@@ -6797,10 +6797,9 @@ pub fn analyze_with_options(
         } else {
             "missing required 'sample' block"
         };
-        errors.push(Diagnostic::semantic_span(
-            missing_entry_message,
-            missing_sample_loc,
-        ));
+        errors.push(
+            Diagnostic::semantic_span(missing_entry_message, missing_sample_loc).compiler_only(),
+        );
     }
 
     {
@@ -7243,10 +7242,13 @@ pub fn analyze_with_options(
             .block(BlockKind::Block)
             .map(Block::loc)
             .unwrap_or_default();
-        errors.push(Diagnostic::semantic_span(
-            "block section with sample-rate outputs must include nested 'sample' block",
-            block_loc,
-        ));
+        errors.push(
+            Diagnostic::semantic_span(
+                "block section with sample-rate outputs must include nested 'sample' block",
+                block_loc,
+            )
+            .compiler_only(),
+        );
     }
 
     let (typed_params, param_arrays) = coerce_params(&params, options, &mut errors);

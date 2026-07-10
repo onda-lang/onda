@@ -4863,6 +4863,7 @@ sample:
             .expect("missing sample diagnostic");
 
         assert_eq!((diag.line, diag.column), (3, 1));
+        assert!(!diag.editor_visible, "missing sample is compile-only");
     }
 
     #[test]
@@ -5253,12 +5254,14 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block without nested sample should fail");
 
-        assert!(
-            errors.iter().any(|diag| diag
-                .message
-                .contains("sample-rate outputs must include nested 'sample' block")),
-            "missing block-specific diagnostic"
-        );
+        let diagnostic = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("sample-rate outputs must include nested 'sample' block")
+            })
+            .expect("missing block-specific diagnostic");
+        assert!(!diagnostic.editor_visible, "missing sample is compile-only");
         assert!(
             !errors
                 .iter()

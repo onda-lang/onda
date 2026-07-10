@@ -1010,10 +1010,14 @@ fn build_proc_lowering_env(
         match proc.outs_timing {
             OutputTiming::Sample => {
                 if !proc.has_sample_block {
-                    push_semantic(
-                        proc_diag,
-                        errors,
-                        format!("processor '{}' must declare sample block", proc.name),
+                    errors.push(
+                        proc_diag
+                            .semantic(
+                                format!("processor '{}' must declare sample block", proc.name),
+                                0,
+                                0,
+                            )
+                            .compiler_only(),
                     );
                 }
             }

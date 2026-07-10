@@ -3985,6 +3985,46 @@ sample {
 }
 
 #[test]
+fn parse_program_with_path_accepts_unsaved_entry_overlay() {
+    let dir = mk_temp_dir("unsaved_entry_overlay");
+    let main = dir.join("new.onda");
+
+    let program = parse_program_with_path("outs 1\nsample:\n  out1 = 0.0\n", &main)
+        .expect("an unsaved entry overlay should not require an on-disk file");
+
+    assert!(program
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::Sample(_))));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn parse_program_file_with_overlays_accepts_unsaved_import() {
+    let dir = mk_temp_dir("unsaved_import_overlay");
+    let main = dir.join("main.onda");
+    let lib = dir.join("lib.onda");
+    let mut overlays = std::collections::HashMap::new();
+    overlays.insert(
+        main.clone(),
+        "import lib\nouts 1\nsample:\n  out1 = Lib::value()\n".to_owned(),
+    );
+    overlays.insert(
+        lib.parent().expect("lib parent").join(".").join("lib.onda"),
+        "namespace Lib:\n  def value():\n    return 0.0\n".to_owned(),
+    );
+
+    let program = parse_program_file_with_overlays(&main, &overlays)
+        .expect("an unsaved imported overlay should resolve before disk lookup");
+
+    assert!(program
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::Namespace(namespace) if namespace.name == "Lib")));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn parse_program_file_with_overlays_uses_dependency_overlay_contents() {
     let dir = mk_temp_dir("dependency_overlay_import");
     let main = dir.join("main.onda");

@@ -679,6 +679,7 @@ fn format_diag_snippet_underlines_same_line_ranges() {
         end_column: 17,
         file: Some(path.to_string_lossy().into_owned()),
         trace: Vec::new(),
+        editor_visible: true,
     };
 
     let snippet = super::diag_print::format_diag_snippet(&diag).expect("snippet should render");

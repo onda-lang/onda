@@ -5,6 +5,7 @@ use super::loading_support::{
 };
 use super::preprocess::preprocess_indentation_blocks;
 use super::*;
+use std::path::Component;
 
 mod namespaces;
 pub use namespaces::parse_namespace_ref_text_ast;
@@ -166,9 +167,13 @@ pub fn parse_program(source: &str) -> Result<Program, Vec<Diagnostic>> {
                     module,
                     display_path(&virtual_path)
                 );
-                let mut imported =
-                    load_builtin_module_blocks(&module, true, &mut state, &[trace.clone()])
-                        .map_err(|diags| append_diagnostics_trace(diags, trace))?;
+                let mut imported = load_builtin_module_blocks(
+                    &module,
+                    true,
+                    &mut state,
+                    std::slice::from_ref(&trace),
+                )
+                .map_err(|diags| append_diagnostics_trace(diags, trace))?;
                 blocks.append(&mut imported);
             }
         }
@@ -190,14 +195,14 @@ pub fn parse_program_file_with_overlays(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<Program, Vec<Diagnostic>> {
-    let canonical = fs::canonicalize(path).map_err(|err| {
+    let normalized_overlays = normalize_overlay_paths(overlays);
+    let canonical = resolve_file_or_overlay_path(path, &normalized_overlays).map_err(|err| {
         vec![Diagnostic::syntax(
             format!("failed to resolve '{}': {err}", path.display()),
             0,
             0,
         )]
     })?;
-    let normalized_overlays = normalize_overlay_paths(path, &canonical, overlays);
     let mut state = LoadState::default();
     state
         .file_modes
@@ -229,7 +234,7 @@ fn parse_program_preprocessed(
     state: &mut LoadState,
 ) -> Result<Program, Vec<Diagnostic>> {
     with_parse_loc_context(file_path, line_offset, trace, source_line_map, || {
-        let mut parsed = OndaParser::parse(Rule::program, &preprocessed)
+        let mut parsed = OndaParser::parse(Rule::program, preprocessed)
             .map_err(|err| vec![diag_from_pest_error(err)])?;
         let program_pair = parsed
             .next()
@@ -298,7 +303,7 @@ fn load_program_blocks_from_file(
     trace: &[String],
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<Vec<Block>, Vec<Diagnostic>> {
-    let canonical = fs::canonicalize(file_path).map_err(|err| {
+    let canonical = resolve_file_or_overlay_path(file_path, overlays).map_err(|err| {
         annotate_diagnostics_with_file(
             vec![Diagnostic::syntax(
                 format!("failed to resolve '{}': {err}", display_path(file_path)),
@@ -376,7 +381,10 @@ fn load_program_blocks_from_file(
                     blocks.append(&mut parsed.blocks);
                 }
                 TopLevelItem::Include { path, line } => {
-                    let include_path = resolve_include_path(&canonical, &path).map_err(|msg| {
+                    let include_path = resolve_include_path_with_overlays(
+                        &canonical, &path, overlays,
+                    )
+                    .map_err(|msg| {
                         annotate_diagnostics_with_file(
                             vec![Diagnostic::syntax(msg, line, 1)],
                             &canonical,
@@ -420,7 +428,10 @@ fn load_program_blocks_from_file(
                         blocks.append(&mut imported);
                         continue;
                     }
-                    let import_path = resolve_import_path(&canonical, &module).map_err(|msg| {
+                    let import_path = resolve_import_path_with_overlays(
+                        &canonical, &module, overlays,
+                    )
+                    .map_err(|msg| {
                         annotate_diagnostics_with_file(
                             vec![Diagnostic::syntax(msg, line, 1)],
                             &canonical,
@@ -489,21 +500,103 @@ fn load_program_blocks_from_file(
     result
 }
 
-fn normalize_overlay_paths(
-    requested_path: &Path,
-    canonical_requested_path: &Path,
-    overlays: &HashMap<PathBuf, String>,
-) -> HashMap<PathBuf, String> {
+fn normalize_overlay_paths(overlays: &HashMap<PathBuf, String>) -> HashMap<PathBuf, String> {
     let mut normalized = HashMap::with_capacity(overlays.len());
     for (path, source) in overlays {
-        let key = if path == requested_path {
-            canonical_requested_path.to_path_buf()
-        } else {
-            fs::canonicalize(path).unwrap_or_else(|_| path.clone())
-        };
+        let key = normalize_overlay_path(path);
         normalized.insert(key, source.clone());
     }
     normalized
+}
+
+fn normalize_overlay_path(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        };
+        let mut normalized = PathBuf::new();
+        for component in absolute.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    normalized.pop();
+                }
+                Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                    normalized.push(component.as_os_str());
+                }
+            }
+        }
+        normalized
+    })
+}
+
+fn resolve_file_or_overlay_path(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<PathBuf, std::io::Error> {
+    match fs::canonicalize(path) {
+        Ok(canonical) => Ok(canonical),
+        Err(err) => {
+            let normalized = normalize_overlay_path(path);
+            if overlays.contains_key(&normalized) {
+                Ok(normalized)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+fn resolve_include_path_with_overlays(
+    current_file: &Path,
+    include_path: &str,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    resolve_include_path(current_file, include_path).or_else(|message| {
+        let include = PathBuf::from(include_path);
+        let unresolved = if include.is_absolute() {
+            include
+        } else {
+            current_file
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(include)
+        };
+        let normalized = normalize_overlay_path(&unresolved);
+        if overlays.contains_key(&normalized) {
+            Ok(normalized)
+        } else {
+            Err(message)
+        }
+    })
+}
+
+fn resolve_import_path_with_overlays(
+    current_file: &Path,
+    module_path: &str,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    resolve_import_path(current_file, module_path).or_else(|message| {
+        let base = if Path::new(module_path).is_absolute() {
+            PathBuf::from(module_path)
+        } else {
+            current_file
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(module_path)
+        };
+        for ext in ["onda", "on"] {
+            let candidate = normalize_overlay_path(&base.with_extension(ext));
+            if overlays.contains_key(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        Err(message)
+    })
 }
 
 fn load_builtin_module_blocks(

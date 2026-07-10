@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use onda_frontend::{
     is_reserved_word, language_type_names, parse_program, parse_program_file_with_overlays,
@@ -59,6 +60,11 @@ pub(super) fn completion_trigger_characters() -> &'static [&'static str] {
     &[".", ":", "/", " ", "(", ","]
 }
 
+pub(super) struct CompletionResult {
+    pub(super) items: Vec<Value>,
+    pub(super) is_incomplete: bool,
+}
+
 pub(super) fn completion_items_for_document_with_index(
     source: &str,
     path: Option<&Path>,
@@ -67,15 +73,21 @@ pub(super) fn completion_items_for_document_with_index(
     index_snapshot: Option<&CompletionIndexSnapshot>,
     position: CompletionPosition,
     snippets: bool,
-) -> Vec<Value> {
+) -> CompletionResult {
     let offset = byte_offset_for_position(source, position);
     let context = CompletionContext::from_source(source, offset);
     if context.in_comment {
-        return Vec::new();
+        return CompletionResult {
+            items: Vec::new(),
+            is_incomplete: false,
+        };
     }
 
     if let CompletionContextKind::ImportPath { typed } = &context.kind {
-        return filter_and_encode(import_completion_items(path, typed), "", snippets);
+        return CompletionResult {
+            items: filter_and_encode(import_completion_items(path, typed), "", snippets),
+            is_incomplete: false,
+        };
     }
 
     let parsed_owned;
@@ -85,6 +97,8 @@ pub(super) fn completion_items_for_document_with_index(
         parsed_owned = parse_for_completion(source, path, overlays, offset);
         parsed_owned.as_ref()
     };
+    let is_incomplete =
+        parsed.is_none() && !matches!(context.kind, CompletionContextKind::Namespace { .. });
     let index = match (parsed, index_snapshot) {
         (Some(program), Some(snapshot)) => snapshot.for_request(program, source, position),
         _ => CompletionIndex::build(parsed, source, path, position),
@@ -112,7 +126,10 @@ pub(super) fn completion_items_for_document_with_index(
         items
     };
 
-    filter_and_encode(items, &context.prefix, snippets)
+    CompletionResult {
+        items: filter_and_encode(items, &context.prefix, snippets),
+        is_incomplete,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +293,7 @@ struct CompletionItem {
     insert_text: Option<String>,
     snippet_insert_text: Option<String>,
     sort_text: Option<String>,
+    additional_import: Option<String>,
 }
 
 impl CompletionItem {
@@ -288,6 +306,7 @@ impl CompletionItem {
             insert_text: None,
             snippet_insert_text: None,
             sort_text: None,
+            additional_import: None,
         }
     }
 
@@ -321,6 +340,11 @@ impl CompletionItem {
         self
     }
 
+    fn additional_import(mut self, module: impl Into<String>) -> Self {
+        self.additional_import = Some(module.into());
+        self
+    }
+
     fn to_lsp(&self, snippets: bool) -> Value {
         let mut item = json!({
             "label": self.label,
@@ -336,6 +360,15 @@ impl CompletionItem {
         }
         if let Some(sort_text) = &self.sort_text {
             item["sortText"] = json!(sort_text);
+        }
+        if let Some(module) = &self.additional_import {
+            item["additionalTextEdits"] = json!([{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 0 },
+                },
+                "newText": format!("import {module}\n"),
+            }]);
         }
         if snippets {
             if let Some(insert_text) = &self.snippet_insert_text {
@@ -362,7 +395,7 @@ struct SymbolInfo {
     detail: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 enum SymbolKind {
     Const,
     Def,
@@ -414,6 +447,17 @@ fn completion_sort_text(group: CompletionSortGroup, label: &str) -> String {
 
 fn declaration_sort_text(kind: SymbolKind, label: &str) -> String {
     completion_sort_text(declaration_sort_group(kind), label)
+}
+
+fn qualified_declaration_sort_text(kind: SymbolKind, label: &str) -> String {
+    let prefix = match kind {
+        SymbolKind::Namespace => "00_00",
+        SymbolKind::Proc => "00_01",
+        SymbolKind::Struct => "00_02",
+        SymbolKind::Def => "00_10",
+        SymbolKind::Const => "00_11",
+    };
+    format!("{prefix}_{label}")
 }
 
 fn declaration_sort_group(kind: SymbolKind) -> CompletionSortGroup {
@@ -524,6 +568,7 @@ struct CompletionIndex {
     source: String,
     position: CompletionPosition,
     symbols: Vec<SymbolInfo>,
+    symbol_identities: BTreeSet<SymbolIdentity>,
     symbols_by_full_name: HashMap<String, usize>,
     members_by_namespace: HashMap<String, Vec<SymbolInfo>>,
     namespaces_by_parent: HashMap<String, BTreeSet<String>>,
@@ -538,6 +583,14 @@ struct CompletionIndex {
     scope_at_position: Option<usize>,
 }
 
+type SymbolIdentity = (
+    String,
+    SymbolKind,
+    Vec<String>,
+    Option<String>,
+    Option<String>,
+);
+
 impl CompletionIndex {
     fn build_global(program: &Program, path: Option<&Path>) -> Self {
         let mut index = Self {
@@ -545,6 +598,7 @@ impl CompletionIndex {
             ..Self::default()
         };
         index.collect_builtin_symbols();
+        index.collect_stdlib_symbols();
         for block in &program.blocks {
             index.collect_block(block, "");
         }
@@ -565,6 +619,7 @@ impl CompletionIndex {
             ..Self::default()
         };
         index.collect_builtin_symbols();
+        index.collect_stdlib_symbols();
 
         if let Some(program) = program {
             for block in &program.blocks {
@@ -610,6 +665,15 @@ impl CompletionIndex {
                 label_detail: Some("(...)".to_owned()),
                 detail: Some(format!("built-in call {name}(...)")),
             });
+        }
+    }
+
+    fn collect_stdlib_symbols(&mut self) {
+        let Some(program) = stdlib_completion_program() else {
+            return;
+        };
+        for block in &program.blocks {
+            self.collect_block(block, "");
         }
     }
 
@@ -800,6 +864,16 @@ impl CompletionIndex {
     }
 
     fn push_symbol(&mut self, symbol: SymbolInfo) {
+        let identity = (
+            symbol.full_name.clone(),
+            symbol.kind,
+            symbol.type_params.clone(),
+            symbol.label_detail.clone(),
+            symbol.detail.clone(),
+        );
+        if !self.symbol_identities.insert(identity) {
+            return;
+        }
         let idx = self.symbols.len();
         self.symbols_by_full_name
             .entry(symbol.full_name.clone())
@@ -1631,7 +1705,7 @@ impl CompletionIndex {
             );
         }
         for symbol in &self.symbols {
-            if symbol.namespace.is_empty() && self.symbol_visible(symbol) {
+            if symbol.namespace.is_empty() {
                 out.push(symbol_completion_item(symbol, false));
             }
         }
@@ -1689,20 +1763,38 @@ impl CompletionIndex {
                 out.push(
                     CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_MODULE)
                         .detail("namespace")
-                        .sort_text(declaration_sort_text(SymbolKind::Namespace, name)),
+                        .sort_text(qualified_declaration_sort_text(SymbolKind::Namespace, name)),
                 );
             }
         }
         if let Some(members) = self.members_by_namespace.get(&namespace) {
             for symbol in members {
-                if self.symbol_visible(symbol) {
-                    out.push(symbol_completion_item(symbol, true));
-                }
+                out.push(symbol_completion_item(symbol, true));
             }
         }
         out.into_iter()
+            .map(|item| self.with_required_std_import(&namespace, item))
             .filter(|item| prefix.is_empty() || item.label.starts_with(prefix))
             .collect()
+    }
+
+    fn with_required_std_import(&self, namespace: &str, item: CompletionItem) -> CompletionItem {
+        let module = if namespace == "std" && item.kind == COMPLETION_ITEM_KIND_MODULE {
+            let candidate = format!("std/{}", item.label);
+            stdlib_module_names()
+                .any(|module| module == candidate)
+                .then_some(candidate)
+        } else {
+            stdlib_module_for_namespace(namespace)
+        };
+        let Some(module) = module else {
+            return item;
+        };
+        if implicitly_imported_std_module(&module) || source_imports_module(&self.source, &module) {
+            item
+        } else {
+            item.additional_import(module)
+        }
     }
 
     fn member_items(&self, receiver: &str, prefix: &str) -> Vec<CompletionItem> {
@@ -1929,9 +2021,7 @@ impl CompletionIndex {
                 .get(&target)
                 .into_iter()
                 .flatten()
-                .filter(|symbol| {
-                    symbol.kind != SymbolKind::Namespace && self.symbol_visible(symbol)
-                })
+                .filter(|symbol| symbol.kind != SymbolKind::Namespace)
                 .map(|symbol| symbol_completion_item(symbol, false))
                 .collect::<Vec<_>>();
             if let Some(children) = self.namespaces_by_parent.get(&target) {
@@ -1978,7 +2068,7 @@ impl CompletionIndex {
             if self.namespace_exists(&target) {
                 if let Some(members) = self.members_by_namespace.get(&target) {
                     for symbol in members {
-                        if symbol.kind != SymbolKind::Namespace && self.symbol_visible(symbol) {
+                        if symbol.kind != SymbolKind::Namespace {
                             out.push(symbol_completion_item(symbol, false));
                         }
                     }
@@ -1997,13 +2087,6 @@ impl CompletionIndex {
             }
         }
         out
-    }
-
-    fn symbol_visible(&self, symbol: &SymbolInfo) -> bool {
-        if symbol.namespace.is_empty() {
-            return true;
-        }
-        true
     }
 
     fn use_visible(&self, use_info: &UseInfo) -> bool {
@@ -2029,16 +2112,7 @@ impl CompletionIndex {
                 return Some(candidate);
             }
         }
-        self.symbols.iter().find_map(|symbol| {
-            if matches!(symbol.kind, SymbolKind::Proc | SymbolKind::Struct)
-                && symbol.label == clean
-                && self.symbol_visible(symbol)
-            {
-                Some(symbol.full_name.clone())
-            } else {
-                None
-            }
-        })
+        None
     }
 
     fn instance_from_fn_param(&self, param: &FnParamDecl, namespace: &str) -> Option<InstanceInfo> {
@@ -2076,15 +2150,6 @@ impl CompletionIndex {
         self.qualified_name_candidates(&clean, namespace)
             .into_iter()
             .find_map(|candidate| self.functions.get(&candidate))
-            .or_else(|| {
-                self.symbols.iter().find_map(|symbol| {
-                    if symbol.kind == SymbolKind::Def && symbol.label == clean {
-                        self.functions.get(&symbol.full_name)
-                    } else {
-                        None
-                    }
-                })
-            })
     }
 
     fn qualified_name_candidates(&self, name: &str, current_namespace: &str) -> Vec<String> {
@@ -2632,6 +2697,11 @@ fn symbol_completion_item(symbol: &SymbolInfo, qualified_member: bool) -> Comple
         SymbolKind::Struct => COMPLETION_ITEM_KIND_STRUCT,
         SymbolKind::Namespace => COMPLETION_ITEM_KIND_MODULE,
     };
+    let sort_text = if qualified_member {
+        qualified_declaration_sort_text(symbol.kind, &symbol.label)
+    } else {
+        declaration_sort_text(symbol.kind, &symbol.label)
+    };
     let mut item = CompletionItem::new(symbol.label.clone(), kind)
         .maybe_label_detail(symbol.label_detail.clone())
         .detail(
@@ -2640,7 +2710,7 @@ fn symbol_completion_item(symbol: &SymbolInfo, qualified_member: bool) -> Comple
                 .clone()
                 .unwrap_or_else(|| symbol_kind_detail(symbol.kind).to_owned()),
         )
-        .sort_text(declaration_sort_text(symbol.kind, &symbol.label));
+        .sort_text(sort_text);
     if matches!(symbol.kind, SymbolKind::Def | SymbolKind::Proc) {
         item = item
             .insert_text(callable_insert_text(&symbol.label, &symbol.type_params))
@@ -2891,17 +2961,62 @@ fn is_ident_text(text: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
+fn stdlib_completion_program() -> Option<&'static Program> {
+    static PROGRAM: OnceLock<Option<Program>> = OnceLock::new();
+    PROGRAM
+        .get_or_init(|| {
+            let imports = stdlib_module_names()
+                .map(|module| format!("import {module}\n"))
+                .collect::<String>();
+            parse_program(&imports).ok()
+        })
+        .as_ref()
+}
+
+fn stdlib_module_for_namespace(namespace: &str) -> Option<String> {
+    let mut segments = namespace.split("::");
+    if segments.next() != Some("std") {
+        return None;
+    }
+    let module_name = segments.next()?;
+    let module = format!("std/{module_name}");
+    stdlib_module_names()
+        .any(|candidate| candidate == module)
+        .then_some(module)
+}
+
+fn implicitly_imported_std_module(module: &str) -> bool {
+    matches!(module, "std/math" | "std/lookup" | "std/random")
+}
+
+fn source_imports_module(source: &str, module: &str) -> bool {
+    source.lines().any(|line| {
+        let code = line.split('#').next().unwrap_or(line);
+        code.split(';').any(|statement| {
+            let statement = statement.trim();
+            let Some(rest) = statement.strip_prefix("import") else {
+                return false;
+            };
+            if !rest.chars().next().is_some_and(char::is_whitespace) {
+                return false;
+            }
+            rest.split_whitespace().next() == Some(module)
+        })
+    })
+}
+
 fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     for module in stdlib_module_names() {
         if module.starts_with(typed) {
+            let completion = import_completion_segment(module, typed);
             items.push(
-                CompletionItem::new(module, COMPLETION_ITEM_KIND_MODULE)
-                    .detail("std module")
-                    .insert_text(module)
+                CompletionItem::new(completion.clone(), COMPLETION_ITEM_KIND_MODULE)
+                    .detail(format!("std module {module}"))
+                    .insert_text(completion.clone())
                     .sort_text(completion_sort_text(
                         CompletionSortGroup::ImportModule,
-                        module,
+                        &completion,
                     )),
             );
         }
@@ -2936,13 +3051,14 @@ fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionIt
                     file_name
                 };
                 if entry_path.is_dir() {
+                    let completion = import_completion_segment(&format!("{rel}/"), typed);
                     items.push(
-                        CompletionItem::new(format!("{rel}/"), COMPLETION_ITEM_KIND_FILE)
-                            .detail("folder")
-                            .insert_text(format!("{rel}/"))
+                        CompletionItem::new(completion.clone(), COMPLETION_ITEM_KIND_FILE)
+                            .detail(format!("folder {rel}/"))
+                            .insert_text(completion.clone())
                             .sort_text(completion_sort_text(
                                 CompletionSortGroup::ImportFile,
-                                &format!("{rel}/"),
+                                &completion,
                             )),
                     );
                 } else if matches!(
@@ -2953,13 +3069,14 @@ fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionIt
                         .strip_suffix(".onda")
                         .or_else(|| rel.strip_suffix(".on"))
                         .unwrap_or(&rel);
+                    let completion = import_completion_segment(without_ext, typed);
                     items.push(
-                        CompletionItem::new(without_ext.to_owned(), COMPLETION_ITEM_KIND_FILE)
-                            .detail("Onda module")
-                            .insert_text(without_ext.to_owned())
+                        CompletionItem::new(completion.clone(), COMPLETION_ITEM_KIND_FILE)
+                            .detail(format!("Onda module {without_ext}"))
+                            .insert_text(completion.clone())
                             .sort_text(completion_sort_text(
                                 CompletionSortGroup::ImportFile,
-                                without_ext,
+                                &completion,
                             )),
                     );
                 }
@@ -2967,6 +3084,17 @@ fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionIt
         }
     }
     items
+}
+
+fn import_completion_segment(candidate: &str, typed: &str) -> String {
+    let Some((directory, _)) = typed.rsplit_once('/') else {
+        return candidate.to_owned();
+    };
+    let prefix = format!("{directory}/");
+    candidate
+        .strip_prefix(&prefix)
+        .unwrap_or(candidate)
+        .to_owned()
 }
 
 fn filter_and_encode(items: Vec<CompletionItem>, prefix: &str, snippets: bool) -> Vec<Value> {
@@ -3656,6 +3784,28 @@ mod tests {
 
     fn labels(items: Vec<CompletionItem>) -> Vec<String> {
         items.into_iter().map(|item| item.label).collect()
+    }
+
+    #[test]
+    fn stdlib_catalog_deduplicates_imported_symbols_without_collapsing_overloads() {
+        let source = "import std/osc\n";
+        let parsed = parse_program(source).expect("stdlib import should parse");
+        let index =
+            CompletionIndex::build(Some(&parsed), source, None, CompletionPosition::default());
+
+        let sine_count = index
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.full_name == "std::osc::Sine")
+            .count();
+        assert_eq!(sine_count, 1, "Sine should be indexed once");
+
+        let read_overloads = index
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.full_name == "read")
+            .count();
+        assert_eq!(read_overloads, 2, "read overloads should remain distinct");
     }
 
     #[test]

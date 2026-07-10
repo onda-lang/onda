@@ -18,6 +18,7 @@ pub struct Diagnostic {
     pub end_column: usize,
     pub file: Option<String>,
     pub trace: Vec<String>,
+    pub editor_visible: bool,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
@@ -102,6 +103,7 @@ impl Diagnostic {
             end_column: Self::point_end_column(column),
             file: None,
             trace: Vec::new(),
+            editor_visible: true,
         }
     }
 
@@ -146,6 +148,7 @@ impl Diagnostic {
             end_column,
             file,
             trace,
+            editor_visible: true,
         }
     }
 
@@ -179,6 +182,7 @@ impl Diagnostic {
             end_column: span.end_column as usize,
             file,
             trace,
+            editor_visible: true,
         }
     }
 
@@ -192,6 +196,7 @@ impl Diagnostic {
             end_column: loc.end_column,
             file: loc.file(),
             trace: loc.trace(),
+            editor_visible: true,
         }
     }
 
@@ -205,6 +210,7 @@ impl Diagnostic {
             end_column: Self::point_end_column(column),
             file: None,
             trace: Vec::new(),
+            editor_visible: true,
         }
     }
 
@@ -218,6 +224,7 @@ impl Diagnostic {
             end_column: loc.end_column,
             file: loc.file(),
             trace: loc.trace(),
+            editor_visible: true,
         }
     }
 
@@ -231,7 +238,13 @@ impl Diagnostic {
             end_column: 0,
             file: None,
             trace: Vec::new(),
+            editor_visible: true,
         }
+    }
+
+    pub fn compiler_only(mut self) -> Self {
+        self.editor_visible = false;
+        self
     }
 }
 

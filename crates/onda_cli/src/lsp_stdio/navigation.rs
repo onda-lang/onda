@@ -2358,19 +2358,7 @@ impl NavigationIndex {
                 return Some(candidate);
             }
         }
-
-        let clean = strip_type_args_from_path(name);
-        self.definitions.iter().find_map(|definition| {
-            if matches!(
-                definition.kind,
-                DefinitionKind::Proc | DefinitionKind::Struct
-            ) && definition.name == clean
-            {
-                Some(definition.full_name.clone())
-            } else {
-                None
-            }
-        })
+        None
     }
 
     fn instance_from_fn_param(&self, param: &FnParamDecl, namespace: &str) -> Option<InstanceInfo> {

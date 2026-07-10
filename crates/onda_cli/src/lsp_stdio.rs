@@ -662,7 +662,7 @@ impl LspServer {
             }
         }
 
-        let parsed = self.cached_parsed_program_for_source(normalized, source_hash);
+        let parsed = self.parsed_program_for_open_request(normalized, source);
         let tokens = if let Some(parsed) = parsed.as_deref() {
             semantic_tokens_for_document_with_parsed(source, Some(normalized), Some(parsed))
         } else {
@@ -696,40 +696,38 @@ impl LspServer {
         let source = self.source_text_for_path(&path)?;
         if colon_trigger_is_single_colon(&source, position, context) {
             return Ok(json!({
-                "isIncomplete": false,
+                "isIncomplete": true,
                 "items": [],
             }));
         }
+        let completion_position = CompletionPosition {
+            line: position.line,
+            character: position.character,
+        };
         let overlays = self.session.analysis().overlay_map();
         let snippets = self.completion_snippets;
         let normalized = normalize_path(&path);
-        let open_document = self.session.analysis().document(&normalized).is_some();
         let parsed = if self.session.analysis().document(&normalized).is_some() {
-            self.fast_parsed_program_for_open_request(&normalized, &source)
+            self.parsed_program_for_open_request(&normalized, &source)
         } else {
             let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
-            self.best_effort_parsed_program_for_path(&normalized, &overlays, fingerprint)
+            self.parsed_program_for_path(&normalized, &overlays, fingerprint)
         };
-        let allow_stale_index =
-            open_document && !dependency_paths_for_source(&normalized, &source).is_empty();
-        let index_snapshot = parsed.as_deref().and_then(|program| {
-            self.completion_index_snapshot_for_path(&normalized, program, allow_stale_index)
-        });
-        let items = completion_items_for_document_with_index(
+        let index_snapshot = parsed
+            .as_deref()
+            .and_then(|program| self.completion_index_snapshot_for_path(&normalized, program));
+        let completion = completion_items_for_document_with_index(
             &source,
             Some(&normalized),
             &overlays,
             parsed.as_deref(),
             index_snapshot,
-            CompletionPosition {
-                line: position.line,
-                character: position.character,
-            },
+            completion_position,
             snippets,
         );
         Ok(json!({
-            "isIncomplete": false,
-            "items": items,
+            "isIncomplete": completion.is_incomplete,
+            "items": completion.items,
         }))
     }
 
@@ -816,8 +814,10 @@ impl LspServer {
 
     fn note_document_changed(&mut self, path: &Path) {
         let normalized = normalize_path(path);
-        self.semantic_token_cache.remove(&normalized);
         self.dependency_fingerprint_cache.remove(&normalized);
+        self.semantic_token_cache.clear();
+        self.parse_cache.clear();
+        self.completion_index_cache.clear();
     }
 
     fn note_document_closed(&mut self, path: &Path) {
@@ -881,43 +881,7 @@ impl LspServer {
         Some(parsed)
     }
 
-    fn best_effort_parsed_program_for_path(
-        &mut self,
-        path: &Path,
-        overlays: &HashMap<PathBuf, String>,
-        fingerprint: DocumentFingerprint,
-    ) -> Option<Arc<Program>> {
-        let normalized = normalize_path(path);
-        if let Some(parsed) = self
-            .parse_cache
-            .get(&normalized)
-            .filter(|cached| cached.fingerprint == fingerprint)
-            .map(|cached| cached.parsed.clone())
-        {
-            return parsed;
-        }
-
-        let stale = self
-            .parse_cache
-            .get(&normalized)
-            .and_then(|cached| cached.parsed.clone());
-        match parse_program_file_with_overlays(&normalized, overlays) {
-            Ok(program) => {
-                let parsed = Arc::new(program);
-                self.parse_cache.insert(
-                    normalized,
-                    CachedParsedDocument {
-                        fingerprint,
-                        parsed: Some(parsed.clone()),
-                    },
-                );
-                Some(parsed)
-            }
-            Err(_) => stale,
-        }
-    }
-
-    fn fast_parsed_program_for_open_request(
+    fn parsed_program_for_open_request(
         &mut self,
         path: &Path,
         source: &str,
@@ -932,26 +896,21 @@ impl LspServer {
         {
             return Some(parsed);
         }
-        if dependency_paths_for_source(&normalized, source).is_empty() {
-            if let Ok(program) = parse_program_file_with_overlays(
+        if let Ok(program) =
+            parse_program_file_with_overlays(&normalized, &self.session.analysis().overlay_map())
+        {
+            let parsed = Some(Arc::new(program));
+            self.store_parsed_program_for_path(
                 &normalized,
-                &self.session.analysis().overlay_map(),
-            ) {
-                let parsed = Some(Arc::new(program));
-                self.store_parsed_program_for_path(
-                    &normalized,
-                    DocumentFingerprint {
-                        source_hash,
-                        dependency_hash: 0,
-                    },
-                    parsed.clone(),
-                );
-                return parsed;
-            }
+                DocumentFingerprint {
+                    source_hash,
+                    dependency_hash: 0,
+                },
+                parsed.clone(),
+            );
+            return parsed;
         }
-        self.parse_cache
-            .get(&normalized)
-            .and_then(|cached| cached.parsed.clone())
+        None
     }
 
     fn parsed_program_for_open_navigation_request(
@@ -960,7 +919,6 @@ impl LspServer {
         source: &str,
     ) -> Option<Arc<Program>> {
         let normalized = normalize_path(path);
-        let source_hash = hash_source(source);
         let overlays = self.session.analysis().overlay_map();
         let fingerprint = self.document_fingerprint_for_path(&normalized, source, &overlays);
         if let Some(parsed) = self
@@ -972,30 +930,14 @@ impl LspServer {
             return Some(parsed);
         }
 
-        let stale = self
-            .parse_cache
-            .get(&normalized)
-            .filter(|cached| cached.fingerprint.source_hash == source_hash)
-            .and_then(|cached| cached.parsed.clone());
         match parse_program_file_with_overlays(&normalized, &overlays) {
             Ok(program) => {
                 let parsed = Some(Arc::new(program));
                 self.store_parsed_program_for_path(&normalized, fingerprint, parsed.clone());
                 parsed
             }
-            Err(_) => stale,
+            Err(_) => None,
         }
-    }
-
-    fn cached_parsed_program_for_source(
-        &self,
-        path: &Path,
-        source_hash: u64,
-    ) -> Option<Arc<Program>> {
-        self.parse_cache
-            .get(&normalize_path(path))
-            .filter(|cached| cached.fingerprint.source_hash == source_hash)
-            .and_then(|cached| cached.parsed.clone())
     }
 
     fn document_fingerprint_for_path(
@@ -1033,6 +975,7 @@ impl LspServer {
                 parsed,
             },
         );
+        self.completion_index_cache.remove(&normalized);
         self.semantic_token_cache.remove(&normalized);
     }
 
@@ -1040,16 +983,9 @@ impl LspServer {
         &mut self,
         path: &Path,
         program: &Program,
-        allow_stale: bool,
     ) -> Option<&CompletionIndexSnapshot> {
         let normalized = normalize_path(path);
         let fingerprint = self.parse_cache.get(&normalized)?.fingerprint;
-        if allow_stale && self.completion_index_cache.contains_key(&normalized) {
-            return self
-                .completion_index_cache
-                .get(&normalized)
-                .map(|cached| &cached.snapshot);
-        }
         let stale = self
             .completion_index_cache
             .get(&normalized)
@@ -1209,6 +1145,9 @@ impl LspServer {
         let mut grouped: HashMap<String, Vec<Value>> = HashMap::new();
 
         for diagnostic in diagnostics {
+            if !diagnostic.editor_visible {
+                continue;
+            }
             let uri = diagnostic_uri(diagnostic, default_uri)?;
             grouped
                 .entry(uri)
@@ -2846,6 +2785,42 @@ def target():
     }
 
     #[test]
+    fn dependency_edit_refreshes_open_importer_semantic_tokens_immediately() {
+        let dir = mk_temp_dir("semantic_tokens_open_dependency_edit");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let main_source = "import lib\nsample:\n  out1 = target()\n";
+        let old_lib = "def target():\n  return 0.0\n";
+        let new_lib = "const target = 0.0\n";
+        write_file(&lib, old_lib);
+        write_file(&main, main_source);
+
+        let mut server = LspServer::default();
+        let main_path =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), main_source);
+        let lib_path = server
+            .session
+            .open_document(&lib, onda_daemon::DocumentVersion(1), old_lib);
+        let old_data = semantic_token_data_for(&mut server, &main_path);
+
+        let changed =
+            server
+                .session
+                .update_document(&lib_path, onda_daemon::DocumentVersion(2), new_lib);
+        server.note_document_changed(&changed);
+        let new_data = semantic_token_data_for(&mut server, &main_path);
+
+        assert_ne!(
+            old_data, new_data,
+            "semantic tokens should use the edited overlay"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn completion_uses_cached_parse_after_unsaved_edit() {
         let dir = mk_temp_dir("completion_cached_parse_after_edit");
         let main = dir.join("main.onda");
@@ -2967,8 +2942,8 @@ namespace sc:
     }
 
     #[test]
-    fn diagnostics_do_not_clear_cached_parse_after_syntax_error() {
-        let dir = mk_temp_dir("diagnostic_error_keeps_parse_cache");
+    fn diagnostics_do_not_retain_stale_parse_after_syntax_error() {
+        let dir = mk_temp_dir("diagnostic_error_drops_stale_parse_cache");
         let lib = dir.join("lib.onda");
         let main = dir.join("main.onda");
         let initial_source = r#"
@@ -3043,8 +3018,8 @@ namespace sc:
                 .parse_cache
                 .get(&normalized)
                 .and_then(|cached| cached.parsed.as_ref())
-                .is_some(),
-            "failed diagnostics should keep the last successful parsed snapshot"
+                .is_none(),
+            "failed diagnostics should not keep a stale parsed snapshot"
         );
 
         server
@@ -3054,15 +3029,15 @@ namespace sc:
         let labels = completion_labels_for(&mut server, &main, completion_source, "Si");
         assert!(
             labels.contains(&"SinOsc".to_owned()),
-            "completion should reuse the last successful parsed snapshot after an error: {labels:?}"
+            "completion should reparse current source after an error: {labels:?}"
         );
 
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn completion_keeps_ready_index_when_parse_cache_changes_without_prebuilt_index() {
-        let dir = mk_temp_dir("completion_keeps_ready_index");
+    fn completion_rebuilds_index_when_parsed_dependencies_change() {
+        let dir = mk_temp_dir("completion_rebuilds_changed_dependency_index");
         let lib = dir.join("lib.onda");
         let main = dir.join("main.onda");
         let source = r#"
@@ -3124,8 +3099,12 @@ namespace sc:
 
         let labels = completion_labels_for(&mut server, &main, source, "d = S");
         assert!(
-            labels.contains(&"SinOsc".to_owned()),
-            "request-time completion should keep the ready index until a replacement is prepared: {labels:?}"
+            labels.contains(&"SawOsc".to_owned()),
+            "completion should use the replacement parsed dependency: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"SinOsc".to_owned()),
+            "completion should not retain stale dependency symbols: {labels:?}"
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -3290,6 +3269,84 @@ namespace sc:
         assert!(
             affected.contains(&lib_path),
             "changed open document should be diagnosed: {affected:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dependency_edit_invalidates_importer_completion_immediately() {
+        let dir = mk_temp_dir("dependency_edit_completion_invalidation");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let main_source = "import lib\ninit:\n  value = Lib::Old\n";
+        let old_lib = "namespace Lib:\n  const Old = 1\n";
+        let new_lib = "namespace Lib:\n  const New = 1\n";
+        write_file(&lib, old_lib);
+        write_file(&main, main_source);
+
+        let mut server = LspServer::default();
+        server
+            .session
+            .open_document(&main, onda_daemon::DocumentVersion(1), main_source);
+        server
+            .session
+            .open_document(&lib, onda_daemon::DocumentVersion(1), old_lib);
+        let old_labels = completion_labels_for(&mut server, &main, main_source, "Lib::");
+        assert!(
+            old_labels.contains(&"Old".to_owned()),
+            "labels: {old_labels:?}"
+        );
+
+        let changed =
+            server
+                .session
+                .update_document(&lib, onda_daemon::DocumentVersion(2), new_lib);
+        server.note_document_changed(&changed);
+        let new_labels = completion_labels_for(&mut server, &main, main_source, "Lib::");
+
+        assert!(
+            new_labels.contains(&"New".to_owned()),
+            "labels: {new_labels:?}"
+        );
+        assert!(
+            !new_labels.contains(&"Old".to_owned()),
+            "stale imported symbol should be gone: {new_labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dependency_edit_refreshes_importer_navigation_immediately() {
+        let dir = mk_temp_dir("dependency_edit_navigation_invalidation");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let main_source = "import lib\nsample:\n  out1 = target()\n";
+        let old_lib = "def target():\n  return 0.0\n";
+        let new_lib = "\n\ndef target():\n  return 1.0\n";
+        write_file(&lib, old_lib);
+        write_file(&main, main_source);
+
+        let mut server = LspServer::default();
+        server
+            .session
+            .open_document(&main, onda_daemon::DocumentVersion(1), main_source);
+        let lib_path = server
+            .session
+            .open_document(&lib, onda_daemon::DocumentVersion(1), old_lib);
+        let old_definition = definition_for(&mut server, &main, main_source, "target");
+
+        let changed =
+            server
+                .session
+                .update_document(&lib_path, onda_daemon::DocumentVersion(2), new_lib);
+        server.note_document_changed(&changed);
+        let new_definition = definition_for(&mut server, &main, main_source, "target");
+
+        assert_ne!(
+            old_definition["range"]["start"]["line"], new_definition["range"]["start"]["line"],
+            "navigation should use the edited dependency overlay"
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -3623,6 +3680,7 @@ init:
             end_column: 2,
             file: None,
             trace: vec!["deep".to_owned(), "higher".to_owned()],
+            editor_visible: true,
         };
         let message = diagnostic_message(&diagnostic);
         assert!(message.contains("root error"));
@@ -3642,6 +3700,7 @@ init:
             end_column: 2,
             file: None,
             trace: Vec::new(),
+            editor_visible: true,
         };
 
         let lsp = diagnostic_to_lsp(&diagnostic);
@@ -3672,10 +3731,7 @@ init:
     fn publish_diagnostics_does_not_immediately_clear_entry_uri() {
         let dir = mk_temp_dir("publish_diagnostics");
         let main = dir.join("main.onda");
-        write_file(
-            &main,
-            "proc Saturate:\n  sample:\n    x = in1\n    out1 = x\n\ninit:\n  sat = Saturat()\n",
-        );
+        write_file(&main, "sample:\n  out1 = missing\n");
 
         let mut server = LspServer::default();
         let normalized = server.session.open_document(
@@ -3731,7 +3787,7 @@ init:
     fn did_open_publishes_diagnostics_immediately() {
         let dir = mk_temp_dir("did_open_publish");
         let main = dir.join("main.onda");
-        let source = "init:\n  sat = Saturat()\n";
+        let source = "sample:\n  out1 = missing\n";
         write_file(&main, source);
 
         let mut server = LspServer::default();
@@ -3771,6 +3827,87 @@ init:
                     .unwrap_or(false)
             }),
             "expected didOpen to publish diagnostics: {notifications:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn did_open_empty_document_publishes_no_errors() {
+        let dir = mk_temp_dir("did_open_empty_document");
+        let main = dir.join("empty.onda");
+
+        let mut server = LspServer::default();
+        let mut writer = Vec::new();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": path_to_file_uri(&main),
+                            "languageId": "onda",
+                            "version": 1,
+                            "text": ""
+                        }
+                    }
+                }),
+                &mut writer,
+            )
+            .expect("didOpen should succeed");
+
+        let notifications = decode_lsp_messages(writer);
+        let diagnostics = notifications
+            .iter()
+            .filter(|message| message["method"] == json!("textDocument/publishDiagnostics"))
+            .flat_map(|message| {
+                message["params"]["diagnostics"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lsp_hides_missing_sample_diagnostic() {
+        let dir = mk_temp_dir("hide_missing_sample_diagnostic");
+        let main = dir.join("main.onda");
+        let source = "outs:\n  out1\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let normalized =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), source);
+        let mut writer = Vec::new();
+        server
+            .publish_diagnostics_for_entry(&normalized, &mut writer)
+            .expect("diagnostics should publish");
+
+        let notifications = decode_lsp_messages(writer);
+        let messages = notifications
+            .iter()
+            .filter(|message| message["method"] == json!("textDocument/publishDiagnostics"))
+            .flat_map(|message| {
+                message["params"]["diagnostics"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+            })
+            .filter_map(|diagnostic| diagnostic["message"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            messages
+                .iter()
+                .all(|message| !message.contains("missing required 'sample' block")),
+            "messages: {messages:?}"
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -3860,7 +3997,7 @@ init:
         let dir = mk_temp_dir("did_save_publish");
         let main = dir.join("main.onda");
         let valid_source = "sample:\n  out1 = 0.0\n";
-        let invalid_source = "init:\n  sat = Saturat()\n";
+        let invalid_source = "sample:\n  out1 = missing\n";
         write_file(&main, valid_source);
 
         let mut server = LspServer::default();
@@ -3927,7 +4064,7 @@ init:
         let dir = mk_temp_dir("did_change_publish_sync");
         let main = dir.join("main.onda");
         let valid_source = "sample:\n  out1 = 0.0\n";
-        let invalid_source = "init:\n  sat = Saturat()\n";
+        let invalid_source = "sample:\n  out1 = missing\n";
         write_file(&main, valid_source);
 
         let mut server = LspServer::default();
@@ -3999,7 +4136,7 @@ init:
         let dir = mk_temp_dir("did_change_deferred");
         let main = dir.join("main.onda");
         let valid_source = "sample:\n  out1 = 0.0\n";
-        let invalid_source = "init:\n  sat = Saturat()\n";
+        let invalid_source = "sample:\n  out1 = missing\n";
         write_file(&main, valid_source);
 
         let mut server = LspServer {
@@ -4632,6 +4769,388 @@ sample:
 
         assert!(labels.contains(&"Sine".to_owned()), "labels: {labels:?}");
         assert!(labels.contains(&"Saw".to_owned()), "labels: {labels:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_discovers_std_namespaces_without_prior_import() {
+        let dir = mk_temp_dir("completion_std_namespace_discovery");
+        let main = dir.join("main.onda");
+        let source = "init:\n  a = std::\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for(&mut server, &main, source, "std::");
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>();
+
+        for expected in ["osc", "filter", "env", "delay"] {
+            assert!(labels.contains(&expected), "missing {expected}: {items:?}");
+        }
+        for unrelated in ["init", "sample", "sin", "PI"] {
+            assert!(
+                !labels.contains(&unrelated),
+                "unexpected {unrelated}: {items:?}"
+            );
+        }
+        assert!(
+            items.iter().all(|item| item["kind"] == json!(9)),
+            "std:: should contain only namespaces: {items:?}"
+        );
+        assert!(
+            items.iter().all(|item| {
+                item["sortText"]
+                    .as_str()
+                    .is_some_and(|sort_text| sort_text.starts_with("00_00_"))
+            }),
+            "namespace ranks: {items:?}"
+        );
+
+        let osc = items
+            .iter()
+            .find(|item| item["label"] == json!("osc"))
+            .expect("osc namespace completion");
+        assert_eq!(
+            osc["additionalTextEdits"][0]["newText"],
+            json!("import std/osc\n"),
+            "item: {osc:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_filters_std_namespace_prefix_without_prior_import() {
+        let dir = mk_temp_dir("completion_std_namespace_prefix");
+        let main = dir.join("main.onda");
+        let source = "init:\n  a = std::o\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "std::o");
+
+        assert_eq!(labels, vec!["osc".to_owned()], "labels: {labels:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_discovers_std_module_symbols_without_prior_import() {
+        let dir = mk_temp_dir("completion_std_module_symbol_discovery");
+        let main = dir.join("main.onda");
+        let source = "init:\n  a = std::osc::\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for(&mut server, &main, source, "std::osc::");
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>();
+
+        for expected in ["Phasor", "Sine", "Saw", "Pulse"] {
+            assert!(labels.contains(&expected), "missing {expected}: {items:?}");
+        }
+        for unrelated in ["init", "sample", "sin", "PI", "Complex"] {
+            assert!(
+                !labels.contains(&unrelated),
+                "unexpected {unrelated}: {items:?}"
+            );
+        }
+
+        assert_eq!(
+            &labels[..7],
+            ["Phasor", "Pulse", "Saw", "SawDown", "Sine", "Square", "Triangle"],
+            "constructors should lead the qualified list: {items:?}"
+        );
+        assert!(
+            items[..7].iter().all(|item| {
+                item["sortText"]
+                    .as_str()
+                    .is_some_and(|sort_text| sort_text.starts_with("00_01_"))
+            }),
+            "constructor ranks: {items:?}"
+        );
+
+        let sine = items
+            .iter()
+            .find(|item| item["label"] == json!("Sine"))
+            .expect("Sine completion");
+        assert_eq!(sine["kind"], json!(4), "item: {sine:?}");
+        assert_eq!(
+            sine["additionalTextEdits"][0]["newText"],
+            json!("import std/osc\n"),
+            "item: {sine:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_does_not_duplicate_existing_std_import_edit() {
+        let dir = mk_temp_dir("completion_existing_std_import");
+        let main = dir.join("main.onda");
+        let source = "import std/osc\ninit:\n  a = std::osc::\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for(&mut server, &main, source, "std::osc::");
+        let sine = items
+            .iter()
+            .find(|item| item["label"] == json!("Sine"))
+            .expect("Sine completion");
+
+        assert!(
+            sine.get("additionalTextEdits").is_none(),
+            "existing import should not be duplicated: {sine:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_replaces_general_session_across_std_namespace_triggers() {
+        let dir = mk_temp_dir("completion_std_trigger_sequence");
+        let main = dir.join("main.onda");
+        let mut server = LspServer::default();
+
+        let root_source = "init:\n  a = std::\n";
+        write_file(&main, root_source);
+        let root_labels = completion_items_for_with_context(
+            &mut server,
+            &main,
+            root_source,
+            "std::",
+            Some(json!({
+                "triggerKind": 2,
+                "triggerCharacter": ":",
+            })),
+        )
+        .iter()
+        .filter_map(|item| item["label"].as_str().map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+        assert!(
+            root_labels.contains(&"osc".to_owned()),
+            "labels: {root_labels:?}"
+        );
+        assert!(
+            !root_labels.contains(&"sample".to_owned()),
+            "labels: {root_labels:?}"
+        );
+
+        let module_source = "init:\n  a = std::osc::\n";
+        let module_labels = completion_items_for_with_context(
+            &mut server,
+            &main,
+            module_source,
+            "std::osc::",
+            Some(json!({
+                "triggerKind": 2,
+                "triggerCharacter": ":",
+            })),
+        )
+        .iter()
+        .filter_map(|item| item["label"].as_str().map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+        assert!(
+            module_labels.contains(&"Sine".to_owned()),
+            "labels: {module_labels:?}"
+        );
+        assert!(
+            !module_labels.contains(&"sample".to_owned()),
+            "labels: {module_labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_marks_qualified_results_complete_when_source_is_incomplete() {
+        let dir = mk_temp_dir("completion_incomplete_requery");
+        let main = dir.join("main.onda");
+        let source = "import std/osc\ninit:\n  sine = std::osc::\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let normalized =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), source);
+        let result = server
+            .completions_for_uri(
+                &path_to_file_uri(&normalized),
+                position_after(source, "std::osc::"),
+                None,
+            )
+            .expect("completion should succeed");
+
+        assert_eq!(result["isIncomplete"], json!(false), "result: {result:?}");
+        assert!(
+            result["items"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["label"] == json!("Sine"))),
+            "result: {result:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_lists_only_std_osc_members_on_first_qualified_request() {
+        let dir = mk_temp_dir("completion_std_osc_first_qualified_request");
+        let main = dir.join("main.onda");
+        write_file(&main, "");
+
+        let mut server = LspServer::default();
+        let normalized = server
+            .session
+            .open_document(&main, onda_daemon::DocumentVersion(1), "");
+        server
+            .publish_diagnostics_for_entry(&normalized, &mut Vec::new())
+            .expect("empty document diagnostics should populate the initial parse cache");
+
+        let source = r#"import std/osc
+
+init:
+  sine = std::osc::Si
+"#;
+        server
+            .session
+            .update_document(&main, onda_daemon::DocumentVersion(2), source);
+        server.note_document_changed(&main);
+
+        let items = completion_items_for(&mut server, &main, source, "std::osc::Si");
+
+        assert_eq!(items.len(), 1, "items: {items:?}");
+        assert_eq!(items[0]["label"], json!("Sine"), "item: {:?}", items[0]);
+        assert_eq!(items[0]["kind"], json!(4), "item: {:?}", items[0]);
+        assert!(
+            items[0]["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.starts_with("proc std::osc::Sine")),
+            "item: {:?}",
+            items[0]
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_for_bare_std_osc_namespace_excludes_unrelated_symbols() {
+        let dir = mk_temp_dir("completion_std_osc_namespace_only");
+        let main = dir.join("main.onda");
+        let source = r#"import std/osc
+
+init:
+  sine = std::osc::
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "std::osc::");
+
+        for expected in ["Phasor", "Sine", "Saw", "poly_blep"] {
+            assert!(
+                labels.contains(&expected.to_owned()),
+                "missing {expected}: {labels:?}"
+            );
+        }
+        for unrelated in ["sin", "PI", "sample", "Complex"] {
+            assert!(
+                !labels.contains(&unrelated.to_owned()),
+                "unexpected {unrelated}: {labels:?}"
+            );
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_after_import_slash_inserts_only_the_remaining_segment() {
+        let dir = mk_temp_dir("completion_import_path_segment");
+        let main = dir.join("main.onda");
+        let source = "import std/";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for(&mut server, &main, source, "std/");
+        let osc = items
+            .iter()
+            .find(|item| item["label"] == json!("osc"))
+            .unwrap_or_else(|| panic!("missing osc module completion: {items:?}"));
+
+        assert_eq!(osc["insertText"], json!("osc"), "item: {osc:?}");
+        assert!(
+            items
+                .iter()
+                .all(|item| item["insertText"] != json!("std/osc")),
+            "completion must not duplicate the existing std/ prefix: {items:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_does_not_resolve_unqualified_imported_namespace_types() {
+        let dir = mk_temp_dir("completion_unqualified_imported_namespace_type");
+        let main = dir.join("main.onda");
+        let source = r#"import std/osc
+
+init:
+  sine = Sine()
+  sine.
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "sine.");
+
+        assert!(labels.is_empty(), "labels: {labels:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn navigation_does_not_resolve_members_of_unqualified_imported_namespace_types() {
+        let dir = mk_temp_dir("navigation_unqualified_imported_namespace_type");
+        let main = dir.join("main.onda");
+        let source = r#"import std/osc
+
+init:
+  sine = Sine()
+  value = sine.freq
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let definition = definition_for(&mut server, &main, source, "sine.freq");
+
+        assert_eq!(definition, json!(null), "definition: {definition:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_resolves_unqualified_namespace_types_after_use() {
+        let dir = mk_temp_dir("completion_used_namespace_type");
+        let main = dir.join("main.onda");
+        let source = r#"import std/osc
+use std::osc
+
+init:
+  sine = Sine()
+  sine.
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "sine.");
+
+        assert!(labels.contains(&"freq".to_owned()), "labels: {labels:?}");
+        assert!(labels.contains(&"amp".to_owned()), "labels: {labels:?}");
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -5347,7 +5866,7 @@ sample:
         let mut server = LspServer::default();
         let items = completion_items_for(&mut server, &main, source, "DSP::");
         let expected = vec![
-            "Alpha", "Zoo", "AStruct", "ZStruct", "AProc", "ZProc", "adef", "zdef", "AConst",
+            "Alpha", "Zoo", "AProc", "ZProc", "AStruct", "ZStruct", "adef", "zdef", "AConst",
             "ZConst",
         ];
         let labels = items
@@ -5358,11 +5877,11 @@ sample:
 
         assert_eq!(labels, expected, "items: {items:?}");
         for (label, sort_text) in [
-            ("Alpha", "10_Alpha"),
-            ("AStruct", "11_AStruct"),
-            ("AProc", "12_AProc"),
-            ("adef", "13_adef"),
-            ("AConst", "15_AConst"),
+            ("Alpha", "00_00_Alpha"),
+            ("AProc", "00_01_AProc"),
+            ("AStruct", "00_02_AStruct"),
+            ("adef", "00_10_adef"),
+            ("AConst", "00_11_AConst"),
         ] {
             let item = items
                 .iter()
