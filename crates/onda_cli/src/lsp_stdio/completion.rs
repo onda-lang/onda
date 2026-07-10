@@ -86,7 +86,7 @@ pub(super) fn completion_items_for_document_with_index(
     if let CompletionContextKind::ImportPath { typed } = &context.kind {
         return CompletionResult {
             items: filter_and_encode(import_completion_items(path, typed), "", snippets),
-            is_incomplete: false,
+            is_incomplete: typed.is_empty(),
         };
     }
 
@@ -97,8 +97,8 @@ pub(super) fn completion_items_for_document_with_index(
         parsed_owned = parse_for_completion(source, path, overlays, offset);
         parsed_owned.as_ref()
     };
-    let is_incomplete =
-        parsed.is_none() && !matches!(context.kind, CompletionContextKind::Namespace { .. });
+    let is_incomplete = context.prefix.is_empty()
+        || (parsed.is_none() && !matches!(context.kind, CompletionContextKind::Namespace { .. }));
     let index = match (parsed, index_snapshot) {
         (Some(program), Some(snapshot)) => snapshot.for_request(program, source, position),
         _ => CompletionIndex::build(parsed, source, path, position),
@@ -598,7 +598,6 @@ impl CompletionIndex {
             ..Self::default()
         };
         index.collect_builtin_symbols();
-        index.collect_stdlib_symbols();
         for block in &program.blocks {
             index.collect_block(block, "");
         }
@@ -619,7 +618,6 @@ impl CompletionIndex {
             ..Self::default()
         };
         index.collect_builtin_symbols();
-        index.collect_stdlib_symbols();
 
         if let Some(program) = program {
             for block in &program.blocks {
@@ -632,6 +630,15 @@ impl CompletionIndex {
             index.collect_source_variables(source);
             index.rebuild_namespace_member_maps();
         }
+        index
+    }
+
+    fn build_discovery_catalog(program: &Program) -> Self {
+        let mut index = Self::default();
+        for block in &program.blocks {
+            index.collect_block(block, "");
+        }
+        index.rebuild_namespace_member_maps();
         index
     }
 
@@ -665,15 +672,6 @@ impl CompletionIndex {
                 label_detail: Some("(...)".to_owned()),
                 detail: Some(format!("built-in call {name}(...)")),
             });
-        }
-    }
-
-    fn collect_stdlib_symbols(&mut self) {
-        let Some(program) = stdlib_completion_program() else {
-            return;
-        };
-        for block in &program.blocks {
-            self.collect_block(block, "");
         }
     }
 
@@ -1741,19 +1739,32 @@ impl CompletionIndex {
             out
         } else {
             out.into_iter()
-                .filter(|item| item.label.starts_with(prefix))
+                .filter(|item| prefix_matches(&item.label, prefix))
                 .collect()
         }
     }
 
     fn namespace_items(&self, namespace: &str, prefix: &str) -> Vec<CompletionItem> {
         let namespace = self.resolve_namespace_key_at_current_position(namespace);
+        let mut out = self.raw_namespace_items(&namespace);
+        if namespace == "std" || namespace.starts_with("std::") {
+            if let Some(catalog) = stdlib_discovery_index() {
+                out.extend(catalog.raw_namespace_items(&namespace));
+            }
+        }
+        out.into_iter()
+            .map(|item| self.with_required_std_import(&namespace, item))
+            .filter(|item| prefix_matches(&item.label, prefix))
+            .collect()
+    }
+
+    fn raw_namespace_items(&self, namespace: &str) -> Vec<CompletionItem> {
         let mut out = Vec::new();
-        if let Some(names) = self.namespaces_by_parent.get(&namespace) {
+        if let Some(names) = self.namespaces_by_parent.get(namespace) {
             for name in names {
                 if self
                     .members_by_namespace
-                    .get(&namespace)
+                    .get(namespace)
                     .into_iter()
                     .flatten()
                     .any(|symbol| symbol.label == *name)
@@ -1767,15 +1778,12 @@ impl CompletionIndex {
                 );
             }
         }
-        if let Some(members) = self.members_by_namespace.get(&namespace) {
+        if let Some(members) = self.members_by_namespace.get(namespace) {
             for symbol in members {
                 out.push(symbol_completion_item(symbol, true));
             }
         }
-        out.into_iter()
-            .map(|item| self.with_required_std_import(&namespace, item))
-            .filter(|item| prefix.is_empty() || item.label.starts_with(prefix))
-            .collect()
+        out
     }
 
     fn with_required_std_import(&self, namespace: &str, item: CompletionItem) -> CompletionItem {
@@ -1907,7 +1915,7 @@ impl CompletionIndex {
             );
         }
         out.into_iter()
-            .filter(|item| prefix.is_empty() || item.label.starts_with(prefix))
+            .filter(|item| prefix_matches(&item.label, prefix))
             .collect()
     }
 
@@ -2753,7 +2761,7 @@ fn source_self_member_items(source: &str, offset: usize, prefix: &str) -> Vec<Co
     };
     let mut out = Vec::new();
     for field in members.fields {
-        if prefix.is_empty() || field.starts_with(prefix) {
+        if prefix_matches(&field, prefix) {
             out.push(
                 CompletionItem::new(field.clone(), COMPLETION_ITEM_KIND_FIELD)
                     .detail("struct field")
@@ -2765,7 +2773,7 @@ fn source_self_member_items(source: &str, offset: usize, prefix: &str) -> Vec<Co
         }
     }
     for method in members.methods {
-        if prefix.is_empty() || method.name.starts_with(prefix) {
+        if prefix_matches(&method.name, prefix) {
             out.push(
                 CompletionItem::new(method.name.clone(), COMPLETION_ITEM_KIND_METHOD)
                     .detail("method")
@@ -2973,6 +2981,13 @@ fn stdlib_completion_program() -> Option<&'static Program> {
         .as_ref()
 }
 
+fn stdlib_discovery_index() -> Option<&'static CompletionIndex> {
+    static INDEX: OnceLock<Option<CompletionIndex>> = OnceLock::new();
+    INDEX
+        .get_or_init(|| stdlib_completion_program().map(CompletionIndex::build_discovery_catalog))
+        .as_ref()
+}
+
 fn stdlib_module_for_namespace(namespace: &str) -> Option<String> {
     let mut segments = namespace.split("::");
     if segments.next() != Some("std") {
@@ -3100,12 +3115,18 @@ fn import_completion_segment(candidate: &str, typed: &str) -> String {
 fn filter_and_encode(items: Vec<CompletionItem>, prefix: &str, snippets: bool) -> Vec<Value> {
     let mut dedup =
         BTreeMap::<(String, u32, Option<String>, Option<String>), CompletionItem>::new();
-    for item in items {
+    for mut item in items {
         if is_generated_completion_label(&item.label) {
             continue;
         }
-        if !prefix.is_empty() && !item.label.starts_with(prefix) {
+        let Some(case_rank) = prefix_match_case_rank(&item.label, prefix) else {
             continue;
+        };
+        if !prefix.is_empty() {
+            let base_sort_text = item.sort_text.take().unwrap_or_else(|| {
+                completion_sort_text(completion_kind_sort_group(item.kind), &item.label)
+            });
+            item.sort_text = Some(format!("{case_rank}_{base_sort_text}"));
         }
         let key = (
             item.label.clone(),
@@ -3121,6 +3142,20 @@ fn filter_and_encode(items: Vec<CompletionItem>, prefix: &str, snippets: bool) -
         .into_iter()
         .map(|item| item.to_lsp(snippets))
         .collect()
+}
+
+fn prefix_matches(label: &str, prefix: &str) -> bool {
+    prefix_match_case_rank(label, prefix).is_some()
+}
+
+fn prefix_match_case_rank(label: &str, prefix: &str) -> Option<u8> {
+    if prefix.is_empty() || label.starts_with(prefix) {
+        return Some(0);
+    }
+    label
+        .get(..prefix.len())
+        .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .map(|_| 1)
 }
 
 fn is_generated_completion_label(label: &str) -> bool {
@@ -3787,11 +3822,8 @@ mod tests {
     }
 
     #[test]
-    fn stdlib_catalog_deduplicates_imported_symbols_without_collapsing_overloads() {
-        let source = "import std/osc\n";
-        let parsed = parse_program(source).expect("stdlib import should parse");
-        let index =
-            CompletionIndex::build(Some(&parsed), source, None, CompletionPosition::default());
+    fn stdlib_discovery_catalog_deduplicates_symbols_without_collapsing_overloads() {
+        let index = stdlib_discovery_index().expect("stdlib discovery index");
 
         let sine_count = index
             .symbols

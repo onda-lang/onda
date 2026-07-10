@@ -4968,7 +4968,7 @@ sample:
     }
 
     #[test]
-    fn completion_marks_qualified_results_complete_when_source_is_incomplete() {
+    fn completion_marks_empty_qualified_prefix_incomplete_for_requery() {
         let dir = mk_temp_dir("completion_incomplete_requery");
         let main = dir.join("main.onda");
         let source = "import std/osc\ninit:\n  sine = std::osc::\n";
@@ -4987,7 +4987,7 @@ sample:
             )
             .expect("completion should succeed");
 
-        assert_eq!(result["isIncomplete"], json!(false), "result: {result:?}");
+        assert_eq!(result["isIncomplete"], json!(true), "result: {result:?}");
         assert!(
             result["items"]
                 .as_array()
@@ -5109,6 +5109,28 @@ init:
         let labels = completion_labels_for(&mut server, &main, source, "sine.");
 
         assert!(labels.is_empty(), "labels: {labels:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_does_not_expose_std_members_through_use_without_import() {
+        let dir = mk_temp_dir("completion_std_use_without_import");
+        let main = dir.join("main.onda");
+        let source = r#"use std::osc
+
+init:
+  sine = Si
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "Si");
+
+        assert!(
+            !labels.contains(&"Sine".to_owned()),
+            "use must not expose members of an unimported module: {labels:?}"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -5889,6 +5911,144 @@ sample:
                 .unwrap_or_else(|| panic!("missing {label} in {items:?}"));
             assert_eq!(item["sortText"], json!(sort_text), "item: {item:?}");
         }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_prefers_matching_case_then_declaration_kind() {
+        let dir = mk_temp_dir("completion_case_aware_order");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace Cases:
+  namespace SNamespace:
+    const X = 1
+
+  namespace sNamespace:
+    const X = 1
+
+  proc SProc:
+    outs:
+      out1
+    sample:
+      out1 = 0.0
+
+  proc sProc:
+    outs:
+      out1
+    sample:
+      out1 = 0.0
+
+  struct SStruct:
+    value: f32
+
+  struct sStruct:
+    value: f32
+
+  def SDef():
+    return 0.0
+
+  def sDef():
+    return 0.0
+
+  const SConst = 1
+  const sConst = 1
+
+outs:
+  out1
+
+sample:
+  out1 = Cases::S
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for(&mut server, &main, source, "Cases::S");
+        let expected = vec![
+            "SNamespace",
+            "SProc",
+            "SStruct",
+            "SDef",
+            "SConst",
+            "sNamespace",
+            "sProc",
+            "sStruct",
+            "sDef",
+            "sConst",
+        ];
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .filter(|label| expected.contains(label))
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, expected, "items: {items:?}");
+        for (label, sort_text) in [
+            ("SNamespace", "0_00_00_SNamespace"),
+            ("SProc", "0_00_01_SProc"),
+            ("sNamespace", "1_00_00_sNamespace"),
+            ("sProc", "1_00_01_sProc"),
+        ] {
+            let item = items
+                .iter()
+                .find(|item| item["label"] == json!(label))
+                .unwrap_or_else(|| panic!("missing {label} in {items:?}"));
+            assert_eq!(item["sortText"], json!(sort_text), "item: {item:?}");
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_requeries_after_empty_general_prefix_before_case_ranking() {
+        let dir = mk_temp_dir("completion_case_aware_requery");
+        let main = dir.join("main.onda");
+        let empty_prefix_source = r#"import std/osc
+use std::osc
+
+init:
+  osc = Sine()
+  tosc = 
+
+sample:
+  out1 = osc()
+"#;
+        write_file(&main, empty_prefix_source);
+
+        let mut server = LspServer::default();
+        let normalized = server.session.open_document(
+            &main,
+            onda_daemon::DocumentVersion(1),
+            empty_prefix_source,
+        );
+        let initial = server
+            .completions_for_uri(
+                &path_to_file_uri(&normalized),
+                position_after(empty_prefix_source, "tosc = "),
+                None,
+            )
+            .expect("initial completion should succeed");
+        assert_eq!(
+            initial["isIncomplete"],
+            json!(true),
+            "the client must requery after the first identifier character: {initial:?}"
+        );
+
+        let typed_source = empty_prefix_source.replacen("tosc = ", "tosc = S", 1);
+        let labels = completion_labels_for(&mut server, &main, &typed_source, "tosc = S");
+        assert_eq!(
+            labels.first().map(String::as_str),
+            Some("Saw"),
+            "{labels:?}"
+        );
+        let std_position = labels
+            .iter()
+            .position(|label| label == "std")
+            .expect("lowercase std fallback");
+        assert!(
+            std_position > 0,
+            "uppercase matches must precede std: {labels:?}"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
