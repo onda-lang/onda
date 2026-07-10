@@ -1,5 +1,3 @@
-/target
-/.claude
-/.deps
-Cargo.lock
-onda_out.wav
+target/
+graphify-out/
+.deps/
