@@ -34,7 +34,7 @@ jobs:
             arch: x64
             archive_ext: zip
           - name: linux-x64
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
             platform: linux
             arch: x64
             archive_ext: tar.xz
@@ -69,6 +69,12 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libgl1-mesa-dev
+
+          pipewire_version="$(pkg-config --modversion libpipewire-0.3)"
+          if ! printf '%s\n%s\n' "0.3.53" "$pipewire_version" | sort -V -C; then
+            echo "PipeWire >= 0.3.53 is required; found $pipewire_version" >&2
+            exit 1
+          fi
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
