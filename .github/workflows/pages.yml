@@ -34,7 +34,7 @@ jobs:
 
       - name: Configure Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Stage website and shared documentation
         run: ./website/stage.sh
