@@ -217,7 +217,16 @@ mul_op = { "*" | "/" | "%" }
 cmp_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
-keyword = _{ ("while" | "break" | "continue" | "pin" | "as" | "pub") ~ !ident_char }
+keyword = _{
+  (
+    "import" | "include"
+    | "if" | "elif" | "else"
+    | "for" | "in" | "while" | "loop"
+    | "break" | "continue" | "return" | "assert"
+    | "use" | "as" | "pub" | "pin"
+    | "true" | "false"
+  ) ~ !ident_char
+}
 ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
 number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }

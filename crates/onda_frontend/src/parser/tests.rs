@@ -920,21 +920,19 @@ sample:
 }
 
 #[test]
-fn rejects_reserved_loop_control_keywords_as_identifiers() {
-    let src = r#"
-outs { out1 }
-sample {
-  while = 1.0
-  break = 2.0
-  continue = 3.0
-  out1 = while + break + continue
-}
-"#;
-    let result = parse_program(src);
-    assert!(
-        result.is_err(),
-        "reserved keywords should not parse as identifiers"
-    );
+fn rejects_reserved_keywords_as_identifiers() {
+    let keywords = [
+        "if", "elif", "else", "for", "in", "while", "loop", "break", "continue", "return",
+        "assert", "import", "include", "use", "as", "pub", "pin", "true", "false",
+    ];
+
+    for keyword in keywords {
+        let src = format!("params:\n  {keyword} = 1.0\nsample:\n  out1 = 0.0\n");
+        assert!(
+            parse_program(&src).is_err(),
+            "reserved keyword '{keyword}' should not parse as an identifier"
+        );
+    }
 }
 
 #[test]

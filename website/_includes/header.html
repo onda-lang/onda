@@ -1,0 +1,22 @@
+<header class="site-header">
+  <a class="brand" href="{{ '/' | relative_url }}" aria-label="Onda home">
+    <img class="theme-logo theme-logo-light" src="{{ '/assets/svg/onda-logo.svg' | relative_url }}" alt="" width="30" height="30">
+    <img class="theme-logo theme-logo-dark" src="{{ '/assets/svg/onda-logo-dark.svg' | relative_url }}" alt="" width="30" height="30">
+    <span>Onda</span>
+  </a>
+  <nav class="main-nav" id="main-nav" aria-label="Main navigation">
+    <a href="{{ '/docs/' | relative_url }}"{% if page.section == 'learn' %} aria-current="page"{% endif %}>Docs</a>
+    <a href="{{ '/docs/language/' | relative_url }}"{% if page.section == 'reference' %} aria-current="page"{% endif %}>Language</a>
+    <a href="{{ '/docs/examples/' | relative_url }}"{% if page.section == 'examples' %} aria-current="page"{% endif %}>Examples</a>
+    <a href="https://github.com/onda-lang/onda/releases/latest">Releases</a>
+    <a class="github-link" href="https://github.com/onda-lang/onda">GitHub <span aria-hidden="true">↗</span></a>
+  </nav>
+  <div class="header-actions">
+    <button class="icon-button theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle color theme">
+      <span class="theme-icon" aria-hidden="true">◐</span>
+    </button>
+    <button class="icon-button menu-toggle" type="button" aria-expanded="false" aria-controls="main-nav" aria-label="Open navigation">
+      <span aria-hidden="true">☰</span>
+    </button>
+  </div>
+</header>

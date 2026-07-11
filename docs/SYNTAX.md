@@ -1,3 +1,11 @@
+---
+title: Language guide
+description: The complete guide to Onda syntax, semantics, processors, graphs, generics, and modules.
+permalink: /docs/language/
+section: reference
+eyebrow: Language reference
+---
+
 # Onda Language Guide
 
 This guide is the main reference for writing Onda programs. It is organized as
@@ -1015,7 +1023,7 @@ differences:
 ```onda
 proc StereoGain:
   ins:
-    in: f32[2]
+    input: f32[2]
 
   params:
     gain: f32[2] = [1.0, 1.0]
@@ -1024,8 +1032,8 @@ proc StereoGain:
     out: f32[2]
 
   sample:
-    out[0] = in[0] * gain[0]
-    out[1] = in[1] * gain[1]
+    out[0] = input[0] * gain[0]
+    out[1] = input[1] * gain[1]
 ```
 
 ### Constructing and Calling Procs
@@ -1616,14 +1624,16 @@ or stored from `init`, `event`, or top-level `def` bodies.
 - `outputs` aliases `outs`.
 - `processor` aliases `proc`.
 - Top-level `kins` aliases `params`.
-- `pin` is reserved and only valid as a proc-param prefix.
+- Control-flow keywords are reserved: `if`, `elif`, `else`, `for`, `in`, `while`, `loop`, `break`, `continue`, `return`, and `assert`.
+- `in` separates the loop variable from its range in `for i in A..B`; use names such as `input` for ports and variables.
+- `import`, `include`, `use`, `as`, `pub`, and `pin` are reserved for their declaration and modifier syntax.
+- `true` and `false` are reserved boolean literals.
 - Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.
 
 ### Common Current Limits
 
-- Graph source expressions cannot call user-defined functions or procs.
-- `graph` has no event-routing syntax.
 - Proc-local defs are not overloadable.
 - Returning structs, arrays, or buffers from runtime `def` is unsupported.
 - Struct-element arrays are not sliceable.
-- Imported files are declaration-only.
+- `graph` source expressions cannot call user-defined functions or procs.
+- `graph` has no event-routing syntax.

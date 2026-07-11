@@ -1,0 +1,40 @@
+title: Onda
+description: A JIT-compiled audio programming language.
+url: "https://onda-lang.github.io"
+baseurl: "/onda"
+repository: onda-lang/onda
+lang: en
+permalink: pretty
+markdown: kramdown
+highlighter: null
+layouts_dir: _layouts
+includes_dir: _includes
+
+kramdown:
+  input: GFM
+  syntax_highlighter: null
+  toc_levels: 2..3
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+exclude:
+  - AGENTS.md
+  - Cargo.lock
+  - Cargo.toml
+  - LICENSE
+  - README.md
+  - crates
+  - deps
+  - examples
+  - include
+  - scripts
+  - stdlib
+  - targets
+  - ui
+  - docs/todo
+  - target
+  - vendor

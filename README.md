@@ -1,67 +1,189 @@
 <h1>
-  onda <img src="assets/svg/onda-logo-dark.svg" alt="onda logo" width="40" align="absmiddle" />
+  <img src="assets/svg/onda-logo-dark.svg" alt="onda logo" width="40" align="absmiddle" /> Onda 
 </h1>
 
 Onda is a JIT-compiled audio programming language.
 This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
 
-## Short example
+Visit the project's [website](https://onda-lang.github.io/onda) for an introduction to the language.
 
-For the actual language reference, see [docs/SYNTAX.md](docs/SYNTAX.md).
-As a minimal example for a sine wave:
+## Code example
+
+Here is a code example for a saw oscillator processed by a resonant filter and an oversampled soft-clip distortion:
 
 ```onda
+import std/osc
+import std/filter
+
 params:
-  freq = 440.0 {20, 1000}
+  freq = 110.0 {20.0, 880.0}
+  cutoff = 1200.0 {40.0, 12000.0}
+  resonance = 1.0 {0.1, 8.0}
+  drive = 1.0 {1.0, 10.0}
+
+def soft_clip(x):
+  return tanh(x)
+
+proc Saturator:
+  params:
+    amount = 1.0
+
+  sample 4:
+    out1 = soft_clip(in1 * amount)
 
 init:
-  phase = 0.0
+  osc = std::osc::Saw()
+  filter = std::filter::Svf(cutoff = cutoff, q = resonance)
+  saturator = Saturator()
 
 block:
-  incr = freq * TWO_PI / SR
+  filter.update_coeffs(cutoff, resonance)
 
   sample:
-    phase = phase + incr
-    if phase > TWO_PI:
-      phase = phase - TWO_PI
-    out1 = sin(phase)
+    tone = osc(freq = freq)
+    out1 = saturator(filter(tone), amount = drive)
 ```
 
 Take a look at the `examples/` folder for more usage examples.
-
-## What this repository provides
-
-- `onda` CLI for compile, run, diagnostics, and language-server workflows
-- LLVM-backed compiler and JIT runtime for Onda programs
-- stdio LSP server for diagnostics and semantic tokens
-- tooling for offline render and real-time playback
-- editor integrations for VSCode and Neovim
-- C API in `include/onda.h` for non-Rust hosts
-
-Current execution is LLVM ORC JIT.
-The CLI can also emit LLVM IR and native object files for AOT compilation.
-
-## Main components
-
-- `crates/onda_frontend`: parser, AST, diagnostics
-- `crates/onda_semantics`: semantic analysis and lowering rewrites
-- `crates/onda_codegen_llvm`: LLVM lowering and ORC JIT backend
-- `crates/onda_runtime`: runtime instance and processing APIs
-- `crates/onda_api`: C API
-- `crates/onda_cpal`: minimal real-time CPAL/PipeWire audio callback and SPSC transport
-- `crates/onda_daemon`: analysis and run session engine
-- `crates/onda_run`: shared run controller/runtime
-- `crates/onda_cli`: CLI, LSP adapter, and run control transport
-- `crates/onda_egui`: native egui run host
-- `crates/onda_webview`: native webview run host
-- `examples/`: Onda example programs
 
 ## Documentation
 
 - [docs/SYNTAX.md](docs/SYNTAX.md): language syntax and semantics
 - [docs/INFO.md](docs/INFO.md): project structure and implementation notes
 
-## Building `onda`
+## Precompiled releases
+
+[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, static and shared C libraries, the public header, language guide and examples.
+
+## The `onda` CLI
+
+The CLI surface is:
+
+```text
+onda compile <input.onda>
+onda lsp
+onda run <input.onda> [--theme <auto|dark|light>]
+onda run play <input.onda>
+onda run render <input.onda>
+onda daemon diagnose <input.onda>
+onda daemon stdio
+```
+
+For a full list of all commands and their flags, run the help file via `onda --help`.
+
+### `onda compile`
+
+Compiles an Onda file and optionally emits IR or an object file.
+
+Typical uses:
+- syntax and semantic checking
+- inspect graph lowering with `--dump-graph`
+- emit LLVM IR with `--emit llvm-ir` or `--ir`
+- emit a native object file with `--emit obj`
+
+Examples:
+
+```bash
+onda compile examples/foundations/sine.onda
+onda compile examples/processors-and-graphs/proc_gain_graph.onda --dump-graph
+onda compile examples/foundations/sine.onda --emit llvm-ir
+onda compile examples/foundations/sine.onda --emit obj
+onda compile examples/foundations/sine.onda --target-triple aarch64-unknown-linux-gnu --emit obj
+```
+
+Cross-target IR and object emission is also supported:
+
+```bash
+onda compile examples/foundations/sine.onda --target-spec ./targets/arm64.toml --emit obj
+```
+
+### `onda run`
+
+Opens the standalone UI window.
+This can be used to interactively play with the live-running code.
+
+```bash
+onda run examples/foundations/sine.onda
+```
+
+Run host selection:
+- egui is the default run host
+- `--webview` selects the webview run host explicitly
+
+Useful flags:
+- `--sample-rate`
+- `--block-size`
+- `--input-device`
+- `--output-device`
+- `--theme`
+
+### `onda run play`
+
+Runs the real-time playback/control transport without opening the standalone UI.
+Parameters can be set via the `--set` argument.
+
+```bash
+onda run play examples/foundations/sine.onda --dur 2
+onda run play examples/foundations/sine.onda --forever --set freq=220
+```
+
+Useful flags:
+- `--dur` or `--forever`
+- `--sample-rate`
+- `--block-size`
+- `--input-device`
+- `--output-device`
+- `--set name=value`
+
+With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
+
+### `onda run render`
+
+Offline render through the run pipeline.
+This is useful when you want to render out to a wav file without running real-time playback.
+
+```bash
+onda run render examples/foundations/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
+```
+
+Useful flags:
+- `--output`
+- `--dur`
+- `--sample-rate`
+- `--block-size`
+- `--set name=value`
+
+### `onda daemon diagnose`
+
+Runs daemon-backed analysis for a file and reports diagnostics.
+
+```bash
+onda daemon diagnose examples/foundations/sine.onda
+```
+
+### `onda daemon stdio`
+
+Starts the daemon control transport over stdio.
+This is intended for tool/editor integration rather than everyday manual use.
+
+```bash
+onda daemon stdio
+```
+
+### `onda lsp`
+
+Starts the Onda language server over stdio.
+
+```bash
+onda lsp
+```
+
+Current LSP support includes:
+- open, change, save, and close document tracking
+- immediate diagnostics on open/save and debounced diagnostics while editing
+- semantic tokens for constants, params, ports, and init-scoped variables
+
+## Building `onda` from source
 
 1. Initialize submodules.
 
@@ -105,138 +227,6 @@ cargo build -p onda_api --release
 This produces the `onda` C API library artifacts in `target/release/` along with the public header in `include/onda.h`.
 Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 On Windows, the shipped static `onda.lib` is built with the static MSVC CRT (`/MT`), so hosts linking that library should use a compatible runtime choice.
-
-## The `onda` CLI
-
-The CLI surface is:
-
-```text
-onda compile <input.onda>
-onda lsp
-onda run <input.onda> [--theme <auto|dark|light>]
-onda run play <input.onda>
-onda run render <input.onda>
-onda daemon diagnose <input.onda>
-onda daemon stdio
-```
-
-For a full list of all commands and their flags, run the help file via `onda --help`.
-
-### `onda compile`
-
-Compiles an Onda file and optionally emits IR or an object file.
-
-Typical uses:
-- syntax and semantic checking
-- inspect graph lowering with `--dump-graph`
-- emit LLVM IR with `--emit llvm-ir` or `--ir`
-- emit a native object file with `--emit obj`
-
-Examples:
-
-```bash
-onda compile examples/sine.onda
-onda compile examples/proc_gain_graph.onda --dump-graph
-onda compile examples/sine.onda --emit llvm-ir
-onda compile examples/sine.onda --emit obj
-onda compile examples/sine.onda --target-triple aarch64-unknown-linux-gnu --emit obj
-```
-
-Cross-target IR and object emission is also supported:
-
-```bash
-onda compile examples/sine.onda --target-spec ./targets/arm64.toml --emit obj
-```
-
-### `onda run`
-
-Opens the standalone UI window.
-This can be used to interactively play with the live-running code.
-
-```bash
-onda run examples/sine.onda
-```
-
-Run host selection:
-- egui is the default run host
-- `--webview` selects the webview run host explicitly
-
-Useful flags:
-- `--sample-rate`
-- `--block-size`
-- `--input-device`
-- `--output-device`
-- `--theme`
-
-### `onda run play`
-
-Runs the real-time playback/control transport without opening the standalone UI.
-Parameters can be set via the `--set` argument.
-
-```bash
-onda run play examples/sine.onda --dur 2
-onda run play examples/sine.onda --forever --set freq=220
-```
-
-Useful flags:
-- `--dur` or `--forever`
-- `--sample-rate`
-- `--block-size`
-- `--input-device`
-- `--output-device`
-- `--set name=value`
-
-With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
-
-### `onda run render`
-
-Offline render through the run pipeline.
-This is useful when you want to render out to a wav file without running real-time playback.
-
-```bash
-onda run render examples/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
-```
-
-Useful flags:
-- `--output`
-- `--dur`
-- `--sample-rate`
-- `--block-size`
-- `--set name=value`
-
-### `onda daemon diagnose`
-
-Runs daemon-backed analysis for a file and reports diagnostics.
-
-```bash
-onda daemon diagnose examples/sine.onda
-```
-
-### `onda daemon stdio`
-
-Starts the daemon control transport over stdio.
-This is intended for tool/editor integration rather than everyday manual use.
-
-```bash
-onda daemon stdio
-```
-
-### `onda lsp`
-
-Starts the Onda language server over stdio.
-
-```bash
-onda lsp
-```
-
-Current LSP support includes:
-- open, change, save, and close document tracking
-- immediate diagnostics on open/save and debounced diagnostics while editing
-- semantic tokens for constants, params, ports, and init-scoped variables
-
-## C API
-
-The C API of the JIT compiler is exposed through `include/onda.h`.
 
 ## Editor support
 

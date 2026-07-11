@@ -12,5 +12,7 @@ block:
   for i in 0..NUM_SINES:
     sines[i].freq = freqs[i]
   sample:
+    sum = 0.0
     for i in 0..NUM_SINES:
-      out1 = out1 + sines[i]() / NUM_SINES
+      sum = sum + sines[i]() / NUM_SINES
+    out1 = sum

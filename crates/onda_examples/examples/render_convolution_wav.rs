@@ -66,8 +66,14 @@ fn workspace_root() -> PathBuf {
 
 fn main() -> Result<(), Diagnostic> {
     let root = workspace_root();
-    let example_path = root.join("examples").join("convolution_wav_impulse.onda");
-    let ir_path = root.join("examples").join("impulse.wav");
+    let example_path = root
+        .join("examples")
+        .join("buffers-fft-convolution")
+        .join("convolution_wav_impulse.onda");
+    let ir_path = root
+        .join("examples")
+        .join("buffers-fft-convolution")
+        .join("impulse.wav");
     let target_dir = root.join("target");
     fs::create_dir_all(&target_dir).expect("create target dir");
     let out_path = target_dir.join("convolution_wav_impulse_output.wav");

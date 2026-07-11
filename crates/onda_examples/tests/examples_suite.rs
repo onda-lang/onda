@@ -17,8 +17,10 @@ include!("examples_suite/support.rs");
 
 #[test]
 fn polyphonic_saw_file_example_analyzes() {
-    let parsed = parse_program_file(std::path::Path::new("../../examples/polyphonic_saw.onda"))
-        .expect("parse should succeed");
+    let parsed = parse_program_file(std::path::Path::new(
+        "../../examples/larger-patches/polyphonic_saw.onda",
+    ))
+    .expect("parse should succeed");
     analyze(parsed).expect("analysis should succeed");
 }
 

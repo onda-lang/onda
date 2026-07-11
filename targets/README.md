@@ -7,9 +7,9 @@ These are low-level codegen presets only. They do not describe sysroots, SDKs, l
 Examples:
 
 ```powershell
-cargo run -p onda_cli -- compile examples/sine.onda --emit obj --target-spec .\targets\arm64.toml
-cargo run -p onda_cli -- compile examples/sine.onda --emit obj --target-spec .\targets\aarch64-none-elf.toml
-cargo run -p onda_cli -- compile examples/sine_wasm.onda --emit obj --target-spec .\targets\wasm32-unknown-unknown.toml
+cargo run -p onda_cli -- compile examples/foundations/sine.onda --emit obj --target-spec .\targets\arm64.toml
+cargo run -p onda_cli -- compile examples/foundations/sine.onda --emit obj --target-spec .\targets\aarch64-none-elf.toml
+cargo run -p onda_cli -- compile examples/web/sine_wasm_worklet/sine_wasm.onda --emit obj --target-spec .\targets\wasm32-unknown-unknown.toml
 ```
 
 Suggested presets:

@@ -1989,13 +1989,15 @@ fn stdlib_convolution_generic_f64_compile_and_run() {
 #[test]
 
 fn convolution_wav_impulse_example_reproduces_ir_from_event_payload() {
-    let src = include_str!("../../../../examples/convolution_wav_impulse.onda");
+    let src =
+        include_str!("../../../../examples/buffers-fft-convolution/convolution_wav_impulse.onda");
     const MAX_IR: usize = 100_000;
 
     let ir_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("examples")
+        .join("buffers-fft-convolution")
         .join("impulse.wav");
 
     let mut ir = read_wav_mixdown_f32(ir_path.to_str().expect("utf8 path"));

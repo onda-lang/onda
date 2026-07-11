@@ -1,8 +1,16 @@
-# onda Project Info
+---
+title: Compiler architecture
+description: A map of the Onda compiler, runtime, CLI, language server, and host crates.
+permalink: /docs/architecture/
+section: reference
+eyebrow: Contributor guide
+---
+
+# Onda compiler architecture
 
 This document describes the architecture of `onda` and where each piece of the project lives.
-For language syntax and semantics, see [SYNTAX.md](SYNTAX.md).
-For build, CLI usage, and editor integrations, see [README.md](../README.md).
+For language syntax and semantics, see the [language guide](https://onda-lang.github.io/onda/docs/language/).
+For build, CLI usage, and editor integrations, see the [getting-started guide](https://onda-lang.github.io/onda/docs/getting-started/).
 
 ## Workspace layout
 
@@ -163,14 +171,3 @@ Non-crate directories of note:
 - CI-oriented prebuilt bootstrap: `scripts/bootstrap-llvm.ps1` / `scripts/bootstrap-llvm.sh` (when `CI` is set) downloads release assets from `onda-lang/llvm-bootstrap` into `.deps/llvm/21.1.2`.
 - LLVM env-selection scripts: `scripts/use-llvm-env.ps1` / `scripts/use-llvm-env.sh` (source the bash one). Flavors: `auto`, `prebuilt`, `source-static`, `source-shared`, `source`.
 - `llvm-sys` line is `211.x` (compatible with LLVM 21.1.x C API). The ORC path is implemented through `llvm-sys`.
-
-## Major remaining work
-
-Detailed roadmap notes live under [docs/todo/](todo/).
-
-High-level themes:
-- Graph follow-ups: broader source expressions, optional coercion/broadcasting rules, richer diagnostics.
-- AOT convenience layers: `--emit wasm`, optional link helpers, host-integration polish beyond the current object + sidecar model.
-- C++ single-header backend.
-- Richer standard library.
-- RT-safety instrumentation/audit suite and stricter host-facing diagnostics lifecycle.

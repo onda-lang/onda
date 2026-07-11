@@ -349,7 +349,7 @@ fn semantic_tokens_do_not_leak_event_locals_into_sample_blocks() {
 
 #[test]
 fn semantic_tokens_do_not_leak_event_locals_into_sample_blocks_for_simple_events_file() {
-    let (path, source) = repo_source("examples/simple_events.onda");
+    let (path, source) = repo_source("examples/foundations/simple_events.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
 
     let amp_tokens = find_tokens_named(&tokens, &source, "amp");
@@ -934,7 +934,7 @@ fn semantic_tokens_mark_proc_output_in_else_branch() {
 
 #[test]
 fn semantic_tokens_mark_top_level_init_vars_in_buffer_looper_read() {
-    let (path, source) = repo_source("examples/buffer_looper_read.onda");
+    let (path, source) = repo_source("examples/buffers-fft-convolution/buffer_looper_read.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
 
     let pos_tokens = find_tokens_named(&tokens, &source, "pos");
@@ -967,7 +967,7 @@ fn semantic_tokens_mark_top_level_init_vars_in_buffer_looper_read() {
 
 #[test]
 fn semantic_tokens_mark_top_level_block_locals_in_nested_sample_for_buffer_looper_read() {
-    let (path, source) = repo_source("examples/buffer_looper_read.onda");
+    let (path, source) = repo_source("examples/buffers-fft-convolution/buffer_looper_read.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
 
     let frames_tokens = find_tokens_named(&tokens, &source, "frames");
@@ -1003,7 +1003,7 @@ fn semantic_tokens_mark_top_level_block_locals_in_nested_sample_for_buffer_loope
 
 #[test]
 fn semantic_tokens_do_not_mark_import_path_segments_as_init_state_in_polyphonic_saw() {
-    let (path, source) = repo_source("examples/polyphonic_saw.onda");
+    let (path, source) = repo_source("examples/larger-patches/polyphonic_saw.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
 
     let osc_tokens = find_tokens_named(&tokens, &source, "osc");
@@ -1037,7 +1037,7 @@ fn semantic_tokens_do_not_mark_import_path_segments_as_init_state_in_polyphonic_
 
 #[test]
 fn semantic_tokens_mark_named_argument_labels_as_state_in_polyphonic_saw() {
-    let (path, source) = repo_source("examples/polyphonic_saw.onda");
+    let (path, source) = repo_source("examples/larger-patches/polyphonic_saw.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
 
     assert!(

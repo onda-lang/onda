@@ -42,7 +42,8 @@ sample {
 }
 "#;
 
-const STD_ENV_ADSR_FILE_EXAMPLE: &str = include_str!("../../../../examples/std_env_adsr.onda");
+const STD_ENV_ADSR_FILE_EXAMPLE: &str =
+    include_str!("../../../../examples/standard-library/std_env_adsr.onda");
 const STDLIB_OSC_SQUARE_F64_EXAMPLE: &str = r#"
 import std/osc
 
@@ -194,7 +195,8 @@ sample {
 }
 "#;
 
-const STD_OSC_SHAPES_FILE_EXAMPLE: &str = include_str!("../../../../examples/std_osc_shapes.onda");
+const STD_OSC_SHAPES_FILE_EXAMPLE: &str =
+    include_str!("../../../../examples/standard-library/std_osc_shapes.onda");
 const STDLIB_FILTER_ONE_POLE_MODES_EXAMPLE: &str = r#"
 import std/filter
 
@@ -278,8 +280,9 @@ sample {
 "#;
 
 const STD_FILTER_MODES_FILE_EXAMPLE: &str =
-    include_str!("../../../../examples/std_filter_modes.onda");
-const STD_NOISE_FILE_EXAMPLE: &str = include_str!("../../../../examples/std_noise.onda");
+    include_str!("../../../../examples/standard-library/std_filter_modes.onda");
+const STD_NOISE_FILE_EXAMPLE: &str =
+    include_str!("../../../../examples/standard-library/std_noise.onda");
 const STDLIB_FILTER_SVF_EXTRA_MODES_EXAMPLE: &str = r#"
 import std/filter
 import std/osc
@@ -329,7 +332,8 @@ sample {
 }
 "#;
 
-const STD_SMOOTHING_FILE_EXAMPLE: &str = include_str!("../../../../examples/std_smoothing.onda");
+const STD_SMOOTHING_FILE_EXAMPLE: &str =
+    include_str!("../../../../examples/standard-library/std_smoothing.onda");
 const STDLIB_MIX_HELPERS_EXAMPLE: &str = r#"
 import std/mix
 
@@ -424,7 +428,7 @@ sample {
 "#;
 
 const STD_MIX_GAIN_PITCH_FILE_EXAMPLE: &str =
-    include_str!("../../../../examples/std_mix_gain_pitch.onda");
+    include_str!("../../../../examples/standard-library/std_mix_gain_pitch.onda");
 
 #[test]
 
@@ -7047,7 +7051,7 @@ fn proc_array_init_harmonics_example_is_not_silent() {
 
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/proc_array_init_harmonics.onda"
+        "/../../examples/processors-and-graphs/proc_array_init_harmonics.onda"
     );
 
     let (mut instance, in_channels, out_channels) = compile_instance_file(path, frames);
@@ -7060,7 +7064,10 @@ fn proc_array_init_harmonics_example_is_not_silent() {
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
-    assert_non_silent(&output, "examples/proc_array_init_harmonics.onda");
+    assert_non_silent(
+        &output,
+        "examples/processors-and-graphs/proc_array_init_harmonics.onda",
+    );
 }
 
 #[test]

@@ -5241,12 +5241,12 @@ fn reverb_graph_example_matches_sample_version() {
 
     let sample_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/reverb_sample.onda"
+        "/../../examples/processors-and-graphs/reverb_sample.onda"
     );
 
     let graph_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/reverb_graph.onda"
+        "/../../examples/processors-and-graphs/reverb_graph.onda"
     );
 
     let (mut sample_instance, sample_in_channels, sample_out_channels) =

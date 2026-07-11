@@ -1,1 +1,3 @@
-Read README.md, docs/INFO.md, docs/SYNTAX.md
+Read README.md, docs/INFO.md.
+
+Only read docs/SYNTAX.md if the request is about the language use or design.

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="{{ site.lang | default: 'en' }}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f9ff">
+    <meta name="description" content="{{ page.description | default: site.description | escape }}">
+    <meta property="og:title" content="{{ page.title | default: site.title | escape }}">
+    <meta property="og:description" content="{{ page.description | default: site.description | escape }}">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="{{ '/assets/png/onda-logo-alt-light-dark-rect.png' | absolute_url }}">
+    <title>{% if page.title and page.title != site.title %}{{ page.title }} · {% endif %}{{ site.title }}</title>
+    <script>document.documentElement.dataset.theme=localStorage.getItem('onda-theme')||'auto';</script>
+    <link id="site-icon" rel="icon" href="{{ '/assets/svg/onda-logo.svg' | relative_url }}" type="image/svg+xml" data-light="{{ '/assets/svg/onda-logo.svg' | relative_url }}" data-dark="{{ '/assets/svg/onda-logo-dark.svg' | relative_url }}">
+    <link rel="stylesheet" href="{{ '/assets/site/styles.css' | relative_url }}">
+  </head>
+  <body class="{% if page.layout == 'home' %}home-page{% else %}docs-page{% endif %}">
+    {% include header.html %}
+    {% if page.layout == 'home' %}
+      {{ content }}
+    {% else %}
+      <div class="docs-shell">
+        {% include sidebar.html %}
+        <main class="docs-content" id="main-content">
+          <article class="prose">
+            {{ content }}
+          </article>
+        </main>
+        <aside class="page-toc" aria-label="On this page">
+          <p class="sidebar-label">On this page</p>
+          <nav id="page-toc"></nav>
+        </aside>
+      </div>
+    {% endif %}
+    <script src="{{ '/assets/site/site.js' | relative_url }}"></script>
+  </body>
+</html>
