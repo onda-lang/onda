@@ -8,7 +8,7 @@
     <meta property="og:title" content="{{ page.title | default: site.title | escape }}">
     <meta property="og:description" content="{{ page.description | default: site.description | escape }}">
     <meta property="og:type" content="website">
-    <meta property="og:image" content="{{ '/assets/png/onda-logo-alt-light-dark-rect.png' | absolute_url }}">
+    <meta property="og:image" content="{{ '/assets/png/onda-logo-rect.png' | absolute_url }}">
     <title>{% if page.title and page.title != site.title %}{{ page.title }} · {% endif %}{{ site.title }}</title>
     <script>document.documentElement.dataset.theme=localStorage.getItem('onda-theme')||'auto';</script>
     <link id="site-icon" rel="icon" href="{{ '/assets/svg/onda-logo.svg' | relative_url }}" type="image/svg+xml" data-light="{{ '/assets/svg/onda-logo.svg' | relative_url }}" data-dark="{{ '/assets/svg/onda-logo-dark.svg' | relative_url }}">
