@@ -7,8 +7,9 @@ use onda_codegen_llvm::{
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, process_checked, reset_instance_state,
-    set_param_by_index, trigger_event_by_index, Instance, InstanceConfig,
+    bind_buffer, bind_input, bind_output, create_instance, prepare_unchecked_process,
+    process_unchecked, reset_instance_state, set_param_by_index, trigger_event_by_index, Instance,
+    InstanceConfig,
 };
 use onda_semantics::{AnalysisOptions, TypedProgram};
 
@@ -192,6 +193,7 @@ impl RunSession {
         let buffer_bindings =
             bind_placeholder_buffers(&jit, &mut instance, options.block_size, options.sample_rate)
                 .map_err(RunBuildError::Runtime)?;
+        prepare_unchecked_process(&mut instance).map_err(RunBuildError::Runtime)?;
 
         Ok(Self {
             path,
@@ -333,7 +335,7 @@ impl RunSession {
                 .or_insert_with(|| default_run_param_value(desc));
         } else {
             let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
-            set_param_by_index(&mut self.instance, index, &bytes)?;
+            set_param_by_index(&mut self.instance, index, bytes.as_slice())?;
             self.param_runtime_values.insert(name.to_owned(), value);
         }
         Ok(())
@@ -366,20 +368,66 @@ impl RunSession {
     }
 
     pub fn render_block(&mut self) -> Result<Vec<Vec<f32>>, Diagnostic> {
+        let mut rendered = vec![
+            0.0;
+            self.options
+                .block_size
+                .saturating_mul(self.jit.required_out_channels())
+        ];
+        self.render_block_interleaved(&mut rendered)?;
+
+        let mut channels = Vec::with_capacity(self.jit.required_out_channels());
+        for channel in 0..self.jit.required_out_channels() {
+            let mut samples = Vec::with_capacity(self.options.block_size);
+            samples.extend(
+                rendered
+                    .chunks_exact(self.jit.required_out_channels())
+                    .map(|frame| frame[channel]),
+            );
+            channels.push(samples);
+        }
+        Ok(channels)
+    }
+
+    /// Renders directly into a caller-owned interleaved buffer.
+    ///
+    /// The buffer must contain exactly one block. Once the session has been
+    /// built, this path performs no host allocations.
+    pub fn render_block_interleaved(&mut self, rendered: &mut [f32]) -> Result<(), Diagnostic> {
+        let output_channels = self.jit.required_out_channels();
+        let expected_samples = self.options.block_size.saturating_mul(output_channels);
+        if rendered.len() != expected_samples {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "run render buffer expects {expected_samples} samples, got {}",
+                    rendered.len()
+                ),
+                0,
+                0,
+            ));
+        }
+
         self.apply_smoothed_params()?;
         for buffer in &mut self.output_buffers {
             buffer.fill(0.0);
         }
-        process_checked(&mut self.instance, self.options.block_size)?;
-        let mut rendered = Vec::with_capacity(self.jit.required_out_channels());
+        // SAFETY: all input, output, and declared-buffer bindings are installed
+        // and prepared during build/rebuild. Their backing allocations remain
+        // stable for the lifetime of this instance.
+        unsafe { process_unchecked(&mut self.instance)? };
+
+        let mut output_channel = 0;
         for (buffer, desc) in self.output_buffers.iter().zip(self.jit.outputs()) {
             for ch in 0..desc.array_len() {
-                let start = ch.saturating_mul(self.options.block_size);
-                let end = start.saturating_add(self.options.block_size);
-                rendered.push(buffer[start..end].to_vec());
+                let channel =
+                    &buffer[ch * self.options.block_size..(ch + 1) * self.options.block_size];
+                for (frame, &sample) in channel.iter().enumerate() {
+                    rendered[frame * output_channels + output_channel] = sample;
+                }
+                output_channel += 1;
             }
         }
-        Ok(rendered)
+        Ok(())
     }
 
     pub fn set_input_block(&mut self, interleaved: &[f32], source_channels: usize) {
@@ -410,6 +458,8 @@ impl RunSession {
 
     pub fn reset(&mut self) {
         reset_instance_state(&mut self.instance);
+        prepare_unchecked_process(&mut self.instance)
+            .expect("run session bindings remain valid across state reset");
     }
 
     pub fn bind_buffer_wav_path(
@@ -559,15 +609,16 @@ impl RunSession {
                 .copied()
                 .unwrap_or(value);
             let bytes = scalar_param_bytes(desc.elem_ty(), runtime_value)?;
-            set_param_by_index(&mut instance, index, &bytes)?;
+            set_param_by_index(&mut instance, index, bytes.as_slice())?;
         }
+        prepare_unchecked_process(&mut instance)?;
         self.instance = instance;
         Ok(())
     }
 
     fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
         if self.options.float_param_smoothing_ms <= 0.0 {
-            for (name, target_value) in self.param_values.clone() {
+            for (name, &target_value) in &self.param_values {
                 let Some(index) = self.jit.param_index(&name) else {
                     continue;
                 };
@@ -578,15 +629,18 @@ impl RunSession {
                     continue;
                 }
                 let bytes = scalar_param_bytes(desc.elem_ty(), target_value)?;
-                set_param_by_index(&mut self.instance, index, &bytes)?;
-                self.param_runtime_values.insert(name, target_value);
+                set_param_by_index(&mut self.instance, index, bytes.as_slice())?;
+                *self
+                    .param_runtime_values
+                    .get_mut(name)
+                    .expect("smoothed run params have initialized runtime values") = target_value;
             }
             return Ok(());
         }
         let block_ms = (self.options.block_size as f64 * 1000.0)
             / f64::from(self.options.sample_rate.max(1.0));
         let alpha = (block_ms / self.options.float_param_smoothing_ms).clamp(0.0, 1.0);
-        for (name, target_value) in self.param_values.clone() {
+        for (name, &target_value) in &self.param_values {
             let Some(index) = self.jit.param_index(&name) else {
                 continue;
             };
@@ -598,7 +652,7 @@ impl RunSession {
             }
             let current_value = self
                 .param_runtime_values
-                .get(&name)
+                .get(name)
                 .copied()
                 .unwrap_or_else(|| default_run_param_value(desc));
             let mut next_value = current_value + (target_value - current_value) * alpha;
@@ -606,8 +660,11 @@ impl RunSession {
                 next_value = target_value;
             }
             let bytes = scalar_param_bytes(desc.elem_ty(), next_value)?;
-            set_param_by_index(&mut self.instance, index, &bytes)?;
-            self.param_runtime_values.insert(name, next_value);
+            set_param_by_index(&mut self.instance, index, bytes.as_slice())?;
+            *self
+                .param_runtime_values
+                .get_mut(name)
+                .expect("smoothed run params have initialized runtime values") = next_value;
         }
         Ok(())
     }
@@ -917,18 +974,47 @@ fn read_wav_interleaved_f32(path: &Path) -> Result<(Vec<f32>, usize, u32), Diagn
     Ok((samples, channels, spec.sample_rate))
 }
 
-fn scalar_param_bytes(ty: onda_frontend::PrimitiveType, value: f64) -> Result<Vec<u8>, Diagnostic> {
-    let mut out = Vec::new();
-    match ty {
-        onda_frontend::PrimitiveType::F32 => out.extend_from_slice(&(value as f32).to_ne_bytes()),
-        onda_frontend::PrimitiveType::F64 => out.extend_from_slice(&value.to_ne_bytes()),
-        onda_frontend::PrimitiveType::I32 => out.extend_from_slice(&(value as i32).to_ne_bytes()),
-        onda_frontend::PrimitiveType::I64 => out.extend_from_slice(&(value as i64).to_ne_bytes()),
+struct ScalarParamBytes {
+    bytes: [u8; 8],
+    len: usize,
+}
+
+impl ScalarParamBytes {
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+fn scalar_param_bytes(
+    ty: onda_frontend::PrimitiveType,
+    value: f64,
+) -> Result<ScalarParamBytes, Diagnostic> {
+    let mut out = ScalarParamBytes {
+        bytes: [0; 8],
+        len: 0,
+    };
+    let len = match ty {
+        onda_frontend::PrimitiveType::F32 => {
+            out.bytes[..4].copy_from_slice(&(value as f32).to_ne_bytes());
+            4
+        }
+        onda_frontend::PrimitiveType::F64 => {
+            out.bytes.copy_from_slice(&value.to_ne_bytes());
+            8
+        }
+        onda_frontend::PrimitiveType::I32 => {
+            out.bytes[..4].copy_from_slice(&(value as i32).to_ne_bytes());
+            4
+        }
+        onda_frontend::PrimitiveType::I64 => {
+            out.bytes.copy_from_slice(&(value as i64).to_ne_bytes());
+            8
+        }
         onda_frontend::PrimitiveType::Bool => {
-            let encoded = if value == 0.0 {
-                0_i8
+            out.bytes[0] = if value == 0.0 {
+                0
             } else if value == 1.0 {
-                1_i8
+                1
             } else {
                 return Err(Diagnostic::runtime(
                     format!("boolean parameter requires 0 or 1, got {value}"),
@@ -936,9 +1022,10 @@ fn scalar_param_bytes(ty: onda_frontend::PrimitiveType, value: f64) -> Result<Ve
                     0,
                 ));
             };
-            out.extend_from_slice(&encoded.to_ne_bytes());
+            1
         }
-    }
+    };
+    out.len = len;
     Ok(out)
 }
 

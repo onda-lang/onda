@@ -15,6 +15,7 @@ For build, CLI usage, and editor integrations, see [README.md](../README.md).
 | `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
 | `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
 | `onda_api` | C ABI surface exposed through `include/onda.h`. |
+| `onda_cpal` | Minimal CPAL/PipeWire backend: device discovery, RT callbacks, sample conversion, and SPSC transport. |
 | `onda_daemon` | Stateful session engine: in-memory analysis overlays and live run sessions. |
 | `onda_run` | Shared run controller / real-time playback transport used by the CLI and run hosts. |
 | `onda_cli` | `onda` binary: argument parsing, `compile`/`run`/`daemon`/`lsp` commands, and the LSP adapter. |
@@ -96,6 +97,9 @@ Non-crate directories of note:
 ### `onda_api` (`crates/onda_api/src`)
 - `lib.rs` — C ABI surface (compile/create/process/destroy, bind/set, metadata queries, event trigger, state snapshot/restore).
 
+### `onda_cpal` (`crates/onda_cpal/src`)
+- `lib.rs` — CPAL 0.18/PipeWire device discovery and stream setup, allocation-free input/output callbacks, FP-mode setup, and lock-free SPSC sample transport.
+
 ### `onda_daemon` (`crates/onda_daemon/src`)
 - `lib.rs` — session manager and transport entry points.
 - `analysis_session.rs` — in-memory document overlays and `analyze_document` snapshots.
@@ -103,7 +107,7 @@ Non-crate directories of note:
 
 ### `onda_run` (`crates/onda_run/src`)
 - `lib.rs` — run controller wiring real-time audio to a daemon run session.
-- `playback.rs` — `cpal` audio thread, lock-free SPSC ring buffer, optional `--control-json` TCP control server.
+- `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
 
 ### `onda_cli` (`crates/onda_cli/src`)
 - `main.rs`, `main_tests.rs` — binary entry and integration tests.
@@ -170,4 +174,3 @@ High-level themes:
 - C++ single-header backend.
 - Richer standard library.
 - RT-safety instrumentation/audit suite and stricter host-facing diagnostics lifecycle.
-

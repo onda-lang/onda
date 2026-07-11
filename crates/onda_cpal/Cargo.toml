@@ -1,0 +1,20 @@
+[package]
+name = "onda_cpal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+cpal = { version = "0.18.1", features = ["pipewire", "realtime"] }
+libc = "0.2"
+
+[lib]
+path = "src/lib.rs"
+# `cargo test -p onda_cpal` builds the CPAL PipeWire stack in Cargo's test
+# profile for both unit tests and doctests. That currently triggers a
+# libspa-sys bindgen bug where SPA_ID_INVALID is omitted from generated
+# bindings. Keep those harnesses disabled until upstream libspa-sys/cpal no
+# longer needs this workaround.
+test = false
+doctest = false

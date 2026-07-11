@@ -1,16 +1,17 @@
-use std::cell::{Cell, UnsafeCell};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::Sample;
 use onda_codegen_llvm::TargetOptLevel;
+use onda_cpal::{
+    configure_current_thread_fp_mode, sample_ring, AudioHost, InputEndpoint, OutputEndpoint,
+    SampleConsumer, SampleProducer, StreamErrorState,
+};
 use onda_daemon::{
     DaemonConfig, DaemonSession, RunBufferInfo, RunEventInfo, RunEventValue, RunOptions,
     RunParamInfo,
@@ -168,26 +169,23 @@ struct PlaybackControlRequest {
 
 pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let _signal_guard = install_run_signal_handlers();
-    let host = cpal::default_host();
-    let output_device = find_output_device(&host, launch.output_device.as_deref())?;
-    let default_output_config = output_device
-        .default_output_config()
-        .map_err(|err| format!("failed to query default output config: {err}"))?;
-
-    let output_device_channels = usize::from(default_output_config.channels());
-    let mut output_config: cpal::StreamConfig = default_output_config.config();
-    output_config.channels = default_output_config.channels();
-    output_config.sample_rate = cpal::SampleRate(launch.sample_rate_hz);
-    output_config.buffer_size = cpal::BufferSize::Fixed(launch.block_frames as u32);
+    let audio_host = AudioHost::default();
+    let output_endpoint = OutputEndpoint::open(
+        &audio_host,
+        launch.output_device.as_deref(),
+        launch.sample_rate_hz,
+        launch.block_frames,
+    )?;
+    let output_device_channels = output_endpoint.channels();
 
     let queue_capacity = (launch.block_frames * output_device_channels.max(2) * 16)
         .next_power_of_two()
         .max(1024);
-    let sample_queue = Arc::new(SpscSampleRing::new(queue_capacity));
-    let input_queue = Arc::new(SpscSampleRing::new(queue_capacity));
+    let (sample_producer, sample_consumer) = sample_ring(queue_capacity);
+    let (input_producer, input_consumer) = sample_ring(queue_capacity);
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_error = Arc::new(Mutex::new(None::<String>));
-    let error_state = Arc::new(Mutex::new(None::<String>));
+    let error_state = StreamErrorState::default();
     let (startup_tx, startup_rx) = mpsc::channel();
     let (control_tx, control_rx) = if launch.control_json {
         let (tx, rx) = mpsc::channel();
@@ -199,8 +197,8 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
     let render_thread = spawn_run_render_thread(
         launch.clone(),
-        Arc::clone(&sample_queue),
-        Arc::clone(&input_queue),
+        sample_producer,
+        input_consumer,
         Arc::clone(&scope_ring),
         Arc::clone(&stop_flag),
         Arc::clone(&render_error),
@@ -271,51 +269,23 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     }
 
     let input_stream = if startup.input_channels > 0 {
-        let input_device = find_input_device(&host, launch.input_device.as_deref())?;
-        let default_input_config = input_device
-            .default_input_config()
-            .map_err(|err| format!("failed to query default input config: {err}"))?;
-        let mut input_config: cpal::StreamConfig = default_input_config.config();
-        input_config.channels = default_input_config.channels();
-        input_config.sample_rate = cpal::SampleRate(launch.sample_rate_hz);
-        input_config.buffer_size = cpal::BufferSize::Fixed(launch.block_frames as u32);
-        Some(match default_input_config.sample_format() {
-            cpal::SampleFormat::F32 => build_input_stream::<f32>(
-                &input_device,
-                &input_config,
-                startup.input_channels,
-                Arc::clone(&input_queue),
-                make_input_stream_error_handler(Arc::clone(&error_state)),
-            )?,
-            cpal::SampleFormat::I16 => build_input_stream::<i16>(
-                &input_device,
-                &input_config,
-                startup.input_channels,
-                Arc::clone(&input_queue),
-                make_input_stream_error_handler(Arc::clone(&error_state)),
-            )?,
-            cpal::SampleFormat::U16 => build_input_stream::<u16>(
-                &input_device,
-                &input_config,
-                startup.input_channels,
-                Arc::clone(&input_queue),
-                make_input_stream_error_handler(Arc::clone(&error_state)),
-            )?,
-            other => {
-                stop_flag.store(true, Ordering::Release);
-                let _ = render_thread.join();
-                drop(control_server);
-                return Err(format!(
-                    "unsupported input sample format from audio device: {other:?}"
-                ));
-            }
-        })
+        let input_endpoint = InputEndpoint::open(
+            &audio_host,
+            launch.input_device.as_deref(),
+            launch.sample_rate_hz,
+            launch.block_frames,
+        )?;
+        Some(input_endpoint.build_stream(
+            startup.input_channels,
+            input_producer,
+            error_state.clone(),
+        )?)
     } else {
         None
     };
 
     wait_for_prefill(
-        &sample_queue,
+        &sample_consumer,
         startup.output_channels * launch.block_frames,
         &stop_flag,
         &render_error,
@@ -326,48 +296,16 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         return Ok(());
     }
 
-    let stream = match default_output_config.sample_format() {
-        cpal::SampleFormat::F32 => build_output_stream::<f32>(
-            &output_device,
-            &output_config,
-            output_device_channels,
-            startup.output_channels,
-            Arc::clone(&sample_queue),
-            make_stream_error_handler(Arc::clone(&error_state)),
-        )?,
-        cpal::SampleFormat::I16 => build_output_stream::<i16>(
-            &output_device,
-            &output_config,
-            output_device_channels,
-            startup.output_channels,
-            Arc::clone(&sample_queue),
-            make_stream_error_handler(Arc::clone(&error_state)),
-        )?,
-        cpal::SampleFormat::U16 => build_output_stream::<u16>(
-            &output_device,
-            &output_config,
-            output_device_channels,
-            startup.output_channels,
-            Arc::clone(&sample_queue),
-            make_stream_error_handler(Arc::clone(&error_state)),
-        )?,
-        other => {
-            stop_flag.store(true, Ordering::Release);
-            let _ = render_thread.join();
-            return Err(format!(
-                "unsupported output sample format from audio device: {other:?}"
-            ));
-        }
-    };
+    let stream = output_endpoint.build_stream(
+        startup.output_channels,
+        sample_consumer,
+        error_state.clone(),
+    )?;
 
     if let Some(input_stream) = input_stream.as_ref() {
-        input_stream
-            .play()
-            .map_err(|err| format!("failed to start audio input stream: {err}"))?;
+        input_stream.play()?;
     }
-    stream
-        .play()
-        .map_err(|err| format!("failed to start audio output stream: {err}"))?;
+    stream.play()?;
     if launch.control_json {
         eprintln!(
             "{}",
@@ -388,11 +326,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let _ = render_thread.join();
     drop(control_server);
 
-    if let Some(err) = error_state
-        .lock()
-        .map_err(|_| "failed to read audio stream error state".to_owned())?
-        .clone()
-    {
+    if let Some(err) = error_state.message() {
         return Err(err);
     }
     if let Some(err) = render_error
@@ -475,7 +409,7 @@ fn wait_for_playback_completion(
     dur_seconds: Option<u32>,
     stop_flag: &Arc<AtomicBool>,
     render_error: &Arc<Mutex<Option<String>>>,
-    error_state: &Arc<Mutex<Option<String>>>,
+    error_state: &StreamErrorState,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
     loop {
@@ -498,11 +432,7 @@ fn wait_for_playback_completion(
         {
             return Err(err);
         }
-        if let Some(err) = error_state
-            .lock()
-            .map_err(|_| "failed to read audio stream error state".to_owned())?
-            .clone()
-        {
+        if let Some(err) = error_state.message() {
             return Err(err);
         }
         thread::sleep(Duration::from_millis(50));
@@ -510,216 +440,10 @@ fn wait_for_playback_completion(
     Ok(())
 }
 
-fn build_output_stream<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    device_channels: usize,
-    source_channels: usize,
-    sample_queue: Arc<SpscSampleRing>,
-    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
-) -> Result<cpal::Stream, String>
-where
-    T: cpal::SizedSample + cpal::FromSample<f32>,
-{
-    device
-        .build_output_stream(
-            config,
-            move |data: &mut [T], _| {
-                ensure_realtime_thread_fp_mode();
-                write_output_data::<T>(data, device_channels, source_channels, &sample_queue)
-            },
-            err_fn,
-            None,
-        )
-        .map_err(|err| format!("failed to build audio output stream: {err}"))
-}
-
-fn build_input_stream<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    target_channels: usize,
-    input_queue: Arc<SpscSampleRing>,
-    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
-) -> Result<cpal::Stream, String>
-where
-    T: cpal::SizedSample,
-    f32: cpal::FromSample<T>,
-{
-    let device_channels = usize::from(config.channels);
-    device
-        .build_input_stream(
-            config,
-            move |data: &[T], _| {
-                ensure_realtime_thread_fp_mode();
-                write_input_data::<T>(data, device_channels, target_channels, &input_queue)
-            },
-            err_fn,
-            None,
-        )
-        .map_err(|err| format!("failed to build audio input stream: {err}"))
-}
-
-fn make_stream_error_handler(
-    error_state: Arc<Mutex<Option<String>>>,
-) -> impl FnMut(cpal::StreamError) + Send + 'static {
-    move |err| {
-        if let Ok(mut slot) = error_state.lock() {
-            *slot = Some(format!("audio output stream error: {err}"));
-        }
-    }
-}
-
-fn make_input_stream_error_handler(
-    error_state: Arc<Mutex<Option<String>>>,
-) -> impl FnMut(cpal::StreamError) + Send + 'static {
-    move |err| {
-        if let Ok(mut slot) = error_state.lock() {
-            *slot = Some(format!("audio input stream error: {err}"));
-        }
-    }
-}
-
-thread_local! {
-    static REALTIME_FP_MODE_CONFIGURED: Cell<bool> = const { Cell::new(false) };
-}
-
-fn ensure_realtime_thread_fp_mode() {
-    REALTIME_FP_MODE_CONFIGURED.with(|configured| {
-        if configured.get() {
-            return;
-        }
-        configure_realtime_thread_fp_mode();
-        configured.set(true);
-    });
-}
-
-#[cfg(target_arch = "x86_64")]
-fn configure_realtime_thread_fp_mode() {
-    // Flush denormals to zero on realtime threads to avoid severe x86 stalls when
-    // tiny float values appear during parameter smoothing or feedback decay.
-    unsafe {
-        let mut csr = 0_u32;
-        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags));
-        let desired = csr | (1 << 15) | (1 << 6);
-        if desired != csr {
-            std::arch::asm!("ldmxcsr [{}]", in(reg) &desired, options(nostack, preserves_flags));
-        }
-    }
-}
-
-#[cfg(target_arch = "x86")]
-fn configure_realtime_thread_fp_mode() {
-    unsafe {
-        let mut csr = 0_u32;
-        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags));
-        let desired = csr | (1 << 15) | (1 << 6);
-        if desired != csr {
-            std::arch::asm!("ldmxcsr [{}]", in(reg) &desired, options(nostack, preserves_flags));
-        }
-    }
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn configure_realtime_thread_fp_mode() {}
-
-fn write_output_data<T>(
-    data: &mut [T],
-    device_channels: usize,
-    source_channels: usize,
-    sample_queue: &Arc<SpscSampleRing>,
-) where
-    T: cpal::SizedSample + cpal::FromSample<f32>,
-{
-    for frame in data.chunks_mut(device_channels) {
-        if source_channels == 1 {
-            let sample = sample_queue.pop_one().unwrap_or(0.0);
-            for out in frame.iter_mut() {
-                *out = T::from_sample(sample);
-            }
-            continue;
-        }
-
-        for (channel_index, sample) in frame.iter_mut().enumerate() {
-            let value = if channel_index < source_channels {
-                sample_queue.pop_one().unwrap_or(0.0)
-            } else {
-                0.0
-            };
-            *sample = T::from_sample(value);
-        }
-        for _ in device_channels..source_channels {
-            let _ = sample_queue.pop_one();
-        }
-    }
-}
-
-fn write_input_data<T>(
-    data: &[T],
-    device_channels: usize,
-    target_channels: usize,
-    input_queue: &Arc<SpscSampleRing>,
-) where
-    T: cpal::Sample,
-    f32: cpal::FromSample<T>,
-{
-    if device_channels == 0 || target_channels == 0 {
-        return;
-    }
-    for frame in data.chunks(device_channels) {
-        for sample in frame.iter().take(target_channels).copied() {
-            if !input_queue.push_one(f32::from_sample(sample)) {
-                return;
-            }
-        }
-    }
-}
-
-fn find_output_device(
-    host: &cpal::Host,
-    requested_name: Option<&str>,
-) -> Result<cpal::Device, String> {
-    match requested_name {
-        Some(name) => host
-            .output_devices()
-            .map_err(|err| format!("failed to enumerate output devices: {err}"))?
-            .find(|device| {
-                device
-                    .name()
-                    .map(|device_name| device_name == name)
-                    .unwrap_or(false)
-            })
-            .ok_or_else(|| format!("output device '{name}' was not found")),
-        None => host
-            .default_output_device()
-            .ok_or_else(|| "no default output audio device available".to_owned()),
-    }
-}
-
-fn find_input_device(
-    host: &cpal::Host,
-    requested_name: Option<&str>,
-) -> Result<cpal::Device, String> {
-    match requested_name {
-        Some(name) => host
-            .input_devices()
-            .map_err(|err| format!("failed to enumerate input devices: {err}"))?
-            .find(|device| {
-                device
-                    .name()
-                    .map(|device_name| device_name == name)
-                    .unwrap_or(false)
-            })
-            .ok_or_else(|| format!("input device '{name}' was not found")),
-        None => host
-            .default_input_device()
-            .ok_or_else(|| "no default input audio device available".to_owned()),
-    }
-}
-
 fn spawn_run_render_thread(
     launch: PlaybackLaunch,
-    sample_queue: Arc<SpscSampleRing>,
-    input_queue: Arc<SpscSampleRing>,
+    sample_queue: SampleProducer,
+    input_queue: SampleConsumer,
     scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
@@ -727,7 +451,7 @@ fn spawn_run_render_thread(
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        ensure_realtime_thread_fp_mode();
+        configure_current_thread_fp_mode();
         let control_rx = control_rx;
         let mut session = DaemonSession::new(DaemonConfig {
             analysis: AnalysisOptions {
@@ -794,30 +518,17 @@ fn spawn_run_render_thread(
             })
         })();
 
-        let render_input_channels = match startup {
-            Ok(ref startup) => {
+        let (render_input_channels, render_output_channels) = match startup {
+            Ok(startup) => {
                 {
                     let mut ring = scope_ring.lock().unwrap();
                     *ring = ScopeRing::new(SCOPE_CAPACITY_FRAMES, startup.output_channels);
                 }
-                if startup_tx
-                    .send(Ok(PlaybackStartup {
-                        path: startup.path.clone(),
-                        input_channels: startup.input_channels,
-                        output_channels: startup.output_channels,
-                        params: startup.params.clone(),
-                        buffers: startup.buffers.clone(),
-                        events: startup.events.clone(),
-                        input_devices: startup.input_devices.clone(),
-                        output_devices: startup.output_devices.clone(),
-                        current_input_device: startup.current_input_device.clone(),
-                        current_output_device: startup.current_output_device.clone(),
-                    }))
-                    .is_err()
-                {
+                let channel_counts = (startup.input_channels, startup.output_channels);
+                if startup_tx.send(Ok(startup)).is_err() {
                     return;
                 }
-                startup.input_channels
+                channel_counts
             }
             Err(err) => {
                 let _ = startup_tx.send(Err(err));
@@ -825,9 +536,13 @@ fn spawn_run_render_thread(
             }
         };
 
+        let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
+        let mut captured = vec![0.0_f32; launch.block_frames.saturating_mul(render_input_channels)];
+        let mut interleaved =
+            vec![0.0_f32; launch.block_frames.saturating_mul(render_output_channels)];
+
         while !stop_flag.load(Ordering::Acquire) {
             if let Some(control_rx) = &control_rx {
-                let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::new();
                 for _ in 0..MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK {
                     let Ok(command) = control_rx.try_recv() else {
                         break;
@@ -958,18 +673,14 @@ fn spawn_run_render_thread(
 
             if render_input_channels > 0 {
                 let input_channels = render_input_channels;
-                let input_samples = launch.block_frames * input_channels;
-                let mut captured = vec![0.0_f32; input_samples];
-                for sample in &mut captured {
-                    *sample = input_queue.pop_one().unwrap_or(0.0);
-                }
+                input_queue.pop_slice_aligned(&mut captured, input_channels);
                 if let Some(run) = session.run_mut(&launch.input) {
                     run.set_input_block(&captured, input_channels);
                 }
             }
 
-            let block = match session.render_run_block(&launch.input) {
-                Ok(block) => block,
+            match session.render_run_block_interleaved(&launch.input, &mut interleaved) {
+                Ok(()) => {}
                 Err(diag) => {
                     store_thread_error(
                         &render_error,
@@ -978,12 +689,7 @@ fn spawn_run_render_thread(
                     stop_flag.store(true, Ordering::Release);
                     break;
                 }
-            };
-
-            let mut interleaved = Vec::with_capacity(
-                block.len() * block.first().map(Vec::len).unwrap_or(launch.block_frames),
-            );
-            append_interleaved_block(&mut interleaved, &block);
+            }
 
             if let Ok(mut ring) = scope_ring.try_lock() {
                 ring.push_interleaved(&interleaved);
@@ -1007,7 +713,7 @@ fn flush_pending_param_updates(
     session: &mut DaemonSession,
     input: &Path,
 ) {
-    for (name, update) in std::mem::take(pending) {
+    for (name, update) in pending.drain() {
         let result = session
             .run_mut(input)
             .ok_or_else(|| "run is not active".to_owned())
@@ -1022,7 +728,7 @@ fn flush_pending_param_updates(
 }
 
 fn wait_for_prefill(
-    sample_queue: &Arc<SpscSampleRing>,
+    sample_queue: &SampleConsumer,
     min_samples: usize,
     stop_flag: &Arc<AtomicBool>,
     render_error: &Arc<Mutex<Option<String>>>,
@@ -1516,82 +1222,6 @@ fn run_control_response(
                 "error": err,
             })
         }),
-    }
-}
-
-struct SpscSampleRing {
-    capacity: usize,
-    mask: usize,
-    slots: Box<[UnsafeCell<f32>]>,
-    read_index: AtomicUsize,
-    write_index: AtomicUsize,
-}
-
-unsafe impl Send for SpscSampleRing {}
-unsafe impl Sync for SpscSampleRing {}
-
-impl SpscSampleRing {
-    fn new(capacity: usize) -> Self {
-        let capacity = capacity.max(2).next_power_of_two();
-        let slots = std::iter::repeat_with(|| UnsafeCell::new(0.0))
-            .take(capacity)
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        Self {
-            capacity,
-            mask: capacity - 1,
-            slots,
-            read_index: AtomicUsize::new(0),
-            write_index: AtomicUsize::new(0),
-        }
-    }
-
-    fn len(&self) -> usize {
-        let write = self.write_index.load(Ordering::Acquire);
-        let read = self.read_index.load(Ordering::Acquire);
-        write.saturating_sub(read)
-    }
-
-    fn push_slice(&self, input: &[f32]) -> usize {
-        let write = self.write_index.load(Ordering::Relaxed);
-        let read = self.read_index.load(Ordering::Acquire);
-        let available = self.capacity.saturating_sub(write.saturating_sub(read));
-        let count = input.len().min(available);
-        for (offset, sample) in input.iter().copied().take(count).enumerate() {
-            let index = (write + offset) & self.mask;
-            // SAFETY: producer is single-writer and only writes slots not yet published via write_index.
-            unsafe { *self.slots[index].get() = sample };
-        }
-        if count != 0 {
-            self.write_index.store(write + count, Ordering::Release);
-        }
-        count
-    }
-
-    fn push_one(&self, sample: f32) -> bool {
-        let write = self.write_index.load(Ordering::Relaxed);
-        let read = self.read_index.load(Ordering::Acquire);
-        if self.capacity.saturating_sub(write.saturating_sub(read)) == 0 {
-            return false;
-        }
-        let index = write & self.mask;
-        // SAFETY: producer is single-writer and only writes slots not yet published via write_index.
-        unsafe { *self.slots[index].get() = sample };
-        self.write_index.store(write + 1, Ordering::Release);
-        true
-    }
-
-    fn pop_one(&self) -> Option<f32> {
-        let read = self.read_index.load(Ordering::Relaxed);
-        let write = self.write_index.load(Ordering::Acquire);
-        if read == write {
-            return None;
-        }
-        let index = read & self.mask;
-        // SAFETY: consumer is single-reader and only reads slots published via write_index.
-        let sample = unsafe { *self.slots[index].get() };
-        self.read_index.store(read + 1, Ordering::Release);
-        Some(sample)
     }
 }
 

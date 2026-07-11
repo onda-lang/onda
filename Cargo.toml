@@ -7,6 +7,7 @@ members = [
   "crates/onda_codegen_llvm",
   "crates/onda_runtime",
   "crates/onda_api",
+  "crates/onda_cpal",
   "crates/onda_run",
   "crates/onda_egui",
   "crates/onda_webview",

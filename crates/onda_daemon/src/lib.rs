@@ -157,6 +157,22 @@ impl DaemonSession {
         })?;
         run.render_block()
     }
+
+    pub fn render_run_block_interleaved(
+        &mut self,
+        path: impl AsRef<Path>,
+        rendered: &mut [f32],
+    ) -> Result<(), Diagnostic> {
+        let normalized = normalize_session_path(path.as_ref());
+        let run = self.runs.get_mut(&normalized).ok_or_else(|| {
+            Diagnostic::runtime(
+                format!("run is not active for '{}'", normalized.display()),
+                0,
+                0,
+            )
+        })?;
+        run.render_block_interleaved(rendered)
+    }
 }
 
 #[cfg(test)]

@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait};
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{
@@ -32,12 +31,6 @@ const SCOPE_POLL_INTERVAL_MS: u64 = 50;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-
-#[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
-
-#[cfg(target_os = "linux")]
-use std::sync::OnceLock;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -121,7 +114,7 @@ impl RunState {
 }
 
 pub fn available_audio_devices() -> (Vec<String>, Vec<String>) {
-    (list_input_devices(), list_output_devices())
+    onda_cpal::available_audio_devices()
 }
 
 #[derive(Debug)]
@@ -984,74 +977,11 @@ fn file_stamp(path: &Path) -> FileStamp {
 }
 
 fn list_input_devices() -> Vec<String> {
-    enumerate_devices_silenced(|host| {
-        host.input_devices()
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|device| device.name().ok())
-            .collect()
-    })
+    onda_cpal::input_audio_devices()
 }
 
 fn list_output_devices() -> Vec<String> {
-    enumerate_devices_silenced(|host| {
-        host.output_devices()
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|device| device.name().ok())
-            .collect()
-    })
-}
-
-fn enumerate_devices_silenced<T>(f: impl FnOnce(&cpal::Host) -> T) -> T {
-    #[cfg(target_os = "linux")]
-    {
-        static STDERR_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = STDERR_GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("stderr guard mutex should not be poisoned");
-        let host = cpal::default_host();
-        with_stderr_silenced(|| f(&host))
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let host = cpal::default_host();
-        f(&host)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn with_stderr_silenced<T>(f: impl FnOnce() -> T) -> T {
-    let stderr = std::io::stderr();
-    let stderr_fd = stderr.as_raw_fd();
-    let null = match std::fs::OpenOptions::new().write(true).open("/dev/null") {
-        Ok(file) => file,
-        Err(_) => return f(),
-    };
-    let null_fd = null.as_raw_fd();
-
-    // SAFETY:
-    // We temporarily redirect the process stderr to /dev/null while CPAL/ALSA/JACK
-    // enumerate devices because some backends print directly to stderr. Access is
-    // serialized with a global mutex and the original fd is restored afterwards.
-    unsafe {
-        let saved = libc::dup(stderr_fd);
-        if saved < 0 {
-            return f();
-        }
-        if libc::dup2(null_fd, stderr_fd) < 0 {
-            let _ = libc::close(saved);
-            return f();
-        }
-        let result = f();
-        let _ = libc::dup2(saved, stderr_fd);
-        let _ = libc::close(saved);
-        result
-    }
+    onda_cpal::output_audio_devices()
 }
 
 fn validated_device(name: Option<&str>, devices: &[String]) -> Result<Option<String>, String> {

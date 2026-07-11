@@ -6,12 +6,12 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-cpal = { version = "0.16", features = ["audio_thread_priority"] }
 libc = "0.2"
 notify = { version = "7", default-features = false, features = ["macos_kqueue"] }
 notify-debouncer-mini = "0.5"
 onda_daemon = { path = "../onda_daemon" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
+onda_cpal = { path = "../onda_cpal" }
 onda_frontend = { path = "../onda_frontend" }
 onda_semantics = { path = "../onda_semantics" }
 serde = { version = "1.0", features = ["derive"] }
