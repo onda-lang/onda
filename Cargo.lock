@@ -3514,7 +3514,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "onda_api"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
@@ -3524,7 +3524,7 @@ dependencies = [
 
 [[package]]
 name = "onda_cli"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "hound",
  "onda_codegen_llvm",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "onda_codegen_llvm"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "llvm-sys",
  "onda_frontend",
@@ -3551,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "onda_cpal"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "cpal",
  "libc",
@@ -3559,7 +3559,7 @@ dependencies = [
 
 [[package]]
 name = "onda_daemon"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "hound",
  "onda_codegen_llvm",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "onda_egui"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "eframe",
  "egui_extras",
@@ -3581,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "onda_examples"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "hound",
  "onda_codegen_llvm",
@@ -3592,7 +3592,7 @@ dependencies = [
 
 [[package]]
 name = "onda_frontend"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "pest",
  "pest_derive",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "onda_run"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "libc",
  "notify",
@@ -3616,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "onda_runtime"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
@@ -3624,14 +3624,14 @@ dependencies = [
 
 [[package]]
 name = "onda_semantics"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "onda_frontend",
 ]
 
 [[package]]
 name = "onda_webview"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "image",
  "onda_run",
