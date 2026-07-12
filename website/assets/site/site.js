@@ -4,7 +4,6 @@
   const themeColor = document.querySelector('meta[name="theme-color"]');
   const siteIcon = document.querySelector('#site-icon');
   const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
-  const themes = ['auto', 'light', 'dark'];
 
   const resolvedTheme = () => {
     const selected = root.dataset.theme || 'auto';
@@ -25,8 +24,7 @@
   syncTheme();
   colorScheme.addEventListener('change', syncTheme);
   themeButton?.addEventListener('click', () => {
-    const current = root.dataset.theme || 'auto';
-    const next = themes[(themes.indexOf(current) + 1) % themes.length];
+    const next = resolvedTheme() === 'dark' ? 'light' : 'dark';
     root.dataset.theme = next;
     localStorage.setItem('onda-theme', next);
     syncTheme();
