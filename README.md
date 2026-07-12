@@ -3,13 +3,14 @@
 </h1>
 
 Onda is an expressive and performant JIT-compiled audio programming language.
+
 This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
 
 Visit the project's [website](https://onda-lang.github.io/onda) for an introduction to the language.
 
 ## Code example
 
-Here is a code example for a saw oscillator processed by a resonant filter and an oversampled soft-clip distortion:
+Here is a code example for a saw oscillator processed by a resonant filter and an oversampled saturator:
 
 ```onda
 import std/osc

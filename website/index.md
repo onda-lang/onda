@@ -25,7 +25,7 @@ description: Onda is a JIT-compiled audio programming language.
   <section class="home-example">
     <div class="section-title">
       <h2>Code example</h2>
-      <p>A standard-library oscillator and resonant filter with a custom oversampled drive processor.</p>
+      <p>A standard-library oscillator and resonant filter with a custom oversampled saturator.</p>
     </div>
 <pre><code class="language-onda">import std/osc
 import std/filter
