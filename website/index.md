@@ -61,12 +61,12 @@ block:
 
   <nav class="home-docs" aria-label="Documentation">
     <div class="doc-list">
-      <a href="{{ '/docs/getting-started/' | relative_url }}"><strong>Getting started</strong><span>Download or build Onda, run a program, and render audio.</span></a>
-      <a href="{{ '/docs/language/' | relative_url }}"><strong>Language guide</strong><span>Syntax and semantics from basic programs through processors, graphs, generics, and modules.</span></a>
-      <a href="{{ '/docs/examples/' | relative_url }}"><strong>Examples</strong><span>Programs covering oscillators, events, processors, graphs, the standard library, FFT, and convolution.</span></a>
-      <a href="{{ '/docs/tooling/' | relative_url }}"><strong>CLI and editors</strong><span>Compilation, playback, rendering, language-server support, and embedding.</span></a>
-      <a href="{{ '/docs/architecture/' | relative_url }}"><strong>Architecture</strong><span>The compiler, runtime, CLI, daemon, and host crates.</span></a>
-      <a href="{{ '/docs/roadmap/' | relative_url }}"><strong>Roadmap</strong><span>Current design ideas and planned work.</span></a>
+      <a href="{{ '/docs/getting-started/' | relative_url }}"><strong>Getting started</strong><span>Download or build Onda, run a program, and render audio</span></a>
+      <a href="{{ '/docs/language/' | relative_url }}"><strong>Language guide</strong><span>Syntax and semantics from basic programs through processors, graphs, generics, and modules</span></a>
+      <a href="{{ '/docs/examples/' | relative_url }}"><strong>Examples</strong><span>Programs covering oscillators, events, processors, graphs, the standard library, FFT, and convolution</span></a>
+      <a href="{{ '/docs/tooling/' | relative_url }}"><strong>CLI and editors</strong><span>Compilation, playback, rendering, language-server support, and embedding</span></a>
+      <a href="{{ '/docs/architecture/' | relative_url }}"><strong>Architecture</strong><span>The compiler, runtime, CLI, daemon, and host crates</span></a>
+      <a href="{{ '/docs/roadmap/' | relative_url }}"><strong>Roadmap</strong><span>Current design ideas and planned work</span></a>
     </div>
   </nav>
 </main>
