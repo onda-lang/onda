@@ -13,7 +13,7 @@ description: Onda is a JIT-compiled audio programming language.
       </div>
       <h1>Onda</h1>
     </div>
-    <p class="home-lead">JIT-compiled audio programming language with a high-performance LLVM backend.</p>
+    <p class="home-lead">Expressive and performant JIT-compiled audio programming language.</p>
     <nav class="home-links" aria-label="Start here">
       <a href="{{ '/docs/getting-started/' | relative_url }}">Getting started</a>
       <a href="{{ '/docs/language/' | relative_url }}">Language guide</a>
