@@ -1,3 +1,5 @@
+const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
+
 class OndaSineProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -28,6 +30,10 @@ class OndaSineProcessor extends AudioWorkletProcessor {
     this.stateSizeBytes = Number(metadata.runtime?.state_size_bytes ?? 0);
     this.paramInfo = Array.isArray(metadata.metadata?.params) ? metadata.metadata.params : [];
     this.outputCount = Number(metadata.metadata?.outputs?.length ?? 1);
+    this.blockSize = Number(metadata.compile?.block_size ?? 128);
+    if (!Number.isInteger(this.blockSize) || this.blockSize <= 0) {
+      throw new Error(`invalid compile-time block size: ${this.blockSize}`);
+    }
     this.outputPtrs = [];
     this.outputCapacityFrames = 0;
 
@@ -43,7 +49,7 @@ class OndaSineProcessor extends AudioWorkletProcessor {
     this.statePtr = this.alloc(this.stateSizeBytes, 16);
     this.outPtrsPtr = this.alloc(this.outputCount * 4, 4);
     this.writeParamF32("freq", this.frequency);
-    this.ensureOutputCapacity(128);
+    this.ensureOutputCapacity(this.blockSize);
     this.exports.onda_init(this.paramsPtr, this.statePtr);
   }
 
@@ -85,11 +91,15 @@ class OndaSineProcessor extends AudioWorkletProcessor {
       return;
     }
 
-    const view = this.memoryView();
     this.outputPtrs = [];
     for (let channel = 0; channel < this.outputCount; channel += 1) {
       const ptr = this.alloc(frames * 4, 16);
       this.outputPtrs.push(ptr);
+    }
+
+    const view = this.memoryView();
+    for (let channel = 0; channel < this.outputCount; channel += 1) {
+      const ptr = this.outputPtrs[channel];
       view.setUint32(this.outPtrsPtr + channel * 4, ptr, true);
     }
     this.outputCapacityFrames = frames;
@@ -102,12 +112,18 @@ class OndaSineProcessor extends AudioWorkletProcessor {
     }
 
     const frames = outChannels[0].length;
-    this.ensureOutputCapacity(frames);
+    if (frames > this.blockSize) {
+      throw new Error(
+        `AudioWorklet block size ${frames} exceeds compiled block size ${this.blockSize}`,
+      );
+    }
     this.writeParamF32("freq", this.frequency);
     this.exports.onda_process(
       0,
       this.outPtrsPtr,
+      0,
       frames,
+      ONDA_PROCESS_FULL_BLOCK,
       this.paramsPtr,
       this.statePtr,
       0,

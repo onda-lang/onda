@@ -100,9 +100,9 @@ get_wasm_ld() {
 pushd "$repo_root" >/dev/null
 invoke_onda compile "$source_file" \
   --emit obj \
-  --target wasm32-unknown-unknown \
+  --target-triple wasm32-unknown-unknown \
   --sample-rate "$sample_rate" \
-  --block "$block_size" \
+  --block-size "$block_size" \
   --output "$object_file" \
   --meta-out "$meta_file"
 popd >/dev/null
@@ -115,7 +115,6 @@ wasm_ld="$(get_wasm_ld)"
   --export=__heap_base \
   --export-memory \
   --initial-memory=131072 \
-  --no-growable-memory \
   -o "$wasm_file"
 
 echo "Wrote object: $object_file"

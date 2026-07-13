@@ -68,7 +68,7 @@ function Get-WasmLd {
 
 Push-Location $repoRoot
 try {
-    Invoke-Onda compile $sourceFile --emit obj --target wasm32-unknown-unknown --sample-rate $SampleRate --block $BlockSize --output $objectFile --meta-out $metaFile
+    Invoke-Onda compile $sourceFile --emit obj --target-triple wasm32-unknown-unknown --sample-rate $SampleRate --block-size $BlockSize --output $objectFile --meta-out $metaFile
 
     $wasmLd = Get-WasmLd
     & $wasmLd $objectFile `
@@ -78,7 +78,6 @@ try {
         --export=__heap_base `
         --export-memory `
         --initial-memory=131072 `
-        --no-growable-memory `
         -o $wasmFile
 
     Write-Host "Wrote object: $objectFile"
