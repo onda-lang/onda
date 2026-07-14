@@ -1,7 +1,7 @@
 ---
 layout: home
 title: Onda
-description: Onda is a JIT-compiled audio programming language.
+description: Expressive and performant JIT-compiled audio programming language
 ---
 
 <main class="home-main">
