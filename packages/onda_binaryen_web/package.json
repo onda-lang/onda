@@ -1,0 +1,20 @@
+{
+  "name": "@onda-lang/binaryen-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-side Binaryen backend for versioned Onda MIR",
+  "exports": "./src/index.js",
+  "scripts": {
+    "test": "node --test",
+    "test:onda": "node ./scripts/verify-language-slice.mjs && node ./scripts/verify-backend-parity.mjs && node ./scripts/verify-fma-oracle.mjs",
+    "test:corpus": "node ./scripts/verify-source-corpus.mjs",
+    "test:fma-oracle": "node ./scripts/verify-fma-oracle.mjs",
+    "test:parity": "node ./scripts/verify-backend-parity.mjs",
+    "bench": "node ./scripts/benchmark-backends.mjs",
+    "verify-mir": "node ./scripts/verify-mir.mjs"
+  },
+  "dependencies": {
+    "binaryen": "130.0.0"
+  }
+}

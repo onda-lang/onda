@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use onda_frontend::Span;
@@ -26,6 +27,87 @@ fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnos
         )]);
     }
     Ok(())
+}
+
+fn statements_return_value(statements: &[Stmt]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Stmt::Return { .. } => true,
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => statements_return_value(then_branch) || statements_return_value(else_branch),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_return_value(body),
+        Stmt::Const { .. }
+        | Stmt::Assign { .. }
+        | Stmt::Expr { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => false,
+    })
+}
+
+fn collect_typed_nested_proc_arrays(
+    owner_struct: &str,
+    proc_name: &str,
+    physical_prefix: &str,
+    lowering_shapes: &HashMap<String, ProcLoweringShape>,
+    stack: &mut HashSet<String>,
+    output: &mut Vec<TypedNestedProcArray>,
+) {
+    if !stack.insert(proc_name.to_owned()) {
+        return;
+    }
+    let Some(shape) = lowering_shapes.get(proc_name) else {
+        stack.remove(proc_name);
+        return;
+    };
+    let mut arrays = shape
+        .nested_proc_array_slots
+        .iter()
+        .filter_map(|(field_name, slots)| {
+            shape
+                .state
+                .nested_proc_arrays
+                .get(field_name)
+                .map(|nested| (field_name, slots, nested.proc_name.as_str()))
+        })
+        .collect::<Vec<_>>();
+    arrays.sort_by(|lhs, rhs| lhs.0.cmp(rhs.0));
+    for (field_name, slots, child_proc) in arrays {
+        let physical_slots = slots
+            .iter()
+            .map(|slot| format!("{physical_prefix}{slot}"))
+            .collect::<Vec<_>>();
+        output.push(TypedNestedProcArray {
+            owner_struct: owner_struct.to_owned(),
+            field_name: format!("{physical_prefix}{field_name}"),
+            proc_name: child_proc.to_owned(),
+            slots: physical_slots.clone(),
+        });
+        for physical_slot in physical_slots {
+            collect_typed_nested_proc_arrays(
+                owner_struct,
+                child_proc,
+                &format!("{physical_slot}__"),
+                lowering_shapes,
+                stack,
+                output,
+            );
+        }
+    }
+    let mut nested_instances = shape.state.nested_procs.iter().collect::<Vec<_>>();
+    nested_instances.sort_by(|lhs, rhs| lhs.0.cmp(rhs.0));
+    for (field_name, nested) in nested_instances {
+        collect_typed_nested_proc_arrays(
+            owner_struct,
+            &nested.proc_name,
+            &format!("{physical_prefix}{field_name}__"),
+            lowering_shapes,
+            stack,
+            output,
+        );
+    }
+    stack.remove(proc_name);
 }
 
 fn preprocess_program_for_analysis(
@@ -7620,7 +7702,7 @@ pub fn analyze_with_options(
 
     let (overload_candidates, def_public_name_by_internal) =
         crate::def_semantics::prepare_function_overloads(&mut defs);
-    let method_self_struct_internal = defs
+    let mut method_self_struct_internal = defs
         .iter()
         .filter_map(|def| {
             let public_name = def_public_name_by_internal
@@ -7681,7 +7763,11 @@ pub fn analyze_with_options(
         &struct_defs,
         &mut errors,
     );
-    let mut block_pre_rewrite_env = top_level_env.clone();
+    // Init declarations become persistent program state. Carry the structural
+    // facts learned while rewriting init into every runtime scope so overload
+    // selection can distinguish state arrays/structs from external buffers.
+    let runtime_rewrite_seed = init_rewrite_env.clone();
+    let mut block_pre_rewrite_env = runtime_rewrite_seed.clone();
     crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
         &mut block_pre,
         &mut block_pre_rewrite_env,
@@ -7689,7 +7775,7 @@ pub fn analyze_with_options(
         &struct_defs,
         &mut errors,
     );
-    let mut sample_rewrite_env = top_level_env.clone();
+    let mut sample_rewrite_env = runtime_rewrite_seed.clone();
     crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
         &mut sample,
         &mut sample_rewrite_env,
@@ -7697,7 +7783,7 @@ pub fn analyze_with_options(
         &struct_defs,
         &mut errors,
     );
-    let mut block_post_rewrite_env = top_level_env.clone();
+    let mut block_post_rewrite_env = runtime_rewrite_seed.clone();
     crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
         &mut block_post,
         &mut block_post_rewrite_env,
@@ -7706,7 +7792,7 @@ pub fn analyze_with_options(
         &mut errors,
     );
     for event in &mut events {
-        let mut event_env = top_level_env.clone();
+        let mut event_env = runtime_rewrite_seed.clone();
         crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
             &mut event.body,
             &mut event_env,
@@ -7909,11 +7995,15 @@ pub fn analyze_with_options(
         validate_generic_def_type_args_in_stmts(&def.body, &fn_signatures, &mut errors);
     }
 
+    // Validate templates before monomorphization: unused generic defs may be
+    // removed below, but their source-level result contract must still hold.
+    validate_def_return_control_flow(&defs, &mut errors);
+
     // --- Def monomorphization pass ---
     // Identify defs whose parameters require monomorphization (generic struct,
     // untyped array `[]`, bare `buffer`, or generic def type params `<T>`).
     {
-        let mono_eligible: HashSet<String> = fn_signatures
+        let mandatory_mono: HashSet<String> = fn_signatures
             .iter()
             .filter_map(|(name, sig)| {
                 let needs_mono = !sig.type_params.is_empty()
@@ -7939,6 +8029,28 @@ pub fn analyze_with_options(
             })
             .collect();
 
+        // Untyped scalar parameters are polymorphic in the source language.
+        // Specialize them here from concrete call-site types so MIR and every
+        // backend consume resolved signatures instead of independently
+        // defaulting or inferring a type during code generation. Untyped
+        // structural/proc-array parameters remain on the existing inference
+        // path when their call argument is not a primitive or tuple.
+        let scalar_mono_candidates = fn_signatures
+            .iter()
+            .filter_map(|(name, sig)| {
+                let is_struct_method = method_self_struct_internal.contains_key(name);
+                sig.param_types
+                    .iter()
+                    .enumerate()
+                    .any(|(index, ty)| ty.is_none() && (!is_struct_method || index != 0))
+                    .then_some(name.clone())
+            })
+            .collect::<HashSet<_>>();
+        let mono_eligible = mandatory_mono
+            .union(&scalar_mono_candidates)
+            .cloned()
+            .collect::<HashSet<_>>();
+
         // Also run mono pass when any def has untyped params that could be
         // inferred as tuple from call-site tuple literal args.
         let has_untyped_params = fn_signatures
@@ -7954,7 +8066,7 @@ pub fn analyze_with_options(
             let original_defs_snapshot = defs.clone();
 
             // Rewrite calls in-place across all scopes.
-            crate::def_semantics::monomorphize_calls_in_stmts(
+            let mono_runtime_env = crate::def_semantics::monomorphize_calls_in_stmts(
                 &mut init,
                 &top_level_env,
                 &mono_eligible,
@@ -7971,7 +8083,7 @@ pub fn analyze_with_options(
             );
             crate::def_semantics::monomorphize_calls_in_stmts(
                 &mut block_pre,
-                &top_level_env,
+                &mono_runtime_env,
                 &mono_eligible,
                 &fn_signatures,
                 &defs,
@@ -7986,7 +8098,7 @@ pub fn analyze_with_options(
             );
             crate::def_semantics::monomorphize_calls_in_stmts(
                 &mut sample,
-                &top_level_env,
+                &mono_runtime_env,
                 &mono_eligible,
                 &fn_signatures,
                 &defs,
@@ -8001,7 +8113,7 @@ pub fn analyze_with_options(
             );
             crate::def_semantics::monomorphize_calls_in_stmts(
                 &mut block_post,
-                &top_level_env,
+                &mono_runtime_env,
                 &mono_eligible,
                 &fn_signatures,
                 &defs,
@@ -8017,7 +8129,7 @@ pub fn analyze_with_options(
             for event in &mut events {
                 crate::def_semantics::monomorphize_calls_in_stmts(
                     &mut event.body,
-                    &top_level_env,
+                    &mono_runtime_env,
                     &mono_eligible,
                     &fn_signatures,
                     &defs,
@@ -8035,6 +8147,10 @@ pub fn analyze_with_options(
             for def in &mut defs {
                 let mut def_env = top_level_env.clone();
                 for param in &def.params {
+                    // Function parameters shadow top-level symbols even when their shape is
+                    // untyped. Retaining a same-named global here can specialize an unrelated
+                    // def-to-def call with the global's resource shape.
+                    def_env.shadow_binding(&param.name);
                     match &param.ty {
                         Some(FnParamType::Primitive(prim)) => {
                             def_env.scalar_types.insert(param.name.clone(), *prim);
@@ -8044,7 +8160,10 @@ pub fn analyze_with_options(
                                 .struct_instances
                                 .insert(param.name.clone(), struct_name.clone());
                         }
-                        Some(FnParamType::Array(Some(prim))) => {
+                        Some(FnParamType::Array(Some(prim)))
+                        | Some(FnParamType::SizedArray {
+                            elem: Some(prim), ..
+                        }) => {
                             def_env.array_elem_types.insert(param.name.clone(), *prim);
                         }
                         Some(FnParamType::ArrayGeneric(_)) => {}
@@ -8097,8 +8216,42 @@ pub fn analyze_with_options(
                 for def in generated_defs.iter_mut() {
                     let mut def_env = top_level_env.clone();
                     for param in &def.params {
-                        if let Some(FnParamType::Primitive(prim)) = &param.ty {
-                            def_env.scalar_types.insert(param.name.clone(), *prim);
+                        def_env.shadow_binding(&param.name);
+                        match &param.ty {
+                            Some(FnParamType::Primitive(prim)) => {
+                                def_env.scalar_types.insert(param.name.clone(), *prim);
+                            }
+                            Some(FnParamType::Struct(struct_name)) => {
+                                def_env
+                                    .struct_instances
+                                    .insert(param.name.clone(), struct_name.clone());
+                            }
+                            Some(FnParamType::Array(Some(prim)))
+                            | Some(FnParamType::SizedArray {
+                                elem: Some(prim), ..
+                            }) => {
+                                def_env.array_elem_types.insert(param.name.clone(), *prim);
+                            }
+                            Some(FnParamType::Buffer(buffer_ty)) => {
+                                let BufferElemType::Primitive(elem_ty) = &buffer_ty.elem else {
+                                    continue;
+                                };
+                                let channels = match &buffer_ty.channels {
+                                    BufferChannels::Mono => TypedBufferChannels::Mono,
+                                    BufferChannels::Dynamic => TypedBufferChannels::Dynamic,
+                                    BufferChannels::Static(expr) => {
+                                        crate::def_semantics::const_positive_usize_for_overload(
+                                            expr,
+                                        )
+                                        .map(TypedBufferChannels::Static)
+                                        .unwrap_or(TypedBufferChannels::Dynamic)
+                                    }
+                                };
+                                def_env
+                                    .buffer_types
+                                    .insert(param.name.clone(), (*elem_ty, channels));
+                            }
+                            _ => {}
                         }
                     }
                     // Use both fn_signatures and already-generated sigs for lookup.
@@ -8138,14 +8291,39 @@ pub fn analyze_with_options(
             for sig in generated_sigs {
                 fn_signatures.insert(sig.0, sig.1);
             }
+            // Monomorphized method definitions retain the semantic owner of
+            // their source method.  Keep that relationship explicit instead
+            // of making later parameter inference reconstruct it from the
+            // generated symbol spelling.
+            loop {
+                let generated_method_owners = mono_cache
+                    .iter()
+                    .filter_map(|((original_name, _), generated_name)| {
+                        if method_self_struct_internal.contains_key(generated_name) {
+                            return None;
+                        }
+                        method_self_struct_internal
+                            .get(original_name)
+                            .cloned()
+                            .map(|owner| (generated_name.clone(), owner))
+                    })
+                    .collect::<Vec<_>>();
+                if generated_method_owners.is_empty() {
+                    break;
+                }
+                method_self_struct_internal.extend(generated_method_owners);
+            }
             defs.extend(generated_defs);
 
-            // Remove original mono-eligible defs — only specialized copies should
-            // be processed by inference.  Also remove their fn_signatures.
-            for name in &mono_eligible {
+            // Shapes that intrinsically require monomorphization cannot be
+            // analyzed in their template form. Untyped scalar candidates stay
+            // registered because the same syntax may instead describe a
+            // structural/proc-array parameter; primitive call sites have
+            // already been rewritten to concrete generated copies.
+            for name in &mandatory_mono {
                 fn_signatures.remove(name);
             }
-            defs.retain(|d| !mono_eligible.contains(&d.name));
+            defs.retain(|d| !mandatory_mono.contains(&d.name));
         }
     }
 
@@ -8599,6 +8777,7 @@ pub fn analyze_with_options(
     let def_global_inputs = HashSet::<String>::new();
     let def_global_outputs = HashSet::<String>::new();
     let def_global_params = HashSet::<String>::new();
+    let mut def_scalar_local_types = HashMap::<String, LocalAliasTypes>::new();
     for def in defs.iter_mut().filter(|def| {
         reachable_def_names.contains(&def.name)
             || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs)
@@ -8886,6 +9065,7 @@ pub fn analyze_with_options(
             }
             def.body = rewritten_def_body;
         }
+        let resolved_scalar_locals = RefCell::new(LocalAliasTypes::new());
         let def_ctx = DefStmtAnalysisCtx {
             common: ScopeAnalysisCtx {
                 policy: ScopePolicy::Def,
@@ -8912,6 +9092,7 @@ pub fn analyze_with_options(
             proc_array_roots: &param_proc_arrays,
             state_scalars: &def_state_scalars,
             def_return_types: &def_return_types,
+            resolved_scalar_locals: &resolved_scalar_locals,
         };
         let mut def_state = DefStmtAnalysisState::from_parts(
             fn_known,
@@ -8938,6 +9119,7 @@ pub fn analyze_with_options(
         for stmt in &def.body {
             analyze_def_stmt(stmt, def_ctx, &mut def_state, 0, &mut errors);
         }
+        def_scalar_local_types.insert(def.name.clone(), resolved_scalar_locals.into_inner());
     }
 
     if errors.is_empty() {
@@ -8972,6 +9154,23 @@ pub fn analyze_with_options(
             .collect::<Vec<_>>();
         typed_data_roots.sort_by(|a, b| a.name.cmp(&b.name));
 
+        let mut typed_nested_proc_arrays = Vec::new();
+        let mut proc_names = lowering_shapes.keys().cloned().collect::<Vec<_>>();
+        proc_names.sort();
+        for owner_struct in proc_names {
+            collect_typed_nested_proc_arrays(
+                &owner_struct,
+                &owner_struct,
+                "",
+                &lowering_shapes,
+                &mut HashSet::new(),
+                &mut typed_nested_proc_arrays,
+            );
+        }
+        typed_nested_proc_arrays.sort_by(|lhs, rhs| {
+            (&lhs.owner_struct, &lhs.field_name).cmp(&(&rhs.owner_struct, &rhs.field_name))
+        });
+
         let mut synth_names = synthesized_struct_defs.keys().cloned().collect::<Vec<_>>();
         synth_names.sort();
         for name in synth_names {
@@ -8982,6 +9181,17 @@ pub fn analyze_with_options(
                 });
             }
         }
+        let aggregate_layouts = match AggregateLayoutTable::build(&typed_structs) {
+            Ok(layouts) => layouts,
+            Err(layout_errors) => {
+                errors.extend(
+                    layout_errors
+                        .into_iter()
+                        .map(|error| Diagnostic::semantic(error.to_string(), 0, 0)),
+                );
+                AggregateLayoutTable::default()
+            }
+        };
 
         reject_non_sample_proc_operator_calls(
             &init,
@@ -9005,21 +9215,32 @@ pub fn analyze_with_options(
                     .get(&d.name)
                     .cloned()
                     .unwrap_or_else(|| vec![TypedFnParam::Scalar { ty: None }; d.params.len()]);
+                let readonly_array_params = fn_signatures
+                    .get(&d.name)
+                    .map(|signature| signature.readonly_array_params.clone())
+                    .unwrap_or_default();
                 TypedFunction {
                     method_of: method_self_struct_internal.get(&d.name).cloned(),
                     type_params: d.type_params.clone(),
                     param_defaults: d.params.iter().map(|p| p.default.clone()).collect(),
                     param_kinds,
+                    readonly_array_params,
                     return_ty: def_return_types
                         .get(&d.name)
                         .cloned()
                         .unwrap_or(ReturnType::Scalar(PrimitiveType::F32)),
+                    returns_value: statements_return_value(&d.body),
+                    local_scalar_types: def_scalar_local_types.remove(&d.name).unwrap_or_default(),
                     name: d.name,
                     params: d.params.into_iter().map(|p| p.name).collect(),
                     body: d.body,
                 }
             })
             .collect::<Vec<_>>();
+        reject_recursive_runtime_defs(&all_typed_defs, &mut errors);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
         inject_sample_def_owner_proc_block_hooks(
             &sample,
             &mut block_pre,
@@ -9062,7 +9283,36 @@ pub fn analyze_with_options(
             return Err(errors);
         }
 
+        let interface_views = match resolve_interface_views(
+            ins_explicit,
+            &ins,
+            &in_types,
+            &in_arrays,
+            audio_outs_explicit,
+            &outs,
+            &out_types,
+            &out_arrays,
+            control_outs_explicit,
+            &control_outs,
+            &control_out_types,
+            &control_out_arrays,
+            params_explicit,
+            &typed_params
+                .iter()
+                .map(|param| param.name.clone())
+                .collect::<Vec<_>>(),
+            &param_types,
+            &param_arrays,
+        ) {
+            Ok(views) => views,
+            Err(message) => {
+                push_semantic(DiagCtx::default(), &mut errors, message);
+                return Err(errors);
+            }
+        };
+
         Ok(TypedProgram {
+            analysis_options: options,
             ins,
             outs,
             control_outs,
@@ -9076,10 +9326,12 @@ pub fn analyze_with_options(
             out_arrays,
             control_out_arrays,
             param_arrays,
+            interface_views,
             const_arrays,
             params: typed_params,
             buffers: typed_buffers,
             structs: typed_structs,
+            aggregate_layouts,
             defs: typed_defs,
             events: typed_events,
             def_sample_oversample_factors,
@@ -9095,6 +9347,7 @@ pub fn analyze_with_options(
             state_tuples,
             array_vars: typed_data,
             array_struct_roots: typed_data_roots,
+            nested_proc_arrays: typed_nested_proc_arrays,
             ins_explicit,
             audio_outs_explicit,
             control_outs_explicit,
@@ -9104,6 +9357,147 @@ pub fn analyze_with_options(
     } else {
         Err(errors)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_interface_views(
+    inputs_enabled: bool,
+    inputs: &[String],
+    input_types: &HashMap<String, PrimitiveType>,
+    input_arrays: &HashMap<String, TypedArrayInfo>,
+    audio_outputs_enabled: bool,
+    audio_outputs: &[String],
+    audio_output_types: &HashMap<String, PrimitiveType>,
+    audio_output_arrays: &HashMap<String, TypedArrayInfo>,
+    control_outputs_enabled: bool,
+    control_outputs: &[String],
+    control_output_types: &HashMap<String, PrimitiveType>,
+    control_output_arrays: &HashMap<String, TypedArrayInfo>,
+    params_enabled: bool,
+    params: &[String],
+    param_types: &HashMap<String, PrimitiveType>,
+    param_arrays: &HashMap<String, TypedArrayInfo>,
+) -> Result<ResolvedInterfaceViews, String> {
+    Ok(ResolvedInterfaceViews {
+        inputs: resolve_interface_view(inputs_enabled, "input", inputs, input_types, input_arrays)?,
+        audio_outputs: resolve_interface_view(
+            audio_outputs_enabled,
+            "audio output",
+            audio_outputs,
+            audio_output_types,
+            audio_output_arrays,
+        )?,
+        control_outputs: resolve_interface_view(
+            control_outputs_enabled,
+            "control output",
+            control_outputs,
+            control_output_types,
+            control_output_arrays,
+        )?,
+        params: resolve_interface_view(
+            params_enabled,
+            "parameter",
+            params,
+            param_types,
+            param_arrays,
+        )?,
+    })
+}
+
+fn resolve_interface_view(
+    enabled: bool,
+    kind: &str,
+    names: &[String],
+    types: &HashMap<String, PrimitiveType>,
+    arrays: &HashMap<String, TypedArrayInfo>,
+) -> Result<Option<ResolvedInterfaceView>, String> {
+    if !enabled || names.is_empty() {
+        return Ok(None);
+    }
+
+    let mut arrays = arrays.iter().collect::<Vec<_>>();
+    arrays.sort_by_key(|(name, info)| (info.offset, name.as_str()));
+    let mut array_index = 0usize;
+    let mut cursor = 0usize;
+    let mut slots = Vec::with_capacity(names.len());
+    let mut element_type = None;
+    let mut uniform = true;
+
+    while cursor < names.len() {
+        if let Some((root, info)) = arrays.get(array_index).copied() {
+            if info.offset < cursor {
+                return Err(format!(
+                    "resolved {kind} array '{root}' overlaps another interface slot"
+                ));
+            }
+            if info.offset == cursor {
+                let end = cursor.checked_add(info.len).ok_or_else(|| {
+                    format!("resolved {kind} array '{root}' slot range overflows")
+                })?;
+                if end > names.len() {
+                    return Err(format!(
+                        "resolved {kind} array '{root}' exceeds the flattened interface"
+                    ));
+                }
+                for element in 0..info.len {
+                    let flattened = &names[cursor + element];
+                    if types.get(flattened).copied() != Some(info.elem_ty) {
+                        return Err(format!(
+                            "resolved {kind} array '{root}' element {element} has inconsistent type metadata"
+                        ));
+                    }
+                    if let Some(first) = element_type {
+                        uniform &= first == info.elem_ty;
+                    } else {
+                        element_type = Some(info.elem_ty);
+                    }
+                    let id = u32::try_from(slots.len()).map_err(|_| {
+                        format!("resolved {kind} interface exceeds the u32 slot ID space")
+                    })?;
+                    slots.push(ResolvedInterfaceSlot {
+                        id: InterfaceSlotId::new(id),
+                        root: (*root).clone(),
+                        element: Some(element),
+                    });
+                }
+                cursor = end;
+                array_index += 1;
+                continue;
+            }
+        }
+
+        let name = &names[cursor];
+        let ty = types
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("resolved {kind} slot '{name}' has no primitive type"))?;
+        if let Some(first) = element_type {
+            uniform &= first == ty;
+        } else {
+            element_type = Some(ty);
+        }
+        let id = u32::try_from(slots.len())
+            .map_err(|_| format!("resolved {kind} interface exceeds the u32 slot ID space"))?;
+        slots.push(ResolvedInterfaceSlot {
+            id: InterfaceSlotId::new(id),
+            root: name.clone(),
+            element: None,
+        });
+        cursor += 1;
+    }
+
+    if array_index != arrays.len() {
+        return Err(format!(
+            "resolved {kind} interface contains an unreachable array descriptor"
+        ));
+    }
+    if !uniform {
+        return Ok(None);
+    }
+    Ok(Some(ResolvedInterfaceView {
+        element_type: element_type.expect("non-empty interface has an element type"),
+        slots,
+    }))
 }
 
 fn requires_entry_sample(program: &Program) -> bool {
@@ -9683,8 +10077,100 @@ fn collect_reachable_typed_def_names(
             continue;
         };
         seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut pending, &mut seen_pending);
+        seed_called_typed_defs_from_defaults(
+            &def.param_defaults,
+            &def_names,
+            &mut pending,
+            &mut seen_pending,
+        );
     }
     reachable
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RuntimeCallVisit {
+    Visiting,
+    Complete,
+}
+
+/// Runtime recursion is incompatible with Onda's bounded realtime execution
+/// contract and with fixed per-instance aggregate scratch. Reject direct and
+/// mutual call cycles after overload resolution and specialization, when every
+/// call already names its concrete callee.
+fn reject_recursive_runtime_defs(defs: &[TypedFunction], errors: &mut Vec<Diagnostic>) {
+    let def_names = defs
+        .iter()
+        .map(|def| def.name.clone())
+        .collect::<HashSet<_>>();
+    let mut edges = HashMap::<String, Vec<String>>::with_capacity(defs.len());
+    for def in defs {
+        let mut callees = Vec::new();
+        let mut seen = HashSet::new();
+        seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut callees, &mut seen);
+        seed_called_typed_defs_from_defaults(
+            &def.param_defaults,
+            &def_names,
+            &mut callees,
+            &mut seen,
+        );
+        callees.sort();
+        edges.insert(def.name.clone(), callees);
+    }
+
+    let mut names = def_names.into_iter().collect::<Vec<_>>();
+    names.sort();
+    let mut visits = HashMap::<String, RuntimeCallVisit>::new();
+    let mut path = Vec::<String>::new();
+    for name in names {
+        if visits.contains_key(&name) {
+            continue;
+        }
+        if let Some(cycle) = find_runtime_call_cycle(&name, &edges, &mut visits, &mut path) {
+            let diagnostic = defs
+                .iter()
+                .find(|def| def.name == cycle[0])
+                .and_then(|def| def.body.first())
+                .map(|statement| DiagCtx::new(statement.loc()))
+                .unwrap_or_default();
+            push_semantic(
+                diagnostic,
+                errors,
+                format!(
+                    "recursive runtime def cycle is not realtime-safe: {}",
+                    cycle.join(" -> ")
+                ),
+            );
+            return;
+        }
+    }
+}
+
+fn find_runtime_call_cycle(
+    name: &str,
+    edges: &HashMap<String, Vec<String>>,
+    visits: &mut HashMap<String, RuntimeCallVisit>,
+    path: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    if visits.get(name) == Some(&RuntimeCallVisit::Complete) {
+        return None;
+    }
+    if visits.get(name) == Some(&RuntimeCallVisit::Visiting) {
+        let start = path.iter().position(|entry| entry == name).unwrap_or(0);
+        let mut cycle = path[start..].to_vec();
+        cycle.push(name.to_owned());
+        return Some(cycle);
+    }
+
+    visits.insert(name.to_owned(), RuntimeCallVisit::Visiting);
+    path.push(name.to_owned());
+    for callee in edges.get(name).into_iter().flatten() {
+        if let Some(cycle) = find_runtime_call_cycle(callee, edges, visits, path) {
+            return Some(cycle);
+        }
+    }
+    path.pop();
+    visits.insert(name.to_owned(), RuntimeCallVisit::Complete);
+    None
 }
 
 fn collect_reachable_def_names(
@@ -9719,6 +10205,17 @@ fn collect_reachable_def_names(
             continue;
         };
         seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut pending, &mut seen_pending);
+        let defaults = def
+            .params
+            .iter()
+            .map(|param| param.default.clone())
+            .collect::<Vec<_>>();
+        seed_called_typed_defs_from_defaults(
+            &defaults,
+            &def_names,
+            &mut pending,
+            &mut seen_pending,
+        );
     }
     reachable
 }
@@ -9971,6 +10468,12 @@ fn collect_reachable_defs_for_phase(
             continue;
         };
         seed_called_typed_defs_from_stmts(&def.body, def_names, &mut pending, &mut seen_pending);
+        let defaults = def
+            .params
+            .iter()
+            .map(|param| param.default.clone())
+            .collect::<Vec<_>>();
+        seed_called_typed_defs_from_defaults(&defaults, def_names, &mut pending, &mut seen_pending);
     }
     reachable
 }
@@ -11724,6 +12227,17 @@ fn seed_called_typed_defs_from_stmts(
 ) {
     for stmt in stmts {
         collect_called_typed_defs_in_stmt(stmt, def_names, pending, seen_pending);
+    }
+}
+
+fn seed_called_typed_defs_from_defaults(
+    defaults: &[Option<Expr>],
+    def_names: &HashSet<String>,
+    pending: &mut Vec<String>,
+    seen_pending: &mut HashSet<String>,
+) {
+    for default in defaults.iter().flatten() {
+        collect_called_typed_defs_in_expr(default, def_names, pending, seen_pending);
     }
 }
 

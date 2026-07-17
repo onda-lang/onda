@@ -1,0 +1,18 @@
+params:
+  count: i32 = 32
+  divisor: i32 = -1
+  value = 0.0
+
+init:
+  seed: i32 = 17
+
+sample:
+  shifted = i32(1) << count
+  divided = shifted / divisor
+  invalid = value / value
+  converted = i32(invalid)
+  mixed: i32 = seed * 1103515245 + 12345
+  mixed = mixed ^ (mixed >> 13)
+  seed = seed + 7
+  if invalid != invalid:
+    out1 = f32(divided + converted + (mixed & 255))

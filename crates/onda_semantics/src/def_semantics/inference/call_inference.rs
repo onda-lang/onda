@@ -371,6 +371,14 @@ fn infer_expr_calls(
                     for (idx, arg) in resolved.into_iter().enumerate() {
                         if let Some(arg) = arg {
                             if let Some(slot) = param_kinds.get_mut(idx) {
+                                if let Some(struct_name) = slot.method_self_struct.clone() {
+                                    // A synthesized method `self` parameter has an authoritative
+                                    // owner shape. Method/index sugar can turn its call-site
+                                    // expression into an internal selector that is intentionally
+                                    // absent from the ordinary instance map.
+                                    slot.saw_structs.insert(struct_name);
+                                    continue;
+                                }
                                 match arg {
                                     Expr::Var { name: v, .. } => {
                                         if let Some(struct_name) = struct_instances.get(v) {
@@ -480,7 +488,27 @@ fn infer_expr_calls(
                                             slot.saw_scalar = true;
                                         }
                                     }
-                                    _ => slot.saw_scalar = true,
+                                    _ => {
+                                        // Indexed/nested struct method sugar may already have
+                                        // been rewritten to an internal selector expression by
+                                        // this point. The declared callee signature remains the
+                                        // authoritative shape for that argument; treating every
+                                        // non-Var/non-Index expression as scalar makes `self`
+                                        // appear both scalar and struct during MIR preparation.
+                                        if let Some(struct_name) = sig
+                                            .param_types
+                                            .get(idx)
+                                            .and_then(|ty| ty.as_ref())
+                                            .and_then(|ty| match ty {
+                                                FnParamType::Struct(name) => Some(name),
+                                                _ => None,
+                                            })
+                                        {
+                                            slot.saw_structs.insert(struct_name.clone());
+                                        } else {
+                                            slot.saw_scalar = true;
+                                        }
+                                    }
                                 }
                             }
                         }

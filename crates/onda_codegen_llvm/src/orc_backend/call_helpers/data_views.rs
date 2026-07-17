@@ -824,10 +824,7 @@ where
     match arg_expr {
         Expr::Var { name: base, .. } => lower_base_view(base, callee_name),
         Expr::Slice {
-            base,
-            start,
-            end,
-            ..
+            base, start, end, ..
         } => {
             let base_view = lower_base_view(base, callee_name)?;
             let start_idx = lower_slice_bound(start.as_deref(), base_view.len_val, false)?;
@@ -843,12 +840,7 @@ where
                 start_idx,
                 end_before_start_name.as_ptr().cast(),
             );
-            let diff = LLVMBuildSub(
-                builder,
-                end_idx,
-                start_idx,
-                len_diff_name.as_ptr().cast(),
-            );
+            let diff = LLVMBuildSub(builder, end_idx, start_idx, len_diff_name.as_ptr().cast());
             let slice_len = LLVMBuildSelect(
                 builder,
                 end_before_start,

@@ -31,7 +31,7 @@ namespace std::osc:
     sample:
       out1 = sin(phasor(freq = freq) * TWO_PI) * amp
   
-  def poly_blep(t, dt):
+  def poly_blep<T>(t: T, dt: T) -> T:
     zero = dt - dt
     if dt <= zero:
       return zero
@@ -61,7 +61,7 @@ namespace std::osc:
     sample:
       phase = phasor(freq = freq)
       base = phase + phase - 1.0
-      out1 = (base - std::osc::poly_blep(phase, dt)) * amp
+      out1 = (base - std::osc::poly_blep<T>(phase, dt)) * amp
 
   proc SawDown<T>:
     outs<T> 1
@@ -80,7 +80,7 @@ namespace std::osc:
     sample:
       phase = phasor(freq = freq)
       base = 1.0 - phase - phase
-      out1 = (base + std::osc::poly_blep(phase, dt)) * amp
+      out1 = (base + std::osc::poly_blep<T>(phase, dt)) * amp
 
   proc Pulse<T>:
     outs<T> 1
@@ -102,16 +102,16 @@ namespace std::osc:
     sample:
       phase = phasor(freq = freq)
       if (phase < width_v):
-        wave = 1.0
+        wave = T(1.0)
       else:
-        wave = -1.0
+        wave = T(-1.0)
 
       phase2: T = phase - width_v
       if (phase2 < 0.0):
         phase2 = phase2 + 1.0
 
-      wave = wave + std::osc::poly_blep(phase, dt)
-      wave = wave - std::osc::poly_blep(phase2, dt)
+      wave = wave + std::osc::poly_blep<T>(phase, dt)
+      wave = wave - std::osc::poly_blep<T>(phase2, dt)
       out1 = wave * amp
 
   proc Square<T>:

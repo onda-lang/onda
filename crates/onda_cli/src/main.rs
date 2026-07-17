@@ -28,7 +28,7 @@ const USAGE_BODY: &str = r#"Commands:
   
   onda compile <input.onda>          Check, inspect, or emit compile artifacts
     
-    [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
+    [--emit <check|mir|mir-json|mir-messagepack|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]  
     [--dump-graph] [--ir] [--meta] 
@@ -78,8 +78,8 @@ Shared Options:
 
 Compile Options:
   
-  --emit                 Compile artifact for `onda compile`: `check`, `llvm-ir`, or `obj`
-  --output, -o           Output path for `llvm-ir` or `obj`
+  --emit                 Compile artifact: `check`, `mir`, `mir-json`, `mir-messagepack`, `llvm-ir`, or `obj`
+  --output, -o           Output path for `mir`, `mir-json`, `mir-messagepack`, `llvm-ir`, or `obj`
   --meta-out             Write AOT sidecar metadata JSON for `onda compile --emit obj`
   --dump-graph           Print program after graph lowering, before proc desugaring/codegen
   --ir                   Alias for `onda compile --emit llvm-ir`
@@ -140,6 +140,9 @@ enum Command {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum CompileEmit {
     Check,
+    Mir,
+    MirJson,
+    MirMessagePack,
     LlvmIr,
     Object,
 }

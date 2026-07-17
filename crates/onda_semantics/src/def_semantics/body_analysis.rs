@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use crate::*;
 
 fn infer_def_slice_alias_info(
@@ -51,6 +53,7 @@ pub(crate) struct DefStmtAnalysisCtx<'a> {
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub state_scalars: &'a HashMap<String, PrimitiveType>,
     pub def_return_types: &'a HashMap<String, ReturnType>,
+    pub resolved_scalar_locals: &'a RefCell<LocalAliasTypes>,
 }
 
 pub(crate) type DefStmtAnalysisState = ScopeFlowState;
@@ -79,6 +82,7 @@ pub(crate) fn analyze_def_stmt(
         let param_names = common.param_names;
         let struct_defs = common.struct_defs;
         let def_return_types = ctx.def_return_types;
+        let resolved_scalar_locals = ctx.resolved_scalar_locals;
         let options = common.options;
         let empty_data = HashMap::<String, usize>::new();
         // In def analysis, struct-typed parameters (for example `self`) should be
@@ -793,6 +797,10 @@ pub(crate) fn analyze_def_stmt(
                     track_tuple_var_assignment(tuple_vars, name, tuple_arity);
                     if can_track_local {
                         local_aliases.entry(name.clone()).or_insert(target_ty);
+                        resolved_scalar_locals
+                            .borrow_mut()
+                            .entry(name.clone())
+                            .or_insert(target_ty);
                     }
                     known_scalars.insert(name.clone());
                 }
@@ -1310,13 +1318,57 @@ pub(crate) fn analyze_def_stmt(
                     if !targets_ok {
                         return;
                     }
+                    let destructured_types = match expr {
+                        Expr::UserCall { name, .. } => {
+                            match def_return_types.get(name.as_str()) {
+                                Some(ReturnType::Tuple(types)) => Some(types.clone()),
+                                _ => None,
+                            }
+                        }
+                        Expr::Tuple { values, .. } => Some(
+                            values
+                                .iter()
+                                .map(|value| {
+                                    let inferred =
+                                        infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                            value,
+                                            state_scalars,
+                                            declared_symbols,
+                                            None,
+                                            local_aliases,
+                                            local_array_aliases,
+                                            locals,
+                                            input_names,
+                                            output_names,
+                                            param_names,
+                                            struct_instance_ctx,
+                                            struct_defs,
+                                            proc_array_roots,
+                                            errors,
+                                        );
+                                    effective_untyped_assignment_type(value, inferred)
+                                        .unwrap_or(PrimitiveType::F32)
+                                })
+                                .collect(),
+                        ),
+                        _ => None,
+                    };
                     clear_tuple_var_bindings(tuple_vars, targets.iter());
                     // Register each destructured target as a known scalar
-                    for target_name in targets {
+                    for (index, target_name) in targets.iter().enumerate() {
+                        let target_ty = destructured_types
+                            .as_ref()
+                            .and_then(|types| types.get(index))
+                            .copied()
+                            .unwrap_or(PrimitiveType::F32);
                         known_scalars.insert(target_name.clone());
                         local_aliases
                             .entry(target_name.clone())
-                            .or_insert(PrimitiveType::F32);
+                            .or_insert(target_ty);
+                        resolved_scalar_locals
+                            .borrow_mut()
+                            .entry(target_name.clone())
+                            .or_insert(target_ty);
                     }
                 }
             }),

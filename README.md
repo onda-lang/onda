@@ -5,6 +5,11 @@
 Onda is an expressive and performant JIT-compiled audio programming language.
 
 This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
+The production compiler lowers fully resolved semantics to one validated, backend-neutral MIR:
+native hosts consume schema-5 MIR through LLVM/ORC or AOT object emission, while the browser-safe
+compiler produces the same schema in memory for the Binaryen.js WebAssembly backend. The checked-in
+browser playground provides a source editor, structured diagnostics, generated parameter/event
+controls, and AudioWorklet playback without a compiler service.
 
 Visit the project's [website](https://onda-lang.github.io/onda) for an introduction to the language.
 
@@ -51,6 +56,35 @@ Take a look at the `examples/` folder for more usage examples.
 
 - [docs/SYNTAX.md](docs/SYNTAX.md): language syntax and semantics
 - [docs/INFO.md](docs/INFO.md): project structure and implementation notes
+- [docs/MIR.md](docs/MIR.md): backend-neutral MIR and browser-backend boundary
+- [docs/BACKEND_BENCHMARKS.md](docs/BACKEND_BENCHMARKS.md): reproducible LLVM/Binaryen compile and render comparison
+- [crates/onda_compiler_web](crates/onda_compiler_web/README.md): in-browser Onda source-to-MIR compiler API
+- [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): schema-5 MIR-to-Wasm backend
+- [examples/web/sine_wasm_worklet](examples/web/sine_wasm_worklet/README.md): editable browser playground and AudioWorklet host
+
+## Browser playground
+
+The browser demo compiles edited Onda source entirely on the client:
+
+```text
+Onda source -> compiler Wasm -> schema-5 MIR MessagePack -> Binaryen.js -> DSP Wasm -> AudioWorklet
+```
+
+Preparing its static assets requires Node/npm and `wasm-pack`:
+
+```bash
+bash ./examples/web/sine_wasm_worklet/build-demo.sh --serve
+```
+
+PowerShell:
+
+```powershell
+.\examples\web\sine_wasm_worklet\build-demo.ps1 -Serve
+```
+
+Then open `http://127.0.0.1:8787/`. The build does not require the native `onda` CLI or LLVM, but
+`wasm-pack` is required to build the browser compiler. See the demo README for test commands and
+current limitations.
 
 ## Precompiled releases
 
@@ -79,6 +113,7 @@ Compiles an Onda file and optionally emits IR or an object file.
 Typical uses:
 - syntax and semantic checking
 - inspect graph lowering with `--dump-graph`
+- emit backend-neutral MIR for inspection with `--emit mir`, versioned JSON with `--emit mir-json`, or compact production transport with `--emit mir-messagepack`
 - emit LLVM IR with `--emit llvm-ir` or `--ir`
 - emit a native object file with `--emit obj`
 
@@ -86,6 +121,9 @@ Examples:
 
 ```bash
 onda compile examples/foundations/sine.onda
+onda compile examples/foundations/sine.onda --emit mir
+onda compile examples/foundations/sine.onda --emit mir-json --output sine.mir.json
+onda compile examples/foundations/sine.onda --emit mir-messagepack --output sine.mir.msgpack
 onda compile examples/processors-and-graphs/proc_gain_graph.onda --dump-graph
 onda compile examples/foundations/sine.onda --emit llvm-ir
 onda compile examples/foundations/sine.onda --emit obj

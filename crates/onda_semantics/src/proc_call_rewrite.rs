@@ -322,30 +322,12 @@ pub(super) fn build_proc_write_helper(
         });
     }
 
-    for (idx, slot) in slots.iter().enumerate() {
-        body.push(Stmt::If {
-            loc: Default::default(),
-            cond: Expr::Compare {
-                loc: Default::default(),
-                op: CmpOp::Eq,
-                lhs: Box::new(Expr::var("i")),
-                rhs: Box::new(Expr::int(idx as i64)),
-            },
-            then_branch: vec![Stmt::Assign {
-                loc: Default::default(),
-                target_loc: Default::default(),
-                target: AssignTarget::Var(format!("self.{slot}")),
-                decl_ty: None,
-                generic_decl_ty: None,
-                is_typed_decl: false,
-                typed_decl_ty_loc: Default::default(),
-                expr: Expr::var("value"),
-            }],
-            else_branch: Vec::new(),
-        });
-    }
     if unsafe_mode {
-        body.push(Stmt::Expr {
+        // Keep the unsafe OOB sentinel exclusively on the unmatched path.
+        // A trailing dead `1 / 0` used to be harmless in the direct LLVM
+        // backend because poison was unused, but MIR gives integer division
+        // by zero observable trap semantics.
+        let mut unmatched = vec![Stmt::Expr {
             loc: Default::default(),
             expr: Expr::Binary {
                 loc: Default::default(),
@@ -353,7 +335,53 @@ pub(super) fn build_proc_write_helper(
                 lhs: Box::new(Expr::int(1)),
                 rhs: Box::new(Expr::int(0)),
             },
-        });
+        }];
+        for (idx, slot) in slots.iter().enumerate().rev() {
+            unmatched = vec![Stmt::If {
+                loc: Default::default(),
+                cond: Expr::Compare {
+                    loc: Default::default(),
+                    op: CmpOp::Eq,
+                    lhs: Box::new(Expr::var("i")),
+                    rhs: Box::new(Expr::int(idx as i64)),
+                },
+                then_branch: vec![Stmt::Assign {
+                    loc: Default::default(),
+                    target_loc: Default::default(),
+                    target: AssignTarget::Var(format!("self.{slot}")),
+                    decl_ty: None,
+                    generic_decl_ty: None,
+                    is_typed_decl: false,
+                    typed_decl_ty_loc: Default::default(),
+                    expr: Expr::var("value"),
+                }],
+                else_branch: unmatched,
+            }];
+        }
+        body.extend(unmatched);
+    } else {
+        for (idx, slot) in slots.iter().enumerate() {
+            body.push(Stmt::If {
+                loc: Default::default(),
+                cond: Expr::Compare {
+                    loc: Default::default(),
+                    op: CmpOp::Eq,
+                    lhs: Box::new(Expr::var("i")),
+                    rhs: Box::new(Expr::int(idx as i64)),
+                },
+                then_branch: vec![Stmt::Assign {
+                    loc: Default::default(),
+                    target_loc: Default::default(),
+                    target: AssignTarget::Var(format!("self.{slot}")),
+                    decl_ty: None,
+                    generic_decl_ty: None,
+                    is_typed_decl: false,
+                    typed_decl_ty_loc: Default::default(),
+                    expr: Expr::var("value"),
+                }],
+                else_branch: Vec::new(),
+            });
+        }
     }
 
     FunctionDef {
@@ -1530,6 +1558,22 @@ fn lower_named_proc_param_call_expr(
         return;
     };
 
+    // Dynamic proc-array receivers feed the proc step/call itself, optional
+    // block hooks, active-slot bookkeeping, and buffer selection. Snapshot the
+    // source index before any of those rewrites so an effectful index expression
+    // is evaluated exactly once regardless of how many ABI consumers it has.
+    normalize_indexed_receiver_for_named_proc_args(
+        &mut target,
+        args,
+        proc_vars,
+        proc_array_slots,
+        proc_api,
+        aliases,
+        prelude,
+        temp_counter,
+        errors,
+    );
+
     let has_named_param_arg = args.iter().any(|arg| {
         matches!(
             proc_call_arg_kind(&target.api, arg.name.as_deref()),
@@ -1557,18 +1601,6 @@ fn lower_named_proc_param_call_expr(
         }
         return;
     }
-
-    normalize_indexed_receiver_for_named_proc_args(
-        &mut target,
-        args,
-        proc_vars,
-        proc_array_slots,
-        proc_api,
-        aliases,
-        prelude,
-        temp_counter,
-        errors,
-    );
 
     let internal_arg_indices = proc_named_arg_internal_indices(name, args);
     let mut lowered_args = Vec::<CallArg>::with_capacity(args.len());

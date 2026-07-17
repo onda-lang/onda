@@ -1,12 +1,16 @@
 use std::sync::OnceLock;
 
+#[cfg(test)]
 use llvm_sys::core::*;
 use llvm_sys::orc2::LLVMOrcThreadSafeContextRef;
 use llvm_sys::prelude::*;
+#[cfg(test)]
 use llvm_sys::{LLVMFastMathAll, LLVMFastMathFlags, LLVMFastMathNone, LLVMRealPredicate};
 
+#[cfg(test)]
 use onda_frontend::{Diagnostic, PrimitiveType};
 
+#[cfg(test)]
 pub(super) unsafe fn set_internal_alwaysinline(
     fn_ref: LLVMValueRef,
     context: LLVMContextRef,
@@ -25,6 +29,7 @@ pub(super) unsafe fn set_internal_alwaysinline(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) unsafe fn add_enum_param_attribute(
     fn_ref: LLVMValueRef,
     context: LLVMContextRef,
@@ -53,6 +58,7 @@ extern "C" {
     ) -> LLVMOrcThreadSafeContextRef;
 }
 
+#[cfg(test)]
 pub(super) fn fast_math_flags(enabled: bool) -> LLVMFastMathFlags {
     if enabled {
         LLVMFastMathAll
@@ -61,12 +67,14 @@ pub(super) fn fast_math_flags(enabled: bool) -> LLVMFastMathFlags {
     }
 }
 
+#[cfg(test)]
 pub(super) unsafe fn set_fast_math_flags(inst: LLVMValueRef, flags: LLVMFastMathFlags) {
     if flags != LLVMFastMathNone {
         LLVMSetFastMathFlags(inst, flags);
     }
 }
 
+#[cfg(test)]
 pub(super) unsafe fn set_fast_math_for_primitive(
     inst: LLVMValueRef,
     ty: PrimitiveType,
@@ -77,6 +85,7 @@ pub(super) unsafe fn set_fast_math_for_primitive(
     }
 }
 
+#[cfg(test)]
 pub(super) unsafe fn build_fadd_fast(
     builder: LLVMBuilderRef,
     lhs: LLVMValueRef,
@@ -89,6 +98,7 @@ pub(super) unsafe fn build_fadd_fast(
     inst
 }
 
+#[cfg(test)]
 pub(super) unsafe fn build_fsub_fast(
     builder: LLVMBuilderRef,
     lhs: LLVMValueRef,
@@ -101,6 +111,7 @@ pub(super) unsafe fn build_fsub_fast(
     inst
 }
 
+#[cfg(test)]
 pub(super) unsafe fn build_fmul_fast(
     builder: LLVMBuilderRef,
     lhs: LLVMValueRef,
@@ -113,6 +124,7 @@ pub(super) unsafe fn build_fmul_fast(
     inst
 }
 
+#[cfg(test)]
 pub(super) unsafe fn build_fdiv_fast(
     builder: LLVMBuilderRef,
     lhs: LLVMValueRef,
@@ -125,6 +137,7 @@ pub(super) unsafe fn build_fdiv_fast(
     inst
 }
 
+#[cfg(test)]
 pub(super) unsafe fn build_frem_fast(
     builder: LLVMBuilderRef,
     lhs: LLVMValueRef,
@@ -137,6 +150,7 @@ pub(super) unsafe fn build_frem_fast(
     inst
 }
 
+#[cfg(test)]
 pub(super) unsafe fn build_fcmp_fast(
     builder: LLVMBuilderRef,
     pred: LLVMRealPredicate,

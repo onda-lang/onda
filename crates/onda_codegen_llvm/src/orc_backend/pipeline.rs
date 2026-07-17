@@ -165,88 +165,21 @@ pub(crate) fn compile_orc(
     }
 }
 
-pub(crate) fn emit_optimized_ir(
+#[cfg(test)]
+pub(crate) fn emit_legacy_artifacts(
     typed: &TypedProgram,
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
     opt_level: crate::TargetOptLevel,
-) -> Result<String, Diagnostic> {
+) -> Result<(String, Vec<u8>), Diagnostic> {
     initialize_native_target()?;
     let layouts = prepare_codegen_layouts(typed)?;
-
     unsafe {
-        let builder = LLVMOrcCreateLLJITBuilder();
-        if builder.is_null() {
-            return Err(Diagnostic::internal("failed to create LLJIT builder"));
-        }
-        let jtmb = match create_aggressive_jit_target_machine_builder(opt_level) {
-            Ok(v) => v,
-            Err(diag) => {
-                LLVMOrcDisposeLLJITBuilder(builder);
-                return Err(diag);
-            }
-        };
-        if jtmb.is_null() {
-            LLVMOrcDisposeLLJITBuilder(builder);
-            return Err(Diagnostic::internal(
-                "failed to create aggressive JIT target machine builder",
-            ));
-        }
-        LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(builder, jtmb);
-
-        let mut lljit: LLVMOrcLLJITRef = null_mut();
-        let lljit_err = LLVMOrcCreateLLJIT(&mut lljit, builder);
-        if !lljit_err.is_null() {
-            return Err(llvm_error_to_diag(
-                "failed to create LLJIT instance",
-                lljit_err,
-            ));
-        }
-        if lljit.is_null() {
-            return Err(Diagnostic::internal(
-                "LLJIT creation returned null without error",
-            ));
-        }
-
+        let target_machine = create_host_target_machine(opt_level)?;
         let result = (|| {
-            let (module, context) = build_optimized_module_for_jit(
-                lljit,
-                typed,
-                sample_rate,
-                block_size,
-                fast_math,
-                opt_level,
-                &layouts.top_level_oversampling_layout,
-                &layouts.proc_slot_buffer_ref_layouts,
-            )?;
-            let ir = llvm_module_to_string(module)?;
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            Ok(ir)
-        })();
-
-        dispose_lljit_quiet(lljit);
-        result
-    }
-}
-
-pub(crate) fn emit_targeted_ir(
-    typed: &TypedProgram,
-    sample_rate: f32,
-    block_size: usize,
-    fast_math: bool,
-    target: &crate::TargetConfig,
-) -> Result<String, Diagnostic> {
-    initialize_codegen_targets()?;
-    let layouts = prepare_codegen_layouts(typed)?;
-
-    unsafe {
-        let resolved = resolve_target_machine_config(target)?;
-        let tm = create_target_machine_from_config(&resolved)?;
-        let result = (|| {
-            let target_triple = target_machine_triple_string(tm)?;
-            let data_layout = target_machine_data_layout_string(tm)?;
+            let triple = target_machine_triple_string(target_machine)?;
+            let data_layout = target_machine_data_layout_string(target_machine)?;
             let (module, context) = build_optimized_module(
                 typed,
                 sample_rate,
@@ -254,69 +187,52 @@ pub(crate) fn emit_targeted_ir(
                 fast_math,
                 &layouts.top_level_oversampling_layout,
                 &layouts.proc_slot_buffer_ref_layouts,
-                &target_triple,
+                &triple,
                 &data_layout,
-                tm,
-                resolved.opt_level,
+                target_machine,
+                map_opt_level(opt_level),
             )?;
-            let ir = llvm_module_to_string(module)?;
+            let artifacts = (|| {
+                let ir = llvm_module_to_string(module)?;
+                let mut error_message = null_mut();
+                let mut memory_buffer = null_mut();
+                let failed = LLVMTargetMachineEmitToMemoryBuffer(
+                    target_machine,
+                    module,
+                    LLVMCodeGenFileType::LLVMObjectFile,
+                    &mut error_message,
+                    &mut memory_buffer,
+                );
+                if failed != 0 || memory_buffer.is_null() {
+                    let detail = if error_message.is_null() {
+                        "unknown LLVM object emission error".to_owned()
+                    } else {
+                        let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+                        LLVMDisposeMessage(error_message);
+                        message
+                    };
+                    return Err(Diagnostic::internal(format!(
+                        "legacy LLVM object emission failed: {detail}"
+                    )));
+                }
+                let start = LLVMGetBufferStart(memory_buffer).cast::<u8>();
+                let size = LLVMGetBufferSize(memory_buffer);
+                let object = if start.is_null() || size == 0 {
+                    Vec::new()
+                } else {
+                    std::slice::from_raw_parts(start, size).to_vec()
+                };
+                LLVMDisposeMemoryBuffer(memory_buffer);
+                if !error_message.is_null() {
+                    LLVMDisposeMessage(error_message);
+                }
+                Ok((ir, object))
+            })();
             LLVMDisposeModule(module);
             LLVMContextDispose(context);
-            Ok(ir)
+            artifacts
         })();
-        LLVMDisposeTargetMachine(tm);
-        result
-    }
-}
-
-pub(crate) fn emit_targeted_object(
-    typed: &TypedProgram,
-    sample_rate: f32,
-    block_size: usize,
-    fast_math: bool,
-    target: &crate::TargetConfig,
-) -> Result<crate::AotObjectArtifact, Diagnostic> {
-    initialize_codegen_targets()?;
-    let layouts = prepare_codegen_layouts(typed)?;
-
-    unsafe {
-        let resolved = resolve_target_machine_config(target)?;
-        let tm = create_target_machine_from_config(&resolved)?;
-        let result = (|| {
-            let target_triple = target_machine_triple_string(tm)?;
-            let data_layout = target_machine_data_layout_string(tm)?;
-            let (module, context) = build_optimized_module(
-                typed,
-                sample_rate,
-                block_size,
-                fast_math,
-                &layouts.top_level_oversampling_layout,
-                &layouts.proc_slot_buffer_ref_layouts,
-                &target_triple,
-                &data_layout,
-                tm,
-                resolved.opt_level,
-            )?;
-            let object_bytes = emit_object_to_memory_buffer(tm, module)?;
-            let metadata = crate::aot_artifact::build_aot_metadata(
-                typed,
-                sample_rate,
-                block_size,
-                fast_math,
-                target,
-                resolved.normalized_triple.clone(),
-                resolved.cpu.clone(),
-                resolved.features.clone(),
-                layouts.state_total_size_bytes,
-            );
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            Ok(crate::AotObjectArtifact {
-                object_bytes,
-                metadata,
-            })
-        })();
-        LLVMDisposeTargetMachine(tm);
+        LLVMDisposeTargetMachine(target_machine);
         result
     }
 }
@@ -339,17 +255,6 @@ fn initialize_native_target() -> Result<(), Diagnostic> {
         Some(msg) => Err(Diagnostic::internal(msg.clone())),
         None => Ok(()),
     }
-}
-
-fn initialize_codegen_targets() -> Result<(), Diagnostic> {
-    CODEGEN_TARGETS_INIT.get_or_init(|| unsafe {
-        LLVM_InitializeAllTargetInfos();
-        LLVM_InitializeAllTargets();
-        LLVM_InitializeAllTargetMCs();
-        LLVM_InitializeAllAsmPrinters();
-        LLVM_InitializeAllAsmParsers();
-    });
-    Ok(())
 }
 
 fn prepare_codegen_layouts(typed: &TypedProgram) -> Result<PreparedCodegenLayouts, Diagnostic> {
@@ -597,52 +502,4 @@ unsafe fn verify_module(module: LLVMModuleRef) -> Result<(), Diagnostic> {
         LLVMDisposeMessage(verify_message);
     }
     Ok(())
-}
-
-unsafe fn emit_object_to_memory_buffer(
-    tm: LLVMTargetMachineRef,
-    module: LLVMModuleRef,
-) -> Result<Vec<u8>, Diagnostic> {
-    let mut error_message: *mut i8 = null_mut();
-    let mut out_mem_buf: LLVMMemoryBufferRef = null_mut();
-    let emit_status = LLVMTargetMachineEmitToMemoryBuffer(
-        tm,
-        module,
-        LLVMCodeGenFileType::LLVMObjectFile,
-        &mut error_message,
-        &mut out_mem_buf,
-    );
-    if emit_status != 0 {
-        let detail = if error_message.is_null() {
-            "unknown object emission error".to_owned()
-        } else {
-            let msg = CStr::from_ptr(error_message).to_string_lossy().to_string();
-            LLVMDisposeMessage(error_message);
-            msg
-        };
-        return Err(Diagnostic::internal(format!(
-            "LLVM target machine object emission failed: {detail}"
-        )));
-    }
-    if out_mem_buf.is_null() {
-        if !error_message.is_null() {
-            LLVMDisposeMessage(error_message);
-        }
-        return Err(Diagnostic::internal(
-            "LLVM target machine object emission returned a null memory buffer",
-        ));
-    }
-
-    let start = LLVMGetBufferStart(out_mem_buf) as *const u8;
-    let size = LLVMGetBufferSize(out_mem_buf);
-    let bytes = if start.is_null() || size == 0 {
-        Vec::new()
-    } else {
-        std::slice::from_raw_parts(start, size).to_vec()
-    };
-    LLVMDisposeMemoryBuffer(out_mem_buf);
-    if !error_message.is_null() {
-        LLVMDisposeMessage(error_message);
-    }
-    Ok(bytes)
 }

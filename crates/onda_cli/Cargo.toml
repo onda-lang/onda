@@ -15,6 +15,7 @@ onda_daemon = { path = "../onda_daemon" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_egui = { path = "../onda_egui" }
 onda_frontend = { path = "../onda_frontend" }
+onda_mir = { path = "../onda_mir" }
 onda_run = { path = "../onda_run" }
 onda_runtime = { path = "../onda_runtime" }
 onda_semantics = { path = "../onda_semantics" }

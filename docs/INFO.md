@@ -20,7 +20,10 @@ For build, CLI usage, and editor integrations, see the [getting-started guide](h
 | --- | --- |
 | `onda_frontend` | Parser, AST, diagnostics. PEG grammar (`grammar.pest`) driving an iterative parser. |
 | `onda_semantics` | Semantic analysis and lowering rewrites: typing, overload resolution, generic specialization, proc/graph lowering, name resolution. |
+| `onda_mir` | Backend-neutral typed executable IR: logical types, explicit storage/resources, structured control flow, proof-aware validation, optimization, and JSON/MessagePack transport. |
 | `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
+| `onda_compiler_web` | Filesystem-free browser compiler: in-memory source/projects plus embedded stdlib to validated schema-5 MIR MessagePack or JSON. |
+| `onda_realtime` | Backend-independent realtime thread policy, including one-time x86 FTZ/DAZ setup. |
 | `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
 | `onda_api` | C ABI surface exposed through `include/onda.h`. |
 | `onda_cpal` | Minimal CPAL/PipeWire backend: device discovery, RT callbacks, sample conversion, and SPSC transport. |
@@ -36,6 +39,7 @@ Non-crate directories of note:
 - `stdlib/` — built-in `std/...` modules imported by Onda source.
 - `include/` — public C header `onda.h`.
 - `targets/` — checked-in AOT codegen presets for `onda compile --target-spec`.
+- `packages/onda_binaryen_web/` — Binaryen.js MIR-to-Wasm backend and browser runtime helpers.
 - `deps/llvm-bootstrap` — git submodule used to bootstrap LLVM from source.
 - `scripts/` — LLVM bootstrap and env-selection helpers.
 - `docs/`, `examples/`, `assets/`, `ui/`, `sc/` — supporting material.
@@ -76,17 +80,43 @@ Non-crate directories of note:
   - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
   - `proc_call_rewrite.rs`, `proc_call_support.rs`, `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, aliasing, and state symbol rewriting.
 - `internal_names.rs` — internal symbol naming.
+- `mir_lowering.rs` — transactional semantic-to-MIR lowering; owns executable storage/resources,
+  events, functions, aggregate/reference shapes, recursive processor arrays, oversampling, and the
+  canonical segmented process schedule.
+  - `mir_lowering/{lowerer_core,scheduling,control_flow,expressions,calls,aggregates,slices,values}.rs`
+    — focused construction domains kept behind one lowering transaction.
+  - `mir_lowering/audio_outputs.rs` — per-sample audio-output cache initialization and single ordered
+    commit, kept separate as the optimization-facing output transaction boundary.
+  - `mir_lowering/tests.rs` — complete-program lowering regression coverage.
+
+### `onda_mir` (`crates/onda_mir/src`)
+- `lib.rs` — public MIR surface and schema version.
+- `ids.rs` — deterministic typed IDs for program entities and resources.
+- `types.rs` — target-independent scalar, aggregate, slice, and buffer types.
+- `ir.rs` — program/interface/state/function model and executable operations.
+- `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
+- `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked bounds.
+- `passes.rs` — fixed-point backend-neutral canonicalization and cleanup.
+- `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
+- The production MIR contract is documented in `docs/MIR.md`.
 
 ### `onda_codegen_llvm` (`crates/onda_codegen_llvm/src`)
-- `lib.rs` — public JIT/AOT API (`CompileOptions`, `ExecutionBackend`, metadata extraction).
-- `metadata.rs` — runtime metadata extraction (params, buffers, events, state layout).
-- `state_layout.rs` — instance state byte layout.
+- `lib.rs` — public JIT/AOT API. The sole `TypedProgram` JIT path lowers to validated MIR before
+  native codegen; direct MIR entry points accept `onda_mir::Program` without a frontend side channel.
+- `mir_metadata.rs` — runtime descriptors derived from MIR plus the exact physical offsets selected
+  by native codegen.
+- `metadata.rs`, `state_layout.rs` — retiring frontend-derived descriptors/layout used by the
+  differential backend only.
 - `runtime_validation.rs` — runtime binding validation.
 - `target_config.rs` — target triple / CPU / features / reloc / code-model / opt-level config.
 - `primitives.rs` — LLVM primitive helpers.
-- `aot_artifact.rs` — AOT object + sidecar emission.
+- `aot_artifact.rs` — AOT object metadata/sidecar model, populated from MIR-native layout and
+  interface descriptors.
 - `orc_backend.rs`, `orc_backend/` — ORC backend assembly and lowering:
-  - `pipeline.rs`, `contexts.rs`, `value_model.rs`, `process_handle.rs` — backend wiring and process handle.
+  - `mir_native.rs` — production validated-MIR-to-LLVM lowering, ORC JIT, targeted LLVM IR/object
+    emission, ABI layout, and native process/event handles.
+  - `pipeline.rs`, `contexts.rs`, `value_model.rs`, `process_handle.rs` — retiring direct frontend
+    lowering retained only for differential tests.
   - `proc_ir.rs`, `proc_ir/{common,event_ir,init_ir,process_ir}.rs` — proc IR emission.
   - `user_fn_ir.rs`, `user_fn_ir/{lowering,registry}.rs` — top-level `def` IR emission and registry.
   - `specialization.rs` — generic specialization at IR level.
@@ -98,6 +128,19 @@ Non-crate directories of note:
   - `array_access.rs`, `data_access`-style helpers via `pointer_helpers.rs` — array, buffer, and pointer access.
   - `layout.rs` — LLVM type layout helpers.
   - `llvm_helpers.rs`, `jit_utils.rs`, `orc_locals.rs`, `oversampling.rs`, `proc_buffer_refs.rs`, `builtin_intrinsics.rs` — assorted backend support.
+
+The direct frontend `Expr`/`Stmt` modules in that latter group belong to the legacy differential
+implementation and are pending deletion; they are not traversed by normal JIT, CLI, runtime, API,
+or daemon compilation.
+
+### `onda_compiler_web` (`crates/onda_compiler_web/src`)
+- `lib.rs` — browser-safe source-to-MIR front half. The Wasm exports compile one source or a virtual
+  multi-file project entirely in memory, resolve `std/...` from the embedded standard library,
+  return structured JSON diagnostics, and expose the MIR schema version. The native test API uses
+  the same path.
+
+### `onda_realtime` (`crates/onda_realtime/src`)
+- `lib.rs` — allocation-free, once-per-thread audio floating-point policy shared by runtime hosts.
 
 ### `onda_runtime` (`crates/onda_runtime/src`)
 - `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants, reset, param hoisting/clamping, event dispatch.
@@ -142,7 +185,13 @@ Non-crate directories of note:
 - Language/front-end behavior: `onda_frontend/src/parser/*`, `onda_semantics/src/lib.rs`.
 - Proc lowering path: `processor_lowering.rs` → `processor_lowering/*` → `proc_call_rewrite.rs`.
 - Graph lowering path: `processor_lowering/graph_lowering.rs` → `graph_lowering/*` (inspect via `onda compile --dump-graph`).
-- ORC lowering path: `orc_backend.rs` → `{proc_ir,user_fn_ir}` → `{orc_expr_stmt,def_lowering}` → `{data_access,call_helpers}`.
+- Production native lowering: `onda_semantics::lower_program_to_optimized_mir` →
+  `orc_backend/mir_native.rs` → `mir_metadata.rs` / `aot_artifact.rs`.
+- Browser path: `onda_compiler_web` → schema-5 MIR MessagePack →
+  `packages/onda_binaryen_web` → DSP Wasm + host metadata →
+  `examples/web/sine_wasm_worklet`.
+- Legacy differential lowering: `orc_backend/{pipeline,proc_ir,user_fn_ir,...}`; test-only and
+  pending deletion.
 - Runtime API usage: `onda_runtime/src/lib.rs`.
 - C ABI surface: `onda_api/src/lib.rs`, `include/onda.h`.
 - Daemon analysis/run sessions: `onda_daemon/src/{analysis_session,run_session}.rs`.
@@ -151,15 +200,66 @@ Non-crate directories of note:
 
 ## Runtime and codegen architecture
 
-- ORC JIT is the only execution backend (`Auto` routes to ORC). `onda compile` can additionally emit target-aware LLVM IR and native object files through the same lowering path.
-- Optimized LLVM pass pipeline (`default<O3>`-style) with host-target settings.
+- ORC JIT is the native execution backend. Public `TypedProgram` JIT entry points unconditionally
+  route through semantic-to-MIR lowering and the production MIR-native ORC implementation; `onda
+  compile` emits target-aware LLVM IR or objects through the same MIR lowering. The direct
+  `TypedProgram`/frontend-AST LLVM backend has no public selector and is compiled only as a private
+  oracle in codegen unit tests.
+- Native JIT metadata and AOT sidecar metadata come from validated MIR plus codegen's selected byte
+  offsets. Parameter, state, audio/control I/O, buffer, event, export, and target information
+  therefore cannot drift from the executable layout through a separate `TypedProgram` walk. The
+  format-2 sidecar also maps each packed snapshot segment to its physical state offset and records
+  the little-endian format-1 scalar encoding and post-init restore base.
+- `onda compile <file> --emit mir` exposes deterministic MIR for inspection, while `--emit mir-json`
+  emits inspectable schema-5 interchange and `--emit mir-messagepack` emits the compact production
+  transport. In a browser, `onda_compiler_web` produces the same MessagePack directly from in-memory
+  source and embedded `std/...` modules.
+  `packages/onda_binaryen_web` consumes schema 5, including explicit control mirrors, checked slice
+  construction, reference windows, and function attributes, and returns DSP Wasm plus physical
+  state, snapshot, interface, event, buffer, and import metadata.
+- Standard optimized LLVM pass pipeline (`default<O3>`-style) with host-target settings; MIR does not
+  override LLVM's loop or SLP vectorization heuristics.
+- Native checked and prepared-unchecked processing install the shared audio-thread denormal policy;
+  on x86 this enables FTZ/DAZ once per thread before executing DSP.
 - Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).
 - Runtime processing is bound-buffer based (`process_checked`). Segment variants exist for hosts that split a logical block around sample-accurate events:
   - `process_checked_segment(instance, start_frame, frames, flags)`
   - `prepare_unchecked_process(instance)` / `process_unchecked_segment(...)`
+  - unchecked preparation validates current bindings and completes backend setup; it does not
+    intentionally preserve stale buffer bindings after a rebind.
   - segment variants keep full-block base pointers and JIT-loop local frames `[0, frames)`, addressing bound I/O at `start_frame + local_frame`.
   - flags `ONDA_PROCESS_BEGIN_BLOCK` / `ONDA_PROCESS_END_BLOCK` drive block hooks only; they do not imply an implicit runtime cursor.
+- MIR schema 4 introduced the `(start_frame, frames, flags)` process signature and checked
+  `process_frame` audio addressing retained by schema 5. The native wrapper validates segment bounds
+  and the flag mask; zero-frame segments are legal. The schema-5 Binaryen wrapper and reference
+  AudioWorklet implement the same scheduling contract. The worklet maintains the host-side
+  compile-block cursor needed when Web Audio callback sizes differ from the compiled block size.
 - Per-block behavior: declared buffers must be bound before processing; top-level ranged params are hoisted/clamped once per block; top-level ranged inputs once per sample; host-triggered events run synchronously via index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous element bytes).
+
+## Browser build and verification
+
+- `wasm-pack build crates/onda_compiler_web --target web --release` builds the JavaScript glue and
+  compiler Wasm. `wasm-pack` is a required build tool; ordinary native crate tests do not require it.
+- `bash ./examples/web/sine_wasm_worklet/build-demo.sh --serve` builds/stages the compiler and pinned
+  Binaryen assets, then serves the editable playground. The PowerShell equivalent is
+  `.\examples\web\sine_wasm_worklet\build-demo.ps1 -Serve`.
+- From `packages/onda_binaryen_web`, `npm test` runs backend/host fixtures, `npm run test:onda` runs
+  real Onda source plus LLVM/Binaryen parity and the exact-FMA oracle, and `npm run test:parity`
+  selects the differential renderer. `npm run test:corpus` continuously compiles all 46 checked-in
+  examples and positive backend fixtures through source -> schema-5 MIR MessagePack -> Binaryen -> valid
+  Wasm. These source-driven commands require a working native Rust/LLVM Onda build; `npm test` and
+  the browser asset build do not.
+- `npm run bench` runs the reproducible native LLVM versus Binaryen/Wasm comparison documented in
+  [`docs/BACKEND_BENCHMARKS.md`](BACKEND_BENCHMARKS.md). It is a development benchmark, not a
+  universal browser-performance claim.
+- The browser build is static after staging and requires no CLI, LLVM, or server-side compiler.
+  Current product limitations include a single-file playground UI despite the compiler's multi-file
+  API, restart/reset rather than seamless state-preserving hot swap, no control-output or external
+  buffer UI, no microphone/input-source routing, main-thread compilation, and a deliberately exact
+  but expensive BigInt-based FMA import. The page also assumes the requested `AudioContext` sample
+  rate is honored. The current smoke endpoint proves compilation, but automated browser
+  AudioWorklet playback coverage remains future work. Non-local hosting needs a secure context
+  (normally HTTPS; localhost is exempt).
 
 ## LLVM dependency strategy
 

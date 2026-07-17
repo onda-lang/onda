@@ -1,5 +1,60 @@
 use super::*;
 
+fn lower_test_mir(src: &str) -> onda_mir::Program {
+    let parsed = parse_program(src).expect("parse should succeed");
+    let typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: 48_000.0,
+            block_size: 4,
+        },
+    )
+    .expect("analysis should succeed");
+    onda_semantics::lower_program_to_mir(&typed).expect("MIR lowering should succeed")
+}
+
+fn assert_mir_scalar_specialization(
+    mir: &onda_mir::Program,
+    name_fragment: &str,
+    expected: onda_mir::ScalarType,
+) {
+    let matching = mir
+        .functions
+        .iter()
+        .filter(|function| function.name.contains(name_fragment))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matching.len(),
+        1,
+        "expected exactly one MIR function containing '{name_fragment}', got {:?}",
+        mir.functions
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    let function = matching[0];
+    assert_eq!(
+        function.params.len(),
+        1,
+        "'{name_fragment}' should have one scalar parameter"
+    );
+    assert_eq!(
+        function.results.len(),
+        1,
+        "'{name_fragment}' should have one scalar result"
+    );
+    assert_eq!(
+        mir.types[function.params[0].ty.index()],
+        onda_mir::Type::Scalar(expected),
+        "'{name_fragment}' parameter must retain its specialized MIR type"
+    );
+    assert_eq!(
+        mir.types[function.results[0].index()],
+        onda_mir::Type::Scalar(expected),
+        "'{name_fragment}' result must retain its specialized MIR type"
+    );
+}
+
 // ── Generic Defs ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -237,19 +292,12 @@ sample {
 
 "#;
 
-    // IR must contain both f32 and f64 specializations.
+    // MIR must retain both concrete specializations without relying on a
+    // backend-specific LLVM symbol spelling.
 
-    let ir = emit_ir(src);
-
-    assert!(
-        ir.contains("float @onda_def_double.__mono__g_f32(float"),
-        "IR should contain f32 (float) specialization"
-    );
-
-    assert!(
-        ir.contains("double @onda_def_double.__mono__g_f64(double"),
-        "IR should contain f64 (double) specialization"
-    );
+    let mir = lower_test_mir(src);
+    assert_mir_scalar_specialization(&mir, "double.__mono__g_f32", onda_mir::ScalarType::F32);
+    assert_mir_scalar_specialization(&mir, "double.__mono__g_f64", onda_mir::ScalarType::F64);
 
     let frames = 4;
 
@@ -661,19 +709,12 @@ sample {
 
 "#;
 
-    // IR must contain i32 and i64 specializations with integer add (not fadd).
+    // The MIR signatures are the backend-neutral proof that both integer
+    // specializations use integer values rather than floating-point ones.
 
-    let ir = emit_ir(src);
-
-    assert!(
-        ir.contains("i32 @onda_def_triple.__mono__g_i32(i32"),
-        "IR should contain i32 specialization"
-    );
-
-    assert!(
-        ir.contains("i64 @onda_def_triple.__mono__g_i64(i64"),
-        "IR should contain i64 specialization"
-    );
+    let mir = lower_test_mir(src);
+    assert_mir_scalar_specialization(&mir, "triple.__mono__g_i32", onda_mir::ScalarType::I32);
+    assert_mir_scalar_specialization(&mir, "triple.__mono__g_i64", onda_mir::ScalarType::I64);
 
     let frames = 4;
 
@@ -711,14 +752,10 @@ sample {
 
 "#;
 
-    // IR must show f64 specialization inferred from the f64() cast.
+    // MIR must show the f64 specialization inferred from the f64() cast.
 
-    let ir = emit_ir(src);
-
-    assert!(
-        ir.contains("double @onda_def_id.__mono__g_f64(double"),
-        "IR should contain f64 (double) specialization inferred from cast"
-    );
+    let mir = lower_test_mir(src);
+    assert_mir_scalar_specialization(&mir, "id.__mono__g_f64", onda_mir::ScalarType::F64);
 
     let frames = 4;
 
@@ -756,14 +793,11 @@ sample {
 
 "#;
 
-    // IR must show f64 specialization from explicit <f64>, not f32 from inference.
+    // MIR must show f64 specialization from explicit <f64>, not f32 from
+    // default literal inference.
 
-    let ir = emit_ir(src);
-
-    assert!(
-        ir.contains("double @onda_def_id.__mono__g_f64(double"),
-        "IR should contain f64 (double) specialization from explicit type arg"
-    );
+    let mir = lower_test_mir(src);
+    assert_mir_scalar_specialization(&mir, "id.__mono__g_f64", onda_mir::ScalarType::F64);
 
     let frames = 4;
 
@@ -2684,7 +2718,7 @@ fn generic_def_explicit_type_arg_overrides_arg_cast_compile_and_run() {
 
     //   1. Semantic: monomorphized def name contains f64, not f32.
 
-    //   2. LLVM IR: the generated function uses `double` (f64) arithmetic, not `float`.
+    //   2. MIR: the generated function uses f64 parameters/results, not f32.
 
     //   3. Runtime: correct output value.
 
@@ -2728,14 +2762,10 @@ sample {
         typed.defs.iter().map(|d| &d.name).collect::<Vec<_>>()
     );
 
-    // LLVM IR: the monomorphized def must use f64 (LLVM `double`) arithmetic.
+    // MIR: the monomorphized def must retain an f64 parameter and result.
 
-    let ir = emit_ir(src);
-
-    assert!(
-        ir.contains("double @onda_def_double.__mono__g_f64(double"),
-        "IR should contain f64 (double) function signature for generic def"
-    );
+    let mir = lower_test_mir(src);
+    assert_mir_scalar_specialization(&mir, "double.__mono__g_f64", onda_mir::ScalarType::F64);
 
     // Runtime output.
 

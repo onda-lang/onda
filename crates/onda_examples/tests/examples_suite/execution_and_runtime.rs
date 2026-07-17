@@ -1,5 +1,70 @@
 use super::*;
 
+#[test]
+fn mixed_width_stdlib_clamp_and_lerp_preserve_f64_distinctions() {
+    let frames = 4;
+    let src = r#"
+import std/math
+
+outs:
+  out1
+  out2
+
+sample:
+  x: f32 = f32(16777216.0)
+  lo: f64 = f64(16777217.0)
+  hi: f64 = f64(16777218.0)
+  out1 = f32(clamp(x, lo, hi) - lo)
+  out2 = f32(lerp(x, hi, f64(0.5)) - lo)
+"#;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for frame in 0..frames {
+        assert_near(output[frame * out_channels], 0.0, 1e-6);
+        assert_near(output[frame * out_channels + 1], 0.0, 1e-6);
+    }
+}
+
+#[test]
+fn named_slice_arguments_evaluate_bounds_in_textual_source_order() {
+    let frames = 4;
+    let src = r#"
+outs:
+  out1
+
+def mark(values: f32[], value: i32) -> i32:
+  values[0] = f32(value)
+  return 0
+
+def consume(a: f32[], b: f32[]) -> f32:
+  return 0.0
+
+init:
+  values: f32[1] = [0.0]
+
+sample:
+  out1 = consume(
+    b = values[mark(values, 2):],
+    a = values[mark(values, 1):],
+  ) + values[0]
+"#;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 1.0, 1e-6);
+    }
+}
+
 const STDLIB_ENV_AR_ONE_SHOT_EXAMPLE: &str = r#"
 import std/env
 
@@ -3397,8 +3462,6 @@ fn builtin_consts_use_compile_time_sample_rate() {
         BUILTIN_CONSTS_SR_ALIAS_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 4.0,
 
             block_size: frames,
@@ -3434,8 +3497,6 @@ fn builtin_consts_support_samplerate_alias() {
         BUILTIN_CONSTS_SAMPLERATE_ALIAS_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 4.0,
 
             block_size: frames,
@@ -3471,8 +3532,6 @@ fn builtin_consts_support_lowercase_samplerate_alias() {
         BUILTIN_CONSTS_LOWERCASE_SR_ALIAS_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 4.0,
 
             block_size: frames,
@@ -3896,8 +3955,6 @@ fn data_capacity_supports_compile_time_constants() {
         DATA_CONST_CAPACITY_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 16_000.0,
 
             block_size: frames,
@@ -3929,8 +3986,6 @@ fn data_ctor_capacity_supports_compile_time_constants() {
         DATA_CTOR_CONST_CAPACITY_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -3962,8 +4017,6 @@ fn block_size_constant_is_available_in_init_and_block() {
         BLOCK_SIZE_CONST_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -3995,8 +4048,6 @@ fn block_size_aliases_are_available() {
         BLOCK_SIZE_ALIASES_CONST_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -4211,8 +4262,6 @@ fn data_constant_out_of_range_index_is_rejected_in_codegen() {
     let result = onda_codegen_llvm::lower_and_jit_with_options(
         typed,
         CompileOptions {
-            backend: ExecutionBackend::Auto,
-
             sample_rate: 48_000.0,
 
             block_size: 64,
@@ -4847,13 +4896,18 @@ fn generic_proc_buffer_decl_type_analyzes_and_codegen_compiles() {
     let parsed = parse_program(GENERIC_PROC_BUFFER_DECL_TYPE_COMPILES_EXAMPLE)
         .expect("parse should succeed");
 
-    let typed = analyze(parsed).expect("semantic analysis should succeed");
+    let typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: 48_000.0,
+            block_size: 64,
+        },
+    )
+    .expect("semantic analysis should succeed");
 
     let result = onda_codegen_llvm::lower_and_jit_with_options(
         typed,
         CompileOptions {
-            backend: ExecutionBackend::Auto,
-
             sample_rate: 48_000.0,
 
             block_size: 64,
@@ -8364,7 +8418,7 @@ fn proc_instance_array_len_compiles_and_runs() {
 
 #[test]
 
-fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process_checked() {
+fn proc_instance_array_indexed_call_dynamic_index_uses_rebound_buffer_on_process_checked() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) = compile_instance(
@@ -8443,7 +8497,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process
 }
 
 #[test]
-fn checked_end_segment_refreshes_proc_slot_buffer_refs_after_rebind() {
+fn checked_end_segment_uses_rebound_proc_array_buffer() {
     let frames = 4;
     let segment_frames = 2;
 
@@ -8517,8 +8571,8 @@ fn checked_end_segment_refreshes_proc_slot_buffer_refs_after_rebind() {
 
 #[test]
 
-fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_process_unchecked()
-{
+fn proc_instance_array_indexed_call_dynamic_index_uses_validated_rebound_buffer_on_process_unchecked(
+) {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) = compile_instance(
@@ -8566,7 +8620,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked to seed proc-slot refs");
+    process_checked(&mut instance, frames).expect("process checked with old buf2");
 
     let out_seed = decode_planar_f32(&out_bytes);
 
@@ -8591,6 +8645,9 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
 
     validate_outputs(&mut instance).expect("validate outputs");
 
+    // MIR buffer arguments are transient symbolic resources. Once validation publishes the
+    // rebound host table, unchecked processing observes that current table rather than a
+    // pointer-bearing processor cache.
     unsafe {
         process_unchecked(&mut instance).expect("unchecked process after rebind");
     }
@@ -8598,20 +8655,20 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
     let out_unchecked = decode_planar_f32(&out_bytes);
 
     for sample in out_unchecked {
-        assert_near(sample, 0.75, 1e-6);
+        assert_near(sample, 0.5, 1e-6);
     }
 
-    process_checked(&mut instance, frames).expect("process checked refreshes refs");
+    process_checked(&mut instance, frames).expect("process checked uses current binding");
 
-    let out_refreshed = decode_planar_f32(&out_bytes);
+    let out_checked = decode_planar_f32(&out_bytes);
 
-    for sample in out_refreshed {
+    for sample in out_checked {
         assert_near(sample, 0.5, 1e-6);
     }
 }
 
 #[test]
-fn prepare_unchecked_process_refreshes_proc_slot_buffer_refs() {
+fn prepare_unchecked_process_uses_current_proc_array_buffer_binding() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) = compile_instance(
@@ -9108,15 +9165,13 @@ fn struct_method_requires_self_param() {
 #[cfg(feature = "llvm-orc")]
 #[test]
 
-fn explicit_orc_gain_compiles_and_runs() {
+fn explicit_mir_orc_gain_compiles_and_runs() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         GAIN,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -9147,15 +9202,13 @@ fn explicit_orc_gain_compiles_and_runs() {
 #[cfg(feature = "llvm-orc")]
 #[test]
 
-fn explicit_orc_sine_compiles_and_runs() {
+fn explicit_mir_orc_sine_compiles_and_runs() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         SINE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -9188,15 +9241,13 @@ fn explicit_orc_sine_compiles_and_runs() {
 #[cfg(feature = "llvm-orc")]
 #[test]
 
-fn explicit_orc_one_pole_compiles_and_runs() {
+fn explicit_mir_orc_one_pole_compiles_and_runs() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         ONE_POLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -9227,15 +9278,13 @@ fn explicit_orc_one_pole_compiles_and_runs() {
 #[cfg(feature = "llvm-orc")]
 #[test]
 
-fn explicit_orc_if_compiles_and_runs() {
+fn explicit_mir_orc_if_compiles_and_runs() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         IF_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -9268,16 +9317,68 @@ fn explicit_orc_if_compiles_and_runs() {
 
 #[cfg(feature = "llvm-orc")]
 #[test]
+fn scoped_branch_and_loop_locals_do_not_reuse_a_later_bool_binding() {
+    let source = r#"
+outs:
+  out1
 
-fn explicit_orc_for_compiles_and_runs() {
+sample:
+  if in1 > 0.0:
+    temp = 0.0
+  for i in 0..1:
+    temp = f32(i)
+  temp = true
+  if temp:
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![1.0_f32, -1.0, 0.5, -0.5];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_eq!(output, vec![1.0; frames]);
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+fn comparison_literal_uses_the_concrete_f32_peer_width_at_runtime() {
+    let source = r#"
+outs:
+  out1
+
+sample:
+  x: f32 = f32(16777216.0)
+  if x == 16777217.0:
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_eq!(output, vec![1.0; frames]);
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_mir_orc_for_compiles_and_runs() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         FOR_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -9303,15 +9404,13 @@ fn explicit_orc_for_compiles_and_runs() {
 #[cfg(feature = "llvm-orc")]
 #[test]
 
-fn explicit_orc_def_call_compiles_and_runs() {
+fn explicit_mir_orc_def_call_compiles_and_runs() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         DEF_CALL_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -9337,15 +9436,13 @@ fn explicit_orc_def_call_compiles_and_runs() {
 #[cfg(feature = "llvm-orc")]
 #[test]
 
-fn explicit_orc_def_return_exits_early() {
+fn explicit_mir_orc_def_return_exits_early() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         DEF_EARLY_RETURN_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -9371,15 +9468,13 @@ fn explicit_orc_def_return_exits_early() {
 #[cfg(feature = "llvm-orc")]
 #[test]
 
-fn explicit_orc_struct_compiles_and_runs() {
+fn explicit_mir_orc_struct_compiles_and_runs() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         STRUCT_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,
@@ -9405,15 +9500,13 @@ fn explicit_orc_struct_compiles_and_runs() {
 #[cfg(feature = "llvm-orc")]
 #[test]
 
-fn explicit_orc_struct_reserved_method_names_compile_and_run() {
+fn explicit_mir_orc_struct_reserved_method_names_compile_and_run() {
     let frames = 8;
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         RESERVED_METHOD_NAMES_EXAMPLE,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-
             sample_rate: 48_000.0,
 
             block_size: frames,

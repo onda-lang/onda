@@ -1,26 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sample_rate=48000
-block_size=128
 serve=0
 
 usage() {
   cat <<'EOF'
-Usage: examples/web/sine_wasm_worklet/build-demo.sh [--sample-rate <hz>] [--block-size <frames>] [--serve]
+Usage: examples/web/sine_wasm_worklet/build-demo.sh [--serve]
+
+Requires wasm-pack and npm. The resulting playground compiles Onda source in
+the browser; it does not invoke the native onda CLI.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --sample-rate)
-      sample_rate="${2:-}"
-      shift 2
-      ;;
-    --block-size)
-      block_size="${2:-}"
-      shift 2
-      ;;
     --serve)
       serve=1
       shift
@@ -37,92 +30,38 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "$script_dir/../../.." && pwd)"
-source_file="$script_dir/sine_wasm.onda"
-object_file="$script_dir/sine_wasm.o"
-meta_file="$script_dir/sine_wasm.onda.json"
-wasm_file="$script_dir/sine_wasm.wasm"
+demo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$demo_dir/../../.." && pwd)"
+backend_dir="$repo_root/packages/onda_binaryen_web"
+compiler_dir="$repo_root/crates/onda_compiler_web"
+compiler_out="$demo_dir/onda-compiler-web"
+binaryen_js="$backend_dir/node_modules/binaryen/index.js"
 
-invoke_onda() {
-  local packaged_onda="$repo_root/bin/onda"
-  local release_onda="$repo_root/target/release/onda"
-
-  if [[ -x "$packaged_onda" ]]; then
-    "$packaged_onda" "$@"
-    return
-  fi
-
-  if command -v onda >/dev/null 2>&1; then
-    "$(command -v onda)" "$@"
-    return
-  fi
-
-  if [[ -x "$release_onda" ]]; then
-    "$release_onda" "$@"
-    return
-  fi
-
-  if [[ ! -f "$repo_root/Cargo.toml" ]]; then
-    echo "onda not found in bin/ or PATH, and this demo is not running from a source checkout with Cargo.toml." >&2
-    exit 1
-  fi
-
-  if [[ -f "$repo_root/scripts/use-llvm-env.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "$repo_root/scripts/use-llvm-env.sh" --flavor auto --version 21.1.2
-  fi
-
-  cargo build --release -p onda_cli
-  "$release_onda" "$@"
-}
-
-get_wasm_ld() {
-  local sysroot candidate
-  sysroot="$(rustc --print sysroot)"
-
-  while IFS= read -r candidate; do
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done < <(find "$sysroot/lib/rustlib" -path '*/bin/gcc-ld/wasm-ld' -type f 2>/dev/null)
-
-  if command -v wasm-ld >/dev/null 2>&1; then
-    command -v wasm-ld
-    return 0
-  fi
-
-  echo "wasm-ld not found. Install the Rust toolchain or add wasm-ld to PATH." >&2
+if ! command -v wasm-pack >/dev/null 2>&1; then
+  echo "wasm-pack is required. Install it from https://rustwasm.github.io/wasm-pack/installer/." >&2
   exit 1
-}
+fi
 
-pushd "$repo_root" >/dev/null
-invoke_onda compile "$source_file" \
-  --emit obj \
-  --target-triple wasm32-unknown-unknown \
-  --sample-rate "$sample_rate" \
-  --block-size "$block_size" \
-  --output "$object_file" \
-  --meta-out "$meta_file"
-popd >/dev/null
+if [[ ! -f "$binaryen_js" ]]; then
+  npm install --prefix "$backend_dir"
+fi
 
-wasm_ld="$(get_wasm_ld)"
-"$wasm_ld" "$object_file" \
-  --no-entry \
-  --export=onda_init \
-  --export=onda_process \
-  --export=__heap_base \
-  --export-memory \
-  --initial-memory=131072 \
-  -o "$wasm_file"
+wasm-pack build "$compiler_dir" \
+  --target web \
+  --release \
+  --out-dir "$compiler_out" \
+  --out-name onda_compiler_web
 
-echo "Wrote object: $object_file"
-echo "Wrote metadata: $meta_file"
-echo "Wrote wasm: $wasm_file"
+cp "$binaryen_js" "$demo_dir/binaryen.js"
+cp "$backend_dir/src/index.js" "$demo_dir/onda-binaryen-web.js"
+cp "$backend_dir/src/exact-math.js" "$demo_dir/exact-math.js"
+cp "$backend_dir/src/messagepack.js" "$demo_dir/messagepack.js"
+
+echo "Built the in-browser Onda compiler in: $compiler_out"
+echo "Staged the Binaryen backend in: $demo_dir"
 
 if [[ "$serve" == "1" ]]; then
-  pushd "$script_dir" >/dev/null
+  pushd "$demo_dir" >/dev/null
   node ./server.mjs
   popd >/dev/null
 fi

@@ -3,8 +3,8 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 
 use onda_codegen_llvm::{
-    lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, DeclaredEventParam,
-    DeclaredState, JitProgram, RuntimeAllocator,
+    jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredEventParam,
+    DeclaredState, JitProgram, MirCompileOptions, RuntimeAllocator, TargetOptLevel,
 };
 use onda_frontend::{parse_program, parse_program_file, DiagCode, Diagnostic, PrimitiveType};
 use onda_runtime::{
@@ -14,7 +14,9 @@ use onda_runtime::{
     trigger_event_by_index, trigger_event_by_index_unchecked, validate_bindings, validate_buffers,
     validate_inputs, validate_outputs, Instance, InstanceConfig,
 };
-use onda_semantics::{analyze_with_options, AnalysisOptions};
+use onda_semantics::{
+    analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedProgram,
+};
 
 pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESS_BEGIN_BLOCK as i32;
 pub const ONDA_PROCESS_END_BLOCK: i32 = onda_runtime::PROCESS_END_BLOCK as i32;
@@ -37,6 +39,23 @@ pub struct onda_compile_options_t {
     pub fast_math: i32,
     pub sample_rate: f32,
     pub block_size: i32,
+}
+
+fn compile_typed_mir(typed: TypedProgram, fast_math: bool) -> Result<JitProgram, Vec<Diagnostic>> {
+    let mir = lower_program_to_optimized_mir(&typed).map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|error| Diagnostic::internal(format!("MIR lowering failed: {error}")))
+            .collect::<Vec<_>>()
+    })?;
+    jit_program_from_optimized_mir_with_options(
+        mir,
+        MirCompileOptions {
+            fast_math,
+            opt_level: TargetOptLevel::O3,
+            ..MirCompileOptions::default()
+        },
+    )
 }
 
 #[allow(non_camel_case_types)]
@@ -368,11 +387,7 @@ unsafe fn onda_compile_impl(
         }
     };
 
-    let mut jit_options = CompileOptions::default();
-    jit_options.fast_math = options.fast_math != 0;
-    jit_options.sample_rate = options.sample_rate;
-    jit_options.block_size = options.block_size as usize;
-    let jit = match lower_and_jit_with_options(typed, jit_options) {
+    let jit = match compile_typed_mir(typed, options.fast_math != 0) {
         Ok(j) => j,
         Err(errs) => {
             let diag = errs
@@ -702,11 +717,7 @@ unsafe fn onda_compile_file_impl(
         }
     };
 
-    let mut jit_options = CompileOptions::default();
-    jit_options.fast_math = options.fast_math != 0;
-    jit_options.sample_rate = options.sample_rate;
-    jit_options.block_size = options.block_size as usize;
-    let jit = match lower_and_jit_with_options(typed, jit_options) {
+    let jit = match compile_typed_mir(typed, options.fast_math != 0) {
         Ok(j) => j,
         Err(errs) => {
             let diag = errs
@@ -1133,7 +1144,7 @@ pub unsafe extern "C" fn onda_bind_input(
     }
     let ptr = src_ptr.cast::<u8>();
     let bytes = src_bytes as usize;
-    match bind_input(&mut (*instance).inner, index as usize, ptr, bytes) {
+    match unsafe { bind_input(&mut (*instance).inner, index as usize, ptr, bytes) } {
         Ok(_) => 0,
         Err(_) => -2,
     }
@@ -1151,7 +1162,7 @@ pub unsafe extern "C" fn onda_bind_output(
     }
     let ptr = dst_ptr.cast::<u8>();
     let bytes = dst_bytes as usize;
-    match bind_output(&mut (*instance).inner, index as usize, ptr, bytes) {
+    match unsafe { bind_output(&mut (*instance).inner, index as usize, ptr, bytes) } {
         Ok(_) => 0,
         Err(_) => -2,
     }
@@ -1173,15 +1184,17 @@ pub unsafe extern "C" fn onda_bind_buffer(
     let Some(elem_ty) = primitive_type_from_i32(elem_type) else {
         return -1;
     };
-    match bind_buffer(
-        &mut (*instance).inner,
-        index as usize,
-        ptr.cast::<u8>(),
-        frames as usize,
-        channels as usize,
-        sample_rate,
-        elem_ty,
-    ) {
+    match unsafe {
+        bind_buffer(
+            &mut (*instance).inner,
+            index as usize,
+            ptr.cast::<u8>(),
+            frames as usize,
+            channels as usize,
+            sample_rate,
+            elem_ty,
+        )
+    } {
         Ok(_) => 0,
         Err(_) => -2,
     }
@@ -1245,15 +1258,21 @@ pub unsafe extern "C" fn onda_instance_snapshot_state(
     if instance.is_null() || out_capacity < 0 {
         return -1;
     }
-    let bytes = (*instance).inner.snapshot_state_bytes();
-    let required = match i32::try_from(bytes.len()) {
+    let required = match i32::try_from((*instance).inner.state_size_bytes()) {
         Ok(value) => value,
         Err(_) => return -1,
     };
     if out_bytes.is_null() || out_capacity < required {
         return required;
     }
-    ptr::copy_nonoverlapping(bytes.as_ptr(), out_bytes.cast::<u8>(), bytes.len());
+    let destination = std::slice::from_raw_parts_mut(out_bytes.cast::<u8>(), required as usize);
+    if (*instance)
+        .inner
+        .write_snapshot_state_bytes(destination)
+        .is_err()
+    {
+        return -1;
+    }
     required
 }
 

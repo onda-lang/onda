@@ -8,7 +8,10 @@ eyebrow: What comes next
 
 # Ideas and roadmap
 
-Onda currently includes a compiler, LLVM JIT, real-time and offline hosts, an LSP, a C API, processors, graphs, events, generics, and a standard library. The roadmap covers planned language, tooling, backend, and runtime work.
+Onda currently includes a MIR-first compiler, LLVM JIT/AOT codegen, a browser compiler and
+Binaryen WebAssembly backend, real-time and offline hosts, an LSP, a C API, processors, graphs,
+events, generics, and a standard library. The roadmap covers planned language, tooling, backend,
+and runtime work.
 
 This page summarizes design directions. The detailed working notes live in [`docs/todo`](https://github.com/onda-lang/onda/tree/main/docs/todo).
 
@@ -31,14 +34,43 @@ The editor would create processor instances in `init`, emit connections into `gr
 
 ## Onda in the browser
 
-The WebAssembly roadmap builds from capabilities that already exist: the LLVM backend can emit WebAssembly objects, and the repository includes an AudioWorklet example.
+The browser path now works end to end:
 
-Planned product layers include:
+```text
+editable in-memory Onda source
+  -> onda_compiler_web + embedded stdlib
+  -> validated schema-5 MIR MessagePack
+  -> Binaryen.js backend
+  -> DSP Wasm + host metadata
+  -> AudioWorklet
+```
 
-1. A first-class `.wasm` export command around the existing object and linker path.
-2. Reusable JavaScript/TypeScript AudioWorklet host glue.
-3. A browser playground with editing, diagnostics, playback, and generated parameter controls.
-4. Potential in-browser compilation through a smaller Binaryen-based backend.
+The checked-in playground includes a source editor, structured diagnostics, generated parameter and
+event controls, reset, and playback. `onda_compiler_web` also exposes a virtual multi-file project
+API even though the current UI edits one source at a time. The Binaryen backend consumes schema 5,
+and the reference AudioWorklet maps arbitrary Web Audio callback sizes onto the segmented
+`(start_frame, frames, flags)` contract with a persistent compile-block cursor.
+
+The remaining work is:
+
+1. Package, compress, cache, and version the compiler Wasm, Binaryen assets, and reusable JavaScript/
+   TypeScript AudioWorklet host glue.
+2. Extend the playground from its current single-source editor to multi-file projects, external
+   buffer loading/inspection, control-output display, microphone/input routing, export/download,
+   and shareable project URLs.
+3. Add seamless or crossfaded hot swap with an explicit state/parameter migration policy; the
+   current editor recompiles by restarting audio and initializing fresh DSP state.
+4. Add automated browser audio smoke coverage and compatibility passes for Chromium, Firefox, and
+   Safari, then harden secure-context deployment, accessibility, mobile/autoplay behavior, and
+   requested-versus-actual AudioContext sample-rate handling.
+5. Add a first-class `.wasm` CLI export around the independent native-hosted LLVM object and linker
+   path.
+6. Continue cross-backend performance work. Exact WebAssembly FMA currently uses a semantically
+   correct but expensive BigInt host import, and the pinned Binaryen/compiler assets need production
+   transfer-size and browser compile-latency measurements. The current reproducible development
+   measurements live in [the backend benchmark report](BACKEND_BENCHMARKS.md).
+7. Move compiler and Binaryen work off the page's main thread so larger programs do not stall editor
+   interaction.
 
 The long-term experience is a shareable Onda patch that compiles and produces sound without a local toolchain.
 
@@ -62,7 +94,7 @@ Beyond native JIT and object emission, possible export targets include:
 
 - A convenient WebAssembly module and AudioWorklet package.
 - A self-contained C++ header backend for direct host integration.
-- Better metadata packaging for ahead-of-time artifacts.
+- Embedded or bundled metadata options beyond the current AOT sidecar.
 
 ## Help shape the direction
 

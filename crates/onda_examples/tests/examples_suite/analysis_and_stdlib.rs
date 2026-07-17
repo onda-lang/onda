@@ -2013,8 +2013,6 @@ fn convolution_wav_impulse_example_reproduces_ir_from_event_payload() {
         src,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::Auto,
-
             sample_rate: 44_100.0,
 
             block_size: frames,

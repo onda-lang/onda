@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 cpal = { version = "0.18.1", features = ["pipewire", "realtime"] }
 libc = "0.2"
+onda_realtime = { path = "../onda_realtime" }
 
 [lib]
 path = "src/lib.rs"

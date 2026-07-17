@@ -124,7 +124,8 @@ int onda_trigger_event_by_index_unchecked(
    Zero-copy contract: runtime stores src_ptr and reads from it directly (no internal copy).
    src_ptr must remain valid, correctly sized, and at a stable address until this slot is
    rebound/unbound (null + 0 bytes) or the instance is destroyed.
-   src_ptr memory must be readable during processing.
+   src_ptr memory must be readable during processing and naturally aligned for the input's
+   declared primitive element type; misaligned bindings are rejected.
    Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
 int onda_bind_input(
   onda_instance_t* instance,
@@ -137,7 +138,8 @@ int onda_bind_input(
    Zero-copy contract: runtime stores dst_ptr and writes to it directly (no internal copy).
    dst_ptr must remain valid, correctly sized, and at a stable address until this slot is
    rebound/unbound (null + 0 bytes) or the instance is destroyed.
-   dst_ptr memory must be writable during processing.
+   dst_ptr memory must be writable during processing and naturally aligned for the output's
+   declared primitive element type; misaligned bindings are rejected.
    Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
 int onda_bind_output(
   onda_instance_t* instance,
@@ -150,7 +152,8 @@ int onda_bind_output(
    Zero-copy contract: runtime stores ptr and accesses it directly (no internal copy).
    ptr must remain valid, correctly sized for the declared shape, and at a stable address until
    this slot is rebound/unbound (null + 0 frames + 0 channels) or the instance is destroyed.
-   ptr memory must be writable during processing.
+   ptr memory must be writable during processing and naturally aligned for elem_type;
+   misaligned bindings are rejected.
    Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
 int onda_bind_buffer(
   onda_instance_t* instance,
@@ -189,7 +192,7 @@ int onda_reset_instance_state(onda_instance_t* instance);
 /* Returns the byte size of the instance state snapshot, or -1 on invalid instance handle. */
 int onda_instance_state_bytes(const onda_instance_t* instance);
 /*
- * Copies the full instance state snapshot.
+ * Copies the packed persistent-state snapshot. Compiler scratch and control-output mirrors are omitted.
  * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
  */
 int onda_instance_snapshot_state(
@@ -197,7 +200,7 @@ int onda_instance_snapshot_state(
   void* out_bytes,
   int out_capacity
 );
-/* Restores a full state snapshot copied from a compatible program/instance; returns 0 on success. */
+/* Restores a packed snapshot and resets omitted scratch to its post-init state; returns 0 on success. */
 int onda_instance_restore_state(
   onda_instance_t* instance,
   const void* bytes,
@@ -376,9 +379,9 @@ int onda_output_byte_offset(const onda_program_t* program, int index);
 int onda_control_output_byte_offset(const onda_program_t* program, int index);
 /* Returns parameter byte offset within packed param layout, or -1 if invalid. */
 int onda_param_byte_offset(const onda_program_t* program, int index);
-/* Returns state entry byte offset within the full instance state layout, or -1 if invalid. */
+/* Returns state entry byte offset within the packed persistent snapshot, or -1 if invalid. */
 int onda_state_byte_offset(const onda_program_t* program, int index);
-/* Returns total instance state byte size for this program, or -1 if invalid. */
+/* Returns the packed persistent snapshot byte size for this program, or -1 if invalid. */
 int onda_state_total_bytes(const onda_program_t* program);
 
 /* Returns 1 if input default exists, 0 if not, -1 if invalid. */

@@ -14,6 +14,26 @@ fn init_buffer_runtime_message(what: &str) -> String {
     )
 }
 
+fn infer_call_argument_scalar_type(expr: &Expr, env: ExprEnv<'_>) -> Option<PrimitiveType> {
+    let mut discarded = Vec::new();
+    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+        expr,
+        env.state_scalars,
+        env.declared_symbols,
+        Some(env.param_structs),
+        env.local_aliases,
+        env.local_array_aliases,
+        env.locals,
+        env.input_names,
+        env.output_names,
+        env.param_names,
+        env.struct_instances,
+        env.struct_defs,
+        env.proc_array_roots,
+        &mut discarded,
+    )
+}
+
 pub(crate) fn dynamic_param_surface_value_name<'a>(
     expr: &'a Expr,
     env: ExprEnv<'_>,
@@ -1159,6 +1179,16 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             && matches!(arg, Expr::Index { .. } | Expr::Var { .. })
                         {
                             continue;
+                        }
+                        if let Some(FnParamType::Primitive(expected)) = param_ty {
+                            let actual = infer_call_argument_scalar_type(arg, env);
+                            require_expr_assignable_type(
+                                arg,
+                                actual,
+                                *expected,
+                                &format!("function '{name}' argument '{}'", sig.params[idx]),
+                                errors,
+                            );
                         }
                         validate_expr(arg, env, errors);
                     } else if let Some(default) = sig.defaults.get(idx).and_then(|d| d.as_ref()) {

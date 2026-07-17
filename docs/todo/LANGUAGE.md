@@ -6,8 +6,8 @@
   - Improve overload diagnostics to show per-candidate ranking details.
   - Evaluate extending overloads from top-level `def` and struct methods to proc-local defs.
   - Document remaining overload edge cases for complex untyped array/buffer inference-heavy call sites.
-  - Evaluate banning recursion and mutual recursion for ordinary top-level `def` and struct methods, then marking lowered user defs/methods `alwaysinline` once the user-def call graph is guaranteed acyclic.
-  - If we take the no-recursion route, add an explicit semantic cycle check for ordinary `def`/method call graphs rather than relying on LLVM `alwaysinline` failures for diagnostics.
+  - Runtime recursion and mutual recursion are now rejected explicitly as unbounded realtime work;
+    keep cycle diagnostics precise as overloads and new callable forms are added.
 
 - `const` future follow-ups
   - Evaluate const-def overloads. Start with unique names per lexical scope unless reusing ordinary overload machinery is straightforward.
@@ -15,9 +15,12 @@
   - Consider local/proc-local const arrays if they prove useful.
   - Consider const structs or structural compile-time values if stdlib/table generation starts needing them.
   - Improve forward-reference and cycle diagnostics if the strict lexical model becomes annoying.
-  - Preserve the float-literal precision invariant as this code evolves:
-    decimal literals parse into `f64` AST values, untyped assignment inference still defaults them to `f32`,
-    and typed `f64` constants must not round through `f32`.
+  - Preserve the numeric-literal specialization invariant as this code evolves:
+    the AST may use `f64`/`i64` as its widest supported internal literal representation, but an
+    untyped literal is not yet a source-language `f64`/`i64`. Semantic context selects its concrete
+    type once; context-free assignment defaults to `f32`/`i32`, typed `f64` constants must not round
+    through `f32`, and concretely typed runtime expressions must not acquire implicit wider
+    intermediates.
 
 - Graph composition follow-ups
   - Keep the textual `graph` block as the source-of-truth model for any future visual graph editor.

@@ -28,6 +28,20 @@ pub(crate) struct OverloadRewriteEnv {
     pub(crate) buffer_types: HashMap<String, (PrimitiveType, TypedBufferChannels)>,
 }
 
+impl OverloadRewriteEnv {
+    pub(crate) fn shadow_binding(&mut self, name: &str) {
+        let child_prefix = format!("{name}.");
+        self.scalar_types
+            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
+        self.struct_instances
+            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
+        self.array_elem_types
+            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
+        self.buffer_types
+            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
+    }
+}
+
 fn overload_internal_name(public_name: &str, ordinal: usize) -> String {
     format!(
         "__onda_ovl_{}_{}",

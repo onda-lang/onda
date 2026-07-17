@@ -522,7 +522,18 @@ Compound types:
 
 ### Numeric Literals and Casts
 
-Untyped first assignment uses Onda defaults:
+Numeric literals and pure numeric constant expressions begin without a source
+machine width. During semantic analysis they retain the widest supported
+literal representation until a concrete numeric context selects `f32`, `f64`,
+`i32`, or `i64`.
+
+A concrete context can come from an annotation, a function parameter or return
+type, another concretely typed operand, an interface/state/array element type,
+or generic specialization at a call site. Conversion happens once at that
+boundary. Runtime arithmetic then executes at the selected width; Onda does not
+silently evaluate an `f32` expression through `f64` intermediates.
+
+When no context exists, first assignment uses Onda defaults:
 
 ```onda
 sample:
@@ -530,24 +541,28 @@ sample:
   n = 5    # i32 when it fits, otherwise i64
 ```
 
-Pure numeric literal expressions adapt to the surrounding numeric context:
-
-```onda
-init:
-  phase: f32 = 0.0
-
-block:
-  tau = TWO_PI
-  incr = freq * TWO_PI / SR
-```
-
-Although `TWO_PI` is `f64`, pure numeric expressions such as `TWO_PI / SR` can
-be narrowed automatically in an `f32` context. Use explicit casts when you want
-to force a type:
+Pure numeric expressions adapt directly to their surrounding context:
 
 ```onda
 sample:
-  wide = f64(PI * 2.0)
+  narrow: f32 = 0.0
+  wide: f64 = 0.0
+
+  a = narrow + 0.1  # f32 addition
+  b = wide + 0.1    # f64 addition
+  c = 0.1           # no context, so f32
+```
+
+Builtin constants such as `TWO_PI` have an `f64` standalone type, but a pure
+compile-time expression such as `freq * TWO_PI / SR` can convert directly into
+an `f32` context. This does not create an `f64` runtime calculation followed by
+an `f32` truncation.
+
+Use an explicit annotation or cast when wider runtime evaluation is intended:
+
+```onda
+sample:
+  wide = f64(narrow) * 0.1
   count = i64(0)
 ```
 
@@ -727,7 +742,12 @@ Rules:
 - `const NAME: T[N] = [ ... ]` declares a fixed-size const array.
 - `const NAME: T[] = expr` infers the concrete array length from the initializer.
 - Inferred-length const array initializers can be literals, existing const arrays, const-array slices, or array-returning `const def` calls.
-- Untyped scalar const declarations preserve full `f64` or `i64` precision until the use site applies normal type rules.
+- Untyped scalar const declarations remain contextual compile-time numerics and preserve the
+  widest supported literal representation until each use site selects a concrete scalar type.
+- A typed const fixes its scalar type at the declaration. An untyped pure numeric const may
+  specialize directly to `f32` in one context and `f64` in another.
+- Once a numeric expression is concretely typed, every runtime operation uses that width and
+  observes that type's normal rounding semantics. Use an explicit cast to request wider evaluation.
 - Reassignment, forward references, recursion, and mutual recursion are rejected.
 
 `const def` declares compile-time helper functions:
@@ -795,9 +815,14 @@ Return rules:
 
 - A `def` can return a primitive scalar.
 - A `def` can return a tuple of primitive scalars.
+- A value-returning `def` must return a value on every reachable path. A
+  return nested only in a `for` or `while` loop is not sufficient because the
+  loop may execute zero times.
 - Explicit annotations can use primitive scalars, tuples of primitive scalars, and generic primitive placeholders belonging to the current generic owner.
 - Returning structs, arrays, or buffers is not supported.
 - Return checking follows ordinary assignment rules: exact match and implicit widening are allowed; narrowing requires an explicit cast.
+- Runtime def call graphs must be acyclic. Direct and mutual recursion are
+  rejected because they do not provide a statically bounded realtime workload.
 
 Top-level `def` bodies are lexical-local. Top-level runtime symbols such as
 inputs, outputs, params, buffers, and `init` state are not in scope unless

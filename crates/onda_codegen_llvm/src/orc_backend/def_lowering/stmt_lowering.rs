@@ -478,7 +478,7 @@ unsafe fn try_lower_def_typed_array_decl(
         onda_frontend::ArrayElemType::Struct(name) => {
             return Err(Diagnostic::internal(format!(
                 "typed array declaration '{target_name}: {name}[N]' is not yet supported in def lowering"
-            )))
+            )));
         }
     };
     let len = eval_const_data_size_expr(&spec.size, ctx.sample_rate, ctx.block_size)?;

@@ -18,6 +18,7 @@ hound = "3.5.1"
 
 [dev-dependencies]
 onda_frontend = { path = "../onda_frontend" }
+onda_mir = { path = "../onda_mir" }
 onda_semantics = { path = "../onda_semantics" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_runtime = { path = "../onda_runtime" }

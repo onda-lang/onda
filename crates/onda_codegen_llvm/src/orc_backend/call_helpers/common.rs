@@ -609,7 +609,7 @@ pub(in crate::orc_backend) fn eval_const_default_expr_typed(
                     return Err(Diagnostic::internal(format!(
                         "default bitwise-not expression requires integer operand, got {:?}",
                         ty
-                    )))
+                    )));
                 }
             })
         }

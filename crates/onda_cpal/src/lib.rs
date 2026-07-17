@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
+pub use onda_realtime::configure_current_thread_audio_fp_mode as configure_current_thread_fp_mode;
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
@@ -580,36 +581,6 @@ fn with_stderr_silenced<T>(f: impl FnOnce() -> T) -> T {
         result
     }
 }
-
-thread_local! {
-    static REALTIME_FP_MODE_CONFIGURED: Cell<bool> = const { Cell::new(false) };
-}
-
-pub fn configure_current_thread_fp_mode() {
-    REALTIME_FP_MODE_CONFIGURED.with(|configured| {
-        if configured.get() {
-            return;
-        }
-        configure_fp_mode();
-        configured.set(true);
-    });
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn configure_fp_mode() {
-    // Flush denormals to zero to prevent stalls in feedback/smoothing paths.
-    unsafe {
-        let mut csr = 0_u32;
-        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags));
-        let desired = csr | (1 << 15) | (1 << 6);
-        if desired != csr {
-            std::arch::asm!("ldmxcsr [{}]", in(reg) &desired, options(nostack, preserves_flags));
-        }
-    }
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn configure_fp_mode() {}
 
 #[cfg(test)]
 mod tests {

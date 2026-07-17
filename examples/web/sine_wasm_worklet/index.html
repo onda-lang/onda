@@ -3,74 +3,162 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Onda Sine Wasm Worklet Live</title>
+    <title>Onda Browser Playground</title>
     <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+        background: #0b1015;
+        color: #e8eef5;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         margin: 0;
-        padding: 24px;
-        background: #11161c;
-        color: #e8eef5;
-        font: 14px/1.5 ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 12% 0%, #17312a 0, transparent 34rem),
+          #0b1015;
       }
 
       main {
-        max-width: 840px;
+        width: min(1180px, calc(100% - 32px));
         margin: 0 auto;
+        padding: 24px 0 40px;
       }
 
-      h1 {
-        margin: 0 0 8px;
-        font-size: 20px;
-      }
-
-      p {
-        margin: 0 0 16px;
-        color: #9cb0c3;
-      }
-
-      .row {
+      header,
+      .toolbar,
+      .control-grid {
         display: flex;
         flex-wrap: wrap;
         gap: 12px;
         align-items: center;
-        margin-bottom: 16px;
+      }
+
+      header {
+        justify-content: space-between;
+        margin-bottom: 18px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        margin-bottom: 4px;
+        font-size: clamp(22px, 4vw, 34px);
+      }
+
+      h2 {
+        margin-bottom: 12px;
+        font-size: 15px;
+      }
+
+      p {
+        color: #9cb0c3;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.8fr);
+        gap: 16px;
       }
 
       .panel {
-        margin: 0 0 16px;
+        min-width: 0;
         padding: 16px;
         border: 1px solid #2a3642;
         border-radius: 16px;
-        background: #0b1015;
+        background: rgb(11 16 21 / 88%);
+        box-shadow: 0 20px 70px rgb(0 0 0 / 24%);
+      }
+
+      .stack {
+        display: grid;
+        gap: 16px;
+      }
+
+      textarea {
+        display: block;
+        width: 100%;
+        min-height: 520px;
+        resize: vertical;
+        padding: 16px;
+        border: 1px solid #314152;
+        border-radius: 12px;
+        outline: none;
+        background: #070b0f;
+        color: #e8eef5;
+        font: inherit;
+        line-height: 1.55;
+        tab-size: 2;
+      }
+
+      textarea:focus,
+      input:focus {
+        border-color: #3e9c73;
+        box-shadow: 0 0 0 3px rgb(62 156 115 / 16%);
+      }
+
+      button,
+      input {
+        font: inherit;
       }
 
       button {
-        padding: 10px 14px;
+        padding: 9px 13px;
         border: 1px solid #314152;
-        border-radius: 12px;
+        border-radius: 11px;
         background: #18212b;
         color: #dce7f2;
-        font: inherit;
         cursor: pointer;
+      }
+
+      button.primary {
+        border-color: #2b8c61;
+        background: #176440;
       }
 
       button:disabled {
         cursor: default;
-        opacity: 0.6;
+        opacity: 0.55;
       }
 
       label {
         display: grid;
         gap: 6px;
-        min-width: 220px;
+        color: #b8c7d5;
+      }
+
+      input[type="number"],
+      input[type="text"] {
+        width: 100%;
+        min-width: 0;
+        padding: 8px 10px;
+        border: 1px solid #314152;
+        border-radius: 9px;
+        background: #0d141b;
+        color: #e8eef5;
       }
 
       input[type="range"] {
         width: 100%;
       }
 
+      .control-grid > label {
+        flex: 1 1 140px;
+      }
+
       .status {
-        display: inline-block;
+        display: inline-flex;
+        align-items: center;
+        min-height: 34px;
         padding: 6px 10px;
         border: 1px solid #314152;
         border-radius: 999px;
@@ -90,41 +178,127 @@
         color: #f0a3ad;
       }
 
+      .diagnostics {
+        min-height: 52px;
+        max-height: 230px;
+        overflow: auto;
+        margin: 12px 0 0;
+        padding: 12px;
+        border-radius: 10px;
+        background: #070b0f;
+        color: #f0a3ad;
+        white-space: pre-wrap;
+      }
+
+      .diagnostics:empty {
+        display: none;
+      }
+
+      .dynamic-controls {
+        display: grid;
+        gap: 12px;
+      }
+
+      .dynamic-control {
+        display: grid;
+        gap: 7px;
+        padding: 11px;
+        border: 1px solid #26323e;
+        border-radius: 11px;
+        background: #0d141b;
+      }
+
+      .dynamic-control small {
+        color: #7890a5;
+      }
+
+      .empty {
+        color: #7890a5;
+      }
+
       code {
         color: #9de2be;
+      }
+
+      @media (max-width: 820px) {
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        textarea {
+          min-height: 430px;
+        }
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>Onda WebAssembly AudioWorklet Live</h1>
-      <p>This page loads the compiled Onda wasm module and lets you start the sine patch in a real <code>AudioContext</code>.</p>
-
-      <div class="panel">
-        <div class="row">
-          <button type="button" data-toggle disabled>Loading...</button>
-          <span class="status" data-status>Loading assets...</span>
+      <header>
+        <div>
+          <h1>Onda Browser Playground</h1>
+          <p>Edit Onda, compile to schema-5 MIR and WebAssembly in this page, then play it in an AudioWorklet.</p>
         </div>
+        <span class="status" data-status>Loading compiler…</span>
+      </header>
 
-        <div class="row">
-          <label>
-            <span>Frequency: <span data-frequency-value>440</span> Hz</span>
-            <input type="range" min="40" max="1200" step="1" value="440" data-frequency />
-          </label>
+      <div class="workspace">
+        <section class="panel">
+          <div class="toolbar">
+            <button class="primary" type="button" data-compile disabled>Compile</button>
+            <button type="button" data-toggle disabled>Start audio</button>
+            <button type="button" data-reset disabled>Reset DSP</button>
+          </div>
 
-          <label>
-            <span>Gain: <span data-gain-value>0.15</span></span>
-            <input type="range" min="0" max="0.4" step="0.01" value="0.15" data-gain />
-          </label>
-        </div>
-      </div>
+          <div class="control-grid" style="margin: 14px 0">
+            <label>
+              <span>Sample rate</span>
+              <input type="number" min="8000" max="384000" step="1" value="48000" data-sample-rate />
+            </label>
+            <label>
+              <span>Compile block size</span>
+              <input type="number" min="1" max="8192" step="1" value="128" data-block-size />
+            </label>
+            <label>
+              <span>Master gain</span>
+              <input type="range" min="0" max="0.5" step="0.01" value="0.15" data-gain />
+            </label>
+          </div>
 
-      <div class="panel">
-        <strong>How to use</strong>
-        <p>Click <code>Start Audio</code>. Chrome should ask for no extra permissions, but autoplay requires a user gesture, which is why this page does not auto-start.</p>
-        <p>If you hear a sine, the wasm module, metadata, worklet glue, and runtime ABI are all lined up correctly.</p>
+          <textarea spellcheck="false" aria-label="Onda source editor" data-source></textarea>
+          <pre class="diagnostics" aria-live="polite" data-diagnostics></pre>
+        </section>
+
+        <aside class="stack">
+          <section class="panel">
+            <h2>Parameters</h2>
+            <div class="dynamic-controls" data-params>
+              <span class="empty">Compile a program to inspect parameters.</span>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Events</h2>
+            <div class="dynamic-controls" data-events>
+              <span class="empty">Compile a program to inspect events.</span>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Pipeline</h2>
+            <p data-summary>Loading the browser compiler and Binaryen…</p>
+            <p><code>source → semantic analysis → MIR → Binaryen → Wasm → AudioWorklet</code></p>
+          </section>
+        </aside>
       </div>
     </main>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "binaryen": "./binaryen.js"
+        }
+      }
+    </script>
     <script type="module" src="./live.js"></script>
   </body>
-  </html>
+</html>

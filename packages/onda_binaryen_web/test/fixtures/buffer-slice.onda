@@ -1,0 +1,25 @@
+outs:
+  out1
+
+buffers:
+  table: f32
+  bus: f32[2]
+
+def bump_buffer_impl(buf: buffer[f32], index: i32):
+  whole = buf[:]
+  value = buf[index] + whole[index] - whole[index]
+  unsafe_write(buf, index, value + 1.0)
+  return value + f32(buf.len() - 4) + f32(buf.chans() - 1) + buf.samplerate() - 10.0
+
+def bump_buffer(buf: buffer[f32], index: i32):
+  return bump_buffer_impl(buf, index)
+
+init:
+  cursor = 0
+
+sample:
+  mono = bump_buffer(table, cursor)
+  right = bus[1][cursor]
+  bus[0][cursor] = right + 2.0
+  out1 = mono + right + f32(table.len()) + f32(table.chans()) + f32(bus.chans()) + table.samplerate()
+  cursor = (cursor + 1) % 4

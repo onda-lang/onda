@@ -955,7 +955,7 @@ fn draw_scope(
                 egui::pos2(rect.left(), center_y),
                 egui::pos2(rect.right(), center_y),
             ],
-            egui::Stroke::new(1.0, theme.scope_grid),
+            egui::Stroke::new(1.0_f32, theme.scope_grid),
         );
 
         let mut points = Vec::with_capacity(frames);
@@ -968,7 +968,7 @@ fn draw_scope(
         }
         painter.add(egui::Shape::line(
             points,
-            egui::Stroke::new(1.5, stroke_color),
+            egui::Stroke::new(1.5_f32, stroke_color),
         ));
     }
 }
@@ -1048,21 +1048,21 @@ fn apply_run_theme(ctx: &egui::Context, theme: &RunTheme) {
     visuals.extreme_bg_color = theme.menu_fill;
     visuals.code_bg_color = theme.menu_fill;
     visuals.selection.bg_fill = theme.accent_soft;
-    visuals.selection.stroke = egui::Stroke::new(1.0, theme.accent);
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, theme.accent);
     visuals.widgets.noninteractive.bg_fill = theme.panel_fill;
     visuals.widgets.inactive.bg_fill = theme.accent_soft;
     visuals.widgets.inactive.weak_bg_fill = theme.panel_tint;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, theme.border);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border);
     visuals.widgets.hovered.bg_fill = theme.accent;
     visuals.widgets.hovered.weak_bg_fill = theme.accent_soft;
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, theme.accent_hover);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, theme.accent_hover);
     visuals.widgets.active.bg_fill = theme.accent_soft;
     visuals.widgets.active.weak_bg_fill = theme.accent_soft;
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, theme.accent);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, theme.accent);
     visuals.widgets.open.bg_fill = theme.menu_fill;
     visuals.widgets.open.weak_bg_fill = theme.menu_fill;
-    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, theme.border);
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, theme.border);
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, theme.border);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border);
     visuals.widgets.noninteractive.weak_bg_fill = theme.panel_tint;
     visuals.window_corner_radius = 14.0.into();
     visuals.menu_corner_radius = 12.0.into();

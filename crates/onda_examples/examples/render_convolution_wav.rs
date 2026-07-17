@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use onda_codegen_llvm::{CompileOptions, ExecutionBackend, TargetOptLevel};
+use onda_codegen_llvm::{CompileOptions, TargetOptLevel};
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{
     bind_output, create_instance, process_checked, trigger_event_by_index, InstanceConfig,
@@ -96,7 +96,6 @@ fn main() -> Result<(), Diagnostic> {
     let jit = onda_codegen_llvm::lower_and_jit_with_options(
         typed,
         CompileOptions {
-            backend: ExecutionBackend::Auto,
             sample_rate,
             block_size: frames,
             fast_math: false,
@@ -126,7 +125,7 @@ fn main() -> Result<(), Diagnostic> {
     trigger_event_by_index(&mut instance, event_idx, &payload)?;
 
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
-    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len())?;
+    unsafe { bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len())? };
     process_checked(&mut instance, frames)?;
 
     let full = out_bytes

@@ -1,8 +1,10 @@
 use super::{
-    parse_args, Command, CompileEmit, DaemonCommand, RunCommand, RunHostKind,
+    parse_args, run_compile, Command, CompileEmit, DaemonCommand, RunCommand, RunHostKind,
     DEFAULT_PLAY_BLOCK_FRAMES,
 };
-use onda_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
+use onda_codegen_llvm::{
+    TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
+};
 use onda_frontend::{
     parse_program, Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
 };
@@ -236,6 +238,260 @@ fn parse_compile_accepts_object_emit_and_meta_out() {
         }
         _ => panic!("expected compile command"),
     }
+}
+
+#[test]
+fn parse_compile_accepts_mir_emit() {
+    let cmd = parse_args(
+        ["onda", "compile", "x.onda", "--emit", "mir"]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .expect("MIR emit args should parse");
+    match cmd {
+        Command::Compile { emit, .. } => assert_eq!(emit, CompileEmit::Mir),
+        _ => panic!("expected compile command"),
+    }
+}
+
+#[test]
+fn parse_compile_accepts_mir_json_emit() {
+    let cmd = parse_args(
+        ["onda", "compile", "x.onda", "--emit", "mir-json"]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .expect("MIR JSON emit args should parse");
+    match cmd {
+        Command::Compile { emit, .. } => assert_eq!(emit, CompileEmit::MirJson),
+        _ => panic!("expected compile command"),
+    }
+}
+
+#[test]
+fn parse_compile_accepts_mir_messagepack_emit() {
+    let cmd = parse_args(
+        ["onda", "compile", "x.onda", "--emit", "mir-messagepack"]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .expect("MIR MessagePack emit args should parse");
+    match cmd {
+        Command::Compile { emit, .. } => assert_eq!(emit, CompileEmit::MirMessagePack),
+        _ => panic!("expected compile command"),
+    }
+}
+
+#[test]
+fn compile_emits_complete_portable_mir_slice() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "onda-mir-source-{}-{stamp}.onda",
+        std::process::id()
+    ));
+    let output_path = std::env::temp_dir().join(format!(
+        "onda-mir-output-{}-{stamp}.mir",
+        std::process::id()
+    ));
+    std::fs::write(
+        &source_path,
+        "const Table: f32[2] = [0.25, 0.5]\ninit:\n  taps: f32[2] = [1.0, 2.0]\n  phase = 0.0\nevent reset(values: f32[2] = [0.0, 0.0]):\n  phase = values[0]\nsample:\n  phase = phase + Table[0]\n  taps[0] = phase\n  out1 = taps[0]\n",
+    )
+    .expect("source should write");
+
+    let result = run_compile(
+        &source_path,
+        CompileEmit::Mir,
+        Some(&output_path),
+        None,
+        48_000,
+        32,
+        false,
+        false,
+        false,
+        TargetConfig::host(),
+    );
+    let dump = std::fs::read_to_string(&output_path).expect("MIR output should exist");
+    let _ = std::fs::remove_file(&source_path);
+    let _ = std::fs::remove_file(&output_path);
+
+    result.expect("portable source should emit MIR");
+    assert!(dump.contains("entry init=@fn0 process=@fn1"));
+    assert!(dump.contains("const_data @data0 \"Table\""));
+    assert!(dump.contains("event @event0 \"reset\""));
+    assert!(dump.contains("store_output @out0"));
+    assert!(dump.contains("config sample_rate=48000.0 block_size=32"));
+}
+
+#[test]
+fn compile_emits_versioned_mir_json() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "onda-mir-json-source-{}-{stamp}.onda",
+        std::process::id()
+    ));
+    let output_path = std::env::temp_dir().join(format!(
+        "onda-mir-json-output-{}-{stamp}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &source_path,
+        "init:\n  phase = 0.0\nsample:\n  out1 = phase\n",
+    )
+    .expect("source should write");
+
+    let result = run_compile(
+        &source_path,
+        CompileEmit::MirJson,
+        Some(&output_path),
+        None,
+        48_000,
+        32,
+        false,
+        false,
+        false,
+        TargetConfig::host(),
+    );
+    let json = std::fs::read_to_string(&output_path).expect("MIR JSON output should exist");
+    let _ = std::fs::remove_file(&source_path);
+    let _ = std::fs::remove_file(&output_path);
+
+    result.expect("portable source should emit MIR JSON");
+    let mir = unsafe { onda_mir::from_json_with_producer_proofs(&json) }
+        .expect("trusted CLI output should decode as MIR JSON");
+    assert_eq!(mir.schema_version, onda_mir::MIR_SCHEMA_VERSION);
+    unsafe { onda_mir::validate_with_producer_proofs(&mir) }
+        .expect("CLI output should contain valid producer MIR");
+}
+
+#[test]
+fn compile_emits_versioned_mir_messagepack() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "onda-mir-messagepack-source-{}-{stamp}.onda",
+        std::process::id()
+    ));
+    let output_path = std::env::temp_dir().join(format!(
+        "onda-mir-messagepack-output-{}-{stamp}.msgpack",
+        std::process::id()
+    ));
+    std::fs::write(
+        &source_path,
+        "init:\n  phase = 0.0\nsample:\n  out1 = phase\n",
+    )
+    .expect("source should write");
+
+    let result = run_compile(
+        &source_path,
+        CompileEmit::MirMessagePack,
+        Some(&output_path),
+        None,
+        48_000,
+        32,
+        false,
+        false,
+        false,
+        TargetConfig::host(),
+    );
+    let bytes = std::fs::read(&output_path).expect("MIR MessagePack output should exist");
+    let _ = std::fs::remove_file(&source_path);
+    let _ = std::fs::remove_file(&output_path);
+
+    result.expect("portable source should emit MIR MessagePack");
+    let mir = unsafe { onda_mir::from_messagepack_with_producer_proofs(&bytes) }
+        .expect("trusted CLI output should decode as MIR MessagePack");
+    assert_eq!(mir.schema_version, onda_mir::MIR_SCHEMA_VERSION);
+}
+
+#[test]
+fn compile_object_writes_mir_native_metadata_sidecar() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "onda-object-source-{}-{stamp}.onda",
+        std::process::id()
+    ));
+    let object_path = std::env::temp_dir().join(format!(
+        "onda-object-output-{}-{stamp}.o",
+        std::process::id()
+    ));
+    let metadata_path = std::env::temp_dir().join(format!(
+        "onda-object-metadata-{}-{stamp}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &source_path,
+        r#"
+kouts { meter: f64 }
+init { held = 0.5 }
+block { meter = f64(held) }
+events {
+  load(values: f32[2]) { held = values[0] + values[1] }
+}
+"#,
+    )
+    .expect("source should write");
+
+    let result = run_compile(
+        &source_path,
+        CompileEmit::Object,
+        Some(&object_path),
+        Some(&metadata_path),
+        48_000,
+        64,
+        false,
+        false,
+        false,
+        TargetConfig::host(),
+    );
+    let object = std::fs::read(&object_path).expect("object output should exist");
+    let metadata_bytes = std::fs::read(&metadata_path).expect("metadata sidecar should exist");
+    let _ = std::fs::remove_file(&source_path);
+    let _ = std::fs::remove_file(&object_path);
+    let _ = std::fs::remove_file(&metadata_path);
+
+    result.expect("source should emit an object and metadata sidecar");
+    assert!(!object.is_empty());
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&metadata_bytes).expect("metadata should be valid JSON");
+    assert_eq!(metadata["format_version"], 2);
+    assert_eq!(metadata["compile"]["sample_rate"], 48_000.0);
+    assert_eq!(metadata["compile"]["block_size"], 64);
+    assert_eq!(metadata["exports"]["events"][0], "onda_event_0");
+    assert_eq!(metadata["metadata"]["control_outputs"][0]["name"], "meter");
+    let control_state_offset = metadata["metadata"]["control_outputs"][0]["state_byte_offset"]
+        .as_u64()
+        .expect("control output should expose its state offset");
+    let state_size = metadata["runtime"]["state_size_bytes"]
+        .as_u64()
+        .expect("sidecar should expose state size");
+    let state_align = metadata["runtime"]["state_align_bytes"]
+        .as_u64()
+        .expect("sidecar should expose state alignment");
+    let snapshot_size = metadata["runtime"]["snapshot_size_bytes"]
+        .as_u64()
+        .expect("sidecar should expose packed snapshot size");
+    assert!(control_state_offset < state_size);
+    assert!(state_align >= 1);
+    assert!(snapshot_size <= state_size);
+    assert_eq!(metadata["runtime"]["state_initialization"], "zeroed");
+    assert_eq!(metadata["runtime"]["snapshot_format_version"], 1);
+    assert_eq!(metadata["metadata"]["events"][0]["payload_bytes"], 8);
+    assert_eq!(
+        metadata["metadata"]["events"][0]["params"][0]["byte_size"],
+        8
+    );
 }
 
 #[test]

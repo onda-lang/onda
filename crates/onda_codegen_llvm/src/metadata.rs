@@ -1,18 +1,26 @@
-use std::collections::{HashMap, HashSet};
+#[cfg(any(feature = "llvm-orc", test))]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
 
-use onda_frontend::{AssignTarget, CallArg, Expr, PrimitiveType, Stmt};
+use onda_frontend::PrimitiveType;
+#[cfg(test)]
+use onda_frontend::{AssignTarget, CallArg, Expr, Stmt};
+#[cfg(test)]
 use onda_semantics::{
     builtins::{
         is_builtin_buffer_write_function_name, parse_unsafe_write2_instance_base,
         parse_unsafe_write_instance_base,
     },
-    TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue, TypedEventParamDefault,
-    TypedEventParamType, TypedFnParam, TypedProgram, TypedValueRange,
+    TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedEventParamDefault,
+    TypedEventParamType, TypedFnParam, TypedProgram,
 };
+use onda_semantics::{TypedConstValue, TypedValueRange};
 
-use crate::primitives::{
-    append_typed_const_bytes, primitive_type_bytes, primitive_type_name, typed_const_to_f64,
-};
+#[cfg(test)]
+use crate::primitives::append_typed_const_bytes;
+use crate::primitives::{primitive_type_bytes, primitive_type_name, typed_const_to_f64};
+#[cfg(test)]
 use crate::state_layout::{
     compute_arrays_layout, compute_state_layout, ArrayLayoutEntry, StateLayoutEntry,
 };
@@ -21,6 +29,7 @@ use crate::{
     DeclaredState,
 };
 
+#[cfg(any(feature = "llvm-orc", test))]
 pub(crate) struct ProgramMetadata {
     pub(crate) inputs: Vec<DeclaredIo>,
     pub(crate) outputs: Vec<DeclaredIo>,
@@ -122,6 +131,10 @@ impl DeclaredState {
 
     pub fn byte_offset(&self) -> usize {
         self.byte_offset
+    }
+
+    pub fn storage_byte_offset(&self) -> usize {
+        self.storage_byte_offset
     }
 
     pub fn byte_size(&self) -> usize {
@@ -226,6 +239,7 @@ impl DeclaredEventParam {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_program_metadata(typed: &TypedProgram) -> ProgramMetadata {
     let empty_defaults = HashMap::<String, TypedConstValue>::new();
     let empty_ranges = HashMap::<String, TypedValueRange>::new();
@@ -284,6 +298,7 @@ pub(crate) fn build_program_metadata(typed: &TypedProgram) -> ProgramMetadata {
     }
 }
 
+#[cfg(test)]
 fn build_state_byte_offsets_from_layout(
     state_layout: &[StateLayoutEntry],
     array_layout: &[ArrayLayoutEntry],
@@ -299,6 +314,7 @@ fn build_state_byte_offsets_from_layout(
         .collect()
 }
 
+#[cfg(test)]
 fn build_declared_state_entries(
     typed: &TypedProgram,
     state_layout: &[StateLayoutEntry],
@@ -311,32 +327,40 @@ fn build_declared_state_entries(
         .cloned()
         .collect::<HashSet<_>>();
     let mut out = Vec::with_capacity(state_layout.len() + array_layout.len());
+    let mut snapshot_offset = 0usize;
 
     for entry in state_layout {
         if !control_scalars.contains(&entry.name) {
+            let byte_size = primitive_type_bytes(entry.ty);
             out.push(DeclaredState {
                 name: entry.name.clone(),
                 elem_ty: entry.ty,
                 array_len: 1,
-                byte_offset: entry.offset,
+                byte_offset: snapshot_offset,
+                storage_byte_offset: entry.offset,
             });
+            snapshot_offset = snapshot_offset.saturating_add(byte_size);
         }
     }
 
     for entry in array_layout {
         if !control_arrays.contains(&entry.name) {
+            let byte_size = primitive_type_bytes(entry.elem_ty).saturating_mul(entry.len);
             out.push(DeclaredState {
                 name: entry.name.clone(),
                 elem_ty: entry.elem_ty,
                 array_len: entry.len,
-                byte_offset: entry.offset,
+                byte_offset: snapshot_offset,
+                storage_byte_offset: entry.offset,
             });
+            snapshot_offset = snapshot_offset.saturating_add(byte_size);
         }
     }
 
     out
 }
 
+#[cfg(test)]
 fn build_declared_port_ios(
     flat: &[String],
     types: &HashMap<String, PrimitiveType>,
@@ -397,6 +421,7 @@ fn build_declared_port_ios(
     out
 }
 
+#[cfg(test)]
 fn build_declared_param_ios(typed: &TypedProgram) -> Vec<DeclaredIo> {
     let arrays_by_offset = typed
         .param_arrays
@@ -449,6 +474,7 @@ fn build_declared_param_ios(typed: &TypedProgram) -> Vec<DeclaredIo> {
     out
 }
 
+#[cfg(test)]
 fn build_name_to_index(entries: &[DeclaredIo]) -> HashMap<String, usize> {
     entries
         .iter()
@@ -457,6 +483,7 @@ fn build_name_to_index(entries: &[DeclaredIo]) -> HashMap<String, usize> {
         .collect()
 }
 
+#[cfg(test)]
 fn build_event_name_to_index(entries: &[DeclaredEvent]) -> HashMap<String, usize> {
     entries
         .iter()
@@ -465,6 +492,7 @@ fn build_event_name_to_index(entries: &[DeclaredEvent]) -> HashMap<String, usize
         .collect()
 }
 
+#[cfg(test)]
 fn typed_const_values_to_bytes(values: &[TypedConstValue], elem_ty: PrimitiveType) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(primitive_type_bytes(elem_ty).saturating_mul(values.len()));
     for value in values {
@@ -473,6 +501,7 @@ fn typed_const_values_to_bytes(values: &[TypedConstValue], elem_ty: PrimitiveTyp
     bytes
 }
 
+#[cfg(test)]
 fn build_declared_buffers(typed: &TypedProgram) -> Vec<DeclaredBuffer> {
     let written_top_level_buffers = infer_written_top_level_buffers(typed);
     typed
@@ -492,11 +521,13 @@ fn build_declared_buffers(typed: &TypedProgram) -> Vec<DeclaredBuffer> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 struct DefBufferWriteSummary {
     buffer_param_writes: Vec<bool>,
     global_buffer_writes: HashSet<String>,
 }
 
+#[cfg(test)]
 fn infer_written_top_level_buffers(typed: &TypedProgram) -> HashSet<String> {
     let top_level_buffers = typed
         .buffers
@@ -655,6 +686,7 @@ fn infer_written_top_level_buffers(typed: &TypedProgram) -> HashSet<String> {
     written
 }
 
+#[cfg(test)]
 fn collect_stmt_buffer_write_usage(
     stmt: &Stmt,
     top_level_buffers: &HashSet<String>,
@@ -844,6 +876,7 @@ fn collect_stmt_buffer_write_usage(
     }
 }
 
+#[cfg(test)]
 fn collect_expr_buffer_write_usage(
     expr: &Expr,
     top_level_buffers: &HashSet<String>,
@@ -1040,6 +1073,7 @@ fn collect_expr_buffer_write_usage(
     }
 }
 
+#[cfg(test)]
 fn apply_user_call_buffer_write_usage(
     name: &str,
     args: &[CallArg],
@@ -1109,6 +1143,7 @@ fn apply_user_call_buffer_write_usage(
     global_writes.extend(callee_summary.global_buffer_writes.iter().cloned());
 }
 
+#[cfg(test)]
 fn bind_call_args_to_params<'a>(params: &[String], args: &'a [CallArg]) -> Vec<Option<&'a Expr>> {
     let mut bound = vec![None; params.len()];
     let mut next_positional = 0usize;
@@ -1131,6 +1166,7 @@ fn bind_call_args_to_params<'a>(params: &[String], args: &'a [CallArg]) -> Vec<O
     bound
 }
 
+#[cfg(test)]
 fn mark_buffer_symbol_write(
     base: &str,
     top_level_buffers: &HashSet<String>,
@@ -1148,6 +1184,7 @@ fn mark_buffer_symbol_write(
     }
 }
 
+#[cfg(test)]
 fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
     typed
         .events

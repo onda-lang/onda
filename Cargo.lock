@@ -3531,6 +3531,7 @@ dependencies = [
  "onda_daemon",
  "onda_egui",
  "onda_frontend",
+ "onda_mir",
  "onda_run",
  "onda_runtime",
  "onda_semantics",
@@ -3545,8 +3546,21 @@ version = "0.4.4"
 dependencies = [
  "llvm-sys",
  "onda_frontend",
+ "onda_mir",
  "onda_semantics",
  "serde",
+]
+
+[[package]]
+name = "onda_compiler_web"
+version = "0.4.4"
+dependencies = [
+ "onda_frontend",
+ "onda_mir",
+ "onda_semantics",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -3555,6 +3569,7 @@ version = "0.4.4"
 dependencies = [
  "cpal",
  "libc",
+ "onda_realtime",
 ]
 
 [[package]]
@@ -3586,6 +3601,7 @@ dependencies = [
  "hound",
  "onda_codegen_llvm",
  "onda_frontend",
+ "onda_mir",
  "onda_runtime",
  "onda_semantics",
 ]
@@ -3597,6 +3613,19 @@ dependencies = [
  "pest",
  "pest_derive",
 ]
+
+[[package]]
+name = "onda_mir"
+version = "0.4.4"
+dependencies = [
+ "rmp-serde",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "onda_realtime"
+version = "0.4.4"
 
 [[package]]
 name = "onda_run"
@@ -3620,6 +3649,7 @@ version = "0.4.4"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
+ "onda_realtime",
 ]
 
 [[package]]
@@ -3627,6 +3657,7 @@ name = "onda_semantics"
 version = "0.4.4"
 dependencies = [
  "onda_frontend",
+ "onda_mir",
 ]
 
 [[package]]
@@ -4451,6 +4482,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
 ]
 
 [[package]]

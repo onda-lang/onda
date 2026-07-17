@@ -12,6 +12,7 @@ llvm-orc = ["dep:llvm-sys"]
 
 [dependencies]
 onda_frontend = { path = "../onda_frontend" }
+onda_mir = { path = "../onda_mir" }
 onda_semantics = { path = "../onda_semantics" }
 llvm-sys = { version = "211.0.0", optional = true, features = ["no-llvm-linking"] }
 serde = { version = "1.0", features = ["derive"] }

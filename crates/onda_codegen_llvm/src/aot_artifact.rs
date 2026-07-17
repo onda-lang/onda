@@ -1,8 +1,18 @@
-use onda_semantics::{TypedConstValue, TypedProgram};
+#[cfg(feature = "llvm-orc")]
+use onda_semantics::TypedConstValue;
 use serde::Serialize;
 
-use crate::metadata::build_program_metadata;
+#[cfg(feature = "llvm-orc")]
+use crate::metadata::ProgramMetadata;
+#[cfg(feature = "llvm-orc")]
+use crate::mir_metadata::{build_mir_program_metadata, MirMetadataError, MirMetadataLayoutView};
+#[cfg(feature = "llvm-orc")]
 use crate::{DeclaredBufferChannels, TargetConfig};
+
+/// Current JSON sidecar schema emitted with native AOT objects.
+pub const AOT_METADATA_FORMAT_VERSION: u32 = 2;
+/// Packed persistent-state snapshot encoding described by the sidecar.
+pub const AOT_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AotObjectArtifact {
@@ -47,7 +57,20 @@ pub struct AotExports {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AotRuntimeInfo {
+    /// Physical target-layout state storage required by the native entrypoints.
     pub state_size_bytes: usize,
+    /// Minimum alignment required for the physical state allocation.
+    pub state_align_bytes: usize,
+    /// Required host initialization policy before calling `onda_init`.
+    pub state_initialization: &'static str,
+    /// Packed, target-independent persistent-state snapshot size.
+    pub snapshot_size_bytes: usize,
+    /// Version of the packed snapshot byte encoding.
+    pub snapshot_format_version: u32,
+    /// Byte order used for every scalar element in the packed snapshot.
+    pub snapshot_byte_order: &'static str,
+    /// Physical image a host must copy before overlaying restored persistent segments.
+    pub snapshot_restore_base: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,6 +81,8 @@ pub struct AotProgramMetadata {
     pub params: Vec<AotIoMetadata>,
     pub buffers: Vec<AotBufferMetadata>,
     pub events: Vec<AotEventMetadata>,
+    /// Persistent state only. Scratch and control-output mirrors are omitted.
+    pub states: Vec<AotStateMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,8 +126,54 @@ pub struct AotEventParamMetadata {
     pub has_default: bool,
 }
 
-pub(crate) fn build_aot_metadata(
-    typed: &TypedProgram,
+#[derive(Debug, Clone, Serialize)]
+pub struct AotStateMetadata {
+    pub name: String,
+    pub type_repr: String,
+    pub array_len: usize,
+    /// Bytes per scalar element; hosts need not parse `type_repr`.
+    pub element_size_bytes: usize,
+    /// Offset in the packed little-endian snapshot.
+    pub packed_snapshot_byte_offset: usize,
+    /// Offset in the target-layout physical state allocation.
+    pub physical_state_byte_offset: usize,
+    pub byte_size: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "llvm-orc")]
+pub(crate) fn build_mir_aot_metadata(
+    program: &onda_mir::Program,
+    layout: MirMetadataLayoutView<'_>,
+    fast_math: bool,
+    target: &TargetConfig,
+    resolved_triple: String,
+    resolved_cpu: String,
+    resolved_features: String,
+    state_size_bytes: usize,
+    state_align_bytes: usize,
+) -> Result<AotMetadata, MirMetadataError> {
+    let metadata = build_mir_program_metadata(program, layout)?;
+    Ok(build_aot_metadata_from_descriptors(
+        metadata,
+        program.interface.events.len(),
+        program.config.sample_rate,
+        program.config.block_size as usize,
+        fast_math,
+        target,
+        resolved_triple,
+        resolved_cpu,
+        resolved_features,
+        state_size_bytes,
+        state_align_bytes,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "llvm-orc")]
+fn build_aot_metadata_from_descriptors(
+    metadata: ProgramMetadata,
+    event_count: usize,
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
@@ -111,11 +182,14 @@ pub(crate) fn build_aot_metadata(
     resolved_cpu: String,
     resolved_features: String,
     state_size_bytes: usize,
+    state_align_bytes: usize,
 ) -> AotMetadata {
-    let metadata = build_program_metadata(typed);
-
+    let snapshot_size_bytes = metadata
+        .state_entries
+        .last()
+        .map_or(0, |state| state.byte_offset() + state.byte_size());
     AotMetadata {
-        format_version: 1,
+        format_version: AOT_METADATA_FORMAT_VERSION,
         target: AotTargetInfo {
             triple: resolved_triple,
             cpu: resolved_cpu,
@@ -133,11 +207,19 @@ pub(crate) fn build_aot_metadata(
         exports: AotExports {
             init: "onda_init".to_owned(),
             process: "onda_process".to_owned(),
-            events: (0..typed.events.len())
+            events: (0..event_count)
                 .map(|idx| format!("onda_event_{idx}"))
                 .collect(),
         },
-        runtime: AotRuntimeInfo { state_size_bytes },
+        runtime: AotRuntimeInfo {
+            state_size_bytes,
+            state_align_bytes,
+            state_initialization: "zeroed",
+            snapshot_size_bytes,
+            snapshot_format_version: AOT_SNAPSHOT_FORMAT_VERSION,
+            snapshot_byte_order: "little_endian",
+            snapshot_restore_base: "post_init_physical_state_image",
+        },
         metadata: AotProgramMetadata {
             inputs: metadata.inputs.iter().map(map_io_metadata).collect(),
             outputs: metadata.outputs.iter().map(map_io_metadata).collect(),
@@ -149,10 +231,16 @@ pub(crate) fn build_aot_metadata(
             params: metadata.params.iter().map(map_io_metadata).collect(),
             buffers: metadata.buffers.iter().map(map_buffer_metadata).collect(),
             events: metadata.events.iter().map(map_event_metadata).collect(),
+            states: metadata
+                .state_entries
+                .iter()
+                .map(map_state_metadata)
+                .collect(),
         },
     }
 }
 
+#[cfg(feature = "llvm-orc")]
 fn map_io_metadata(io: &crate::DeclaredIo) -> AotIoMetadata {
     AotIoMetadata {
         name: io.name().to_owned(),
@@ -168,6 +256,7 @@ fn map_io_metadata(io: &crate::DeclaredIo) -> AotIoMetadata {
     }
 }
 
+#[cfg(feature = "llvm-orc")]
 fn map_buffer_metadata(buffer: &crate::DeclaredBuffer) -> AotBufferMetadata {
     let (channels, static_channels) = match buffer.channels() {
         DeclaredBufferChannels::Mono => ("mono".to_owned(), Some(1)),
@@ -183,6 +272,7 @@ fn map_buffer_metadata(buffer: &crate::DeclaredBuffer) -> AotBufferMetadata {
     }
 }
 
+#[cfg(feature = "llvm-orc")]
 fn map_event_metadata(event: &crate::DeclaredEvent) -> AotEventMetadata {
     AotEventMetadata {
         name: event.name().to_owned(),
@@ -195,6 +285,20 @@ fn map_event_metadata(event: &crate::DeclaredEvent) -> AotEventMetadata {
     }
 }
 
+#[cfg(feature = "llvm-orc")]
+fn map_state_metadata(state: &crate::DeclaredState) -> AotStateMetadata {
+    AotStateMetadata {
+        name: state.name().to_owned(),
+        type_repr: state.type_repr(),
+        array_len: state.array_len(),
+        element_size_bytes: state.byte_size() / state.array_len(),
+        packed_snapshot_byte_offset: state.byte_offset(),
+        physical_state_byte_offset: state.storage_byte_offset(),
+        byte_size: state.byte_size(),
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
 fn map_event_param_metadata(param: &crate::DeclaredEventParam) -> AotEventParamMetadata {
     AotEventParamMetadata {
         name: param.name().to_owned(),
@@ -207,6 +311,7 @@ fn map_event_param_metadata(param: &crate::DeclaredEventParam) -> AotEventParamM
     }
 }
 
+#[cfg(feature = "llvm-orc")]
 fn format_const_value(value: TypedConstValue) -> String {
     match value {
         TypedConstValue::F32(v) => v.to_string(),

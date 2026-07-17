@@ -594,7 +594,8 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                         if values.len() != elem_tys.len() {
                             return Err(Diagnostic::internal(format!(
                                 "function '{name}' tuple argument arity mismatch: expected {}, got {} in {call_context}",
-                                elem_tys.len(), values.len()
+                                elem_tys.len(),
+                                values.len()
                             )));
                         }
                         for val_expr in values.iter() {

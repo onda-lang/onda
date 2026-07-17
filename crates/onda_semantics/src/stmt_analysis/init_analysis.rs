@@ -1995,6 +1995,7 @@ fn analyze_struct_ctor_init_assign(
                         arg,
                         build_expr_env(
                             known_scalars,
+                            state_scalars,
                             locals,
                             outputs,
                             state_arrays,
@@ -2133,6 +2134,7 @@ fn analyze_struct_field_init_assign(
                 expr,
                 build_expr_env(
                     known_scalars,
+                    state_scalars,
                     locals,
                     outputs,
                     state_arrays,

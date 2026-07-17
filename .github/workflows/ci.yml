@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_VERSION: 21.1.2
+
+jobs:
+  compiler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test portable compiler layers
+        run: cargo test -p onda_mir -p onda_semantics -p onda_compiler_web
+
+      - name: Check portable compiler layers
+        run: cargo check -p onda_mir -p onda_semantics -p onda_compiler_web
+
+      - name: Lint MIR transport and browser boundary
+        run: cargo clippy -p onda_mir -p onda_realtime -p onda_compiler_web --all-targets --no-deps -- -D warnings
+
+  native-and-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/onda_binaryen_web/package-lock.json
+
+      - name: Bootstrap LLVM
+        run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
+
+      - name: Test native MIR backend and examples
+        shell: bash
+        run: |
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          cargo test -p onda_codegen_llvm -p onda_examples --release
+
+      - name: Install Binaryen package
+        run: npm ci --prefix packages/onda_binaryen_web
+
+      - name: Test Binaryen backend and LLVM parity
+        shell: bash
+        run: |
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          npm test --prefix packages/onda_binaryen_web
+          npm run test:onda --prefix packages/onda_binaryen_web
+
+      - name: Test full Onda source corpus with Binaryen
+        shell: bash
+        run: |
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          npm run test:corpus --prefix packages/onda_binaryen_web
+
+      - name: Build browser compiler
+        run: |
+          cargo install wasm-pack --locked
+          wasm-pack build crates/onda_compiler_web \
+            --target web \
+            --release \
+            --out-dir /tmp/onda-compiler-web \
+            --out-name onda_compiler_web

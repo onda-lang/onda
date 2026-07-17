@@ -30,6 +30,7 @@ enum StructFieldUsage {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct InferredFnParam {
+    method_self_struct: Option<String>,
     saw_scalar: bool,
     saw_structs: HashSet<String>,
     saw_struct_arrays: Vec<InferredStructArrayParam>,
@@ -103,6 +104,12 @@ pub(crate) fn infer_def_param_kinds(
                     if let (Some(struct_name), Some(dst)) =
                         (explicit_struct.as_ref(), kinds_for_def.get_mut(idx))
                     {
+                        if idx == 0
+                            && method_self_struct.get(&def.name).map(String::as_str)
+                                == Some(struct_name.as_str())
+                        {
+                            dst.method_self_struct = Some(struct_name.clone());
+                        }
                         dst.saw_structs.insert(struct_name.clone());
                     }
                 }

@@ -3,7 +3,6 @@ fn compile_instance(src: &str, frames: usize) -> (onda_runtime::Instance, usize,
         src,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::Auto,
             sample_rate: 48_000.0,
             block_size: frames,
             fast_math: false,
@@ -17,7 +16,6 @@ fn compile_instance_file(path: &str, frames: usize) -> (onda_runtime::Instance, 
         path,
         frames,
         CompileOptions {
-            backend: ExecutionBackend::Auto,
             sample_rate: 48_000.0,
             block_size: frames,
             fast_math: false,
@@ -48,7 +46,7 @@ fn compile_instance_with_options(
     let instance = create_instance(
         jit,
         InstanceConfig {
-            sample_rate: 48_000.0,
+            sample_rate: options.sample_rate,
             frames_per_block: frames,
             in_channels,
             out_channels,
@@ -80,7 +78,7 @@ fn compile_instance_file_with_options(
     let instance = create_instance(
         jit,
         InstanceConfig {
-            sample_rate: 48_000.0,
+            sample_rate: options.sample_rate,
             frames_per_block: frames,
             in_channels,
             out_channels,
@@ -88,22 +86,6 @@ fn compile_instance_file_with_options(
     )
     .expect("instance should be created");
     (instance, in_channels, out_channels)
-}
-
-fn emit_ir(src: &str) -> String {
-    let parsed = parse_program(src).expect("parse should succeed");
-    let typed = analyze(parsed).expect("analysis should succeed");
-    onda_codegen_llvm::lower_to_llvm_ir_with_options(
-        typed,
-        CompileOptions {
-            backend: ExecutionBackend::Auto,
-            sample_rate: 48_000.0,
-            block_size: 4,
-            fast_math: false,
-            opt_level: TargetOptLevel::O3,
-        },
-    )
-    .expect("IR emission should succeed")
 }
 
 fn state_type_of(typed: &onda_semantics::TypedProgram, name: &str) -> Option<PrimitiveType> {

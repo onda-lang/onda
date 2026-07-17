@@ -3701,8 +3701,6 @@ sample {
     let jit = onda_codegen_llvm::lower_and_jit_with_options(
         typed,
         CompileOptions {
-            backend: ExecutionBackend::Auto,
-
             sample_rate: 48_000.0,
 
             block_size: 64,

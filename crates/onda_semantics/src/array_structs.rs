@@ -240,7 +240,18 @@ fn register_data_struct_root_inner(
                 }
             }
             TypedFieldType::Array(field_len) => {
-                let nested_len = len.saturating_mul(field_len);
+                let Some(nested_len) = len.checked_mul(field_len) else {
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
+                        format!(
+                            "{context} field '{}.{}' flattened length exceeds addressable size",
+                            struct_name, field.name
+                        ),
+                    );
+                    stack.pop();
+                    return false;
+                };
                 if let Some(elem_struct) = &field.array_elem_struct {
                     let nested_context = format!(
                         "{context} nested array field '{}.{}'",
@@ -453,7 +464,19 @@ fn register_struct_array_param_bindings_inner(
                 }
             }
             TypedFieldType::Array(field_len) => {
-                let nested_factor = len_factor.saturating_mul(field_len).max(1);
+                let Some(nested_factor) = len_factor.checked_mul(field_len) else {
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
+                        format!(
+                            "function parameter '{base}' field '{}.{}' flattened length exceeds addressable size",
+                            struct_name, field.name
+                        ),
+                    );
+                    stack.pop();
+                    return false;
+                };
+                let nested_factor = nested_factor.max(1);
                 if let Some(elem_struct) = &field.array_elem_struct {
                     if !register_struct_array_param_bindings_inner(
                         &flat,

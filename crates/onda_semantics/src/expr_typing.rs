@@ -83,7 +83,7 @@ pub(crate) fn is_pure_numeric_literal_expr(expr: &Expr) -> bool {
 /// and the other is not, adapt the literal's inferred type to the non-literal's
 /// type. This preserves backward-compatible expression types (e.g. `x_f32 + 0.5`
 /// → F32, `acc + sin(0.0)` → F32) while keeping full precision internally.
-fn adapt_binary_operand_types(
+pub(crate) fn adapt_binary_operand_types(
     lhs: &Expr,
     rhs: &Expr,
     lhs_ty: PrimitiveType,
@@ -93,15 +93,99 @@ fn adapt_binary_operand_types(
     let r_pure = is_pure_numeric_literal_expr(rhs);
     match (l_pure, r_pure) {
         // One pure-literal, one non-literal: adapt literal to match the non-literal's type.
-        // Only adapt within the numeric domain (don't coerce bools).
+        // Never narrow a floating literal to an integer variable: `i / 10.0`
+        // is a floating expression. Integer literals may still adapt to a
+        // floating variable, and literals within one numeric family retain the
+        // non-literal width.
         (true, false) if lhs_ty != PrimitiveType::Bool && rhs_ty != PrimitiveType::Bool => {
-            (rhs_ty, rhs_ty)
+            if is_float_type(lhs_ty) && !is_float_type(rhs_ty) {
+                (
+                    effective_untyped_assignment_type(lhs, Some(lhs_ty)).unwrap_or(lhs_ty),
+                    rhs_ty,
+                )
+            } else {
+                (rhs_ty, rhs_ty)
+            }
         }
         (false, true) if lhs_ty != PrimitiveType::Bool && rhs_ty != PrimitiveType::Bool => {
-            (lhs_ty, lhs_ty)
+            if is_float_type(rhs_ty) && !is_float_type(lhs_ty) {
+                (
+                    lhs_ty,
+                    effective_untyped_assignment_type(rhs, Some(rhs_ty)).unwrap_or(rhs_ty),
+                )
+            } else {
+                (lhs_ty, lhs_ty)
+            }
         }
         // Both pure or neither: keep inferred types, let merge handle it.
         _ => (lhs_ty, rhs_ty),
+    }
+}
+
+/// Adapts pure numeric arguments to the concrete width selected by the
+/// non-literal arguments of the same builtin call.
+///
+/// This is the n-ary counterpart of [`adapt_binary_operand_types`]. It keeps
+/// calls such as `max(x_f32, 0.0)` and `fma(x_f32, 1.0, 0.0)` at `f32` while
+/// retaining the normal numeric merge when several concrete operands disagree.
+pub(crate) fn adapt_numeric_argument_types(
+    args: &[Expr],
+    arg_types: &[PrimitiveType],
+) -> Vec<PrimitiveType> {
+    if args.len() != arg_types.len() {
+        return arg_types.to_vec();
+    }
+
+    let mut concrete_ty = None;
+    for (arg, ty) in args.iter().zip(arg_types.iter().copied()) {
+        if is_pure_numeric_literal_expr(arg) {
+            continue;
+        }
+        concrete_ty = Some(match concrete_ty {
+            Some(current) => {
+                let Some(merged) = merge_numeric_types_without_diagnostics(current, ty) else {
+                    return arg_types.to_vec();
+                };
+                merged
+            }
+            None if ty != PrimitiveType::Bool => ty,
+            None => return arg_types.to_vec(),
+        });
+    }
+
+    let Some(concrete_ty) = concrete_ty else {
+        return arg_types.to_vec();
+    };
+
+    args.iter()
+        .zip(arg_types.iter().copied())
+        .map(|(arg, ty)| {
+            if !is_pure_numeric_literal_expr(arg)
+                || ty == PrimitiveType::Bool
+                || concrete_ty == PrimitiveType::Bool
+            {
+                return ty;
+            }
+            if is_float_type(ty) && !is_float_type(concrete_ty) {
+                effective_untyped_assignment_type(arg, Some(ty)).unwrap_or(ty)
+            } else {
+                concrete_ty
+            }
+        })
+        .collect()
+}
+
+fn merge_numeric_types_without_diagnostics(
+    lhs: PrimitiveType,
+    rhs: PrimitiveType,
+) -> Option<PrimitiveType> {
+    use PrimitiveType::{Bool, F32, F64, I32, I64};
+    match (lhs, rhs) {
+        (Bool, _) | (_, Bool) => None,
+        (F64, _) | (_, F64) => Some(F64),
+        (F32, _) | (_, F32) => Some(F32),
+        (I64, _) | (_, I64) => Some(I64),
+        (I32, I32) => Some(I32),
     }
 }
 
@@ -346,6 +430,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 return None;
             }
             let arg_types = arg_types.into_iter().flatten().collect::<Vec<_>>();
+            let arg_types = adapt_numeric_argument_types(args, &arg_types);
 
             match func {
                 BuiltinFn::Abs => {
@@ -679,21 +764,7 @@ pub(crate) fn require_expr_assignable_type(
     errors: &mut Vec<Diagnostic>,
 ) {
     if let Some(src) = src {
-        if src != dst && !can_implicitly_assign(src, dst) {
-            // Pure numeric literal expressions (literals, builtin consts, and
-            // arithmetic on them) may narrow at the assignment site so that
-            // full precision is retained internally while the language surface
-            // still defaults to F32/I32.
-            if is_pure_numeric_literal_expr(expr) {
-                match (src, dst) {
-                    // Same-category narrowing for literals:
-                    (PrimitiveType::F64, PrimitiveType::F32)
-                    | (PrimitiveType::I64, PrimitiveType::I32)
-                    // Int literal to float (e.g. `x: f32 = 5`):
-                    | (PrimitiveType::I64, PrimitiveType::F32) => return,
-                    _ => {}
-                }
-            }
+        if !can_assign_expr_to_type(expr, src, dst) {
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "{context} type mismatch: cannot assign {:?} to {:?}",
@@ -703,6 +774,29 @@ pub(crate) fn require_expr_assignable_type(
             ));
         }
     }
+}
+
+/// Returns whether semantic analysis may adapt `expr` from `src` to `dst`
+/// without an explicit source cast.
+///
+/// Concrete runtime values follow the ordinary widening relation. Pure
+/// numeric literal expressions additionally adapt once at their contextual
+/// boundary, retaining their wide compile-time representation until then.
+pub(crate) fn can_assign_expr_to_type(expr: &Expr, src: PrimitiveType, dst: PrimitiveType) -> bool {
+    if src == dst || can_implicitly_assign(src, dst) {
+        return true;
+    }
+    if !is_pure_numeric_literal_expr(expr) {
+        return false;
+    }
+    matches!(
+        (src, dst),
+        // Same-category contextual literal narrowing.
+        (PrimitiveType::F64, PrimitiveType::F32)
+            | (PrimitiveType::I64, PrimitiveType::I32)
+            // Integer literal to floating context.
+            | (PrimitiveType::I64, PrimitiveType::F32)
+    )
 }
 
 pub(crate) fn require_expr_numeric_type(

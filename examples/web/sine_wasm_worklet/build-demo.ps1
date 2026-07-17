@@ -1,6 +1,4 @@
 param(
-    [int]$SampleRate = 48000,
-    [int]$BlockSize = 128,
     [switch]$Serve
 )
 
@@ -8,90 +6,38 @@ $ErrorActionPreference = "Stop"
 
 $demoDir = Resolve-Path $PSScriptRoot
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
-$sourceFile = Join-Path $demoDir "sine_wasm.onda"
-$objectFile = Join-Path $demoDir "sine_wasm.o"
-$metaFile = Join-Path $demoDir "sine_wasm.onda.json"
-$wasmFile = Join-Path $demoDir "sine_wasm.wasm"
+$backendDir = Join-Path $repoRoot "packages\onda_binaryen_web"
+$compilerDir = Join-Path $repoRoot "crates\onda_compiler_web"
+$compilerOut = Join-Path $demoDir "onda-compiler-web"
+$binaryenJs = Join-Path $backendDir "node_modules\binaryen\index.js"
 
-function Invoke-Onda {
-    param(
-        [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$Args
-    )
-
-    $packagedOnda = Join-Path $repoRoot "bin\onda.exe"
-    $releaseOnda = Join-Path $repoRoot "target\release\onda.exe"
-
-    if (Test-Path $packagedOnda) {
-        & $packagedOnda @Args
-        return
-    }
-
-    $pathOnda = Get-Command onda.exe -ErrorAction SilentlyContinue
-    if ($pathOnda) {
-        & $pathOnda.Source @Args
-        return
-    }
-
-    if (Test-Path $releaseOnda) {
-        & $releaseOnda @Args
-        return
-    }
-
-    if (-not (Test-Path (Join-Path $repoRoot "Cargo.toml"))) {
-        throw "onda not found in bin/ or PATH, and this demo is not running from a source checkout with Cargo.toml."
-    }
-
-    $useLlvmEnv = Join-Path $repoRoot "scripts\use-llvm-env.ps1"
-    if (Test-Path $useLlvmEnv) {
-        . $useLlvmEnv -Flavor auto -Version "21.1.2"
-    }
-
-    cargo build --release -p onda_cli
-    & $releaseOnda @Args
+if (-not (Get-Command wasm-pack -ErrorAction SilentlyContinue)) {
+    throw "wasm-pack is required. Install it from https://rustwasm.github.io/wasm-pack/installer/."
 }
 
-function Get-WasmLd {
-    $sysroot = (& rustc --print sysroot).Trim()
-    $candidate = Join-Path $sysroot "lib\rustlib\x86_64-pc-windows-msvc\bin\gcc-ld\wasm-ld.exe"
-    if (Test-Path $candidate) {
-        return $candidate
-    }
-
-    $command = Get-Command wasm-ld.exe -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Source
-    }
-
-    throw "wasm-ld.exe not found. Install the Rust toolchain or add wasm-ld to PATH."
+if (-not (Test-Path $binaryenJs)) {
+    npm install --prefix $backendDir
 }
 
-Push-Location $repoRoot
-try {
-    Invoke-Onda compile $sourceFile --emit obj --target-triple wasm32-unknown-unknown --sample-rate $SampleRate --block-size $BlockSize --output $objectFile --meta-out $metaFile
+wasm-pack build $compilerDir `
+    --target web `
+    --release `
+    --out-dir $compilerOut `
+    --out-name onda_compiler_web
 
-    $wasmLd = Get-WasmLd
-    & $wasmLd $objectFile `
-        --no-entry `
-        --export=onda_init `
-        --export=onda_process `
-        --export=__heap_base `
-        --export-memory `
-        --initial-memory=131072 `
-        -o $wasmFile
+Copy-Item $binaryenJs (Join-Path $demoDir "binaryen.js") -Force
+Copy-Item (Join-Path $backendDir "src\index.js") (Join-Path $demoDir "onda-binaryen-web.js") -Force
+Copy-Item (Join-Path $backendDir "src\exact-math.js") (Join-Path $demoDir "exact-math.js") -Force
+Copy-Item (Join-Path $backendDir "src\messagepack.js") (Join-Path $demoDir "messagepack.js") -Force
 
-    Write-Host "Wrote object: $objectFile"
-    Write-Host "Wrote metadata: $metaFile"
-    Write-Host "Wrote wasm: $wasmFile"
+Write-Host "Built the in-browser Onda compiler in: $compilerOut"
+Write-Host "Staged the Binaryen backend in: $demoDir"
 
-    if ($Serve) {
-        Push-Location $demoDir
-        try {
-            node .\server.mjs
-        } finally {
-            Pop-Location
-        }
+if ($Serve) {
+    Push-Location $demoDir
+    try {
+        node .\server.mjs
+    } finally {
+        Pop-Location
     }
-} finally {
-    Pop-Location
 }

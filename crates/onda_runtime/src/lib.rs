@@ -2,6 +2,7 @@ use onda_codegen_llvm::{
     DeclaredBufferChannels, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
+use onda_realtime::configure_current_thread_audio_fp_mode;
 
 pub const PROCESS_BEGIN_BLOCK: u32 = 1 << 0;
 pub const PROCESS_END_BLOCK: u32 = 1 << 1;
@@ -211,15 +212,24 @@ impl Instance {
     }
 
     pub fn state_size_bytes(&self) -> usize {
-        self.state.byte_size()
+        self.program.state_size_bytes()
     }
 
-    pub fn snapshot_state_bytes(&self) -> &[u8] {
-        self.state.bytes()
+    pub fn snapshot_state_bytes(&self) -> Vec<u8> {
+        let mut snapshot = vec![0_u8; self.program.state_size_bytes()];
+        self.program
+            .write_state_snapshot(&self.state, &mut snapshot)
+            .expect("instance snapshot buffer matches compiled snapshot layout");
+        snapshot
+    }
+
+    pub fn write_snapshot_state_bytes(&self, destination: &mut [u8]) -> Result<(), Diagnostic> {
+        self.program.write_state_snapshot(&self.state, destination)
     }
 
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
-        self.state.copy_from_bytes(bytes)?;
+        self.program
+            .restore_state_snapshot(&mut self.state, &self.initial_state, bytes)?;
         self.buffers_validated = false;
         Ok(())
     }
@@ -245,6 +255,24 @@ fn create_instance_inner(
     config: InstanceConfig,
     allocator: Option<RuntimeAllocator>,
 ) -> Result<Instance, Diagnostic> {
+    if !config.sample_rate.is_finite() || config.sample_rate <= 0.0 {
+        return Err(Diagnostic::runtime(
+            "instance sample_rate must be finite and greater than zero",
+            0,
+            0,
+        ));
+    }
+    if config.sample_rate.to_bits() != program.sample_rate().to_bits() {
+        return Err(Diagnostic::runtime(
+            format!(
+                "instance sample_rate ({}) must match program compile-time sample rate ({})",
+                config.sample_rate,
+                program.sample_rate(),
+            ),
+            0,
+            0,
+        ));
+    }
     if config.frames_per_block == 0 {
         return Err(Diagnostic::runtime(
             "frames_per_block must be greater than zero",
@@ -436,7 +464,16 @@ pub fn read_control_output_bytes(
     Ok(())
 }
 
-pub fn bind_input(
+/// Binds borrowed host input memory without copying it.
+///
+/// # Safety
+///
+/// `ptr` must remain readable for `bytes` bytes at a stable address until the
+/// slot is rebound/unbound or the instance is destroyed. The pointer must have
+/// the natural alignment of the declared primitive element type; this function
+/// validates the address before retaining it. Bound input, output, and
+/// external-buffer regions must not overlap while processing.
+pub unsafe fn bind_input(
     instance: &mut Instance,
     index: usize,
     ptr: *const u8,
@@ -461,6 +498,7 @@ pub fn bind_input(
             0,
         ));
     }
+    validate_pointer_alignment(ptr, desc.elem_ty(), "input", desc.name())?;
     let expected = desc
         .byte_size()
         .saturating_mul(instance.config.frames_per_block);
@@ -481,7 +519,16 @@ pub fn bind_input(
     Ok(())
 }
 
-pub fn bind_output(
+/// Binds borrowed host output memory without copying it.
+///
+/// # Safety
+///
+/// `ptr` must remain writable for `bytes` bytes at a stable address until the
+/// slot is rebound/unbound or the instance is destroyed. The pointer must have
+/// the natural alignment of the declared primitive element type; this function
+/// validates the address before retaining it. Bound input, output, and
+/// external-buffer regions must not overlap while processing.
+pub unsafe fn bind_output(
     instance: &mut Instance,
     index: usize,
     ptr: *mut u8,
@@ -506,6 +553,7 @@ pub fn bind_output(
             0,
         ));
     }
+    validate_pointer_alignment(ptr.cast_const(), desc.elem_ty(), "output", desc.name())?;
     let expected = desc
         .byte_size()
         .saturating_mul(instance.config.frames_per_block);
@@ -526,7 +574,16 @@ pub fn bind_output(
     Ok(())
 }
 
-pub fn bind_buffer(
+/// Binds borrowed external-buffer memory without copying it.
+///
+/// # Safety
+///
+/// `ptr` must remain valid for `frames * channels` elements of `elem_ty`, with
+/// the element's required alignment, until rebound/unbound or instance
+/// destruction. The region must be writable when the declaration permits
+/// writes, and all bound host regions must be mutually non-overlapping while
+/// processing.
+pub unsafe fn bind_buffer(
     instance: &mut Instance,
     index: usize,
     ptr: *mut u8,
@@ -587,6 +644,7 @@ pub fn bind_buffer(
             0,
         ));
     }
+    validate_pointer_alignment(ptr.cast_const(), elem_ty, "buffer", desc.name())?;
     match desc.channels() {
         DeclaredBufferChannels::Mono => {
             if channels != 1 {
@@ -639,6 +697,7 @@ pub fn bind_buffer(
             0,
         )
     })?;
+    validate_buffer_byte_extent(frames_i32, channels_i32, elem_ty, desc.name())?;
     instance.buffer_bindings[index] = Some(BoundBuffer {
         ptr,
         frames_i32,
@@ -709,30 +768,46 @@ pub fn process_checked_segment(
     frames: usize,
     flags: u32,
 ) -> Result<(), Diagnostic> {
+    configure_current_thread_audio_fp_mode();
     validate_process_request(instance, start_frame, frames, flags)?;
     validate_bindings_for_process(instance)?;
     sync_proc_buffer_refs_for_process(instance)?;
-    instance.program.process_checked(
-        &mut instance.state,
-        &instance.params,
-        start_frame,
-        frames,
-        flags,
-        &instance.input_ptrs,
-        &instance.output_ptrs,
-        &instance.buffer_ptrs,
-        &instance.buffer_frames,
-        &instance.buffer_channels,
-        &instance.buffer_sample_rates,
-    )?;
+    unsafe {
+        instance.program.process_checked(
+            &mut instance.state,
+            &instance.params,
+            start_frame,
+            frames,
+            flags,
+            &instance.input_ptrs,
+            &instance.output_ptrs,
+            &instance.buffer_ptrs,
+            &instance.buffer_frames,
+            &instance.buffer_channels,
+            &instance.buffer_sample_rates,
+        )?;
+    }
     Ok(())
 }
 
+/// Validates the current host bindings and completes backend-specific preparation for unchecked
+/// processing.
+///
+/// This is not a stale-binding snapshot operation. Call it again after rebinding before entering
+/// an unchecked processing loop; MIR backends consume the current validated buffer table directly.
 pub fn prepare_unchecked_process(instance: &mut Instance) -> Result<(), Diagnostic> {
     validate_bindings_for_process(instance)?;
     sync_proc_buffer_refs_for_process(instance)
 }
 
+/// Processes one complete block without revalidating host bindings.
+///
+/// # Safety
+///
+/// The instance's input, output, and buffer bindings must have been successfully prepared with
+/// [`prepare_unchecked_process`] (or the equivalent validation functions) after their most recent
+/// mutation. Every bound region must remain valid, correctly sized, and appropriately aligned for
+/// the duration of this call, without aliases that violate Rust's memory rules.
 pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<(), Diagnostic> {
     unsafe {
         process_unchecked_segment(
@@ -744,12 +819,21 @@ pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<(), Diagnosti
     }
 }
 
+/// Processes a segment of the configured block without revalidating host bindings.
+///
+/// # Safety
+///
+/// The instance's input, output, and buffer bindings must have been successfully prepared with
+/// [`prepare_unchecked_process`] (or the equivalent validation functions) after their most recent
+/// mutation. Every bound region must remain valid, correctly sized, and appropriately aligned for
+/// the duration of this call, without aliases that violate Rust's memory rules.
 pub unsafe fn process_unchecked_segment(
     instance: &mut Instance,
     start_frame: usize,
     frames: usize,
     flags: u32,
 ) -> Result<(), Diagnostic> {
+    configure_current_thread_audio_fp_mode();
     validate_process_request(instance, start_frame, frames, flags)?;
     debug_assert!(
         instance.inputs_validated && instance.outputs_validated && instance.buffers_validated,
@@ -832,13 +916,15 @@ fn validate_bindings_for_process(instance: &mut Instance) -> Result<(), Diagnost
 }
 
 fn sync_proc_buffer_refs_for_process(instance: &mut Instance) -> Result<(), Diagnostic> {
-    instance.program.sync_proc_buffer_refs_for_process_checked(
-        &mut instance.state,
-        &instance.buffer_ptrs,
-        &instance.buffer_frames,
-        &instance.buffer_channels,
-        &instance.buffer_sample_rates,
-    )
+    unsafe {
+        instance.program.sync_proc_buffer_refs_for_process_checked(
+            &mut instance.state,
+            &instance.buffer_ptrs,
+            &instance.buffer_frames,
+            &instance.buffer_channels,
+            &instance.buffer_sample_rates,
+        )
+    }
 }
 
 pub fn trigger_event_by_index(
@@ -849,18 +935,27 @@ pub fn trigger_event_by_index(
     if !instance.buffers_validated {
         validate_buffers(instance)?;
     }
-    instance.program.trigger_event_by_index(
-        &mut instance.state,
-        &instance.params,
-        event_index,
-        payload,
-        &instance.buffer_ptrs,
-        &instance.buffer_frames,
-        &instance.buffer_channels,
-        &instance.buffer_sample_rates,
-    )
+    unsafe {
+        instance.program.trigger_event_by_index(
+            &mut instance.state,
+            &instance.params,
+            event_index,
+            payload,
+            &instance.buffer_ptrs,
+            &instance.buffer_frames,
+            &instance.buffer_channels,
+            &instance.buffer_sample_rates,
+        )
+    }
 }
 
+/// Dispatches an event without validating its payload or current buffer bindings.
+///
+/// # Safety
+///
+/// Buffer bindings must have been validated after their most recent mutation and must remain valid
+/// for the call. `payload` must exactly match the declared fixed or dynamic layout for
+/// `event_index`, including all slice length prefixes and element data.
 pub unsafe fn trigger_event_by_index_unchecked(
     instance: &mut Instance,
     event_index: usize,
@@ -906,6 +1001,55 @@ fn primitive_type_bytes(ty: PrimitiveType) -> usize {
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
         PrimitiveType::Bool => 1,
     }
+}
+
+fn primitive_type_alignment(ty: PrimitiveType) -> usize {
+    match ty {
+        PrimitiveType::F32 => std::mem::align_of::<f32>(),
+        PrimitiveType::F64 => std::mem::align_of::<f64>(),
+        PrimitiveType::I32 => std::mem::align_of::<i32>(),
+        PrimitiveType::I64 => std::mem::align_of::<i64>(),
+        PrimitiveType::Bool => std::mem::align_of::<u8>(),
+    }
+}
+
+fn validate_pointer_alignment(
+    ptr: *const u8,
+    ty: PrimitiveType,
+    surface: &str,
+    name: &str,
+) -> Result<(), Diagnostic> {
+    let required = primitive_type_alignment(ty);
+    if (ptr as usize) % required == 0 {
+        return Ok(());
+    }
+    Err(Diagnostic::runtime(
+        format!("{surface} '{name}' binding pointer requires {required}-byte alignment for {ty:?}"),
+        0,
+        0,
+    ))
+}
+
+fn validate_buffer_byte_extent(
+    frames: i32,
+    channels: i32,
+    element: PrimitiveType,
+    name: &str,
+) -> Result<i32, Diagnostic> {
+    let element_size =
+        i32::try_from(primitive_type_bytes(element)).expect("primitive element sizes fit i32");
+    frames
+        .checked_mul(channels)
+        .and_then(|elements| elements.checked_mul(element_size))
+        .ok_or_else(|| {
+        Diagnostic::runtime(
+            format!(
+                "buffer '{name}' byte extent {frames} * {channels} * {element_size} exceeds i32 runtime limit"
+            ),
+            0,
+            0,
+        )
+    })
 }
 
 fn prepare_input_ptrs_from_bindings(
@@ -1005,4 +1149,46 @@ fn prepare_output_ptrs_for_process(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_bindings_reject_misaligned_primitive_addresses() {
+        let storage = [0_u64; 2];
+        let aligned = storage.as_ptr().cast::<u8>();
+        let misaligned = unsafe { aligned.add(1) };
+
+        for ty in [
+            PrimitiveType::F32,
+            PrimitiveType::F64,
+            PrimitiveType::I32,
+            PrimitiveType::I64,
+        ] {
+            validate_pointer_alignment(aligned, ty, "test", "value")
+                .expect("u64 storage should satisfy primitive alignment");
+            let error = validate_pointer_alignment(misaligned, ty, "test", "value")
+                .expect_err("offset byte pointer must be rejected");
+            assert!(error.message.contains("alignment"));
+        }
+        validate_pointer_alignment(misaligned, PrimitiveType::Bool, "test", "value")
+            .expect("byte elements have alignment one");
+    }
+
+    #[test]
+    fn checked_buffer_bindings_reject_wrapping_element_counts() {
+        let error = validate_buffer_byte_extent(i32::MAX, 2, PrimitiveType::F32, "huge")
+            .expect_err("buffer byte extent must fit the generated i32 ABI");
+        assert!(error.message.contains("exceeds i32 runtime limit"));
+        let f64_error =
+            validate_buffer_byte_extent(i32::MAX / 8 + 1, 1, PrimitiveType::F64, "wide")
+                .expect_err("f64 byte extent must fit i32 even when element count does");
+        assert!(f64_error.message.contains("byte extent"));
+        assert_eq!(
+            validate_buffer_byte_extent(1024, 2, PrimitiveType::F32, "ok").unwrap(),
+            8192
+        );
+    }
 }

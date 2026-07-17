@@ -428,7 +428,7 @@ unsafe fn lower_orc_var_assign(
                 onda_frontend::ArrayElemType::Struct(ref struct_name) => {
                     return Err(Diagnostic::internal(format!(
                         "typed array declaration '{name}: {struct_name}[N]' is not yet supported in ORC lowering"
-                    )))
+                    )));
                 }
             };
             let len = eval_const_data_size_expr(&spec.size, ctx.sample_rate, ctx.block_size)?;

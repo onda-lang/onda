@@ -85,4 +85,12 @@ Once the smaller examples feel familiar, explore:
 
 ## WebAssembly host example
 
-[`examples/web/sine_wasm_worklet`](https://github.com/onda-lang/onda/tree/main/examples/web/sine_wasm_worklet) demonstrates the current low-level WebAssembly path: emit a WebAssembly object, link it, and run the DSP inside an AudioWorklet. A first-class `--emit wasm` workflow is part of the roadmap rather than the stable CLI surface today.
+[`examples/web/sine_wasm_worklet`](https://github.com/onda-lang/onda/tree/main/examples/web/sine_wasm_worklet) is the end-to-end browser playground. Its editor sends source to [`onda_compiler_web`](https://github.com/onda-lang/onda/tree/main/crates/onda_compiler_web), which resolves embedded `std/...` modules and emits validated schema-5 MIR in the page. [`onda_binaryen_web`](https://github.com/onda-lang/onda/tree/main/packages/onda_binaryen_web) lowers that MIR to DSP Wasm, and the AudioWorklet host supplies metadata-driven parameters, events, reset, external buffers, and segmented processing.
+
+Build and serve it with `bash ./examples/web/sine_wasm_worklet/build-demo.sh --serve` or
+`.\examples\web\sine_wasm_worklet\build-demo.ps1 -Serve`. This requires Node/npm and `wasm-pack`,
+but not the native Onda CLI, LLVM, or a compiler service. The current playground exposes a
+single-source editor even though the compiler API also supports virtual multi-file projects; a
+first-class `--emit wasm` CLI workflow remains separate roadmap work. See the
+[backend benchmark report](BACKEND_BENCHMARKS.md) for the reproducible development comparison
+between native LLVM and Binaryen/Wasm.
