@@ -1,0 +1,11 @@
+init:
+  phase = 0.125
+
+sample:
+  phase = phase + 0.03125
+  phase = phase - floor(phase)
+  x = phase
+  narrow = sin(x) + cos(x) + tan(x) + tanh(x) + atan(x) + atan2(x, f32(0.5)) + exp(x) + log(f32(1.0) + x) + sqrt(x) + pow(x, f32(2.0)) + abs(-x) + floor(x) + ceil(x) + round(x) + trunc(x) + min(x, f32(0.5)) + max(x, f32(0.5)) + fma(x, f32(2.0), f32(0.125))
+  y: f64 = f64(x)
+  wide: f64 = sin(y) + cos(y) + tan(y) + tanh(y) + atan(y) + atan2(y, f64(0.5)) + exp(y) + log(f64(1.0) + y) + sqrt(y) + pow(y, f64(2.0)) + abs(-y) + floor(y) + ceil(y) + round(y) + trunc(y) + min(y, f64(0.5)) + max(y, f64(0.5)) + fma(y, f64(2.0), f64(0.125))
+  out1 = narrow + f32(wide)

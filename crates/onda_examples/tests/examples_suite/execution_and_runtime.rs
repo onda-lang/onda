@@ -527,11 +527,11 @@ fn stdlib_f32_graph_example_matches_sample_version() {
 
 #[test]
 
-fn sine_wasm_example_runs_with_bounded_output() {
+fn wasm_playground_default_runs_with_bounded_output() {
     let frames = 128;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(SINE_WASM_FILE_EXAMPLE, frames);
+        compile_instance(WASM_PLAYGROUND_FILE_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 
@@ -543,12 +543,12 @@ fn sine_wasm_example_runs_with_bounded_output() {
 
     assert!(
         output.iter().any(|sample| sample.abs() > 0.05),
-        "expected sine_wasm example to produce audible output, got {output:?}"
+        "expected playground default to produce audible output, got {output:?}"
     );
 
     assert!(
         output.iter().all(|sample| sample.abs() <= 1.1),
-        "expected sine_wasm example to remain bounded, got {output:?}"
+        "expected playground default to remain bounded, got {output:?}"
     );
 }
 
@@ -3560,11 +3560,11 @@ fn builtin_consts_support_lowercase_samplerate_alias() {
 
 #[test]
 
-fn export_math_typed_overloads_compile_and_run() {
+fn builtin_math_typed_overloads_compile_and_run() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(EXPORT_MATH_TYPED_OVERLOADS_EXAMPLE, frames);
+        compile_instance(BUILTIN_MATH_TYPED_OVERLOADS_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 

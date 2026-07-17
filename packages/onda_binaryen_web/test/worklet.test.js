@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { compileTrustedMir as compileMir } from "../src/index.js";
 
@@ -156,6 +160,7 @@ function f64PassthroughMir() {
 }
 
 let WorkletProcessor;
+let registeredProcessorName;
 globalThis.AudioWorkletProcessor = class {
   constructor() {
     this.port = {
@@ -165,16 +170,31 @@ globalThis.AudioWorkletProcessor = class {
     };
   }
 };
-globalThis.registerProcessor = (_name, processor) => {
+globalThis.registerProcessor = (name, processor) => {
+  registeredProcessorName = name;
   WorkletProcessor = processor;
 };
 
-await import(
-  new URL(
-    "../../../examples/web/sine_wasm_worklet/onda-sine-processor.js",
-    import.meta.url,
-  )
-);
+const workletFixture = await mkdtemp(join(tmpdir(), "onda-worklet-test-"));
+try {
+  await copyFile(
+    fileURLToPath(
+      new URL(
+        "../../../examples/web/onda_wasm_playground/onda-wasm-processor.js",
+        import.meta.url,
+      ),
+    ),
+    join(workletFixture, "onda-wasm-processor.js"),
+  );
+  await import(pathToFileURL(join(workletFixture, "onda-wasm-processor.js")));
+} finally {
+  await rm(workletFixture, { recursive: true, force: true });
+}
+
+test("AudioWorklet module registers the public processor name", () => {
+  assert.equal(registeredProcessorName, "onda-wasm-processor");
+  assert.equal(typeof WorkletProcessor, "function");
+});
 
 test("AudioWorklet marshals Web Audio f32 through f64 MIR input/output storage", () => {
   const artifact = compileMir(f64PassthroughMir());

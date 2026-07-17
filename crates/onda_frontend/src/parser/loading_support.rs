@@ -12,10 +12,6 @@ const ONDA_SOURCE_EXTENSIONS: &[&str] = &["onda", "on"];
 const BUILTIN_STD_MODULES: &[(&str, &str)] = &[
     ("std/math", include_str!("../../../../stdlib/std/math.onda")),
     (
-        "std/export_math",
-        include_str!("../../../../stdlib/std/export_math.onda"),
-    ),
-    (
         "std/complex",
         include_str!("../../../../stdlib/std/complex.onda"),
     ),

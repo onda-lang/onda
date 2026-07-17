@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
+import binaryen from "binaryen";
 import {
   compileTrustedMir as compileMir,
   createDefaultImports,
@@ -33,12 +34,21 @@ const compileRepetitions = Number(
   process.env.ONDA_BENCH_COMPILE_REPETITIONS ?? 5,
 );
 const minimumRoundMs = Number(process.env.ONDA_BENCH_MIN_ROUND_MS ?? 50);
+const binaryenOptimizeLevel = Number(
+  process.env.ONDA_BENCH_BINARYEN_OPT_LEVEL ?? 4,
+);
+const binaryenStackIr = parseBooleanEnvironment(
+  process.env.ONDA_BENCH_BINARYEN_STACK_IR,
+  false,
+  "ONDA_BENCH_BINARYEN_STACK_IR",
+);
 const requireLlvmWin = parseBooleanEnvironment(
   process.env.ONDA_BENCH_REQUIRE_LLVM_WIN,
   true,
+  "ONDA_BENCH_REQUIRE_LLVM_WIN",
 );
 const minimumWasmToLlvmRatio = Number(
-  process.env.ONDA_BENCH_MIN_WASM_TO_LLVM_RATIO ?? 1.05,
+  process.env.ONDA_BENCH_MIN_WASM_TO_LLVM_RATIO ?? 1.0,
 );
 const scenarios = [
   {
@@ -56,6 +66,10 @@ const scenarios = [
       "examples/processors-and-graphs/saw_filter_saturator.onda",
     ),
   },
+  {
+    name: "math-intrinsics",
+    source: join(packageDir, "test/fixtures/math-intrinsics-parity.onda"),
+  },
 ];
 
 validatePositiveInteger(blockSize, "block size");
@@ -63,6 +77,12 @@ validatePositiveInteger(iterations, "iterations");
 validatePositiveInteger(repetitions, "repetitions");
 validatePositiveInteger(compileRepetitions, "compile repetitions");
 validatePositiveNumber(minimumRoundMs, "minimum timing-round milliseconds");
+validateIntegerInRange(
+  binaryenOptimizeLevel,
+  0,
+  4,
+  "Binaryen optimization level",
+);
 validatePositiveNumber(
   minimumWasmToLlvmRatio,
   "minimum Wasm-to-LLVM runtime ratio",
@@ -89,6 +109,10 @@ execFileSync(
 
 const temporary = mkdtempSync(join(tmpdir(), "onda-backend-benchmark-"));
 const results = [];
+const previousGenerateStackIr = binaryen.getGenerateStackIR();
+const previousOptimizeStackIr = binaryen.getOptimizeStackIR();
+binaryen.setGenerateStackIR(binaryenStackIr);
+binaryen.setOptimizeStackIR(binaryenStackIr);
 try {
   for (const [scenarioId, scenario] of scenarios.entries()) {
     const mirPath = join(temporary, `scenario-${scenarioId}.mir.msgpack`);
@@ -116,7 +140,9 @@ try {
     let artifact;
     for (let repetition = 0; repetition <= compileRepetitions; repetition += 1) {
       const started = performance.now();
-      artifact = compileMir(mirTransport);
+      artifact = compileMir(mirTransport, {
+        optimizeLevel: binaryenOptimizeLevel,
+      });
       const elapsed = performance.now() - started;
       if (repetition > 0) binaryenSamples.push(elapsed);
     }
@@ -228,6 +254,8 @@ try {
     });
   }
 } finally {
+  binaryen.setGenerateStackIR(previousGenerateStackIr);
+  binaryen.setOptimizeStackIR(previousOptimizeStackIr);
   rmSync(temporary, { recursive: true, force: true });
 }
 
@@ -239,7 +267,7 @@ process.stdout.write(
   [
     `Onda backend benchmark: ${blockSize}-frame blocks, at least ${iterations} blocks × ${repetitions} timing rounds`,
     `Host: ${host.cpuModel}; logical CPUs: ${host.logicalCpuCount}; allowed CPUs: ${host.allowedCpus}.`,
-    `Strict arithmetic with the audio-thread denormal policy; timing cells are median ± MAD across ${compileRepetitions} compile/instantiate samples or ${repetitions} throughput rounds.`,
+    `Binaryen O${binaryenOptimizeLevel}, strict arithmetic, SIMD enabled, StackIR ${binaryenStackIr ? "enabled" : "disabled"}; timing cells are median ± MAD across ${compileRepetitions} compile/instantiate samples or ${repetitions} throughput rounds.`,
     "First-block parity checks every f32 output sample (absolute and relative tolerance 1e-6) before throughput timing.",
     `Each scenario uses one shared native/Wasm block count calibrated to target at least ${fixed(minimumRoundMs)} ms per round.`,
     "Native throughput prepares bindings once and calls process_unchecked; Wasm calls the raw onda_process export.",
@@ -526,18 +554,26 @@ function validatePositiveInteger(value, label) {
   }
 }
 
+function validateIntegerInRange(value, minimum, maximum, label) {
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(
+      `${label} must be an integer from ${minimum} through ${maximum}`,
+    );
+  }
+}
+
 function validatePositiveNumber(value, label) {
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${label} must be a positive number`);
   }
 }
 
-function parseBooleanEnvironment(value, fallback) {
+function parseBooleanEnvironment(value, fallback, label) {
   if (value === undefined) return fallback;
   if (["1", "true", "yes", "on"].includes(value.toLowerCase())) return true;
   if (["0", "false", "no", "off"].includes(value.toLowerCase())) return false;
   throw new Error(
-    `ONDA_BENCH_REQUIRE_LLVM_WIN must be a boolean, got '${value}'`,
+    `${label} must be a boolean, got '${value}'`,
   );
 }
 

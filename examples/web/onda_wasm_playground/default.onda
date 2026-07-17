@@ -1,5 +1,3 @@
-import std/export_math
-
 params:
   freq = 440.0 { 20, 1000 }
 
@@ -13,4 +11,4 @@ block:
     phase = phase + incr
     if (phase > TWO_PI):
       phase = phase - TWO_PI
-    out1 = std::export_math::sin(phase)
+    out1 = sin(phase)

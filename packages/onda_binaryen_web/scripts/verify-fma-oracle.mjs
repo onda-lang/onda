@@ -4,10 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  exactFmaF32Bits,
-  exactFmaF64Bits,
-} from "../src/index.js";
+import { ONDA_MATH_KERNEL_WASM } from "../src/math-kernel.generated.js";
 
 const conversionBuffer = new ArrayBuffer(8);
 const conversionView = new DataView(conversionBuffer);
@@ -16,6 +13,9 @@ const temporary = mkdtempSync(join(tmpdir(), "onda-fma-oracle-"));
 const oracle = join(
   temporary,
   process.platform === "win32" ? "fma-oracle.exe" : "fma-oracle",
+);
+const { instance: mathKernel } = await WebAssembly.instantiate(
+  ONDA_MATH_KERNEL_WASM,
 );
 
 try {
@@ -44,8 +44,12 @@ try {
   vectors.forEach(({ scalar, operands }, index) => {
     const expectedBits = BigInt(`0x${expected[index]}`);
     const actualBits = scalar === "f32"
-      ? BigInt(exactFmaF32Bits(...operands.map(Number)))
-      : exactFmaF64Bits(...operands);
+      ? BigInt(valueToF32Bits(mathKernel.exports.onda_math_fma_f32(
+        ...operands.map(f32BitsToValue),
+      )))
+      : valueToF64Bits(mathKernel.exports.onda_math_fma_f64(
+        ...operands.map(f64BitsToValue),
+      ));
     if (isNaNBits(expectedBits, scalar)) {
       nanResults += 1;
       if (!isNaNBits(actualBits, scalar)) {
@@ -167,4 +171,24 @@ function valuesToF64Bits(...values) {
     conversionView.setFloat64(0, value, true);
     return conversionView.getBigUint64(0, true);
   });
+}
+
+function f32BitsToValue(bits) {
+  conversionView.setUint32(0, Number(bits), true);
+  return conversionView.getFloat32(0, true);
+}
+
+function valueToF32Bits(value) {
+  conversionView.setFloat32(0, value, true);
+  return conversionView.getUint32(0, true);
+}
+
+function f64BitsToValue(bits) {
+  conversionView.setBigUint64(0, bits, true);
+  return conversionView.getFloat64(0, true);
+}
+
+function valueToF64Bits(value) {
+  conversionView.setFloat64(0, value, true);
+  return conversionView.getBigUint64(0, true);
 }

@@ -907,5 +907,5 @@ const STDLIB_F32_FILE_EXAMPLE: &str =
     include_str!("../../../../../examples/standard-library/std_f32.onda");
 const STDLIB_F32_GRAPH_FILE_EXAMPLE: &str =
     include_str!("../../../../../examples/standard-library/std_f32_graph.onda");
-const SINE_WASM_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/web/sine_wasm_worklet/sine_wasm.onda");
+const WASM_PLAYGROUND_FILE_EXAMPLE: &str =
+    include_str!("../../../../../examples/web/onda_wasm_playground/default.onda");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import binaryen from "binaryen";
 
 import {
   OndaBinaryenError,
@@ -309,6 +310,90 @@ test("passes an addressable slice element to a reference parameter", async () =>
   assert.equal(view.getFloat32(state + 8, true), 7);
 });
 
+test("spills an address-taken scalar local around reference calls", async () => {
+  const mir = executableMir();
+  mir.functions[1].locals.push({ name: "promoted_phase", ty: 0 });
+  mir.functions[1].body.statements.unshift(
+    assign(place("local", 6), {
+      kind: "load",
+      data: place("state", 0),
+    }),
+    statement("call", {
+      results: [6],
+      function: 2,
+      args: [{ kind: "place", data: place("local", 6) }],
+    }),
+    assign(place("state", 0), { kind: "use", data: local(6) }),
+  );
+  mir.functions.push({
+    name: "update_promoted_phase",
+    kind: { kind: "user" },
+    attributes: attributes(),
+    params: [{ name: "phase", ty: 0, mode: "read_write_reference" }],
+    results: [0],
+    locals: [],
+    body: {
+      statements: [
+        assign(place("parameter", 0), {
+          kind: "use",
+          data: constant("f32", 7),
+        }),
+        statement("return", { values: [constant("f32", 9)] }),
+      ],
+    },
+    source: unknownSource,
+  });
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const params = Number(instance.exports.__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  instance.exports.onda_init(params, state);
+  instance.exports.onda_process(0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
+  assert.equal(new DataView(instance.exports.memory.buffer).getFloat32(state, true), 9);
+});
+
+test("vectorizes contiguous slice fills with a scalar tail", async () => {
+  const mir = executableMir();
+  mir.types.push(
+    type("array", { element: 0, len: 10 }),
+    type("slice", { element: "f32", access: "read_write" }),
+  );
+  mir.state.push({ name: "values", ty: 3, persistence: "snapshot" });
+  mir.functions[1].locals.push({ name: "values_view", ty: 4 });
+  mir.functions[1].body.statements.unshift(
+    assign(place("local", 6), {
+      kind: "make_slice",
+      data: {
+        source: { kind: "place", data: place("state", 1) },
+        start: constant("i32", 0),
+        len: constant("i32", 10),
+        bounds: "unchecked",
+        access: "read_write",
+      },
+    }),
+    statement("slice_fill", {
+      destination: local(6),
+      value: constant("f32", 3.5),
+    }),
+  );
+
+  const vectorized = compileMir(mir, { emitText: true });
+  const scalar = compileMir(mir, { emitText: true, simd: false });
+  assert.match(vectorized.wat, /v128\.store/);
+  assert.doesNotMatch(scalar.wat, /v128\.store/);
+
+  const { instance } = await WebAssembly.instantiate(vectorized.wasm);
+  const params = Number(instance.exports.__heap_base.value);
+  const state = params + vectorized.metadata.runtime.param_size_bytes;
+  instance.exports.onda_init(params, state);
+  instance.exports.onda_process(0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
+  assert.deepEqual(
+    [...new Float32Array(instance.exports.memory.buffer, state + 4, 10)],
+    Array.from({ length: 10 }, () => 3.5),
+  );
+});
+
 test("enforces checked make_slice ranges and traps indexed access to empty slices", async () => {
   const makeMir = ({ start, len, bounds, load }) => {
     const mir = executableMir();
@@ -539,12 +624,15 @@ test("rejects incompatible MIR schema versions before code generation", () => {
   );
 });
 
-test("uses an explicit Binaryen O3 speed policy by default", () => {
+test("uses an explicit Binaryen O4 speed policy by default", () => {
   const artifact = compileMir(executableMir());
   assert.deepEqual(artifact.metadata.optimization, {
     enabled: true,
-    level: 3,
+    level: 4,
     shrink_level: 0,
+    fast_math: false,
+    simd: true,
+    inline_functions_with_loops: false,
   });
 
   const custom = compileMir(executableMir(), {
@@ -555,11 +643,37 @@ test("uses an explicit Binaryen O3 speed policy by default", () => {
     enabled: true,
     level: 2,
     shrink_level: 1,
+    fast_math: false,
+    simd: true,
+    inline_functions_with_loops: false,
   });
   assert.throws(
     () => compileMir(executableMir(), { optimizeLevel: 5 }),
     /optimizeLevel must be an integer from 0 through 4/,
   );
+});
+
+test("restores process-global Binaryen optimization policy", () => {
+  const previousFastMath = binaryen.getFastMath();
+  const previousLoopInlining = binaryen.getAllowInliningFunctionsWithLoops();
+  binaryen.setFastMath(true);
+  binaryen.setAllowInliningFunctionsWithLoops(true);
+  try {
+    const artifact = compileMir(executableMir(), {
+      fastMath: false,
+      allowInliningFunctionsWithLoops: false,
+    });
+    assert.equal(artifact.metadata.optimization.fast_math, false);
+    assert.equal(
+      artifact.metadata.optimization.inline_functions_with_loops,
+      false,
+    );
+    assert.equal(binaryen.getFastMath(), true);
+    assert.equal(binaryen.getAllowInliningFunctionsWithLoops(), true);
+  } finally {
+    binaryen.setFastMath(previousFastMath);
+    binaryen.setAllowInliningFunctionsWithLoops(previousLoopInlining);
+  }
 });
 
 test("rejects audio I/O frames not produced by process_frame", () => {
@@ -701,24 +815,67 @@ test("rejects lossy numeric schema-v5 i64 constants", () => {
   );
 });
 
-test("declares and satisfies browser math imports for non-Wasm intrinsics", async () => {
+test("links the complete LLVM math surface into a self-contained module", async () => {
   const mir = executableMir();
   const thenStatements =
     mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
       .then_block.statements;
-  thenStatements[2].kind.data.value = {
+  const intrinsic = (name, args) => ({
     kind: "intrinsic",
-    data: { intrinsic: "sin", args: [local(3)] },
-  };
-  const artifact = compileMir(mir);
-  assert.deepEqual(artifact.metadata.imports, [
-    { module: "onda_math", name: "sin_f32" },
-  ]);
-
-  const { instance } = await WebAssembly.instantiate(
-    artifact.wasm,
-    createDefaultImports(),
+    data: { intrinsic: name, args },
+  });
+  const x = local(3);
+  const half = constant("f32", 0.5);
+  const terms = [
+    intrinsic("sin", [x]),
+    intrinsic("cos", [x]),
+    intrinsic("tan", [x]),
+    intrinsic("tanh", [x]),
+    intrinsic("atan", [x]),
+    intrinsic("atan2", [x, half]),
+    intrinsic("exp", [x]),
+    intrinsic("log", [constant("f32", 1.25)]),
+    intrinsic("sqrt", [x]),
+    intrinsic("pow", [x, constant("f32", 2)]),
+    intrinsic("abs", [constant("f32", -0.25)]),
+    intrinsic("floor", [x]),
+    intrinsic("ceil", [x]),
+    intrinsic("round", [x]),
+    intrinsic("trunc", [x]),
+    intrinsic("min", [x, half]),
+    intrinsic("max", [x, half]),
+    intrinsic("fma", [x, constant("f32", 2), constant("f32", 0.125)]),
+  ];
+  const firstMathLocal = mir.functions[1].locals.length;
+  mir.functions[1].locals.push(
+    ...terms.map((_, index) => ({ name: `math_${index}`, ty: 0 })),
   );
+  const mathStatements = terms.map((term, index) =>
+    assign(place("local", firstMathLocal + index), term));
+  const sumStatements = [
+    assign(place("local", 2), {
+      kind: "use",
+      data: local(firstMathLocal),
+    }),
+    ...terms.slice(1).map((_, index) =>
+      assign(place("local", 2), {
+        kind: "binary",
+        data: {
+          op: "add",
+          lhs: local(2),
+          rhs: local(firstMathLocal + index + 1),
+        },
+      })),
+  ];
+  thenStatements.splice(2, 1, ...mathStatements, ...sumStatements);
+  const artifact = compileMir(mir);
+  assert.deepEqual(artifact.metadata.imports, []);
+  assert.deepEqual(
+    WebAssembly.Module.imports(new WebAssembly.Module(artifact.wasm)),
+    [],
+  );
+
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const { memory, __heap_base, onda_init, onda_process } = instance.exports;
   const params = Number(__heap_base.value);
   const state = params + 16;
@@ -729,13 +886,90 @@ test("declares and satisfies browser math imports for non-Wasm intrinsics", asyn
   view.setUint32(outputTable, output, true);
   onda_init(params, state);
   onda_process(0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
-  assert.ok(
-    Math.abs(new Float32Array(memory.buffer, output, 4)[0] - Math.sin(0.25)) <
-      1e-6,
+  const expectedTerms = [
+    Math.sin(0.25),
+    Math.cos(0.25),
+    Math.tan(0.25),
+    Math.tanh(0.25),
+    Math.atan(0.25),
+    Math.atan2(0.25, 0.5),
+    Math.exp(0.25),
+    Math.log(1.25),
+    Math.sqrt(0.25),
+    0.25 ** 2,
+    Math.abs(-0.25),
+    Math.floor(0.25),
+    Math.ceil(0.25),
+    0,
+    Math.trunc(0.25),
+    Math.min(0.25, 0.5),
+    Math.max(0.25, 0.5),
+    0.25 * 2 + 0.125,
+  ].map(Math.fround);
+  const expected = expectedTerms.reduce(
+    (sum, term) => Math.fround(sum + term),
   );
+  const actual = new Float32Array(memory.buffer, output, 4)[0];
+  assert.ok(Math.abs(actual - expected) < 2e-6, `${actual} != ${expected}`);
 });
 
-test("lowers f32 and f64 FMA through the exact versioned bit support ABI", async () => {
+test("implements LLVM half-away-from-zero round without reserving the math kernel", async () => {
+  for (const scalar of ["f32", "f64"]) {
+    const mir = executableMir();
+    if (scalar === "f64") {
+      mir.types[0] = type("scalar", "f64");
+      mir.interface.params[0].default.data = { type: "f64", value: 0 };
+      mir.functions[0].body.statements[0].kind.data.value = {
+        kind: "use",
+        data: constant("f64", 0),
+      };
+    }
+    const thenStatements =
+      mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+        .then_block.statements;
+    thenStatements[2].kind.data.value = {
+      kind: "intrinsic",
+      data: { intrinsic: "round", args: [local(3)] },
+    };
+
+    const artifact = compileMir(mir);
+    assert.deepEqual(artifact.metadata.imports, []);
+    const { instance } = await WebAssembly.instantiate(artifact.wasm);
+    const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+    const params = Number(__heap_base.value);
+    assert.ok(params < 32 * 1024, "round alone must not reserve the software kernel");
+    const state = params + 16;
+    const outputTable = state + artifact.metadata.runtime.state_size_bytes;
+    const elementSize = scalar === "f32" ? 4 : 8;
+    const output = Math.ceil((outputTable + 4) / elementSize) * elementSize;
+    const view = new DataView(memory.buffer);
+    view.setUint32(outputTable, output, true);
+    onda_init(params, state);
+
+    const nearHalf = scalar === "f32" ? Math.fround(0.5 - 2 ** -25) : 0.5 - 2 ** -54;
+    for (const input of [
+      -1.5,
+      -0.5,
+      -nearHalf,
+      -0,
+      nearHalf,
+      0.5,
+      1.5,
+      scalar === "f32" ? 2 ** 23 : 2 ** 52,
+    ]) {
+      if (scalar === "f32") view.setFloat32(params, input, true);
+      else view.setFloat64(params, input, true);
+      onda_process(0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
+      const actual = scalar === "f32"
+        ? view.getFloat32(output, true)
+        : view.getFloat64(output, true);
+      const expected = input < 0 ? -Math.round(-input) : Math.round(input);
+      assert.ok(Object.is(actual, expected), `${scalar}: round(${input}) = ${actual}`);
+    }
+  }
+});
+
+test("links strict f32 and f64 FMA into the generated Wasm module", async () => {
   for (const scalar of ["f32", "f64"]) {
     const mir = executableMir();
     if (scalar === "f64") {
@@ -764,27 +998,13 @@ test("lowers f32 and f64 FMA through the exact versioned bit support ABI", async
     };
 
     const artifact = compileMir(mir);
-    assert.deepEqual(artifact.metadata.imports, [
-      {
-        module: "onda_exact_math_v1",
-        name: `fma_${scalar}_bits`,
-      },
-    ]);
+    assert.deepEqual(artifact.metadata.imports, []);
     const imports = WebAssembly.Module.imports(
       new WebAssembly.Module(artifact.wasm),
     );
-    assert.deepEqual(imports, [
-      {
-        module: "onda_exact_math_v1",
-        name: `fma_${scalar}_bits`,
-        kind: "function",
-      },
-    ]);
+    assert.deepEqual(imports, []);
 
-    const { instance } = await WebAssembly.instantiate(
-      artifact.wasm,
-      createDefaultImports(),
-    );
+    const { instance } = await WebAssembly.instantiate(artifact.wasm);
     const { memory, __heap_base, onda_init, onda_process } = instance.exports;
     const params = Number(__heap_base.value);
     const state = params + 16;

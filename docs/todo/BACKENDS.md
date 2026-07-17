@@ -8,7 +8,7 @@
     wasm object emission already works through `onda compile --emit obj --target wasm32-unknown-unknown`
     or `--target-spec targets/wasm32-unknown-unknown.toml` when LLVM was built with the `WebAssembly`
     target enabled. That native-hosted path is now separate from the browser Binaryen demo under
-    `examples/web/sine_wasm_worklet/`.
+    `examples/web/onda_wasm_playground/`.
   - Decide whether `onda link` is worth adding as a low-level multi-object/native-link orchestration command, or whether that should stay external.
   - Decide whether metadata should remain sidecar-only or gain an optional embedded/exported form for host loaders.
   - Add a few more cross-target artifact smoke tests if we want broader confidence across ELF/COFF/Mach-O/WASM object formats.
@@ -19,7 +19,7 @@
     - checked-in target spec: `targets/wasm32-unknown-unknown.toml`
     - checked-in LLVM object/link support remains available for native-hosted optimized builds
     - `onda compile --emit mir-messagepack` plus `packages/onda_binaryen_web` now provides an executable browser-side MIR-to-Wasm slice; JSON remains available for inspection
-    - `examples/web/sine_wasm_worklet/` compiles edited source to MIR and then DSP Wasm in the page
+    - `examples/web/onda_wasm_playground/` compiles edited source to MIR and then DSP Wasm in the page
       before starting the AudioWorklet
   - Target: `wasm32-unknown-unknown` (pure compute module, no WASI dependency).
   - Two codegen strategies (not mutually exclusive):
@@ -74,10 +74,12 @@
         input/output/param/buffer/event counts, names, types, and byte sizes.
     - Optimization:
       - LLVM path: `default<O3>` pipeline + optional `wasm-opt` post-pass.
-      - Binaryen path: Binaryen's own optimization passes (equivalent to `wasm-opt -O3`).
+      - Binaryen path: Binaryen's own optimization passes (equivalent to `wasm-opt -O4`).
       - Evaluate WASM SIMD (`simd128`) for vectorizable inner loops (both paths).
     - Constraints and exclusions:
-      - No dynamic linking. Most generated modules are self-contained; direct transcendental MIR intrinsics may import deterministic `onda_math` host functions because core WebAssembly has no corresponding instructions. Scalar `fma` uses the versioned bit-level `onda_exact_math_v1` import: the bundled BigInt implementation rounds the exact product-plus-add once for f32/f64 and preserves IEEE exceptional-value and signed-zero semantics, at a documented import/allocation cost.
+      - No dynamic linking. Generated modules are self-contained. Binaryen links the used closure
+        of the embedded pure-Wasm f32/f64 transcendental and strict-FMA kernel before optimization;
+        unsupported core-Wasm math never crosses a JavaScript import boundary.
       - No file I/O or OS calls - pure deterministic compute kernel.
       - `std/fft` and other stdlib modules that use only arithmetic should work unchanged;
         verify no stdlib path accidentally depends on host intrinsics.
@@ -133,9 +135,9 @@
     - `--wasm-backend binaryen|llvm` selects the codegen strategy (default: `binaryen`).
   - Testing:
     - Keep `npm test` as the schema-5 backend/AudioWorklet fixture gate.
-    - Keep `npm run test:onda` as the source-driven integration, LLVM/MIR-Binaryen parity, and exact
-      FMA oracle gate; it requires the native Rust/LLVM Onda build. Expand its real-program corpus
-      as features land.
+    - Keep `npm run test:onda` as the source-driven integration, LLVM/MIR-Binaryen parity, and
+      internal-Wasm FMA oracle gate; it requires the native Rust/LLVM Onda build. Expand its
+      real-program corpus as features land.
     - Keep `npm run bench` as the reproducible development comparison described in
       [`docs/BACKEND_BENCHMARKS.md`](../BACKEND_BENCHMARKS.md); add browser and architecture runs
       before setting product budgets.

@@ -39,7 +39,8 @@ Non-crate directories of note:
 - `stdlib/` — built-in `std/...` modules imported by Onda source.
 - `include/` — public C header `onda.h`.
 - `targets/` — checked-in AOT codegen presets for `onda compile --target-spec`.
-- `packages/onda_binaryen_web/` — Binaryen.js MIR-to-Wasm backend and browser runtime helpers.
+- `packages/onda_binaryen_web/` — Binaryen.js MIR-to-Wasm backend, reproducible embedded no-std
+  math kernel, and browser runtime helpers.
 - `deps/llvm-bootstrap` — git submodule used to bootstrap LLVM from source.
 - `scripts/` — LLVM bootstrap and env-selection helpers.
 - `docs/`, `examples/`, `assets/`, `ui/`, `sc/` — supporting material.
@@ -94,9 +95,12 @@ Non-crate directories of note:
 - `ids.rs` — deterministic typed IDs for program entities and resources.
 - `types.rs` — target-independent scalar, aggregate, slice, and buffer types.
 - `ir.rs` — program/interface/state/function model and executable operations.
+- `analysis.rs` — backend-neutral call-transitive effects, reference access direction, and integer
+  range facts.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
 - `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked bounds.
-- `passes.rs` — fixed-point backend-neutral canonicalization and cleanup.
+- `passes.rs`, `passes/{cse,state_promotion}.rs` — fixed-point backend-neutral canonicalization,
+  pure-expression value numbering, bounded alias-safe scalar-state promotion, and cleanup.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
 - The production MIR contract is documented in `docs/MIR.md`.
 
@@ -189,7 +193,7 @@ or daemon compilation.
   `orc_backend/mir_native.rs` → `mir_metadata.rs` / `aot_artifact.rs`.
 - Browser path: `onda_compiler_web` → schema-5 MIR MessagePack →
   `packages/onda_binaryen_web` → DSP Wasm + host metadata →
-  `examples/web/sine_wasm_worklet`.
+  `examples/web/onda_wasm_playground`.
 - Legacy differential lowering: `orc_backend/{pipeline,proc_ir,user_fn_ir,...}`; test-only and
   pending deletion.
 - Runtime API usage: `onda_runtime/src/lib.rs`.
@@ -240,11 +244,11 @@ or daemon compilation.
 
 - `wasm-pack build crates/onda_compiler_web --target web --release` builds the JavaScript glue and
   compiler Wasm. `wasm-pack` is a required build tool; ordinary native crate tests do not require it.
-- `bash ./examples/web/sine_wasm_worklet/build-demo.sh --serve` builds/stages the compiler and pinned
+- `bash ./examples/web/onda_wasm_playground/build-demo.sh --serve` builds/stages the compiler and pinned
   Binaryen assets, then serves the editable playground. The PowerShell equivalent is
-  `.\examples\web\sine_wasm_worklet\build-demo.ps1 -Serve`.
+  `.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve`.
 - From `packages/onda_binaryen_web`, `npm test` runs backend/host fixtures, `npm run test:onda` runs
-  real Onda source plus LLVM/Binaryen parity and the exact-FMA oracle, and `npm run test:parity`
+  real Onda source plus LLVM/Binaryen parity and the internal-Wasm FMA oracle, and `npm run test:parity`
   selects the differential renderer. `npm run test:corpus` continuously compiles all 46 checked-in
   examples and positive backend fixtures through source -> schema-5 MIR MessagePack -> Binaryen -> valid
   Wasm. These source-driven commands require a working native Rust/LLVM Onda build; `npm test` and
@@ -255,9 +259,10 @@ or daemon compilation.
 - The browser build is static after staging and requires no CLI, LLVM, or server-side compiler.
   Current product limitations include a single-file playground UI despite the compiler's multi-file
   API, restart/reset rather than seamless state-preserving hot swap, no control-output or external
-  buffer UI, no microphone/input-source routing, main-thread compilation, and a deliberately exact
-  but expensive BigInt-based FMA import. The page also assumes the requested `AudioContext` sample
-  rate is honored. The current smoke endpoint proves compilation, but automated browser
+  buffer UI, no microphone/input-source routing, and main-thread compilation. Software math helpers
+  are internal to generated Wasm, so the render path has no JavaScript math boundary, though native
+  LLVM may still execute them faster. The page also assumes the requested `AudioContext` sample rate
+  is honored. The current smoke endpoint proves compilation, but automated browser
   AudioWorklet playback coverage remains future work. Non-local hosting needs a secure context
   (normally HTTPS; localhost is exempt).
 

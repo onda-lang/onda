@@ -4,6 +4,7 @@
 //! processor/graph lowering have completed. Backends must not need to recover
 //! source-level meaning from names or frontend AST nodes.
 
+mod analysis;
 mod format;
 mod ids;
 mod ir;
@@ -51,3 +52,7 @@ pub const PROCESS_FULL_BLOCK: i32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
 
 /// Stable serialized names for the positional process-entry parameters.
 pub const PROCESS_PARAM_NAMES: [&str; PROCESS_PARAM_COUNT] = ["start_frame", "frames", "flags"];
+pub use analysis::{
+    analyze_effects, analyze_integer_ranges, EffectAnalysis, FunctionEffects,
+    FunctionRangeAnalysis, IntegerRange, MemoryRegionSet, ReferenceEffects,
+};

@@ -7,16 +7,23 @@ use crate::{
     ValidatedProgram, ValidationError, Value,
 };
 
+mod cse;
+mod state_promotion;
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct PassStats {
     pub iterations: u32,
     pub propagated_values: u64,
+    pub propagated_copies: u64,
     pub folded_rvalues: u64,
     pub simplified_branches: u64,
     pub removed_unreachable_statements: u64,
     pub removed_dead_assignments: u64,
     pub removed_redundant_zero_stores: u64,
     pub removed_locals: u64,
+    pub promoted_state_slots: u64,
+    pub eliminated_common_subexpressions: u64,
+    pub algebraic_simplifications: u64,
 }
 
 /// A validated MIR program brought to the backend-neutral optimization fixed
@@ -58,6 +65,9 @@ impl PassStats {
         self.propagated_values = self
             .propagated_values
             .saturating_add(other.propagated_values);
+        self.propagated_copies = self
+            .propagated_copies
+            .saturating_add(other.propagated_copies);
         self.folded_rvalues = self.folded_rvalues.saturating_add(other.folded_rvalues);
         self.simplified_branches = self
             .simplified_branches
@@ -72,16 +82,29 @@ impl PassStats {
             .removed_redundant_zero_stores
             .saturating_add(other.removed_redundant_zero_stores);
         self.removed_locals = self.removed_locals.saturating_add(other.removed_locals);
+        self.promoted_state_slots = self
+            .promoted_state_slots
+            .saturating_add(other.promoted_state_slots);
+        self.eliminated_common_subexpressions = self
+            .eliminated_common_subexpressions
+            .saturating_add(other.eliminated_common_subexpressions);
+        self.algebraic_simplifications = self
+            .algebraic_simplifications
+            .saturating_add(other.algebraic_simplifications);
     }
 
     fn changed(self) -> bool {
         self.propagated_values != 0
+            || self.propagated_copies != 0
             || self.folded_rvalues != 0
             || self.simplified_branches != 0
             || self.removed_unreachable_statements != 0
             || self.removed_dead_assignments != 0
             || self.removed_redundant_zero_stores != 0
             || self.removed_locals != 0
+            || self.promoted_state_slots != 0
+            || self.eliminated_common_subexpressions != 0
+            || self.algebraic_simplifications != 0
     }
 }
 
@@ -95,6 +118,11 @@ pub fn canonicalize(
         iterations: 1,
         ..PassStats::default()
     };
+    canonicalize_program(&mut program, &mut stats);
+    crate::validate::revalidate_owned(program, unchecked_bounds).map(|program| (program, stats))
+}
+
+fn canonicalize_program(program: &mut crate::Program, stats: &mut PassStats) {
     let passing_modes = program
         .functions
         .iter()
@@ -106,11 +134,13 @@ pub fn canonicalize(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
+    let types = program.types.clone();
     for function in &mut program.functions {
-        propagate_local_constants(function, &passing_modes, &mut stats);
-        canonicalize_block(&mut function.body, &mut stats);
+        propagate_local_values(function, &passing_modes, stats);
+        simplify_algebraic_identities(function, &types, stats);
+        cse::eliminate_common_subexpressions(function, &passing_modes, stats);
+        canonicalize_block(&mut function.body, stats);
     }
-    crate::validate::revalidate_owned(program, unchecked_bounds).map(|program| (program, stats))
 }
 
 /// Runs backend-neutral MIR cleanup to a fixed point while retaining the
@@ -118,27 +148,39 @@ pub fn canonicalize(
 pub fn optimize(
     program: ValidatedProgram,
 ) -> Result<(OptimizedProgram, PassStats), Vec<ValidationError>> {
-    let mut program = program;
+    let unchecked_bounds = program.unchecked_bounds_proof();
+    let mut raw = program.into_program();
     let mut total = PassStats::default();
+    // Structural transforms run once before the monotonic cleanup fixed point.
+    // They may add locals or statements, while the rounds below only replace
+    // values or remove structure.
+    state_promotion::promote_process_scalar_state(&mut raw, &mut total);
     // Every round is monotonic: it only replaces values/rvalues with their
     // canonical constants or removes branches, statements, and locals. No
     // pass adds executable structure, so the finite program must reach a
-    // fixed point without an arbitrary iteration cap.
+    // fixed point without an arbitrary iteration cap. These are one trusted
+    // internal pipeline, so retain the input proof during the fixed point and
+    // validate the completed program once rather than rescanning a large MIR
+    // after each cleanup round.
     loop {
-        let (mut next, mut stats) = canonicalize(program)?;
-        let unchecked_bounds = next.unchecked_bounds_proof();
-        let mut raw = next.into_program();
+        let mut stats = PassStats {
+            iterations: 1,
+            ..PassStats::default()
+        };
+        // `optimize` owns the complete round, so canonicalization and dead
+        // cleanup share one validation boundary instead of validating the
+        // same intermediate program twice.
+        canonicalize_program(&mut raw, &mut stats);
         if let Some(init) = raw.functions.get_mut(raw.entry_points.init.index()) {
             eliminate_preinitialized_zero_stores(init, &mut stats);
         }
         for function in &mut raw.functions {
             remove_dead_pure_locals(function, &mut stats);
         }
-        next = crate::validate::revalidate_owned(raw, unchecked_bounds)?;
         let changed = stats.changed();
         total.merge(stats);
-        program = next;
         if !changed {
+            let program = crate::validate::revalidate_owned(raw, unchecked_bounds)?;
             return Ok((OptimizedProgram(program), total));
         }
     }
@@ -379,18 +421,256 @@ fn scalar_is_all_bits_zero(value: Value) -> bool {
     }
 }
 
-fn propagate_local_constants(
+fn stable_local_values(function: &Function, passing_modes: &[Vec<PassingMode>]) -> Vec<bool> {
+    let mut writes = vec![0_u32; function.locals.len()];
+    let mut unstable = vec![false; function.locals.len()];
+    collect_local_stability(
+        &function.body,
+        false,
+        passing_modes,
+        &mut writes,
+        &mut unstable,
+    );
+    writes
+        .into_iter()
+        .zip(unstable)
+        .map(|(writes, unstable)| writes == 1 && !unstable)
+        .collect()
+}
+
+fn collect_local_stability(
+    block: &Block,
+    inside_loop: bool,
+    passing_modes: &[Vec<PassingMode>],
+    writes: &mut [u32],
+    unstable: &mut [bool],
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Assign { destination, .. } => {
+                if let PlaceBase::Local(local) = destination.base {
+                    record_local_stability_write(
+                        local,
+                        inside_loop,
+                        !destination.projections.is_empty(),
+                        writes,
+                        unstable,
+                    );
+                }
+            }
+            StatementKind::Call {
+                results,
+                function,
+                args,
+            } => {
+                for result in results {
+                    record_local_stability_write(*result, inside_loop, false, writes, unstable);
+                }
+                for (index, argument) in args.iter().enumerate() {
+                    if passing_modes
+                        .get(function.index())
+                        .and_then(|modes| modes.get(index))
+                        == Some(&PassingMode::ReadWriteReference)
+                    {
+                        if let Some(local) = mutated_argument_local(argument) {
+                            record_local_stability_write(
+                                local,
+                                inside_loop,
+                                true,
+                                writes,
+                                unstable,
+                            );
+                        }
+                    }
+                }
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_local_stability(then_block, inside_loop, passing_modes, writes, unstable);
+                collect_local_stability(else_block, inside_loop, passing_modes, writes, unstable);
+            }
+            StatementKind::Loop { body } => {
+                collect_local_stability(body, true, passing_modes, writes, unstable)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn record_local_stability_write(
+    local: LocalId,
+    inside_loop: bool,
+    through_reference: bool,
+    writes: &mut [u32],
+    unstable: &mut [bool],
+) {
+    let index = local.index();
+    writes[index] = writes[index].saturating_add(1);
+    unstable[index] |= inside_loop || through_reference;
+}
+
+fn simplify_algebraic_identities(
+    function: &mut Function,
+    types: &[crate::Type],
+    stats: &mut PassStats,
+) {
+    let local_types = function
+        .locals
+        .iter()
+        .map(|local| local.ty)
+        .collect::<Vec<_>>();
+    simplify_block_algebra(&mut function.body, &local_types, types, stats);
+}
+
+fn simplify_block_algebra(
+    block: &mut Block,
+    local_types: &[crate::TypeId],
+    types: &[crate::Type],
+    stats: &mut PassStats,
+) {
+    for statement in &mut block.statements {
+        match &mut statement.kind {
+            StatementKind::Assign { value, .. } => {
+                if let Some(replacement) = simplify_rvalue_algebra(value, local_types, types) {
+                    *value = Rvalue::Use(replacement);
+                    stats.algebraic_simplifications =
+                        stats.algebraic_simplifications.saturating_add(1);
+                }
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                simplify_block_algebra(then_block, local_types, types, stats);
+                simplify_block_algebra(else_block, local_types, types, stats);
+            }
+            StatementKind::Loop { body } => simplify_block_algebra(body, local_types, types, stats),
+            _ => {}
+        }
+    }
+}
+
+fn simplify_rvalue_algebra(
+    value: &Rvalue,
+    local_types: &[crate::TypeId],
+    types: &[crate::Type],
+) -> Option<Value> {
+    match value {
+        Rvalue::Binary { op, lhs, rhs } => {
+            let scalar = scalar_type_of_value(*lhs, local_types, types)?;
+            if !matches!(scalar, ScalarType::I32 | ScalarType::I64) {
+                return None;
+            }
+            match op {
+                BinaryOp::Add if scalar_value_is_zero(*rhs) => Some(*lhs),
+                BinaryOp::Add if scalar_value_is_zero(*lhs) => Some(*rhs),
+                BinaryOp::Subtract if scalar_value_is_zero(*rhs) => Some(*lhs),
+                BinaryOp::Subtract if values_identical(*lhs, *rhs) => Some(integer_zero(scalar)),
+                BinaryOp::Multiply if scalar_value_is_one(*rhs) => Some(*lhs),
+                BinaryOp::Multiply if scalar_value_is_one(*lhs) => Some(*rhs),
+                BinaryOp::Multiply if scalar_value_is_zero(*lhs) || scalar_value_is_zero(*rhs) => {
+                    Some(integer_zero(scalar))
+                }
+                BinaryOp::Divide if scalar_value_is_one(*rhs) => Some(*lhs),
+                BinaryOp::Remainder if scalar_value_is_one(*rhs) => Some(integer_zero(scalar)),
+                BinaryOp::BitAnd if scalar_value_is_zero(*lhs) || scalar_value_is_zero(*rhs) => {
+                    Some(integer_zero(scalar))
+                }
+                BinaryOp::BitAnd if scalar_value_is_all_ones(*rhs) => Some(*lhs),
+                BinaryOp::BitAnd if scalar_value_is_all_ones(*lhs) => Some(*rhs),
+                BinaryOp::BitOr | BinaryOp::BitXor if scalar_value_is_zero(*rhs) => Some(*lhs),
+                BinaryOp::BitOr | BinaryOp::BitXor if scalar_value_is_zero(*lhs) => Some(*rhs),
+                BinaryOp::BitXor if values_identical(*lhs, *rhs) => Some(integer_zero(scalar)),
+                BinaryOp::ShiftLeft | BinaryOp::ShiftRight if scalar_value_is_zero(*rhs) => {
+                    Some(*lhs)
+                }
+                _ => None,
+            }
+        }
+        Rvalue::Compare { op, lhs, rhs } if values_identical(*lhs, *rhs) => {
+            let scalar = scalar_type_of_value(*lhs, local_types, types)?;
+            if matches!(scalar, ScalarType::F32 | ScalarType::F64) {
+                // NaNs make self-comparisons non-reflexive, and replacing the
+                // operation could also discard signaling behavior.
+                return None;
+            }
+            let result = match op {
+                CompareOp::Equal | CompareOp::LessEqual | CompareOp::GreaterEqual => true,
+                CompareOp::NotEqual | CompareOp::Less | CompareOp::Greater => false,
+            };
+            Some(Value::Constant(ScalarValue::Bool(result)))
+        }
+        _ => None,
+    }
+}
+
+fn scalar_type_of_value(
+    value: Value,
+    local_types: &[crate::TypeId],
+    types: &[crate::Type],
+) -> Option<ScalarType> {
+    match value {
+        Value::Constant(value) => Some(value.ty()),
+        Value::Local(local) => match types.get(local_types[local.index()].index()) {
+            Some(crate::Type::Scalar(scalar)) => Some(*scalar),
+            _ => None,
+        },
+    }
+}
+
+fn scalar_value_is_zero(value: Value) -> bool {
+    matches!(
+        value,
+        Value::Constant(ScalarValue::I32(0) | ScalarValue::I64(0))
+    )
+}
+
+fn scalar_value_is_one(value: Value) -> bool {
+    matches!(
+        value,
+        Value::Constant(ScalarValue::I32(1) | ScalarValue::I64(1))
+    )
+}
+
+fn scalar_value_is_all_ones(value: Value) -> bool {
+    matches!(
+        value,
+        Value::Constant(ScalarValue::I32(-1) | ScalarValue::I64(-1))
+    )
+}
+
+fn integer_zero(scalar: ScalarType) -> Value {
+    match scalar {
+        ScalarType::I32 => Value::Constant(ScalarValue::I32(0)),
+        ScalarType::I64 => Value::Constant(ScalarValue::I64(0)),
+        _ => unreachable!("algebraic integer identity requires an integer type"),
+    }
+}
+
+fn propagate_local_values(
     function: &mut Function,
     passing_modes: &[Vec<PassingMode>],
     stats: &mut PassStats,
 ) {
+    let stable_locals = stable_local_values(function, passing_modes);
     let mut facts = vec![None; function.locals.len()];
-    propagate_block_constants(&mut function.body, &mut facts, passing_modes, stats);
+    propagate_block_values(
+        &mut function.body,
+        &mut facts,
+        &stable_locals,
+        passing_modes,
+        stats,
+    );
 }
 
-fn propagate_block_constants(
+fn propagate_block_values(
     block: &mut Block,
-    facts: &mut Vec<Option<ScalarValue>>,
+    facts: &mut Vec<Option<Value>>,
+    stable_locals: &[bool],
     passing_modes: &[Vec<PassingMode>],
     stats: &mut PassStats,
 ) -> bool {
@@ -399,14 +679,16 @@ fn propagate_block_constants(
         if !falls_through {
             break;
         }
-        falls_through = propagate_statement_constants(statement, facts, passing_modes, stats);
+        falls_through =
+            propagate_statement_values(statement, facts, stable_locals, passing_modes, stats);
     }
     falls_through
 }
 
-fn propagate_statement_constants(
+fn propagate_statement_values(
     statement: &mut Statement,
-    facts: &mut Vec<Option<ScalarValue>>,
+    facts: &mut Vec<Option<Value>>,
+    stable_locals: &[bool],
     passing_modes: &[Vec<PassingMode>],
     stats: &mut PassStats,
 ) -> bool {
@@ -417,8 +699,11 @@ fn propagate_statement_constants(
             if let PlaceBase::Local(local) = destination.base {
                 let fact = if destination.projections.is_empty() {
                     match value {
-                        Rvalue::Use(Value::Constant(value)) => Some(*value),
-                        _ => fold_rvalue(value),
+                        Rvalue::Use(value @ Value::Constant(_)) => Some(*value),
+                        Rvalue::Use(Value::Local(local)) if stable_locals[local.index()] => {
+                            Some(Value::Local(*local))
+                        }
+                        _ => fold_rvalue(value).map(Value::Constant),
                     }
                 } else {
                     None
@@ -522,10 +807,20 @@ fn propagate_statement_constants(
             };
             let mut then_facts = facts.clone();
             let mut else_facts = facts.clone();
-            let then_falls =
-                propagate_block_constants(then_block, &mut then_facts, passing_modes, stats);
-            let else_falls =
-                propagate_block_constants(else_block, &mut else_facts, passing_modes, stats);
+            let then_falls = propagate_block_values(
+                then_block,
+                &mut then_facts,
+                stable_locals,
+                passing_modes,
+                stats,
+            );
+            let else_falls = propagate_block_values(
+                else_block,
+                &mut else_facts,
+                stable_locals,
+                passing_modes,
+                stats,
+            );
             match constant_condition {
                 Some(true) => {
                     if then_falls {
@@ -545,7 +840,7 @@ fn propagate_statement_constants(
                 }
                 None => match (then_falls, else_falls) {
                     (true, true) => {
-                        merge_constant_facts(facts, &then_facts, &else_facts);
+                        merge_value_facts(facts, &then_facts, &else_facts);
                         true
                     }
                     (true, false) => {
@@ -570,7 +865,7 @@ fn propagate_statement_constants(
                 invalidate_fact(facts, *local);
             }
             let mut body_facts = facts.clone();
-            propagate_block_constants(body, &mut body_facts, passing_modes, stats);
+            propagate_block_values(body, &mut body_facts, stable_locals, passing_modes, stats);
             for local in mutated {
                 invalidate_fact(facts, local);
             }
@@ -588,7 +883,7 @@ fn propagate_statement_constants(
 
 fn propagate_optional_value(
     value: &mut Option<Value>,
-    facts: &[Option<ScalarValue>],
+    facts: &[Option<Value>],
     stats: &mut PassStats,
 ) {
     if let Some(value) = value {
@@ -596,22 +891,32 @@ fn propagate_optional_value(
     }
 }
 
-fn propagate_value(value: &mut Value, facts: &[Option<ScalarValue>], stats: &mut PassStats) {
-    let Value::Local(local) = value else {
+fn propagate_value(value: &mut Value, facts: &[Option<Value>], stats: &mut PassStats) {
+    let original = *value;
+    let mut resolved = original;
+    for _ in 0..facts.len() {
+        let Value::Local(local) = resolved else {
+            break;
+        };
+        let Some(next) = facts.get(local.index()).and_then(|fact| *fact) else {
+            break;
+        };
+        if values_identical(next, resolved) {
+            break;
+        }
+        resolved = next;
+    }
+    if values_identical(original, resolved) {
         return;
-    };
-    let Some(constant) = facts.get(local.index()).and_then(|fact| *fact) else {
-        return;
-    };
-    *value = Value::Constant(constant);
+    }
+    *value = resolved;
     stats.propagated_values = stats.propagated_values.saturating_add(1);
+    if matches!(resolved, Value::Local(_)) {
+        stats.propagated_copies = stats.propagated_copies.saturating_add(1);
+    }
 }
 
-fn propagate_place_indices(
-    place: &mut Place,
-    facts: &[Option<ScalarValue>],
-    stats: &mut PassStats,
-) {
+fn propagate_place_indices(place: &mut Place, facts: &[Option<Value>], stats: &mut PassStats) {
     for projection in &mut place.projections {
         if let Projection::Index { index, .. } = projection {
             propagate_value(index, facts, stats);
@@ -619,11 +924,7 @@ fn propagate_place_indices(
     }
 }
 
-fn propagate_rvalue_values(
-    rvalue: &mut Rvalue,
-    facts: &[Option<ScalarValue>],
-    stats: &mut PassStats,
-) {
+fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: &mut PassStats) {
     match rvalue {
         Rvalue::Use(value) | Rvalue::SliceLen(value) => {
             propagate_value(value, facts, stats);
@@ -682,7 +983,7 @@ fn propagate_rvalue_values(
 
 fn propagate_call_argument(
     argument: &mut CallArgument,
-    facts: &[Option<ScalarValue>],
+    facts: &[Option<Value>],
     stats: &mut PassStats,
 ) {
     match argument {
@@ -704,25 +1005,33 @@ fn propagate_call_argument(
     }
 }
 
-fn invalidate_fact(facts: &mut [Option<ScalarValue>], local: LocalId) {
+fn invalidate_fact(facts: &mut [Option<Value>], local: LocalId) {
     if let Some(fact) = facts.get_mut(local.index()) {
         *fact = None;
     }
 }
 
-fn merge_constant_facts(
-    destination: &mut [Option<ScalarValue>],
-    lhs: &[Option<ScalarValue>],
-    rhs: &[Option<ScalarValue>],
+fn merge_value_facts(
+    destination: &mut [Option<Value>],
+    lhs: &[Option<Value>],
+    rhs: &[Option<Value>],
 ) {
     for (index, destination) in destination.iter_mut().enumerate() {
         *destination = match (
             lhs.get(index).copied().flatten(),
             rhs.get(index).copied().flatten(),
         ) {
-            (Some(lhs), Some(rhs)) if scalar_constants_identical(lhs, rhs) => Some(lhs),
+            (Some(lhs), Some(rhs)) if values_identical(lhs, rhs) => Some(lhs),
             _ => None,
         };
+    }
+}
+
+fn values_identical(lhs: Value, rhs: Value) -> bool {
+    match (lhs, rhs) {
+        (Value::Local(lhs), Value::Local(rhs)) => lhs == rhs,
+        (Value::Constant(lhs), Value::Constant(rhs)) => scalar_constants_identical(lhs, rhs),
+        _ => false,
     }
 }
 
@@ -1852,10 +2161,10 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
 #[cfg(test)]
 mod tests {
     use crate::{
-        process_function_params, AccessMode, Block, BoundsMode, CompileConfig, Function,
-        FunctionAttributes, FunctionId, FunctionKind, Local, Place, PlaceBase, Program, Projection,
-        Rvalue, ScalarType, ScalarValue, SliceSource, SourceSpan, StateId, StatePersistence,
-        StateSlot, Statement, StatementKind, Type, TypeId, Value,
+        process_function_params, AccessMode, Block, BoundsMode, CallArgument, CompileConfig,
+        Function, FunctionAttributes, FunctionId, FunctionKind, Local, Place, PlaceBase, Program,
+        Projection, Rvalue, ScalarType, ScalarValue, SliceSource, SourceSpan, StateId,
+        StatePersistence, StateSlot, Statement, StatementKind, Type, TypeId, Value,
     };
 
     use super::*;
@@ -1887,6 +2196,146 @@ mod tests {
         process.params = process_function_params(TypeId::new(0));
         program.functions = vec![function("init", FunctionKind::Init), process];
         program
+    }
+
+    #[test]
+    fn optimize_promotes_process_state_across_reference_calls() {
+        let mut program = empty_program();
+        let f32_ty = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Scalar(ScalarType::F32));
+        program.state.push(StateSlot {
+            name: "phase".to_owned(),
+            ty: f32_ty,
+            persistence: StatePersistence::Snapshot,
+        });
+
+        let helper_id = FunctionId::new(program.functions.len() as u32);
+        let mut helper = function("generated_step", FunctionKind::User);
+        helper.attributes = FunctionAttributes {
+            origin: crate::FunctionOrigin::CompilerGenerated,
+            inline: crate::InlineHint::Always,
+        };
+        helper.params.push(crate::FunctionParam {
+            name: "phase".to_owned(),
+            ty: f32_ty,
+            mode: PassingMode::ReadWriteReference,
+        });
+        helper.body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::Parameter(crate::ParameterId::new(0)),
+                    projections: Vec::new(),
+                },
+                value: Rvalue::Use(Value::Constant(ScalarValue::F32(1.0))),
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+        program.functions.push(helper);
+        program.functions[program.entry_points.process.index()]
+            .body
+            .statements
+            .push(Statement {
+                kind: StatementKind::Call {
+                    results: Vec::new(),
+                    function: helper_id,
+                    args: vec![CallArgument::Place(Place {
+                        base: PlaceBase::State(StateId::new(0)),
+                        projections: Vec::new(),
+                    })],
+                },
+                source: SourceSpan::UNKNOWN,
+            });
+
+        let mut aliased_program = program.clone();
+        aliased_program.functions[helper_id.index()]
+            .locals
+            .push(Local {
+                name: Some("direct_state_alias".to_owned()),
+                ty: f32_ty,
+            });
+        aliased_program.functions[helper_id.index()]
+            .body
+            .statements
+            .insert(
+                0,
+                Statement {
+                    kind: StatementKind::Assign {
+                        destination: Place::local(LocalId::new(0)),
+                        value: Rvalue::Load(Place {
+                            base: PlaceBase::State(StateId::new(0)),
+                            projections: Vec::new(),
+                        }),
+                    },
+                    source: SourceSpan::UNKNOWN,
+                },
+            );
+        let aliased = crate::validate_owned(aliased_program)
+            .expect("direct-state alias fixture should validate");
+        let (aliased, aliased_stats) =
+            optimize(aliased).expect("alias-safe optimization should validate");
+        assert_eq!(aliased_stats.promoted_state_slots, 0);
+        assert!(matches!(
+            &aliased.functions[aliased.entry_points.process.index()].body.statements[0].kind,
+            StatementKind::Call { args, .. }
+                if matches!(
+                    args.as_slice(),
+                    [CallArgument::Place(Place {
+                        base: PlaceBase::State(_),
+                        ..
+                    })]
+                )
+        ));
+
+        let validated = crate::validate_owned(program).expect("test MIR should validate");
+        let (optimized, stats) = optimize(validated).expect("transforms should preserve validity");
+        assert_eq!(stats.promoted_state_slots, 1);
+
+        let process = &optimized.functions[optimized.entry_points.process.index()];
+        assert!(process.body.statements.iter().any(|statement| matches!(
+            &statement.kind,
+            StatementKind::Call { args, .. }
+                if matches!(
+                    args.as_slice(),
+                    [CallArgument::Place(Place {
+                        base: PlaceBase::Local(_),
+                        ..
+                    })]
+                )
+        )));
+        assert!(process.locals.iter().any(|local| {
+            local
+                .name
+                .as_deref()
+                .is_some_and(|name| name == "$promoted.state.phase")
+        }));
+        assert!(matches!(
+            process
+                .body
+                .statements
+                .first()
+                .map(|statement| &statement.kind),
+            Some(StatementKind::Assign {
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::State(state),
+                    ..
+                }),
+                ..
+            }) if *state == StateId::new(0)
+        ));
+        assert!(matches!(
+            process
+                .body
+                .statements
+                .last()
+                .map(|statement| &statement.kind),
+            Some(StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::State(state),
+                    ..
+                },
+                ..
+            }) if *state == StateId::new(0)
+        ));
     }
 
     #[test]
@@ -1980,6 +2429,48 @@ mod tests {
             ScalarValue::F64(f64::from_bits(0x7ff8_0000_0000_0001)),
             ScalarValue::F64(f64::from_bits(0x7ff8_0000_0000_0001))
         ));
+    }
+
+    #[test]
+    fn algebraic_identities_preserve_strict_float_edge_semantics() {
+        let local_types = [TypeId::new(0), TypeId::new(1)];
+        let types = [Type::Scalar(ScalarType::I32), Type::Scalar(ScalarType::F32)];
+        assert_eq!(
+            simplify_rvalue_algebra(
+                &Rvalue::Binary {
+                    op: BinaryOp::Subtract,
+                    lhs: Value::Local(LocalId::new(1)),
+                    rhs: Value::Local(LocalId::new(1)),
+                },
+                &local_types,
+                &types,
+            ),
+            None
+        );
+        assert_eq!(
+            simplify_rvalue_algebra(
+                &Rvalue::Compare {
+                    op: CompareOp::Equal,
+                    lhs: Value::Local(LocalId::new(1)),
+                    rhs: Value::Local(LocalId::new(1)),
+                },
+                &local_types,
+                &types,
+            ),
+            None
+        );
+        assert_eq!(
+            simplify_rvalue_algebra(
+                &Rvalue::Binary {
+                    op: BinaryOp::Subtract,
+                    lhs: Value::Local(LocalId::new(0)),
+                    rhs: Value::Local(LocalId::new(0)),
+                },
+                &local_types,
+                &types,
+            ),
+            Some(Value::Constant(ScalarValue::I32(0)))
+        );
     }
 
     #[test]
@@ -2078,6 +2569,72 @@ mod tests {
             panic!("optimized function should return")
         };
         assert_eq!(values, &[Value::Constant(ScalarValue::I32(7))]);
+    }
+
+    #[test]
+    fn eliminates_repeated_pure_expressions_with_stable_operands() {
+        let mut program = empty_program();
+        let mut user = function("repeated_expression", FunctionKind::User);
+        user.params.push(crate::FunctionParam {
+            name: "value".to_owned(),
+            ty: TypeId::new(0),
+            mode: PassingMode::Value,
+        });
+        user.results.push(TypeId::new(0));
+        user.locals.extend((0..3).map(|_| Local {
+            name: None,
+            ty: TypeId::new(0),
+        }));
+        user.body.statements.extend([
+            Statement {
+                kind: StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value: Rvalue::Load(Place {
+                        base: PlaceBase::Parameter(crate::ParameterId::new(0)),
+                        projections: Vec::new(),
+                    }),
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+            Statement {
+                kind: StatementKind::Assign {
+                    destination: Place::local(LocalId::new(1)),
+                    value: Rvalue::Binary {
+                        op: BinaryOp::Multiply,
+                        lhs: Value::Local(LocalId::new(0)),
+                        rhs: Value::Constant(ScalarValue::I32(7)),
+                    },
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+            Statement {
+                kind: StatementKind::Assign {
+                    destination: Place::local(LocalId::new(2)),
+                    value: Rvalue::Binary {
+                        op: BinaryOp::Multiply,
+                        lhs: Value::Local(LocalId::new(0)),
+                        rhs: Value::Constant(ScalarValue::I32(7)),
+                    },
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+            Statement {
+                kind: StatementKind::Return {
+                    values: vec![Value::Local(LocalId::new(2))],
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+        ]);
+        program.functions.push(user);
+
+        let validated = crate::validate_owned(program).expect("CSE fixture should validate");
+        let (optimized, stats) = optimize(validated).expect("CSE should preserve validity");
+        assert_eq!(stats.eliminated_common_subexpressions, 1);
+        let user = &optimized.functions[2];
+        let StatementKind::Return { values } = &user.body.statements.last().unwrap().kind else {
+            panic!("optimized user function should return")
+        };
+        assert_eq!(values, &[Value::Local(LocalId::new(1))]);
     }
 
     #[test]
@@ -2300,7 +2857,7 @@ mod tests {
     }
 
     #[test]
-    fn optimize_reaches_fixed_point_beyond_sixteen_dead_chain_rounds() {
+    fn copy_propagation_collapses_long_dead_chains_before_the_fixed_point() {
         const PURE_CHAIN_LEN: u32 = 32;
 
         let mut program = empty_program();
@@ -2333,9 +2890,10 @@ mod tests {
         let validated = crate::validate_owned(program).expect("dead-chain fixture is valid");
         let (optimized, stats) =
             super::optimize(validated).expect("monotonic cleanup must converge");
+        assert!(stats.propagated_copies >= u64::from(PURE_CHAIN_LEN - 1));
         assert!(
-            stats.iterations > 16,
-            "regression must exercise convergence beyond the former cap"
+            stats.iterations <= 4,
+            "copy chains should not require one cleanup round per link"
         );
         assert_eq!(optimized.functions[1].locals.len(), 1);
         assert_eq!(optimized.functions[1].body.statements.len(), 1);
@@ -2346,6 +2904,7 @@ mod tests {
         assert_eq!(second.as_program(), &fixed_point);
         assert_eq!(second_stats.iterations, 1);
         assert_eq!(second_stats.propagated_values, 0);
+        assert_eq!(second_stats.propagated_copies, 0);
         assert_eq!(second_stats.folded_rvalues, 0);
         assert_eq!(second_stats.simplified_branches, 0);
         assert_eq!(second_stats.removed_unreachable_statements, 0);

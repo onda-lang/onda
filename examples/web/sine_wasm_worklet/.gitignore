@@ -1,8 +1,0 @@
-binaryen.js
-onda-binaryen-web.js
-exact-math.js
-onda-compiler-web/
-sine_wasm.mir.json
-sine_wasm.o
-sine_wasm.wasm
-sine_wasm.onda.json

@@ -1,46 +1,7 @@
-const exactMathModule = typeof process === "undefined"
-  ? "./exact-math.js"
-  : "../../../packages/onda_binaryen_web/src/exact-math.js";
-const { createExactMathImports } = await import(exactMathModule);
-
 const ONDA_PROCESS_BEGIN_BLOCK = 1 << 0;
 const ONDA_PROCESS_END_BLOCK = 1 << 1;
 
-function ondaMathImports() {
-  const unary = (fn, f32 = false) => (value) =>
-    f32 ? Math.fround(fn(value)) : fn(value);
-  const binary = (fn, f32 = false) => (lhs, rhs) =>
-    f32 ? Math.fround(fn(lhs, rhs)) : fn(lhs, rhs);
-  const roundAwayFromZero = (value) =>
-    value < 0 ? -Math.round(-value) : Math.round(value);
-  return {
-    onda_math: {
-      sin_f32: unary(Math.sin, true),
-      sin_f64: unary(Math.sin),
-      cos_f32: unary(Math.cos, true),
-      cos_f64: unary(Math.cos),
-      tan_f32: unary(Math.tan, true),
-      tan_f64: unary(Math.tan),
-      tanh_f32: unary(Math.tanh, true),
-      tanh_f64: unary(Math.tanh),
-      atan_f32: unary(Math.atan, true),
-      atan_f64: unary(Math.atan),
-      atan2_f32: binary(Math.atan2, true),
-      atan2_f64: binary(Math.atan2),
-      exp_f32: unary(Math.exp, true),
-      exp_f64: unary(Math.exp),
-      log_f32: unary(Math.log, true),
-      log_f64: unary(Math.log),
-      pow_f32: binary(Math.pow, true),
-      pow_f64: binary(Math.pow),
-      round_f32: unary(roundAwayFromZero, true),
-      round_f64: unary(roundAwayFromZero),
-    },
-    ...createExactMathImports(),
-  };
-}
-
-class OndaSineProcessor extends AudioWorkletProcessor {
+class OndaWasmProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
 
@@ -51,7 +12,7 @@ class OndaSineProcessor extends AudioWorkletProcessor {
     const bytes =
       wasmBytes instanceof Uint8Array ? wasmBytes : new Uint8Array(wasmBytes);
     const module = new WebAssembly.Module(bytes);
-    const instance = new WebAssembly.Instance(module, ondaMathImports());
+    const instance = new WebAssembly.Instance(module);
     this.exports = instance.exports;
     this.memory = this.exports.memory;
 
@@ -772,4 +733,4 @@ class OndaSineProcessor extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor("onda-sine-processor", OndaSineProcessor);
+registerProcessor("onda-wasm-processor", OndaWasmProcessor);

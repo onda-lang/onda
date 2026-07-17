@@ -357,7 +357,7 @@ async function startAudio() {
   }
 
   context = new AudioContext({ sampleRate });
-  await context.audioWorklet.addModule("./onda-sine-processor.js");
+  await context.audioWorklet.addModule("./onda-wasm-processor.js");
   const nodeOptions = {
     numberOfInputs: inputChannels ? 1 : 0,
     numberOfOutputs: outputChannels ? 1 : 0,
@@ -371,7 +371,7 @@ async function startAudio() {
     },
   };
   if (outputChannels) nodeOptions.outputChannelCount = [outputChannels];
-  node = new AudioWorkletNode(context, "onda-sine-processor", nodeOptions);
+  node = new AudioWorkletNode(context, "onda-wasm-processor", nodeOptions);
 
   if (outputChannels) {
     gainNode = new GainNode(context, { gain: Number(gainEl.value) });
@@ -403,7 +403,7 @@ async function loadToolchain() {
   const [backendModule, compilerModule, sourceResponse] = await Promise.all([
     import("./onda-binaryen-web.js"),
     import("./onda-compiler-web/onda_compiler_web.js"),
-    fetch("./sine_wasm.onda"),
+    fetch("./default.onda"),
   ]);
   if (!sourceResponse.ok) {
     throw new Error(`failed to load example source: ${sourceResponse.status}`);
@@ -411,8 +411,10 @@ async function loadToolchain() {
   await compilerModule.default();
   backend = backendModule;
   compiler = compilerModule;
-  sourceEl.value =
-    localStorage.getItem(sourceStorageKey) ?? await sourceResponse.text();
+  const exampleSource = await sourceResponse.text();
+  sourceEl.value = smokeMode
+    ? exampleSource
+    : localStorage.getItem(sourceStorageKey) ?? exampleSource;
   compileButton.disabled = false;
   await compileSource();
 }

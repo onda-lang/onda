@@ -165,9 +165,10 @@ trap deterministically; MIR does not imply an unrepresented realtime scratch all
 Math intrinsics express Onda semantics, not a target implementation. LLVM may map an intrinsic to
 LLVM IR or libm; WebAssembly may map it to a native instruction or an Onda-supplied math function.
 In particular, `fma` requires one correctly rounded product-plus-add operation: a backend must not
-replace it with separately rounded multiply and add instructions. The Binaryen backend uses a
-versioned integer-bit support ABI for exact f32/f64 results because core WebAssembly has no scalar
-FMA instruction.
+replace it with separately rounded multiply and add instructions. Because core WebAssembly has no
+scalar FMA or transcendental instructions, the Binaryen backend links the required pure-Wasm
+helper closure into the generated module and then optimizes the combined program. This is target
+legalization below MIR: it introduces no host import and does not weaken f32/f64 semantics.
 
 ## Scheduling
 
@@ -242,24 +243,50 @@ context where possible.
 ## Backend-neutral passes
 
 MIR stays structured and non-SSA while a shared pass pipeline performs cleanup useful to every
-backend. The initial pipeline propagates scalar local constants through structured control flow,
-merges identical branch facts, folds target-independent scalar operations and exact simple
-intrinsics, simplifies constant branches, removes unreachable block tails, deletes unused
+backend. The pipeline propagates constants and immutable local copies through structured control
+flow, merges identical branch facts, folds target-independent scalar operations and exact simple
+intrinsics, applies integer-safe algebraic identities, performs local value numbering for pure
+scalar expressions, simplifies constant branches, removes unreachable block tails, deletes unused
 nontrapping pure temporaries, removes proven redundant all-bits-zero writes from the straight-line
-prefix of pre-zeroed `init` state, and compacts local IDs. Loop-written locals and locals passed by
-read-write reference invalidate constant facts. The zero-store analysis stops conservatively across
-calls, structured control flow, or unknown aliases. `canonicalize` performs one validated structural
-round; `optimize` iterates to a fixed point and returns `PassStats` with an opaque
-`OptimizedProgram`.
+prefix of pre-zeroed `init` state, and compacts local IDs. Floating-point identities are not applied
+under the strict profile: NaNs, signed zero, and signaling behavior make transformations such as
+`x - x -> 0` invalid.
+
+The process pass may cache a small working set of scalar state slots in locals, loading once per
+segment and committing writable values once at the end. The portable budget is deliberately capped
+at eight scalars so a large process loop does not acquire a PHI web or Wasm spills that a target's
+register-pressure model would reject. Control mirrors, projected aggregates, and slots whose
+transitive callees also access the same state directly remain in memory to preserve alias
+coherence. Reference calls keep their aliasing semantics; a backend that cannot take the address of
+a register local must legalize that case explicitly.
+
+Loop-written locals and locals passed by read-write reference invalidate propagation facts. Memory
+and descriptor loads remain outside common-subexpression elimination until provenance proves their
+source. The zero-store analysis stops conservatively across calls, structured control flow, or
+unknown aliases. `canonicalize` performs one validated structural round. `optimize` runs its trusted
+monotonic cleanup to a fixed point, validates the completed pipeline once, and returns `PassStats`
+with an opaque `OptimizedProgram`.
+
+`analysis.rs` exposes call-transitive logical effect summaries and conservative integer ranges.
+Effects distinguish state, interface parameters, audio I/O, external buffers, constant data, event
+payloads, indirect descriptors, and per-reference reads/writes without encoding a target ABI. Range
+facts include the segmented-process contract, interface declarations, constants, and operations
+that cannot overflow. These analyses are backend inputs: they let LLVM attach memory and range
+attributes today and give future Wasm/native passes one shared place for alias, trap, and
+vectorization legality. Aggregate read-write references remain conservative when converted to
+descriptors, so LLVM never receives a `readonly` promise that descriptor provenance has not proved.
 
 These passes do not replace LLVM or Binaryen optimization. They keep portable MIR deterministic,
 remove producer artifacts before backend legalization, and prevent basic code quality from depending
 on one backend's optimizer.
 
-LLVM codegen applies the standard target-aware O3 pipeline after the shared passes, including LLVM's
-ordinary loop and SLP vectorization decisions. MIR does not override those target heuristics. The
-output-transaction form and alias metadata expose independent work to the backend, while another
-backend remains free to choose the best target strategy for the same operations.
+LLVM codegen carries MIR facts into function, parameter, and call-site attributes: memory-free or
+read-only functions, reference read/write direction, no-capture/non-null/dereferenceable pointers,
+non-throwing/non-allocating behavior, and constant ranges for process segment arguments. It then
+applies the standard target-aware O3 pipeline, including LLVM's ordinary loop and SLP vectorization
+decisions. MIR does not inject loop hints or override those target heuristics. The output-transaction
+form and alias metadata expose independent work to the backend, while another backend remains free
+to choose the best target strategy for the same operations.
 
 ## Production construction boundary
 
@@ -386,14 +413,29 @@ The schema-5 backend consumes explicit control-mirror state, checked `make_slice
 slice reference windows, and serialized function attributes. It covers scalar and fixed-array
 storage, tuples and multi-value returns, primitive slices, dynamic-slice events, buffers, flattened
 data structs, recursive processor arrays, structured control flow, constant data, oversampling, and
-segmented audio. Binaryen validates and optimizes the emitted module.
+segmented audio. Address-taken scalar locals are legalized through per-function scratch slots around
+reference calls, so shared state promotion remains portable. Contiguous slice fill uses WebAssembly
+SIMD with a scalar tail, while same-representation contiguous slice copy uses bulk-memory
+`memory.copy` and therefore retains memmove overlap semantics. Strided cases keep the scalar,
+direction-aware implementation. Binaryen validates and optimizes the emitted module.
+
+Binaryen O4, strict arithmetic, SIMD, and ordinary inlining heuristics are the defaults. Relaxed
+floating-point optimization is an explicit `fastMath` option. Inlining functions that contain loops
+is also explicit rather than default: measurements improved the oversampling case but regressed the
+language and saturator cases, so the backend does not force that global heuristic. Binaryen's
+process-global optimization controls are restored after every compilation.
+O4's more expensive IR flattening improved three of the four affinity-pinned backend workloads and
+left the fourth effectively unchanged; the browser pays that extra compilation cost once per
+artifact. StackIR generation remains disabled because it did not improve the complete workload
+matrix.
 
 The source-driven workflows exercise current compiler MessagePack output rather than hand-authored
 legacy MIR:
 `npm test` runs backend and AudioWorklet fixtures, `npm run test:onda` runs the real-source slice,
-LLVM/Binaryen render parity, and the exact-FMA oracle, and `npm run test:parity` runs the differential
-render subset. The differential suite covers full and segmented blocks, zero-frame hooks, events,
-numeric edge rules, packed snapshots/restores, buffers, slices, processor arrays, and oversampling.
+LLVM/Binaryen render parity, and the internal-Wasm FMA oracle, and `npm run test:parity` runs the
+differential render subset. The differential suite covers full and segmented blocks, zero-frame
+hooks, events, numeric edge rules, the complete f32/f64 math surface, packed snapshots/restores,
+buffers, slices, processor arrays, and oversampling.
 `npm run test:corpus` discovers all checked-in examples and positive backend fixtures and requires
 each source to produce schema-5 MIR and valid Binaryen WebAssembly. The source-driven
 commands intentionally require the native Rust/LLVM Onda build; the backend fixtures and browser
@@ -410,12 +452,12 @@ runtime processing, daemon rendering, and benchmarks now share this policy inste
 particular host to remember it. MIR still defines strict-width arithmetic; the realtime execution
 environment deliberately treats inaudible subnormal tails as zero.
 
-Core WebAssembly still has no scalar fused multiply-add instruction. The backend therefore uses the
-versioned `onda_exact_math_v1` bit ABI, whose bundled BigInt implementation matches one-rounding
-f32/f64 FMA semantics including exceptional values and signed zero. That path is exact but
-materially slower than native hardware FMA, so dense per-sample FMA remains a browser performance
-limitation rather than a semantic mismatch. The reproducible development comparison and its
-measurement caveats are recorded in [the backend benchmark report](BACKEND_BENCHMARKS.md).
+Core WebAssembly still has no scalar fused multiply-add instruction. The backend therefore links a
+strict software FMA from its internal pure-Wasm math kernel. It matches one-rounding f32/f64 FMA
+semantics without a JavaScript import or allocation, but native LLVM can still select hardware FMA;
+dense per-sample FMA may therefore remain a browser performance limitation rather than a semantic
+mismatch. The reproducible development comparison and its measurement caveats are recorded in
+[the backend benchmark report](BACKEND_BENCHMARKS.md).
 
 ## Backend invariants
 

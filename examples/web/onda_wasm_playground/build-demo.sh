@@ -5,7 +5,7 @@ serve=0
 
 usage() {
   cat <<'EOF'
-Usage: examples/web/sine_wasm_worklet/build-demo.sh [--serve]
+Usage: examples/web/onda_wasm_playground/build-demo.sh [--serve]
 
 Requires wasm-pack and npm. The resulting playground compiles Onda source in
 the browser; it does not invoke the native onda CLI.
@@ -54,7 +54,7 @@ wasm-pack build "$compiler_dir" \
 
 cp "$binaryen_js" "$demo_dir/binaryen.js"
 cp "$backend_dir/src/index.js" "$demo_dir/onda-binaryen-web.js"
-cp "$backend_dir/src/exact-math.js" "$demo_dir/exact-math.js"
+cp "$backend_dir/src/math-kernel.generated.js" "$demo_dir/math-kernel.generated.js"
 cp "$backend_dir/src/messagepack.js" "$demo_dir/messagepack.js"
 
 echo "Built the in-browser Onda compiler in: $compiler_out"

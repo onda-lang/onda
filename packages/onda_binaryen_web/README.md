@@ -12,12 +12,11 @@ function attributes before code generation.
 ```js
 import {
   compileTrustedMir,
-  createDefaultImports,
 } from "@onda-lang/binaryen-web";
 
 const mir = await fetch("patch.mir.msgpack").then((response) => response.arrayBuffer());
 const { wasm, metadata } = compileTrustedMir(mir);
-const instance = await WebAssembly.instantiate(wasm, createDefaultImports());
+const instance = await WebAssembly.instantiate(wasm);
 ```
 
 `compileMir` is the safe boundary for arbitrary MIR and rejects every operation marked with
@@ -39,8 +38,10 @@ The executable backend supports:
 - scalar/fixed-array control-output stores in the shared state blob
 - interleaved mono/static/dynamic external buffers, including reads, writes, bounds modes, and runtime metadata queries
 - checked slice construction plus fixed-array/slice reference windows
+- address-taken scalar locals legalized through per-function reference scratch storage
+- SIMD contiguous slice fill with a scalar tail and bulk-memory contiguous slice copy
 - schema-5 function attributes as validated, portable optimization hints
-- native WebAssembly numeric intrinsics plus optional `onda_math` imports for transcendental operations
+- native WebAssembly numeric intrinsics plus on-demand internal transcendental and strict-FMA helpers
 - Binaryen validation and optimization before emission
 
 The backend also supports primitive slice locals and reference arguments, event slices, flattened data structs, structure-of-arrays processor state, recursive processor arrays, and canonical top-level/processor oversampling schedules. Oversampling interpolation, substeps, sinc-filter state updates, and output decimation are ordinary MIR operations; Binaryen has no Onda-specific scheduling logic. Recursive call graphs are rejected as unbounded realtime work before fixed-array local storage can become re-entrant. Aggregate shapes that cannot be represented by portable MIR are rejected above the backend boundary.
@@ -58,9 +59,48 @@ Emitted metadata distinguishes physical Wasm state storage from the packed persi
 `runtime.state_size_bytes` sizes linear-memory state, while `runtime.snapshot_size_bytes` and
 `metadata.states` describe the deterministic scratch-free snapshot layout shared with native MIR.
 
-Core WebAssembly has no scalar fused multiply-add instruction. MIR `fma` therefore uses the explicitly versioned `onda_exact_math_v1` support ABI instead of being silently expanded to a rounded multiply followed by an add. Wasm passes the three operands and result as `i32`/`i64` IEEE bit patterns through `fma_f32_bits` or `fma_f64_bits`. The bundled support reconstructs the exact integer product and sum with `BigInt`, then performs one round-to-nearest, ties-to-even step. It handles normals, subnormals, underflow, overflow, infinities, deterministic canonical quiet NaNs, exact cancellation, and signed zero. `createDefaultImports()` includes this support; a custom host can merge `createExactMathImports()` and should use `artifact.metadata.imports` to discover when it is required.
+Core WebAssembly has no scalar fused multiply-add or transcendental instructions. The backend
+therefore links only the required closure from an embedded, pure-Wasm math kernel into each DSP
+module before Binaryen optimization. Calls remain inside one Wasm instance: generated artifacts
+have no `onda_math` or exact-FMA host imports, and the AudioWorklet performs no JavaScript math on
+the render path. The kernel provides the same f32/f64 `sin`, `cos`, `tan`, `tanh`, `atan`, `atan2`,
+`exp`, `log`, `pow`, and strict `fma` surface as native LLVM lowering. Core Wasm instructions still
+handle `sqrt`, `abs`, `floor`, `ceil`, `trunc`, `min`, and `max`; a small internal helper implements
+LLVM-compatible half-away-from-zero `round`.
 
-The exact support prioritizes semantics over throughput: each dynamic `fma` crosses a Wasm import boundary and performs allocating `BigInt` arithmetic, so it is materially slower and less realtime-friendly than a native hardware FMA. Avoid placing it in a dense per-sample hot path when latency is critical. The versioned bit ABI allows a host to substitute a faster implementation only if it returns identical IEEE bits. `npm run test:fma-oracle` compares targeted edge cases and deterministic random bit patterns against Rust's native `mul_add` oracle.
+The kernel is a reproducible `no_std` Rust build of MIT-licensed `libm` 0.2.16. Its strict software
+FMA performs one correctly rounded operation without an allocating JavaScript `BigInt` boundary.
+`npm run build:math-kernel` regenerates the embedded module, while `npm run test:fma-oracle`
+compares targeted edge cases and deterministic random bit patterns against Rust's native
+`mul_add` oracle. Binaryen removes unused helper functions, so a program pays code size only for
+the math closure it calls. `createDefaultImports()` remains as a compatibility convenience and now
+returns an empty object.
+
+Compilation defaults to Binaryen O4 for speed, strict floating-point optimization, WebAssembly
+SIMD enabled, and Binaryen's ordinary inlining policy. Options are explicit and recorded in
+`artifact.metadata.optimization`:
+
+```js
+compileTrustedMir(mir, {
+  optimize: true,
+  optimizeLevel: 4,       // 0..4
+  shrinkLevel: 0,         // 0..2
+  fastMath: false,        // opt in to relaxed floating-point rewrites
+  simd: true,             // set false for pre-SIMD Wasm hosts
+  allowInliningFunctionsWithLoops: false,
+  emitText: false,
+});
+```
+
+Loop-containing inlining remains opt-in because controlled measurements were workload-dependent:
+it helped the oversampling fixture but regressed the language and saturator fixtures. The compiler
+saves and restores Binaryen's process-global optimization settings around every module, so one
+compile cannot silently change another compile's numerical or inlining policy.
+
+O4 was selected by an affinity-pinned O3/O4 A/B over language, oversampling, saturator, and complete
+math workloads. It improved three workloads and left saturator effectively unchanged, at the cost
+of higher one-time compilation latency. Binaryen StackIR generation remains off because it improved
+some workloads but regressed others in the same matrix.
 
 MIR schema 5 retains the lossless scalar encoding introduced by schema 3: `i64` values are decimal strings and non-finite floats are exact hexadecimal IEEE bit patterns. The compiler and reference AudioWorklet decode both forms before constructing Wasm constants or initializing host storage.
 
@@ -73,7 +113,7 @@ npm run test:onda
 npm run test:corpus
 ```
 
-`npm test` runs schema-5 backend, exact-math, and AudioWorklet fixtures. `npm run test:onda`
+`npm test` runs schema-5 backend, embedded-math-kernel, and AudioWorklet fixtures. `npm run test:onda`
 compiles real Onda sources, runs LLVM/MIR-Binaryen render parity through MessagePack, and verifies
 exact FMA against Rust's `mul_add`; `npm run test:parity` selects only the differential renderer.
 That renderer covers full/segmented/zero-frame scheduling, events, snapshots/restores, numeric edge
@@ -87,17 +127,17 @@ Run `npm run bench` for the reproducible development comparison documented in
 [`docs/BACKEND_BENCHMARKS.md`](../../docs/BACKEND_BENCHMARKS.md). Those measurements validate output
 and compare native LLVM JIT/processing with Binaryen compilation, Wasm instantiation, and Wasm
 processing; they require the native Rust/LLVM Onda build and are not universal browser-performance
-claims. The benchmark fails by default unless LLVM is at least 5% faster in every checked scenario;
-the report includes the current CPU affinity so heterogeneous-core placement is visible.
+claims. The benchmark fails by default if Binaryen/Wasm beats LLVM in any checked scenario; the
+report includes the current CPU affinity so heterogeneous-core placement is visible.
 
-The browser playground under `examples/web/sine_wasm_worklet` builds the Rust compiler with
+The browser playground under `examples/web/onda_wasm_playground` builds the Rust compiler with
 `wasm-pack`, loads this backend as an ESM module, and compiles edited source to executable DSP Wasm
 inside the page.
 
 Current limitations are explicit:
 
-- exact FMA is correct but expensive because it crosses an import boundary and allocates BigInts
-- transcendental operations use `onda_math` imports because core WebAssembly lacks those instructions
+- scalar FMA and transcendental operations are software helpers on core Wasm targets, so LLVM may
+  still use faster target instructions or platform libm implementations
 - recursive call graphs are rejected as unbounded realtime work
 - `inline: always` and `inline: never` are validated but remain advisory because Binaryen.js does
   not expose per-function inline/no-inline annotations; its module optimizer chooses whether to

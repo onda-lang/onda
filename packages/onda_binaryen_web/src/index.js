@@ -1,24 +1,28 @@
 import binaryen from "binaryen";
 import { decodeMirMessagePack } from "./messagepack.js";
-import {
-  createExactMathImports,
-  ONDA_EXACT_MATH_ABI_VERSION,
-  ONDA_EXACT_MATH_IMPORT_MODULE,
-} from "./exact-math.js";
-
-export {
-  createExactMathImports,
-  exactFmaF32Bits,
-  exactFmaF64Bits,
-  ONDA_EXACT_MATH_ABI_VERSION,
-  ONDA_EXACT_MATH_IMPORT_MODULE,
-} from "./exact-math.js";
+import { ONDA_MATH_KERNEL_WASM } from "./math-kernel.generated.js";
 
 const SUPPORTED_SCHEMA_VERSION = 5;
 const PAGE_BYTES = 64 * 1024;
 const STATIC_BASE = 1024;
+const MATH_KERNEL_RESERVED_END = 32 * 1024;
+const MATH_KERNEL_DATA_SEGMENT = ".rodata";
+const MATH_KERNEL_STACK_GLOBAL = "__stack_pointer";
 const MAX_MEMORY_PAGES = 65_536;
+const DEFAULT_OPTIMIZE_LEVEL = 4;
 const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
+const MATH_KERNEL_INTRINSICS = new Set([
+  "sin",
+  "cos",
+  "tan",
+  "tanh",
+  "atan",
+  "atan2",
+  "exp",
+  "log",
+  "pow",
+  "fma",
+]);
 
 const POINTER_GLOBALS = Object.freeze({
   inputs: "$onda.inputs",
@@ -69,38 +73,45 @@ function parseMirInput(input) {
 }
 
 export function createDefaultImports() {
-  const roundAwayFromZero = (value) =>
-    value < 0 ? -Math.round(-value) : Math.round(value);
-  const unary = (fn, f32 = false) => (value) =>
-    f32 ? Math.fround(fn(value)) : fn(value);
-  const binary = (fn, f32 = false) => (lhs, rhs) =>
-    f32 ? Math.fround(fn(lhs, rhs)) : fn(lhs, rhs);
+  return {};
+}
 
-  return {
-    onda_math: {
-      sin_f32: unary(Math.sin, true),
-      sin_f64: unary(Math.sin),
-      cos_f32: unary(Math.cos, true),
-      cos_f64: unary(Math.cos),
-      tan_f32: unary(Math.tan, true),
-      tan_f64: unary(Math.tan),
-      tanh_f32: unary(Math.tanh, true),
-      tanh_f64: unary(Math.tanh),
-      atan_f32: unary(Math.atan, true),
-      atan_f64: unary(Math.atan),
-      atan2_f32: binary(Math.atan2, true),
-      atan2_f64: binary(Math.atan2),
-      exp_f32: unary(Math.exp, true),
-      exp_f64: unary(Math.exp),
-      log_f32: unary(Math.log, true),
-      log_f64: unary(Math.log),
-      pow_f32: binary(Math.pow, true),
-      pow_f64: binary(Math.pow),
-      round_f32: unary(roundAwayFromZero, true),
-      round_f64: unary(roundAwayFromZero),
-    },
-    ...createExactMathImports(),
-  };
+function collectMathKernelHelpers(mir) {
+  const result = new Set();
+  for (const func of mir?.functions ?? []) {
+    const localScalars = (func.locals ?? []).map((local) => {
+      const type = mir.types?.[local.ty];
+      return type?.kind === "scalar" ? type.data : null;
+    });
+    const valueScalar = (value) => {
+      if (value?.kind === "constant") return value.data?.type;
+      if (value?.kind === "local") return localScalars[value.data];
+      return null;
+    };
+    const visitBlock = (block) => {
+      for (const statement of block?.statements ?? []) {
+        const kind = statement.kind?.kind;
+        const data = statement.kind?.data;
+        if (kind === "assign" && data?.value?.kind === "intrinsic") {
+          const intrinsic = data.value.data?.intrinsic;
+          const scalar = valueScalar(data.value.data?.args?.[0]);
+          if (
+            MATH_KERNEL_INTRINSICS.has(intrinsic)
+            && (scalar === "f32" || scalar === "f64")
+          ) {
+            result.add(`onda_math_${intrinsic}_${scalar}`);
+          }
+        } else if (kind === "if") {
+          visitBlock(data?.then_block);
+          visitBlock(data?.else_block);
+        } else if (kind === "loop") {
+          visitBlock(data?.body);
+        }
+      }
+    };
+    visitBlock(func.body);
+  }
+  return result;
 }
 
 function parseMirJson(json) {
@@ -135,8 +146,12 @@ class MirCompiler {
     this.options = {
       optimize: options.optimize !== false,
       emitText: options.emitText === true,
-      optimizeLevel: options.optimizeLevel ?? 3,
+      optimizeLevel: options.optimizeLevel ?? DEFAULT_OPTIMIZE_LEVEL,
       shrinkLevel: options.shrinkLevel ?? 0,
+      fastMath: options.fastMath === true,
+      simd: options.simd !== false,
+      allowInliningFunctionsWithLoops:
+        options.allowInliningFunctionsWithLoops === true,
     };
     this.trustedProducer = trustedProducer;
     this.module = new binaryen.Module();
@@ -149,9 +164,13 @@ class MirCompiler {
     this.eventLayout = [];
     this.constLayout = [];
     this.localArrayLayout = [];
+    this.localScalarRefLayout = [];
     this.memorySegments = [];
-    this.requiredImports = new Map();
-    this.nextStaticAddress = STATIC_BASE;
+    this.requiredMathHelpers = collectMathKernelHelpers(mir);
+    this.nextStaticAddress = this.requiredMathHelpers.size > 0
+      ? MATH_KERNEL_RESERVED_END
+      : STATIC_BASE;
+    this.internalHelpers = new Set();
     this.nextLabel = 0;
   }
 
@@ -159,6 +178,7 @@ class MirCompiler {
     try {
       this.validateEnvelope();
       this.buildLayouts();
+      this.addMathKernel();
       this.addMemoryAndContextGlobals();
       this.addMirFunctions();
       this.addAbiWrappers();
@@ -169,13 +189,22 @@ class MirCompiler {
       if (this.options.optimize) {
         const previousOptimizeLevel = binaryen.getOptimizeLevel();
         const previousShrinkLevel = binaryen.getShrinkLevel();
+        const previousFastMath = binaryen.getFastMath();
+        const previousLoopInlining =
+          binaryen.getAllowInliningFunctionsWithLoops();
         try {
           binaryen.setOptimizeLevel(this.options.optimizeLevel);
           binaryen.setShrinkLevel(this.options.shrinkLevel);
+          binaryen.setFastMath(this.options.fastMath);
+          binaryen.setAllowInliningFunctionsWithLoops(
+            this.options.allowInliningFunctionsWithLoops,
+          );
           this.module.optimize();
         } finally {
           binaryen.setOptimizeLevel(previousOptimizeLevel);
           binaryen.setShrinkLevel(previousShrinkLevel);
+          binaryen.setFastMath(previousFastMath);
+          binaryen.setAllowInliningFunctionsWithLoops(previousLoopInlining);
         }
         if (!this.module.validate()) {
           throw new OndaBinaryenError(
@@ -446,7 +475,53 @@ class MirCompiler {
         return { ...layout, address };
       }),
     );
+    this.localScalarRefLayout = this.mir.functions.map((func, functionId) => {
+      const addressTaken = this.collectAddressTakenScalarLocals(functionId);
+      return func.locals.map((local, localId) => {
+        if (!addressTaken.has(localId)) return null;
+        const type = this.type(local.ty);
+        if (type.kind !== "scalar") return null;
+        const size = this.scalarSize(type.data);
+        this.nextStaticAddress = alignUp(this.nextStaticAddress, size);
+        const address = this.nextStaticAddress;
+        this.nextStaticAddress += size;
+        return { address, scalar: type.data, size };
+      });
+    });
     this.nextStaticAddress = alignUp(this.nextStaticAddress, 16);
+  }
+
+  collectAddressTakenScalarLocals(functionId) {
+    const result = new Set();
+    const visitBlock = (block) => {
+      for (const statement of block.statements) {
+        const kind = statement.kind?.kind;
+        const data = statement.kind?.data;
+        if (kind === "call") {
+          const target = this.mir.functions[data.function];
+          data.args.forEach((argument, index) => {
+            const parameter = target?.params[index];
+            const type = parameter && this.type(parameter.ty);
+            if (
+              parameter?.mode !== "value"
+              && type?.kind === "scalar"
+              && argument.kind === "place"
+              && argument.data.base.kind === "local"
+              && argument.data.projections.length === 0
+            ) {
+              result.add(argument.data.base.data);
+            }
+          });
+        } else if (kind === "if") {
+          visitBlock(data.then_block);
+          visitBlock(data.else_block);
+        } else if (kind === "loop") {
+          visitBlock(data.body);
+        }
+      }
+    };
+    visitBlock(this.mir.functions[functionId].body);
+    return result;
   }
 
   layoutNamedValues(values) {
@@ -560,6 +635,84 @@ class MirCompiler {
     }
   }
 
+  addMathKernel() {
+    if (this.requiredMathHelpers.size === 0) return;
+
+    const source = binaryen.readBinary(ONDA_MATH_KERNEL_WASM);
+    try {
+      if (
+        source.getNumGlobals() !== 1
+        || source.getNumTables() !== 0
+        || source.getNumDataSegments() !== 1
+      ) {
+        this.fail("embedded Wasm math kernel has an unsupported module shape");
+      }
+
+      for (let index = source.getNumExports() - 1; index >= 0; index -= 1) {
+        const exported = binaryen.getExportInfo(source.getExportByIndex(index));
+        if (!this.requiredMathHelpers.has(exported.name)) {
+          source.removeExport(exported.name);
+        }
+      }
+      source.runPasses(["remove-unused-module-elements"]);
+
+      if (source.getNumGlobals() > 1 || source.getNumDataSegments() > 1) {
+        this.fail("optimized Wasm math kernel has an unsupported module shape");
+      }
+      if (source.getNumGlobals() === 1) {
+        const global = binaryen.getGlobalInfo(source.getGlobalByIndex(0));
+        if (
+          global.module
+          || global.name !== MATH_KERNEL_STACK_GLOBAL
+          || global.type !== binaryen.i32
+          || !global.mutable
+        ) {
+          this.fail("embedded Wasm math kernel has an invalid stack global");
+        }
+        this.module.addGlobal(
+          global.name,
+          global.type,
+          global.mutable,
+          this.module.copyExpression(global.init),
+        );
+      }
+
+      if (source.getNumDataSegments() === 1) {
+        const segment = source.getDataSegmentInfo(source.getDataSegmentByIndex(0));
+        if (
+          segment.name !== MATH_KERNEL_DATA_SEGMENT
+          || segment.passive
+          || !Number.isInteger(segment.offset)
+          || segment.offset < STATIC_BASE
+          || segment.offset + segment.data.byteLength > MATH_KERNEL_RESERVED_END
+        ) {
+          this.fail("embedded Wasm math kernel exceeds its reserved memory region");
+        }
+        this.memorySegments.push({
+          offset: this.module.i32.const(segment.offset),
+          data: new Uint8Array(segment.data),
+        });
+      }
+
+      this.module.setFeatures(this.module.getFeatures() | source.getFeatures());
+      for (let index = 0; index < source.getNumFunctions(); index += 1) {
+        const func = binaryen.getFunctionInfo(source.getFunctionByIndex(index));
+        if (func.module || !func.body) {
+          this.fail("embedded Wasm math kernel must not import functions");
+        }
+        this.module.addFunction(
+          func.name,
+          func.params,
+          func.results,
+          func.vars,
+          this.module.copyExpression(func.body),
+        );
+      }
+    } finally {
+      source.dispose();
+    }
+  }
+
   addMirFunctions() {
     this.functionNames = this.mir.functions.map((_, id) => `$onda.fn.${id}`);
     for (let id = 0; id < this.mir.functions.length; id += 1) {
@@ -599,10 +752,13 @@ class MirCompiler {
     const resultScalars = func.results.map((result, resultId) =>
       this.requireScalarType(result, `result ${resultId} of '${func.name}'`),
     );
-    const tupleLocals = this.collectTupleCallLocals(func);
+    const callResultLocals = this.collectCallResultLocals(func);
     const sliceScratch = this.collectSliceScratchLocals(func);
     const processFrameLocals = this.collectProcessFrameLocals(func);
-    if (resultScalars.length > 1 || tupleLocals.length > 0) {
+    if (
+      resultScalars.length > 1
+      || callResultLocals.some((entry) => entry.resultCount > 1)
+    ) {
       this.module.setFeatures(
         this.module.getFeatures() | binaryen.Features.Multivalue,
       );
@@ -615,8 +771,8 @@ class MirCompiler {
       localScalars,
       localLayouts,
       flatLocalCount: flatLocalScalars.length,
-      tupleLocals: new Map(
-        tupleLocals.map((entry, index) => [
+      callResultLocals: new Map(
+        callResultLocals.map((entry, index) => [
           entry.call,
           {
             index: paramScalars.length + flatLocalScalars.length + index,
@@ -631,7 +787,7 @@ class MirCompiler {
             index:
               paramScalars.length +
               flatLocalScalars.length +
-              tupleLocals.length +
+              callResultLocals.length +
               sliceScratch.offsets[index],
             count: entry.count,
           },
@@ -649,7 +805,7 @@ class MirCompiler {
       this.wasmResultType(resultScalars),
       [
         ...flatLocalScalars.map((type) => this.wasmType(type)),
-        ...tupleLocals.map((entry) => entry.type),
+        ...callResultLocals.map((entry) => entry.type),
         ...Array.from({ length: sliceScratch.count }, () => binaryen.i32),
       ],
       body,
@@ -750,15 +906,23 @@ class MirCompiler {
     }
   }
 
-  collectTupleCallLocals(func) {
+  collectCallResultLocals(func) {
     const result = [];
     const visitBlock = (block) => {
       for (const statement of block.statements) {
         const kind = statement.kind?.kind;
         const data = statement.kind?.data;
-        if (kind === "call" && data.results.length > 1) {
+        if (kind === "call" && data.results.length > 0) {
           this.requireFunctionId(data.function, "call target");
           const target = this.mir.functions[data.function];
+          const aliasesResult = data.args.some((argument, index) =>
+            target.params[index]?.mode !== "value"
+              && argument.kind === "place"
+              && argument.data.base.kind === "local"
+              && argument.data.projections.length === 0
+              && this.type(target.params[index].ty).kind === "scalar"
+          );
+          if (data.results.length === 1 && !aliasesResult) continue;
           const scalars = target.results.map((typeId, resultId) =>
             this.requireScalarType(
               typeId,
@@ -767,6 +931,7 @@ class MirCompiler {
           );
           result.push({
             call: data,
+            resultCount: scalars.length,
             type: binaryen.createType(
               scalars.map((scalar) => this.wasmType(scalar)),
             ),
@@ -863,7 +1028,8 @@ class MirCompiler {
     this.module.setFeatures(
       this.module.getFeatures() |
         binaryen.Features.BulkMemory |
-        binaryen.Features.BulkMemoryOpt,
+        binaryen.Features.BulkMemoryOpt |
+        (this.options.simd ? binaryen.Features.SIMD128 : 0),
     );
     const initBody = this.module.block(null, [
       this.module.global.set(
@@ -1206,30 +1372,98 @@ class MirCompiler {
     );
     const resultType = this.wasmResultType(resultScalars);
     const call = this.module.call(this.functionNames[data.function], args, resultType);
-    if (data.results.length === 0) {
-      return call;
+    const localReferenceSync = data.args.flatMap((argument, index) => {
+      const parameter = target.params[index];
+      if (
+        parameter.mode === "value"
+        || argument.kind !== "place"
+        || argument.data.base.kind !== "local"
+        || argument.data.projections.length !== 0
+      ) {
+        return [];
+      }
+      const layout =
+        this.localScalarRefLayout[context.functionId]?.[argument.data.base.data];
+      if (!layout) return [];
+      return [{
+        localId: argument.data.base.data,
+        address: layout.address,
+        scalar: layout.scalar,
+        writeBack: parameter.mode === "read_write_reference",
+      }];
+    });
+    const beforeCall = localReferenceSync.map((sync) =>
+      this.storeScalar(
+        sync.scalar,
+        this.module.i32.const(sync.address),
+        this.module.local.get(
+          this.localIndex(sync.localId, context),
+          this.wasmType(sync.scalar),
+        ),
+      ),
+    );
+    const afterCall = localReferenceSync
+      .filter((sync) => sync.writeBack)
+      .map((sync) =>
+        this.module.local.set(
+          this.localIndex(sync.localId, context),
+          this.loadScalar(sync.scalar, this.module.i32.const(sync.address)),
+        ),
+      );
+    const resultSpill = context.callResultLocals.get(data);
+    if (localReferenceSync.length > 0 && data.results.length > 0) {
+      if (!resultSpill) {
+        this.fail(`internal result spill is missing for call to '${target.name}'`);
+      }
+      const spilledValue = () =>
+        this.module.local.get(resultSpill.index, resultSpill.type);
+      const assignResults = data.results.length === 1
+        ? [
+            this.module.local.set(
+              this.localIndex(data.results[0], context),
+              spilledValue(),
+            ),
+          ]
+        : data.results.map((localId, index) =>
+            this.module.local.set(
+              this.localIndex(localId, context),
+              this.module.tuple.extract(spilledValue(), index),
+            ),
+          );
+      return this.module.block(null, [
+        ...beforeCall,
+        this.module.local.set(resultSpill.index, call),
+        ...afterCall,
+        ...assignResults,
+      ]);
     }
-    if (data.results.length === 1) {
-      return this.module.local.set(
+    let compiledCall;
+    if (data.results.length === 0) {
+      compiledCall = call;
+    } else if (data.results.length === 1) {
+      compiledCall = this.module.local.set(
         this.localIndex(data.results[0], context),
         call,
       );
-    }
-    const tupleLocal = context.tupleLocals.get(data);
-    if (!tupleLocal) {
-      this.fail(`internal tuple spill is missing for call to '${target.name}'`);
-    }
-    const tupleValue = () =>
-      this.module.local.get(tupleLocal.index, tupleLocal.type);
-    return this.module.block(null, [
-      this.module.local.set(tupleLocal.index, call),
-      ...data.results.map((localId, index) =>
-        this.module.local.set(
-          this.localIndex(localId, context),
-          this.module.tuple.extract(tupleValue(), index),
+    } else {
+      const tupleLocal = context.callResultLocals.get(data);
+      if (!tupleLocal) {
+        this.fail(`internal tuple spill is missing for call to '${target.name}'`);
+      }
+      const tupleValue = () =>
+        this.module.local.get(tupleLocal.index, tupleLocal.type);
+      compiledCall = this.module.block(null, [
+        this.module.local.set(tupleLocal.index, call),
+        ...data.results.map((localId, index) =>
+          this.module.local.set(
+            this.localIndex(localId, context),
+            this.module.tuple.extract(tupleValue(), index),
+          ),
         ),
-      ),
-    ]);
+      ]);
+    }
+    if (localReferenceSync.length === 0) return compiledCall;
+    return this.module.block(null, [...beforeCall, compiledCall, ...afterCall]);
   }
 
   compileOutputStore(data, context) {
@@ -2141,23 +2375,25 @@ class MirCompiler {
     }
     const counter = scratch.index;
     const id = this.nextLabel++;
-    const loopLabel = `$onda.slice.fill.${id}`;
+    const vectorLoopLabel = `$onda.slice.fill.vector.${id}`;
+    const scalarLoopLabel = `$onda.slice.fill.scalar.${id}`;
     const destination = () => this.compileSliceValue(data.destination, context);
     const counterValue = () => this.module.local.get(counter, binaryen.i32);
+    const scalar = this.sliceElementScalar(data.destination, context);
+    const scalarSize = this.scalarSize(scalar);
     const address = () =>
       this.module.i32.add(
         destination()[0],
         this.module.i32.mul(counterValue(), destination()[2]),
       );
-    return this.module.block(null, [
-      this.module.local.set(counter, this.module.i32.const(0)),
+    const scalarLoop = () =>
       this.module.loop(
-        loopLabel,
+        scalarLoopLabel,
         this.module.if(
           this.module.i32.lt_s(counterValue(), destination()[1]),
           this.module.block(null, [
             this.storeScalar(
-              this.sliceElementScalar(data.destination, context),
+              scalar,
               address(),
               this.compileValue(data.value, context),
             ),
@@ -2165,10 +2401,64 @@ class MirCompiler {
               counter,
               this.module.i32.add(counterValue(), this.module.i32.const(1)),
             ),
-            this.module.br(loopLabel),
+            this.module.br(scalarLoopLabel),
           ]),
         ),
-      ),
+      );
+    const body = [];
+    if (this.options.simd) {
+      const lanes = 16 / scalarSize;
+      const vectorCondition = this.module.i32.and(
+        this.module.i32.eq(
+          destination()[2],
+          this.module.i32.const(scalarSize),
+        ),
+        this.module.i32.and(
+          this.module.i32.ge_u(
+            destination()[1],
+            this.module.i32.const(lanes),
+          ),
+          this.module.i32.le_u(
+            counterValue(),
+            this.module.i32.sub(
+              destination()[1],
+              this.module.i32.const(lanes),
+            ),
+          ),
+        ),
+      );
+      body.push(
+        this.module.loop(
+          vectorLoopLabel,
+          this.module.if(
+            vectorCondition,
+            this.module.block(null, [
+              this.module.v128.store(
+                0,
+                scalarSize,
+                address(),
+                this.compileVectorSplat(
+                  scalar,
+                  this.compileValue(data.value, context),
+                ),
+              ),
+              this.module.local.set(
+                counter,
+                this.module.i32.add(
+                  counterValue(),
+                  this.module.i32.const(lanes),
+                ),
+              ),
+              this.module.br(vectorLoopLabel),
+            ]),
+          ),
+        ),
+      );
+    }
+    body.push(scalarLoop());
+    return this.module.block(null, [
+      this.module.local.set(counter, this.module.i32.const(0)),
+      ...body,
     ]);
   }
 
@@ -2255,17 +2545,7 @@ class MirCompiler {
         this.module.i32.ne(destination()[2], source()[2]),
         overlaps(),
       );
-    return this.module.block(null, [
-      this.module.local.set(
-        count,
-        this.module.select(
-          this.module.i32.lt_s(destination()[1], source()[1]),
-          destination()[1],
-          source()[1],
-        ),
-      ),
-      this.module.if(invalidOverlap(), this.module.unreachable()),
-      this.module.local.set(counter, this.module.i32.const(0)),
+    const scalarCopy = () =>
       this.module.loop(
         loopLabel,
         this.module.if(
@@ -2279,8 +2559,57 @@ class MirCompiler {
             this.module.br(loopLabel),
           ]),
         ),
+      );
+    const sameRepresentation = sourceScalar === destinationScalar;
+    const copy = sameRepresentation
+      ? this.module.if(
+          this.module.i32.and(
+            this.module.i32.eq(
+              destination()[2],
+              this.module.i32.const(this.scalarSize(destinationScalar)),
+            ),
+            this.module.i32.eq(
+              source()[2],
+              this.module.i32.const(this.scalarSize(sourceScalar)),
+            ),
+          ),
+          // memory.copy has memmove overlap semantics and lets engines use
+          // their tuned bulk-memory implementation for contiguous slices.
+          this.module.memory.copy(
+            destination()[0],
+            source()[0],
+            this.module.i32.mul(
+              countValue(),
+              this.module.i32.const(this.scalarSize(sourceScalar)),
+            ),
+          ),
+          scalarCopy(),
+        )
+      : scalarCopy();
+    return this.module.block(null, [
+      this.module.local.set(
+        count,
+        this.module.select(
+          this.module.i32.lt_s(destination()[1], source()[1]),
+          destination()[1],
+          source()[1],
+        ),
       ),
+      this.module.if(invalidOverlap(), this.module.unreachable()),
+      this.module.local.set(counter, this.module.i32.const(0)),
+      copy,
     ]);
+  }
+
+  compileVectorSplat(scalar, value) {
+    switch (scalar) {
+      case "bool": return this.module.i8x16.splat(value);
+      case "i32": return this.module.i32x4.splat(value);
+      case "i64": return this.module.i64x2.splat(value);
+      case "f32": return this.module.f32x4.splat(value);
+      case "f64": return this.module.f64x2.splat(value);
+      default: this.fail(`unknown SIMD scalar type '${String(scalar)}'`);
+    }
   }
 
   compileValue(value, context) {
@@ -2433,9 +2762,11 @@ class MirCompiler {
         break;
       }
       case "local": {
-        const layout = this.localArrayLayout[context.functionId]?.[place.base.data];
+        const layout =
+          this.localArrayLayout[context.functionId]?.[place.base.data]
+          ?? this.localScalarRefLayout[context.functionId]?.[place.base.data];
         if (!layout) {
-          this.fail(`local id ${place.base.data} is not an addressable array`);
+          this.fail(`local id ${place.base.data} is not addressable`);
         }
         typeId = context.function.locals[place.base.data].ty;
         address = this.module.i32.const(layout.address);
@@ -2717,7 +3048,7 @@ class MirCompiler {
       case "trunc": return wasm.trunc(args[0]);
       case "min": return wasm.min(args[0], args[1]);
       case "max": return wasm.max(args[0], args[1]);
-      case "fma": return this.compileExactFmaImport(scalar, args);
+      case "fma": return this.compileMathKernelCall(data.intrinsic, scalar, args);
       case "sin":
       case "cos":
       case "tan":
@@ -2727,54 +3058,51 @@ class MirCompiler {
       case "exp":
       case "log":
       case "pow":
+        return this.compileMathKernelCall(data.intrinsic, scalar, args);
       case "round":
-        return this.compileMathImport(data.intrinsic, scalar, args);
+        return this.compileRoundHelper(scalar, args);
       default:
         this.fail(`unknown intrinsic '${String(data.intrinsic)}'`);
     }
   }
 
-  compileMathImport(intrinsic, scalar, args) {
-    const name = `$onda.math.${intrinsic}.${scalar}`;
-    if (!this.requiredImports.has(name)) {
-      this.requiredImports.set(name, {
-        module: "onda_math",
-        name: `${intrinsic}_${scalar}`,
-      });
-      this.module.addFunctionImport(
-        name,
-        "onda_math",
-        `${intrinsic}_${scalar}`,
-        binaryen.createType(args.map(() => this.wasmType(scalar))),
-        this.wasmType(scalar),
-      );
+  compileMathKernelCall(intrinsic, scalar, args) {
+    const name = `onda_math_${intrinsic}_${scalar}`;
+    if (!this.requiredMathHelpers.has(name)) {
+      this.fail(`math kernel was not reserved for helper '${name}'`);
     }
-    return this.module.call(name, args, this.wasmType(scalar));
+    return this.module.call(
+      name,
+      args,
+      this.wasmType(scalar),
+    );
   }
 
-  compileExactFmaImport(scalar, args) {
-    const integer = scalar === "f32" ? "i32" : "i64";
-    const name = `$onda.exact_math.v${ONDA_EXACT_MATH_ABI_VERSION}.fma.${scalar}`;
-    const externalName = `fma_${scalar}_bits`;
-    if (!this.requiredImports.has(name)) {
-      this.requiredImports.set(name, {
-        module: ONDA_EXACT_MATH_IMPORT_MODULE,
-        name: externalName,
-      });
-      this.module.addFunctionImport(
-        name,
-        ONDA_EXACT_MATH_IMPORT_MODULE,
-        externalName,
-        binaryen.createType(args.map(() => this.wasmType(integer))),
-        this.wasmType(integer),
+  compileRoundHelper(scalar, args) {
+    const name = `$onda.math.round.${scalar}`;
+    if (!this.internalHelpers.has(name)) {
+      const wasm = this.module[scalar];
+      const get = () => this.module.local.get(0, this.wasmType(scalar));
+      const trunc = () => wasm.trunc(get());
+      const magnitude = wasm.abs(wasm.sub(get(), trunc()));
+      const rounded = wasm.add(
+        trunc(),
+        wasm.copysign(wasm.const(1), get()),
       );
+      this.module.addFunction(
+        name,
+        this.wasmType(scalar),
+        this.wasmType(scalar),
+        [],
+        this.module.select(
+          wasm.ge(magnitude, wasm.const(0.5)),
+          rounded,
+          trunc(),
+        ),
+      );
+      this.internalHelpers.add(name);
     }
-    const resultBits = this.module.call(
-      name,
-      args.map((arg) => this.module[integer].reinterpret(arg)),
-      this.wasmType(integer),
-    );
-    return this.module[scalar].reinterpret(resultBits);
+    return this.module.call(name, args, this.wasmType(scalar));
   }
 
   loadScalar(scalar, address) {
@@ -2943,6 +3271,10 @@ class MirCompiler {
         enabled: this.options.optimize,
         level: this.options.optimizeLevel,
         shrink_level: this.options.shrinkLevel,
+        fast_math: this.options.fastMath,
+        simd: this.options.simd,
+        inline_functions_with_loops:
+          this.options.allowInliningFunctionsWithLoops,
       },
       compile: {
         sample_rate: this.mir.config.sample_rate,
@@ -3017,7 +3349,7 @@ class MirCompiler {
           })),
         })),
       },
-      imports: [...this.requiredImports.values()],
+      imports: [],
     };
   }
 

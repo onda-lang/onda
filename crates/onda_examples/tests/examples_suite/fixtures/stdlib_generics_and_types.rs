@@ -99,15 +99,14 @@ sample {
 }
 "#;
 
-const EXPORT_MATH_TYPED_OVERLOADS_EXAMPLE: &str = r#"
-import std/export_math
+const BUILTIN_MATH_TYPED_OVERLOADS_EXAMPLE: &str = r#"
 outs {
   out1
   out2
 }
 sample {
-  out1 = std::export_math::cos(0.0) + std::export_math::exp(0.0) + std::export_math::log(1.0)
-  out2 = f32(std::export_math::cos(f64(0.0)) + std::export_math::exp(f64(0.0)) + std::export_math::log(f64(1.0)))
+  out1 = cos(0.0) + exp(0.0) + log(1.0)
+  out2 = f32(cos(f64(0.0)) + exp(f64(0.0)) + log(f64(1.0)))
 }
 "#;
 

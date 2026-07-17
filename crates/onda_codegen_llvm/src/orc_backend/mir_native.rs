@@ -496,6 +496,7 @@ struct FunctionDecl {
 
 struct ModuleEmitter<'a> {
     program: &'a Program,
+    effects: onda_mir::EffectAnalysis,
     context: LLVMContextRef,
     module: LLVMModuleRef,
     types: &'a LoweredTypes,
@@ -529,10 +530,13 @@ impl<'a> ModuleEmitter<'a> {
             runtime_fields.len() as u32,
             0,
         );
+        let effects = onda_mir::analyze_effects(program);
         let const_globals = build_const_globals(program, context, module)?;
-        let functions = declare_functions(program, context, module, types, layouts, ptr_ty)?;
+        let functions =
+            declare_functions(program, &effects, context, module, types, layouts, ptr_ty)?;
         Ok(Self {
             program,
+            effects,
             context,
             module,
             types,
@@ -555,6 +559,7 @@ impl<'a> ModuleEmitter<'a> {
 
 unsafe fn declare_functions(
     program: &Program,
+    effects: &onda_mir::EffectAnalysis,
     context: LLVMContextRef,
     module: LLVMModuleRef,
     types: &LoweredTypes,
@@ -637,6 +642,48 @@ unsafe fn declare_functions(
         if internal {
             LLVMSetLinkage(value, LLVMLinkage::LLVMInternalLinkage);
         }
+        let function_effects = effects.function(onda_mir::FunctionId::new(index as u32));
+        // MIR has no exceptions, allocation, atomics, or synchronization.
+        // Carrying those source-level facts into LLVM is substantially more
+        // robust than asking target passes to infer them through the opaque
+        // runtime-context pointer.
+        for attribute in ["nounwind", "nofree", "nosync"] {
+            add_enum_attribute_at_index(
+                context,
+                value,
+                llvm_sys::LLVMAttributeFunctionIndex,
+                attribute,
+                0,
+            )?;
+        }
+        if function_effects.is_memory_free() {
+            add_enum_attribute_at_index(
+                context,
+                value,
+                llvm_sys::LLVMAttributeFunctionIndex,
+                "memory",
+                0,
+            )?;
+        } else if function_effects.is_read_only() {
+            // LLVM 21 encodes MemoryEffects as two Mod/Ref bits for each of
+            // its four memory locations. `0b01` repeated is read-only.
+            add_enum_attribute_at_index(
+                context,
+                value,
+                llvm_sys::LLVMAttributeFunctionIndex,
+                "memory",
+                0b01_01_01_01,
+            )?;
+        }
+        if !function_effects.may_not_return && !function_effects.may_trap {
+            add_enum_attribute_at_index(
+                context,
+                value,
+                llvm_sys::LLVMAttributeFunctionIndex,
+                "willreturn",
+                0,
+            )?;
+        }
         match function.attributes.inline {
             onda_mir::InlineHint::Auto => {}
             onda_mir::InlineHint::Always => {
@@ -671,6 +718,33 @@ unsafe fn declare_functions(
                 add_enum_param_attribute(context, value, 7, "noalias")?;
                 add_enum_param_attribute(context, value, 6, "noalias")?;
                 add_enum_param_attribute(context, value, 6, "readonly")?;
+                for parameter in [3_u32, 4, 5] {
+                    add_enum_param_attribute(context, value, parameter, "noundef")?;
+                }
+                let ranges = onda_mir::analyze_integer_ranges(
+                    program,
+                    onda_mir::FunctionId::new(index as u32),
+                );
+                for (parameter, llvm_index) in [3_u32, 4, 5].into_iter().enumerate() {
+                    let Some(range) =
+                        ranges.parameter(onda_mir::ParameterId::new(parameter as u32))
+                    else {
+                        continue;
+                    };
+                    if range.scalar() != onda_mir::ScalarType::I32
+                        || range.min() < 0
+                        || range.max() >= i64::from(i32::MAX)
+                    {
+                        continue;
+                    }
+                    add_i32_range_attribute(
+                        context,
+                        value,
+                        llvm_index,
+                        range.min() as u64,
+                        (range.max() + 1) as u64,
+                    )?;
+                }
             }
             FunctionKind::Event(_) => {
                 for parameter in [1_u32, 2] {
@@ -680,12 +754,13 @@ unsafe fn declare_functions(
             }
             FunctionKind::User => {
                 for (index, parameter) in function.params.iter().enumerate() {
-                    if parameter.mode == onda_mir::PassingMode::Value {
-                        continue;
-                    }
                     // LLVM parameter attributes are one-based, and every MIR
                     // user function has the opaque runtime context in slot 1.
                     let llvm_index = index as u32 + 2;
+                    add_enum_param_attribute(context, value, llvm_index, "noundef")?;
+                    if parameter.mode == onda_mir::PassingMode::Value {
+                        continue;
+                    }
                     add_enum_param_attribute(context, value, llvm_index, "nonnull")?;
                     // LLVM 21 replaced the legacy `nocapture` spelling with
                     // the integer `captures(none)` parameter attribute. The
@@ -699,8 +774,13 @@ unsafe fn declare_functions(
                         "dereferenceable",
                         layouts.type_sizes[parameter.ty.index()] as u64,
                     )?;
-                    if parameter.mode == onda_mir::PassingMode::ReadOnlyReference {
+                    let parameter_effects = function_effects.parameters[index];
+                    if parameter.mode == onda_mir::PassingMode::ReadOnlyReference
+                        || !parameter_effects.writes
+                    {
                         add_enum_param_attribute(context, value, llvm_index, "readonly")?;
+                    } else if parameter_effects.writes && !parameter_effects.reads {
+                        add_enum_param_attribute(context, value, llvm_index, "writeonly")?;
                     }
                 }
             }
@@ -708,6 +788,25 @@ unsafe fn declare_functions(
         declarations.push(FunctionDecl { value, ty: fn_ty });
     }
     Ok(declarations)
+}
+
+unsafe fn add_i32_range_attribute(
+    context: LLVMContextRef,
+    function: LLVMValueRef,
+    index: u32,
+    lower: u64,
+    upper: u64,
+) -> Result<(), MirCodegenError> {
+    let name = "range";
+    let kind = LLVMGetEnumAttributeKindForName(name.as_ptr().cast(), name.len());
+    if kind == 0 {
+        return Err(MirCodegenError::llvm(
+            "failed to resolve LLVM 'range' attribute",
+        ));
+    }
+    let attribute = LLVMCreateConstantRangeAttribute(context, kind, 32, &lower, &upper);
+    LLVMAddAttributeAtIndex(function, index, attribute);
+    Ok(())
 }
 
 unsafe fn add_enum_param_attribute(
@@ -1452,6 +1551,12 @@ impl FunctionEmitter<'_, '_> {
                 "dereferenceable",
                 self.module.layouts.type_sizes[parameter.ty.index()] as u64,
             )?;
+            let parameter_effects = self.module.effects.function(function).parameters[index];
+            if !parameter_effects.writes {
+                add_enum_callsite_attribute(self.module.context, call, llvm_index, "readonly", 0)?;
+            } else if !parameter_effects.reads {
+                add_enum_callsite_attribute(self.module.context, call, llvm_index, "writeonly", 0)?;
+            }
         }
         match results {
             [] => {}
@@ -7501,7 +7606,7 @@ sample:
             .find(|line| line.contains("define void @onda_process("))
             .expect("process definition");
         assert_eq!(signature.matches("ptr").count(), 8);
-        assert_eq!(signature.matches("i32").count(), 3);
+        assert_eq!(signature.matches("i32 noundef range(i32").count(), 3);
     }
 
     #[test]

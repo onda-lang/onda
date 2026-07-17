@@ -116,6 +116,11 @@ const scenarios = [
     source: join(packageDir, "test/fixtures/numeric-edge-parity.onda"),
     blocks: 2,
   },
+  {
+    name: "complete f32/f64 math intrinsic surface",
+    source: join(packageDir, "test/fixtures/math-intrinsics-parity.onda"),
+    blocks: 3,
+  },
 ];
 
 try {

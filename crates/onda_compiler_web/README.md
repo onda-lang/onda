@@ -19,7 +19,7 @@ project root. `mir_schema_version()` exposes the producer version for integratio
 Compilation failures reject with a JSON-encoded array of structured diagnostics.
 
 The current producer and `packages/onda_binaryen_web` both use MIR schema 5. The browser playground
-under `examples/web/sine_wasm_worklet` passes the generated MessagePack directly to the explicitly
+under `examples/web/onda_wasm_playground` passes the generated MessagePack directly to the explicitly
 trusted Onda-producer entry point in the Binaryen.js backend and runs the resulting DSP Wasm in an
 AudioWorklet.
 
@@ -35,11 +35,12 @@ cargo test -p onda_compiler_web
 Build and serve the complete browser path from the repository root with:
 
 ```sh
-bash ./examples/web/sine_wasm_worklet/build-demo.sh --serve
+bash ./examples/web/onda_wasm_playground/build-demo.sh --serve
 ```
 
 That demo build requires Node/npm and `wasm-pack`; it does not require LLVM or the native Onda CLI.
-This crate deliberately stops at optimized validated MIR transport. DSP Wasm emission, exact math imports, runtime
-layout metadata, and AudioWorklet hosting live in the Binaryen package and browser example. Backend
+This crate deliberately stops at optimized validated MIR transport. DSP Wasm emission, internal
+Wasm math legalization, runtime layout metadata, and AudioWorklet hosting live in the Binaryen
+package and browser example. Backend
 compile/render measurements are documented in
 [`docs/BACKEND_BENCHMARKS.md`](../../docs/BACKEND_BENCHMARKS.md).

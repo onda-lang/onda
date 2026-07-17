@@ -65,10 +65,11 @@ The remaining work is:
    requested-versus-actual AudioContext sample-rate handling.
 5. Add a first-class `.wasm` CLI export around the independent native-hosted LLVM object and linker
    path.
-6. Continue cross-backend performance work. Exact WebAssembly FMA currently uses a semantically
-   correct but expensive BigInt host import, and the pinned Binaryen/compiler assets need production
-   transfer-size and browser compile-latency measurements. The current reproducible development
-   measurements live in [the backend benchmark report](BACKEND_BENCHMARKS.md).
+6. Continue cross-backend performance work. Exact WebAssembly FMA and transcendental operations now
+   use self-contained software helpers with no audio-thread JavaScript boundary; the pinned math,
+   Binaryen, and compiler assets still need production transfer-size and browser compile-latency
+   measurements. The current reproducible development measurements live in
+   [the backend benchmark report](BACKEND_BENCHMARKS.md).
 7. Move compiler and Binaryen work off the page's main thread so larger programs do not stall editor
    interaction.
 

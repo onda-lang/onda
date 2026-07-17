@@ -108,7 +108,7 @@ try {
   };
   await import(
     new URL(
-      "../../../examples/web/sine_wasm_worklet/onda-sine-processor.js",
+      "../../../examples/web/onda_wasm_playground/onda-wasm-processor.js",
       import.meta.url,
     )
   );

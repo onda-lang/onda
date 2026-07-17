@@ -31,13 +31,13 @@ non-local AudioWorklet hosting normally requires HTTPS because it must run in a 
 Windows PowerShell:
 
 ```powershell
-.\examples\web\sine_wasm_worklet\build-demo.ps1 -Serve
+.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve
 ```
 
 macOS/Linux:
 
 ```bash
-bash ./examples/web/sine_wasm_worklet/build-demo.sh --serve
+bash ./examples/web/onda_wasm_playground/build-demo.sh --serve
 ```
 
 Open `http://127.0.0.1:8787/`. Edit the source and select **Compile** (or press
@@ -47,18 +47,18 @@ from a user gesture.
 Without `-Serve`/`--serve`, the scripts only prepare the static assets:
 
 ```powershell
-.\examples\web\sine_wasm_worklet\build-demo.ps1
+.\examples\web\onda_wasm_playground\build-demo.ps1
 ```
 
 ```bash
-bash ./examples/web/sine_wasm_worklet/build-demo.sh
+bash ./examples/web/onda_wasm_playground/build-demo.sh
 ```
 
 The scripts:
 
 - run `wasm-pack build` for `crates/onda_compiler_web` with the `web` target
 - install the pinned `binaryen` npm dependency when it is missing
-- stage the compiler package, Binaryen ESM file, Onda schema-5 backend, MessagePack decoder, and exact-math support
+- stage the compiler package, Binaryen ESM file, Onda schema-5 backend, MessagePack decoder, and embedded Wasm math kernel
 - optionally start `server.mjs` on `127.0.0.1:8787`
 
 Sample rate and compile block size are editor controls, not build-script flags.
@@ -66,7 +66,7 @@ Sample rate and compile block size are editor controls, not build-script flags.
 If PowerShell script execution is blocked:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\examples\web\sine_wasm_worklet\build-demo.ps1 -Serve
+powershell.exe -ExecutionPolicy Bypass -File .\examples\web\onda_wasm_playground\build-demo.ps1 -Serve
 ```
 
 ## Verification
@@ -80,7 +80,7 @@ npm test
 npm run test:onda
 ```
 
-`npm test` covers schema-5 lowering, exact math, and AudioWorklet behavior. `npm run test:onda`
+`npm test` covers schema-5 lowering, the internal Wasm math kernel, and AudioWorklet behavior. `npm run test:onda`
 compiles real Onda source, compares Binaryen renders with the native LLVM/MIR path, and runs the FMA
 oracle. `npm run test:parity` runs only the LLVM/Binaryen differential render suite. The
 source-driven/parity commands require a working native Rust/LLVM Onda build; the demo asset build
@@ -133,8 +133,9 @@ layout. Mono/static channel constraints are checked against compiler metadata.
   programs can temporarily block editor interaction.
 - The page requests the selected sample rate from `AudioContext`, but it does not currently
   recompile if a browser chooses a different actual rate.
-- Exact f32/f64 FMA uses the `onda_exact_math_v1` BigInt import. It preserves one-rounding IEEE
-  behavior but is substantially slower than native hardware FMA in dense sample loops.
+- Exact f32/f64 FMA is linked into the DSP module from the pure-Wasm math kernel. It preserves
+  one-rounding behavior without JavaScript work on the audio thread, but can remain slower than
+  native hardware FMA in dense sample loops.
 - Binaryen and the compiler Wasm are staged as development assets; production hosting should add
   compression, caching, versioned URLs, and broader Chromium/Firefox/Safari audio coverage.
 - The current browser smoke endpoint verifies source-to-Wasm page compilation, not automated audible

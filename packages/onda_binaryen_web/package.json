@@ -6,6 +6,7 @@
   "description": "Browser-side Binaryen backend for versioned Onda MIR",
   "exports": "./src/index.js",
   "scripts": {
+    "build:math-kernel": "node ./scripts/build-math-kernel.mjs",
     "test": "node --test",
     "test:onda": "node ./scripts/verify-language-slice.mjs && node ./scripts/verify-backend-parity.mjs && node ./scripts/verify-fma-oracle.mjs",
     "test:corpus": "node ./scripts/verify-source-corpus.mjs",

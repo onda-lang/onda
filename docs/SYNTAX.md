@@ -1495,7 +1495,7 @@ Rules:
 Current std modules include:
 
 ```text
-std/prelude std/math std/random std/export_math std/complex
+std/prelude std/math std/random std/complex
 std/osc std/filter std/env std/delay std/data std/lookup
 std/fft std/convolution std/gain std/levels std/mix
 std/noise std/pitch std/smoothing

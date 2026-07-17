@@ -27,7 +27,7 @@ wasm-pack build $compilerDir `
 
 Copy-Item $binaryenJs (Join-Path $demoDir "binaryen.js") -Force
 Copy-Item (Join-Path $backendDir "src\index.js") (Join-Path $demoDir "onda-binaryen-web.js") -Force
-Copy-Item (Join-Path $backendDir "src\exact-math.js") (Join-Path $demoDir "exact-math.js") -Force
+Copy-Item (Join-Path $backendDir "src\math-kernel.generated.js") (Join-Path $demoDir "math-kernel.generated.js") -Force
 Copy-Item (Join-Path $backendDir "src\messagepack.js") (Join-Path $demoDir "messagepack.js") -Force
 
 Write-Host "Built the in-browser Onda compiler in: $compilerOut"

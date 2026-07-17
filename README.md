@@ -60,7 +60,7 @@ Take a look at the `examples/` folder for more usage examples.
 - [docs/BACKEND_BENCHMARKS.md](docs/BACKEND_BENCHMARKS.md): reproducible LLVM/Binaryen compile and render comparison
 - [crates/onda_compiler_web](crates/onda_compiler_web/README.md): in-browser Onda source-to-MIR compiler API
 - [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): schema-5 MIR-to-Wasm backend
-- [examples/web/sine_wasm_worklet](examples/web/sine_wasm_worklet/README.md): editable browser playground and AudioWorklet host
+- [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable browser playground and AudioWorklet host
 
 ## Browser playground
 
@@ -73,13 +73,13 @@ Onda source -> compiler Wasm -> schema-5 MIR MessagePack -> Binaryen.js -> DSP W
 Preparing its static assets requires Node/npm and `wasm-pack`:
 
 ```bash
-bash ./examples/web/sine_wasm_worklet/build-demo.sh --serve
+bash ./examples/web/onda_wasm_playground/build-demo.sh --serve
 ```
 
 PowerShell:
 
 ```powershell
-.\examples\web\sine_wasm_worklet\build-demo.ps1 -Serve
+.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve
 ```
 
 Then open `http://127.0.0.1:8787/`. The build does not require the native `onda` CLI or LLVM, but
