@@ -3,21 +3,27 @@ use onda_semantics::TypedConstValue;
 use serde::Serialize;
 
 pub use onda_processor_abi::{
-    BufferMetadata as AotBufferMetadata, CompileInfo as AotCompileInfo,
-    EventMetadata as AotEventMetadata, EventParamMetadata as AotEventParamMetadata,
-    Exports as AotExports, IntegrationInfo as AotIntegrationInfo,
-    IntegrationProfile as AotIntegrationProfile, IoMetadata as AotIoMetadata,
-    ProcessorDescriptor as AotMetadata, ProgramMetadata as AotProgramMetadata,
-    RuntimeInfo as AotRuntimeInfo, StateMetadata as AotStateMetadata, TargetInfo as AotTargetInfo,
-    PROCESSOR_ABI_VERSION, PROCESSOR_ARTIFACT_FORMAT,
-    PROCESSOR_ARTIFACT_FORMAT_VERSION as AOT_METADATA_FORMAT_VERSION,
+    ProcessorDescriptor as AotMetadata, StateMetadata as AotStateMetadata, PROCESSOR_ABI_VERSION,
+    PROCESSOR_ARTIFACT_FORMAT, PROCESSOR_ARTIFACT_FORMAT_VERSION as AOT_METADATA_FORMAT_VERSION,
     PROCESSOR_SNAPSHOT_FORMAT_VERSION as AOT_SNAPSHOT_FORMAT_VERSION,
 };
 
 #[cfg(feature = "llvm-orc")]
-use crate::metadata::ProgramMetadata;
+pub use onda_processor_abi::IntegrationProfile as AotIntegrationProfile;
+
+#[cfg(feature = "llvm-orc")]
+use onda_processor_abi::{
+    BufferMetadata as AotBufferMetadata, CompileInfo as AotCompileInfo,
+    EventMetadata as AotEventMetadata, EventParamMetadata as AotEventParamMetadata,
+    Exports as AotExports, IntegrationInfo as AotIntegrationInfo, IoMetadata as AotIoMetadata,
+    ProgramMetadata as AotProgramMetadata, RuntimeInfo as AotRuntimeInfo,
+    TargetInfo as AotTargetInfo,
+};
+
 #[cfg(feature = "llvm-orc")]
 use crate::mir_metadata::{build_mir_program_metadata, MirMetadataError, MirMetadataLayoutView};
+#[cfg(feature = "llvm-orc")]
+use crate::runtime_metadata::ProgramMetadata;
 #[cfg(feature = "llvm-orc")]
 use crate::{DeclaredBufferChannels, TargetConfig};
 

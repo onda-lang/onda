@@ -153,50 +153,7 @@ it does not change the browser backend's production default.
 StackIR optimizer for an A/B run. It is disabled by default unless measurement
 justifies changing the production policy.
 
-## Legacy-to-MIR migration oracle
-
-The native codegen crate retains the former direct `TypedProgram`-to-LLVM path
-only under `cfg(test)`. This makes it possible to compare the retired and
-production MIR pipelines in the same process without keeping two selectable
-production backends:
-
-```bash
-taskset -c 0 cargo test -p onda_codegen_llvm \
-  legacy_vs_mir_o3_performance_oracle \
-  -- --ignored --nocapture
-```
-
-Use any allowed fixed CPU in place of `0`; on non-Linux systems use the platform's affinity tool.
-Pinning matters because paired deltas from separate JIT bodies can otherwise contradict their own
-absolute medians as frequency and hybrid-core placement drift.
-
-The oracle builds both paths at LLVM O3, rejects surviving compiler-generated
-helper calls and runtime-sized allocas in MIR output, requires MIR LLVM IR and
-object files not to exceed the legacy artifacts, and measures paired checked
-and prepared-unchecked processing medians. A separate non-ignored regression
-renders representative user-call, stateful, and oversampled programs through
-both paths and enforces the strict-math backend tolerance sample by sample.
-
-On the same host on 2026-07-17, one representative oracle run after the shared-pass work produced:
-
-| Scenario | MIR IR change | MIR object change | Prepared runtime change |
-| --- | ---: | ---: | ---: |
-| Scalar expression | -44.6% | -33.9% | -19.3% |
-| Deep user-call chain | -52.2% | -78.5% | -90.3% |
-| Stateful oscillator | -15.6% | -11.8% | -42.7% |
-| Oversampled processor | -51.9% | -50.7% | -26.6% |
-| Larger reverb | -18.3% | -31.5% | -11.1% |
-| Neural synth | -37.6% | -47.2% | -24.1% |
-
-Negative runtime values mean the MIR-generated code was faster. The oracle now
-fails if any production prepared-runtime case is slower than its paired legacy
-measurement. In this run all six generated-code cases improved and every
-artifact shrank. End-to-end
-JIT latency was mixed because it includes semantic-to-MIR construction:
-small/stateful programs can spend more time at the new compiler boundary even
-when the resulting machine code is better, while larger call-heavy programs
-usually recover that cost during LLVM optimization or execution. Treat these
-figures as a migration diagnostic, not a permanent release threshold.
+## Optimization findings
 
 Portable inlining and unconstrained scalar-state promotion were both rejected by measurement.
 Pre-inlining structured MIR regressed the larger reverb by roughly 30%, and promoting all 33

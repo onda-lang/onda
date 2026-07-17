@@ -398,10 +398,9 @@ relocatable-object integration profile. The logical entry points are specified o
 [`PROCESSOR_ABI.md`](PROCESSOR_ABI.md); target triples select the platform representation rather than
 creating a separate Wasm ABI.
 
-The former direct `TypedProgram`/frontend-AST-to-LLVM implementation has no public selector and is
-compiled only as a private differential oracle in codegen unit tests. It is not part of normal
-library, CLI, runtime, API, or daemon builds. Keeping it briefly as an oracle makes sample,
-metadata, and layout comparisons useful without preserving two production semantics pipelines.
+The former direct `TypedProgram`/frontend-AST-to-LLVM implementation has been removed. Native JIT,
+LLVM IR, object emission, runtime metadata, and AOT metadata all consume the same validated MIR
+contract, leaving no parallel LLVM semantics or layout pipeline to drift from the other backends.
 
 ## Browser backend
 
@@ -470,7 +469,6 @@ mismatch. The reproducible development comparison and its measurement caveats ar
 
 - Production LLVM JIT/AOT and browser WebAssembly codegen consume the same optimized schema-5 MIR
   contract.
-- The remaining frontend `Expr`/`Stmt` LLVM lowering is test-only legacy code pending deletion.
 - Native and WebAssembly differential renders remain a required regression gate as the language and
   MIR evolve.
 - `--emit mir` remains deterministic and useful for debugging compiler behavior; schema-5 JSON and

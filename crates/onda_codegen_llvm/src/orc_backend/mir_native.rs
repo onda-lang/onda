@@ -4823,15 +4823,6 @@ pub fn lower_optimized_mir_to_object_artifact(
     emit_targeted_native_object_artifact(program.as_program(), options).map_err(|error| vec![error])
 }
 
-#[cfg(test)]
-pub(crate) fn emit_optimized_mir_artifacts(
-    program: &onda_mir::OptimizedProgram,
-    options: MirCompileOptions,
-) -> Result<(String, Vec<u8>), Vec<MirCodegenError>> {
-    validate_backend_capabilities(program.as_program())?;
-    emit_native_artifacts(program.as_program(), options).map_err(|error| vec![error])
-}
-
 impl MirJitProgram {
     pub fn mir(&self) -> &Program {
         &self.mir
@@ -5534,44 +5525,6 @@ fn emit_native_ir(
     }
 }
 
-#[cfg(test)]
-fn emit_native_artifacts(
-    program: &Program,
-    options: MirCompileOptions,
-) -> Result<(String, Vec<u8>), MirCodegenError> {
-    initialize_native_llvm()?;
-    unsafe {
-        let target_machine = super::jit_utils::create_host_target_machine(options.opt_level)
-            .map_err(codegen_diagnostic)?;
-        let result = (|| {
-            let triple = super::jit_utils::target_machine_triple_string(target_machine)
-                .map_err(codegen_diagnostic)?;
-            let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine)
-                .map_err(codegen_diagnostic)?;
-            let (module, context, _) =
-                build_native_module(program, options.fast_math, &triple, &data_layout)?;
-            let result = (|| {
-                super::jit_utils::run_default_pass_pipeline(
-                    module,
-                    target_machine,
-                    super::jit_utils::map_opt_level(options.opt_level),
-                )
-                .map_err(codegen_diagnostic)?;
-                verify_module(module)?;
-                let ir =
-                    super::jit_utils::llvm_module_to_string(module).map_err(codegen_diagnostic)?;
-                let object = emit_object_to_bytes(target_machine, module)?;
-                Ok((ir, object))
-            })();
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            result
-        })();
-        LLVMDisposeTargetMachine(target_machine);
-        result
-    }
-}
-
 fn emit_targeted_native_ir(
     program: &Program,
     options: &MirTargetOptions,
@@ -6040,11 +5993,6 @@ mod tests {
         lower_optimized_mir_to_object_artifact(&trusted_optimized(program.clone())?, options)
     }
 
-    fn lower_legacy_jit(typed: TypedProgram, block_size: usize) -> crate::JitProgram {
-        crate::build_orc_program(typed, 48_000.0, block_size, false, TargetOptLevel::O0)
-            .expect("legacy differential backend should compile")
-    }
-
     trait CheckedHostCalls {
         #[allow(clippy::too_many_arguments)]
         fn test_process_checked(
@@ -6074,64 +6022,6 @@ mod tests {
             buffer_channels: &[i32],
             buffer_sample_rates: &[f32],
         ) -> Result<(), Diagnostic>;
-    }
-
-    impl CheckedHostCalls for crate::JitProgram {
-        fn test_process_checked(
-            &self,
-            state: &mut RuntimeState,
-            params: &[u8],
-            start_frame: usize,
-            frames: usize,
-            flags: u32,
-            in_ptrs: &[*const u8],
-            out_ptrs: &[*mut u8],
-            buffer_ptrs: &[*mut u8],
-            buffer_frames: &[i32],
-            buffer_channels: &[i32],
-            buffer_sample_rates: &[f32],
-        ) -> Result<(), Diagnostic> {
-            unsafe {
-                self.process_checked(
-                    state,
-                    params,
-                    start_frame,
-                    frames,
-                    flags,
-                    in_ptrs,
-                    out_ptrs,
-                    buffer_ptrs,
-                    buffer_frames,
-                    buffer_channels,
-                    buffer_sample_rates,
-                )
-            }
-        }
-
-        fn test_trigger_event_by_index(
-            &self,
-            state: &mut RuntimeState,
-            params: &[u8],
-            event_index: usize,
-            payload: &[u8],
-            buffer_ptrs: &[*mut u8],
-            buffer_frames: &[i32],
-            buffer_channels: &[i32],
-            buffer_sample_rates: &[f32],
-        ) -> Result<(), Diagnostic> {
-            unsafe {
-                self.trigger_event_by_index(
-                    state,
-                    params,
-                    event_index,
-                    payload,
-                    buffer_ptrs,
-                    buffer_frames,
-                    buffer_channels,
-                    buffer_sample_rates,
-                )
-            }
-        }
     }
 
     impl CheckedHostCalls for MirJitProgram {
@@ -6206,68 +6096,6 @@ mod tests {
         }
     }
 
-    fn run_current_and_native(source: &str, block_size: usize) -> (Vec<f32>, Vec<f32>) {
-        let (typed, mir) = source_program(source, block_size);
-        let current = lower_legacy_jit(typed, block_size);
-        let native = lower_mir_and_jit_with_options(
-            mir,
-            MirCompileOptions {
-                fast_math: false,
-                opt_level: TargetOptLevel::O0,
-            },
-        )
-        .expect("native MIR LLVM backend should compile");
-        assert_eq!(native.default_param_bytes(), current.default_param_bytes());
-
-        let current_params = current.default_param_bytes();
-        let native_params = native.default_param_bytes();
-        let mut current_state = current
-            .initialize_state(&current_params)
-            .expect("current state should initialize");
-        let mut native_state = native
-            .initialize_state(&native_params)
-            .expect("native state should initialize");
-        let mut current_output = vec![0.0_f32; block_size];
-        let mut native_output = vec![0.0_f32; block_size];
-        let current_outputs = [current_output.as_mut_ptr().cast::<u8>()];
-        let native_outputs = [native_output.as_mut_ptr().cast::<u8>()];
-        let inputs: [*const u8; 0] = [];
-        let buffers: [*mut u8; 0] = [];
-        let metadata_i32: [i32; 0] = [];
-        let metadata_f32: [f32; 0] = [];
-        current
-            .test_process_checked(
-                &mut current_state,
-                &current_params,
-                0,
-                block_size,
-                3,
-                &inputs,
-                &current_outputs,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .expect("current process should run");
-        native
-            .test_process_checked(
-                &mut native_state,
-                &native_params,
-                0,
-                block_size,
-                3,
-                &inputs,
-                &native_outputs,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .expect("native process should run");
-        (current_output, native_output)
-    }
-
     fn run_native_outputs(source: &str, block_size: usize) -> Vec<Vec<f32>> {
         let (_, mir) = source_program(source, block_size);
         let native = lower_mir_and_jit_with_options(
@@ -6309,18 +6137,8 @@ mod tests {
         outputs
     }
 
-    fn assert_samples_match(current: &[f32], native: &[f32]) {
-        assert_eq!(current.len(), native.len());
-        for (index, (current, native)) in current.iter().zip(native).enumerate() {
-            assert!(
-                (current - native).abs() <= 2.0e-6,
-                "sample {index} differs: current={current}, native={native}"
-            );
-        }
-    }
-
     #[test]
-    fn split_zero_frame_and_flag_segments_match_current_llvm() {
+    fn split_zero_frame_and_flag_segments_execute_expected_hooks() {
         let source = r#"
 ins:
   in1 = 0.0
@@ -6335,8 +6153,7 @@ block:
   value = value + 10.0
 "#;
         let block_size = 8;
-        let (typed, mir) = source_program(source, block_size);
-        let current = lower_legacy_jit(typed, block_size);
+        let (_, mir) = source_program(source, block_size);
         let native = lower_mir_and_jit_with_options(
             mir,
             MirCompileOptions {
@@ -6345,13 +6162,9 @@ block:
             },
         )
         .unwrap();
-        let current_params = current.default_param_bytes();
         let native_params = native.default_param_bytes();
-        let mut current_state = current.initialize_state(&current_params).unwrap();
         let mut native_state = native.initialize_state(&native_params).unwrap();
-        let mut current_output = vec![-99.0_f32; block_size];
         let mut native_output = vec![-99.0_f32; block_size];
-        let current_outputs = [current_output.as_mut_ptr().cast::<u8>()];
         let native_outputs = [native_output.as_mut_ptr().cast::<u8>()];
         let input = [0.0_f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
         let inputs = [input.as_ptr().cast::<u8>()];
@@ -6359,23 +6172,8 @@ block:
         let metadata_i32: [i32; 0] = [];
         let metadata_f32: [f32; 0] = [];
 
-        macro_rules! run_both {
+        macro_rules! run_segment {
             ($start:expr, $frames:expr, $flags:expr) => {{
-                current
-                    .test_process_checked(
-                        &mut current_state,
-                        &current_params,
-                        $start,
-                        $frames,
-                        $flags,
-                        &inputs,
-                        &current_outputs,
-                        &buffers,
-                        &metadata_i32,
-                        &metadata_i32,
-                        &metadata_f32,
-                    )
-                    .unwrap();
                 native
                     .test_process_checked(
                         &mut native_state,
@@ -6394,23 +6192,20 @@ block:
             }};
         }
 
-        run_both!(0, 3, onda_mir::PROCESS_BEGIN_BLOCK as u32);
-        run_both!(3, 0, 0);
-        run_both!(3, 5, onda_mir::PROCESS_END_BLOCK as u32);
-        assert_samples_match(&current_output, &native_output);
+        run_segment!(0, 3, onda_mir::PROCESS_BEGIN_BLOCK as u32);
+        run_segment!(3, 0, 0);
+        run_segment!(3, 5, onda_mir::PROCESS_END_BLOCK as u32);
         assert_eq!(native_output, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
 
         // Zero-frame calls still run independently gated hooks. Exercise all
         // four legal flag combinations without imposing positional rules.
-        run_both!(0, 0, 0);
-        run_both!(0, 0, onda_mir::PROCESS_BEGIN_BLOCK as u32);
-        run_both!(block_size, 0, onda_mir::PROCESS_END_BLOCK as u32);
-        run_both!(4, 0, onda_mir::PROCESS_FULL_BLOCK as u32);
+        run_segment!(0, 0, 0);
+        run_segment!(0, 0, onda_mir::PROCESS_BEGIN_BLOCK as u32);
+        run_segment!(block_size, 0, onda_mir::PROCESS_END_BLOCK as u32);
+        run_segment!(4, 0, onda_mir::PROCESS_FULL_BLOCK as u32);
 
-        current_output.fill(-99.0);
         native_output.fill(-99.0);
-        run_both!(0, block_size, 0);
-        assert_samples_match(&current_output, &native_output);
+        run_segment!(0, block_size, 0);
         assert_eq!(
             native_output,
             [33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0]
@@ -6453,21 +6248,24 @@ block:
     }
 
     #[test]
-    fn real_sine_source_matches_current_llvm() {
-        let (current, native) = run_current_and_native(
+    fn real_sine_source_executes_through_mir_llvm() {
+        let outputs = run_native_outputs(
             include_str!("../../../../examples/foundations/sine.onda"),
             16,
         );
-        assert_samples_match(&current, &native);
+        assert_eq!(outputs.len(), 1);
+        assert!(outputs[0].iter().all(|sample| sample.is_finite()));
+        assert!(outputs[0].iter().any(|sample| *sample != 0.0));
     }
 
     #[test]
-    fn real_const_array_source_matches_current_llvm() {
-        let (current, native) = run_current_and_native(
+    fn real_const_array_source_executes_through_mir_llvm() {
+        let outputs = run_native_outputs(
             include_str!("../../../../examples/foundations/const_harmonic_bank.onda"),
             8,
         );
-        assert_samples_match(&current, &native);
+        assert_eq!(outputs.len(), 1);
+        assert!(outputs[0].iter().all(|sample| sample.is_finite()));
     }
 
     #[test]
@@ -6478,7 +6276,7 @@ block:
         paths.sort();
         assert_eq!(
             paths.len(),
-            46,
+            47,
             "the canonical example sweep changed; review new or removed programs"
         );
 
@@ -6521,13 +6319,12 @@ block:
     }
 
     #[test]
-    fn real_event_and_user_call_source_matches_current_llvm() {
+    fn real_event_and_user_call_source_executes_through_mir_llvm() {
         let block_size = 8;
-        let (typed, mir) = source_program(
+        let (_, mir) = source_program(
             include_str!("../../../../examples/foundations/simple_events.onda"),
             block_size,
         );
-        let current = lower_legacy_jit(typed, block_size);
         let native = lower_mir_and_jit_with_options(
             mir,
             MirCompileOptions {
@@ -6540,9 +6337,7 @@ block:
             native.event_payload_shape(0),
             Some(MirEventPayloadShape::Fixed { byte_size: 8 })
         );
-        let current_params = current.default_param_bytes();
         let native_params = native.default_param_bytes();
-        let mut current_state = current.initialize_state(&current_params).unwrap();
         let mut native_state = native.initialize_state(&native_params).unwrap();
         let mut payload = Vec::new();
         payload.extend_from_slice(&330.0_f32.to_ne_bytes());
@@ -6550,18 +6345,6 @@ block:
         let buffers: [*mut u8; 0] = [];
         let metadata_i32: [i32; 0] = [];
         let metadata_f32: [f32; 0] = [];
-        current
-            .test_trigger_event_by_index(
-                &mut current_state,
-                &current_params,
-                0,
-                &payload,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .unwrap();
         native
             .test_trigger_event_by_index(
                 &mut native_state,
@@ -6575,26 +6358,9 @@ block:
             )
             .unwrap();
 
-        let mut current_output = vec![0.0_f32; block_size];
         let mut native_output = vec![0.0_f32; block_size];
-        let current_outputs = [current_output.as_mut_ptr().cast::<u8>()];
         let native_outputs = [native_output.as_mut_ptr().cast::<u8>()];
         let inputs: [*const u8; 0] = [];
-        current
-            .test_process_checked(
-                &mut current_state,
-                &current_params,
-                0,
-                block_size,
-                3,
-                &inputs,
-                &current_outputs,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .unwrap();
         native
             .test_process_checked(
                 &mut native_state,
@@ -6610,11 +6376,12 @@ block:
                 &metadata_f32,
             )
             .unwrap();
-        assert_samples_match(&current_output, &native_output);
+        assert!(native_output.iter().all(|sample| sample.is_finite()));
+        assert!(native_output.iter().any(|sample| *sample != 0.0));
     }
 
     #[test]
-    fn source_input_and_value_call_match_current_llvm() {
+    fn source_input_and_value_call_produces_expected_samples() {
         let source = r#"
 params:
   gain = 0.75 { 0.0, 1.0 }
@@ -6628,8 +6395,7 @@ sample:
   out1 = shape(in1, gain)
 "#;
         let block_size = 8;
-        let (typed, mir) = source_program(source, block_size);
-        let current = lower_legacy_jit(typed, block_size);
+        let (_, mir) = source_program(source, block_size);
         let native = lower_mir_and_jit_with_options(
             mir,
             MirCompileOptions {
@@ -6638,34 +6404,15 @@ sample:
             },
         )
         .unwrap();
-        let params = current.default_param_bytes();
         let native_params = native.default_param_bytes();
-        let mut current_state = current.initialize_state(&params).unwrap();
         let mut native_state = native.initialize_state(&native_params).unwrap();
         let input = [-1.0_f32, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0];
         let inputs = [input.as_ptr().cast::<u8>()];
-        let mut current_output = vec![0.0_f32; block_size];
         let mut native_output = vec![0.0_f32; block_size];
-        let current_outputs = [current_output.as_mut_ptr().cast::<u8>()];
         let native_outputs = [native_output.as_mut_ptr().cast::<u8>()];
         let buffers: [*mut u8; 0] = [];
         let metadata_i32: [i32; 0] = [];
         let metadata_f32: [f32; 0] = [];
-        current
-            .test_process_checked(
-                &mut current_state,
-                &params,
-                0,
-                block_size,
-                3,
-                &inputs,
-                &current_outputs,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .unwrap();
         native
             .test_process_checked(
                 &mut native_state,
@@ -6681,11 +6428,14 @@ sample:
                 &metadata_f32,
             )
             .unwrap();
-        assert_samples_match(&current_output, &native_output);
+        assert_eq!(
+            native_output,
+            [0.75, 0.375, 0.1875, 0.0, 0.1875, 0.375, 0.5625, 0.75]
+        );
     }
 
     #[test]
-    fn source_fixed_array_parameter_matches_current_llvm() {
+    fn source_fixed_array_parameter_produces_expected_samples() {
         let source = r#"
 params:
   weights: f32[3] = [0.25, 0.5, 1.0]
@@ -6693,9 +6443,8 @@ params:
 sample:
   out1 = weights[0] + weights[1] + weights[2]
 "#;
-        let (current, native) = run_current_and_native(source, 4);
-        assert_samples_match(&current, &native);
-        assert!(native.iter().all(|sample| (*sample - 1.75).abs() < 1.0e-6));
+        let outputs = run_native_outputs(source, 4);
+        assert_eq!(outputs, [vec![1.75; 4]]);
     }
 
     #[test]
@@ -6781,18 +6530,20 @@ sample:
     }
 
     #[test]
-    fn source_intrinsic_set_matches_current_llvm() {
+    fn source_intrinsic_set_executes_through_mir_llvm() {
         let source = r#"
 sample:
   x = f32(0.25)
   out1 = sin(x) + cos(x) + tan(x) + tanh(x) + atan(x) + atan2(x, f32(0.5)) + exp(x) + log(f32(1.0) + x) + sqrt(x) + pow(x, f32(2.0)) + abs(-x) + floor(x) + ceil(x) + round(x) + trunc(x) + min(x, f32(0.5)) + max(x, f32(0.5)) + fma(x, f32(2.0), f32(0.125))
 "#;
-        let (current, native) = run_current_and_native(source, 2);
-        assert_samples_match(&current, &native);
+        let outputs = run_native_outputs(source, 2);
+        assert_eq!(outputs.len(), 1);
+        assert!(outputs[0][0].is_finite());
+        assert_eq!(outputs[0][0], outputs[0][1]);
     }
 
     #[test]
-    fn runtime_slice_source_matches_current_llvm() {
+    fn runtime_slice_source_produces_expected_samples() {
         let source = r#"
 const Table: f32[3] = [0.25, 0.5, 1.0]
 
@@ -6802,13 +6553,12 @@ def sum_edges(values: f32[]) -> f32:
 sample:
   out1 = sum_edges(Table)
 "#;
-        let (current, native) = run_current_and_native(source, 4);
-        assert_samples_match(&current, &native);
-        assert!(native.iter().all(|sample| (*sample - 1.25).abs() < 1.0e-6));
+        let outputs = run_native_outputs(source, 4);
+        assert_eq!(outputs, [vec![1.25; 4]]);
     }
 
     #[test]
-    fn runtime_buffer_and_forwarded_buffer_parameter_match_current_llvm() {
+    fn runtime_buffer_and_forwarded_buffer_parameter_execute_expected_behavior() {
         let source = r#"
 outs:
   out1
@@ -6829,8 +6579,7 @@ sample:
   out1 = forward(table, 0)
 "#;
         let block_size = 4;
-        let (typed, mir) = source_program(source, block_size);
-        let current = lower_legacy_jit(typed, block_size);
+        let (_, mir) = source_program(source, block_size);
         let native = lower_mir_and_jit_with_options(
             mir,
             MirCompileOptions {
@@ -6841,38 +6590,17 @@ sample:
         .unwrap();
         assert_eq!(native.buffer_count(), 1);
 
-        let current_params = current.default_param_bytes();
         let native_params = native.default_param_bytes();
-        let mut current_state = current.initialize_state(&current_params).unwrap();
         let mut native_state = native.initialize_state(&native_params).unwrap();
-        let mut current_buffer = [2.0_f32, 3.0, 4.0, 5.0];
-        let mut native_buffer = current_buffer;
-        let current_buffers = [current_buffer.as_mut_ptr().cast::<u8>()];
+        let mut native_buffer = [2.0_f32, 3.0, 4.0, 5.0];
         let native_buffers = [native_buffer.as_mut_ptr().cast::<u8>()];
         let buffer_frames = [4_i32];
         let buffer_channels = [1_i32];
         let buffer_sample_rates = [100.0_f32];
-        let mut current_output = [0.0_f32; 4];
         let mut native_output = [0.0_f32; 4];
-        let current_outputs = [current_output.as_mut_ptr().cast::<u8>()];
         let native_outputs = [native_output.as_mut_ptr().cast::<u8>()];
         let inputs: [*const u8; 0] = [];
 
-        current
-            .test_process_checked(
-                &mut current_state,
-                &current_params,
-                0,
-                block_size,
-                onda_mir::PROCESS_FULL_BLOCK as u32,
-                &inputs,
-                &current_outputs,
-                &current_buffers,
-                &buffer_frames,
-                &buffer_channels,
-                &buffer_sample_rates,
-            )
-            .unwrap();
         native
             .test_process_checked(
                 &mut native_state,
@@ -6889,14 +6617,12 @@ sample:
             )
             .unwrap();
 
-        assert_samples_match(&current_output, &native_output);
-        assert_eq!(current_buffer, native_buffer);
         assert_eq!(native_output, [107.0, 108.0, 109.0, 110.0]);
         assert_eq!(native_buffer, [6.0, 3.0, 4.0, 5.0]);
     }
 
     #[test]
-    fn dynamic_slice_event_payload_matches_current_llvm_and_is_validated() {
+    fn dynamic_slice_event_payload_executes_and_is_validated() {
         let source = r#"
 outs:
   out1
@@ -6914,8 +6640,7 @@ events:
 sample:
   out1 = total
 "#;
-        let (typed, mir) = source_program(source, 1);
-        let current = lower_legacy_jit(typed, 1);
+        let (_, mir) = source_program(source, 1);
         let native = lower_mir_and_jit_with_options(
             mir,
             MirCompileOptions {
@@ -6930,9 +6655,7 @@ sample:
             Some(MirEventPayloadShape::Dynamic)
         );
 
-        let current_params = current.default_param_bytes();
         let native_params = native.default_param_bytes();
-        let mut current_state = current.initialize_state(&current_params).unwrap();
         let mut native_state = native.initialize_state(&native_params).unwrap();
         let mut payload = Vec::new();
         payload.extend_from_slice(&4_i32.to_ne_bytes());
@@ -6942,18 +6665,6 @@ sample:
         let buffers: [*mut u8; 0] = [];
         let metadata_i32: [i32; 0] = [];
         let metadata_f32: [f32; 0] = [];
-        current
-            .test_trigger_event_by_index(
-                &mut current_state,
-                &current_params,
-                0,
-                &payload,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .unwrap();
         native
             .test_trigger_event_by_index(
                 &mut native_state,
@@ -6967,26 +6678,9 @@ sample:
             )
             .unwrap();
 
-        let mut current_output = [0.0_f32; 1];
         let mut native_output = [0.0_f32; 1];
-        let current_outputs = [current_output.as_mut_ptr().cast::<u8>()];
         let native_outputs = [native_output.as_mut_ptr().cast::<u8>()];
         let inputs: [*const u8; 0] = [];
-        current
-            .test_process_checked(
-                &mut current_state,
-                &current_params,
-                0,
-                1,
-                onda_mir::PROCESS_FULL_BLOCK as u32,
-                &inputs,
-                &current_outputs,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .unwrap();
         native
             .test_process_checked(
                 &mut native_state,
@@ -7002,7 +6696,6 @@ sample:
                 &metadata_f32,
             )
             .unwrap();
-        assert_samples_match(&current_output, &native_output);
         assert_eq!(native_output, [100.0]);
 
         let invalid_payloads = [

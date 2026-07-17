@@ -112,8 +112,8 @@ Non-crate directories of note:
   native codegen; direct MIR entry points accept `onda_mir::Program` without a frontend side channel.
 - `mir_metadata.rs` — runtime descriptors derived from MIR plus the exact physical offsets selected
   by native codegen.
-- `metadata.rs`, `state_layout.rs` — retiring frontend-derived descriptors/layout used by the
-  differential backend only.
+- `runtime_metadata.rs` — shared runtime descriptor types and accessors populated exclusively from
+  MIR-native metadata lowering.
 - `runtime_validation.rs` — runtime binding validation.
 - `target_config.rs` — target triple / CPU / features / reloc / code-model / opt-level config.
 - `primitives.rs` — LLVM primitive helpers.
@@ -122,23 +122,8 @@ Non-crate directories of note:
 - `orc_backend.rs`, `orc_backend/` — ORC backend assembly and lowering:
   - `mir_native.rs` — production validated-MIR-to-LLVM lowering, ORC JIT, targeted LLVM IR/object
     emission, ABI layout, and native process/event handles.
-  - `pipeline.rs`, `contexts.rs`, `value_model.rs`, `process_handle.rs` — retiring direct frontend
-    lowering retained only for differential tests.
-  - `proc_ir.rs`, `proc_ir/{common,event_ir,init_ir,process_ir}.rs` — proc IR emission.
-  - `user_fn_ir.rs`, `user_fn_ir/{lowering,registry}.rs` — top-level `def` IR emission and registry.
-  - `specialization.rs` — generic specialization at IR level.
-  - `def_lowering.rs`, `def_lowering/{expr_lowering,stmt_lowering,struct_helpers}.rs` — def-body lowering.
-  - `orc_expr_stmt.rs`, `orc_expr_stmt/{expr_lowering,stmt_lowering}.rs` — owner-scope expr/stmt lowering.
-  - `lowering_common/{mod,expr,stmt}.rs` — shared lowering helpers.
-  - `expr_common.rs`, `stmt_common.rs` — shared expr/stmt primitives.
-  - `call_helpers.rs`, `call_helpers/{common,data_views,struct_args}.rs` — call argument lowering.
-  - `array_access.rs`, `data_access`-style helpers via `pointer_helpers.rs` — array, buffer, and pointer access.
-  - `layout.rs` — LLVM type layout helpers.
-  - `llvm_helpers.rs`, `jit_utils.rs`, `orc_locals.rs`, `oversampling.rs`, `proc_buffer_refs.rs`, `builtin_intrinsics.rs` — assorted backend support.
-
-The direct frontend `Expr`/`Stmt` modules in that latter group belong to the legacy differential
-implementation and are pending deletion; they are not traversed by normal JIT, CLI, runtime, API,
-or daemon compilation.
+  - `jit_utils.rs`, `llvm_helpers.rs` — target-machine, pass-pipeline, ORC, and LLVM initialization
+    support shared by MIR JIT and AOT emission.
 
 ### `onda_compiler_web` (`crates/onda_compiler_web/src`)
 - `lib.rs` — browser-safe source-to-MIR front half. The Wasm exports compile one source or a virtual
@@ -205,8 +190,6 @@ or daemon compilation.
 - AOT browser deployment: native compiler-only MIR helper →
   `packages/onda_binaryen_web` at build time → complete Wasm artifact →
   `examples/web/onda_wasm_aot_sample_player`.
-- Legacy differential lowering: `orc_backend/{pipeline,proc_ir,user_fn_ir,...}`; test-only and
-  pending deletion.
 - Runtime API usage: `onda_runtime/src/lib.rs`.
 - C ABI surface: `onda_api/src/lib.rs`, `include/onda.h`.
 - Daemon analysis/run sessions: `onda_daemon/src/{analysis_session,run_session}.rs`.
@@ -217,9 +200,8 @@ or daemon compilation.
 
 - ORC JIT is the native execution backend. Public `TypedProgram` JIT entry points unconditionally
   route through semantic-to-MIR lowering and the production MIR-native ORC implementation; `onda
-  compile` emits target-aware LLVM IR or objects through the same MIR lowering. The direct
-  `TypedProgram`/frontend-AST LLVM backend has no public selector and is compiled only as a private
-  oracle in codegen unit tests.
+  compile` emits target-aware LLVM IR or objects through the same MIR lowering. There is no direct
+  `TypedProgram`/frontend-AST LLVM backend.
 - Native JIT metadata and AOT sidecar metadata come from validated MIR plus codegen's selected byte
   offsets. Parameter, state, audio/control I/O, buffer, event, export, and target information
   therefore cannot drift from the executable layout through a separate `TypedProgram` walk. The

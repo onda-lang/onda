@@ -9,8 +9,8 @@ use onda_mir::{
 };
 use onda_semantics::{TypedConstValue, TypedValueRange};
 
-use crate::metadata::ProgramMetadata;
 use crate::primitives::{append_typed_const_bytes, primitive_type_bytes};
+use crate::runtime_metadata::ProgramMetadata;
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
     DeclaredState,
