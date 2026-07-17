@@ -220,6 +220,10 @@ impl DeclaredEventParam {
         self.default_bytes.as_deref()
     }
 
+    pub fn default_values(&self) -> Option<&[TypedConstValue]> {
+        self.default_values.as_deref()
+    }
+
     pub fn type_repr(&self) -> String {
         if self.is_slice {
             return format!("{}[]", primitive_type_name(self.elem_ty));
@@ -1211,6 +1215,10 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
                             is_slice: false,
                             byte_offset,
                             default_bytes,
+                            default_values: match &param.default {
+                                Some(TypedEventParamDefault::Scalar(value)) => Some(vec![*value]),
+                                _ => None,
+                            },
                         });
                         byte_offset = byte_offset.saturating_add(primitive_type_bytes(elem_ty));
                         if let Some(total) = payload_bytes.as_mut() {
@@ -1237,6 +1245,10 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
                             is_slice: false,
                             byte_offset,
                             default_bytes,
+                            default_values: match &param.default {
+                                Some(TypedEventParamDefault::Array(values)) => Some(values.clone()),
+                                _ => None,
+                            },
                         });
                         let bytes = primitive_type_bytes(elem).saturating_mul(len);
                         byte_offset = byte_offset.saturating_add(bytes);
@@ -1252,6 +1264,7 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
                             is_slice: true,
                             byte_offset,
                             default_bytes: None,
+                            default_values: None,
                         });
                         payload_bytes = None;
                     }

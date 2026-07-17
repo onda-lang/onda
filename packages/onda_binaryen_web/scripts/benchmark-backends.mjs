@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -87,6 +87,8 @@ validatePositiveNumber(
   minimumWasmToLlvmRatio,
   "minimum Wasm-to-LLVM runtime ratio",
 );
+
+pinBenchmarkProcess();
 
 execFileSync(
   "cargo",
@@ -270,7 +272,7 @@ process.stdout.write(
     `Binaryen O${binaryenOptimizeLevel}, strict arithmetic, SIMD enabled, StackIR ${binaryenStackIr ? "enabled" : "disabled"}; timing cells are median ± MAD across ${compileRepetitions} compile/instantiate samples or ${repetitions} throughput rounds.`,
     "First-block parity checks every f32 output sample (absolute and relative tolerance 1e-6) before throughput timing.",
     `Each scenario uses one shared native/Wasm block count calibrated to target at least ${fixed(minimumRoundMs)} ms per round.`,
-    "Native throughput prepares bindings once and calls process_unchecked; Wasm calls the raw onda_process export.",
+    "Both throughput paths call the raw validated onda_process backend entry; host runtime/worklet overhead is excluded.",
     requireLlvmWin
       ? `LLVM win gate: every Wasm/LLVM ratio must be at least ${minimumWasmToLlvmRatio.toFixed(2)}×.`
       : "LLVM win gate: disabled by ONDA_BENCH_REQUIRE_LLVM_WIN.",
@@ -342,7 +344,7 @@ async function prepareWasmBenchmark(artifact) {
   writeParameterDefaults(memory, params, metadata.metadata.params);
   onda_init(params, state);
   const process = () =>
-    onda_process(0, outputTable, 0, blockSize, 3, params, state, 0, 0, 0, 0);
+    onda_process(state, params, 0, outputTable, 0, blockSize, 3, 0, 0, 0, 0);
 
   process();
   const firstOutputs = outputPointers.map((pointer, index) =>
@@ -593,6 +595,67 @@ function benchmarkHost() {
     logicalCpuCount: processors.length,
     allowedCpus,
   };
+}
+
+function pinBenchmarkProcess() {
+  if (
+    process.platform !== "linux"
+    || process.env.ONDA_BENCH_AFFINITY_PINNED === "1"
+    || parseBooleanEnvironment(
+      process.env.ONDA_BENCH_DISABLE_AFFINITY,
+      false,
+      "ONDA_BENCH_DISABLE_AFFINITY",
+    )
+  ) {
+    return;
+  }
+  const allowed = linuxAllowedCpus();
+  const cpu = process.env.ONDA_BENCH_AFFINITY_CPU ?? firstCpuInList(allowed);
+  if (cpu === null) {
+    process.stderr.write(
+      "Could not determine an allowed CPU; continuing without affinity pinning.\n",
+    );
+    return;
+  }
+  const child = spawnSync(
+    "taskset",
+    ["-c", String(cpu), process.execPath, ...process.argv.slice(1)],
+    {
+      cwd: process.cwd(),
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        ONDA_BENCH_AFFINITY_PINNED: "1",
+        ONDA_BENCH_AFFINITY_CPU: String(cpu),
+      },
+    },
+  );
+  if (child.error?.code === "ENOENT") {
+    process.stderr.write(
+      "taskset is unavailable; continuing without affinity pinning.\n",
+    );
+    return;
+  }
+  if (child.error) throw child.error;
+  if (child.signal) {
+    process.stderr.write(`Pinned benchmark terminated by ${child.signal}.\n`);
+    process.exit(1);
+  }
+  process.exit(child.status ?? 1);
+}
+
+function linuxAllowedCpus() {
+  try {
+    const status = readFileSync("/proc/self/status", "utf8");
+    return status.match(/^Cpus_allowed_list:\s*(.+)$/m)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function firstCpuInList(list) {
+  const first = list?.split(",", 1)[0]?.split("-", 1)[0];
+  return /^\d+$/.test(first ?? "") ? first : null;
 }
 
 function kib(bytes) {

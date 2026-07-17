@@ -55,7 +55,7 @@ for (let channel = 0; channel < outputCount; channel += 1) {
 }
 
 onda_init(params, state);
-onda_process(0, outputTable, 0, blockSize, 3, params, state, 0, 0, 0, 0);
+onda_process(state, params, 0, outputTable, 0, blockSize, 3, 0, 0, 0, 0);
 const samples = outputPointers.flatMap((pointer) => [
   ...new Float32Array(memory.buffer, pointer, blockSize),
 ]);

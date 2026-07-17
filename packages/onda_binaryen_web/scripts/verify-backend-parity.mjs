@@ -349,13 +349,13 @@ async function renderWasmBlocks(mirPath, scenario) {
 
   onda_init(params, state);
   const processSegment = (startFrame, frames, flags) => onda_process(
+      state,
+      params,
       inputTable,
       outputTable,
       startFrame,
       frames,
       flags,
-      params,
-      state,
       bufferPointers,
       bufferFrames,
       bufferChannels,

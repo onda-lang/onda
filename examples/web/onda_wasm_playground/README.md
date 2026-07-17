@@ -1,10 +1,10 @@
-# Onda Browser Playground
+# Onda embedded-compiler playground
 
-This example is the end-to-end browser path:
+This example demonstrates embedding the Onda compiler in a browser application:
 
 ```text
 editable Onda source
-  -> onda_compiler_web Wasm + embedded stdlib
+  -> module worker: onda_compiler_web Wasm + embedded stdlib
   -> validated schema-5 MIR MessagePack
   -> onda_binaryen_web + Binaryen.js
   -> DSP Wasm + metadata
@@ -12,9 +12,15 @@ editable Onda source
 ```
 
 The page contains a source editor, structured compiler diagnostics, sample-rate and compile-block
-settings, metadata-generated parameter and event controls, DSP reset, master gain, and live audio.
+settings, metadata-generated parameter and event controls, reusable artifact export, DSP reset,
+master gain, and live audio. Rust semantic compilation and Binaryen O4 optimization run in a module
+worker, so compilation does not block editor interaction.
 The source is compiled in the browser; there is no compiler service, native Onda CLI, LLVM, or
 `wasm-ld` in the runtime path.
+
+For an application that ships only an ahead-of-time compiled processor, see the separate
+[`onda_wasm_aot_sample_player`](../onda_wasm_aot_sample_player/README.md) example. That page contains
+neither the Onda compiler nor Binaryen.
 
 ## Prerequisites
 
@@ -58,7 +64,8 @@ The scripts:
 
 - run `wasm-pack build` for `crates/onda_compiler_web` with the `web` target
 - install the pinned `binaryen` npm dependency when it is missing
-- stage the compiler package, Binaryen ESM file, Onda schema-5 backend, MessagePack decoder, and embedded Wasm math kernel
+- stage the compiler package, Binaryen ESM file, Onda schema-5 backend, artifact helpers, MessagePack
+  decoder, embedded Wasm math kernel, and reusable Web Audio adapter/worklet
 - optionally start `server.mjs` on `127.0.0.1:8787`
 
 Sample rate and compile block size are editor controls, not build-script flags.
@@ -71,13 +78,16 @@ powershell.exe -ExecutionPolicy Bypass -File .\examples\web\onda_wasm_playground
 
 ## Verification
 
-The backend and host tests live in `packages/onda_binaryen_web`:
+The backend tests live in `packages/onda_binaryen_web`; adapter API tests live in
+`packages/onda_webaudio`:
 
 ```bash
 cd packages/onda_binaryen_web
 npm install
 npm test
 npm run test:onda
+cd ../onda_webaudio
+npm test
 ```
 
 `npm test` covers schema-5 lowering, the internal Wasm math kernel, and AudioWorklet behavior. `npm run test:onda`
@@ -100,7 +110,9 @@ compile-time block size. Each callback is split into legal `(start_frame, frames
 a compile block may span callbacks, and one callback may cross several compile-block boundaries
 without resetting DSP state.
 
-Parameters are initialized from generated metadata and updated with
+The optional `packages/onda_webaudio` adapter registers the worklet module before constructing the
+node, derives channel options from metadata, and provides request-correlated helpers. Parameters are
+initialized from generated metadata and updated with
 `{ type: "set-param", param: "name", value }`. Scalar and fixed-array parameter types are written
 according to their metadata rather than by a name-specific convention. `{ type: "reset" }` clears
 physical state, resets the compile-block cursor, and runs `onda_init` again.
@@ -110,7 +122,8 @@ The generic event/control-output ABI accepts
 payloads are packed from compiler metadata and dispatched through the generated `onda_event_N`
 export. `{ type: "read-control-outputs" }` produces a
 `{ type: "control-outputs", values }` reply. ABI errors are returned as `onda-error` messages rather
-than terminating the processor.
+than terminating the processor. Portable packed state can be requested and restored through
+`snapshot` and `restore-snapshot`; restore starts from a fresh post-init physical image.
 
 Declared external buffers are supplied in `processorOptions.buffers`, keyed by Onda name. Each
 binding has `{ data, frames, channels, sampleRate }`; `data` uses the native interleaved frame
@@ -129,8 +142,6 @@ layout. Mono/static channel constraints are checked against compiler metadata.
 - The page does not connect a microphone or other source to its AudioWorklet input, so programs with
   audio inputs currently receive silence.
 - The page rejects more than 32 flattened input or output channels because of Web Audio node limits.
-- Rust compilation and Binaryen optimization run synchronously on the page's main thread, so larger
-  programs can temporarily block editor interaction.
 - The page requests the selected sample rate from `AudioContext`, but it does not currently
   recompile if a browser chooses a different actual rate.
 - Exact f32/f64 FMA is linked into the DSP module from the pure-Wasm math kernel. It preserves

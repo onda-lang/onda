@@ -129,7 +129,7 @@ order: floats use their IEEE-754 bits, signed integers use two's-complement bits
 one byte containing `0` or `1`. The persistent-state manifest records the element size, packed
 snapshot offset, target-layout physical offset, and byte size of every included segment. An AOT
 host must preserve the complete post-`init` physical state image; restore copies that image first,
-then decodes and overlays the manifest's persistent segments. Sidecar metadata format 2 carries
+then decodes and overlays the manifest's persistent segments. Processor descriptor format 3 carries
 this manifest and the explicit `little_endian` / `post_init_physical_state_image` contract.
 
 ## Operations
@@ -391,8 +391,12 @@ program to optimized validated MIR and then uses the MIR-native LLVM ORC impleme
 LLVM IR and object emission use the same MIR lowering. Runtime and AOT metadata are derived from the
 MIR interface together with the physical offsets selected by codegen, so `TypedProgram` is no
 longer a semantic side channel for production JIT, object, state-layout, or host-interface data.
-The AOT format-2 sidecar includes the packed persistent-state segment manifest needed to implement
+The AOT format-3 processor descriptor includes the packed persistent-state segment manifest needed to implement
 snapshot/restore without confusing packed offsets with the target's physical state layout.
+It also records the resolved LLVM pointer width, byte order, data layout, pointer model, and
+relocatable-object integration profile. The logical entry points are specified once in
+[`PROCESSOR_ABI.md`](PROCESSOR_ABI.md); target triples select the platform representation rather than
+creating a separate Wasm ABI.
 
 The former direct `TypedProgram`/frontend-AST-to-LLVM implementation has no public selector and is
 compiled only as a private differential oracle in codegen unit tests. It is not part of normal
@@ -438,9 +442,12 @@ hooks, events, numeric edge rules, the complete f32/f64 math surface, packed sna
 buffers, slices, processor arrays, and oversampling.
 `npm run test:corpus` discovers all checked-in examples and positive backend fixtures and requires
 each source to produce schema-5 MIR and valid Binaryen WebAssembly. The source-driven
-commands intentionally require the native Rust/LLVM Onda build; the backend fixtures and browser
-asset build do not. The checked-in browser playground adds an editable source view, diagnostics,
-metadata-driven parameter/event controls, reset, and AudioWorklet playback.
+commands intentionally require the native Rust/LLVM Onda build; the backend fixtures and embedded
+compiler asset build do not. The checked-in compiler playground performs Rust semantic compilation
+and Binaryen O4 optimization in a module worker and can export the complete Wasm module with its
+integrity-checked descriptor. The separate AOT sample-player example performs both compiler stages
+before deployment and ships only that descriptor, module, Web Audio adapter, and audio asset. Both
+use `packages/onda_webaudio` for AudioWorklet playback.
 
 ## Realtime floating-point environment
 

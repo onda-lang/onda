@@ -1,0 +1,19 @@
+{
+  "name": "@onda-lang/webaudio",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Optional Web Audio adapter for Onda processor WebAssembly artifacts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./worklet": "./src/worklet.js"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -3547,6 +3547,7 @@ dependencies = [
  "llvm-sys",
  "onda_frontend",
  "onda_mir",
+ "onda_processor_abi",
  "onda_semantics",
  "serde",
 ]
@@ -3602,6 +3603,7 @@ dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
  "onda_mir",
+ "onda_realtime",
  "onda_runtime",
  "onda_semantics",
 ]
@@ -3621,6 +3623,13 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "onda_processor_abi"
+version = "0.4.4"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

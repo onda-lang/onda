@@ -26,7 +26,20 @@ hand-authored MIR document from asserting its own memory-safety proof. Both func
 string, a MessagePack `ArrayBuffer`/typed-array view, or a decoded object. JSON remains useful for
 inspection; the browser compiler and test corpus use MessagePack as the production transport.
 
-The generated module exports `memory`, `__heap_base`, `onda_init(params_ptr, state_ptr)`, the native-compatible 11-argument `onda_process`, and one native-compatible `onda_event_N` function per declared event. The host owns allocation in linear memory. Metadata contains state/parameter layouts, state-backed control-output offsets, flattened audio-port channels, packed event payload layouts, and all exported ABI names.
+The generated module exports `memory`, `__heap_base`, `onda_init(params_ptr, state_ptr)`, the
+11-argument processor `onda_process`, and one `onda_event_N` function per declared event. These are
+the complete wasm32-module profile of the generic
+[`Onda processor ABI`](../../docs/PROCESSOR_ABI.md), not a Web Audio-specific interface. The host
+owns allocation in linear memory. Metadata contains resolved target/integration facts,
+state/parameter layouts, state-backed control-output offsets, flattened audio-port channels, packed
+event payload layouts, and all exported ABI names.
+
+`createProcessorArtifactFiles()` validates the final module, computes a SHA-256 digest, and returns
+a reusable `.wasm` plus `.onda.json` descriptor pair. `validateProcessorArtifact`,
+`parseProcessorMetadata`, and `serializeProcessorMetadata` are also exported for loaders. The
+`loadProcessorArtifactFiles()` validates both files and verifies their SHA-256 association before
+returning an artifact. The package includes TypeScript declarations and is publishable as
+`@onda-lang/binaryen-web`.
 
 The executable backend supports:
 
@@ -113,7 +126,7 @@ npm run test:onda
 npm run test:corpus
 ```
 
-`npm test` runs schema-5 backend, embedded-math-kernel, and AudioWorklet fixtures. `npm run test:onda`
+`npm test` runs schema-5 backend, embedded-math-kernel, artifact, and reference-worklet fixtures. `npm run test:onda`
 compiles real Onda sources, runs LLVM/MIR-Binaryen render parity through MessagePack, and verifies
 exact FMA against Rust's `mul_add`; `npm run test:parity` selects only the differential renderer.
 That renderer covers full/segmented/zero-frame scheduling, events, snapshots/restores, numeric edge
@@ -130,9 +143,10 @@ processing; they require the native Rust/LLVM Onda build and are not universal b
 claims. The benchmark fails by default if Binaryen/Wasm beats LLVM in any checked scenario; the
 report includes the current CPU affinity so heterogeneous-core placement is visible.
 
-The browser playground under `examples/web/onda_wasm_playground` builds the Rust compiler with
-`wasm-pack`, loads this backend as an ESM module, and compiles edited source to executable DSP Wasm
-inside the page.
+The embedded-compiler playground under `examples/web/onda_wasm_playground` builds the Rust compiler
+with `wasm-pack`, loads this backend as an ESM module, and compiles edited source to executable DSP
+Wasm inside the page. The separate `examples/web/onda_wasm_aot_sample_player` example invokes this
+backend at build time and ships only the resulting module and descriptor to the browser.
 
 Current limitations are explicit:
 
@@ -143,4 +157,5 @@ Current limitations are explicit:
   not expose per-function inline/no-inline annotations; its module optimizer chooses whether to
   inline a call
 - this package is a JavaScript backend API, not yet a first-class `onda compile --emit wasm` CLI mode
-- production consumers still need to package/cache Binaryen and provide an AudioWorklet or other host
+- production consumers must package/cache Binaryen; Web Audio users can use the separate optional
+  `@onda-lang/webaudio` adapter, while other hosts consume the generic artifact directly

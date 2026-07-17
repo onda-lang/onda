@@ -23,7 +23,7 @@ mod target_config;
 
 pub use aot_artifact::{
     AotMetadata, AotObjectArtifact, AotStateMetadata, AOT_METADATA_FORMAT_VERSION,
-    AOT_SNAPSHOT_FORMAT_VERSION,
+    AOT_SNAPSHOT_FORMAT_VERSION, PROCESSOR_ABI_VERSION, PROCESSOR_ARTIFACT_FORMAT,
 };
 #[cfg(feature = "llvm-orc")]
 pub use orc_backend::{
@@ -389,6 +389,7 @@ pub struct DeclaredEventParam {
     is_slice: bool,
     byte_offset: usize,
     default_bytes: Option<Vec<u8>>,
+    default_values: Option<Vec<TypedConstValue>>,
 }
 
 pub fn lower_and_jit(typed: TypedProgram) -> Result<JitProgram, Vec<Diagnostic>> {

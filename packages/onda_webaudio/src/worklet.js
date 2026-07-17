@@ -1,5 +1,6 @@
 const ONDA_PROCESS_BEGIN_BLOCK = 1 << 0;
 const ONDA_PROCESS_END_BLOCK = 1 << 1;
+const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
 
 class OndaWasmProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -8,6 +9,14 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     const processorOptions = options.processorOptions ?? {};
     const wasmBytes = processorOptions.wasmBytes;
     const metadata = processorOptions.metadata ?? {};
+
+    if (
+      metadata.artifact_kind !== "webassembly_module"
+      || metadata.target?.pointer_model !== "linear_memory_offset"
+      || metadata.target?.pointer_width_bits !== 32
+    ) {
+      throw new Error("expected an Onda wasm32 executable-module artifact");
+    }
 
     const bytes =
       wasmBytes instanceof Uint8Array ? wasmBytes : new Uint8Array(wasmBytes);
@@ -38,6 +47,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.outputInfo = Array.isArray(metadata.metadata?.outputs)
       ? metadata.metadata.outputs
       : [];
+    this.snapshotInfo = Array.isArray(metadata.metadata?.states)
+      ? metadata.metadata.states
+      : [];
+    this.snapshotSizeBytes = Number(metadata.runtime?.snapshot_size_bytes ?? 0);
     this.inputChannels = this.flattenAudioChannels(this.inputInfo, "input");
     this.outputChannels = this.flattenAudioChannels(this.outputInfo, "output");
     this.inputCount = this.inputChannels.length;
@@ -242,6 +255,97 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.exports.onda_init(this.paramsPtr, this.statePtr);
   }
 
+  createSnapshot() {
+    const snapshot = new Uint8Array(this.snapshotSizeBytes);
+    const state = new Uint8Array(
+      this.memory.buffer,
+      this.statePtr,
+      this.stateSizeBytes,
+    );
+    for (const entry of this.snapshotInfo) {
+      const packedOffset = Number(
+        entry.byte_offset ?? entry.packed_snapshot_byte_offset,
+      );
+      const physicalOffset = Number(
+        entry.storage_byte_offset ?? entry.physical_state_byte_offset,
+      );
+      const byteSize = Number(entry.byte_size);
+      this.validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize);
+      snapshot.set(
+        state.subarray(physicalOffset, physicalOffset + byteSize),
+        packedOffset,
+      );
+    }
+    return snapshot;
+  }
+
+  restoreSnapshot(value) {
+    const snapshot = this.snapshotBytes(value);
+    if (snapshot.byteLength !== this.snapshotSizeBytes) {
+      throw new Error(
+        `snapshot has ${snapshot.byteLength} bytes; expected ${this.snapshotSizeBytes}`,
+      );
+    }
+    // The ABI restore base is a fresh post-init image, so scratch and
+    // control-mirror state never leak across a restore.
+    this.reset();
+    const state = new Uint8Array(
+      this.memory.buffer,
+      this.statePtr,
+      this.stateSizeBytes,
+    );
+    for (const entry of this.snapshotInfo) {
+      const packedOffset = Number(
+        entry.byte_offset ?? entry.packed_snapshot_byte_offset,
+      );
+      const physicalOffset = Number(
+        entry.storage_byte_offset ?? entry.physical_state_byte_offset,
+      );
+      const byteSize = Number(entry.byte_size);
+      this.validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize);
+      state.set(
+        snapshot.subarray(packedOffset, packedOffset + byteSize),
+        physicalOffset,
+      );
+    }
+  }
+
+  snapshotBytes(value) {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    throw new Error("snapshot restore requires byte storage");
+  }
+
+  validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize) {
+    if (
+      !Number.isSafeInteger(packedOffset)
+      || packedOffset < 0
+      || !Number.isSafeInteger(physicalOffset)
+      || physicalOffset < 0
+      || !Number.isSafeInteger(byteSize)
+      || byteSize < 0
+      || packedOffset + byteSize > this.snapshotSizeBytes
+      || physicalOffset + byteSize > this.stateSizeBytes
+    ) {
+      throw new Error(
+        `state '${String(entry.name)}' has invalid snapshot metadata`,
+      );
+    }
+  }
+
+  postResponse(message, response, always = false, transfer = []) {
+    if (!always && message.requestId === undefined) return;
+    this.port.postMessage(
+      message.requestId === undefined
+        ? response
+        : { ...response, requestId: message.requestId },
+      transfer,
+    );
+  }
+
   handleMessage(message) {
     try {
       if (message.type === "set-param") {
@@ -249,25 +353,46 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
           message.param ?? message.name ?? message.index,
           message.value,
         );
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "reset") {
         this.reset();
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "event") {
         this.dispatchEvent(
           message.event ?? message.name ?? message.index,
           message.values ?? message.args ?? {},
         );
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "read-control-outputs") {
-        this.port.postMessage({
+        this.postResponse(message, {
           type: "control-outputs",
           values: this.readControlOutputs(),
-        });
+        }, true);
       } else if (message.type === "read-buffer") {
-        this.port.postMessage({ type: "buffer", ...this.readBuffer(message.buffer) });
+        this.postResponse(
+          message,
+          { type: "buffer", ...this.readBuffer(message.buffer) },
+          true,
+        );
+      } else if (message.type === "snapshot") {
+        const snapshot = this.createSnapshot();
+        this.postResponse(
+          message,
+          { type: "snapshot", bytes: snapshot },
+          true,
+          [snapshot.buffer],
+        );
+      } else if (message.type === "restore-snapshot") {
+        this.restoreSnapshot(message.snapshot ?? message.bytes);
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else {
+        throw new Error(`unknown Onda worklet operation '${String(message.type)}'`);
       }
     } catch (error) {
       this.port.postMessage({
         type: "onda-error",
         operation: message.type ?? "unknown",
+        requestId: message.requestId,
         error: String(error && error.message ? error.message : error),
       });
     }
@@ -677,13 +802,13 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
 
   invokeProcessSegment(startFrame, frames, flags) {
     return this.exports.onda_process(
+      this.statePtr,
+      this.paramsPtr,
       this.inPtrsPtr,
       this.outPtrsPtr,
       startFrame,
       frames,
       flags,
-      this.paramsPtr,
-      this.statePtr,
       this.bufferPointersPtr,
       this.bufferFramesPtr,
       this.bufferChannelsPtr,
@@ -733,4 +858,4 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor("onda-wasm-processor", OndaWasmProcessor);
+registerProcessor(ONDA_AUDIO_WORKLET_PROCESSOR_NAME, OndaWasmProcessor);

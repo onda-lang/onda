@@ -353,6 +353,11 @@ fn build_events(
                         .as_ref()
                         .map(|value| constant_bytes(program, value, param.ty))
                         .transpose()?;
+                    let default_values = param
+                        .default
+                        .as_ref()
+                        .map(|value| constant_values(program, value, param.ty))
+                        .transpose()?;
                     params.push(DeclaredEventParam {
                         name: param.name.clone(),
                         elem_ty: element,
@@ -360,6 +365,7 @@ fn build_events(
                         is_slice: false,
                         byte_offset: minimum_wire_offset,
                         default_bytes,
+                        default_values,
                     });
                     minimum_wire_offset =
                         checked_add(minimum_wire_offset, bytes, "event parameter wire offset")?;
@@ -393,6 +399,11 @@ fn build_events(
                         .as_ref()
                         .map(|value| constant_bytes(program, value, param.ty))
                         .transpose()?;
+                    let default_values = param
+                        .default
+                        .as_ref()
+                        .map(|value| constant_values(program, value, param.ty))
+                        .transpose()?;
                     params.push(DeclaredEventParam {
                         name: param.name.clone(),
                         elem_ty,
@@ -400,6 +411,7 @@ fn build_events(
                         is_slice: false,
                         byte_offset: minimum_wire_offset,
                         default_bytes,
+                        default_values,
                     });
                     minimum_wire_offset =
                         checked_add(minimum_wire_offset, bytes, "event parameter wire offset")?;
@@ -421,6 +433,7 @@ fn build_events(
                         is_slice: true,
                         byte_offset: minimum_wire_offset,
                         default_bytes: None,
+                        default_values: None,
                     });
                     // The dynamic native wire format stores an i32 length before
                     // the element bytes. Offsets after a slice are minimum
@@ -957,6 +970,45 @@ fn constant_bytes(
     let mut bytes = Vec::new();
     append_constant_bytes(program, value, ty, &mut bytes)?;
     Ok(bytes)
+}
+
+fn constant_values(
+    program: &Program,
+    value: &ConstantValue,
+    ty: onda_mir::TypeId,
+) -> Result<Vec<TypedConstValue>, MirMetadataError> {
+    let mut values = Vec::new();
+    append_constant_values(program, value, ty, &mut values)?;
+    Ok(values)
+}
+
+fn append_constant_values(
+    program: &Program,
+    value: &ConstantValue,
+    ty: onda_mir::TypeId,
+    output: &mut Vec<TypedConstValue>,
+) -> Result<(), MirMetadataError> {
+    match (program.types.get(ty.index()), value) {
+        (Some(Type::Scalar(expected)), ConstantValue::Scalar(value)) if *expected == value.ty() => {
+            output.push(typed_scalar(*value));
+            Ok(())
+        }
+        (Some(Type::Array { element, len }), ConstantValue::Aggregate(values))
+            if values.len() == *len as usize =>
+        {
+            for value in values {
+                append_constant_values(program, value, *element, output)?;
+            }
+            Ok(())
+        }
+        (Some(expected), _) => Err(MirMetadataError::new(format!(
+            "MIR constant does not match descriptor type {expected:?}"
+        ))),
+        (None, _) => Err(MirMetadataError::new(format!(
+            "MIR constant references missing type {}",
+            ty.raw()
+        ))),
+    }
 }
 
 fn append_constant_bytes(

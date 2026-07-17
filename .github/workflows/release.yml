@@ -176,6 +176,7 @@ jobs:
             Copy-Item target\release\onda.exp $libDir
           }
           Copy-Item include\onda.h $includeDir
+          Copy-Item include\onda_processor_abi.h $includeDir
           Copy-Item LICENSE $packageRoot
           Copy-Item README.md $packageRoot
           Copy-Item docs\SYNTAX.md $packageRoot
@@ -208,6 +209,7 @@ jobs:
             cp target/release/libonda.a "$lib_dir/"
           fi
           cp include/onda.h "$include_dir/"
+          cp include/onda_processor_abi.h "$include_dir/"
           cp LICENSE "$package_root/"
           cp README.md "$package_root/"
           cp docs/SYNTAX.md "$package_root/"

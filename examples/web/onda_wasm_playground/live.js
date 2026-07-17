@@ -1,6 +1,10 @@
+import { createProcessorArtifactFiles } from "./artifact.js";
+import { createOndaAudioProcessor } from "./onda-webaudio.js";
+
 const compileButton = document.querySelector("[data-compile]");
 const toggleButton = document.querySelector("[data-toggle]");
 const resetButton = document.querySelector("[data-reset]");
+const exportButton = document.querySelector("[data-export]");
 const statusEl = document.querySelector("[data-status]");
 const diagnosticsEl = document.querySelector("[data-diagnostics]");
 const sourceEl = document.querySelector("[data-source]");
@@ -14,11 +18,13 @@ const summaryEl = document.querySelector("[data-summary]");
 const smokeMode = new URLSearchParams(window.location.search).has("smoke");
 const sourceStorageKey = "onda.browser-playground.source";
 
-let backend = null;
-let compiler = null;
+let compilerWorker = null;
+let nextWorkerRequestId = 1;
+const workerRequests = new Map();
 let artifact = null;
 let context = null;
 let node = null;
+let audioProcessor = null;
 let gainNode = null;
 let compiling = false;
 let paramValues = {};
@@ -40,6 +46,35 @@ function reportSmokeResult(result) {
 function errorMessage(error) {
   if (typeof error === "string") return error;
   return String(error?.message ?? error);
+}
+
+function requestWorker(type, fields = {}) {
+  const requestId = nextWorkerRequestId++;
+  return new Promise((resolve, reject) => {
+    workerRequests.set(requestId, { resolve, reject });
+    compilerWorker.postMessage({ type, requestId, ...fields });
+  });
+}
+
+function handleWorkerMessage(event) {
+  const message = event.data ?? {};
+  const request = workerRequests.get(message.requestId);
+  if (!request) return;
+  if (message.type === "phase") {
+    if (message.phase === "loading") setStatus("Loading compiler toolchain…");
+    else if (message.phase === "mir") setStatus("Compiling source to MIR…");
+    else if (message.phase === "binaryen") setStatus("Optimizing MIR with Binaryen O4…");
+    return;
+  }
+  workerRequests.delete(message.requestId);
+  if (message.type === "error") request.reject(new Error(message.error));
+  else request.resolve(message.value);
+}
+
+function handleWorkerFailure(event) {
+  const error = new Error(event.message ?? "compiler worker failed");
+  for (const request of workerRequests.values()) request.reject(error);
+  workerRequests.clear();
 }
 
 function decodeScalar(scalar) {
@@ -141,11 +176,9 @@ function defaultBuffers(metadata) {
 
 function postParam(name, value) {
   paramValues[name] = value;
-  node?.port.postMessage({
-    type: "set-param",
-    param: name,
-    value,
-  });
+  audioProcessor?.setParam(name, value).catch((error) =>
+    setStatus(errorMessage(error), "fail")
+  );
 }
 
 function renderParams(metadata) {
@@ -269,11 +302,9 @@ function renderEvents(metadata) {
       }
       try {
         const values = event.params.length ? JSON.parse(editor.value) : {};
-        node.port.postMessage({
-          type: "event",
-          event: event.name,
-          values,
-        });
+        audioProcessor.trigger(event.name, values).catch((error) =>
+          setStatus(errorMessage(error), "fail")
+        );
         editor.setCustomValidity("");
       } catch (error) {
         editor.setCustomValidity(errorMessage(error));
@@ -298,31 +329,28 @@ function renderArtifact(artifactValue) {
 }
 
 async function compileSource({ restart = false } = {}) {
-  if (!backend || !compiler || compiling) return;
+  if (!compilerWorker || compiling) return;
   compiling = true;
   compileButton.disabled = true;
   toggleButton.disabled = true;
   resetButton.disabled = true;
+  exportButton.disabled = true;
   diagnosticsEl.textContent = "";
   const wasRunning = Boolean(context);
   try {
     if (wasRunning) await stopAudio();
-    setStatus("Compiling source to MIR…");
-    await new Promise((resolve) => setTimeout(resolve, 0));
     const sampleRate = Number(sampleRateEl.value);
     const blockSize = Number(blockSizeEl.value);
-    const mirMessagePack = compiler.compile_to_mir_messagepack(
-      sourceEl.value,
+    artifact = await requestWorker("compile", {
+      source: sourceEl.value,
       sampleRate,
       blockSize,
-    );
-    setStatus("Lowering MIR with Binaryen…");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    artifact = backend.compileTrustedMir(mirMessagePack);
+    });
     localStorage.setItem(sourceStorageKey, sourceEl.value);
     renderArtifact(artifact);
     setStatus("Compiled and ready.", "ready");
     toggleButton.disabled = false;
+    exportButton.disabled = false;
     if (restart || wasRunning) await startAudio();
     reportSmokeResult({
       ok: true,
@@ -339,6 +367,7 @@ async function compileSource({ restart = false } = {}) {
     compiling = false;
     compileButton.disabled = false;
     toggleButton.disabled = !artifact;
+    exportButton.disabled = !artifact;
     resetButton.disabled = !node;
   }
 }
@@ -357,28 +386,29 @@ async function startAudio() {
   }
 
   context = new AudioContext({ sampleRate });
-  await context.audioWorklet.addModule("./onda-wasm-processor.js");
-  const nodeOptions = {
-    numberOfInputs: inputChannels ? 1 : 0,
-    numberOfOutputs: outputChannels ? 1 : 0,
-    channelCount: Math.max(inputChannels, 1),
-    channelCountMode: "explicit",
-    processorOptions: {
-      wasmBytes: artifact.wasm,
-      metadata,
+  try {
+    audioProcessor = await createOndaAudioProcessor(context, artifact, {
+      workletUrl: "./onda-wasm-processor.js",
       params: paramValues,
       buffers: defaultBuffers(metadata),
-    },
-  };
-  if (outputChannels) nodeOptions.outputChannelCount = [outputChannels];
-  node = new AudioWorkletNode(context, "onda-wasm-processor", nodeOptions);
+    });
+    node = audioProcessor.node;
 
-  if (outputChannels) {
-    gainNode = new GainNode(context, { gain: Number(gainEl.value) });
-    node.connect(gainNode);
-    gainNode.connect(context.destination);
+    if (outputChannels) {
+      gainNode = new GainNode(context, { gain: Number(gainEl.value) });
+      node.connect(gainNode);
+      gainNode.connect(context.destination);
+    }
+    await context.resume();
+  } catch (error) {
+    audioProcessor?.close();
+    audioProcessor = null;
+    node = null;
+    gainNode = null;
+    await context.close();
+    context = null;
+    throw error;
   }
-  await context.resume();
   toggleButton.textContent = "Stop audio";
   resetButton.disabled = false;
   setStatus(`Running at ${context.sampleRate} Hz.`, "ready");
@@ -388,6 +418,8 @@ async function stopAudio() {
   if (!context) return;
   setStatus("Stopping audio…");
   node?.disconnect();
+  audioProcessor?.close();
+  audioProcessor = null;
   gainNode?.disconnect();
   node = null;
   gainNode = null;
@@ -400,17 +432,17 @@ async function stopAudio() {
 
 async function loadToolchain() {
   setStatus("Loading Onda compiler and Binaryen…");
-  const [backendModule, compilerModule, sourceResponse] = await Promise.all([
-    import("./onda-binaryen-web.js"),
-    import("./onda-compiler-web/onda_compiler_web.js"),
+  compilerWorker = new Worker("./compiler-worker.js", { type: "module" });
+  compilerWorker.addEventListener("message", handleWorkerMessage);
+  compilerWorker.addEventListener("error", handleWorkerFailure);
+  compilerWorker.addEventListener("messageerror", handleWorkerFailure);
+  const [sourceResponse] = await Promise.all([
     fetch("./default.onda"),
+    requestWorker("initialize"),
   ]);
   if (!sourceResponse.ok) {
     throw new Error(`failed to load example source: ${sourceResponse.status}`);
   }
-  await compilerModule.default();
-  backend = backendModule;
-  compiler = compilerModule;
   const exampleSource = await sourceResponse.text();
   sourceEl.value = smokeMode
     ? exampleSource
@@ -432,9 +464,36 @@ toggleButton.addEventListener("click", async () => {
   }
 });
 resetButton.addEventListener("click", () => {
-  node?.port.postMessage({ type: "reset" });
-  setStatus("DSP state reset.", "ready");
+  audioProcessor?.reset().then(
+    () => setStatus("DSP state reset.", "ready"),
+    (error) => setStatus(errorMessage(error), "fail"),
+  );
 });
+exportButton.addEventListener("click", async () => {
+  if (!artifact) return;
+  exportButton.disabled = true;
+  try {
+    const files = await createProcessorArtifactFiles(artifact, {
+      baseName: "onda-processor",
+    });
+    downloadFile(files.wasm.name, files.wasm.bytes, files.wasm.mediaType);
+    downloadFile(files.metadata.name, files.metadata.text, files.metadata.mediaType);
+    setStatus("Exported reusable Wasm module and descriptor.", "ready");
+  } catch (error) {
+    setStatus(errorMessage(error), "fail");
+  } finally {
+    exportButton.disabled = !artifact;
+  }
+});
+
+function downloadFile(name, contents, mediaType) {
+  const url = URL.createObjectURL(new Blob([contents], { type: mediaType }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 gainEl.addEventListener("input", () => {
   if (gainNode) gainNode.gain.value = Number(gainEl.value);
 });
@@ -454,6 +513,7 @@ sourceEl.addEventListener("keydown", (event) => {
 loadToolchain().catch((error) => {
   compileButton.disabled = true;
   toggleButton.disabled = true;
+  exportButton.disabled = true;
   showCompileError(error);
   setStatus(errorMessage(error), "fail");
   reportSmokeResult({ ok: false, error: errorMessage(error) });

@@ -15,11 +15,11 @@ use llvm_sys::orc2::lljit::*;
 use llvm_sys::orc2::*;
 use llvm_sys::prelude::*;
 use llvm_sys::target::{
-    LLVMABIAlignmentOfType, LLVMABISizeOfType, LLVMCreateTargetData, LLVMDisposeTargetData,
-    LLVMStoreSizeOfType, LLVMTargetDataRef, LLVM_InitializeAllAsmParsers,
-    LLVM_InitializeAllAsmPrinters, LLVM_InitializeAllTargetInfos, LLVM_InitializeAllTargetMCs,
-    LLVM_InitializeAllTargets, LLVM_InitializeNativeAsmParser, LLVM_InitializeNativeAsmPrinter,
-    LLVM_InitializeNativeTarget,
+    LLVMABIAlignmentOfType, LLVMABISizeOfType, LLVMByteOrder, LLVMCreateTargetData,
+    LLVMDisposeTargetData, LLVMPointerSize, LLVMStoreSizeOfType, LLVMTargetDataRef,
+    LLVM_InitializeAllAsmParsers, LLVM_InitializeAllAsmPrinters, LLVM_InitializeAllTargetInfos,
+    LLVM_InitializeAllTargetMCs, LLVM_InitializeAllTargets, LLVM_InitializeNativeAsmParser,
+    LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget,
 };
 use llvm_sys::target_machine::{
     LLVMCodeGenFileType, LLVMDisposeTargetMachine, LLVMTargetMachineEmitToMemoryBuffer,
@@ -123,13 +123,13 @@ impl Default for MirCompileOptions {
 }
 
 type NativeProcessFn = unsafe extern "C" fn(
+    *mut u8,
+    *const u8,
     *const *const u8,
     *const *mut u8,
     u32,
     u32,
     u32,
-    *const u8,
-    *mut u8,
     *const *mut u8,
     *const i32,
     *const i32,
@@ -581,7 +581,7 @@ unsafe fn declare_functions(
             }
             FunctionKind::Process => {
                 let mut args = [
-                    ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
+                    ptr_ty, ptr_ty, ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty,
                     ptr_ty,
                 ];
                 (
@@ -711,21 +711,20 @@ unsafe fn declare_functions(
                 add_enum_param_attribute(context, value, 2, "noalias")?;
             }
             FunctionKind::Process => {
+                add_enum_param_attribute(context, value, 1, "noalias")?;
                 for attribute in ["noalias", "readonly"] {
-                    add_enum_param_attribute(context, value, 1, attribute)?;
+                    add_enum_param_attribute(context, value, 2, attribute)?;
+                    add_enum_param_attribute(context, value, 3, attribute)?;
                 }
-                add_enum_param_attribute(context, value, 2, "noalias")?;
-                add_enum_param_attribute(context, value, 7, "noalias")?;
-                add_enum_param_attribute(context, value, 6, "noalias")?;
-                add_enum_param_attribute(context, value, 6, "readonly")?;
-                for parameter in [3_u32, 4, 5] {
+                add_enum_param_attribute(context, value, 4, "noalias")?;
+                for parameter in [5_u32, 6, 7] {
                     add_enum_param_attribute(context, value, parameter, "noundef")?;
                 }
                 let ranges = onda_mir::analyze_integer_ranges(
                     program,
                     onda_mir::FunctionId::new(index as u32),
                 );
-                for (parameter, llvm_index) in [3_u32, 4, 5].into_iter().enumerate() {
+                for (parameter, llvm_index) in [5_u32, 6, 7].into_iter().enumerate() {
                     let Some(range) =
                         ranges.parameter(onda_mir::ParameterId::new(parameter as u32))
                     else {
@@ -4191,9 +4190,17 @@ unsafe fn build_entry_runtime_context(
             fields[6] = LLVMGetParam(function, 1);
         }
         FunctionKind::Process => {
-            for (index, field) in fields.iter_mut().take(11).enumerate() {
-                *field = LLVMGetParam(function, index as u32);
-            }
+            fields[6] = LLVMGetParam(function, 0);
+            fields[5] = LLVMGetParam(function, 1);
+            fields[0] = LLVMGetParam(function, 2);
+            fields[1] = LLVMGetParam(function, 3);
+            fields[2] = LLVMGetParam(function, 4);
+            fields[3] = LLVMGetParam(function, 5);
+            fields[4] = LLVMGetParam(function, 6);
+            fields[7] = LLVMGetParam(function, 7);
+            fields[8] = LLVMGetParam(function, 8);
+            fields[9] = LLVMGetParam(function, 9);
+            fields[10] = LLVMGetParam(function, 10);
         }
         FunctionKind::Event(_) => {
             fields[11] = LLVMGetParam(function, 0);
@@ -5006,13 +5013,13 @@ impl MirJitProgram {
             .map_err(|_| Diagnostic::runtime("frame count does not fit u32", 0, 0))?;
         unsafe {
             (self.compiled.process)(
+                state.state_words.as_mut_ptr().cast::<u8>(),
+                params.as_ptr(),
                 in_ptrs.as_ptr(),
                 out_ptrs.as_ptr(),
                 start_frame,
                 frames,
                 flags,
-                params.as_ptr(),
-                state.state_words.as_mut_ptr().cast::<u8>(),
                 buffer_ptrs.as_ptr(),
                 buffer_frames.as_ptr(),
                 buffer_channels.as_ptr(),
@@ -5045,13 +5052,13 @@ impl MirJitProgram {
     ) {
         unsafe {
             (self.compiled.process)(
+                state.state_words.as_mut_ptr().cast::<u8>(),
+                params.as_ptr(),
                 in_ptrs.as_ptr(),
                 out_ptrs.as_ptr(),
                 start_frame,
                 frames,
                 flags,
-                params.as_ptr(),
-                state.state_words.as_mut_ptr().cast::<u8>(),
                 buffer_ptrs.as_ptr(),
                 buffer_frames.as_ptr(),
                 buffer_channels.as_ptr(),
@@ -5614,6 +5621,9 @@ struct TargetedNativeObjectParts {
     triple: String,
     cpu: String,
     features: String,
+    data_layout: String,
+    pointer_width_bits: u32,
+    byte_order: &'static str,
 }
 
 fn emit_targeted_native_object_parts(
@@ -5631,6 +5641,7 @@ fn emit_targeted_native_object_parts(
                 .map_err(codegen_diagnostic)?;
             let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine)
                 .map_err(codegen_diagnostic)?;
+            let (pointer_width_bits, byte_order) = target_data_facts(&data_layout)?;
             let (module, context, layouts) =
                 build_native_module(program, options.fast_math, &triple, &data_layout)?;
             let result = (|| {
@@ -5648,6 +5659,9 @@ fn emit_targeted_native_object_parts(
                     triple,
                     cpu: resolved.cpu.clone(),
                     features: resolved.features.clone(),
+                    data_layout,
+                    pointer_width_bits,
+                    byte_order,
                 })
             })();
             LLVMDisposeModule(module);
@@ -5664,6 +5678,7 @@ fn emit_targeted_native_object_artifact(
     options: &MirTargetOptions,
 ) -> Result<crate::AotObjectArtifact, MirCodegenError> {
     let parts = emit_targeted_native_object_parts(program, options)?;
+    validate_relocatable_object(&parts.triple, &parts.object_bytes)?;
     let event_fixed_sizes = parts
         .layouts
         .event_payloads
@@ -5685,14 +5700,118 @@ fn emit_targeted_native_object_artifact(
         parts.triple,
         parts.cpu,
         parts.features,
+        parts.data_layout,
+        parts.pointer_width_bits,
+        parts.byte_order,
         parts.layouts.state.size,
         parts.layouts.state.alignment,
+        parts.layouts.params.size,
+        parts.layouts.params.alignment,
     )
     .map_err(|error| MirCodegenError::invalid(format!("MIR AOT metadata failed: {error}")))?;
     Ok(crate::AotObjectArtifact {
         object_bytes: parts.object_bytes,
         metadata,
     })
+}
+
+unsafe fn target_data_facts(data_layout: &str) -> Result<(u32, &'static str), MirCodegenError> {
+    let layout = CString::new(data_layout)
+        .map_err(|_| MirCodegenError::llvm("LLVM target data layout contains a NUL byte"))?;
+    let target_data = LLVMCreateTargetData(layout.as_ptr());
+    if target_data.is_null() {
+        return Err(MirCodegenError::llvm(
+            "LLVMCreateTargetData returned null for the resolved target layout",
+        ));
+    }
+    let pointer_width_bits = LLVMPointerSize(target_data)
+        .checked_mul(8)
+        .ok_or_else(|| MirCodegenError::llvm("LLVM pointer width overflowed u32"));
+    let byte_order = match LLVMByteOrder(target_data) {
+        llvm_sys::target::LLVMByteOrdering::LLVMLittleEndian => "little_endian",
+        llvm_sys::target::LLVMByteOrdering::LLVMBigEndian => "big_endian",
+    };
+    LLVMDisposeTargetData(target_data);
+    Ok((pointer_width_bits?, byte_order))
+}
+
+fn validate_relocatable_object(triple: &str, bytes: &[u8]) -> Result<(), MirCodegenError> {
+    if bytes.is_empty() {
+        return Err(MirCodegenError::llvm(
+            "native MIR object emission returned an empty object",
+        ));
+    }
+    if !triple.starts_with("wasm32-") && !triple.starts_with("wasm64-") {
+        return Ok(());
+    }
+    const WASM_HEADER: &[u8] = b"\0asm\x01\0\0\0";
+    if !bytes.starts_with(WASM_HEADER) {
+        return Err(MirCodegenError::llvm(format!(
+            "LLVM target '{triple}' did not emit a WebAssembly object"
+        )));
+    }
+    if !wasm_has_custom_section(bytes, b"linking")? {
+        return Err(MirCodegenError::llvm(
+            "LLVM WebAssembly output is missing the relocatable linking section",
+        ));
+    }
+    Ok(())
+}
+
+fn wasm_has_custom_section(bytes: &[u8], expected_name: &[u8]) -> Result<bool, MirCodegenError> {
+    let mut cursor = 8;
+    while cursor < bytes.len() {
+        let section_id = bytes[cursor];
+        cursor += 1;
+        let section_size = wasm_u32_leb(bytes, &mut cursor)? as usize;
+        let section_end = cursor.checked_add(section_size).ok_or_else(|| {
+            MirCodegenError::llvm("WebAssembly object section size overflowed usize")
+        })?;
+        if section_end > bytes.len() {
+            return Err(MirCodegenError::llvm(
+                "WebAssembly object contains a truncated section",
+            ));
+        }
+        if section_id == 0 {
+            let mut payload_cursor = cursor;
+            let name_size = wasm_u32_leb(bytes, &mut payload_cursor)? as usize;
+            let name_end = payload_cursor.checked_add(name_size).ok_or_else(|| {
+                MirCodegenError::llvm("WebAssembly custom-section name overflowed usize")
+            })?;
+            if name_end > section_end {
+                return Err(MirCodegenError::llvm(
+                    "WebAssembly object contains a truncated custom-section name",
+                ));
+            }
+            if &bytes[payload_cursor..name_end] == expected_name {
+                return Ok(true);
+            }
+        }
+        cursor = section_end;
+    }
+    Ok(false)
+}
+
+fn wasm_u32_leb(bytes: &[u8], cursor: &mut usize) -> Result<u32, MirCodegenError> {
+    let mut result = 0_u32;
+    for shift in (0..35).step_by(7) {
+        let byte = *bytes.get(*cursor).ok_or_else(|| {
+            MirCodegenError::llvm("WebAssembly object contains a truncated LEB128 value")
+        })?;
+        *cursor += 1;
+        if shift == 28 && byte & 0xf0 != 0 {
+            return Err(MirCodegenError::llvm(
+                "WebAssembly object contains an overflowing u32 LEB128 value",
+            ));
+        }
+        result |= u32::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(result);
+        }
+    }
+    Err(MirCodegenError::llvm(
+        "WebAssembly object contains an invalid u32 LEB128 value",
+    ))
 }
 
 fn initialize_codegen_targets() {
@@ -7651,6 +7770,14 @@ events {
         .expect("MIR object and sidecar should emit");
 
         assert!(!artifact.object_bytes.is_empty());
+        assert_eq!(artifact.metadata.format, crate::PROCESSOR_ARTIFACT_FORMAT);
+        assert_eq!(artifact.metadata.abi_version, crate::PROCESSOR_ABI_VERSION);
+        assert_eq!(artifact.metadata.artifact_kind, "relocatable_object");
+        assert_eq!(artifact.metadata.backend, "llvm");
+        assert_eq!(
+            artifact.metadata.mir_schema_version,
+            onda_mir::MIR_SCHEMA_VERSION
+        );
         assert_eq!(
             artifact.metadata.format_version,
             crate::AOT_METADATA_FORMAT_VERSION
@@ -7659,6 +7786,14 @@ events {
         assert_eq!(artifact.metadata.compile.block_size, 64);
         assert_eq!(artifact.metadata.exports.init, "onda_init");
         assert_eq!(artifact.metadata.exports.process, "onda_process");
+        assert_eq!(artifact.metadata.target.pointer_model, "native_address");
+        assert_eq!(artifact.metadata.target.calling_convention, "c");
+        assert!(artifact.metadata.target.pointer_width_bits >= 32);
+        assert!(!artifact.metadata.target.data_layout.is_empty());
+        assert!(matches!(
+            artifact.metadata.integration.profile,
+            crate::aot_artifact::AotIntegrationProfile::NativeRelocatableObject { .. }
+        ));
         assert_eq!(
             artifact.metadata.exports.events,
             ["onda_event_0", "onda_event_1"]
@@ -7671,6 +7806,7 @@ events {
             artifact.metadata.runtime.state_align_bytes,
             native.state_alignment_bytes()
         );
+        assert!(artifact.metadata.runtime.param_align_bytes >= 1);
         assert_eq!(artifact.metadata.runtime.state_initialization, "zeroed");
         assert_eq!(
             artifact.metadata.runtime.snapshot_format_version,
@@ -7713,10 +7849,15 @@ events {
         assert_eq!(fixed.params[0].byte_offset, 0);
         assert_eq!(fixed.params[0].byte_size, Some(8));
         assert!(fixed.params[0].has_default);
+        assert_eq!(
+            fixed.params[0].default_reprs,
+            Some(vec!["0.25".to_owned(), "0.5".to_owned()])
+        );
         assert_eq!(fixed.params[1].type_repr, "i64");
         assert_eq!(fixed.params[1].byte_offset, 8);
         assert_eq!(fixed.params[1].byte_size, Some(8));
         assert!(fixed.params[1].has_default);
+        assert_eq!(fixed.params[1].default_reprs, Some(vec!["7".to_owned()]));
 
         let dynamic = &artifact.metadata.metadata.events[1];
         assert_eq!(dynamic.name, "dynamic");
@@ -7730,6 +7871,49 @@ events {
         assert_eq!(dynamic.params[1].byte_size, None);
         assert_eq!(dynamic.params[2].byte_offset, 12);
         assert_eq!(dynamic.params[2].byte_size, Some(8));
+    }
+
+    #[test]
+    fn wasm_aot_artifact_is_relocatable_and_declares_linker_contract() {
+        let (_, mir) = source_program(
+            r#"
+init { phase = 0.0 }
+sample { out1 = phase }
+"#,
+            64,
+        );
+        let artifact = lower_mir_to_object_artifact(
+            &mir,
+            &MirTargetOptions {
+                fast_math: false,
+                target: crate::TargetConfig::for_triple("wasm32-unknown-unknown"),
+            },
+        )
+        .expect("LLVM should emit a relocatable wasm32 processor object");
+
+        assert!(artifact.object_bytes.starts_with(b"\0asm\x01\0\0\0"));
+        assert!(artifact
+            .object_bytes
+            .windows(b"linking".len())
+            .any(|window| window == b"linking"));
+        assert_eq!(artifact.metadata.target.pointer_width_bits, 32);
+        assert_eq!(artifact.metadata.target.byte_order, "little_endian");
+        assert_eq!(
+            artifact.metadata.target.pointer_model,
+            "linear_memory_offset"
+        );
+        assert!(matches!(
+            artifact.metadata.integration.profile,
+            crate::aot_artifact::AotIntegrationProfile::WebassemblyRelocatableObject {
+                no_entry: true,
+                export_memory: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            artifact.metadata.integration.required_symbols,
+            ["onda_init", "onda_process"]
+        );
     }
 
     #[test]

@@ -1,5 +1,8 @@
 binaryen.js
 onda-binaryen-web.js
+artifact.js
+onda-webaudio.js
+onda-wasm-processor.js
 math-kernel.generated.js
 onda-compiler-web/
 default.mir.json

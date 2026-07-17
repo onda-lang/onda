@@ -7,9 +7,8 @@ Onda is an expressive and performant JIT-compiled audio programming language.
 This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
 The production compiler lowers fully resolved semantics to one validated, backend-neutral MIR:
 native hosts consume schema-5 MIR through LLVM/ORC or AOT object emission, while the browser-safe
-compiler produces the same schema in memory for the Binaryen.js WebAssembly backend. The checked-in
-browser playground provides a source editor, structured diagnostics, generated parameter/event
-controls, and AudioWorklet playback without a compiler service.
+compiler produces the same schema in memory for the Binaryen.js WebAssembly backend. Separate
+checked-in browser examples cover embedding that compiler and hosting a precompiled Wasm artifact.
 
 Visit the project's [website](https://onda-lang.github.io/onda) for an introduction to the language.
 
@@ -57,17 +56,23 @@ Take a look at the `examples/` folder for more usage examples.
 - [docs/SYNTAX.md](docs/SYNTAX.md): language syntax and semantics
 - [docs/INFO.md](docs/INFO.md): project structure and implementation notes
 - [docs/MIR.md](docs/MIR.md): backend-neutral MIR and browser-backend boundary
+- [docs/PROCESSOR_ABI.md](docs/PROCESSOR_ABI.md): generic processor ABI and target/artifact profiles
 - [docs/BACKEND_BENCHMARKS.md](docs/BACKEND_BENCHMARKS.md): reproducible LLVM/Binaryen compile and render comparison
 - [crates/onda_compiler_web](crates/onda_compiler_web/README.md): in-browser Onda source-to-MIR compiler API
 - [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): schema-5 MIR-to-Wasm backend
-- [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable browser playground and AudioWorklet host
+- [packages/onda_webaudio](packages/onda_webaudio/README.md): optional reusable Web Audio adapter
+- [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground
+- [examples/web/onda_wasm_aot_sample_player](examples/web/onda_wasm_aot_sample_player/README.md): precompiled Wasm sample player and AudioWorklet host
+- [examples/native/raw_processor_object](examples/native/raw_processor_object/README.md): link and call a native relocatable processor object directly
 
-## Browser playground
+## Browser examples
+
+### Embedded compiler playground
 
 The browser demo compiles edited Onda source entirely on the client:
 
 ```text
-Onda source -> compiler Wasm -> schema-5 MIR MessagePack -> Binaryen.js -> DSP Wasm -> AudioWorklet
+Onda source -> compiler worker -> schema-5 MIR MessagePack -> Binaryen O4 -> DSP Wasm -> AudioWorklet
 ```
 
 Preparing its static assets requires Node/npm and `wasm-pack`:
@@ -86,9 +91,20 @@ Then open `http://127.0.0.1:8787/`. The build does not require the native `onda`
 `wasm-pack` is required to build the browser compiler. See the demo README for test commands and
 current limitations.
 
+### AOT Wasm sample player
+
+The AOT example compiles the shared sample player before serving the page. Its browser bundle loads
+only the finished Wasm artifact, descriptor, Web Audio adapter, and `impulse.wav`:
+
+```bash
+bash ./examples/web/onda_wasm_aot_sample_player/build-demo.sh --serve
+```
+
+It runs on `http://127.0.0.1:8788/` and does not ship the Onda compiler or Binaryen to the browser.
+
 ## Precompiled releases
 
-[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, static and shared C libraries, the public header, language guide and examples.
+[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, static and shared C libraries, public headers, language guide and examples.
 
 ## The `onda` CLI
 
@@ -266,6 +282,11 @@ cargo build -p onda_api --release
 This produces the `onda` C API library artifacts in `target/release/` along with the public header in `include/onda.h`.
 Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 On Windows, the shipped static `onda.lib` is built with the static MSVC CRT (`/MT`), so hosts linking that library should use a compatible runtime choice.
+
+Already-compiled native processor objects do not require `libonda`: include
+`include/onda_processor_abi.h`, link the emitted object with the application, and call its raw
+entrypoints directly. The paired JSON descriptor supplies storage sizes, alignments, defaults, and
+interface layouts. See the native raw-object example for a complete link command.
 
 ## Editor support
 

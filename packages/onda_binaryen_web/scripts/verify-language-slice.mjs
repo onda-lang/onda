@@ -78,7 +78,7 @@ try {
 
   onda_init(params, state);
   onda_event_0(payload, params, state, 0, 0, 0, 0);
-  onda_process(0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
+  onda_process(state, params, 0, outputTable, 0, 4, 3, 0, 0, 0, 0);
 
   const samples = [...new Float32Array(memory.buffer, output, 4)];
   const expected = [10, 13, 16, 19];
@@ -108,7 +108,7 @@ try {
   };
   await import(
     new URL(
-      "../../../examples/web/onda_wasm_playground/onda-wasm-processor.js",
+      "../../onda_webaudio/src/worklet.js",
       import.meta.url,
     )
   );

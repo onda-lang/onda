@@ -456,7 +456,7 @@ sample:
     fn browser_front_half_compiles_the_checked_in_example_corpus() {
         let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
         let paths = onda_sources_below(&examples);
-        assert_eq!(paths.len(), 46, "example corpus count changed");
+        assert_eq!(paths.len(), 47, "example corpus count changed");
         let sources = paths
             .iter()
             .map(|path| {

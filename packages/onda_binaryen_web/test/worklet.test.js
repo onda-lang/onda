@@ -180,7 +180,7 @@ try {
   await copyFile(
     fileURLToPath(
       new URL(
-        "../../../examples/web/onda_wasm_playground/onda-wasm-processor.js",
+        "../../onda_webaudio/src/worklet.js",
         import.meta.url,
       ),
     ),
@@ -399,6 +399,54 @@ test("AudioWorklet reset zeroes physical state before re-running init", () => {
   assert.equal(view.getFloat64(untouchedAddress, true), 0);
   assert.equal(processor.blockCursor, 0);
   assert.deepEqual(processor.port.messages, []);
+});
+
+test("AudioWorklet snapshots persistent state and restores from a post-init base", () => {
+  const mir = f64PassthroughMir();
+  mir.state = [
+    { name: "remembered", ty: 0, persistence: "snapshot" },
+    { name: "scratch", ty: 0, persistence: "instance_scratch" },
+  ];
+  mir.functions[0].body.statements = [
+    assign(place("state", 1), {
+      kind: "use",
+      data: constant("f64", 9),
+    }),
+  ];
+  const artifact = compileMir(mir);
+  const processor = new WorkletProcessor({
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+    },
+  });
+  const remembered = artifact.metadata.metadata.states[0];
+  const rememberedAddress = processor.statePtr + remembered.storage_byte_offset;
+  const scratchAddress = processor.statePtr + 8;
+  const view = processor.memoryView();
+
+  view.setFloat64(rememberedAddress, 42.5, true);
+  view.setFloat64(scratchAddress, 100, true);
+  processor.port.onmessage({ data: { type: "snapshot", requestId: 7 } });
+  const reply = processor.port.messages.at(-1);
+  assert.equal(reply.type, "snapshot");
+  assert.equal(reply.requestId, 7);
+  assert.equal(new DataView(reply.bytes.buffer).getFloat64(0, true), 42.5);
+
+  view.setFloat64(rememberedAddress, -1, true);
+  view.setFloat64(scratchAddress, -2, true);
+  processor.blockCursor = 3;
+  processor.port.onmessage({
+    data: { type: "restore-snapshot", requestId: 8, snapshot: reply.bytes },
+  });
+  assert.equal(view.getFloat64(rememberedAddress, true), 42.5);
+  assert.equal(view.getFloat64(scratchAddress, true), 9);
+  assert.equal(processor.blockCursor, 0);
+  assert.deepEqual(processor.port.messages.at(-1), {
+    type: "onda-ok",
+    operation: "restore-snapshot",
+    requestId: 8,
+  });
 });
 
 test("AudioWorklet supplies the exact FMA support ABI", () => {

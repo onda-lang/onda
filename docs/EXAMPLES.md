@@ -69,6 +69,7 @@ The `std` modules provide oscillators, filters, envelopes, delay, FFT, convoluti
 These examples are more host- and data-oriented:
 
 - [`buffer_looper_read.onda`](https://github.com/onda-lang/onda/blob/main/examples/buffers-fft-convolution/buffer_looper_read.onda) reads a host-bound buffer.
+- [`sample_player.onda`](https://github.com/onda-lang/onda/blob/main/examples/buffers-fft-convolution/sample_player.onda) plays a host-bound clip under event, speed, and audio-rate amplitude control.
 - [`fft_bin_shift.onda`](https://github.com/onda-lang/onda/blob/main/examples/buffers-fft-convolution/fft_bin_shift.onda) transforms frequency bins.
 - [`convolution_impulse.onda`](https://github.com/onda-lang/onda/blob/main/examples/buffers-fft-convolution/convolution_impulse.onda) performs convolution with generated impulse data.
 - [`convolution_wav_impulse.onda`](https://github.com/onda-lang/onda/blob/main/examples/buffers-fft-convolution/convolution_wav_impulse.onda) uses a WAV impulse response.
@@ -83,9 +84,9 @@ Once the smaller examples feel familiar, explore:
 - [`matrix_feedback_blipblop.onda`](https://github.com/onda-lang/onda/blob/main/examples/larger-patches/matrix_feedback_blipblop.onda) and its `lush` and `chaos` variants for complex feedback systems.
 - [`cybernetic_feedback_graph.onda`](https://github.com/onda-lang/onda/blob/main/examples/larger-patches/cybernetic_feedback_graph.onda) for a graph-heavy generative patch.
 
-## WebAssembly host example
+## WebAssembly examples
 
-[`examples/web/onda_wasm_playground`](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_playground) is the end-to-end browser playground. Its editor sends source to [`onda_compiler_web`](https://github.com/onda-lang/onda/tree/main/crates/onda_compiler_web), which resolves embedded `std/...` modules and emits validated schema-5 MIR in the page. [`onda_binaryen_web`](https://github.com/onda-lang/onda/tree/main/packages/onda_binaryen_web) lowers that MIR to DSP Wasm, and the AudioWorklet host supplies metadata-driven parameters, events, reset, external buffers, and segmented processing.
+[`examples/web/onda_wasm_playground`](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_playground) demonstrates embedding the compiler. Its editor sends source to [`onda_compiler_web`](https://github.com/onda-lang/onda/tree/main/crates/onda_compiler_web), which resolves embedded `std/...` modules and emits validated schema-5 MIR in the page. [`onda_binaryen_web`](https://github.com/onda-lang/onda/tree/main/packages/onda_binaryen_web) lowers that MIR to DSP Wasm, and the AudioWorklet host supplies metadata-driven parameters, events, reset, external buffers, and segmented processing.
 
 Build and serve it with `bash ./examples/web/onda_wasm_playground/build-demo.sh --serve` or
 `.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve`. This requires Node/npm and `wasm-pack`,
@@ -94,3 +95,5 @@ single-source editor even though the compiler API also supports virtual multi-fi
 first-class `--emit wasm` CLI workflow remains separate roadmap work. See the
 [backend benchmark report](BACKEND_BENCHMARKS.md) for the reproducible development comparison
 between native LLVM and Binaryen/Wasm.
+
+[`examples/web/onda_wasm_aot_sample_player`](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_aot_sample_player) demonstrates the deployment path instead. Its build compiles the shared sample-player source through MIR and Binaryen O4 ahead of time. The static page contains no compiler or Binaryen; it loads the complete Wasm module and descriptor, binds `impulse.wav`, supplies an audio-rate amplitude input, and controls the `speed` parameter and `play(bool)` event.

@@ -1,6 +1,25 @@
 import binaryen from "binaryen";
 import { decodeMirMessagePack } from "./messagepack.js";
 import { ONDA_MATH_KERNEL_WASM } from "./math-kernel.generated.js";
+import {
+  PROCESSOR_ABI_VERSION,
+  PROCESSOR_ARTIFACT_FORMAT,
+  PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  validateProcessorMetadata,
+} from "./artifact.js";
+
+export {
+  OndaArtifactError,
+  PROCESSOR_ABI_VERSION,
+  PROCESSOR_ARTIFACT_FORMAT,
+  PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  createProcessorArtifactFiles,
+  loadProcessorArtifactFiles,
+  parseProcessorMetadata,
+  serializeProcessorMetadata,
+  validateProcessorArtifact,
+  validateProcessorMetadata,
+} from "./artifact.js";
 
 const SUPPORTED_SCHEMA_VERSION = 5;
 const PAGE_BYTES = 64 * 1024;
@@ -10,6 +29,7 @@ const MATH_KERNEL_DATA_SEGMENT = ".rodata";
 const MATH_KERNEL_STACK_GLOBAL = "__stack_pointer";
 const MAX_MEMORY_PAGES = 65_536;
 const DEFAULT_OPTIMIZE_LEVEL = 4;
+const SNAPSHOT_FORMAT_VERSION = 1;
 const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
 const MATH_KERNEL_INTRINSICS = new Set([
   "sin",
@@ -221,6 +241,9 @@ class MirCompiler {
       if (this.options.emitText) {
         result.wat = this.module.emitText();
       }
+      // Binaryen already validated the module above. Validate the descriptor here
+      // without asking the JavaScript engine to compile the Wasm a second time.
+      validateProcessorMetadata(result.metadata, "webassembly_module");
       return result;
     } finally {
       this.module.dispose();
@@ -1059,9 +1082,9 @@ class MirCompiler {
     const processParams = binaryen.createType(
       Array.from({ length: 11 }, () => binaryen.i32),
     );
-    const startFrame = () => this.module.local.get(2, binaryen.i32);
-    const frames = () => this.module.local.get(3, binaryen.i32);
-    const flags = () => this.module.local.get(4, binaryen.i32);
+    const startFrame = () => this.module.local.get(4, binaryen.i32);
+    const frames = () => this.module.local.get(5, binaryen.i32);
+    const flags = () => this.module.local.get(6, binaryen.i32);
     const invalidRange = this.module.i32.or(
       this.module.i32.or(
         this.module.i32.or(
@@ -1093,20 +1116,20 @@ class MirCompiler {
     const processBody = this.module.block(null, [
       this.module.if(invalidRange, this.module.unreachable()),
       this.module.global.set(
-        POINTER_GLOBALS.inputs,
+        POINTER_GLOBALS.state,
         this.module.local.get(0, binaryen.i32),
       ),
       this.module.global.set(
-        POINTER_GLOBALS.outputs,
+        POINTER_GLOBALS.params,
         this.module.local.get(1, binaryen.i32),
       ),
       this.module.global.set(
-        POINTER_GLOBALS.params,
-        this.module.local.get(5, binaryen.i32),
+        POINTER_GLOBALS.inputs,
+        this.module.local.get(2, binaryen.i32),
       ),
       this.module.global.set(
-        POINTER_GLOBALS.state,
-        this.module.local.get(6, binaryen.i32),
+        POINTER_GLOBALS.outputs,
+        this.module.local.get(3, binaryen.i32),
       ),
       this.module.global.set(
         POINTER_GLOBALS.buffers,
@@ -3263,10 +3286,49 @@ class MirCompiler {
     const stateSize = this.stateLayout.byteLength ?? 0;
     const paramSize = this.paramLayout.byteLength ?? 0;
     const snapshot = this.stateSnapshotMetadata();
+    const eventExports = this.mir.interface.events.map(
+      (_, id) => `onda_event_${id}`,
+    );
+    const requiredExports = [
+      "memory",
+      "__heap_base",
+      "onda_init",
+      "onda_process",
+      ...eventExports,
+    ];
+    const targetFeatures = ["bulk-memory"];
+    if (this.options.simd) targetFeatures.push("simd128");
     return {
-      abi_version: 1,
+      format: PROCESSOR_ARTIFACT_FORMAT,
+      format_version: PROCESSOR_ARTIFACT_FORMAT_VERSION,
+      artifact_kind: "webassembly_module",
+      abi_version: PROCESSOR_ABI_VERSION,
       backend: "binaryen-js",
       mir_schema_version: this.mir.schema_version,
+      target: {
+        triple: "wasm32-unknown-unknown",
+        cpu: "generic",
+        features: targetFeatures.map((feature) => `+${feature}`).join(","),
+        reloc_model: "static",
+        code_model: "default",
+        opt_level: String(this.options.optimizeLevel),
+        abi_name: null,
+        pointer_width_bits: 32,
+        byte_order: "little_endian",
+        pointer_model: "linear_memory_offset",
+        calling_convention: "core_webassembly",
+      },
+      integration: {
+        required_symbols: requiredExports,
+        one_processor_per_artifact: true,
+        profile: {
+          kind: "core_webassembly_module",
+          imports: [],
+          memory_export: "memory",
+          heap_base_export: "__heap_base",
+        },
+      },
+      required_features: targetFeatures,
       optimization: {
         enabled: this.options.optimize,
         level: this.options.optimizeLevel,
@@ -3281,14 +3343,22 @@ class MirCompiler {
         block_size: this.mir.config.block_size,
       },
       exports: {
+        memory: "memory",
+        heap_base: "__heap_base",
         init: "onda_init",
         process: "onda_process",
-        events: this.mir.interface.events.map((_, id) => `onda_event_${id}`),
+        events: eventExports,
       },
       runtime: {
         state_size_bytes: stateSize,
+        state_align_bytes: 16,
+        state_initialization: "zeroed",
         snapshot_size_bytes: snapshot.byteLength,
+        snapshot_format_version: SNAPSHOT_FORMAT_VERSION,
+        snapshot_byte_order: "little_endian",
+        snapshot_restore_base: "post_init_physical_state_image",
         param_size_bytes: paramSize,
+        param_align_bytes: 16,
         requires_full_blocks: false,
       },
       metadata: {

@@ -326,6 +326,7 @@ fn create_instance_inner(
 
     let mut params = RuntimeBuffer::try_from_elem_in(program.param_byte_size(), 0_u8, allocator)?;
     program.write_default_param_bytes(&mut params)?;
+    configure_current_thread_audio_fp_mode();
     let state = program.initialize_state_with_allocator(&params, allocator)?;
     let initial_state = state.try_clone_with_allocator(allocator)?;
 
@@ -932,6 +933,7 @@ pub fn trigger_event_by_index(
     event_index: usize,
     payload: &[u8],
 ) -> Result<(), Diagnostic> {
+    configure_current_thread_audio_fp_mode();
     if !instance.buffers_validated {
         validate_buffers(instance)?;
     }
@@ -961,6 +963,7 @@ pub unsafe fn trigger_event_by_index_unchecked(
     event_index: usize,
     payload: &[u8],
 ) -> Result<(), Diagnostic> {
+    configure_current_thread_audio_fp_mode();
     debug_assert!(
         instance.buffers_validated,
         "trigger_event_by_index_unchecked called without validating required buffer bindings"

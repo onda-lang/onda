@@ -8,6 +8,7 @@ $demoDir = Resolve-Path $PSScriptRoot
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
 $backendDir = Join-Path $repoRoot "packages\onda_binaryen_web"
 $compilerDir = Join-Path $repoRoot "crates\onda_compiler_web"
+$webAudioDir = Join-Path $repoRoot "packages\onda_webaudio"
 $compilerOut = Join-Path $demoDir "onda-compiler-web"
 $binaryenJs = Join-Path $backendDir "node_modules\binaryen\index.js"
 
@@ -26,9 +27,14 @@ wasm-pack build $compilerDir `
     --out-name onda_compiler_web
 
 Copy-Item $binaryenJs (Join-Path $demoDir "binaryen.js") -Force
-Copy-Item (Join-Path $backendDir "src\index.js") (Join-Path $demoDir "onda-binaryen-web.js") -Force
+$backendSource = Get-Content (Join-Path $backendDir "src\index.js") -Raw
+$backendSource.Replace('from "binaryen"', 'from "./binaryen.js"') |
+    Set-Content (Join-Path $demoDir "onda-binaryen-web.js") -NoNewline
+Copy-Item (Join-Path $backendDir "src\artifact.js") (Join-Path $demoDir "artifact.js") -Force
 Copy-Item (Join-Path $backendDir "src\math-kernel.generated.js") (Join-Path $demoDir "math-kernel.generated.js") -Force
 Copy-Item (Join-Path $backendDir "src\messagepack.js") (Join-Path $demoDir "messagepack.js") -Force
+Copy-Item (Join-Path $webAudioDir "src\index.js") (Join-Path $demoDir "onda-webaudio.js") -Force
+Copy-Item (Join-Path $webAudioDir "src\worklet.js") (Join-Path $demoDir "onda-wasm-processor.js") -Force
 
 Write-Host "Built the in-browser Onda compiler in: $compilerOut"
 Write-Host "Staged the Binaryen backend in: $demoDir"

@@ -465,7 +465,19 @@ events {
     assert!(!object.is_empty());
     let metadata: serde_json::Value =
         serde_json::from_slice(&metadata_bytes).expect("metadata should be valid JSON");
-    assert_eq!(metadata["format_version"], 2);
+    assert_eq!(metadata["format"], "onda-processor");
+    assert_eq!(metadata["format_version"], 3);
+    assert_eq!(metadata["artifact_kind"], "relocatable_object");
+    assert_eq!(metadata["abi_version"], 1);
+    assert_eq!(metadata["backend"], "llvm");
+    assert_eq!(metadata["mir_schema_version"], onda_mir::MIR_SCHEMA_VERSION);
+    assert_eq!(metadata["target"]["pointer_model"], "native_address");
+    assert!(metadata["target"]["pointer_width_bits"].as_u64().unwrap() >= 32);
+    assert_eq!(
+        metadata["integration"]["profile"]["kind"],
+        "native_relocatable_object"
+    );
+    assert_eq!(metadata["integration"]["required_symbols"][0], "onda_init");
     assert_eq!(metadata["compile"]["sample_rate"], 48_000.0);
     assert_eq!(metadata["compile"]["block_size"], 64);
     assert_eq!(metadata["exports"]["events"][0], "onda_event_0");
@@ -484,6 +496,7 @@ events {
         .expect("sidecar should expose packed snapshot size");
     assert!(control_state_offset < state_size);
     assert!(state_align >= 1);
+    assert!(metadata["runtime"]["param_align_bytes"].as_u64().unwrap() >= 1);
     assert!(snapshot_size <= state_size);
     assert_eq!(metadata["runtime"]["state_initialization"], "zeroed");
     assert_eq!(metadata["runtime"]["snapshot_format_version"], 1);

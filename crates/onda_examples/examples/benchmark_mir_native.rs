@@ -5,13 +5,13 @@ use std::hint::black_box;
 use std::path::Path;
 use std::time::Instant;
 
-use onda_codegen_llvm::{lower_and_jit_with_options, CompileOptions, TargetOptLevel};
-use onda_frontend::{parse_program_file, PrimitiveType};
-use onda_runtime::{
-    bind_output, create_instance, prepare_unchecked_process, process_checked, process_unchecked,
-    Instance, InstanceConfig,
+use onda_codegen_llvm::{
+    lower_optimized_mir_and_jit_with_options, MirCompileOptions, MirJitProgram, RuntimeState,
+    TargetOptLevel,
 };
-use onda_semantics::{analyze_with_options, AnalysisOptions};
+use onda_frontend::parse_program_file;
+use onda_realtime::configure_current_thread_audio_fp_mode;
+use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const WARMUP_BLOCKS: usize = 200;
@@ -30,6 +30,87 @@ struct SampleSummary {
 struct ParitySummary {
     samples: usize,
     maximum_absolute_error: f64,
+}
+
+struct NativeBenchmark {
+    jit: MirJitProgram,
+    params: Vec<u8>,
+    state: RuntimeState,
+    input_ptrs: Vec<*const u8>,
+    output_ptrs: Vec<*mut u8>,
+    buffer_ptrs: Vec<*mut u8>,
+    buffer_frames: Vec<i32>,
+    buffer_channels: Vec<i32>,
+    buffer_sample_rates: Vec<f32>,
+    outputs: Vec<Vec<f32>>,
+    block_size_u32: u32,
+}
+
+impl NativeBenchmark {
+    fn new(jit: MirJitProgram, block_size: usize) -> Result<Self, Box<dyn Error>> {
+        let params = jit.default_param_bytes();
+        let state = jit
+            .initialize_state(&params)
+            .map_err(|error| format!("state initialization failed: {error:?}"))?;
+        let input_ptrs = Vec::new();
+        let mut outputs = (0..jit.required_out_channels())
+            .map(|_| vec![0.0_f32; block_size])
+            .collect::<Vec<_>>();
+        let output_ptrs = outputs
+            .iter_mut()
+            .map(|output| output.as_mut_ptr().cast::<u8>())
+            .collect::<Vec<_>>();
+        Ok(Self {
+            jit,
+            params,
+            state,
+            input_ptrs,
+            output_ptrs,
+            buffer_ptrs: Vec::new(),
+            buffer_frames: Vec::new(),
+            buffer_channels: Vec::new(),
+            buffer_sample_rates: Vec::new(),
+            outputs,
+            block_size_u32: u32::try_from(block_size)?,
+        })
+    }
+
+    fn process_checked(&mut self) -> Result<(), Box<dyn Error>> {
+        unsafe {
+            self.jit.process_checked(
+                &mut self.state,
+                &self.params,
+                0,
+                self.block_size_u32 as usize,
+                3,
+                &self.input_ptrs,
+                &self.output_ptrs,
+                &self.buffer_ptrs,
+                &self.buffer_frames,
+                &self.buffer_channels,
+                &self.buffer_sample_rates,
+            )
+        }
+        .map_err(|error| format!("checked process failed: {error:?}").into())
+    }
+
+    unsafe fn process_unchecked(&mut self) {
+        unsafe {
+            self.jit.process_unchecked(
+                &mut self.state,
+                &self.params,
+                0,
+                self.block_size_u32,
+                3,
+                &self.input_ptrs,
+                &self.output_ptrs,
+                &self.buffer_ptrs,
+                &self.buffer_frames,
+                &self.buffer_channels,
+                &self.buffer_sample_rates,
+            );
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -84,15 +165,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )
     .map_err(|errors| format!("semantic analysis failed: {errors:?}"))?;
-    let compile_options = CompileOptions {
-        sample_rate: SAMPLE_RATE,
-        block_size,
+    let mir = lower_program_to_optimized_mir(&typed)
+        .map_err(|errors| format!("optimized MIR lowering failed: {errors:?}"))?;
+    let compile_options = MirCompileOptions {
         fast_math: false,
         opt_level: TargetOptLevel::O3,
     };
     let (jit, compile_summary) = if validate_only {
         (
-            lower_and_jit_with_options(typed, compile_options)
+            lower_optimized_mir_and_jit_with_options(mir, compile_options)
                 .map_err(|errors| format!("LLVM JIT lowering failed: {errors:?}"))?,
             None,
         )
@@ -100,9 +181,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut samples = Vec::with_capacity(compile_repetitions);
         let mut compiled = None;
         for repetition in 0..=compile_repetitions {
-            let typed_sample = typed.clone();
             let started = Instant::now();
-            let next = lower_and_jit_with_options(typed_sample, compile_options)
+            let next = lower_optimized_mir_and_jit_with_options(mir.clone(), compile_options)
                 .map_err(|errors| format!("LLVM JIT lowering failed: {errors:?}"))?;
             let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
             if repetition > 0 {
@@ -117,7 +197,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let input_channels = jit.required_in_channels();
-    let output_channels = jit.output_count();
+    let output_channels = jit.required_out_channels();
     if input_channels != 0 {
         return Err("native benchmark scenarios must not require audio inputs".into());
     }
@@ -127,49 +207,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     if jit.buffer_count() != 0 {
         return Err("native benchmark scenarios must not require external buffers".into());
     }
-    if jit
-        .outputs()
-        .iter()
-        .any(|output| output.elem_ty() != PrimitiveType::F32 || output.array_len() != 1)
-    {
+    if jit.mir().interface.outputs.iter().any(|output| {
+        !matches!(
+            jit.mir().types.get(output.ty.index()),
+            Some(onda_mir::Type::Scalar(onda_mir::ScalarType::F32))
+        )
+    }) {
         return Err("native benchmark scenarios must expose scalar f32 audio outputs".into());
     }
 
-    let mut instance = create_instance(
-        jit,
-        InstanceConfig {
-            sample_rate: SAMPLE_RATE,
-            frames_per_block: block_size,
-            in_channels: input_channels,
-            out_channels: output_channels,
-        },
-    )
-    .map_err(|error| format!("instance creation failed: {error:?}"))?;
-
-    let mut outputs = (0..output_channels)
-        .map(|_| vec![0.0_f32; block_size])
-        .collect::<Vec<_>>();
-    for (index, output) in outputs.iter_mut().enumerate() {
-        unsafe {
-            bind_output(
-                &mut instance,
-                index,
-                output.as_mut_ptr().cast::<u8>(),
-                output.len() * std::mem::size_of::<f32>(),
-            )
-        }
-        .map_err(|error| format!("bind output {index} failed: {error:?}"))?;
-    }
-
-    process_checked(&mut instance, block_size)
-        .map_err(|error| format!("first process failed: {error:?}"))?;
-    let parity = validate_first_block(&outputs, Path::new(&expected_outputs), block_size)?;
-    prepare_unchecked_process(&mut instance)
-        .map_err(|error| format!("unchecked preparation failed: {error:?}"))?;
-    run_unchecked_blocks(&mut instance, WARMUP_BLOCKS, "warmup")?;
+    configure_current_thread_audio_fp_mode();
+    let mut benchmark = NativeBenchmark::new(jit, block_size)?;
+    benchmark.process_checked()?;
+    let parity =
+        validate_first_block(&benchmark.outputs, Path::new(&expected_outputs), block_size)?;
+    run_unchecked_blocks(&mut benchmark, WARMUP_BLOCKS);
     if validate_only {
         let recommended_iterations =
-            calibrate_iterations(&mut instance, iterations, minimum_round_ms)?;
+            calibrate_iterations(&mut benchmark, iterations, minimum_round_ms)?;
         println!(
             concat!(
                 "{{",
@@ -187,10 +242,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut samples = Vec::with_capacity(repetitions);
     for _ in 0..repetitions {
         let started = Instant::now();
-        run_unchecked_blocks(&mut instance, iterations, "timed")?;
+        run_unchecked_blocks(&mut benchmark, iterations);
         let elapsed = started.elapsed().as_nanos() as f64;
         samples.push(elapsed / (iterations * block_size) as f64);
-        black_box(output_checksum(&outputs));
+        black_box(output_checksum(&benchmark.outputs));
     }
     let process_summary = summarize_samples(samples)?;
     let compile_summary = compile_summary.expect("benchmark mode records compile samples");
@@ -303,14 +358,14 @@ fn summarize_samples(mut samples: Vec<f64>) -> Result<SampleSummary, Box<dyn Err
 }
 
 fn calibrate_iterations(
-    instance: &mut Instance,
+    benchmark: &mut NativeBenchmark,
     minimum_iterations: usize,
     minimum_round_ms: f64,
 ) -> Result<usize, Box<dyn Error>> {
     let mut iterations = minimum_iterations;
     loop {
         let started = Instant::now();
-        run_unchecked_blocks(instance, iterations, "calibration")?;
+        run_unchecked_blocks(benchmark, iterations);
         if started.elapsed().as_secs_f64() * 1_000.0 >= minimum_round_ms {
             return Ok(iterations);
         }
@@ -320,22 +375,16 @@ fn calibrate_iterations(
     }
 }
 
-fn run_unchecked_blocks(
-    instance: &mut Instance,
-    blocks: usize,
-    phase: &str,
-) -> Result<(), Box<dyn Error>> {
+fn run_unchecked_blocks(benchmark: &mut NativeBenchmark, blocks: usize) {
     for _ in 0..blocks {
-        // The output bindings were validated and remain stable for the benchmark lifetime.
-        unsafe { process_unchecked(instance) }
-            .map_err(|error| format!("{phase} process failed: {error:?}"))?;
+        // Construction and the checked preflight establish the raw processor ABI invariants.
+        unsafe { benchmark.process_unchecked() };
     }
-    Ok(())
 }
 
 fn median_of_sorted(samples: &[f64]) -> f64 {
     let midpoint = samples.len() / 2;
-    if samples.len() % 2 == 0 {
+    if samples.len().is_multiple_of(2) {
         (samples[midpoint - 1] + samples[midpoint]) * 0.5
     } else {
         samples[midpoint]

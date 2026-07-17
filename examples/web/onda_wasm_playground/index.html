@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Onda Browser Playground</title>
+    <title>Onda Embedded Compiler Playground</title>
     <style>
       :root {
         color-scheme: dark;
@@ -235,7 +235,7 @@
     <main>
       <header>
         <div>
-          <h1>Onda Browser Playground</h1>
+          <h1>Onda embedded compiler</h1>
           <p>Edit Onda, compile to schema-5 MIR and WebAssembly in this page, then play it in an AudioWorklet.</p>
         </div>
         <span class="status" data-status>Loading compiler…</span>
@@ -247,6 +247,7 @@
             <button class="primary" type="button" data-compile disabled>Compile</button>
             <button type="button" data-toggle disabled>Start audio</button>
             <button type="button" data-reset disabled>Reset DSP</button>
+            <button type="button" data-export disabled>Export artifact</button>
           </div>
 
           <div class="control-grid" style="margin: 14px 0">

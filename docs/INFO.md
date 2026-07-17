@@ -22,6 +22,7 @@ For build, CLI usage, and editor integrations, see the [getting-started guide](h
 | `onda_semantics` | Semantic analysis and lowering rewrites: typing, overload resolution, generic specialization, proc/graph lowering, name resolution. |
 | `onda_mir` | Backend-neutral typed executable IR: logical types, explicit storage/resources, structured control flow, proof-aware validation, optimization, and JSON/MessagePack transport. |
 | `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
+| `onda_processor_abi` | Compiler-free shared processor descriptor schema and ABI version constants. |
 | `onda_compiler_web` | Filesystem-free browser compiler: in-memory source/projects plus embedded stdlib to validated schema-5 MIR MessagePack or JSON. |
 | `onda_realtime` | Backend-independent realtime thread policy, including one-time x86 FTZ/DAZ setup. |
 | `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
@@ -41,6 +42,8 @@ Non-crate directories of note:
 - `targets/` — checked-in AOT codegen presets for `onda compile --target-spec`.
 - `packages/onda_binaryen_web/` — Binaryen.js MIR-to-Wasm backend, reproducible embedded no-std
   math kernel, and browser runtime helpers.
+- `packages/onda_webaudio/` — optional metadata-driven Web Audio adapter for complete wasm32
+  processor artifacts; it is not part of the processor ABI or code generator.
 - `deps/llvm-bootstrap` — git submodule used to bootstrap LLVM from source.
 - `scripts/` — LLVM bootstrap and env-selection helpers.
 - `docs/`, `examples/`, `assets/`, `ui/`, `sc/` — supporting material.
@@ -146,6 +149,11 @@ or daemon compilation.
 ### `onda_realtime` (`crates/onda_realtime/src`)
 - `lib.rs` — allocation-free, once-per-thread audio floating-point policy shared by runtime hosts.
 
+### `onda_processor_abi`
+
+- `onda_processor_abi/src/lib.rs` — serializable/deserializable format-3 processor descriptor owned
+  outside every compiler/backend crate.
+
 ### `onda_runtime` (`crates/onda_runtime/src`)
 - `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants, reset, param hoisting/clamping, event dispatch.
 
@@ -194,6 +202,9 @@ or daemon compilation.
 - Browser path: `onda_compiler_web` → schema-5 MIR MessagePack →
   `packages/onda_binaryen_web` → DSP Wasm + host metadata →
   `examples/web/onda_wasm_playground`.
+- AOT browser deployment: native compiler-only MIR helper →
+  `packages/onda_binaryen_web` at build time → complete Wasm artifact →
+  `examples/web/onda_wasm_aot_sample_player`.
 - Legacy differential lowering: `orc_backend/{pipeline,proc_ir,user_fn_ir,...}`; test-only and
   pending deletion.
 - Runtime API usage: `onda_runtime/src/lib.rs`.
@@ -212,8 +223,9 @@ or daemon compilation.
 - Native JIT metadata and AOT sidecar metadata come from validated MIR plus codegen's selected byte
   offsets. Parameter, state, audio/control I/O, buffer, event, export, and target information
   therefore cannot drift from the executable layout through a separate `TypedProgram` walk. The
-  format-2 sidecar also maps each packed snapshot segment to its physical state offset and records
-  the little-endian format-1 scalar encoding and post-init restore base.
+  format-3 processor descriptor also maps each packed snapshot segment to its physical state offset,
+  records the little-endian format-1 scalar encoding and post-init restore base, and declares the
+  resolved target pointer model plus artifact integration profile.
 - `onda compile <file> --emit mir` exposes deterministic MIR for inspection, while `--emit mir-json`
   emits inspectable schema-5 interchange and `--emit mir-messagepack` emits the compact production
   transport. In a browser, `onda_compiler_web` produces the same MessagePack directly from in-memory
@@ -221,6 +233,10 @@ or daemon compilation.
   `packages/onda_binaryen_web` consumes schema 5, including explicit control mirrors, checked slice
   construction, reference windows, and function attributes, and returns DSP Wasm plus physical
   state, snapshot, interface, event, buffer, and import metadata.
+- [`PROCESSOR_ABI.md`](PROCESSOR_ABI.md) defines the shared logical processor contract. LLVM emits
+  relocatable objects for native and WebAssembly targets and leaves linking to the application;
+  Binaryen emits a complete core-Wasm module because browsers expose no linker. Target triples
+  select LLVM's platform ABI and object representation without changing the logical Onda ABI.
 - Standard optimized LLVM pass pipeline (`default<O3>`-style) with host-target settings; MIR does not
   override LLVM's loop or SLP vectorization heuristics.
 - Native checked and prepared-unchecked processing install the shared audio-thread denormal policy;
@@ -247,9 +263,12 @@ or daemon compilation.
 - `bash ./examples/web/onda_wasm_playground/build-demo.sh --serve` builds/stages the compiler and pinned
   Binaryen assets, then serves the editable playground. The PowerShell equivalent is
   `.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve`.
-- From `packages/onda_binaryen_web`, `npm test` runs backend/host fixtures, `npm run test:onda` runs
+- `bash ./examples/web/onda_wasm_aot_sample_player/build-demo.sh --serve` compiles the shared sample
+  player to MIR and Binaryen Wasm before serving a compiler-free page on port 8788. The PowerShell
+  equivalent is `.\examples\web\onda_wasm_aot_sample_player\build-demo.ps1 -Serve`.
+- From `packages/onda_binaryen_web`, `npm test` runs backend/worklet fixtures, `npm run test:onda` runs
   real Onda source plus LLVM/Binaryen parity and the internal-Wasm FMA oracle, and `npm run test:parity`
-  selects the differential renderer. `npm run test:corpus` continuously compiles all 46 checked-in
+  selects the differential renderer. `npm run test:corpus` continuously compiles all 47 checked-in
   examples and positive backend fixtures through source -> schema-5 MIR MessagePack -> Binaryen -> valid
   Wasm. These source-driven commands require a working native Rust/LLVM Onda build; `npm test` and
   the browser asset build do not.
@@ -257,9 +276,10 @@ or daemon compilation.
   [`docs/BACKEND_BENCHMARKS.md`](BACKEND_BENCHMARKS.md). It is a development benchmark, not a
   universal browser-performance claim.
 - The browser build is static after staging and requires no CLI, LLVM, or server-side compiler.
-  Current product limitations include a single-file playground UI despite the compiler's multi-file
-  API, restart/reset rather than seamless state-preserving hot swap, no control-output or external
-  buffer UI, no microphone/input-source routing, and main-thread compilation. Software math helpers
+  Compiler and Binaryen work run in a module worker; `packages/onda_webaudio` registers and hosts the
+  processor worklet. Current product limitations include a single-file playground UI despite the
+  compiler's multi-file API, restart/reset rather than seamless state-preserving hot swap, no
+  control-output or external-buffer UI, and no microphone/input-source routing. Software math helpers
   are internal to generated Wasm, so the render path has no JavaScript math boundary, though native
   LLVM may still execute them faster. The page also assumes the requested `AudioContext` sample rate
   is honored. The current smoke endpoint proves compilation, but automated browser
