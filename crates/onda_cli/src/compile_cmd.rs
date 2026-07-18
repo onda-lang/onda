@@ -14,8 +14,8 @@ use onda_semantics::{
 
 use crate::args::{default_metadata_output_path, default_object_output_path};
 use crate::diag_print::format_diagnostics;
-use crate::formatting::{format_program, primitive_type_name};
 use crate::CompileEmit;
+use onda_lsp::formatting::{format_program, primitive_type_name};
 
 pub(crate) fn run_compile(
     input: &Path,

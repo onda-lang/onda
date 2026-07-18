@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import test from "node:test";
 import binaryen from "binaryen";
+import * as backend from "../src/index.js";
 
 import {
   OndaBinaryenError,
-  compileMir as compileUntrustedMir,
   compileTrustedMir as compileMir,
   createProcessorArtifactFiles,
   createDefaultImports,
@@ -211,11 +211,8 @@ function executableMir() {
   };
 }
 
-test("requires an explicit trusted-producer boundary for unchecked MIR", () => {
-  assert.throws(
-    () => compileUntrustedMir(executableMir()),
-    /unchecked bounds.*require compileTrustedMir/,
-  );
+test("does not expose a partial validator for arbitrary MIR", () => {
+  assert.equal("compileMir" in backend, false);
 });
 
 test("compiles versioned MIR into an executable persistent DSP module", async () => {

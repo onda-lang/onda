@@ -6,6 +6,7 @@ members = [
   "crates/onda_semantics",
   "crates/onda_mir",
   "crates/onda_compiler_web",
+  "crates/onda_lsp",
   "crates/onda_codegen_llvm",
   "crates/onda_processor_abi",
   "crates/onda_runtime",

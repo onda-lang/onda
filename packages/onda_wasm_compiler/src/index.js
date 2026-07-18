@@ -9,7 +9,8 @@ import {
   serializeProcessorMetadata,
   validateProcessorArtifact,
   validateProcessorMetadata,
-} from "../dist/backend/artifact.js";
+  validateProcessorModule,
+} from "@onda-lang/processor-abi";
 import { SUPPORTED_MIR_SCHEMA_VERSION } from "../dist/backend/constants.js";
 import { OndaBinaryenError } from "../dist/backend/errors.js";
 import { defaultFrontendInput } from "#onda-frontend-loader";
@@ -30,6 +31,7 @@ export {
   serializeProcessorMetadata,
   validateProcessorArtifact,
   validateProcessorMetadata,
+  validateProcessorModule,
 };
 
 export class OndaCompilerError extends Error {
@@ -59,6 +61,7 @@ class OndaCompiler {
   constructor(frontend, compileTrustedMir) {
     this.frontend = frontend;
     this.compileTrustedMir = compileTrustedMir;
+    this.lsp = null;
   }
 
   async compileSource(source, options = {}) {
@@ -110,7 +113,36 @@ class OndaCompiler {
     return compileMirTransport(mir, compile.codegen, this.compileTrustedMir);
   }
 
-  async dispose() {}
+  async sendLspMessage(message) {
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
+      throw new OndaCompilerError("LSP message must be a JSON-RPC object");
+    }
+    this.lsp ??= new this.frontend.OndaLsp();
+    try {
+      const responses = JSON.parse(this.lsp.handle_message(JSON.stringify(message)));
+      if (!Array.isArray(responses)) {
+        throw new Error("Onda LSP returned a non-array response batch");
+      }
+      return responses;
+    } catch (cause) {
+      throw new OndaCompilerError("Onda LSP failed to handle a message", { cause });
+    }
+  }
+
+  async setLspAnalysisOptions(options = {}) {
+    const compile = normalizeCompileOptions(options);
+    this.lsp ??= new this.frontend.OndaLsp();
+    try {
+      this.lsp.set_analysis_options(compile.sampleRate, compile.blockSize);
+    } catch (cause) {
+      throw new OndaCompilerError("failed to configure Onda LSP analysis", { cause });
+    }
+  }
+
+  async dispose() {
+    this.lsp?.free();
+    this.lsp = null;
+  }
 }
 
 class WorkerOndaCompiler {
@@ -124,8 +156,8 @@ class WorkerOndaCompiler {
     worker.addEventListener("error", this.onError);
   }
 
-  initialize() {
-    return this.request("initialize");
+  initialize(frontendWasm) {
+    return this.request("initialize", { frontendWasm });
   }
 
   compileSource(source, options = {}) {
@@ -134,6 +166,14 @@ class WorkerOndaCompiler {
 
   compileProject(project, options = {}) {
     return this.request("compileProject", { project, options });
+  }
+
+  sendLspMessage(message) {
+    return this.request("lspMessage", { message });
+  }
+
+  setLspAnalysisOptions(options = {}) {
+    return this.request("lspAnalysisOptions", { options });
   }
 
   async dispose() {
@@ -193,7 +233,7 @@ export async function createCompiler(options = {}) {
         name: "onda-wasm-compiler",
       }),
     );
-    await compiler.initialize();
+    await compiler.initialize(options.frontendWasm);
     return compiler;
   }
 

@@ -43,6 +43,7 @@ const SYMBOL_KIND_CONSTRUCTOR: u32 = 9;
 const SYMBOL_KIND_FUNCTION: u32 = 12;
 const SYMBOL_KIND_VARIABLE: u32 = 13;
 const SYMBOL_KIND_CONSTANT: u32 = 14;
+const STDLIB_VIRTUAL_URI_PREFIX: &str = "onda-stdlib:///";
 const SYMBOL_KIND_STRUCT: u32 = 23;
 const SYMBOL_KIND_EVENT: u32 = 24;
 #[derive(Debug, Clone, Copy, Default)]
@@ -2689,11 +2690,56 @@ fn span_range_json(span: Span, source: Option<&str>) -> Value {
 }
 
 fn uri_for_span(span: Span, fallback_path: Option<&Path>) -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(module) = span
+        .file()
+        .as_deref()
+        .and_then(stdlib_module_from_virtual_file)
+    {
+        return Some(stdlib_virtual_uri(&module));
+    }
+    if fallback_path
+        .and_then(|path| stdlib_module_from_virtual_file(&path.to_string_lossy()))
+        .is_some()
+    {
+        let module = span
+            .file()
+            .as_deref()
+            .and_then(stdlib_module_from_virtual_file)
+            .or_else(|| {
+                fallback_path
+                    .and_then(|path| stdlib_module_from_virtual_file(&path.to_string_lossy()))
+            })?;
+        return Some(stdlib_virtual_uri(&module));
+    }
     let path = span
         .file()
         .map(|file| path_for_span_file(&file))
         .or_else(|| fallback_path.map(Path::to_path_buf))?;
     Some(path_to_file_uri(&path))
+}
+
+pub(super) fn stdlib_virtual_document(uri: &str) -> Option<Value> {
+    let (module, _, source) = stdlib_virtual_source(uri)?;
+    Some(json!({
+        "uri": uri,
+        "path": format!("{module}.onda"),
+        "languageId": "onda",
+        "readOnly": true,
+        "text": source,
+    }))
+}
+
+pub(super) fn stdlib_virtual_source(uri: &str) -> Option<(&str, PathBuf, &'static str)> {
+    let module_path = uri.strip_prefix(STDLIB_VIRTUAL_URI_PREFIX)?;
+    let module = module_path.strip_suffix(".onda")?;
+    let source = onda_frontend::stdlib_module_source(module)?;
+    let path = PathBuf::from(format!("<{module}.onda>"));
+    Some((module, path, source))
+}
+
+fn stdlib_virtual_uri(module: &str) -> String {
+    format!("{STDLIB_VIRTUAL_URI_PREFIX}{module}.onda")
 }
 
 fn source_for_span<'a>(
@@ -2706,7 +2752,7 @@ fn source_for_span<'a>(
         return Some(Cow::Borrowed(fallback_source));
     };
     if let Some(module) = stdlib_module_from_virtual_file(&file) {
-        return onda_frontend::stdlib_module_source(module).map(Cow::Borrowed);
+        return onda_frontend::stdlib_module_source(&module).map(Cow::Borrowed);
     }
 
     let file_key = normalize_file_key(&file);
@@ -2729,17 +2775,18 @@ fn source_for_span<'a>(
 
 fn path_for_span_file(file: &str) -> PathBuf {
     if let Some(module) = stdlib_module_from_virtual_file(file) {
-        if let Some(path) = materialized_stdlib_path(module) {
+        if let Some(path) = materialized_stdlib_path(&module) {
             return path;
         }
     }
     PathBuf::from(file)
 }
 
-fn stdlib_module_from_virtual_file(file: &str) -> Option<&str> {
+fn stdlib_module_from_virtual_file(file: &str) -> Option<String> {
     file.strip_prefix('<')
         .and_then(|s| s.strip_suffix(".onda>"))
         .filter(|module| module.starts_with("std/"))
+        .map(ToOwned::to_owned)
 }
 
 fn materialized_stdlib_path(module: &str) -> Option<PathBuf> {

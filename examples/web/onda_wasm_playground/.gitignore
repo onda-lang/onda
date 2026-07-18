@@ -8,6 +8,7 @@ onda-webaudio.js
 onda-wasm-processor.js
 math-kernel.generated.js
 onda-compiler-web/
+run.html
 default.mir.json
 default.o
 default.wasm

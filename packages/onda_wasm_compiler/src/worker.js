@@ -7,7 +7,7 @@ globalThis.addEventListener("message", async (event) => {
   const requestId = message.requestId;
   try {
     if (message.type === "initialize") {
-      await compiler();
+      await compiler(message.frontendWasm);
       respond(requestId, null);
       return;
     }
@@ -25,6 +25,16 @@ globalThis.addEventListener("message", async (event) => {
         message.options,
       );
       respond(requestId, artifact, [artifact.wasm.buffer]);
+      return;
+    }
+    if (message.type === "lspMessage") {
+      const responses = await (await compiler()).sendLspMessage(message.message);
+      respond(requestId, responses);
+      return;
+    }
+    if (message.type === "lspAnalysisOptions") {
+      await (await compiler()).setLspAnalysisOptions(message.options);
+      respond(requestId, null);
       return;
     }
     if (message.type === "dispose") {
@@ -48,8 +58,8 @@ globalThis.addEventListener("message", async (event) => {
   }
 });
 
-function compiler() {
-  compilerPromise ??= createCompiler();
+function compiler(frontendWasm) {
+  compilerPromise ??= createCompiler({ frontendWasm });
   return compilerPromise;
 }
 

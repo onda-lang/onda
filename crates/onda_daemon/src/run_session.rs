@@ -13,7 +13,7 @@ use onda_runtime::{
 };
 use onda_semantics::{lower_program_to_optimized_mir, AnalysisOptions, TypedProgram};
 
-use crate::analysis_session::{normalize_session_path, AnalysisSession, DocumentVersion};
+use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RunOptions {

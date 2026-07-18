@@ -1,27 +1,64 @@
+import {
+  validateProcessorArtifact,
+  validateProcessorModule,
+} from "@onda-lang/processor-abi";
+
 export const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
 
 const registrationByContext = new WeakMap();
 
 export function flattenedAudioChannelCount(ports = []) {
-  return ports.reduce(
-    (count, port) => count + Number(port.channel_count ?? 1),
-    0,
-  );
+  if (!Array.isArray(ports)) {
+    throw new Error("processor audio ports must be an array");
+  }
+  return ports.reduce((count, port, index) => {
+    const channels = Number(port?.channel_count ?? 1);
+    if (!Number.isSafeInteger(channels) || channels <= 0) {
+      throw new Error(
+        `processor audio port ${index} has invalid channel_count '${String(port?.channel_count)}'`,
+      );
+    }
+    return count + channels;
+  }, 0);
 }
 
 export function ondaAudioWorkletNodeOptions(artifact, options = {}) {
-  const { wasm, metadata } = validateExecutableArtifact(artifact);
+  const validated = validateExecutableArtifact(
+    artifact,
+    options.compiledModule === undefined,
+  );
+  return audioWorkletNodeOptionsFromValidated(
+    validated,
+    options,
+    options.compiledModule !== undefined,
+  );
+}
+
+function audioWorkletNodeOptionsFromValidated(
+  { wasm, metadata },
+  options,
+  validateCompiledModule,
+) {
   const inputChannels = flattenedAudioChannelCount(metadata.metadata.inputs);
   const outputChannels = flattenedAudioChannelCount(metadata.metadata.outputs);
   if (inputChannels > 32 || outputChannels > 32) {
     throw new Error("Web Audio supports at most 32 flattened channels per Onda node");
   }
+  if (inputChannels === 0 && outputChannels === 0) {
+    throw new Error(
+      "the Web Audio adapter requires at least one audio input or output to establish the render quantum",
+    );
+  }
+  if (validateCompiledModule) {
+    validateProcessorModule(options.compiledModule, metadata);
+  }
   const nodeOptions = {
+    ...options.nodeOptions,
     numberOfInputs: inputChannels ? 1 : 0,
     numberOfOutputs: outputChannels ? 1 : 0,
     channelCount: Math.max(inputChannels, 1),
     channelCountMode: "explicit",
-    ...options.nodeOptions,
+    channelInterpretation: "discrete",
     processorOptions: {
       ...options.nodeOptions?.processorOptions,
       ...(options.compiledModule === undefined
@@ -33,8 +70,10 @@ export function ondaAudioWorkletNodeOptions(artifact, options = {}) {
       eventPayloadCapacityBytes: options.eventPayloadCapacityBytes,
     },
   };
-  if (outputChannels && nodeOptions.outputChannelCount === undefined) {
+  if (outputChannels) {
     nodeOptions.outputChannelCount = [outputChannels];
+  } else {
+    delete nodeOptions.outputChannelCount;
   }
   return nodeOptions;
 }
@@ -60,10 +99,15 @@ export async function registerOndaAudioWorklet(
 }
 
 export async function createOndaAudioProcessor(context, artifact, options = {}) {
+  const validated = validateExecutableArtifact(artifact, false);
+  validateContextSampleRate(context, validated.metadata);
+  if (options.compiledModule !== undefined) {
+    validateProcessorModule(options.compiledModule, validated.metadata);
+  }
   const [, compiledModule] = await Promise.all([
     registerOndaAudioWorklet(context, options.workletUrl),
     options.compiledModule === undefined
-      ? compileOndaProcessorModule(artifact)
+      ? compileValidatedProcessorModule(validated)
       : Promise.resolve(options.compiledModule),
   ]);
   const NodeConstructor = options.AudioWorkletNode ?? globalThis.AudioWorkletNode;
@@ -73,14 +117,25 @@ export async function createOndaAudioProcessor(context, artifact, options = {}) 
   const node = new NodeConstructor(
     context,
     ONDA_AUDIO_WORKLET_PROCESSOR_NAME,
-    ondaAudioWorkletNodeOptions(artifact, { ...options, compiledModule }),
+    audioWorkletNodeOptionsFromValidated(
+      validated,
+      { ...options, compiledModule },
+      false,
+    ),
   );
   return new OndaAudioProcessor(node);
 }
 
 export async function compileOndaProcessorModule(artifact) {
-  const { wasm } = validateExecutableArtifact(artifact);
-  return WebAssembly.compile(wasm);
+  return compileValidatedProcessorModule(
+    validateExecutableArtifact(artifact, false),
+  );
+}
+
+async function compileValidatedProcessorModule({ wasm, metadata }) {
+  const module = await WebAssembly.compile(wasm);
+  validateProcessorModule(module, metadata);
+  return module;
 }
 
 export class OndaAudioProcessor {
@@ -155,22 +210,10 @@ export class OndaAudioProcessor {
   }
 }
 
-function validateExecutableArtifact(artifact) {
-  const metadata = artifact?.metadata;
-  const wasm = artifact?.wasm instanceof Uint8Array
-    ? artifact.wasm
-    : artifact?.wasm instanceof ArrayBuffer
-      ? new Uint8Array(artifact.wasm)
-      : null;
-  if (wasm === null) {
-    throw new Error("an Onda artifact with WebAssembly bytes is required");
-  }
+function validateExecutableArtifact(artifact, inspectModule = true) {
+  const { wasm, metadata } = validateProcessorArtifact(artifact, { inspectModule });
   if (
-    metadata?.format !== "onda-processor"
-    || metadata?.format_version !== 3
-    || metadata?.abi_version !== 1
-    || metadata?.artifact_kind !== "webassembly_module"
-    || metadata?.integration?.profile?.kind !== "core_webassembly_module"
+    metadata.integration?.profile?.kind !== "core_webassembly_module"
     || metadata?.target?.pointer_model !== "linear_memory_offset"
     || metadata?.target?.pointer_width_bits !== 32
   ) {
@@ -182,4 +225,17 @@ function validateExecutableArtifact(artifact) {
     }
   }
   return { wasm, metadata };
+}
+
+function validateContextSampleRate(context, metadata) {
+  const actual = Number(context?.sampleRate);
+  const compiled = Number(metadata.compile.sample_rate);
+  if (!Number.isFinite(actual) || actual <= 0) {
+    throw new Error("an AudioContext with a valid sampleRate is required");
+  }
+  if (actual !== compiled) {
+    throw new Error(
+      `processor was compiled for ${compiled} Hz but the AudioContext runs at ${actual} Hz; recompile for the actual context sample rate`,
+    );
+  }
 }

@@ -4,11 +4,15 @@
 front half of Onda. The standard library is embedded in the Rust frontend, so compiling an
 in-memory program and its `std/...` imports does not require filesystem access.
 
-Build JavaScript glue and the compiler Wasm with:
+Build the production JavaScript glue and compiler Wasm from the repository root with:
 
 ```sh
-wasm-pack build crates/onda_compiler_web --target web --release --no-opt
+npm run build --workspace @onda-lang/wasm-compiler
 ```
+
+The package build runs `wasm-pack --release` and then the workspace-pinned Binaryen
+`wasm-opt -O4`. Its internal `--no-opt` argument only disables wasm-pack's separately bundled
+optimizer so every local, CI, website, and npm build uses the same Binaryen release.
 
 The production exports `compile_to_mir_messagepack(source, sampleRate, blockSize)` and
 `compile_project_to_mir_messagepack(entryPath, sourcesJson, sampleRate, blockSize)` return compact

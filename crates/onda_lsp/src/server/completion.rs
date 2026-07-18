@@ -85,7 +85,7 @@ pub(super) fn completion_items_for_document_with_index(
 
     if let CompletionContextKind::ImportPath { typed } = &context.kind {
         return CompletionResult {
-            items: filter_and_encode(import_completion_items(path, typed), "", snippets),
+            items: filter_and_encode(import_completion_items(path, typed, overlays), "", snippets),
             is_incomplete: typed.is_empty(),
         };
     }
@@ -3020,7 +3020,11 @@ fn source_imports_module(source: &str, module: &str) -> bool {
     })
 }
 
-fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionItem> {
+fn import_completion_items(
+    path: Option<&Path>,
+    typed: &str,
+    overlays: &HashMap<PathBuf, String>,
+) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     for module in stdlib_module_names() {
         if module.starts_with(typed) {
@@ -3037,6 +3041,56 @@ fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionIt
         }
     }
     if let Some(path) = path.and_then(Path::parent) {
+        let (typed_directory, partial) = typed
+            .rsplit_once('/')
+            .map(|(directory, partial)| (format!("{directory}/"), partial))
+            .unwrap_or_else(|| (String::new(), typed));
+        let mut virtual_entries = BTreeMap::<String, bool>::new();
+        for overlay_path in overlays.keys() {
+            let Ok(relative) = overlay_path.strip_prefix(path) else {
+                continue;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let module = relative
+                .strip_suffix(".onda")
+                .or_else(|| relative.strip_suffix(".on"));
+            let Some(module) = module else {
+                continue;
+            };
+            let Some(remaining) = module.strip_prefix(&typed_directory) else {
+                continue;
+            };
+            let segment = remaining.split('/').next().unwrap_or(remaining);
+            if segment.is_empty() || !segment.starts_with(partial) {
+                continue;
+            }
+            let directory = remaining.contains('/');
+            let candidate = format!(
+                "{typed_directory}{segment}{}",
+                if directory { "/" } else { "" }
+            );
+            virtual_entries
+                .entry(candidate)
+                .and_modify(|existing| *existing |= directory)
+                .or_insert(directory);
+        }
+        for (candidate, directory) in virtual_entries {
+            let completion = import_completion_segment(&candidate, typed);
+            items.push(
+                CompletionItem::new(completion.clone(), COMPLETION_ITEM_KIND_FILE)
+                    .detail(if directory {
+                        format!("project folder {candidate}")
+                    } else {
+                        format!("project module {candidate}")
+                    })
+                    .insert_text(completion.clone())
+                    .sort_text(completion_sort_text(
+                        CompletionSortGroup::ImportFile,
+                        &completion,
+                    )),
+            );
+        }
+
         let prefix_path = PathBuf::from(typed);
         let search_dir = if typed.ends_with('/') {
             path.join(&prefix_path)

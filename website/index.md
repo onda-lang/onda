@@ -14,12 +14,6 @@ description: Expressive and performant JIT-compiled audio programming language
       <h1>Onda</h1>
     </div>
     <p class="home-lead">Expressive and performant JIT-compiled audio programming language</p>
-    <nav class="home-links" aria-label="Start here">
-      <a href="{{ '/docs/getting-started/' | relative_url }}">Getting started</a>
-      <a href="{{ '/docs/language/' | relative_url }}">Language guide</a>
-      <a href="https://github.com/onda-lang/onda/releases/latest">Download</a>
-      <a href="https://github.com/onda-lang/onda">GitHub ↗</a>
-    </nav>
   </section>
 
   <section class="home-example">
@@ -27,36 +21,10 @@ description: Expressive and performant JIT-compiled audio programming language
       <h2>Code example</h2>
       <p>A standard-library oscillator and resonant filter with a custom oversampled saturator</p>
     </div>
-<pre><code class="language-onda">import std/osc
-import std/filter
-
-params:
-  freq = 110.0 {20.0, 880.0}
-  cutoff = 1200.0 {40.0, 12000.0}
-  resonance = 0.8 {0.1, 8.0}
-  drive = 1.0 {1.0, 10.0}
-
-def soft_clip(x):
-  return tanh(x)
-
-proc Saturator:
-  params:
-    amount = 1.0
-
-  sample 4:
-    out1 = soft_clip(in1 * amount)
-
-init:
-  osc = std::osc::Saw()
-  filter = std::filter::Svf(cutoff = cutoff, q = resonance)
-  saturator = Saturator()
-
-block:
-  filter.update_coeffs(cutoff, resonance)
-
-  sample:
-    tone = osc(freq = freq)
-    out1 = saturator(filter(tone), amount = drive)</code></pre>
+    <div class="home-example-code">
+<pre><code class="language-onda">{% include home-example.onda %}</code></pre>
+      <a class="primary-button" href="{{ '/playground/?example=processors-and-graphs/saw_filter_saturator.onda' | relative_url }}">Open in playground</a>
+    </div>
   </section>
 
   <nav class="home-docs" aria-label="Documentation">
@@ -70,5 +38,3 @@ block:
     </div>
   </nav>
 </main>
-
-<footer class="site-footer">Onda is open-source software. Source and issue tracking are on <a href="https://github.com/onda-lang/onda">GitHub</a>.</footer>

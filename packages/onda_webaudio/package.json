@@ -31,6 +31,9 @@
   "scripts": {
     "test": "node --test"
   },
+  "dependencies": {
+    "@onda-lang/processor-abi": "0.4.4"
+  },
   "publishConfig": {
     "access": "public"
   }

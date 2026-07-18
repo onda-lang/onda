@@ -34,12 +34,12 @@ demo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$demo_dir/../../.." && pwd)"
 backend_dir="$repo_root/packages/onda_binaryen_web"
 webaudio_dir="$repo_root/packages/onda_webaudio"
+abi_dir="$repo_root/packages/onda_processor_abi"
 source_file="$repo_root/examples/buffers-fft-convolution/sample_player.onda"
 mir_file="$demo_dir/sample-player.mir.msgpack"
-binaryen_js="$backend_dir/node_modules/binaryen/index.js"
 
-if [[ ! -f "$binaryen_js" ]]; then
-  npm install --prefix "$backend_dir"
+if ! node -p "require.resolve('binaryen', { paths: [process.argv[1]] })" "$backend_dir" >/dev/null; then
+  npm ci --prefix "$repo_root"
 fi
 
 cargo run --quiet --release \
@@ -50,7 +50,7 @@ cargo run --quiet --release \
 
 node "$demo_dir/build-artifact.mjs" "$mir_file" "$demo_dir"
 
-cp "$backend_dir/src/artifact.js" "$demo_dir/artifact.js"
+cp "$abi_dir/src/index.js" "$demo_dir/artifact.js"
 cp "$webaudio_dir/src/index.js" "$demo_dir/onda-webaudio.js"
 cp "$webaudio_dir/src/worklet.js" "$demo_dir/onda-wasm-processor.js"
 cp "$repo_root/examples/buffers-fft-convolution/impulse.wav" "$demo_dir/impulse.wav"

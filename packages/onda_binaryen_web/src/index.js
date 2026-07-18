@@ -21,6 +21,7 @@ export {
   serializeProcessorMetadata,
   validateProcessorArtifact,
   validateProcessorMetadata,
+  validateProcessorModule,
 } from "./artifact.js";
 export { SUPPORTED_MIR_SCHEMA_VERSION } from "./constants.js";
 export { OndaBinaryenError } from "./errors.js";
@@ -59,20 +60,17 @@ const POINTER_GLOBALS = Object.freeze({
   bufferSampleRates: "$onda.buffer_sample_rates",
 });
 
-export function compileMir(mirJson, options = {}) {
-  return compileMirInternal(mirJson, options, false);
-}
-
 // Compiles MIR emitted by Onda's semantic producer. The producer owns proofs
-// for operations marked `bounds: "unchecked"`; callers accepting arbitrary
-// MIR must use compileMir(), which rejects those operations.
+// for operations marked `bounds: "unchecked"` and all other validated MIR
+// invariants. This backend deliberately does not expose a partial validator
+// for downloaded or hand-authored MIR.
 export function compileTrustedMir(mirJson, options = {}) {
-  return compileMirInternal(mirJson, options, true);
+  return compileMirInternal(mirJson, options);
 }
 
-function compileMirInternal(mirJson, options, trustedProducer) {
+function compileMirInternal(mirJson, options) {
   const mir = parseMirInput(mirJson);
-  const compiler = new MirCompiler(mir, options, trustedProducer);
+  const compiler = new MirCompiler(mir, options);
   return compiler.compile();
 }
 
@@ -138,26 +136,8 @@ function parseMirJson(json) {
   }
 }
 
-function findUncheckedBounds(value, path = "$") {
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) {
-      const found = findUncheckedBounds(value[index], `${path}[${index}]`);
-      if (found !== null) return found;
-    }
-    return null;
-  }
-  if (!value || typeof value !== "object") return null;
-  for (const [key, child] of Object.entries(value)) {
-    const childPath = `${path}.${key}`;
-    if (key === "bounds" && child === "unchecked") return childPath;
-    const found = findUncheckedBounds(child, childPath);
-    if (found !== null) return found;
-  }
-  return null;
-}
-
 class MirCompiler {
-  constructor(mir, options, trustedProducer) {
+  constructor(mir, options) {
     this.mir = mir;
     this.options = {
       optimize: options.optimize !== false,
@@ -169,7 +149,6 @@ class MirCompiler {
       allowInliningFunctionsWithLoops:
         options.allowInliningFunctionsWithLoops === true,
     };
-    this.trustedProducer = trustedProducer;
     this.module = new binaryen.Module();
     this.functionNames = [];
     this.stateLayout = [];
@@ -255,14 +234,6 @@ class MirCompiler {
       this.fail(
         `unsupported MIR schema version ${String(mir.schema_version)}; expected ${SUPPORTED_MIR_SCHEMA_VERSION}`,
       );
-    }
-    if (!this.trustedProducer) {
-      const uncheckedPath = findUncheckedBounds(mir);
-      if (uncheckedPath !== null) {
-        this.fail(
-          `unchecked bounds at ${uncheckedPath} require compileTrustedMir() and a trusted Onda producer`,
-        );
-      }
     }
     for (const field of ["types", "state", "const_data", "functions"]) {
       if (!Array.isArray(mir[field])) {

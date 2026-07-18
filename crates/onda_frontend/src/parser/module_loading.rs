@@ -212,6 +212,12 @@ pub fn parse_program_file_with_overlays(
     Ok(Program { blocks })
 }
 
+pub fn parse_stdlib_module(module: &str) -> Result<Program, Vec<Diagnostic>> {
+    let mut state = LoadState::default();
+    let blocks = load_builtin_module_blocks(module, false, &mut state, &[])?;
+    Ok(Program { blocks })
+}
+
 pub fn inject_auto_std_prelude(program: &mut Program) -> Result<(), Vec<Diagnostic>> {
     let mut state = LoadState::default();
     for module in STDLIB_AUTO_IMPORT_MODULES {

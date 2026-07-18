@@ -63,6 +63,8 @@ _site_source/
 .jekyll-cache/
 .jekyll-metadata
 .sass-cache/
+/examples/web/onda_wasm_playground/onda-highlighter.js
+/examples/web/onda_wasm_playground/playground.js
 
 # Python tooling
 __pycache__/

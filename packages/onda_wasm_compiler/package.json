@@ -24,7 +24,7 @@
     },
     "./artifact": {
       "types": "./src/artifact.d.ts",
-      "default": "./dist/backend/artifact.js"
+      "default": "./src/artifact.js"
     },
     "./worker": {
       "types": "./src/worker.d.ts",
@@ -52,11 +52,14 @@
     "build": "node ./scripts/build.mjs",
     "sync:versions": "node ../../scripts/sync-package-versions.mjs",
     "check:versions": "node ../../scripts/sync-package-versions.mjs --check",
-    "test": "npm run build && node --test ./test/*.test.js",
+    "test": "npm run build && npm run test:built",
+    "test:built": "node --test ./test/*.test.js",
     "test:pack": "node ./scripts/test-package.mjs",
+    "test:pack:built": "node ./scripts/test-package.mjs --skip-build",
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@onda-lang/processor-abi": "0.4.4",
     "binaryen": "130.0.0"
   },
   "publishConfig": {

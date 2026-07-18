@@ -9,6 +9,8 @@ The production compiler lowers fully resolved semantics to one validated, backen
 native hosts consume schema-5 MIR through LLVM/ORC or AOT object emission, while the browser-safe
 compiler produces the same schema in memory for the Binaryen.js WebAssembly backend. Separate
 checked-in browser examples cover embedding that compiler and hosting a precompiled Wasm artifact.
+The project website lets visitors compile its homepage example on demand and provides a full
+editor/compiler/audio playground under [`/playground/`](https://onda-lang.github.io/onda/playground/).
 
 Visit the project's [website](https://onda-lang.github.io/onda) for an introduction to the language.
 
@@ -61,7 +63,9 @@ Take a look at the `examples/` folder for more usage examples.
 - [crates/onda_compiler_web](crates/onda_compiler_web/README.md): in-browser Onda source-to-MIR compiler API
 - [packages/onda_wasm_compiler](packages/onda_wasm_compiler/README.md): packaged source-to-WebAssembly compiler and `onda-wasm` CLI
 - [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): schema-5 MIR-to-Wasm backend
+- [packages/onda_processor_abi](packages/onda_processor_abi/README.md): compiler-free artifact schema, validation, and integrity helpers
 - [packages/onda_webaudio](packages/onda_webaudio/README.md): optional reusable Web Audio adapter
+- [ui/playground](ui/playground/README.md): shared browser IDE used by the website and standalone host
 - [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground
 - [examples/web/onda_wasm_aot_sample_player](examples/web/onda_wasm_aot_sample_player/README.md): precompiled Wasm sample player and AudioWorklet host
 - [examples/native/raw_processor_object](examples/native/raw_processor_object/README.md): link and call a native relocatable processor object directly
@@ -111,8 +115,9 @@ It runs on `http://127.0.0.1:8788/` and does not ship the Onda compiler or Binar
 
 [GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, static and shared C libraries, public headers, language guide and examples.
 
-The same releases attach portable npm tarballs for `@onda-lang/wasm-compiler`, its low-level
-Binaryen backend, and the optional Web Audio adapter.
+Tagged releases attach portable tarballs and publish the four public npm packages with provenance:
+`@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and
+`@onda-lang/wasm-compiler`.
 
 ## The `onda` CLI
 

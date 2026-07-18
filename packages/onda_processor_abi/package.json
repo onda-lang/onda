@@ -1,0 +1,34 @@
+{
+  "name": "@onda-lang/processor-abi",
+  "version": "0.4.4",
+  "type": "module",
+  "description": "Shared Onda processor artifact schema, validation, and integrity helpers",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/onda-lang/onda.git",
+    "directory": "packages/onda_processor_abi"
+  },
+  "homepage": "https://onda-lang.github.io/onda/",
+  "bugs": {
+    "url": "https://github.com/onda-lang/onda/issues"
+  },
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,9 +1,7 @@
 export const ONDA_AUDIO_WORKLET_PROCESSOR_NAME: "onda-wasm-processor";
 
-export interface OndaProcessorArtifact {
-  wasm: Uint8Array | ArrayBuffer;
-  metadata: Record<string, any>;
-}
+export type { OndaProcessorArtifact, OndaProcessorMetadata } from "@onda-lang/processor-abi";
+import type { OndaProcessorArtifact } from "@onda-lang/processor-abi";
 
 export interface OndaAudioProcessorOptions {
   workletUrl?: string | URL;

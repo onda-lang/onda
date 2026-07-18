@@ -12,6 +12,7 @@ use onda_frontend::{
 };
 
 pub mod aggregate_layout;
+mod analysis_session;
 mod array_structs;
 pub mod builtins;
 mod decl_symbols;
@@ -39,6 +40,9 @@ pub use aggregate_layout::{
     AggregateLayout, AggregateLayoutArithmeticError, AggregateLayoutError, AggregateLayoutId,
     AggregateLayoutTable, AggregateLeafId, AggregateLeafLayout, AggregatePathComponent,
     AggregateTensorLayout,
+};
+pub use analysis_session::{
+    normalize_session_path, AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument,
 };
 use array_structs::*;
 use builtins::*;

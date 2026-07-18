@@ -45,54 +45,66 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            packages/onda_binaryen_web/package-lock.json
-            packages/onda_wasm_compiler/package-lock.json
+          cache-dependency-path: package-lock.json
+
+      - name: Install native system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libpipewire-0.3-dev \
+            libdbus-1-dev \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
 
       - name: Bootstrap LLVM
         run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
 
-      - name: Synchronize package versions
-        run: node ./scripts/sync-package-versions.mjs
+      - name: Verify package versions
+        run: node ./scripts/sync-package-versions.mjs --check
 
-      - name: Test native MIR backend and examples
+      - name: Test Rust workspace outside PipeWire-dependent hosts
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test -p onda_codegen_llvm -p onda_examples --release
+          cargo test --workspace --release \
+            --exclude onda_cpal \
+            --exclude onda_run \
+            --exclude onda_cli \
+            --exclude onda_egui \
+            --exclude onda_webview
 
-      - name: Install Binaryen package
-        run: npm ci --prefix packages/onda_binaryen_web
+      - name: Install JavaScript workspace
+        run: npm ci
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
-
-      - name: Install WebAssembly compiler package
-        run: npm ci --prefix packages/onda_wasm_compiler
 
       - name: Test Binaryen backend and LLVM parity
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          npm test --prefix packages/onda_binaryen_web
-          npm run test:onda --prefix packages/onda_binaryen_web
+          npm test --workspace @onda-lang/binaryen-web
+          npm run test:onda --workspace @onda-lang/binaryen-web
 
       - name: Test full Onda source corpus with Binaryen
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          npm run test:corpus --prefix packages/onda_binaryen_web
-
-      - name: Build browser compiler
-        run: |
-          wasm-pack build crates/onda_compiler_web \
-            --target web \
-            --release \
-            --no-opt \
-            --out-dir /tmp/onda-compiler-web \
-            --out-name onda_compiler_web
+          npm run test:corpus --workspace @onda-lang/binaryen-web
 
       - name: Test WebAssembly compiler product package
         run: |
-          npm test --prefix packages/onda_wasm_compiler
-          npm run test:pack --prefix packages/onda_wasm_compiler
+          npm test --workspace @onda-lang/processor-abi
+          npm test --workspace @onda-lang/webaudio
+          npm run build --workspace @onda-lang/wasm-compiler
+          npm run test:built --workspace @onda-lang/wasm-compiler
+          npm run test:pack:built --workspace @onda-lang/wasm-compiler

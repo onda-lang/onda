@@ -3,7 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use onda_frontend::{parse_program_file_with_overlays, Diagnostic, Program};
-use onda_semantics::{analyze_with_options, AnalysisOptions, TypedProgram};
+
+use crate::{analyze_with_options, AnalysisOptions, TypedProgram};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DocumentVersion(pub i32);
@@ -29,6 +30,7 @@ impl AnalysisSnapshot {
     }
 }
 
+/// Browser-safe source overlay and analysis session shared by the LSP and daemon.
 #[derive(Debug, Default)]
 pub struct AnalysisSession {
     open_documents: HashMap<PathBuf, OpenDocument>,
@@ -85,7 +87,10 @@ impl AnalysisSession {
         options: AnalysisOptions,
     ) -> AnalysisSnapshot {
         let path = normalize_session_path(path.as_ref());
-        let version = self.open_documents.get(&path).map(|doc| doc.version);
+        let version = self
+            .open_documents
+            .get(&path)
+            .map(|document| document.version);
         let overlays = self.overlay_map();
         let parsed = match parse_program_file_with_overlays(&path, &overlays) {
             Ok(program) => program,
@@ -121,12 +126,12 @@ impl AnalysisSession {
     pub fn overlay_map(&self) -> HashMap<PathBuf, String> {
         self.open_documents
             .iter()
-            .map(|(path, doc)| (path.clone(), doc.text.clone()))
+            .map(|(path, document)| (path.clone(), document.text.clone()))
             .collect()
     }
 }
 
-pub(crate) fn normalize_session_path(path: &Path) -> PathBuf {
+pub fn normalize_session_path(path: &Path) -> PathBuf {
     if let Ok(canonical) = fs::canonicalize(path) {
         return canonical;
     }

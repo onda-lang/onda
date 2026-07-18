@@ -48,5 +48,9 @@ The scripts deliberately show the two AOT stages separately:
 2. `build-artifact.mjs` lowers MIR with Binaryen O4 and writes the executable `.wasm` plus its
    integrity-associated `.onda.json` descriptor.
 
+This example artifact is compiled for 48 kHz. The Web Audio adapter rejects playback if the browser
+creates a context at another rate; a production AOT deployment should select from precompiled
+sample-rate variants, as the website homepage does for 44.1 and 48 kHz.
+
 For the source-editing, in-browser compilation path, use the separate
 [`onda_wasm_playground`](../onda_wasm_playground/README.md) embedded-compiler example.

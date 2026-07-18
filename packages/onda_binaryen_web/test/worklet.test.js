@@ -171,6 +171,7 @@ function f32PassthroughMir() {
 
 let WorkletProcessor;
 let registeredProcessorName;
+globalThis.sampleRate = 48_000;
 globalThis.AudioWorkletProcessor = class {
   constructor() {
     this.port = {
@@ -220,6 +221,20 @@ test("AudioWorklet accepts a module compiled outside the rendering thread", () =
 
   assert.equal(processor.process([[input]], [[output]]), true);
   assert.deepEqual([...output], [...input]);
+});
+
+test("AudioWorklet rejects a processor compiled for a different sample rate", () => {
+  const artifact = compileMir(f32PassthroughMir());
+  artifact.metadata.compile.sample_rate = 44_100;
+  assert.throws(
+    () => new WorkletProcessor({
+      processorOptions: {
+        wasmBytes: artifact.wasm,
+        metadata: artifact.metadata,
+      },
+    }),
+    /compiled for 44100 Hz.*runs at 48000 Hz/,
+  );
 });
 
 test("AudioWorklet reuses cached f32 views in the render callback", () => {

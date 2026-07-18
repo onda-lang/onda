@@ -3531,6 +3531,7 @@ dependencies = [
  "onda_daemon",
  "onda_egui",
  "onda_frontend",
+ "onda_lsp",
  "onda_mir",
  "onda_run",
  "onda_runtime",
@@ -3557,6 +3558,7 @@ name = "onda_compiler_web"
 version = "0.4.4"
 dependencies = [
  "onda_frontend",
+ "onda_lsp",
  "onda_mir",
  "onda_semantics",
  "serde",
@@ -3614,6 +3616,16 @@ version = "0.4.4"
 dependencies = [
  "pest",
  "pest_derive",
+]
+
+[[package]]
+name = "onda_lsp"
+version = "0.4.4"
+dependencies = [
+ "onda_frontend",
+ "onda_semantics",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

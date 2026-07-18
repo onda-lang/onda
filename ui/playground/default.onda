@@ -1,3 +1,4 @@
+# Default project embedded by the shared browser playground.
 params:
   freq = 440.0 { 20, 1000 }
 

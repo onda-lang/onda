@@ -8,9 +8,8 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use onda_daemon::{AnalysisSession, DaemonSession, DocumentVersion};
-use onda_frontend::{parse_program_file_with_overlays, Diagnostic, Program};
-use onda_semantics::AnalysisOptions;
+use onda_frontend::{parse_program_file_with_overlays, parse_stdlib_module, Diagnostic, Program};
+use onda_semantics::{AnalysisOptions, AnalysisSession, DocumentVersion};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -29,7 +28,8 @@ use completion::{
 use diagnostics::{diagnostic_to_lsp, diagnostic_uri};
 use navigation::{
     definition_for_document_with_parsed, document_symbols_for_document_with_parsed,
-    hover_for_document_with_parsed, NavigationPosition,
+    hover_for_document_with_parsed, stdlib_virtual_document, stdlib_virtual_source,
+    NavigationPosition,
 };
 use path_utils::{lsp_document_path, normalize_path, path_to_file_uri};
 use semantic_tokens::{
@@ -318,13 +318,7 @@ impl LspCore {
         if current_generation != result.generation {
             return Ok(());
         }
-        if self
-            .server
-            .session
-            .analysis()
-            .document(&result.entry_path)
-            .is_none()
-        {
+        if self.server.session.document(&result.entry_path).is_none() {
             return Ok(());
         }
         self.server.publish_diagnostic_result(result, writer)
@@ -333,7 +327,8 @@ impl LspCore {
 
 #[derive(Default)]
 struct LspServer {
-    session: DaemonSession,
+    session: AnalysisSession,
+    analysis_options: AnalysisOptions,
     shutdown_requested: bool,
     defer_diagnostics: bool,
     diagnostic_requests: Vec<DiagnosticScheduleRequest>,
@@ -346,6 +341,40 @@ struct LspServer {
     completion_index_cache: HashMap<PathBuf, CachedCompletionIndex>,
     semantic_token_cache: HashMap<PathBuf, CachedSemanticTokens>,
     dependency_fingerprint_cache: DependencyFingerprintCache,
+}
+
+/// Transport-neutral Onda LSP session.
+///
+/// Native `onda lsp` feeds this session from stdio. Browser hosts feed the
+/// same JSON-RPC messages from a Web Worker and receive every response or
+/// notification produced while handling that message.
+#[derive(Default)]
+pub struct LspSession {
+    server: LspServer,
+}
+
+impl LspSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_analysis_options(&mut self, options: AnalysisOptions) {
+        self.server.analysis_options = options;
+        self.server.note_watched_files_changed(&[]);
+    }
+
+    pub fn handle_message(&mut self, message: Value) -> Result<Vec<Value>, String> {
+        let mut output = Vec::new();
+        self.server.handle_message(message, &mut output)?;
+        decode_lsp_messages(&output)
+    }
+
+    pub fn handle_message_json(&mut self, message: &str) -> Result<String, String> {
+        let message = serde_json::from_str(message)
+            .map_err(|error| format!("invalid lsp json message: {error}"))?;
+        serde_json::to_string(&self.handle_message(message)?)
+            .map_err(|error| format!("failed to encode lsp responses: {error}"))
+    }
 }
 
 struct CachedParsedDocument {
@@ -456,7 +485,6 @@ impl LspServer {
                 self.note_watched_files_changed(&params.changes);
                 let open_paths = self
                     .session
-                    .analysis()
                     .open_documents()
                     .keys()
                     .cloned()
@@ -529,7 +557,6 @@ impl LspServer {
                 if let Some(text) = params.text {
                     let version = self
                         .session
-                        .analysis()
                         .document(&path)
                         .map(|doc| doc.version)
                         .unwrap_or(DocumentVersion(0));
@@ -588,6 +615,11 @@ impl LspServer {
                 let result = self.definition_for_uri(&params.text_document.uri, params.position)?;
                 write_result(writer, envelope.id.unwrap_or(Value::Null), result)?;
             }
+            "onda/virtualDocument" => {
+                let params = parse_params::<VirtualDocumentParams>(envelope.params)?;
+                let result = stdlib_virtual_document(&params.uri).unwrap_or(Value::Null);
+                write_result(writer, envelope.id.unwrap_or(Value::Null), result)?;
+            }
             "textDocument/documentSymbol" => {
                 let params = parse_params::<DocumentSymbolParams>(envelope.params)?;
                 let result = self.document_symbols_for_uri(&params.text_document.uri)?;
@@ -614,11 +646,11 @@ impl LspServer {
         };
         let source = self.source_text_for_path(&path)?;
         let normalized = normalize_path(&path);
-        if self.session.analysis().document(&normalized).is_some() {
+        if self.session.document(&normalized).is_some() {
             return self.semantic_tokens_for_open_document(&normalized, &source);
         }
 
-        let overlays = self.session.analysis().overlay_map();
+        let overlays = self.session.overlay_map();
         let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
         if let Some(cached) = self.semantic_token_cache.get(&normalized) {
             if cached.fingerprint == fingerprint {
@@ -704,10 +736,10 @@ impl LspServer {
             line: position.line,
             character: position.character,
         };
-        let overlays = self.session.analysis().overlay_map();
+        let overlays = self.session.overlay_map();
         let snippets = self.completion_snippets;
         let normalized = normalize_path(&path);
-        let parsed = if self.session.analysis().document(&normalized).is_some() {
+        let parsed = if self.session.document(&normalized).is_some() {
             self.parsed_program_for_open_request(&normalized, &source)
         } else {
             let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
@@ -736,9 +768,9 @@ impl LspServer {
             return Ok(Value::Null);
         };
         let source = self.source_text_for_path(&path)?;
-        let overlays = self.session.analysis().overlay_map();
+        let overlays = self.session.overlay_map();
         let normalized = normalize_path(&path);
-        let parsed = if self.session.analysis().document(&normalized).is_some() {
+        let parsed = if self.session.document(&normalized).is_some() {
             self.parsed_program_for_open_navigation_request(&normalized, &source)
         } else {
             let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
@@ -758,13 +790,28 @@ impl LspServer {
     }
 
     fn definition_for_uri(&mut self, uri: &str, position: Position) -> Result<Value, String> {
+        if let Some((module, path, source)) = stdlib_virtual_source(uri) {
+            let overlays = self.session.overlay_map();
+            let parsed = parse_stdlib_module(module).ok();
+            return Ok(definition_for_document_with_parsed(
+                source,
+                Some(&path),
+                &overlays,
+                parsed.as_ref(),
+                NavigationPosition {
+                    line: position.line,
+                    character: position.character,
+                },
+            )
+            .unwrap_or(Value::Null));
+        }
         let Some(path) = lsp_document_path(uri).map_err(invalid_params)? else {
             return Ok(Value::Null);
         };
         let source = self.source_text_for_path(&path)?;
-        let overlays = self.session.analysis().overlay_map();
+        let overlays = self.session.overlay_map();
         let normalized = normalize_path(&path);
-        let parsed = if self.session.analysis().document(&normalized).is_some() {
+        let parsed = if self.session.document(&normalized).is_some() {
             self.parsed_program_for_open_navigation_request(&normalized, &source)
         } else {
             let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
@@ -788,9 +835,9 @@ impl LspServer {
             return Ok(json!([]));
         };
         let source = self.source_text_for_path(&path)?;
-        let overlays = self.session.analysis().overlay_map();
+        let overlays = self.session.overlay_map();
         let normalized = normalize_path(&path);
-        let parsed = if self.session.analysis().document(&normalized).is_some() {
+        let parsed = if self.session.document(&normalized).is_some() {
             self.parsed_program_for_open_navigation_request(&normalized, &source)
         } else {
             let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
@@ -805,7 +852,7 @@ impl LspServer {
     }
 
     fn source_text_for_path(&self, path: &Path) -> Result<String, String> {
-        if let Some(document) = self.session.analysis().document(path) {
+        if let Some(document) = self.session.document(path) {
             return Ok(document.text.clone());
         }
         fs::read_to_string(path)
@@ -897,7 +944,7 @@ impl LspServer {
             return Some(parsed);
         }
         if let Ok(program) =
-            parse_program_file_with_overlays(&normalized, &self.session.analysis().overlay_map())
+            parse_program_file_with_overlays(&normalized, &self.session.overlay_map())
         {
             let parsed = Some(Arc::new(program));
             self.store_parsed_program_for_path(
@@ -919,7 +966,7 @@ impl LspServer {
         source: &str,
     ) -> Option<Arc<Program>> {
         let normalized = normalize_path(path);
-        let overlays = self.session.analysis().overlay_map();
+        let overlays = self.session.overlay_map();
         let fingerprint = self.document_fingerprint_for_path(&normalized, source, &overlays);
         if let Some(parsed) = self
             .parse_cache
@@ -1047,7 +1094,6 @@ impl LspServer {
         let entry_path = normalize_path(entry_path);
         let open_documents = self
             .session
-            .analysis()
             .open_documents()
             .iter()
             .map(|(path, document)| DiagnosticOpenDocument {
@@ -1108,11 +1154,13 @@ impl LspServer {
         let entry_path = normalize_path(entry_path);
 
         let source = self.source_text_for_path(&entry_path).ok();
-        let overlays = self.session.analysis().overlay_map();
+        let overlays = self.session.overlay_map();
         let parse_fingerprint = source
             .as_deref()
             .map(|source| self.document_fingerprint_for_path(&entry_path, source, &overlays));
-        let snapshot = self.session.analyze_document(&entry_path);
+        let snapshot = self
+            .session
+            .analyze_document(&entry_path, self.analysis_options);
         let should_refresh_semantic_tokens =
             self.semantic_tokens_refresh && snapshot.parsed.is_some();
         if let Some(fingerprint) = parse_fingerprint {
@@ -1182,11 +1230,11 @@ impl LspServer {
 
     fn diagnostic_entries_affected_by_change(&mut self, changed_path: &Path) -> Vec<PathBuf> {
         let changed_path = normalize_path(changed_path);
-        let overlays = self.session.analysis().overlay_map();
+        let overlays = self.session.overlay_map();
         let mut out = Vec::<PathBuf>::new();
         let mut seen = HashSet::<PathBuf>::new();
 
-        for (entry_path, document) in self.session.analysis().open_documents() {
+        for (entry_path, document) in self.session.open_documents() {
             let entry_path = normalize_path(entry_path);
             let affected = entry_path == changed_path
                 || self.dependency_fingerprint_cache.source_depends_on_path(
@@ -1358,6 +1406,11 @@ struct HoverParams {
 struct DefinitionParams {
     text_document: TextDocumentIdentifier,
     position: Position,
+}
+
+#[derive(Debug, Deserialize)]
+struct VirtualDocumentParams {
+    uri: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1882,6 +1935,9 @@ fn initialize_result(process_id: Option<u32>) -> Value {
             "hoverProvider": true,
             "definitionProvider": true,
             "documentSymbolProvider": true,
+            "experimental": {
+                "ondaVirtualDocuments": true,
+            },
         },
         "serverInfo": {
             "name": "onda",
@@ -1950,6 +2006,15 @@ fn read_lsp_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> 
     let text = String::from_utf8(payload)
         .map_err(|err| format!("lsp payload was not valid utf-8: {err}"))?;
     serde_json::from_str(&text).map_err(|err| format!("invalid lsp json payload: {err}"))
+}
+
+fn decode_lsp_messages(bytes: &[u8]) -> Result<Vec<Value>, String> {
+    let mut reader = BufReader::new(bytes);
+    let mut messages = Vec::new();
+    while let Some(message) = read_lsp_message(&mut reader)? {
+        messages.push(message);
+    }
+    Ok(messages)
 }
 
 fn write_result(writer: &mut impl Write, id: Value, result: Value) -> Result<(), String> {
@@ -2028,10 +2093,11 @@ mod tests {
     use super::path_utils::file_uri_to_path;
     use super::{
         initialize_result, latest_full_text, lsp_document_path, path_to_file_uri, DiagnosticDelay,
-        DiagnosticJobResult, DiagnosticScheduleRequest, LspCore, LspServer, Position,
+        DiagnosticJobResult, DiagnosticScheduleRequest, LspCore, LspServer, LspSession, Position,
         TextDocumentContentChangeEvent,
     };
     use onda_frontend::{DiagCode, Diagnostic};
+    use onda_semantics as onda_daemon;
     use serde_json::json;
     use std::fs;
     use std::io::Cursor;
@@ -2851,7 +2917,7 @@ sample:
         let fingerprint = super::source_fingerprint(source);
         let parsed = onda_frontend::parse_program_file_with_overlays(
             &normalized,
-            &server.session.analysis().overlay_map(),
+            &server.session.overlay_map(),
         )
         .expect("source should parse");
         server.cache_parsed_program_for_path(&normalized, fingerprint, Some(parsed));
@@ -2915,7 +2981,7 @@ namespace sc:
                 .open_document(&main, onda_daemon::DocumentVersion(1), initial_source);
         let parsed = onda_frontend::parse_program_file_with_overlays(
             &normalized,
-            &server.session.analysis().overlay_map(),
+            &server.session.overlay_map(),
         )
         .expect("initial source should parse");
         server.cache_parsed_program_for_path(
@@ -3064,7 +3130,7 @@ namespace sc:
         let mut server = LspServer::default();
         let old_parsed = onda_frontend::parse_program_file_with_overlays(
             &super::normalize_path(&main),
-            &server.session.analysis().overlay_map(),
+            &server.session.overlay_map(),
         )
         .expect("initial source should parse");
         server.cache_parsed_program_for_path(
@@ -3088,7 +3154,7 @@ namespace sc:
         );
         let parsed = onda_frontend::parse_program_file_with_overlays(
             &super::normalize_path(&main),
-            &server.session.analysis().overlay_map(),
+            &server.session.overlay_map(),
         )
         .expect("changed dependency should parse");
         server.cache_parsed_program_for_path(
@@ -3160,7 +3226,7 @@ namespace sc:
                 .open_document(&main, onda_daemon::DocumentVersion(1), initial_source);
         let parsed = onda_frontend::parse_program_file_with_overlays(
             &normalized,
-            &server.session.analysis().overlay_map(),
+            &server.session.overlay_map(),
         )
         .expect("initial source should parse");
         server.cache_parsed_program_for_path(
@@ -3968,7 +4034,6 @@ init:
         );
         let normalized = server
             .session
-            .analysis()
             .open_documents()
             .keys()
             .next()
@@ -5550,11 +5615,9 @@ struct Box:
         write_file(&main, old_source);
 
         let mut server = LspServer::default();
-        let old_parsed = onda_frontend::parse_program_file_with_overlays(
-            &main,
-            &server.session.analysis().overlay_map(),
-        )
-        .expect("old source should parse");
+        let old_parsed =
+            onda_frontend::parse_program_file_with_overlays(&main, &server.session.overlay_map())
+                .expect("old source should parse");
         server.cache_parsed_program_for_path(
             &main,
             super::source_fingerprint(old_source),
@@ -5727,11 +5790,9 @@ namespace sc:
         write_file(&main, old_source);
 
         let mut server = LspServer::default();
-        let old_parsed = onda_frontend::parse_program_file_with_overlays(
-            &main,
-            &server.session.analysis().overlay_map(),
-        )
-        .expect("old source should parse");
+        let old_parsed =
+            onda_frontend::parse_program_file_with_overlays(&main, &server.session.overlay_map())
+                .expect("old source should parse");
         server.cache_parsed_program_for_path(
             &main,
             super::source_fingerprint(old_source),
@@ -7556,5 +7617,102 @@ namespace DSP:
         assert!(child_names.contains(&"shape"), "children: {child_names:?}");
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn protocol_completion_lists_virtual_project_imports() {
+        let mut session = LspSession::new();
+        session
+            .handle_message(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "processId": null, "capabilities": {} },
+            }))
+            .expect("initialize should succeed");
+        for (uri, text) in [
+            (
+                "file:///onda-project/lib.onda",
+                "namespace Lib:\n  const value = 1.0\n",
+            ),
+            ("file:///onda-project/main.onda", "import l\n"),
+        ] {
+            session
+                .handle_message(json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": "onda",
+                            "version": 1,
+                            "text": text,
+                        }
+                    },
+                }))
+                .expect("virtual document should open");
+        }
+
+        let messages = session
+            .handle_message(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": "file:///onda-project/main.onda" },
+                    "position": { "line": 0, "character": 8 },
+                },
+            }))
+            .expect("completion should succeed");
+        let items = messages[0]["result"]["items"]
+            .as_array()
+            .expect("completion items");
+        assert!(
+            items.iter().any(|item| item["label"] == json!("lib")),
+            "virtual project module should be offered: {items:?}"
+        );
+    }
+
+    #[test]
+    fn protocol_serves_read_only_stdlib_virtual_documents() {
+        let mut session = LspSession::new();
+        let messages = session
+            .handle_message(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "onda/virtualDocument",
+                "params": { "uri": "onda-stdlib:///std/osc.onda" },
+            }))
+            .expect("virtual document request should succeed");
+        let document = &messages[0]["result"];
+        assert_eq!(document["path"], json!("std/osc.onda"));
+        assert_eq!(document["languageId"], json!("onda"));
+        assert_eq!(document["readOnly"], json!(true));
+        assert!(
+            document["text"]
+                .as_str()
+                .is_some_and(|source| source.contains("proc Saw")),
+            "virtual document should contain the embedded std/osc source"
+        );
+
+        let source = document["text"].as_str().expect("stdlib source").to_owned();
+        let position = position_after(&source, "Phasor");
+        let messages = session
+            .handle_message(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/definition",
+                "params": {
+                    "textDocument": { "uri": "onda-stdlib:///std/osc.onda" },
+                    "position": {
+                        "line": position.line,
+                        "character": position.character,
+                    }
+                },
+            }))
+            .expect("virtual stdlib definition request should succeed");
+        let definition = &messages[0]["result"];
+        assert_eq!(definition["uri"], json!("onda-stdlib:///std/osc.onda"));
+        assert_eq!(definition["range"]["start"]["line"], json!(1));
     }
 }

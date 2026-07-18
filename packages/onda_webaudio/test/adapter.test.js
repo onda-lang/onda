@@ -11,20 +11,65 @@ import {
 
 function artifact() {
   return {
-    wasm: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
+    wasm: new Uint8Array([
+      0, 97, 115, 109, 1, 0, 0, 0,
+      1, 4, 1, 96, 0, 0,
+      3, 3, 2, 0, 0,
+      5, 3, 1, 0, 1,
+      6, 7, 1, 127, 0, 65, 128, 8, 11,
+      7, 51, 4,
+      6, 109, 101, 109, 111, 114, 121, 2, 0,
+      11, 95, 95, 104, 101, 97, 112, 95, 98, 97, 115, 101, 3, 0,
+      9, 111, 110, 100, 97, 95, 105, 110, 105, 116, 0, 0,
+      12, 111, 110, 100, 97, 95, 112, 114, 111, 99, 101, 115, 115, 0, 1,
+      10, 7, 2, 2, 0, 11, 2, 0, 11,
+    ]),
     metadata: {
       format: "onda-processor",
       format_version: 3,
       abi_version: 1,
       artifact_kind: "webassembly_module",
-      integration: { profile: { kind: "core_webassembly_module" } },
+      backend: "test",
+      mir_schema_version: 5,
+      integration: {
+        required_symbols: ["memory", "__heap_base", "onda_init", "onda_process"],
+        one_processor_per_artifact: true,
+        profile: {
+          kind: "core_webassembly_module",
+          memory_export: "memory",
+          heap_base_export: "__heap_base",
+        },
+      },
       target: {
+        triple: "wasm32-unknown-unknown",
+        byte_order: "little_endian",
         pointer_model: "linear_memory_offset",
         pointer_width_bits: 32,
+        calling_convention: "core-wasm",
+      },
+      compile: { sample_rate: 48_000, block_size: 128 },
+      runtime: {
+        state_size_bytes: 0,
+        state_align_bytes: 1,
+        param_size_bytes: 0,
+        param_align_bytes: 1,
+        snapshot_size_bytes: 0,
+      },
+      exports: {
+        memory: "memory",
+        heap_base: "__heap_base",
+        init: "onda_init",
+        process: "onda_process",
+        events: [],
       },
       metadata: {
+        states: [],
         inputs: [{ channel_count: 2 }],
         outputs: [{ channel_count: 1 }],
+        control_outputs: [],
+        params: [],
+        buffers: [],
+        events: [],
       },
     },
   };
@@ -65,17 +110,34 @@ class FakeNode {
 }
 
 test("derives explicit Web Audio channel options from processor metadata", () => {
-  const options = ondaAudioWorkletNodeOptions(artifact(), { params: { gain: 1 } });
+  const options = ondaAudioWorkletNodeOptions(artifact(), {
+    params: { gain: 1 },
+    nodeOptions: {
+      numberOfInputs: 0,
+      outputChannelCount: [8],
+    },
+  });
   assert.equal(options.numberOfInputs, 1);
   assert.equal(options.numberOfOutputs, 1);
   assert.equal(options.channelCount, 2);
+  assert.equal(options.channelInterpretation, "discrete");
   assert.deepEqual(options.outputChannelCount, [1]);
   assert.deepEqual(options.processorOptions.params, { gain: 1 });
+});
+
+test("rejects invalid processor channel metadata", () => {
+  const source = artifact();
+  source.metadata.metadata.outputs[0].channel_count = -1;
+  assert.throws(
+    () => ondaAudioWorkletNodeOptions(source),
+    /invalid channel_count/,
+  );
 });
 
 test("registers the worklet before constructing the public processor node", async () => {
   const modules = [];
   const context = {
+    sampleRate: 48_000,
     audioWorklet: {
       addModule: async (url) => modules.push(String(url)),
     },
@@ -91,6 +153,29 @@ test("registers the worklet before constructing the public processor node", asyn
     true,
   );
   assert.equal("wasmBytes" in processor.node.options.processorOptions, false);
+});
+
+test("rejects a processor compiled for a different AudioContext sample rate", async () => {
+  const context = {
+    sampleRate: 44_100,
+    audioWorklet: { addModule: async () => {} },
+  };
+  await assert.rejects(
+    createOndaAudioProcessor(context, artifact(), {
+      AudioWorkletNode: FakeNode,
+    }),
+    /compiled for 48000 Hz.*runs at 44100 Hz/,
+  );
+});
+
+test("rejects Web Audio processors without a render-quantum audio surface", () => {
+  const source = artifact();
+  source.metadata.metadata.inputs = [];
+  source.metadata.metadata.outputs = [];
+  assert.throws(
+    () => ondaAudioWorkletNodeOptions(source),
+    /at least one audio input or output/,
+  );
 });
 
 test("can reuse a processor module compiled off the audio rendering thread", async () => {

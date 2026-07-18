@@ -3,14 +3,21 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const staticRoot = process.argv[2] ?? process.env.ONDA_STATIC_ROOT;
+const root = staticRoot
+  ? resolve(staticRoot)
+  : resolve(fileURLToPath(new URL(".", import.meta.url)));
 const port = Number(process.env.PORT || 8787);
 
 const contentTypes = new Map([
+  [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
+  [".ico", "image/x-icon"],
   [".js", "text/javascript; charset=utf-8"],
   [".json", "application/json; charset=utf-8"],
   [".onda", "text/plain; charset=utf-8"],
+  [".png", "image/png"],
+  [".svg", "image/svg+xml"],
   [".wasm", "application/wasm"],
 ]);
 
@@ -49,7 +56,9 @@ const server = createServer(async (req, res) => {
     }
 
     const requestPath = url.pathname;
-    const relativePath = requestPath === "/" ? "/index.html" : requestPath;
+    const relativePath = requestPath.endsWith("/")
+      ? `${requestPath}index.html`
+      : requestPath;
     const filePath = resolve(join(root, normalize(relativePath)));
     if (!filePath.startsWith(root)) {
       res.writeHead(403);

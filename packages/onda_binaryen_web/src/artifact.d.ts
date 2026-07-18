@@ -9,8 +9,9 @@ export {
   serializeProcessorMetadata,
   validateProcessorArtifact,
   validateProcessorMetadata,
-} from "./index.js";
+  validateProcessorModule,
+} from "@onda-lang/processor-abi";
 export type {
   OndaProcessorArtifact,
   OndaProcessorMetadata,
-} from "./index.js";
+} from "@onda-lang/processor-abi";

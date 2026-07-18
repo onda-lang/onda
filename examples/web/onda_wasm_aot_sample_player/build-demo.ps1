@@ -8,12 +8,13 @@ $demoDir = Resolve-Path $PSScriptRoot
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
 $backendDir = Join-Path $repoRoot "packages\onda_binaryen_web"
 $webAudioDir = Join-Path $repoRoot "packages\onda_webaudio"
+$abiDir = Join-Path $repoRoot "packages\onda_processor_abi"
 $sourceFile = Join-Path $repoRoot "examples\buffers-fft-convolution\sample_player.onda"
 $mirFile = Join-Path $demoDir "sample-player.mir.msgpack"
-$binaryenJs = Join-Path $backendDir "node_modules\binaryen\index.js"
 
-if (-not (Test-Path $binaryenJs)) {
-    npm install --prefix $backendDir
+node -p "require.resolve('binaryen', { paths: [process.argv[1]] })" $backendDir | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    npm ci --prefix $repoRoot
 }
 
 cargo run --quiet --release `
@@ -24,7 +25,7 @@ cargo run --quiet --release `
 
 node (Join-Path $demoDir "build-artifact.mjs") $mirFile $demoDir
 
-Copy-Item (Join-Path $backendDir "src\artifact.js") (Join-Path $demoDir "artifact.js") -Force
+Copy-Item (Join-Path $abiDir "src\index.js") (Join-Path $demoDir "artifact.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\index.js") (Join-Path $demoDir "onda-webaudio.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\worklet.js") (Join-Path $demoDir "onda-wasm-processor.js") -Force
 Copy-Item `

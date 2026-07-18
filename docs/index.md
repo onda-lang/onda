@@ -20,8 +20,3 @@ The [Language guide]({{ '/docs/language/' | relative_url }}) is the complete syn
 
 [Precompiled releases](https://github.com/onda-lang/onda/releases/latest) are available for Linux x64, macOS arm64, and Windows x64. The [CLI and editor guide]({{ '/docs/tooling/' | relative_url }}) explains compilation, real-time playback, offline rendering, diagnostics, VS Code, Neovim, and the C embedding API.
 
-## Understand the project
-
-The [Compiler architecture]({{ '/docs/architecture/' | relative_url }}) maps each workspace crate and the main implementation paths through parsing, semantic analysis, LLVM lowering, runtime processing, the daemon, and language tooling.
-
-The [Ideas and roadmap]({{ '/docs/roadmap/' | relative_url }}) summarizes active directions including musical scheduling, visual graph editing, WebAssembly, browser tooling, standard-library growth, and runtime verification.

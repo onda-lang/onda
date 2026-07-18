@@ -35,7 +35,6 @@ tarball or npm package:
 
 ```bash
 npm install ./onda-lang-wasm-compiler-X.Y.Z.tgz
-# After registry publication:
 npm install @onda-lang/wasm-compiler
 npx onda-wasm compile sine.onda --output sine.wasm
 ```
@@ -43,7 +42,7 @@ npx onda-wasm compile sine.onda --output sine.wasm
 The command writes `sine.wasm` and its integrity-associated `sine.onda.json` processor descriptor.
 It is a build-time compiler and does not require LLVM, Rust, or a Wasm linker after installation.
 Applications compiling source in the browser can use the package's asynchronous JavaScript API and
-worker mode. `@onda-lang/webaudio` remains an optional playback host rather than part of compilation.
+worker mode. `@onda-lang/webaudio` remains an optional playback host.
 
 ## Write your first patch
 
@@ -94,15 +93,13 @@ You can also run without the UI and set parameters from the command line:
 onda run play sine.onda --dur 3 --set freq=220
 ```
 
-## Render a WAV
+## Render a WAV file
 
 Offline rendering uses the same run pipeline without opening an audio device:
 
 ```bash
 onda run render sine.onda --output first.wav --dur 5 --set freq=330
 ```
-
-This is useful for repeatable tests, inspecting generated audio, and workflows where real-time playback is not needed.
 
 ## Understand the execution model
 
@@ -119,10 +116,3 @@ An Onda patch is organized by when work happens:
 
 That visible rate model is the central idea of the language. Read [the complete language guide]({{ '/docs/language/' | relative_url }}) next, or learn from the [example cookbook]({{ '/docs/examples/' | relative_url }}).
 
-## Where to go next
-
-1. Change the oscillator into a simple input gain: `out1 = in1 * gain`.
-2. Open `examples/standard-library/std_osc_shapes.onda` to see standard-library oscillators.
-3. Learn how [`proc` creates reusable DSP units]({{ '/docs/language/#10-processors-with-proc' | relative_url }}).
-4. Try [declarative graphs]({{ '/docs/language/#11-graphs' | relative_url }}).
-5. Set up [VS Code or Neovim]({{ '/docs/tooling/#editor-support' | relative_url }}) for diagnostics and language-aware editing.

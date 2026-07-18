@@ -7,8 +7,6 @@ mod args;
 mod compile_cmd;
 mod daemon_stdio;
 mod diag_print;
-mod formatting;
-mod lsp_stdio;
 mod run_cmd;
 
 use args::parse_args;
@@ -235,7 +233,7 @@ fn main() {
             fast_math,
             target,
         ),
-        Command::Lsp => lsp_stdio::run_stdio_loop(),
+        Command::Lsp => onda_lsp::run_stdio_loop(),
         Command::Run(cmd) => run_run(cmd),
         Command::Daemon(cmd) => run_daemon(cmd),
     };

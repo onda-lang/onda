@@ -21,6 +21,12 @@ metadata, marshals declared scalar widths, schedules arbitrary render quanta acr
 blocks, and provides request/response helpers for parameters, events, buffers, control outputs,
 reset, and portable snapshots.
 
+The artifact must be compiled for exactly `audioContext.sampleRate`; the adapter rejects a mismatch
+before registering the node so sample-rate-derived language semantics cannot silently drift. A Web
+Audio processor must expose at least one audio input or output, because an empty callback surface
+does not carry a render-quantum frame count. Control-only artifacts remain usable through the generic
+processor ABI in a non-Web-Audio host.
+
 ## Real-time behavior
 
 `createOndaAudioProcessor` compiles the processor's `WebAssembly.Module` concurrently with worklet
@@ -44,6 +50,9 @@ host-side allocation or memory growth. Full-block f32 inputs and outputs use typ
 segmented callbacks and other ABI scalar widths use preallocated typed views with conversion loops
 (i64 input conversion necessarily creates JavaScript `BigInt` values). External buffers are copied
 into Wasm with typed-array bulk operations during construction.
+
+Artifact descriptors and module exports are validated by the shared, compiler-free
+`@onda-lang/processor-abi` package before anything reaches the rendering thread.
 
 Dynamic event storage is also allocated before rendering. Its default capacity is 64 KiB per
 processor with dynamic events and can be changed explicitly:

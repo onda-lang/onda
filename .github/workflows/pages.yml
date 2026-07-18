@@ -4,13 +4,43 @@ on:
   push:
     branches: [main]
     paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
       - "docs/**"
+      - "examples/web/onda_wasm_playground/**"
+      - "package-lock.json"
+      - "package.json"
+      - "packages/onda_binaryen_web/**"
+      - "packages/onda_processor_abi/**"
+      - "packages/onda_wasm_compiler/**"
+      - "packages/onda_webaudio/**"
+      - "scripts/build-website-playground.mjs"
+      - "scripts/bundle-web-playground.mjs"
+      - "scripts/sync-package-versions.mjs"
+      - "stdlib/**"
+      - "ui/**"
       - "website/**"
       - "assets/**"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
       - "docs/**"
+      - "examples/web/onda_wasm_playground/**"
+      - "package-lock.json"
+      - "package.json"
+      - "packages/onda_binaryen_web/**"
+      - "packages/onda_processor_abi/**"
+      - "packages/onda_wasm_compiler/**"
+      - "packages/onda_webaudio/**"
+      - "scripts/build-website-playground.mjs"
+      - "scripts/bundle-web-playground.mjs"
+      - "scripts/sync-package-versions.mjs"
+      - "stdlib/**"
+      - "ui/**"
       - "website/**"
       - "assets/**"
       - ".github/workflows/pages.yml"
@@ -31,6 +61,28 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install browser build tools
+        run: |
+          npm ci
+          cargo install wasm-pack --locked
+
+      - name: Build versioned browser compiler assets
+        run: |
+          npm run check:versions
+          npm run build:website
 
       - name: Configure Pages
         id: pages

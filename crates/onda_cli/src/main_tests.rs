@@ -814,7 +814,10 @@ fn format_expr_prints_named_call_args_with_equals() {
             expr: Expr::var("mix.out1"),
         }],
     };
-    assert_eq!(super::formatting::format_expr(&expr), "sat(in1 = mix.out1)");
+    assert_eq!(
+        onda_lsp::formatting::format_expr(&expr),
+        "sat(in1 = mix.out1)"
+    );
 }
 
 #[test]
@@ -843,7 +846,7 @@ fn format_program_prints_graph_fanout_destinations() {
     };
 
     assert_eq!(
-        super::formatting::format_program(&program),
+        onda_lsp::formatting::format_program(&program),
         "graph:\n  src >> { out1, mix.in1 }\n\n"
     );
 }
@@ -865,7 +868,7 @@ sample:
     .expect("program should parse");
 
     assert_eq!(
-        super::formatting::format_program(&program),
+        onda_lsp::formatting::format_program(&program),
         "const N = 2\n\nins<f64> N\n\nouts<i32> 1:\n  out1: i32\n\nparams<bool> 3\n\nbuffers[f32] N\n\nsample:\n  out1 = 0\n\n"
     );
 }
@@ -893,7 +896,7 @@ sample:
     )
     .expect("program should parse");
 
-    let formatted = super::formatting::format_program(&program);
+    let formatted = onda_lsp::formatting::format_program(&program);
     assert!(formatted.contains("  ins<f64> N\n"));
     assert!(formatted.contains("  outs<i32> 1\n"));
     assert!(formatted.contains("  params<bool> N\n"));
@@ -927,7 +930,7 @@ sample:
     )
     .expect("program should parse");
 
-    let formatted = super::formatting::format_program(&program);
+    let formatted = onda_lsp::formatting::format_program(&program);
     assert!(formatted.contains("kins<f64> 2\n"));
     assert!(formatted.contains("    gain = 1.0 {0.0, 1.0} => update\n"));
     assert!(formatted.contains("    pin coeffs: f32[2] = [0.5, 0.25]\n"));

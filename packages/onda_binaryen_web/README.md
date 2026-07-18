@@ -23,12 +23,12 @@ const { wasm, metadata } = compileTrustedMir(mir);
 const instance = await WebAssembly.instantiate(wasm);
 ```
 
-`compileMir` is the safe boundary for arbitrary MIR and rejects every operation marked with
-unchecked bounds. `compileTrustedMir` is reserved for output from Onda's semantic MIR producer,
-which owns the corresponding range proofs. Naming that trust transition prevents a downloaded or
-hand-authored MIR document from asserting its own memory-safety proof. Both functions accept a JSON
-string, a MessagePack `ArrayBuffer`/typed-array view, or a decoded object. JSON remains useful for
-inspection; the browser compiler and test corpus use MessagePack as the production transport.
+`compileTrustedMir` accepts only output from Onda's semantic MIR producer, which owns the complete
+validator proof including bounds, types, structured definite assignment, and resource legality.
+The package intentionally does not expose a partial validator for downloaded or hand-authored MIR:
+such a boundary would need to reproduce every invariant enforced by `onda_mir`. The function accepts
+a JSON string, a MessagePack `ArrayBuffer`/typed-array view, or a decoded object. JSON remains useful
+for inspection; the browser compiler and test corpus use MessagePack as the production transport.
 
 The generated module exports `memory`, `__heap_base`, `onda_init(params_ptr, state_ptr)`, the
 11-argument processor `onda_process`, and one `onda_event_N` function per declared event. These are

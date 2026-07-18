@@ -408,9 +408,9 @@ The browser path is current end to end. `onda_compiler_web` compiles one in-memo
 virtual multi-file project, resolves the embedded standard library, and returns optimized,
 validated schema-5 MIR as compact MessagePack for production or JSON for inspection, with
 structured diagnostics. `packages/onda_binaryen_web` accepts either transport and lowers it with
-Binaryen.js to an executable DSP Wasm module plus host metadata. `compileMir` is the untrusted API
-and rejects unchecked bounds; compiler output crosses the deliberately named `compileTrustedMir`
-producer boundary.
+Binaryen.js to an executable DSP Wasm module plus host metadata. Its deliberately named
+`compileTrustedMir` entry accepts only output carrying the complete `onda_mir` producer proof; the
+JavaScript backend does not pretend that rejecting unchecked bounds alone validates arbitrary MIR.
 
 `packages/onda_wasm_compiler` is the product-facing composition of these layers. It initializes the
 embedded frontend Wasm, checks the producer/backend schema versions, keeps the trusted transition

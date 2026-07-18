@@ -1,7 +1,6 @@
-mod analysis_session;
 mod run_session;
 
-pub use analysis_session::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
+pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
     RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo, RunEventParamInfo,
     RunEventValue, RunOptions, RunParamInfo, RunSession,
@@ -13,7 +12,7 @@ use std::path::{Path, PathBuf};
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
 
-use crate::analysis_session::normalize_session_path;
+use onda_semantics::normalize_session_path;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DaemonConfig {

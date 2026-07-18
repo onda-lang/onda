@@ -16,7 +16,9 @@ if (!workspaceVersion) {
 const mismatches = [];
 const packageDirectories = await ondaPackageDirectories();
 for (const packageDirectory of packageDirectories) {
-  await synchronizeJson(resolve(packageDirectory, "package.json"), [["version"]]);
+  const manifestPath = resolve(packageDirectory, "package.json");
+  await synchronizeJson(manifestPath, [["version"]]);
+  await synchronizeInternalNpmDependencies(manifestPath);
   const lockPath = resolve(packageDirectory, "package-lock.json");
   try {
     await synchronizeJson(lockPath, [
@@ -27,6 +29,8 @@ for (const packageDirectory of packageDirectories) {
     if (error?.code !== "ENOENT") throw error;
   }
 }
+
+await synchronizeRootNpmLock(packageDirectories);
 
 await synchronizeCargoLock();
 
@@ -90,6 +94,28 @@ async function synchronizeJson(path, versionPaths) {
   if (changed) await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+async function synchronizeInternalNpmDependencies(path) {
+  const value = JSON.parse(await readFile(path, "utf8"));
+  let changed = false;
+  for (const field of [
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+  ]) {
+    for (const [name, version] of Object.entries(value[field] ?? {})) {
+      if (!name.startsWith("@onda-lang/") || version === workspaceVersion) continue;
+      if (checkOnly) {
+        mismatches.push(`${relativePath(path)} ${field}.${name} is ${String(version)}`);
+      } else {
+        value[field][name] = workspaceVersion;
+        changed = true;
+      }
+    }
+  }
+  if (changed) await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
 async function synchronizeCargoLock() {
   const lockPath = resolve(repoRoot, "Cargo.lock");
   let lock = await readFile(lockPath, "utf8");
@@ -126,6 +152,54 @@ async function synchronizeCargoLock() {
     }
   }
   if (changed) await writeFile(lockPath, lock);
+}
+
+async function synchronizeRootNpmLock(packageDirectories) {
+  const lockPath = resolve(repoRoot, "package-lock.json");
+  let input;
+  try {
+    input = await readFile(lockPath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  const value = JSON.parse(input);
+  let changed = false;
+  for (const packageDirectory of packageDirectories) {
+    const key = relativePath(packageDirectory).replaceAll("\\", "/");
+    const entry = value.packages?.[key];
+    if (!entry || !("version" in entry)) {
+      mismatches.push(`package-lock.json is missing packages.${key}.version`);
+      continue;
+    }
+    if (entry.version !== workspaceVersion) {
+      if (checkOnly) {
+        mismatches.push(`package-lock.json packages.${key}.version is ${String(entry.version)}`);
+      } else {
+        entry.version = workspaceVersion;
+        changed = true;
+      }
+    }
+    for (const field of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ]) {
+      for (const [name, version] of Object.entries(entry[field] ?? {})) {
+        if (!name.startsWith("@onda-lang/") || version === workspaceVersion) continue;
+        if (checkOnly) {
+          mismatches.push(
+            `package-lock.json packages.${key}.${field}.${name} is ${String(version)}`,
+          );
+        } else {
+          entry[field][name] = workspaceVersion;
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) await writeFile(lockPath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function relativePath(path) {

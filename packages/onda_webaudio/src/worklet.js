@@ -74,10 +74,28 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.outputChannels = this.flattenAudioChannels(this.outputInfo, "output");
     this.inputCount = this.inputChannels.length;
     this.outputCount = this.outputChannels.length;
+    if (this.inputCount === 0 && this.outputCount === 0) {
+      throw new Error(
+        "the Onda Web Audio processor requires at least one audio input or output",
+      );
+    }
     this.blockSize = Number(metadata.compile?.block_size ?? 128);
     this.compileSampleRate = Number(metadata.compile?.sample_rate ?? sampleRate);
     if (!Number.isInteger(this.blockSize) || this.blockSize <= 0) {
       throw new Error(`invalid compile-time block size: ${this.blockSize}`);
+    }
+    if (!Number.isFinite(this.compileSampleRate) || this.compileSampleRate <= 0) {
+      throw new Error(`invalid compile-time sample rate: ${this.compileSampleRate}`);
+    }
+    const renderSampleRate = Number(globalThis.sampleRate);
+    if (
+      Number.isFinite(renderSampleRate)
+      && renderSampleRate > 0
+      && renderSampleRate !== this.compileSampleRate
+    ) {
+      throw new Error(
+        `processor was compiled for ${this.compileSampleRate} Hz but the AudioWorklet runs at ${renderSampleRate} Hz`,
+      );
     }
     this.inputPtrs = [];
     this.inputCapacityFrames = 0;
@@ -833,7 +851,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       const bus = inputs[busId];
       if (bus.length > 0) return bus[0].length;
     }
-    return this.blockSize;
+    throw new Error("AudioWorklet callback has no audio channel from which to derive its frame count");
   }
 
   copyInputSamples(

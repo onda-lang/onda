@@ -42,6 +42,8 @@ Non-crate directories of note:
 - `targets/` — checked-in AOT codegen presets for `onda compile --target-spec`.
 - `packages/onda_binaryen_web/` — Binaryen.js MIR-to-Wasm backend, reproducible embedded no-std
   math kernel, and browser runtime helpers.
+- `packages/onda_processor_abi/` — small compiler-free JavaScript contract for processor descriptor
+  validation, Wasm export validation, integrity-associated artifact files, and shared TypeScript types.
 - `packages/onda_wasm_compiler/` — product-facing browser/Node source-to-Wasm package, worker API,
   typed diagnostics, packed artifact helpers, and `onda-wasm` CLI. Release builds stage the Rust
   frontend Wasm and Binaryen backend inside this package.
@@ -189,7 +191,8 @@ Non-crate directories of note:
   `orc_backend/mir_native.rs` → `mir_metadata.rs` / `aot_artifact.rs`.
 - Browser path: `onda_compiler_web` → schema-5 MIR MessagePack →
   `packages/onda_binaryen_web` → DSP Wasm + host metadata →
-  `examples/web/onda_wasm_playground`.
+  `packages/onda_processor_abi` validation → shared `ui/playground` runtime →
+  `examples/web/onda_wasm_playground` or website `/playground/` host.
 - Packaged browser/Node compiler: `packages/onda_wasm_compiler` composes those first two boundaries,
   verifies their schema handshake, and exposes source/project-to-artifact APIs without exposing the
   trusted MIR transition to ordinary consumers.
@@ -246,16 +249,31 @@ Non-crate directories of note:
 
 ## Browser build and verification
 
-- `wasm-pack build crates/onda_compiler_web --target web --release --no-opt` builds the JavaScript
-  glue and compiler Wasm. `--no-opt` disables wasm-pack's optional post-link `wasm-opt` pass; the
-  Rust crate remains a release build. `wasm-pack` is required; ordinary native crate tests are not.
-- `npm test --prefix packages/onda_wasm_compiler` builds the packaged compiler and tests its API and
-  CLI. `npm run test:pack --prefix packages/onda_wasm_compiler` installs the actual tarball in an
-  empty project and compiles a smoke source through the published package layout.
+- `npm run build --workspace @onda-lang/wasm-compiler` builds the Rust frontend and JavaScript glue
+  with `wasm-pack --release`, then runs the npm-pinned Binaryen `wasm-opt -O4` over the frontend
+  module. The internal `--no-opt` flag prevents wasm-pack from downloading and running a different
+  optimizer release. `dist/build.json` records the optimizer policy and size reduction, and package
+  tests verify that the optimized bytes are the ones shipped. Generated DSP modules use their
+  independent Binaryen O4 compilation policy and are not redundantly post-optimized.
+- `npm run test:web` tests the ABI, Binaryen, Web Audio, and compiler workspaces.
+  `npm run test:pack --workspace @onda-lang/wasm-compiler` packs and installs all four public
+  tarballs in an empty project, then compiles a smoke source through the published package layout.
 - The top-level `[workspace.package].version` is the single authored product version.
   `scripts/sync-package-versions.mjs` updates workspace-owned `Cargo.lock` entries, discovers all
-  `@onda-lang/*` packages, and updates their npm manifests/lockfiles. Compiler builds, CI, and
-  release packaging invoke it automatically; the JavaScript runtime version module is generated.
+  `@onda-lang/*` packages, and updates their npm manifests plus the root workspace lockfile.
+  Compiler builds, CI, and release packaging invoke it automatically; the JavaScript runtime
+  version module is generated.
+- Tag releases publish the four npm packages in dependency order with OIDC trusted publishing and
+  provenance; no registry token is stored in GitHub. Each package's npm settings must authorize
+  `onda-lang/onda` and `.github/workflows/release.yml` as its trusted publisher before relying on
+  the tag job; newly reserved package names may need a one-time registry-owner bootstrap first.
+- `npm run build:website` builds the browser compiler, bundles its worker, and emits versioned,
+  content-addressed website assets. The homepage opens its displayed example in `/playground/`
+  without loading the compiler itself; `/playground/` provides the full LSP-backed editor and
+  AudioWorklet host. The same build emits focused projects for every checked-in Onda example, with
+  local source dependencies, so cookbook links can open directly in the playground.
+  `website/stage.sh` refuses to stage stale or missing browser assets and writes the product version
+  into Jekyll data.
 - `bash ./examples/web/onda_wasm_playground/build-demo.sh --serve` builds/stages the compiler and pinned
   Binaryen assets, then serves the editable playground. The PowerShell equivalent is
   `.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve`.
@@ -276,12 +294,15 @@ Non-crate directories of note:
   processor worklet. The Web Audio adapter precompiles processor modules outside the rendering
   thread, caches typed linear-memory views, bulk-copies full-block f32 audio, and locks host
   linear-memory allocation after construction; dynamic event storage is bounded and preallocated.
-  Current product limitations include a single-file playground UI despite the
-  compiler's multi-file API, restart/reset rather than seamless state-preserving hot swap, no
-  control-output or external-buffer UI, and no microphone/input-source routing. Software math helpers
+  The playground now uses the compiler's multi-file project API and provides a native-style output
+  scope plus PCM/IEEE-float WAV loading for f32 external buffers. Top-level audio inputs lazily
+  connect one reusable microphone stream; projects without them never request media permission.
+  Current product limitations include restart/reset rather than seamless state-preserving hot swap
+  and no mutable buffer/control-output inspection. Software math helpers
   are internal to generated Wasm, so the render path has no JavaScript math boundary, though native
-  LLVM may still execute them faster. The page also assumes the requested `AudioContext` sample rate
-  is honored. The current smoke endpoint proves compilation, but automated browser
+  LLVM may still execute them faster. The page recompiles against the actual `AudioContext` sample
+  rate before constructing a processor, while the adapter rejects mismatched AOT artifacts. The
+  current smoke endpoint proves compilation, but automated browser
   AudioWorklet playback coverage remains future work. Non-local hosting needs a secure context
   (normally HTTPS; localhost is exempt).
 

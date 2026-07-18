@@ -251,6 +251,63 @@ pub fn mir_schema_version() -> u32 {
     MIR_SCHEMA_VERSION
 }
 
+/// Stateful `onda lsp` server for browser Worker transports.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub struct OndaLsp {
+    session: onda_lsp::LspSession,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+impl OndaLsp {
+    #[wasm_bindgen::prelude::wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            session: onda_lsp::LspSession::new(),
+        }
+    }
+
+    pub fn set_analysis_options(
+        &mut self,
+        sample_rate: f32,
+        block_size: u32,
+    ) -> Result<(), wasm_bindgen::JsValue> {
+        if !sample_rate.is_finite() || sample_rate <= 0.0 {
+            return Err(wasm_bindgen::JsValue::from_str(
+                "sample rate must be finite and greater than zero",
+            ));
+        }
+        let block_size = usize::try_from(block_size)
+            .map_err(|_| wasm_bindgen::JsValue::from_str("block size is too large"))?;
+        if block_size == 0 {
+            return Err(wasm_bindgen::JsValue::from_str(
+                "block size must be greater than zero",
+            ));
+        }
+        self.session.set_analysis_options(AnalysisOptions {
+            sample_rate,
+            block_size,
+        });
+        Ok(())
+    }
+
+    /// Accepts one JSON-RPC LSP message and returns a JSON array containing
+    /// all responses and notifications emitted synchronously for it.
+    pub fn handle_message(&mut self, message_json: &str) -> Result<String, wasm_bindgen::JsValue> {
+        self.session
+            .handle_message_json(message_json)
+            .map_err(|error| wasm_bindgen::JsValue::from_str(&error))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Default for OndaLsp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn compile_to_mir_json(

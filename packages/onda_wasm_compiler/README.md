@@ -20,6 +20,11 @@ The package composes Onda's embedded Rust frontend with its Binaryen backend. Th
 validated versioned MIR in memory; the backend lowers that trusted producer output to the generic
 Onda WebAssembly processor ABI. The package verifies the MIR schema handshake during startup.
 
+Release builds post-optimize the Rust frontend Wasm with the package's pinned Binaryen
+`wasm-opt -O4`. The build records input/output sizes and the optimizer version in
+`dist/build.json`, and fails if the pass does not reduce the shipped module. Generated DSP modules
+are already optimized independently by the runtime Binaryen O4 pipeline.
+
 ## Projects
 
 Project compilation resolves imports and includes entirely from the supplied source map and the
@@ -51,11 +56,50 @@ const artifact = await compiler.compileSource(source, options);
 await compiler.dispose();
 ```
 
+Static hosts and bundlers may provide explicit `workerUrl` and `frontendWasm` URLs. The worker
+receives the frontend URL during initialization, so versioned or content-hashed compiler assets do
+not depend on the package's development directory layout.
+
 In worker mode the page-side entry point stays lightweight; the Rust frontend Wasm, Binaryen, and
 the MIR backend are loaded only inside the worker.
 
 The package also exports `@onda-lang/wasm-compiler/worker` for hosts that want to own the worker
 protocol directly.
+
+## Browser LSP
+
+The frontend Wasm contains the same transport-neutral language server used by `onda lsp`. Worker
+clients send ordinary JSON-RPC/LSP messages and receive every response or notification emitted for
+that message:
+
+```js
+await compiler.setLspAnalysisOptions({ sampleRate: 48_000, blockSize: 256 });
+
+const [initialized] = await compiler.sendLspMessage({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: { processId: null, capabilities: {} },
+});
+
+await compiler.sendLspMessage({
+  jsonrpc: "2.0",
+  method: "textDocument/didOpen",
+  params: {
+    textDocument: {
+      uri: "file:///onda-project/main.onda",
+      languageId: "onda",
+      version: 1,
+      text: source,
+    },
+  },
+});
+```
+
+Open every virtual project file with `didOpen`; imports and includes resolve from those overlays and
+the embedded standard library. Diagnostics, semantic tokens, completion, hover, definitions, and
+document symbols use the native server implementation. The browser transport does not run MIR or a
+backend until the host explicitly calls `compileSource` or `compileProject`.
 
 ## CLI
 

@@ -242,38 +242,87 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            packages/onda_binaryen_web/package-lock.json
-            packages/onda_wasm_compiler/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
 
       - name: Install package dependencies
         run: |
-          node ./scripts/sync-package-versions.mjs
-          npm ci --prefix packages/onda_binaryen_web
-          npm ci --prefix packages/onda_wasm_compiler
+          node ./scripts/sync-package-versions.mjs --check
+          npm ci
 
       - name: Test WebAssembly packages
         run: |
-          npm test --prefix packages/onda_binaryen_web
-          npm test --prefix packages/onda_webaudio
-          npm test --prefix packages/onda_wasm_compiler
-          npm run test:pack --prefix packages/onda_wasm_compiler
+          npm test --workspace @onda-lang/processor-abi
+          npm test --workspace @onda-lang/binaryen-web
+          npm test --workspace @onda-lang/webaudio
+          npm run build --workspace @onda-lang/wasm-compiler
+          npm run test:built --workspace @onda-lang/wasm-compiler
+          npm run test:pack:built --workspace @onda-lang/wasm-compiler
 
       - name: Pack WebAssembly packages
         run: |
           mkdir -p dist
+          npm pack ./packages/onda_processor_abi --pack-destination dist
           npm pack ./packages/onda_binaryen_web --pack-destination dist
           npm pack ./packages/onda_webaudio --pack-destination dist
-          npm pack ./packages/onda_wasm_compiler --pack-destination dist
+          npm pack ./packages/onda_wasm_compiler --ignore-scripts --pack-destination dist
 
       - name: Upload WebAssembly package artifacts
         uses: actions/upload-artifact@v6
         with:
           name: onda-web-packages
           path: dist/*.tgz
+
+  npm-publish:
+    name: Publish npm packages
+    if: github.event_name == 'push'
+    needs: web
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Install and verify workspace
+        run: |
+          npm install --global npm@latest
+          workspace_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$tag_version" != "$workspace_version" ]]; then
+            echo "release tag $GITHUB_REF_NAME does not match workspace version $workspace_version" >&2
+            exit 1
+          fi
+          node ./scripts/sync-package-versions.mjs --check
+          npm ci
+          npm run test:pack --workspace @onda-lang/wasm-compiler
+
+      - name: Publish with npm trusted publishing
+        run: |
+          npm publish ./packages/onda_processor_abi --access public --provenance
+          npm publish ./packages/onda_binaryen_web --access public --provenance
+          npm publish ./packages/onda_webaudio --access public --provenance
+          npm publish ./packages/onda_wasm_compiler --access public --provenance
 
   release:
     name: Publish Release
