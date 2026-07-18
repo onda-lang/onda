@@ -1,3 +1,6 @@
+onda-wasm-compiler/
+onda-webaudio/
+# Legacy staged names may remain after switching an existing checkout.
 binaryen.js
 onda-binaryen-web.js
 artifact.js

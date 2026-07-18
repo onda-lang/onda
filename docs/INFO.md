@@ -42,6 +42,9 @@ Non-crate directories of note:
 - `targets/` — checked-in AOT codegen presets for `onda compile --target-spec`.
 - `packages/onda_binaryen_web/` — Binaryen.js MIR-to-Wasm backend, reproducible embedded no-std
   math kernel, and browser runtime helpers.
+- `packages/onda_wasm_compiler/` — product-facing browser/Node source-to-Wasm package, worker API,
+  typed diagnostics, packed artifact helpers, and `onda-wasm` CLI. Release builds stage the Rust
+  frontend Wasm and Binaryen backend inside this package.
 - `packages/onda_webaudio/` — optional metadata-driven Web Audio adapter for complete wasm32
   processor artifacts; it is not part of the processor ABI or code generator.
 - `deps/llvm-bootstrap` — git submodule used to bootstrap LLVM from source.
@@ -187,6 +190,9 @@ Non-crate directories of note:
 - Browser path: `onda_compiler_web` → schema-5 MIR MessagePack →
   `packages/onda_binaryen_web` → DSP Wasm + host metadata →
   `examples/web/onda_wasm_playground`.
+- Packaged browser/Node compiler: `packages/onda_wasm_compiler` composes those first two boundaries,
+  verifies their schema handshake, and exposes source/project-to-artifact APIs without exposing the
+  trusted MIR transition to ordinary consumers.
 - AOT browser deployment: native compiler-only MIR helper →
   `packages/onda_binaryen_web` at build time → complete Wasm artifact →
   `examples/web/onda_wasm_aot_sample_player`.
@@ -240,8 +246,16 @@ Non-crate directories of note:
 
 ## Browser build and verification
 
-- `wasm-pack build crates/onda_compiler_web --target web --release` builds the JavaScript glue and
-  compiler Wasm. `wasm-pack` is a required build tool; ordinary native crate tests do not require it.
+- `wasm-pack build crates/onda_compiler_web --target web --release --no-opt` builds the JavaScript
+  glue and compiler Wasm. `--no-opt` disables wasm-pack's optional post-link `wasm-opt` pass; the
+  Rust crate remains a release build. `wasm-pack` is required; ordinary native crate tests are not.
+- `npm test --prefix packages/onda_wasm_compiler` builds the packaged compiler and tests its API and
+  CLI. `npm run test:pack --prefix packages/onda_wasm_compiler` installs the actual tarball in an
+  empty project and compiles a smoke source through the published package layout.
+- The top-level `[workspace.package].version` is the single authored product version.
+  `scripts/sync-package-versions.mjs` updates workspace-owned `Cargo.lock` entries, discovers all
+  `@onda-lang/*` packages, and updates their npm manifests/lockfiles. Compiler builds, CI, and
+  release packaging invoke it automatically; the JavaScript runtime version module is generated.
 - `bash ./examples/web/onda_wasm_playground/build-demo.sh --serve` builds/stages the compiler and pinned
   Binaryen assets, then serves the editable playground. The PowerShell equivalent is
   `.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve`.
@@ -259,7 +273,10 @@ Non-crate directories of note:
   universal browser-performance claim.
 - The browser build is static after staging and requires no CLI, LLVM, or server-side compiler.
   Compiler and Binaryen work run in a module worker; `packages/onda_webaudio` registers and hosts the
-  processor worklet. Current product limitations include a single-file playground UI despite the
+  processor worklet. The Web Audio adapter precompiles processor modules outside the rendering
+  thread, caches typed linear-memory views, bulk-copies full-block f32 audio, and locks host
+  linear-memory allocation after construction; dynamic event storage is bounded and preallocated.
+  Current product limitations include a single-file playground UI despite the
   compiler's multi-file API, restart/reset rather than seamless state-preserving hot swap, no
   control-output or external-buffer UI, and no microphone/input-source routing. Software math helpers
   are internal to generated Wasm, so the render path has no JavaScript math boundary, though native

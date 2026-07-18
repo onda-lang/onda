@@ -222,4 +222,8 @@ state.
 Web Audio node construction, render-quantum scheduling, f32 marshaling, parameter/event messages,
 buffer bindings, and snapshot requests. None of those policies are required when embedding an Onda
 processor in a native application, an offline renderer, a plugin API, a worker, or another Wasm
-runtime.
+runtime. The adapter compiles the `WebAssembly.Module` outside the audio rendering thread, caches
+typed views over processor memory, uses a bulk-copy fast path for full-block f32 audio, and locks
+host linear-memory allocation after construction. Dynamic event payload storage is preallocated to a
+configurable capacity; an oversized event fails rather than growing linear memory while audio is
+running.

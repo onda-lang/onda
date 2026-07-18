@@ -1,19 +1,37 @@
 {
   "name": "@onda-lang/webaudio",
-  "version": "0.1.0",
+  "version": "0.4.4",
   "type": "module",
   "description": "Optional Web Audio adapter for Onda processor WebAssembly artifacts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/onda-lang/onda.git",
+    "directory": "packages/onda_webaudio"
+  },
+  "homepage": "https://onda-lang.github.io/onda/",
+  "bugs": {
+    "url": "https://github.com/onda-lang/onda/issues"
+  },
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
     },
-    "./worklet": "./src/worklet.js"
+    "./worklet": {
+      "types": "./src/worklet.d.ts",
+      "default": "./src/worklet.js"
+    }
   },
   "files": [
-    "src"
+    "src",
+    "LICENSE",
+    "README.md"
   ],
   "scripts": {
     "test": "node --test"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

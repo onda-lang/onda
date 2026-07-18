@@ -61,7 +61,9 @@ The benchmark is a development diagnostic, with these safeguards:
 
 The checked-in scenarios have no audio inputs or external buffers and expose
 scalar f32 outputs. This keeps the measured ABI identical without claiming to
-cover browser scheduling, AudioWorklet copying, or host-buffer traffic.
+cover browser scheduling, AudioWorklet copying, or host-buffer traffic. The Web Audio adapter has a
+separate cached-view/bulk-copy host path; backend numbers must not be presented as end-to-end browser
+render timings.
 
 ## Illustrative run
 

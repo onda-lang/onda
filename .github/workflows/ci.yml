@@ -45,10 +45,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: packages/onda_binaryen_web/package-lock.json
+          cache-dependency-path: |
+            packages/onda_binaryen_web/package-lock.json
+            packages/onda_wasm_compiler/package-lock.json
 
       - name: Bootstrap LLVM
         run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
+
+      - name: Synchronize package versions
+        run: node ./scripts/sync-package-versions.mjs
 
       - name: Test native MIR backend and examples
         shell: bash
@@ -58,6 +63,12 @@ jobs:
 
       - name: Install Binaryen package
         run: npm ci --prefix packages/onda_binaryen_web
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Install WebAssembly compiler package
+        run: npm ci --prefix packages/onda_wasm_compiler
 
       - name: Test Binaryen backend and LLVM parity
         shell: bash
@@ -74,9 +85,14 @@ jobs:
 
       - name: Build browser compiler
         run: |
-          cargo install wasm-pack --locked
           wasm-pack build crates/onda_compiler_web \
             --target web \
             --release \
+            --no-opt \
             --out-dir /tmp/onda-compiler-web \
             --out-name onda_compiler_web
+
+      - name: Test WebAssembly compiler product package
+        run: |
+          npm test --prefix packages/onda_wasm_compiler
+          npm run test:pack --prefix packages/onda_wasm_compiler

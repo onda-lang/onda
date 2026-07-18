@@ -1,4 +1,6 @@
 import binaryen from "binaryen";
+import { SUPPORTED_MIR_SCHEMA_VERSION } from "./constants.js";
+import { OndaBinaryenError } from "./errors.js";
 import { decodeMirMessagePack } from "./messagepack.js";
 import { ONDA_MATH_KERNEL_WASM } from "./math-kernel.generated.js";
 import {
@@ -20,8 +22,9 @@ export {
   validateProcessorArtifact,
   validateProcessorMetadata,
 } from "./artifact.js";
+export { SUPPORTED_MIR_SCHEMA_VERSION } from "./constants.js";
+export { OndaBinaryenError } from "./errors.js";
 
-const SUPPORTED_SCHEMA_VERSION = 5;
 const PAGE_BYTES = 64 * 1024;
 const STATIC_BASE = 1024;
 const MATH_KERNEL_RESERVED_END = 32 * 1024;
@@ -55,13 +58,6 @@ const POINTER_GLOBALS = Object.freeze({
   bufferChannels: "$onda.buffer_channels",
   bufferSampleRates: "$onda.buffer_sample_rates",
 });
-
-export class OndaBinaryenError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "OndaBinaryenError";
-  }
-}
 
 export function compileMir(mirJson, options = {}) {
   return compileMirInternal(mirJson, options, false);
@@ -255,9 +251,9 @@ class MirCompiler {
     if (!mir || typeof mir !== "object" || Array.isArray(mir)) {
       this.fail("MIR must be a JSON object");
     }
-    if (mir.schema_version !== SUPPORTED_SCHEMA_VERSION) {
+    if (mir.schema_version !== SUPPORTED_MIR_SCHEMA_VERSION) {
       this.fail(
-        `unsupported MIR schema version ${String(mir.schema_version)}; expected ${SUPPORTED_SCHEMA_VERSION}`,
+        `unsupported MIR schema version ${String(mir.schema_version)}; expected ${SUPPORTED_MIR_SCHEMA_VERSION}`,
       );
     }
     if (!this.trustedProducer) {

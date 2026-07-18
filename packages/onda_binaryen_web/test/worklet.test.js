@@ -159,6 +159,16 @@ function f64PassthroughMir() {
   };
 }
 
+function f32PassthroughMir() {
+  const mir = f64PassthroughMir();
+  mir.types[0] = { kind: "scalar", data: "f32" };
+  mir.interface.params[0].default = {
+    kind: "scalar",
+    data: { type: "f32", value: 0 },
+  };
+  return mir;
+}
+
 let WorkletProcessor;
 let registeredProcessorName;
 globalThis.AudioWorkletProcessor = class {
@@ -194,6 +204,88 @@ try {
 test("AudioWorklet module registers the public processor name", () => {
   assert.equal(registeredProcessorName, "onda-wasm-processor");
   assert.equal(typeof WorkletProcessor, "function");
+});
+
+test("AudioWorklet accepts a module compiled outside the rendering thread", () => {
+  const artifact = compileMir(f32PassthroughMir());
+  const module = new WebAssembly.Module(artifact.wasm);
+  const processor = new WorkletProcessor({
+    processorOptions: {
+      wasmModule: module,
+      metadata: artifact.metadata,
+    },
+  });
+  const input = new Float32Array([0.25, -0.5, 0.75, 1]);
+  const output = new Float32Array(4);
+
+  assert.equal(processor.process([[input]], [[output]]), true);
+  assert.deepEqual([...output], [...input]);
+});
+
+test("AudioWorklet reuses cached f32 views in the render callback", () => {
+  const artifact = compileMir(f32PassthroughMir());
+  const processor = new WorkletProcessor({
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+    },
+  });
+  const inputView = processor.inputViews[0];
+  const outputView = processor.outputViews[0];
+  const dataView = processor.memoryView();
+  const input = new Float32Array([0.25, -0.5, 0.75, 1]);
+  const output = new Float32Array(4);
+  const memoryView = processor.memoryView;
+  processor.memoryView = () => {
+    throw new Error("render callback requested a fresh DataView");
+  };
+
+  try {
+    for (let iteration = 0; iteration < 16; iteration += 1) {
+      assert.equal(processor.process([[input]], [[output]]), true);
+    }
+  } finally {
+    processor.memoryView = memoryView;
+  }
+
+  assert.deepEqual([...output], [...input]);
+  assert.equal(processor.inputViews[0], inputView);
+  assert.equal(processor.outputViews[0], outputView);
+  assert.equal(processor.memoryView(), dataView);
+});
+
+test("AudioWorklet bounds dynamic event storage before rendering starts", () => {
+  const artifact = compileMir(f32PassthroughMir());
+  artifact.metadata.metadata.events = [{
+    name: "load",
+    export: "onda_event_0",
+    payload_size_bytes: null,
+    payload_min_size_bytes: 4,
+    has_dynamic_payload: true,
+    params: [{
+      name: "values",
+      scalar: "f32",
+      is_slice: true,
+    }],
+  }];
+  const processor = new WorkletProcessor({
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+      eventPayloadCapacityBytes: 8,
+    },
+  });
+  const memory = processor.memory.buffer;
+  const heap = processor.heap;
+
+  assert.throws(
+    () => processor.dispatchEvent("load", {
+      values: new Float32Array([1, 2]),
+    }),
+    /requires 12 payload bytes; configured capacity is 8/,
+  );
+  assert.equal(processor.memory.buffer, memory);
+  assert.equal(processor.heap, heap);
 });
 
 test("AudioWorklet marshals Web Audio f32 through f64 MIR input/output storage", () => {

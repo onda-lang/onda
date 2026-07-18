@@ -4,6 +4,10 @@ This package consumes Onda's versioned MIR as compact MessagePack, JSON, or an a
 object and emits an executable WebAssembly DSP module with Binaryen.js. It runs in browsers and Node
 without LLVM, `wasm-ld`, or an Onda toolchain in the code-generation environment.
 
+This is the supported low-level MIR backend. Applications starting from Onda source should normally
+use [`@onda-lang/wasm-compiler`](../onda_wasm_compiler/README.md), which packages the browser
+frontend and this backend behind one typed source/project API and the `onda-wasm` CLI.
+
 Compatibility status: this package implements MIR schema 5 and consumes current output from
 `onda compile --emit mir-messagepack`, `--emit mir-json`, and `crates/onda_compiler_web`. It validates explicit control-mirror
 IDs/persistence, checked `make_slice`, fixed-array and slice reference windows, and schema-5
@@ -156,6 +160,7 @@ Current limitations are explicit:
 - `inline: always` and `inline: never` are validated but remain advisory because Binaryen.js does
   not expose per-function inline/no-inline annotations; its module optimizer chooses whether to
   inline a call
-- this package is a JavaScript backend API, not yet a first-class `onda compile --emit wasm` CLI mode
+- this low-level package accepts MIR rather than source; the product-facing `onda-wasm` CLI lives in
+  `@onda-lang/wasm-compiler`, while the native `onda compile` command does not yet emit linked Wasm
 - production consumers must package/cache Binaryen; Web Audio users can use the separate optional
   `@onda-lang/webaudio` adapter, while other hosts consume the generic artifact directly

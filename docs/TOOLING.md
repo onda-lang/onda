@@ -37,6 +37,21 @@ Target presets can describe cross-target code generation:
 onda compile examples/foundations/sine.onda --target-spec ./targets/arm64.toml --emit obj
 ```
 
+## Compile a complete WebAssembly module
+
+The separately packaged WebAssembly compiler produces a self-contained core-Wasm processor and its
+descriptor without LLVM or a linker:
+
+```bash
+npx onda-wasm compile examples/foundations/sine.onda \
+  --root . \
+  --output ./sine.wasm
+```
+
+The same `@onda-lang/wasm-compiler` package exposes asynchronous single-source and virtual-project
+APIs for Node.js and browsers, including a worker-backed browser mode. The lower-level
+`@onda-lang/binaryen-web` package remains available to tools that already produce compatible MIR.
+
 ## Real-time playback
 
 The standalone UI watches the source program and provides controls for its exposed surface:

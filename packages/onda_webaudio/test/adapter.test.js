@@ -4,13 +4,14 @@ import test from "node:test";
 import {
   ONDA_AUDIO_WORKLET_PROCESSOR_NAME,
   OndaAudioProcessor,
+  compileOndaProcessorModule,
   createOndaAudioProcessor,
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
 function artifact() {
   return {
-    wasm: new Uint8Array([0, 97, 115, 109]),
+    wasm: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
     metadata: {
       format: "onda-processor",
       format_version: 3,
@@ -85,6 +86,24 @@ test("registers the worklet before constructing the public processor node", asyn
   });
   assert.equal(modules.length, 1);
   assert.equal(processor.node.name, ONDA_AUDIO_WORKLET_PROCESSOR_NAME);
+  assert.equal(
+    processor.node.options.processorOptions.wasmModule instanceof WebAssembly.Module,
+    true,
+  );
+  assert.equal("wasmBytes" in processor.node.options.processorOptions, false);
+});
+
+test("can reuse a processor module compiled off the audio rendering thread", async () => {
+  const source = artifact();
+  const compiledModule = await compileOndaProcessorModule(source);
+  const options = ondaAudioWorkletNodeOptions(source, {
+    compiledModule,
+    eventPayloadCapacityBytes: 8192,
+  });
+
+  assert.equal(options.processorOptions.wasmModule, compiledModule);
+  assert.equal(options.processorOptions.eventPayloadCapacityBytes, 8192);
+  assert.equal("wasmBytes" in options.processorOptions, false);
 });
 
 test("correlates control responses and preserves caller snapshot storage", async () => {

@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+description = "Browser-safe Onda source-to-MIR compiler"
+repository = "https://github.com/onda-lang/onda"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -1,18 +1,36 @@
 {
   "name": "@onda-lang/binaryen-web",
-  "version": "0.1.0",
+  "version": "0.4.4",
   "type": "module",
-  "description": "Browser-side Binaryen backend for versioned Onda MIR",
+  "description": "Binaryen backend for versioned Onda MIR in browsers and Node.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/onda-lang/onda.git",
+    "directory": "packages/onda_binaryen_web"
+  },
+  "homepage": "https://onda-lang.github.io/onda/",
+  "bugs": {
+    "url": "https://github.com/onda-lang/onda/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "types": "./src/index.d.ts",
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
     },
-    "./artifact": "./src/artifact.js"
+    "./artifact": {
+      "types": "./src/artifact.d.ts",
+      "default": "./src/artifact.js"
+    }
   },
   "files": [
     "src",
+    "math-kernel/LICENSE-libm.txt",
+    "LICENSE",
     "README.md"
   ],
   "scripts": {
@@ -27,5 +45,8 @@
   },
   "dependencies": {
     "binaryen": "130.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

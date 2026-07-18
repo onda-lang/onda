@@ -10,7 +10,7 @@ export function flattenedAudioChannelCount(ports = []) {
 }
 
 export function ondaAudioWorkletNodeOptions(artifact, options = {}) {
-  const metadata = validateExecutableArtifact(artifact);
+  const { wasm, metadata } = validateExecutableArtifact(artifact);
   const inputChannels = flattenedAudioChannelCount(metadata.metadata.inputs);
   const outputChannels = flattenedAudioChannelCount(metadata.metadata.outputs);
   if (inputChannels > 32 || outputChannels > 32) {
@@ -23,11 +23,14 @@ export function ondaAudioWorkletNodeOptions(artifact, options = {}) {
     channelCountMode: "explicit",
     ...options.nodeOptions,
     processorOptions: {
-      wasmBytes: artifact.wasm,
+      ...options.nodeOptions?.processorOptions,
+      ...(options.compiledModule === undefined
+        ? { wasmBytes: wasm }
+        : { wasmModule: options.compiledModule }),
       metadata,
       params: options.params ?? {},
       buffers: options.buffers ?? {},
-      ...options.nodeOptions?.processorOptions,
+      eventPayloadCapacityBytes: options.eventPayloadCapacityBytes,
     },
   };
   if (outputChannels && nodeOptions.outputChannelCount === undefined) {
@@ -57,7 +60,12 @@ export async function registerOndaAudioWorklet(
 }
 
 export async function createOndaAudioProcessor(context, artifact, options = {}) {
-  await registerOndaAudioWorklet(context, options.workletUrl);
+  const [, compiledModule] = await Promise.all([
+    registerOndaAudioWorklet(context, options.workletUrl),
+    options.compiledModule === undefined
+      ? compileOndaProcessorModule(artifact)
+      : Promise.resolve(options.compiledModule),
+  ]);
   const NodeConstructor = options.AudioWorkletNode ?? globalThis.AudioWorkletNode;
   if (typeof NodeConstructor !== "function") {
     throw new Error("AudioWorkletNode is not available in this environment");
@@ -65,9 +73,14 @@ export async function createOndaAudioProcessor(context, artifact, options = {}) 
   const node = new NodeConstructor(
     context,
     ONDA_AUDIO_WORKLET_PROCESSOR_NAME,
-    ondaAudioWorkletNodeOptions(artifact, options),
+    ondaAudioWorkletNodeOptions(artifact, { ...options, compiledModule }),
   );
   return new OndaAudioProcessor(node);
+}
+
+export async function compileOndaProcessorModule(artifact) {
+  const { wasm } = validateExecutableArtifact(artifact);
+  return WebAssembly.compile(wasm);
 }
 
 export class OndaAudioProcessor {
@@ -144,7 +157,12 @@ export class OndaAudioProcessor {
 
 function validateExecutableArtifact(artifact) {
   const metadata = artifact?.metadata;
-  if (!(artifact?.wasm instanceof Uint8Array) && !(artifact?.wasm instanceof ArrayBuffer)) {
+  const wasm = artifact?.wasm instanceof Uint8Array
+    ? artifact.wasm
+    : artifact?.wasm instanceof ArrayBuffer
+      ? new Uint8Array(artifact.wasm)
+      : null;
+  if (wasm === null) {
     throw new Error("an Onda artifact with WebAssembly bytes is required");
   }
   if (
@@ -163,5 +181,5 @@ function validateExecutableArtifact(artifact) {
       throw new Error(`processor metadata is missing '${field}'`);
     }
   }
-  return metadata;
+  return { wasm, metadata };
 }

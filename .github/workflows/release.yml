@@ -2,7 +2,7 @@ name: Build Onda Releases
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ONDA_VERSION: 21.1.2
+  LLVM_VERSION: 21.1.2
 
 on:
   workflow_dispatch:
@@ -95,12 +95,12 @@ jobs:
       - name: Bootstrap LLVM on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/bootstrap-llvm.ps1 -Version "${{ env.ONDA_VERSION }}"
+        run: ./scripts/bootstrap-llvm.ps1 -Version "${{ env.LLVM_VERSION }}"
 
       - name: Bootstrap LLVM on Unix
         if: runner.os != 'Windows'
         shell: bash
-        run: ./scripts/bootstrap-llvm.sh --version "${{ env.ONDA_VERSION }}"
+        run: ./scripts/bootstrap-llvm.sh --version "${{ env.LLVM_VERSION }}"
 
       - name: Build onda and onda_api on Windows
         if: runner.os == 'Windows'
@@ -140,14 +140,14 @@ jobs:
             }
           }
 
-          . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.ONDA_VERSION }}"
+          . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.LLVM_VERSION }}"
           cargo build --release -p onda_cli -p onda_api
 
       - name: Build onda and onda_api on Unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.ONDA_VERSION }}"
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.LLVM_VERSION }}"
           cargo build --release -p onda_cli -p onda_api
 
       - name: Package release on Windows
@@ -224,10 +224,61 @@ jobs:
           name: onda-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*.${{ matrix.archive_ext }}
 
+  web:
+    name: WebAssembly compiler packages
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            packages/onda_binaryen_web/package-lock.json
+            packages/onda_wasm_compiler/package-lock.json
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Install package dependencies
+        run: |
+          node ./scripts/sync-package-versions.mjs
+          npm ci --prefix packages/onda_binaryen_web
+          npm ci --prefix packages/onda_wasm_compiler
+
+      - name: Test WebAssembly packages
+        run: |
+          npm test --prefix packages/onda_binaryen_web
+          npm test --prefix packages/onda_webaudio
+          npm test --prefix packages/onda_wasm_compiler
+          npm run test:pack --prefix packages/onda_wasm_compiler
+
+      - name: Pack WebAssembly packages
+        run: |
+          mkdir -p dist
+          npm pack ./packages/onda_binaryen_web --pack-destination dist
+          npm pack ./packages/onda_webaudio --pack-destination dist
+          npm pack ./packages/onda_wasm_compiler --pack-destination dist
+
+      - name: Upload WebAssembly package artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: onda-web-packages
+          path: dist/*.tgz
+
   release:
     name: Publish Release
     if: ${{ github.event_name == 'push' || inputs.publish_release }}
-    needs: build
+    needs: [build, web]
     runs-on: ubuntu-22.04
 
     steps:
@@ -267,7 +318,7 @@ jobs:
       - name: Generate checksums
         shell: bash
         run: |
-          find dist -type f \( -name '*.tar.xz' -o -name '*.zip' \) -print0 \
+          find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.tgz' \) -print0 \
             | sort -z \
             | xargs -0 sha256sum > dist/SHA256SUMS.txt
 
@@ -279,7 +330,7 @@ jobs:
           RELEASE_NAME: ${{ steps.version.outputs.version }}
         run: |
           mapfile -t release_files < <(
-            find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name 'SHA256SUMS.txt' \) \
+            find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.tgz' -o -name 'SHA256SUMS.txt' \) \
               | sort
           )
 

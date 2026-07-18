@@ -7,7 +7,7 @@ in-memory program and its `std/...` imports does not require filesystem access.
 Build JavaScript glue and the compiler Wasm with:
 
 ```sh
-wasm-pack build crates/onda_compiler_web --target web --release
+wasm-pack build crates/onda_compiler_web --target web --release --no-opt
 ```
 
 The production exports `compile_to_mir_messagepack(source, sampleRate, blockSize)` and
@@ -44,3 +44,8 @@ Wasm math legalization, runtime layout metadata, and AudioWorklet hosting live i
 package and browser example. Backend
 compile/render measurements are documented in
 [`docs/BACKEND_BENCHMARKS.md`](../../docs/BACKEND_BENCHMARKS.md).
+
+Application consumers should normally install
+[`@onda-lang/wasm-compiler`](../../packages/onda_wasm_compiler/README.md), which packages this
+frontend Wasm with the compatible Binaryen backend, verifies their MIR schema handshake, and
+provides typed source/project APIs plus the `onda-wasm` CLI.

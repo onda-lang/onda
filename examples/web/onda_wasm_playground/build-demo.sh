@@ -32,11 +32,11 @@ done
 
 demo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$demo_dir/../../.." && pwd)"
-backend_dir="$repo_root/packages/onda_binaryen_web"
-compiler_dir="$repo_root/crates/onda_compiler_web"
-webaudio_dir="$repo_root/packages/onda_webaudio"
-compiler_out="$demo_dir/onda-compiler-web"
-binaryen_js="$backend_dir/node_modules/binaryen/index.js"
+compiler_package="$repo_root/packages/onda_wasm_compiler"
+webaudio_package="$repo_root/packages/onda_webaudio"
+compiler_out="$demo_dir/onda-wasm-compiler"
+webaudio_out="$demo_dir/onda-webaudio"
+binaryen_js="$compiler_package/node_modules/binaryen/index.js"
 
 if ! command -v wasm-pack >/dev/null 2>&1; then
   echo "wasm-pack is required. Install it from https://rustwasm.github.io/wasm-pack/installer/." >&2
@@ -44,26 +44,24 @@ if ! command -v wasm-pack >/dev/null 2>&1; then
 fi
 
 if [[ ! -f "$binaryen_js" ]]; then
-  npm install --prefix "$backend_dir"
+  npm ci --prefix "$compiler_package"
 fi
 
-wasm-pack build "$compiler_dir" \
-  --target web \
-  --release \
-  --out-dir "$compiler_out" \
-  --out-name onda_compiler_web
+npm run build --prefix "$compiler_package"
 
-cp "$binaryen_js" "$demo_dir/binaryen.js"
+rm -rf "$compiler_out" "$webaudio_out"
+mkdir -p "$compiler_out" "$webaudio_out"
+cp -R "$compiler_package/src" "$compiler_out/src"
+cp -R "$compiler_package/dist" "$compiler_out/dist"
+cp "$binaryen_js" "$compiler_out/dist/backend/binaryen.js"
+sed 's/from "#onda-frontend-loader"/from ".\/frontend-browser.js"/' \
+  "$compiler_package/src/index.js" > "$compiler_out/src/index.js"
 sed 's/from "binaryen"/from ".\/binaryen.js"/' \
-  "$backend_dir/src/index.js" > "$demo_dir/onda-binaryen-web.js"
-cp "$backend_dir/src/artifact.js" "$demo_dir/artifact.js"
-cp "$backend_dir/src/math-kernel.generated.js" "$demo_dir/math-kernel.generated.js"
-cp "$backend_dir/src/messagepack.js" "$demo_dir/messagepack.js"
-cp "$webaudio_dir/src/index.js" "$demo_dir/onda-webaudio.js"
-cp "$webaudio_dir/src/worklet.js" "$demo_dir/onda-wasm-processor.js"
+  "$compiler_package/dist/backend/index.js" > "$compiler_out/dist/backend/index.js"
+cp "$webaudio_package/src/"*.js "$webaudio_out/"
 
-echo "Built the in-browser Onda compiler in: $compiler_out"
-echo "Staged the Binaryen backend in: $demo_dir"
+echo "Staged @onda-lang/wasm-compiler in: $compiler_out"
+echo "Staged @onda-lang/webaudio in: $webaudio_out"
 
 if [[ "$serve" == "1" ]]; then
   pushd "$demo_dir" >/dev/null

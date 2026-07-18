@@ -412,6 +412,11 @@ Binaryen.js to an executable DSP Wasm module plus host metadata. `compileMir` is
 and rejects unchecked bounds; compiler output crosses the deliberately named `compileTrustedMir`
 producer boundary.
 
+`packages/onda_wasm_compiler` is the product-facing composition of these layers. It initializes the
+embedded frontend Wasm, checks the producer/backend schema versions, keeps the trusted transition
+inside the package, and exposes asynchronous source/project APIs, a browser worker, and the
+`onda-wasm` build-time CLI. The low-level packages remain independently testable backend boundaries.
+
 The schema-5 backend consumes explicit control-mirror state, checked `make_slice`, fixed-array and
 slice reference windows, and serialized function attributes. It covers scalar and fixed-array
 storage, tuples and multi-value returns, primitive slices, dynamic-slice events, buffers, flattened

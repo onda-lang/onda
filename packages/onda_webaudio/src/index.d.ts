@@ -9,6 +9,10 @@ export interface OndaAudioProcessorOptions {
   workletUrl?: string | URL;
   params?: Record<string, unknown> | unknown[];
   buffers?: Record<string, unknown> | unknown[];
+  /** Preallocated capacity for dynamic event payloads. Defaults to 64 KiB. */
+  eventPayloadCapacityBytes?: number;
+  /** Reusable module compiled outside the audio rendering thread. */
+  compiledModule?: WebAssembly.Module;
   nodeOptions?: AudioWorkletNodeOptions;
   AudioWorkletNode?: typeof AudioWorkletNode;
 }
@@ -27,6 +31,9 @@ export function createOndaAudioProcessor(
   artifact: OndaProcessorArtifact,
   options?: OndaAudioProcessorOptions,
 ): Promise<OndaAudioProcessor>;
+export function compileOndaProcessorModule(
+  artifact: OndaProcessorArtifact,
+): Promise<WebAssembly.Module>;
 
 export class OndaAudioProcessor {
   constructor(node: AudioWorkletNode);

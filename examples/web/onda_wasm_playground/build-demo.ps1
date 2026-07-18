@@ -6,38 +6,37 @@ $ErrorActionPreference = "Stop"
 
 $demoDir = Resolve-Path $PSScriptRoot
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
-$backendDir = Join-Path $repoRoot "packages\onda_binaryen_web"
-$compilerDir = Join-Path $repoRoot "crates\onda_compiler_web"
-$webAudioDir = Join-Path $repoRoot "packages\onda_webaudio"
-$compilerOut = Join-Path $demoDir "onda-compiler-web"
-$binaryenJs = Join-Path $backendDir "node_modules\binaryen\index.js"
+$compilerPackage = Join-Path $repoRoot "packages\onda_wasm_compiler"
+$webAudioPackage = Join-Path $repoRoot "packages\onda_webaudio"
+$compilerOut = Join-Path $demoDir "onda-wasm-compiler"
+$webAudioOut = Join-Path $demoDir "onda-webaudio"
+$binaryenJs = Join-Path $compilerPackage "node_modules\binaryen\index.js"
 
 if (-not (Get-Command wasm-pack -ErrorAction SilentlyContinue)) {
     throw "wasm-pack is required. Install it from https://rustwasm.github.io/wasm-pack/installer/."
 }
 
 if (-not (Test-Path $binaryenJs)) {
-    npm install --prefix $backendDir
+    npm ci --prefix $compilerPackage
 }
 
-wasm-pack build $compilerDir `
-    --target web `
-    --release `
-    --out-dir $compilerOut `
-    --out-name onda_compiler_web
+npm run build --prefix $compilerPackage
 
-Copy-Item $binaryenJs (Join-Path $demoDir "binaryen.js") -Force
-$backendSource = Get-Content (Join-Path $backendDir "src\index.js") -Raw
+Remove-Item $compilerOut, $webAudioOut -Recurse -Force -ErrorAction SilentlyContinue
+New-Item $compilerOut, $webAudioOut -ItemType Directory | Out-Null
+Copy-Item (Join-Path $compilerPackage "src") (Join-Path $compilerOut "src") -Recurse
+Copy-Item (Join-Path $compilerPackage "dist") (Join-Path $compilerOut "dist") -Recurse
+Copy-Item $binaryenJs (Join-Path $compilerOut "dist\backend\binaryen.js") -Force
+$compilerSource = Get-Content (Join-Path $compilerPackage "src\index.js") -Raw
+$compilerSource.Replace('from "#onda-frontend-loader"', 'from "./frontend-browser.js"') |
+    Set-Content (Join-Path $compilerOut "src\index.js") -NoNewline
+$backendSource = Get-Content (Join-Path $compilerPackage "dist\backend\index.js") -Raw
 $backendSource.Replace('from "binaryen"', 'from "./binaryen.js"') |
-    Set-Content (Join-Path $demoDir "onda-binaryen-web.js") -NoNewline
-Copy-Item (Join-Path $backendDir "src\artifact.js") (Join-Path $demoDir "artifact.js") -Force
-Copy-Item (Join-Path $backendDir "src\math-kernel.generated.js") (Join-Path $demoDir "math-kernel.generated.js") -Force
-Copy-Item (Join-Path $backendDir "src\messagepack.js") (Join-Path $demoDir "messagepack.js") -Force
-Copy-Item (Join-Path $webAudioDir "src\index.js") (Join-Path $demoDir "onda-webaudio.js") -Force
-Copy-Item (Join-Path $webAudioDir "src\worklet.js") (Join-Path $demoDir "onda-wasm-processor.js") -Force
+    Set-Content (Join-Path $compilerOut "dist\backend\index.js") -NoNewline
+Copy-Item (Join-Path $webAudioPackage "src\*.js") $webAudioOut -Force
 
-Write-Host "Built the in-browser Onda compiler in: $compilerOut"
-Write-Host "Staged the Binaryen backend in: $demoDir"
+Write-Host "Staged @onda-lang/wasm-compiler in: $compilerOut"
+Write-Host "Staged @onda-lang/webaudio in: $webAudioOut"
 
 if ($Serve) {
     Push-Location $demoDir

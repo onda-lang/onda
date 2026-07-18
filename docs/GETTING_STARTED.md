@@ -20,11 +20,30 @@ This guide takes you from installing Onda to a running sine oscillator. At the e
 
 Each package contains the `onda` executable, static and shared C libraries, `onda.h`, the language guide, and the examples. Download the archive for your platform, extract it, and add its `bin` directory to your `PATH`. SHA-256 checksums are published with each release.
 
+Releases also contain portable npm tarballs for the WebAssembly compiler and Web Audio packages.
+
 Check the installation:
 
 ```bash
 onda --help
 ```
+
+## Install the WebAssembly compiler
+
+Browser and Node.js applications can install the source-to-WebAssembly compiler from its release
+tarball or npm package:
+
+```bash
+npm install ./onda-lang-wasm-compiler-X.Y.Z.tgz
+# After registry publication:
+npm install @onda-lang/wasm-compiler
+npx onda-wasm compile sine.onda --output sine.wasm
+```
+
+The command writes `sine.wasm` and its integrity-associated `sine.onda.json` processor descriptor.
+It is a build-time compiler and does not require LLVM, Rust, or a Wasm linker after installation.
+Applications compiling source in the browser can use the package's asynchronous JavaScript API and
+worker mode. `@onda-lang/webaudio` remains an optional playback host rather than part of compilation.
 
 ## Write your first patch
 

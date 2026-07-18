@@ -1,5 +1,11 @@
-import { createProcessorArtifactFiles } from "./artifact.js";
-import { createOndaAudioProcessor } from "./onda-webaudio.js";
+import {
+  createCompiler,
+  createProcessorArtifactFiles,
+} from "@onda-lang/wasm-compiler";
+import {
+  createOndaAudioProcessor,
+  flattenedAudioChannelCount,
+} from "@onda-lang/webaudio";
 
 const compileButton = document.querySelector("[data-compile]");
 const toggleButton = document.querySelector("[data-toggle]");
@@ -18,9 +24,7 @@ const summaryEl = document.querySelector("[data-summary]");
 const smokeMode = new URLSearchParams(window.location.search).has("smoke");
 const sourceStorageKey = "onda.browser-playground.source";
 
-let compilerWorker = null;
-let nextWorkerRequestId = 1;
-const workerRequests = new Map();
+let compiler = null;
 let artifact = null;
 let context = null;
 let node = null;
@@ -46,35 +50,6 @@ function reportSmokeResult(result) {
 function errorMessage(error) {
   if (typeof error === "string") return error;
   return String(error?.message ?? error);
-}
-
-function requestWorker(type, fields = {}) {
-  const requestId = nextWorkerRequestId++;
-  return new Promise((resolve, reject) => {
-    workerRequests.set(requestId, { resolve, reject });
-    compilerWorker.postMessage({ type, requestId, ...fields });
-  });
-}
-
-function handleWorkerMessage(event) {
-  const message = event.data ?? {};
-  const request = workerRequests.get(message.requestId);
-  if (!request) return;
-  if (message.type === "phase") {
-    if (message.phase === "loading") setStatus("Loading compiler toolchain…");
-    else if (message.phase === "mir") setStatus("Compiling source to MIR…");
-    else if (message.phase === "binaryen") setStatus("Optimizing MIR with Binaryen O4…");
-    return;
-  }
-  workerRequests.delete(message.requestId);
-  if (message.type === "error") request.reject(new Error(message.error));
-  else request.resolve(message.value);
-}
-
-function handleWorkerFailure(event) {
-  const error = new Error(event.message ?? "compiler worker failed");
-  for (const request of workerRequests.values()) request.reject(error);
-  workerRequests.clear();
 }
 
 function decodeScalar(scalar) {
@@ -112,6 +87,7 @@ function parseScalar(text, scalar) {
 }
 
 function compilerDiagnostics(error) {
+  if (Array.isArray(error?.diagnostics)) return error.diagnostics;
   const candidates = [
     typeof error === "string" ? error : null,
     typeof error?.message === "string" ? error.message : null,
@@ -146,13 +122,6 @@ function showCompileError(error) {
       return `${location} [${diagnostic.stage}] ${diagnostic.message}${trace}`;
     })
     .join("\n\n");
-}
-
-function flattenedChannelCount(ports) {
-  return ports.reduce(
-    (count, port) => count + Number(port.channel_count ?? 1),
-    0,
-  );
 }
 
 function defaultBuffers(metadata) {
@@ -320,8 +289,8 @@ function renderArtifact(artifactValue) {
   const metadata = artifactValue.metadata;
   renderParams(metadata);
   renderEvents(metadata);
-  const inputChannels = flattenedChannelCount(metadata.metadata.inputs);
-  const outputChannels = flattenedChannelCount(metadata.metadata.outputs);
+  const inputChannels = flattenedAudioChannelCount(metadata.metadata.inputs);
+  const outputChannels = flattenedAudioChannelCount(metadata.metadata.outputs);
   summaryEl.textContent =
     `Schema ${metadata.mir_schema_version}; ${artifactValue.wasm.byteLength.toLocaleString()} Wasm bytes; ` +
     `${inputChannels} input channel(s), ${outputChannels} output channel(s), ` +
@@ -329,20 +298,20 @@ function renderArtifact(artifactValue) {
 }
 
 async function compileSource({ restart = false } = {}) {
-  if (!compilerWorker || compiling) return;
+  if (!compiler || compiling) return;
   compiling = true;
   compileButton.disabled = true;
   toggleButton.disabled = true;
   resetButton.disabled = true;
   exportButton.disabled = true;
   diagnosticsEl.textContent = "";
+  setStatus("Compiling source to WebAssembly…");
   const wasRunning = Boolean(context);
   try {
     if (wasRunning) await stopAudio();
     const sampleRate = Number(sampleRateEl.value);
     const blockSize = Number(blockSizeEl.value);
-    artifact = await requestWorker("compile", {
-      source: sourceEl.value,
+    artifact = await compiler.compileSource(sourceEl.value, {
       sampleRate,
       blockSize,
     });
@@ -379,8 +348,8 @@ async function startAudio() {
 
   const metadata = artifact.metadata;
   const sampleRate = Number(metadata.compile.sample_rate);
-  const inputChannels = flattenedChannelCount(metadata.metadata.inputs);
-  const outputChannels = flattenedChannelCount(metadata.metadata.outputs);
+  const inputChannels = flattenedAudioChannelCount(metadata.metadata.inputs);
+  const outputChannels = flattenedAudioChannelCount(metadata.metadata.outputs);
   if (inputChannels > 32 || outputChannels > 32) {
     throw new Error("Web Audio supports at most 32 flattened channels per node");
   }
@@ -388,7 +357,6 @@ async function startAudio() {
   context = new AudioContext({ sampleRate });
   try {
     audioProcessor = await createOndaAudioProcessor(context, artifact, {
-      workletUrl: "./onda-wasm-processor.js",
       params: paramValues,
       buffers: defaultBuffers(metadata),
     });
@@ -432,13 +400,9 @@ async function stopAudio() {
 
 async function loadToolchain() {
   setStatus("Loading Onda compiler and Binaryen…");
-  compilerWorker = new Worker("./compiler-worker.js", { type: "module" });
-  compilerWorker.addEventListener("message", handleWorkerMessage);
-  compilerWorker.addEventListener("error", handleWorkerFailure);
-  compilerWorker.addEventListener("messageerror", handleWorkerFailure);
+  compiler = await createCompiler({ worker: true });
   const [sourceResponse] = await Promise.all([
     fetch("./default.onda"),
-    requestWorker("initialize"),
   ]);
   if (!sourceResponse.ok) {
     throw new Error(`failed to load example source: ${sourceResponse.status}`);

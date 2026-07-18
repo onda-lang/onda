@@ -51,10 +51,14 @@ API even though the current UI edits one source at a time. The Binaryen backend 
 and the reference AudioWorklet maps arbitrary Web Audio callback sizes onto the segmented
 `(start_frame, frames, flags)` contract with a persistent compile-block cursor.
 
+The packaged `@onda-lang/wasm-compiler` product now composes the embedded frontend and Binaryen
+backend behind typed source/project APIs, a browser worker, and the `onda-wasm` CLI. Tagged releases
+build and attach its npm tarball alongside the native archives.
+
 The remaining work is:
 
-1. Package, compress, cache, and version the compiler Wasm, Binaryen assets, and reusable JavaScript/
-   TypeScript AudioWorklet host glue.
+1. Publish the release tarballs to the npm registry, define immutable CDN/cache guidance, and set
+   measured compressed-size and initialization-latency budgets for compiler assets.
 2. Extend the playground from its current single-source editor to multi-file projects, external
    buffer loading/inspection, control-output display, microphone/input routing, export/download,
    and shareable project URLs.
@@ -70,8 +74,8 @@ The remaining work is:
    Binaryen, and compiler assets still need production transfer-size and browser compile-latency
    measurements. The current reproducible development measurements live in
    [the backend benchmark report](BACKEND_BENCHMARKS.md).
-7. Move compiler and Binaryen work off the page's main thread so larger programs do not stall editor
-   interaction.
+7. Extend worker cancellation and progress reporting so larger projects can interrupt superseded
+   compilations and surface finer-grained compiler phases.
 
 The long-term experience is a shareable Onda patch that compiles and produces sound without a local toolchain.
 

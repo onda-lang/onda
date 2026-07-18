@@ -1,7 +1,20 @@
+export const ONDA_VERSION: string;
+export const MIR_SCHEMA_VERSION: number;
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 3;
 export const PROCESSOR_ABI_VERSION: 1;
-export const SUPPORTED_MIR_SCHEMA_VERSION: 5;
+
+export interface OndaCompilerDiagnostic {
+  stage: string;
+  code: number;
+  message: string;
+  file: string | null;
+  line: number;
+  column: number;
+  end_line: number;
+  end_column: number;
+  trace: string[];
+}
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
@@ -25,7 +38,7 @@ export interface OndaProcessorArtifact {
   wat?: string;
 }
 
-export interface OndaBinaryenOptions {
+export interface OndaCodegenOptions {
   optimize?: boolean;
   optimizeLevel?: 0 | 1 | 2 | 3 | 4;
   shrinkLevel?: 0 | 1 | 2;
@@ -35,16 +48,69 @@ export interface OndaBinaryenOptions {
   emitText?: boolean;
 }
 
+export interface OndaCompileOptions {
+  sampleRate?: number;
+  blockSize?: number;
+  codegen?: OndaCodegenOptions;
+}
+
+export interface OndaProject {
+  entry: string;
+  sources: Record<string, string>;
+}
+
+export interface OndaCompilerInstance {
+  compileSource(
+    source: string,
+    options?: OndaCompileOptions,
+  ): Promise<OndaProcessorArtifact>;
+  compileProject(
+    project: OndaProject,
+    options?: OndaCompileOptions,
+  ): Promise<OndaProcessorArtifact>;
+  dispose(): Promise<void>;
+}
+
+export interface DirectCompilerOptions {
+  worker?: false;
+  frontendWasm?: string | URL | ArrayBuffer | ArrayBufferView | WebAssembly.Module;
+}
+
+export interface OndaWorkerLike {
+  addEventListener(type: "message" | "error", listener: (event: any) => void): void;
+  removeEventListener(type: "message" | "error", listener: (event: any) => void): void;
+  postMessage(message: unknown): void;
+  terminate(): void;
+}
+
+export interface OndaWorkerConstructor {
+  new (
+    url: string | URL,
+    options: { type: "module"; name: string },
+  ): OndaWorkerLike;
+}
+
+export interface WorkerCompilerOptions {
+  worker: true;
+  workerUrl?: string | URL;
+  Worker?: OndaWorkerConstructor;
+}
+
+export class OndaCompilerError extends Error {
+  cause?: unknown;
+}
+
+export class OndaCompileError extends OndaCompilerError {
+  readonly diagnostics: OndaCompilerDiagnostic[];
+}
+
 export class OndaBinaryenError extends Error {}
 export class OndaArtifactError extends Error {}
-export function compileMir(
-  mir: string | ArrayBuffer | ArrayBufferView | object,
-  options?: OndaBinaryenOptions,
-): OndaProcessorArtifact;
-export function compileTrustedMir(
-  mir: string | ArrayBuffer | ArrayBufferView | object,
-  options?: OndaBinaryenOptions,
-): OndaProcessorArtifact;
+
+export function createCompiler(
+  options?: DirectCompilerOptions | WorkerCompilerOptions,
+): Promise<OndaCompilerInstance>;
+
 export function createDefaultImports(): Record<string, never>;
 export function validateProcessorMetadata(
   metadata: object,

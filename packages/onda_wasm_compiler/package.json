@@ -1,0 +1,65 @@
+{
+  "name": "@onda-lang/wasm-compiler",
+  "version": "0.4.4",
+  "type": "module",
+  "description": "Onda source-to-WebAssembly compiler for browsers and Node.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/onda-lang/onda.git",
+    "directory": "packages/onda_wasm_compiler"
+  },
+  "homepage": "https://onda-lang.github.io/onda/",
+  "bugs": {
+    "url": "https://github.com/onda-lang/onda/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./artifact": {
+      "types": "./src/artifact.d.ts",
+      "default": "./dist/backend/artifact.js"
+    },
+    "./worker": {
+      "types": "./src/worker.d.ts",
+      "default": "./src/worker.js"
+    }
+  },
+  "imports": {
+    "#onda-frontend-loader": {
+      "node": "./src/frontend-node.js",
+      "default": "./src/frontend-browser.js"
+    }
+  },
+  "bin": {
+    "onda-wasm": "./bin/onda-wasm.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "sync:versions": "node ../../scripts/sync-package-versions.mjs",
+    "check:versions": "node ../../scripts/sync-package-versions.mjs --check",
+    "test": "npm run build && node --test ./test/*.test.js",
+    "test:pack": "node ./scripts/test-package.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "binaryen": "130.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
