@@ -6276,7 +6276,7 @@ block:
         paths.sort();
         assert_eq!(
             paths.len(),
-            47,
+            46,
             "the canonical example sweep changed; review new or removed programs"
         );
 

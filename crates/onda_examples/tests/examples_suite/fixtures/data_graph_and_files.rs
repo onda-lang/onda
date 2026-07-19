@@ -908,4 +908,4 @@ const STDLIB_F32_FILE_EXAMPLE: &str =
 const STDLIB_F32_GRAPH_FILE_EXAMPLE: &str =
     include_str!("../../../../../examples/standard-library/std_f32_graph.onda");
 const WASM_PLAYGROUND_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/web/onda_wasm_playground/default.onda");
+    include_str!("../../../../../ui/playground/default.onda");
