@@ -22,6 +22,7 @@ import { tags } from "@lezer/highlight";
 
 import { projectUriToPath } from "./lsp-client.js";
 import { completionIconMasks, completionType } from "./completions.js";
+import { reorderMap } from "./tab-order.js";
 
 const sectionWords = new Set([
   "ins", "inputs", "outs", "outputs", "params", "kins", "kouts",
@@ -232,11 +233,14 @@ export class OndaProjectEditor {
     this.semanticRefreshTimer = 0;
     this.states = new Map();
     this.documentInfo = new Map();
+    this.draggedTabPath = null;
     this.pendingDefinitionNavigation = Promise.resolve(false);
     for (const [path, source] of Object.entries(initialProject.sources)) {
       this.documentInfo.set(path, { kind: "project", label: path, readOnly: false });
       this.states.set(path, this.createState(path, source));
     }
+    this.tabs.addEventListener("dragover", (event) => this.dragTabOver(event));
+    this.tabs.addEventListener("drop", (event) => this.dropTab(event));
     this.view = new EditorView({ state: this.states.get(this.active), parent });
     this.renderFiles();
   }
@@ -578,6 +582,56 @@ export class OndaProjectEditor {
     view.dom.classList.toggle("cm-onda-definition-mode", enabled);
   }
 
+  startTabDrag(path, tab, event) {
+    this.draggedTabPath = path;
+    tab.dataset.dragging = "true";
+    this.tabs.dataset.dragging = "true";
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", path);
+    }
+  }
+
+  dragTabOver(event) {
+    if (!this.draggedTabPath) return;
+    const dragged = this.tabs.querySelector(
+      `.project-file[data-path="${CSS.escape(this.draggedTabPath)}"]`,
+    );
+    if (!dragged) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const target = event.target.closest?.(".project-file");
+    if (!target || target.parentElement !== this.tabs) {
+      this.tabs.append(dragged);
+      return;
+    }
+    if (target === dragged) return;
+    const bounds = target.getBoundingClientRect();
+    const beforeTarget = event.clientX < bounds.left + bounds.width / 2;
+    this.tabs.insertBefore(dragged, beforeTarget ? target : target.nextSibling);
+  }
+
+  dropTab(event) {
+    if (!this.draggedTabPath) return;
+    event.preventDefault();
+    const previousOrder = this.allPaths();
+    const orderedPaths = [...this.tabs.querySelectorAll(".project-file")]
+      .map((tab) => tab.dataset.path);
+    this.draggedTabPath = null;
+    delete this.tabs.dataset.dragging;
+    this.states = reorderMap(this.states, orderedPaths);
+    const changed = this.allPaths().some((path, index) => path !== previousOrder[index]);
+    this.renderFiles();
+    if (changed) this.onChange?.(this.project());
+  }
+
+  cancelTabDrag(path) {
+    if (this.draggedTabPath !== path) return;
+    this.draggedTabPath = null;
+    delete this.tabs.dataset.dragging;
+    this.renderFiles();
+  }
+
   renderFiles() {
     this.tabs.replaceChildren();
     const projectFileCount = this.paths().length;
@@ -592,6 +646,9 @@ export class OndaProjectEditor {
       tab.dataset.kind = info?.kind ?? "project";
       tab.dataset.errors = String(errorCount);
       tab.setAttribute("role", "presentation");
+      tab.draggable = true;
+      tab.addEventListener("dragstart", (event) => this.startTabDrag(path, tab, event));
+      tab.addEventListener("dragend", () => this.cancelTabDrag(path));
       selectButton.type = "button";
       selectButton.className = "project-file-select";
       selectButton.setAttribute("role", "tab");

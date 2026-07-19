@@ -109,7 +109,11 @@
         color: var(--muted);
         font-size: 11px;
         white-space: nowrap;
+        cursor: grab;
       }
+      .project-file[data-dragging="true"] { opacity: .55; cursor: grabbing; }
+      .project-file-tabs[data-dragging="true"] { cursor: grabbing; }
+      .project-file-tabs[data-dragging="true"] .project-file { user-select: none; }
       .project-file-select {
         display: inline-flex;
         align-items: center;
@@ -125,7 +129,9 @@
         color: inherit;
         font: inherit;
         text-align: left;
+        cursor: grab;
       }
+      .project-file-tabs[data-dragging="true"] .project-file-select { cursor: grabbing; }
       .project-file-close {
         display: grid;
         place-items: center;
@@ -193,8 +199,8 @@
                 <span>Block size</span>
                 <select data-block-size>
                   <option value="128">128 frames</option>
-                  <option value="256" selected>256 frames</option>
-                  <option value="512">512 frames</option>
+                  <option value="256">256 frames</option>
+                  <option value="512" selected>512 frames</option>
                   <option value="1024">1024 frames</option>
                 </select>
               </label>

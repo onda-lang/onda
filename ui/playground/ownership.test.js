@@ -25,6 +25,8 @@ test("the standalone example remains a thin host for ui/playground", async () =>
     "microphone.test.js",
     "run-view-host.js",
     "share.js",
+    "tab-order.js",
+    "tab-order.test.js",
   ]) {
     assert.equal(exampleFiles.has(sharedFile), false, `${sharedFile} must remain owned by ui/playground`);
   }

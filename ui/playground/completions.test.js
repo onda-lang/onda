@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { completionIconMasks, completionType } from "./completions.js";
 
-test("maps every Onda LSP completion kind to a font-independent icon", () => {
+test("maps every Onda LSP completion kind to the same font-independent cube", () => {
   const expected = new Map([
     [2, "method"],
     [3, "function"],
@@ -23,6 +23,7 @@ test("maps every Onda LSP completion kind to a font-independent icon", () => {
   for (const [kind, type] of expected) {
     assert.equal(completionType(kind), type);
     assert.match(completionIconMasks[type], /^url\("data:image\/svg\+xml,/);
+    assert.equal(completionIconMasks[type], completionIconMasks.text);
   }
   assert.equal(completionType(999), "text");
   assert.ok(completionIconMasks.text);

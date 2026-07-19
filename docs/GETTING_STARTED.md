@@ -8,7 +8,16 @@ eyebrow: Learn Onda
 
 # Getting started
 
-This guide takes you from installing Onda to a running sine oscillator. At the end, you will know how an Onda program is shaped, how to hear it in real time, and how to render it to a file.
+This guide takes you from trying Onda to a running sine oscillator. At the end, you will know how an Onda program is shaped, how to hear it in real time, and how to render it to a file.
+
+## Try Onda in your browser
+
+The quickest way to get started is the [Onda playground]({{ '/playground/' | relative_url }}). It
+lets you edit, compile, and hear Onda programs directly in your browser, with no installation. Start
+with the included patch or open a program from the [example cookbook]({{ '/docs/examples/' | relative_url }}).
+
+Install Onda when you are ready to work with local files, use native audio tools, or embed it in an
+application.
 
 ## Install a precompiled release
 
@@ -115,4 +124,3 @@ An Onda patch is organized by when work happens:
 | `graph` | Lowered into scheduled signal flow | Declarative processor routing |
 
 That visible rate model is the central idea of the language. Read [the complete language guide]({{ '/docs/language/' | relative_url }}) next, or learn from the [example cookbook]({{ '/docs/examples/' | relative_url }}).
-

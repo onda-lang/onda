@@ -60,7 +60,7 @@ The main parts are:
 | `params` | Host-visible control values. |
 | `init` | Setup code and persistent state. |
 | `block` | Code that runs once per host block. |
-| nested `sample` | Code that runs once per sample. |
+| `sample` | Code that runs once per sample. |
 | `out1` | A numbered audio output. |
 
 The rest of the language grows from this model. You describe a processor's
