@@ -125,6 +125,7 @@ already produce compatible Onda MIR.
 ## Versioning
 
 `[workspace.package].version` in the repository's top-level `Cargo.toml` is the only authored Onda
-version. `scripts/sync-package-versions.mjs` updates the workspace-owned `Cargo.lock` entries,
+version. Run `scripts/sync-versions.sh` or `scripts/sync-versions.ps1` after changing it.
+The underlying `scripts/sync-package-versions.mjs` updates the workspace-owned `Cargo.lock` entries,
 discovers every `@onda-lang/*` package, and synchronizes its manifest and lockfile. Compiler builds
 and release jobs run it automatically; `ONDA_VERSION` is generated into the packaged distribution.

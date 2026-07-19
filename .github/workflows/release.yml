@@ -223,6 +223,7 @@ jobs:
         with:
           name: onda-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*.${{ matrix.archive_ext }}
+          retention-days: 1
 
   web:
     name: WebAssembly compiler packages
@@ -274,6 +275,7 @@ jobs:
         with:
           name: onda-web-packages
           path: dist/*.tgz
+          retention-days: 1
 
   npm-publish:
     name: Publish npm packages
@@ -285,44 +287,44 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v5
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
-          cache-dependency-path: package-lock.json
 
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+      - name: Download tested npm packages
+        uses: actions/download-artifact@v7
+        with:
+          name: onda-web-packages
+          path: dist
 
-      - name: Install and verify workspace
+      - name: Validate package versions
+        shell: bash
         run: |
-          npm install --global npm@latest
-          workspace_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
-          tag_version="${GITHUB_REF_NAME#v}"
-          if [[ "$tag_version" != "$workspace_version" ]]; then
-            echo "release tag $GITHUB_REF_NAME does not match workspace version $workspace_version" >&2
+          packages=(dist/*.tgz)
+          if [[ "${#packages[@]}" -ne 4 ]]; then
+            echo "expected 4 npm packages, found ${#packages[@]}" >&2
             exit 1
           fi
-          node ./scripts/sync-package-versions.mjs --check
-          npm ci
-          npm run test:pack --workspace @onda-lang/wasm-compiler
+
+          tag_version="${GITHUB_REF_NAME#v}"
+          for package in "${packages[@]}"; do
+            package_version="$(tar -xOf "$package" package/package.json \
+              | node -e 'let data = ""; process.stdin.on("data", chunk => data += chunk).on("end", () => process.stdout.write(JSON.parse(data).version))')"
+            if [[ "$package_version" != "$tag_version" ]]; then
+              echo "$package has version $package_version, expected $tag_version" >&2
+              exit 1
+            fi
+          done
 
       - name: Publish with npm trusted publishing
         run: |
-          npm publish ./packages/onda_processor_abi --access public --provenance
-          npm publish ./packages/onda_binaryen_web --access public --provenance
-          npm publish ./packages/onda_webaudio --access public --provenance
-          npm publish ./packages/onda_wasm_compiler --access public --provenance
+          npm install --global npm@latest
+          npm publish ./dist/onda-lang-processor-abi-*.tgz --access public --provenance
+          npm publish ./dist/onda-lang-binaryen-web-*.tgz --access public --provenance
+          npm publish ./dist/onda-lang-webaudio-*.tgz --access public --provenance
+          npm publish ./dist/onda-lang-wasm-compiler-*.tgz --access public --provenance
 
   release:
     name: Publish Release

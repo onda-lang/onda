@@ -251,6 +251,24 @@ Current LSP support includes:
 - immediate diagnostics on open/save and debounced diagnostics while editing
 - semantic tokens for constants, params, ports, and init-scoped variables
 
+## Updating the project version
+
+After changing `[workspace.package].version` in `Cargo.toml`, synchronize `Cargo.lock`, the npm
+package manifests, internal package dependencies, and `package-lock.json`:
+
+```bash
+./scripts/sync-versions.sh
+```
+
+PowerShell:
+
+```powershell
+.\scripts\sync-versions.ps1
+```
+
+Pass `--check` to the Bash script or `-Check` to the PowerShell script to verify without modifying
+files. CI and release workflows run this check automatically.
+
 ## Building `onda` from source
 
 1. Initialize submodules.

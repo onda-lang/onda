@@ -8,22 +8,19 @@ import {
   compileTrustedMir as compileMir,
   createDefaultImports,
 } from "../src/index.js";
+import { resolveOndaCli } from "./onda-cli.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
 const source = join(packageDir, "test/fixtures/language-slice.onda");
+const ondaCli = resolveOndaCli(repoDir);
 const temporary = mkdtempSync(join(tmpdir(), "onda-binaryen-web-"));
 const mirPath = join(temporary, "language-slice.mir.msgpack");
 
 try {
   execFileSync(
-    "cargo",
+    ondaCli,
     [
-      "run",
-      "-q",
-      "-p",
-      "onda_cli",
-      "--",
       "compile",
       source,
       "--emit",
@@ -140,13 +137,8 @@ try {
   const bufferSource = join(packageDir, "test/fixtures/buffer-slice.onda");
   const bufferMirPath = join(temporary, "buffer-slice.mir.msgpack");
   execFileSync(
-    "cargo",
+    ondaCli,
     [
-      "run",
-      "-q",
-      "-p",
-      "onda_cli",
-      "--",
       "compile",
       bufferSource,
       "--emit",
@@ -213,13 +205,8 @@ try {
   const sliceSource = join(packageDir, "test/fixtures/slice-semantics.onda");
   const sliceMirPath = join(temporary, "slice-semantics.mir.msgpack");
   execFileSync(
-    "cargo",
+    ondaCli,
     [
-      "run",
-      "-q",
-      "-p",
-      "onda_cli",
-      "--",
       "compile",
       sliceSource,
       "--emit",

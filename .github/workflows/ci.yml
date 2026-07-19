@@ -2,19 +2,38 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "assets/**"
+      - "docs/**"
+      - "website/**"
   push:
-    branches:
-      - main
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "assets/**"
+      - "docs/**"
+      - "website/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   LLVM_VERSION: 21.1.2
 
 jobs:
-  compiler:
+  native:
+    name: Native compiler and backend parity
     runs-on: ubuntu-latest
+    env:
+      ONDA_CLI: ${{ github.workspace }}/target/debug/onda
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -22,30 +41,6 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-
-      - name: Test portable compiler layers
-        run: cargo test -p onda_mir -p onda_semantics -p onda_compiler_web
-
-      - name: Check portable compiler layers
-        run: cargo check -p onda_mir -p onda_semantics -p onda_compiler_web
-
-      - name: Lint MIR transport and browser boundary
-        run: cargo clippy -p onda_mir -p onda_realtime -p onda_compiler_web --all-targets --no-deps -- -D warnings
-
-  native-and-browser:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: package-lock.json
 
       - name: Install native system dependencies
         run: |
@@ -68,42 +63,63 @@ jobs:
       - name: Bootstrap LLVM
         run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
 
-      - name: Verify package versions
-        run: node ./scripts/sync-package-versions.mjs --check
-
-      - name: Test Rust workspace outside PipeWire-dependent hosts
+      - name: Test and lint Rust
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test --workspace --release \
+          cargo test --workspace \
             --exclude onda_cpal \
             --exclude onda_run \
             --exclude onda_cli \
             --exclude onda_egui \
             --exclude onda_webview
+          cargo clippy -p onda_mir -p onda_realtime -p onda_compiler_web \
+            --all-targets --no-deps -- -D warnings
+          cargo build -p onda_cli
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install JavaScript workspace
         run: npm ci
 
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
-
-      - name: Test Binaryen backend and LLVM parity
+      - name: Test LLVM and Binaryen parity
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          npm test --workspace @onda-lang/binaryen-web
           npm run test:onda --workspace @onda-lang/binaryen-web
-
-      - name: Test full Onda source corpus with Binaryen
-        shell: bash
-        run: |
-          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
           npm run test:corpus --workspace @onda-lang/binaryen-web
 
-      - name: Test WebAssembly compiler product package
+  browser:
+    name: Browser and npm packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install browser build tools
         run: |
+          npm ci
+          cargo install wasm-pack --locked
+
+      - name: Test browser and npm packages
+        run: |
+          npm run check:versions
+          npm run test:playground
           npm test --workspace @onda-lang/processor-abi
+          npm test --workspace @onda-lang/binaryen-web
           npm test --workspace @onda-lang/webaudio
           npm run build --workspace @onda-lang/wasm-compiler
           npm run test:built --workspace @onda-lang/wasm-compiler

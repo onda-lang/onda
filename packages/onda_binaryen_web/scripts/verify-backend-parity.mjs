@@ -10,15 +10,11 @@ import {
   compileTrustedMir as compileMir,
   createDefaultImports,
 } from "../src/index.js";
+import { resolveOndaCli } from "./onda-cli.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
-const cargoTargetDir = process.env.CARGO_TARGET_DIR
-  ? resolve(repoDir, process.env.CARGO_TARGET_DIR)
-  : join(repoDir, "target");
-const ondaCli =
-  process.env.ONDA_CLI ??
-  join(cargoTargetDir, "debug", process.platform === "win32" ? "onda.exe" : "onda");
+const ondaCli = resolveOndaCli(repoDir);
 const temporary = mkdtempSync(join(tmpdir(), "onda-backend-parity-"));
 const sampleRate = 48_000;
 const blockSize = 4;
@@ -155,13 +151,8 @@ try {
 
 function compileSourceToMir(source, mirPath) {
   execFileSync(
-    "cargo",
+    ondaCli,
     [
-      "run",
-      "-q",
-      "-p",
-      "onda_cli",
-      "--",
       "compile",
       source,
       "--emit",

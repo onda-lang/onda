@@ -18,12 +18,16 @@ members = [
   "crates/onda_webview",
   "crates/onda_examples",
 ]
+default-members = [
+  "crates/onda_cli",
+  "crates/onda_api",
+]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.4.4"
+version = "0.5.0"
 authors = ["onda contributors"]
 
 [workspace.lints.clippy]

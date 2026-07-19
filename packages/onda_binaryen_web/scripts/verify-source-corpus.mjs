@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   readFileSync,
@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import {
   dirname,
   extname,
-  isAbsolute,
   join,
   relative,
   resolve,
@@ -18,6 +17,7 @@ import {
 import { fileURLToPath } from "node:url";
 
 import { compileTrustedMir as compileMir } from "../src/index.js";
+import { resolveOndaCli } from "./onda-cli.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
@@ -57,7 +57,7 @@ if (sources.length === 0) {
   throw new Error("Onda source corpus is empty");
 }
 
-const ondaCli = resolveOndaCli();
+const ondaCli = resolveOndaCli(repoDir);
 const temporary = mkdtempSync(join(tmpdir(), "onda-binaryen-corpus-"));
 const failures = [];
 let validModules = 0;
@@ -144,34 +144,6 @@ function ondaSourcesBelow(directory) {
 
 function repoPath(path) {
   return relative(repoDir, path).split(sep).join("/");
-}
-
-function resolveOndaCli() {
-  const override = process.env.ONDA_CLI?.trim();
-  if (override) {
-    return isAbsolute(override) ? override : resolve(repoDir, override);
-  }
-
-  const cargo = process.env.CARGO?.trim() || "cargo";
-  try {
-    execFileSync(cargo, ["build", "-q", "-p", "onda_cli"], {
-      cwd: repoDir,
-      stdio: "inherit",
-    });
-  } catch (error) {
-    throw new Error(
-      `failed to build onda_cli:\n${errorMessage(error)}`,
-    );
-  }
-
-  const targetDir = process.env.CARGO_TARGET_DIR
-    ? resolve(repoDir, process.env.CARGO_TARGET_DIR)
-    : join(repoDir, "target");
-  return join(
-    targetDir,
-    "debug",
-    process.platform === "win32" ? "onda.exe" : "onda",
-  );
 }
 
 function compileSourceToMir(ondaCli, source, mirPath) {
