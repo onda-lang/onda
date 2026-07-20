@@ -183,7 +183,7 @@ The MIR producer, rather than each backend, owns Onda scheduling semantics:
 - parameter clamping and update hooks
 
 The process MIR therefore describes the canonical process loop. Backends translate that loop; they
-do not independently recreate it from `TypedProgram` regions. In schema 5 the process entry has
+do not independently recreate it from `TypedProgram` regions. The current schema's process entry has
 exactly three ordered `i32` value parameters: `(start_frame, frames, flags)`. BEGIN gates block-pre,
 END gates block-post, and the sample loop runs local frames `[0, frames)`. `process_frame(offset)`
 is the only operation that can produce an audio-I/O frame. It traps unless `0 <= offset < frames`,
@@ -372,9 +372,9 @@ backends. JSON is the inspectable interchange and diagnostic form; MessagePack i
 production transport used by the browser compiler and Binaryen backend. It avoids a second schema
 and is substantially smaller without making backend code depend on Rust layouts.
 Consumers must reject unknown `schema_version` values. Compatible additions retain the version;
-incompatible serialized changes increment it. Schema 5 adds explicit control-mirror IDs and
+incompatible serialized changes increment it. The current schema includes explicit control-mirror IDs and
 persistence, checked slice construction, safe scalar/array reference windows, and serialized
-function origin/inline hints. It retains canonical decimal-string encoding for `i64` and exact
+function origin/inline hints. It uses canonical decimal-string encoding for `i64` and exact
 hexadecimal IEEE bit patterns for non-finite `f32`/`f64`. These encodings avoid JavaScript number
 corruption and JSON's lack of NaN/infinity literals. The safe JSON and MessagePack decoders return
 `ValidatedProgram` and reject unchecked producer claims. Optimized-program serializers and the
@@ -406,7 +406,7 @@ contract, leaving no parallel LLVM semantics or layout pipeline to drift from th
 
 The browser path is current end to end. `onda_compiler_web` compiles one in-memory source or a
 virtual multi-file project, resolves the embedded standard library, and returns optimized,
-validated schema-5 MIR as compact MessagePack for production or JSON for inspection, with
+validated MIR in the current schema as compact MessagePack for production or JSON for inspection, with
 structured diagnostics. `packages/onda_binaryen_web` accepts either transport and lowers it with
 Binaryen.js to an executable DSP Wasm module plus host metadata. Its deliberately named
 `compileTrustedMir` entry accepts only output carrying the complete `onda_mir` producer proof; the
@@ -417,7 +417,7 @@ embedded frontend Wasm, checks the producer/backend schema versions, keeps the t
 inside the package, and exposes asynchronous source/project APIs, a browser worker, and the
 `onda-wasm` build-time CLI. The low-level packages remain independently testable backend boundaries.
 
-The schema-5 backend consumes explicit control-mirror state, checked `make_slice`, fixed-array and
+The current-schema backend consumes explicit control-mirror state, checked `make_slice`, fixed-array and
 slice reference windows, and serialized function attributes. It covers scalar and fixed-array
 storage, tuples and multi-value returns, primitive slices, dynamic-slice events, buffers, flattened
 data structs, recursive processor arrays, structured control flow, constant data, oversampling, and
@@ -445,7 +445,7 @@ differential render subset. The differential suite covers full and segmented blo
 hooks, events, numeric edge rules, the complete f32/f64 math surface, packed snapshots/restores,
 buffers, slices, processor arrays, and oversampling.
 `npm run test:corpus` discovers all checked-in examples and positive backend fixtures and requires
-each source to produce schema-5 MIR and valid Binaryen WebAssembly. The source-driven
+each source to produce current-schema MIR and valid Binaryen WebAssembly. The source-driven
 commands intentionally require the native Rust/LLVM Onda build; the backend fixtures and embedded
 compiler asset build do not. The checked-in compiler playground performs Rust semantic compilation
 and Binaryen O4 optimization in a module worker and can export the complete Wasm module with its
@@ -472,10 +472,10 @@ mismatch. The reproducible development comparison and its measurement caveats ar
 
 ## Backend invariants
 
-- Production LLVM JIT/AOT and browser WebAssembly codegen consume the same optimized schema-5 MIR
+- Production LLVM JIT/AOT and browser WebAssembly codegen consume the same optimized MIR
   contract.
 - Native and WebAssembly differential renders remain a required regression gate as the language and
   MIR evolve.
-- `--emit mir` remains deterministic and useful for debugging compiler behavior; schema-5 JSON and
+- `--emit mir` remains deterministic and useful for debugging compiler behavior; current-schema JSON and
   MessagePack remain checked, versioned views of the same backend interchange form.
 - Adding a backend must not require reimplementing Onda language semantics or scheduling.

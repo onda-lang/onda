@@ -22,7 +22,7 @@ source strings, resolving imports and includes entirely in memory. Paths cannot 
 project root. `mir_schema_version()` exposes the producer version for integration checks.
 Compilation failures reject with a JSON-encoded array of structured diagnostics.
 
-The current producer and `packages/onda_binaryen_web` both use MIR schema 5. The browser playground
+The current producer and `packages/onda_binaryen_web` both use the current MIR schema. The browser playground
 under `examples/web/onda_wasm_playground` passes the generated MessagePack directly to the explicitly
 trusted Onda-producer entry point in the Binaryen.js backend and runs the resulting DSP Wasm in an
 AudioWorklet.

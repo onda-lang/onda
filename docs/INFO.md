@@ -23,7 +23,7 @@ For build, CLI usage, and editor integrations, see the [getting-started guide](h
 | `onda_mir` | Backend-neutral typed executable IR: logical types, explicit storage/resources, structured control flow, proof-aware validation, optimization, and JSON/MessagePack transport. |
 | `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
 | `onda_processor_abi` | Compiler-free shared processor descriptor schema and ABI version constants. |
-| `onda_compiler_web` | Filesystem-free browser compiler: in-memory source/projects plus embedded stdlib to validated schema-5 MIR MessagePack or JSON. |
+| `onda_compiler_web` | Filesystem-free browser compiler: in-memory source/projects plus embedded stdlib to validated current-schema MIR MessagePack or JSON. |
 | `onda_realtime` | Backend-independent realtime thread policy, including one-time x86 FTZ/DAZ setup. |
 | `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
 | `onda_api` | C ABI surface exposed through `include/onda.h`. |
@@ -189,7 +189,7 @@ Non-crate directories of note:
 - Graph lowering path: `processor_lowering/graph_lowering.rs` → `graph_lowering/*` (inspect via `onda compile --dump-graph`).
 - Production native lowering: `onda_semantics::lower_program_to_optimized_mir` →
   `orc_backend/mir_native.rs` → `mir_metadata.rs` / `aot_artifact.rs`.
-- Browser path: `onda_compiler_web` → schema-5 MIR MessagePack →
+- Browser path: `onda_compiler_web` → MIR MessagePack →
   `packages/onda_binaryen_web` → DSP Wasm + host metadata →
   `packages/onda_processor_abi` validation → shared `ui/playground` runtime →
   `examples/web/onda_wasm_playground` or website `/playground/` host.
@@ -218,10 +218,10 @@ Non-crate directories of note:
   records the little-endian format-1 scalar encoding and post-init restore base, and declares the
   resolved target pointer model plus artifact integration profile.
 - `onda compile <file> --emit mir` exposes deterministic MIR for inspection, while `--emit mir-json`
-  emits inspectable schema-5 interchange and `--emit mir-messagepack` emits the compact production
+  emits inspectable current-schema interchange and `--emit mir-messagepack` emits the compact production
   transport. In a browser, `onda_compiler_web` produces the same MessagePack directly from in-memory
   source and embedded `std/...` modules.
-  `packages/onda_binaryen_web` consumes schema 5, including explicit control mirrors, checked slice
+  `packages/onda_binaryen_web` consumes the current schema, including explicit control mirrors, checked slice
   construction, reference windows, and function attributes, and returns DSP Wasm plus physical
   state, snapshot, interface, event, buffer, and import metadata.
 - [`PROCESSOR_ABI.md`](PROCESSOR_ABI.md) defines the shared logical processor contract. LLVM emits
@@ -240,9 +240,9 @@ Non-crate directories of note:
     intentionally preserve stale buffer bindings after a rebind.
   - segment variants keep full-block base pointers and JIT-loop local frames `[0, frames)`, addressing bound I/O at `start_frame + local_frame`.
   - flags `ONDA_PROCESS_BEGIN_BLOCK` / `ONDA_PROCESS_END_BLOCK` drive block hooks only; they do not imply an implicit runtime cursor.
-- MIR schema 4 introduced the `(start_frame, frames, flags)` process signature and checked
-  `process_frame` audio addressing retained by schema 5. The native wrapper validates segment bounds
-  and the flag mask; zero-frame segments are legal. The schema-5 Binaryen wrapper and reference
+- The MIR schema defines the `(start_frame, frames, flags)` process signature and checked
+  `process_frame` audio addressing. The native wrapper validates segment bounds
+  and the flag mask; zero-frame segments are legal. The Binaryen wrapper and reference
   AudioWorklet implement the same scheduling contract. The worklet maintains the host-side
   compile-block cursor needed when Web Audio callback sizes differ from the compiled block size.
 - Per-block behavior: declared buffers must be bound before processing; top-level ranged params are hoisted/clamped once per block; top-level ranged inputs once per sample; host-triggered events run synchronously via index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous element bytes).
@@ -283,7 +283,7 @@ Non-crate directories of note:
 - From `packages/onda_binaryen_web`, `npm test` runs backend/worklet fixtures, `npm run test:onda` runs
   real Onda source plus LLVM/Binaryen parity and the internal-Wasm FMA oracle, and `npm run test:parity`
   selects the differential renderer. `npm run test:corpus` continuously compiles all 47 checked-in
-  examples and positive backend fixtures through source -> schema-5 MIR MessagePack -> Binaryen -> valid
+  examples and positive backend fixtures through source -> MIR MessagePack -> Binaryen -> valid
   Wasm. These source-driven commands require a working native Rust/LLVM Onda build; `npm test` and
   the browser asset build do not.
 - `npm run bench` runs the reproducible native LLVM versus Binaryen/Wasm comparison documented in

@@ -122,7 +122,7 @@ function executableMir() {
   });
 
   return {
-    schema_version: 5,
+    schema_version: backend.SUPPORTED_MIR_SCHEMA_VERSION,
     config: { sample_rate: 48_000, block_size: 4 },
     source_files: [],
     types: [type("scalar", "f32"), type("scalar", "bool"), type("scalar", "i32")],
@@ -578,7 +578,7 @@ test("enforces checked make_slice ranges and traps indexed access to empty slice
   }
 });
 
-test("lowers schema-5 fixed-array and slice reference windows", async () => {
+test("lowers current-schema fixed-array and slice reference windows", async () => {
   const mir = executableMir();
   mir.types.push(
     type("array", { element: 0, len: 4 }),
@@ -684,12 +684,14 @@ test("lowers schema-5 fixed-array and slice reference windows", async () => {
 
 test("rejects incompatible MIR schema versions before code generation", () => {
   const mir = executableMir();
-  mir.schema_version = 2;
+  const incompatibleVersion = backend.SUPPORTED_MIR_SCHEMA_VERSION + 1;
+  mir.schema_version = incompatibleVersion;
   assert.throws(
     () => compileMir(mir),
     (error) =>
       error instanceof OndaBinaryenError &&
-      /unsupported MIR schema version 2; expected 5/.test(error.message),
+      error.message ===
+        `unsupported MIR schema version ${incompatibleVersion}; expected ${backend.SUPPORTED_MIR_SCHEMA_VERSION}`,
   );
 });
 
@@ -760,7 +762,7 @@ test("rejects audio I/O frames not produced by process_frame", () => {
   );
 });
 
-test("rejects noncanonical schema-v5 process entry signatures", () => {
+test("rejects noncanonical current-schema process entry signatures", () => {
   const mutations = [
     {
       change: (mir) => mir.functions[1].params.pop(),
@@ -825,7 +827,7 @@ test("rejects recursive MIR call graphs as unbounded realtime work", () => {
   );
 });
 
-test("preserves schema-v5 i64 and non-finite constants exactly", async () => {
+test("preserves current-schema i64 and non-finite constants exactly", async () => {
   const mir = executableMir();
   mir.types.push(type("scalar", "i64"));
   mir.functions[0].locals.push({ name: "wide", ty: 3 });
@@ -868,7 +870,7 @@ test("preserves schema-v5 i64 and non-finite constants exactly", async () => {
   assert.equal(view.getBigUint64(1048, true), 0x7ff0000000000000n);
 });
 
-test("rejects lossy numeric schema-v5 i64 constants", () => {
+test("rejects lossy numeric current-schema i64 constants", () => {
   const mir = executableMir();
   mir.types.push(type("scalar", "i64"));
   mir.functions[0].locals.push({ name: "wide", ty: 3 });
@@ -880,7 +882,9 @@ test("rejects lossy numeric schema-v5 i64 constants", () => {
   );
   assert.throws(
     () => compileMir(mir),
-    /schema 5 i64 values must be canonical decimal strings/,
+    new RegExp(
+      `schema ${backend.SUPPORTED_MIR_SCHEMA_VERSION} i64 values must be canonical decimal strings`,
+    ),
   );
 });
 

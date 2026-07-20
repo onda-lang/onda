@@ -110,6 +110,7 @@ mod tests {
         FunctionAttributes, FunctionId, FunctionKind, FunctionOrigin, InlineHint, Local, LocalId,
         Place, PlaceBase, Program, Rvalue, ScalarType, ScalarValue, SliceSource, SourceSpan,
         StateId, StatePersistence, StateSlot, Statement, StatementKind, Type, TypeId, Value,
+        MIR_SCHEMA_VERSION,
     };
 
     #[test]
@@ -128,7 +129,7 @@ mod tests {
         program.functions = vec![empty_function("onda_init", FunctionKind::Init), process];
 
         let json = super::to_json_pretty(&program).expect("MIR should encode");
-        assert!(json.contains("\"schema_version\": 5"));
+        assert!(json.contains(&format!("\"schema_version\": {MIR_SCHEMA_VERSION}")));
         assert!(json.contains("\"kind\": \"process\""));
         let decoded = super::from_json(&json).expect("MIR should decode");
         assert_eq!(decoded.as_program(), &program);
@@ -197,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v5_json_preserves_explicit_identity_attributes_and_slice_bounds() {
+    fn current_schema_json_preserves_explicit_identity_attributes_and_slice_bounds() {
         let mut program = Program::new(
             CompileConfig {
                 sample_rate: 48_000.0,
@@ -266,18 +267,18 @@ mod tests {
         });
         program.functions = vec![empty_function("onda_init", FunctionKind::Init), process];
 
-        let json = super::to_json_pretty(&program).expect("schema-v5 MIR should encode");
+        let json = super::to_json_pretty(&program).expect("current-schema MIR should encode");
         assert!(json.contains("\"mirror\": 0"));
         assert!(json.contains("\"control_mirror\""));
         assert!(json.contains("\"origin\": \"compiler_generated\""));
         assert!(json.contains("\"inline\": \"always\""));
         assert!(json.contains("\"bounds\": \"trap\""));
-        let decoded = super::from_json(&json).expect("schema-v5 MIR should decode");
+        let decoded = super::from_json(&json).expect("current-schema MIR should decode");
         assert_eq!(decoded.as_program(), &program);
     }
 
     #[test]
-    fn json_rejects_the_previous_incompatible_schema_version() {
+    fn json_rejects_an_unknown_schema_version() {
         let mut program = Program::new(
             CompileConfig {
                 sample_rate: 48_000.0,
@@ -290,14 +291,15 @@ mod tests {
         let mut process = empty_function("onda_process", FunctionKind::Process);
         process.params = process_function_params(TypeId::new(0));
         program.functions = vec![empty_function("onda_init", FunctionKind::Init), process];
-        program.schema_version = 4;
+        let unknown_version = MIR_SCHEMA_VERSION + 1;
+        program.schema_version = unknown_version;
 
         let json = serde_json::to_string(&program).expect("raw old-schema fixture should encode");
-        let error = super::from_json(&json).expect_err("schema 4 must not decode as schema 5");
+        let error = super::from_json(&json).expect_err("unknown schema must not decode");
         assert!(
             matches!(error, super::MirJsonError::Invalid(errors) if errors
             .iter()
-            .any(|error| error.message.contains("schema version 4")))
+            .any(|error| error.message.contains(&format!("schema version {unknown_version}"))))
         );
     }
 

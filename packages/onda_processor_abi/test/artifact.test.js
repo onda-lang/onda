@@ -11,6 +11,8 @@ import {
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
+const FIXTURE_MIR_SCHEMA_VERSION = 1;
+
 const wasm = new Uint8Array([
   0, 97, 115, 109, 1, 0, 0, 0,
   1, 4, 1, 96, 0, 0,
@@ -32,7 +34,7 @@ function metadata() {
     abi_version: 1,
     artifact_kind: "webassembly_module",
     backend: "test",
-    mir_schema_version: 5,
+    mir_schema_version: FIXTURE_MIR_SCHEMA_VERSION,
     target: {
       triple: "wasm32-unknown-unknown",
       pointer_width_bits: 32,

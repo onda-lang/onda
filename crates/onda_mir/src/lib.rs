@@ -37,7 +37,7 @@ pub use validate::{
 /// JSON consumers must reject versions they do not understand. Compatible
 /// additions retain this value; incompatible serialized-schema changes must
 /// increment it.
-pub const MIR_SCHEMA_VERSION: u32 = 5;
+pub const MIR_SCHEMA_VERSION: u32 = 1;
 
 /// Positional ABI indices for the three value parameters of the process entry.
 pub const PROCESS_START_FRAME_PARAM_INDEX: usize = 0;

@@ -834,18 +834,18 @@ mod tests {
         process.params = process_function_params(TypeId::new(1));
         program.functions.push(process);
 
-        let expected = concat!(
-            "mir 5\n",
-            "config sample_rate=48000.0 block_size=64\n",
+        let expected = format!("mir {}\n", MIR_SCHEMA_VERSION)
+            + concat!(
+                "config sample_rate=48000.0 block_size=64\n",
             "source @file0 \"quoted\\\"path.onda\"\n",
             "type @t0 = f32\n",
             "type @t1 = i32\n",
             "entry init=@fn0 process=@fn1\n",
             "fn @fn0 \"init\" init origin=source inline=auto () -> () {\n",
             "}\n",
-            "fn @fn1 \"process\" process origin=source inline=auto (@p0 \"start_frame\": @t1 value, @p1 \"frames\": @t1 value, @p2 \"flags\": @t1 value) -> () {\n",
-            "}\n",
-        );
+                "fn @fn1 \"process\" process origin=source inline=auto (@p0 \"start_frame\": @t1 value, @p1 \"frames\": @t1 value, @p2 \"flags\": @t1 value) -> () {\n",
+                "}\n",
+            );
         assert_eq!(format_program(&program), expected);
         assert_eq!(format_program(&program), format_program(&program));
     }

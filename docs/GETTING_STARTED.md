@@ -110,17 +110,3 @@ Offline rendering uses the same run pipeline without opening an audio device:
 onda run render sine.onda --output first.wav --dur 5 --set freq=330
 ```
 
-## Understand the execution model
-
-An Onda patch is organized by when work happens:
-
-| Section | Runs | Typical use |
-| --- | --- | --- |
-| `params` | Controlled by the host | Frequency, gain, mix, mode |
-| `init` | At instance creation or reset | Persistent state and proc construction |
-| `block` | Once per host audio block | Control-rate calculations |
-| `sample` | Once per output sample | Oscillators, filters, mixing |
-| `event` | When triggered by the host | Notes, gates, resets, one-shot changes |
-| `graph` | Lowered into scheduled signal flow | Declarative processor routing |
-
-That visible rate model is the central idea of the language. Read [the complete language guide]({{ '/docs/language/' | relative_url }}) next, or learn from the [example cookbook]({{ '/docs/examples/' | relative_url }}).

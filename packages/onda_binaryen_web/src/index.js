@@ -281,12 +281,12 @@ class MirCompiler {
     ) {
       this.fail("Binaryen shrinkLevel must be an integer from 0 through 2");
     }
-    this.validateSchemaV5Envelope();
+    this.validateCurrentSchemaEnvelope();
     this.validateProcessEntrySignature();
     this.validateAcyclicCallGraph();
   }
 
-  validateSchemaV5Envelope() {
+  validateCurrentSchemaEnvelope() {
     const persistenceKinds = new Set([
       "snapshot",
       "instance_scratch",
@@ -334,7 +334,9 @@ class MirCompiler {
         !origins.has(func.attributes.origin) ||
         !inlineHints.has(func.attributes.inline)
       ) {
-        this.fail(`function ${functionId} has invalid schema-5 attributes`);
+        this.fail(
+          `function ${functionId} has invalid schema-${SUPPORTED_MIR_SCHEMA_VERSION} attributes`,
+        );
       }
     }
   }
@@ -3517,7 +3519,9 @@ const I64_MAX = (1n << 63n) - 1n;
 
 function decodeI64Literal(value, compiler) {
   if (typeof value !== "string" || !/^-?(0|[1-9][0-9]*)$/.test(value)) {
-    compiler.fail("MIR schema 5 i64 values must be canonical decimal strings");
+    compiler.fail(
+      `MIR schema ${SUPPORTED_MIR_SCHEMA_VERSION} i64 values must be canonical decimal strings`,
+    );
   }
   let decoded;
   try {

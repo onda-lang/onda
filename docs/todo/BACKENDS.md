@@ -15,7 +15,7 @@ with the target:
 Implemented browser path:
 
 ```text
-source editor -> compiler worker -> schema-5 MIR -> Binaryen O4 -> Wasm + descriptor
+source editor -> compiler worker -> MIR -> Binaryen O4 -> Wasm + descriptor
                                                         -> optional AudioWorklet adapter
 ```
 

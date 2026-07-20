@@ -51,59 +51,16 @@ Take a look at the `examples/` folder for more usage examples.
 
 - [docs/SYNTAX.md](docs/SYNTAX.md): language syntax and semantics
 - [docs/INFO.md](docs/INFO.md): project structure and implementation notes
-- [docs/MIR.md](docs/MIR.md): backend-neutral MIR and browser-backend boundary
+- [docs/MIR.md](docs/MIR.md): backend-neutral MIR and backend boundary
 - [docs/PROCESSOR_ABI.md](docs/PROCESSOR_ABI.md): generic processor ABI and target/artifact profiles
-- [docs/BACKEND_BENCHMARKS.md](docs/BACKEND_BENCHMARKS.md): reproducible LLVM/Binaryen compile and render comparison
 - [crates/onda_compiler_web](crates/onda_compiler_web/README.md): in-browser Onda source-to-MIR compiler API
 - [packages/onda_wasm_compiler](packages/onda_wasm_compiler/README.md): packaged source-to-WebAssembly compiler and `onda-wasm` CLI
-- [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): schema-5 MIR-to-Wasm backend
+- [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): current MIR-to-Wasm backend
 - [packages/onda_processor_abi](packages/onda_processor_abi/README.md): compiler-free artifact schema, validation, and integrity helpers
 - [packages/onda_webaudio](packages/onda_webaudio/README.md): optional reusable Web Audio adapter
-- [ui/playground](ui/playground/README.md): shared browser IDE used by the website and standalone host
 - [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground
 - [examples/web/onda_wasm_aot_sample_player](examples/web/onda_wasm_aot_sample_player/README.md): precompiled Wasm sample player and AudioWorklet host
 - [examples/native/raw_processor_object](examples/native/raw_processor_object/README.md): link and call a native relocatable processor object directly
-
-## Browser examples
-
-### Embedded compiler playground
-
-The browser demo compiles edited Onda source entirely on the client:
-
-```text
-Onda source -> compiler worker -> schema-5 MIR MessagePack -> Binaryen O4 -> DSP Wasm -> AudioWorklet
-```
-
-Preparing its static assets requires Node/npm and `wasm-pack`:
-
-```bash
-bash ./examples/web/onda_wasm_playground/build-demo.sh --serve
-```
-
-PowerShell:
-
-```powershell
-.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve
-```
-
-Then open `http://127.0.0.1:8787/`. The build does not require the native `onda` CLI or LLVM, but
-`wasm-pack` is required to build the browser compiler. See the demo README for test commands and
-current limitations.
-
-For applications, `@onda-lang/wasm-compiler` packages the same frontend and Binaryen backend behind
-one source/project-to-artifact API. Its `onda-wasm` command emits an integrity-associated `.wasm`
-plus `.onda.json` pair for build-time deployment.
-
-### AOT Wasm sample player
-
-The AOT example compiles the shared sample player before serving the page. Its browser bundle loads
-only the finished Wasm artifact, descriptor, Web Audio adapter, and `impulse.wav`:
-
-```bash
-bash ./examples/web/onda_wasm_aot_sample_player/build-demo.sh --serve
-```
-
-It runs on `http://127.0.0.1:8788/` and does not ship the Onda compiler or Binaryen to the browser.
 
 ## Precompiled releases
 

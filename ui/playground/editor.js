@@ -656,6 +656,7 @@ export class OndaProjectEditor {
   renderFiles() {
     this.tabs.replaceChildren();
     const projectFileCount = this.paths().length;
+    let activeTab = null;
     for (const path of this.allPaths()) {
       const info = this.documentInfo.get(path);
       const tab = document.createElement("div");
@@ -723,6 +724,16 @@ export class OndaProjectEditor {
 
       tab.append(selectButton, closeButton);
       this.tabs.append(tab);
+      if (path === this.active) activeTab = tab;
+    }
+    if (activeTab) {
+      const tabBounds = activeTab.getBoundingClientRect();
+      const stripBounds = this.tabs.getBoundingClientRect();
+      if (tabBounds.left < stripBounds.left) {
+        this.tabs.scrollLeft -= stripBounds.left - tabBounds.left;
+      } else if (tabBounds.right > stripBounds.right) {
+        this.tabs.scrollLeft += tabBounds.right - stripBounds.right;
+      }
     }
   }
 }

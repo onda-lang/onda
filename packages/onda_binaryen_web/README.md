@@ -8,9 +8,9 @@ This is the supported low-level MIR backend. Applications starting from Onda sou
 use [`@onda-lang/wasm-compiler`](../onda_wasm_compiler/README.md), which packages the browser
 frontend and this backend behind one typed source/project API and the `onda-wasm` CLI.
 
-Compatibility status: this package implements MIR schema 5 and consumes current output from
+Compatibility status: this package implements the current MIR schema and consumes output from
 `onda compile --emit mir-messagepack`, `--emit mir-json`, and `crates/onda_compiler_web`. It validates explicit control-mirror
-IDs/persistence, checked `make_slice`, fixed-array and slice reference windows, and schema-5
+IDs/persistence, checked `make_slice`, fixed-array and slice reference windows, and current-schema
 function attributes before code generation.
 
 ```js
@@ -57,13 +57,13 @@ The executable backend supports:
 - checked slice construction plus fixed-array/slice reference windows
 - address-taken scalar locals legalized through per-function reference scratch storage
 - SIMD contiguous slice fill with a scalar tail and bulk-memory contiguous slice copy
-- schema-5 function attributes as validated, portable optimization hints
+- current-schema function attributes as validated, portable optimization hints
 - native WebAssembly numeric intrinsics plus on-demand internal transcendental and strict-FMA helpers
 - Binaryen validation and optimization before emission
 
 The backend also supports primitive slice locals and reference arguments, event slices, flattened data structs, structure-of-arrays processor state, recursive processor arrays, and canonical top-level/processor oversampling schedules. Oversampling interpolation, substeps, sinc-filter state updates, and output decimation are ordinary MIR operations; Binaryen has no Onda-specific scheduling logic. Recursive call graphs are rejected as unbounded realtime work before fixed-array local storage can become re-entrant. Aggregate shapes that cannot be represented by portable MIR are rejected above the backend boundary.
 
-MIR schema 5 retains the three ordered `i32` process parameters introduced in schema 4:
+The MIR schema defines three ordered `i32` process parameters:
 `(start_frame, frames, flags)`. `process_frame(offset)` is the checked source of audio-I/O
 addresses. The public 11-argument `onda_process` export keeps full-block base pointers and accepts
 any segment contained in the configured block. BEGIN and END flags independently gate block hooks;
@@ -119,7 +119,7 @@ math workloads. It improved three workloads and left saturator effectively uncha
 of higher one-time compilation latency. Binaryen StackIR generation remains off because it improved
 some workloads but regressed others in the same matrix.
 
-MIR schema 5 retains the lossless scalar encoding introduced by schema 3: `i64` values are decimal strings and non-finite floats are exact hexadecimal IEEE bit patterns. The compiler and reference AudioWorklet decode both forms before constructing Wasm constants or initializing host storage.
+The MIR schema uses lossless scalar encoding: `i64` values are decimal strings and non-finite floats are exact hexadecimal IEEE bit patterns. The compiler and reference AudioWorklet decode both forms before constructing Wasm constants or initializing host storage.
 
 Install the pinned Binaryen dependency and run the test layers from this directory:
 
@@ -130,14 +130,14 @@ npm run test:onda
 npm run test:corpus
 ```
 
-`npm test` runs schema-5 backend, embedded-math-kernel, artifact, and reference-worklet fixtures. `npm run test:onda`
+`npm test` runs current-schema backend, embedded-math-kernel, artifact, and reference-worklet fixtures. `npm run test:onda`
 compiles real Onda sources, runs LLVM/MIR-Binaryen render parity through MessagePack, and verifies
 exact FMA against Rust's `mul_add`; `npm run test:parity` selects only the differential renderer.
 That renderer covers full/segmented/zero-frame scheduling, events, snapshots/restores, numeric edge
 semantics, buffers, slices, processor arrays, and oversampling. The source-driven
 and parity commands require the native Rust/LLVM Onda build. `npm run test:corpus` continuously
 discovers every `.onda` program under `examples/` and this package's positive fixtures, compiles each
-through the CLI to schema-5 MIR, lowers it with Binaryen, and validates the generated Wasm. It also
+through the CLI to current-schema MIR, lowers it with Binaryen, and validates the generated Wasm. It also
 requires the native build. `npm test` does not.
 
 Run `npm run bench` for the reproducible development comparison documented in

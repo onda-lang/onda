@@ -1,1 +1,1 @@
-export const SUPPORTED_MIR_SCHEMA_VERSION = 5;
+export const SUPPORTED_MIR_SCHEMA_VERSION = 1;

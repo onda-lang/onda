@@ -9,6 +9,8 @@ import {
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
+const FIXTURE_MIR_SCHEMA_VERSION = 1;
+
 function artifact() {
   return {
     wasm: new Uint8Array([
@@ -30,7 +32,7 @@ function artifact() {
       abi_version: 1,
       artifact_kind: "webassembly_module",
       backend: "test",
-      mir_schema_version: 5,
+      mir_schema_version: FIXTURE_MIR_SCHEMA_VERSION,
       integration: {
         required_symbols: ["memory", "__heap_base", "onda_init", "onda_process"],
         one_processor_per_artifact: true,

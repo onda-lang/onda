@@ -249,15 +249,18 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .play-source-editor { height: min(68vh, 760px); min-height: 420px; overflow: hidden; border: 1px solid var(--line); border-radius: 0 0 5px 5px; background: var(--code-bg); }
 .play-source-editor:focus-within, .play-page input:focus, .play-page select:focus { border-color: var(--ink); box-shadow: 0 0 0 2px var(--soft); outline: none; }
 .project-files { display: flex; align-items: end; min-width: 0; margin-top: .9rem; border-bottom: 1px solid var(--line); }
-.project-file-tabs { display: flex; flex: 1 1 auto; min-width: 0; overflow: hidden; align-items: end; gap: 0; }
-.project-file-actions { display: flex; flex: 0 0 auto; align-items: center; gap: .25rem; padding: 0 0 .3rem .5rem; }
+.project-file-tabs { display: flex; flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
+.project-file-add { display: grid !important; place-items: center; align-self: flex-start; flex: 0 0 1.8rem; width: 1.8rem; min-height: 30px; margin-bottom: -1px; padding: 0 !important; border-color: transparent transparent var(--line) !important; border-radius: 4px 4px 0 0 !important; background: transparent !important; color: var(--muted) !important; font: 1rem/1 var(--sans) !important; }
+.project-file-add:hover, .project-file-add:focus-visible { background: var(--soft) !important; color: var(--ink) !important; }
+.project-file-actions { display: flex; align-self: flex-start; flex: 0 0 auto; align-items: center; gap: .25rem; padding: 0 0 .3rem .5rem; }
 .project-file-actions button, .buffer-control button { padding: .3rem .48rem !important; font-size: .66rem; }
 .project-file {
   display: flex;
   align-items: center;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 190px;
+  flex: 0 0 9.5rem;
+  width: 9.5rem;
+  min-width: 9.5rem;
+  max-width: 9.5rem;
   min-height: 30px;
   margin-bottom: -1px;
   overflow: hidden;

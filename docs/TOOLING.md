@@ -113,5 +113,3 @@ Use the pre-built shared and static libraries or build them from source with:
 ```bash
 cargo build -p onda_api --release
 ```
-
-For implementation details and crate entry points, continue to the [architecture guide]({{ '/docs/architecture/' | relative_url }}).

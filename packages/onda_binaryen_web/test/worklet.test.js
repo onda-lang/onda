@@ -5,7 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { compileTrustedMir as compileMir } from "../src/index.js";
+import {
+  SUPPORTED_MIR_SCHEMA_VERSION,
+  compileTrustedMir as compileMir,
+} from "../src/index.js";
 
 const unknownSource = {
   file: null,
@@ -33,7 +36,7 @@ const assign = (destination, value) =>
 
 function f64PassthroughMir() {
   return {
-    schema_version: 5,
+    schema_version: SUPPORTED_MIR_SCHEMA_VERSION,
     config: { sample_rate: 48_000, block_size: 4 },
     source_files: [],
     types: [

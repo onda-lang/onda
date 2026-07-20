@@ -4,7 +4,7 @@ This example consumes a processor that was compiled before the page loads:
 
 ```text
 sample_player.onda
-  -> native compiler frontend: optimized schema-5 MIR MessagePack
+  -> native compiler frontend: optimized MIR MessagePack
   -> Binaryen O4 at build time: complete DSP Wasm + descriptor
   -> static browser page: AudioWorklet only
 ```

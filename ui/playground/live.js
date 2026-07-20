@@ -707,6 +707,7 @@ function editProject(action) {
 }
 
 async function createNewPatch() {
+  if (!window.confirm("Create a new patch? This will delete your current project.")) return;
   await stopExecution();
   bufferFiles.clear();
   projectEditor.replaceProject({

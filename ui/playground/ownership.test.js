@@ -46,6 +46,8 @@ test("both playground hosts expose new-patch and stable shortcut controls", asyn
 
   for (const host of hosts) {
     assert.match(host, /data-new-patch/);
+    assert.match(host, /class="project-file-add"[^>]+data-new-file[^>]*>\+<\/button>/);
+    assert.doesNotMatch(host, /data-new-file>New file<\/button>/);
     assert.match(host, /Ctrl\/Cmd \+ Enter/);
     assert.match(host, /Ctrl \+ Period/);
     assert.match(host, /data-status>Loading<\/span>/);
@@ -61,4 +63,8 @@ test("both playground hosts expose new-patch and stable shortcut controls", asyn
   assert.doesNotMatch(playground, /setStatus\([^\n]*(?:Ctrl|Cmd|Period)/);
   assert.match(playground, /setStatus\("Compiling"\)/);
   assert.match(playground, /setStatus\("Error", "fail"\)/);
+  assert.match(
+    playground,
+    /createNewPatch\(\) \{\s+if \(!window\.confirm\("Create a new patch\? This will delete your current project\."\)\) return;\s+await stopExecution\(\);/,
+  );
 });

@@ -1,4 +1,4 @@
-export const SUPPORTED_MIR_SCHEMA_VERSION: 5;
+export const SUPPORTED_MIR_SCHEMA_VERSION: number;
 export {
   OndaArtifactError,
   PROCESSOR_ABI_VERSION,

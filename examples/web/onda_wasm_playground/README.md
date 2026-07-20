@@ -7,7 +7,7 @@ It demonstrates embedding the Onda compiler in a browser application:
 editable Onda source
   -> onda lsp in @onda-lang/wasm-compiler Wasm + embedded stdlib
   -> live diagnostics, completion, hover, definitions, symbols, semantic tokens
-  -> validated schema-5 MIR MessagePack
+  -> validated MIR MessagePack
   -> packaged Binaryen backend + Binaryen.js
   -> DSP Wasm + metadata
   -> @onda-lang/webaudio AudioWorklet
@@ -109,7 +109,7 @@ npm run test:pack --workspace @onda-lang/wasm-compiler
 ```
 
 `npm test` in the compiler package builds the source-to-Wasm product API and tests source, project,
-diagnostic, and worker behavior. The backend's `npm test` covers schema-5 lowering, the internal Wasm
+diagnostic, and worker behavior. The backend's `npm test` covers current-schema lowering, the internal Wasm
 math kernel, and AudioWorklet behavior. Its `npm run test:onda` compiles real Onda source, compares
 Binaryen renders with the native LLVM/MIR path, and runs the FMA oracle. `npm run test:parity` runs
 only the LLVM/Binaryen differential render suite. The source-driven/parity commands require a

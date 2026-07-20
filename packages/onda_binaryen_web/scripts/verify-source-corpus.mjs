@@ -16,7 +16,10 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { compileTrustedMir as compileMir } from "../src/index.js";
+import {
+  SUPPORTED_MIR_SCHEMA_VERSION,
+  compileTrustedMir as compileMir,
+} from "../src/index.js";
 import { resolveOndaCli } from "./onda-cli.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -75,7 +78,7 @@ try {
     try {
       compileSourceToMir(ondaCli, source, mirPath);
       const artifact = compileMir(readFileSync(mirPath));
-      if (artifact.metadata.mir_schema_version !== 5) {
+      if (artifact.metadata.mir_schema_version !== 1) {
         throw new Error(
           `Binaryen metadata reports MIR schema ${String(
             artifact.metadata.mir_schema_version,
@@ -122,7 +125,7 @@ if (failures.length > 0) {
 } else {
   process.stdout.write(
     `\nVerified full Onda source corpus: ${validModules}/${sources.length} ` +
-      `schema-5 MIR programs compiled to valid WebAssembly ` +
+      `schema-${SUPPORTED_MIR_SCHEMA_VERSION} MIR programs compiled to valid WebAssembly ` +
       `(${wasmBytes.toLocaleString("en-US")} total Wasm bytes, ` +
       `${exampleCount} example(s), ${fixtureCount} fixture(s), ` +
       `${excludedCount} explicit exclusion(s)).\n`,

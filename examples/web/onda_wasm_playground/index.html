@@ -97,15 +97,18 @@
       .status.ready { border-color: #227a52; background: var(--soft); color: #9de2be; }
       .status.fail { border-color: #8a3a45; background: #35181e; color: #f0a3ad; }
       .project-files { flex-wrap: nowrap; align-items: end; min-width: 0; margin-top: 12px; border-bottom: 1px solid var(--line); }
-      .project-file-tabs { flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow: hidden; align-items: end; gap: 0; }
-      .project-file-actions { flex: 0 0 auto; flex-wrap: nowrap; gap: 4px; padding: 0 0 5px 8px; }
+      .project-file-tabs { flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
+      .project-file-add { display: grid; place-items: center; align-self: flex-start; flex: 0 0 30px; width: 30px; min-height: 30px; margin-bottom: -1px; padding: 0; border-color: transparent transparent var(--line); border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font: 16px/1 system-ui, sans-serif; }
+      .project-file-add:hover, .project-file-add:focus-visible { background: var(--soft); color: var(--ink); }
+      .project-file-actions { align-self: flex-start; flex: 0 0 auto; flex-wrap: nowrap; gap: 4px; padding: 0 0 5px 8px; }
       .project-file-actions button { padding: 5px 7px; border-radius: 6px; font-size: 11px; }
       .project-file {
         display: flex;
         align-items: center;
-        flex: 0 1 auto;
-        min-width: 0;
-        max-width: 190px;
+        flex: 0 0 152px;
+        width: 152px;
+        min-width: 152px;
+        max-width: 152px;
         min-height: 30px;
         margin-bottom: -1px;
         overflow: hidden;
@@ -226,10 +229,10 @@
 
           <div class="project-files">
             <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
+            <button class="project-file-add" type="button" data-new-file aria-label="New file" title="New file">+</button>
             <div class="project-file-actions">
               <button type="button" data-new-patch>New patch</button>
-              <button type="button" data-new-file>New file</button>
-              <button type="button" data-rename-file>Rename</button>
+              <button type="button" data-rename-file>Rename file</button>
               <button type="button" data-main-file>Set as main</button>
               <button type="button" data-share-project>Share</button>
             </div>
