@@ -249,6 +249,14 @@ impl SampleProducer {
     pub fn push_slice(&self, input: &[f32]) -> usize {
         self.inner.push_slice(input)
     }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl SampleConsumer {
@@ -266,6 +274,12 @@ impl SampleConsumer {
             .consume(output.len(), alignment, |index, sample| {
                 output[index] = sample
             })
+    }
+
+    /// Drops every sample that was published before this call.
+    pub fn discard_buffered(&self) {
+        let write = self.inner.write_index.load(Ordering::Acquire);
+        self.inner.read_index.store(write, Ordering::Release);
     }
 }
 
@@ -618,5 +632,19 @@ mod tests {
         let mut captured = [99.0_f32; 4];
         assert_eq!(consumer.pop_slice_aligned(&mut captured, 2), 4);
         assert_eq!(captured, [1.0, 0.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn consumer_can_discard_buffered_samples() {
+        let (producer, consumer) = sample_ring(8);
+        assert_eq!(producer.push_slice(&[1.0, 2.0, 3.0]), 3);
+
+        consumer.discard_buffered();
+
+        assert!(consumer.is_empty());
+        assert_eq!(producer.push_slice(&[4.0, 5.0]), 2);
+        let mut captured = [0.0; 2];
+        assert_eq!(consumer.pop_slice_aligned(&mut captured, 1), 2);
+        assert_eq!(captured, [4.0, 5.0]);
     }
 }

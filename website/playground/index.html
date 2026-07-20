@@ -11,7 +11,14 @@ permalink: /playground/
     <div>
       <h1>Onda playground</h1>
     </div>
-    <span class="status" aria-live="polite" data-status>Loading compiler…</span>
+    <div class="play-intro-meta">
+      <p class="play-shortcuts" aria-label="Playground keyboard shortcuts">
+        <span class="play-shortcut"><kbd>Ctrl/Cmd + Enter</kbd><span>Play</span></span>
+        <span aria-hidden="true">·</span>
+        <span class="play-shortcut"><kbd>Ctrl + Period</kbd><span>Stop</span></span>
+      </p>
+      <span class="status" aria-live="polite" data-status>Loading</span>
+    </div>
   </header>
 
   <div class="play-workspace">
@@ -40,6 +47,7 @@ permalink: /playground/
       <div class="project-files">
         <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
         <div class="project-file-actions">
+          <button type="button" data-new-patch>New patch</button>
           <button type="button" data-new-file>New file</button>
           <button type="button" data-rename-file>Rename</button>
           <button type="button" data-main-file>Set as main</button>

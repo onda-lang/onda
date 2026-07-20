@@ -2,11 +2,13 @@
 import { closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { createCompiler } from "@onda-lang/wasm-compiler";
 import {
+  compileOndaProcessorModule,
   createOndaAudioProcessor,
   flattenedAudioChannelCount,
 } from "@onda-lang/webaudio";
 
 import { prepareBufferBindings } from "./browser-buffers.js";
+import { compilationKey } from "./compile-cache.js";
 import { normalizeStoredProject, OndaProjectEditor } from "./editor.js";
 import { loadExampleProject } from "./examples.js";
 import { OndaBrowserLsp } from "./lsp-client.js";
@@ -22,6 +24,7 @@ import defaultSource from "./default.onda";
 const statusEl = document.querySelector("[data-status]");
 const editorEl = document.querySelector("[data-editor]");
 const fileTabsEl = document.querySelector("[data-file-tabs]");
+const newPatchButton = document.querySelector("[data-new-patch]");
 const newFileButton = document.querySelector("[data-new-file]");
 const renameFileButton = document.querySelector("[data-rename-file]");
 const mainFileButton = document.querySelector("[data-main-file]");
@@ -41,6 +44,8 @@ const supportedBlockSizes = new Set([128, 256, 512, 1024]);
 let compiler = null;
 let languageServer = null;
 let artifact = null;
+let artifactCompilationKey = null;
+let compiledModule = null;
 let context = null;
 let audioProcessor = null;
 let projectEditor = null;
@@ -66,7 +71,7 @@ const runView = new BrowserRunViewHost(runViewFrame, {
   clearBuffer: (name) => clearBuffer(name),
   error: (error) => {
     runView.setError(error);
-    setStatus(errorMessage(error), "fail");
+    setErrorStatus();
   },
 });
 const scopeSource = new BrowserScopeSource(runView);
@@ -74,6 +79,10 @@ const scopeSource = new BrowserScopeSource(runView);
 function setStatus(text, kind = "") {
   statusEl.textContent = text;
   statusEl.className = `status ${kind}`.trim();
+}
+
+function setErrorStatus() {
+  setStatus("Error", "fail");
 }
 
 function reportSmokeResult(result) {
@@ -122,22 +131,36 @@ async function runProject() {
     reserveAudioContext(options.sampleRate);
   } catch (error) {
     runView.setError(error);
-    setStatus(errorMessage(error), "fail");
+    setErrorStatus();
     return;
   }
   compiling = true;
   const project = projectEditor.compilerProject();
-  runView.setCompiling(project.entry);
-  setStatus("Compiling and starting the processor…");
+  const key = compilationKey(project, options);
+  const needsCompilation = !artifact || artifactCompilationKey !== key;
+  if (needsCompilation) {
+    runView.setCompiling(project.entry);
+    setStatus("Compiling");
+  } else {
+    runView.setStarting(project.entry);
+    setStatus("Starting");
+  }
   try {
-    await languageServer.syncProject(project);
-    if (generation !== runGeneration) return;
-    artifact = await compiler.compileProject(project, options);
-    if (generation !== runGeneration) return;
+    if (needsCompilation) {
+      await languageServer.syncProject(project);
+      if (generation !== runGeneration) return;
+      const compiledArtifact = await compiler.compileProject(project, options);
+      if (generation !== runGeneration) return;
+      const nextCompiledModule = await compileOndaProcessorModule(compiledArtifact);
+      if (generation !== runGeneration) return;
+      artifact = compiledArtifact;
+      compiledModule = nextCompiledModule;
+      artifactCompilationKey = key;
+    }
     localStorage.setItem(projectStorageKey, JSON.stringify(projectEditor.project()));
     runView.setArtifact(artifact, bufferFiles);
     await startAudio();
-    setStatus("Onda LSP and audio runtime are active.", "ready");
+    setStatus("Playing", "ready");
     const runViewDocument = runViewFrame.contentDocument;
     const editorBindings = smokeMode ? await smokeEditorBindings() : {};
     const themeFollowsPage = smokeMode
@@ -181,10 +204,9 @@ async function runProject() {
       ...editorBindings,
     });
   } catch (error) {
-    artifact = null;
     await closeAudioContext();
     runView.setError(error);
-    setStatus(errorMessage(error), "fail");
+    setErrorStatus();
     reportSmokeResult({ ok: false, error: errorMessage(error) });
   } finally {
     compiling = false;
@@ -469,7 +491,12 @@ async function startAudio() {
         blockSize: Number(metadata.compile.block_size),
       };
       await languageServer.setAnalysisOptions(options);
-      artifact = await compiler.compileProject(projectEditor.compilerProject(), options);
+      const project = projectEditor.compilerProject();
+      const compiledArtifact = await compiler.compileProject(project, options);
+      const nextCompiledModule = await compileOndaProcessorModule(compiledArtifact);
+      artifact = compiledArtifact;
+      compiledModule = nextCompiledModule;
+      artifactCompilationKey = compilationKey(project, options);
       metadata = artifact.metadata;
       runView.setArtifact(artifact, bufferFiles);
     }
@@ -478,6 +505,7 @@ async function startAudio() {
       runView.state.params.map((param) => [param.name, param.value]),
     );
     audioProcessor = await createOndaAudioProcessor(context, artifact, {
+      compiledModule,
       params,
       buffers,
       workletUrl: hostedAssets.workletUrl,
@@ -511,7 +539,7 @@ async function startAudio() {
 async function stopAudio() {
   if (!context) {
     runView.setStopped();
-    setStatus("Execution stopped. Onda LSP ready.", "ready");
+    setStatus("Stopped", "ready");
     return;
   }
   scopeSource.stop();
@@ -521,7 +549,7 @@ async function stopAudio() {
   audioProcessor = null;
   await closeAudioContext();
   runView.setStopped();
-  setStatus("Execution stopped. Onda LSP ready.", "ready");
+  setStatus("Stopped", "ready");
 }
 
 async function stopExecution() {
@@ -586,7 +614,7 @@ function scheduleProjectSave(project) {
 }
 
 async function loadToolchain() {
-  setStatus("Loading Onda LSP, compiler, and Binaryen…");
+  setStatus("Loading");
   const compilerLoading = createCompiler({
     worker: true,
     workerUrl: hostedAssets.workerUrl,
@@ -605,7 +633,7 @@ async function loadToolchain() {
   compiler = await compilerLoading;
   languageServer = new OndaBrowserLsp(compiler, {
     onDiagnostics: (path, diagnostics) => projectEditor.setDocumentDiagnostics(path, diagnostics),
-    onError: (error) => setStatus(errorMessage(error), "fail"),
+    onError: () => setErrorStatus(),
   });
   const capabilities = await languageServer.initialize(compileOptions());
   projectEditor.connectLanguageServer(languageServer, capabilities);
@@ -613,12 +641,10 @@ async function loadToolchain() {
   runView.setPath(projectEditor.entry);
   const initialProjectError = sharedSessionError ?? requestedExampleError;
   if (initialProjectError) {
-    setStatus(`${errorMessage(initialProjectError)} Loaded the bundled project instead.`, "fail");
+    runView.setError(initialProjectError);
+    setErrorStatus();
   } else {
-    const prefix = sharedSession
-      ? "Shared project loaded. "
-      : requestedExampleProject ? "Example loaded. " : "";
-    setStatus(`${prefix}Onda LSP ready. Start with Cmd/Ctrl+Enter; stop with Ctrl+Period.`, "ready");
+    setStatus("Ready", "ready");
   }
   if (smokeMode) await runProject();
 }
@@ -644,7 +670,7 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
   projectEditor = new OndaProjectEditor({
     parent: editorEl,
     tabs: fileTabsEl,
-    onError: (error) => setStatus(errorMessage(error), "fail"),
+    onError: () => setErrorStatus(),
     onChange: (project) => {
       if (!smokeMode) scheduleProjectSave(project);
       updateFileActions();
@@ -676,8 +702,24 @@ function editProject(action) {
     action();
     updateFileActions();
   } catch (error) {
-    setStatus(errorMessage(error), "fail");
+    setErrorStatus();
   }
+}
+
+async function createNewPatch() {
+  await stopExecution();
+  bufferFiles.clear();
+  projectEditor.replaceProject({
+    entry: "main.onda",
+    active: "main.onda",
+    sources: { "main.onda": "" },
+  });
+  runView.clearArtifact("main.onda");
+  const url = new URL(window.location.href);
+  url.searchParams.delete("example");
+  url.hash = "";
+  history.replaceState(null, "", url);
+  setStatus("Ready", "ready");
 }
 
 async function shareProject() {
@@ -703,21 +745,18 @@ async function shareProject() {
     }
     if (!copied) window.prompt("Copy this playground link", url.href);
     shareProjectButton.textContent = copied ? "Copied" : "Link ready";
-    setStatus(
-      `${copied ? "Share link copied" : "Share link ready"}. `
-        + `${projectEditor.paths().length} source file${projectEditor.paths().length === 1 ? "" : "s"} included; buffer audio remains local.`,
-      "ready",
-    );
+    setStatus(copied ? "Link copied" : "Link ready", "ready");
     setTimeout(() => {
       shareProjectButton.textContent = "Share";
     }, 1800);
   } catch (error) {
-    setStatus(errorMessage(error), "fail");
+    setErrorStatus();
   } finally {
     shareProjectButton.disabled = false;
   }
 }
 
+newPatchButton.addEventListener("click", () => void createNewPatch());
 newFileButton.addEventListener("click", () => {
   const path = prompt("New project-relative Onda file", "module.onda")?.trim();
   if (path) editProject(() => projectEditor.add(path));
@@ -733,7 +772,7 @@ for (const select of [sampleRateEl, blockSizeEl]) {
   select.addEventListener("change", () => {
     const options = compileOptions();
     languageServer?.setAnalysisOptions(options);
-    setStatus("Analysis target updated. Run the project to apply it to audio.", "ready");
+    setStatus("Ready", "ready");
   });
 }
 document.addEventListener("keydown", handlePlaygroundShortcut, { capture: true });
@@ -775,7 +814,7 @@ if (!sharedSession && requestedExample) {
 initializeEditor(sharedSession, requestedExampleProject);
 const loading = loadToolchain().catch((error) => {
   runView.setError(error);
-  setStatus(errorMessage(error), "fail");
+  setErrorStatus();
   reportSmokeResult({ ok: false, error: errorMessage(error) });
 });
 if (smokeMode) await loading;

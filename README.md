@@ -5,14 +5,8 @@
 Onda is an expressive and performant JIT-compiled audio programming language.
 
 This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
-The production compiler lowers fully resolved semantics to one validated, backend-neutral MIR:
-native hosts consume schema-5 MIR through LLVM/ORC or AOT object emission, while the browser-safe
-compiler produces the same schema in memory for the Binaryen.js WebAssembly backend. Separate
-checked-in browser examples cover embedding that compiler and hosting a precompiled Wasm artifact.
-The project website lets visitors compile its homepage example on demand and provides a full
-editor/compiler/audio playground under [`/playground/`](https://onda-lang.github.io/onda/playground/).
 
-Visit the project's [website](https://onda-lang.github.io/onda) for an introduction to the language.
+Visit the project's [website](https://onda-lang.github.io/onda) to try the web compiler and get an introduction to the language.
 
 ## Code example
 

@@ -508,6 +508,14 @@ impl RunSession {
             .expect("run session bindings remain valid across state reset");
     }
 
+    /// Creates a new runtime instance from the already-compiled JIT program.
+    /// Host-owned parameter targets and buffer bindings are retained, while all
+    /// processor state and parameter-smoothing history start fresh.
+    pub fn restart(&mut self) -> Result<(), Diagnostic> {
+        self.param_runtime_values = self.param_values.clone();
+        self.rebuild_instance()
+    }
+
     pub fn bind_buffer_wav_path(
         &mut self,
         name: &str,

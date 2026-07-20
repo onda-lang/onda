@@ -64,6 +64,16 @@ export class BrowserRunViewHost {
     });
   }
 
+  setStarting(path) {
+    this.setState({
+      path,
+      running: false,
+      connected: false,
+      status: "Starting",
+      error: "",
+    });
+  }
+
   setArtifact(artifact, bufferFiles) {
     const metadata = artifact.metadata.metadata;
     this.state.params = mergeParams(metadata.params ?? [], this.state.params);
@@ -72,6 +82,21 @@ export class BrowserRunViewHost {
     this.state.outputChannels = flattenedAudioChannelCount(metadata.outputs);
     this.state.error = "";
     this.postState();
+  }
+
+  clearArtifact(path = this.state.path) {
+    this.setState({
+      path,
+      running: false,
+      connected: false,
+      status: "Stopped",
+      error: "",
+      outputChannels: 0,
+      buffers: [],
+      events: [],
+      params: [],
+    });
+    this.postScope(0, []);
   }
 
   setRunning(sampleRate, status) {

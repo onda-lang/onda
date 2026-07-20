@@ -348,6 +348,27 @@ export class OndaProjectEditor {
     this.onChange?.(this.project());
   }
 
+  replaceProject(project) {
+    const normalized = normalizeStoredProject(project);
+    if (!normalized) throw new Error("a project must contain at least one valid Onda file");
+    clearTimeout(this.semanticRefreshTimer);
+    this.entry = normalized.entry;
+    this.active = normalized.active;
+    this.diagnostics.clear();
+    this.states.clear();
+    this.documentInfo.clear();
+    for (const [path, source] of Object.entries(normalized.sources)) {
+      this.documentInfo.set(path, { kind: "project", label: path, readOnly: false });
+      this.states.set(path, this.createState(path, source));
+    }
+    this.view.setState(this.states.get(this.active));
+    this.renderFiles();
+    this.onChange?.(this.project());
+    this.onActiveFile?.(this.active);
+    this.scheduleSemanticTokens(this.active, 0);
+    this.view.focus();
+  }
+
   select(path, position) {
     if (!this.states.has(path)) return;
     if (path !== this.active) {

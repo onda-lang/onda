@@ -22,12 +22,13 @@ test("round-trips a versioned multi-file playground session through a URL fragme
   const decoded = await decodeSharedSession(sharedSessionHash(encoded));
 
   assert.deepEqual(decoded, { ...session, v: 1 });
-  assert.match(encoded, /^(?:gzip|json)\.[A-Za-z0-9_-]+$/);
+  assert.match(encoded, /^[zj][A-Za-z0-9_-]+$/);
+  assert.doesNotMatch(sharedSessionHash(encoded), /gzip|json|share=/);
 });
 
 test("rejects malformed and unsupported shared sessions", async () => {
   await assert.rejects(
-    decodeSharedSession("#share=zip.not_base64!"),
+    decodeSharedSession("#p=xnot_base64!"),
     /malformed/,
   );
   const unsupported = btoa(JSON.stringify({ v: 99 }))
@@ -35,7 +36,7 @@ test("rejects malformed and unsupported shared sessions", async () => {
     .replaceAll("/", "_")
     .replace(/=+$/, "");
   await assert.rejects(
-    decodeSharedSession(`#share=json.${unsupported}`),
+    decodeSharedSession(`#p=j${unsupported}`),
     /unsupported shared playground project version/,
   );
 });

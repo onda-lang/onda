@@ -47,7 +47,12 @@
       h1, p { margin-top: 0; }
       h1 { margin-bottom: 4px; font-size: clamp(22px, 4vw, 34px); }
       p { color: #9cb0c3; }
-      .workspace { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(390px, .8fr); gap: 16px; }
+      .header-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 12px; }
+      .shortcut-help { display: flex; align-items: center; flex-wrap: nowrap; gap: 5px 7px; margin: 0; color: var(--muted); font-size: 11px; }
+      .shortcut { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+      .shortcut > span { color: var(--text); font-weight: 650; }
+      .shortcut-help kbd { display: inline-flex; align-items: center; min-height: 23px; padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--soft); color: var(--ink); font: 600 10px/1 var(--mono); }
+      .workspace { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(390px, .8fr); gap: 16px; align-items: stretch; }
       .panel {
         min-width: 0;
         padding: 16px;
@@ -80,10 +85,12 @@
       .status {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
+        inline-size: 116px;
         min-height: 34px;
         padding: 6px 10px;
         border: 1px solid var(--line);
-        border-radius: 999px;
+        border-radius: 6px;
         color: #dce7f2;
         background: #18212b;
       }
@@ -165,9 +172,12 @@
         background: var(--code-bg);
       }
       .source-editor:focus-within { border-color: #3e9c73; box-shadow: 0 0 0 3px rgb(62 156 115 / 16%); }
-      .run-view { width: 100%; height: min(78vh, 860px); min-height: 620px; border: 0; border-radius: 10px; background: var(--code-bg); }
+      .panel[aria-label="Onda run controls"] { display: flex; }
+      .run-view { flex: 1 1 auto; width: 100%; min-height: 620px; border: 0; border-radius: 10px; background: var(--code-bg); }
       code { color: #9de2be; }
       @media (max-width: 980px) {
+        .header-meta { justify-content: flex-start; flex-wrap: wrap; }
+        .shortcut-help { flex-wrap: wrap; }
         .workspace { grid-template-columns: 1fr; }
         .source-editor { height: 540px; }
         .run-view { min-height: 680px; }
@@ -181,7 +191,14 @@
           <h1>Onda browser IDE</h1>
           <p>The real Onda LSP, compiler, AudioWorklet runtime, and shared run view—entirely in this page.</p>
         </div>
-        <span class="status" aria-live="polite" data-status>Loading Onda LSP…</span>
+        <div class="header-meta">
+          <p class="shortcut-help" aria-label="Playground keyboard shortcuts">
+            <span class="shortcut"><kbd>Ctrl/Cmd + Enter</kbd><span>Play</span></span>
+            <span aria-hidden="true">·</span>
+            <span class="shortcut"><kbd>Ctrl + Period</kbd><span>Stop</span></span>
+          </p>
+          <span class="status" aria-live="polite" data-status>Loading</span>
+        </div>
       </header>
 
       <div class="workspace">
@@ -210,6 +227,7 @@
           <div class="project-files">
             <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
             <div class="project-file-actions">
+              <button type="button" data-new-patch>New patch</button>
               <button type="button" data-new-file>New file</button>
               <button type="button" data-rename-file>Rename</button>
               <button type="button" data-main-file>Set as main</button>

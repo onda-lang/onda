@@ -218,7 +218,7 @@ impl eframe::App for RunApp {
                                             if ui
                                                 .add_enabled(
                                                     !state.running,
-                                                    egui::Button::new("Start")
+                                                    egui::Button::new("Play")
                                                         .min_size(egui::vec2(button_width, 30.0)),
                                                 )
                                                 .clicked()

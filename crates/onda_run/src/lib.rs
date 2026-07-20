@@ -10,13 +10,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
-use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{
-    DaemonConfig, DaemonSession, RunBufferChannels as DaemonRunBufferChannels, RunBuildError,
-    RunEventInfo, RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo,
+    RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
+    RunEventValue, RunParamInfo,
 };
 use onda_frontend::Diagnostic;
-use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -173,6 +171,8 @@ pub struct RunController {
     scope_polling_active: bool,
     scope_polling_in_flight: bool,
     last_scope_poll: Instant,
+    compiled_source: Option<Vec<u8>>,
+    pending_source: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -188,6 +188,7 @@ impl RunController {
         let (events_tx, events_rx) = mpsc::channel();
         let bridge = IpcBridge::new();
         let state = RunState::new(&onda_path, &options);
+        let pending_source = fs::read(&onda_path).ok();
         let child = ChildSession::spawn(&onda_path, &options, events_tx.clone())
             .map_err(|e| format!("failed to start run subprocess: {e}"))?;
         let watcher_tx = events_tx.clone();
@@ -210,6 +211,8 @@ impl RunController {
             scope_polling_active: false,
             scope_polling_in_flight: false,
             last_scope_poll: Instant::now(),
+            compiled_source: None,
+            pending_source,
         };
         controller.state.running = true;
         controller.state.status = "Starting...".to_owned();
@@ -254,12 +257,14 @@ impl RunController {
                     }
                 }
                 ControllerEvent::FileChanged => {
-                    if self.state.running {
-                        let _ = self.restart_with_status("Restarting...");
-                    } else {
-                        self.refresh_stopped_state();
+                    if self.source_requires_recompile() {
+                        if self.state.running {
+                            let _ = self.restart_with_status("Restarting...");
+                        } else {
+                            self.invalidate_compiled_child();
+                        }
+                        result.state_changed = true;
                     }
-                    result.state_changed = true;
                 }
             }
         }
@@ -268,19 +273,36 @@ impl RunController {
     }
 
     pub fn start(&mut self) -> Result<(), String> {
+        if self.can_reuse_compiled_child() {
+            self.bridge.send_command("play", &json!({}));
+            self.scope_polling_active = true;
+            self.scope_polling_in_flight = false;
+            self.last_scope_poll = Instant::now();
+            self.state.running = true;
+            self.state.connected = true;
+            self.state.status = "Running".to_owned();
+            self.state.error = None;
+            self.state.scope_channels = 0;
+            self.state.scope_samples.clear();
+            return Ok(());
+        }
         self.restart_with_status("Starting...")
     }
 
     pub fn stop(&mut self) {
-        self.child.kill();
-        self.bridge.disconnect();
+        if self.state.connected && self.child.is_active() {
+            self.bridge.send_command("pause", &json!({}));
+        } else {
+            self.child.kill();
+            self.bridge.disconnect();
+            self.pending_source = None;
+        }
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
         self.state.running = false;
         self.state.connected = false;
         self.state.status = "Stopped".to_owned();
         self.state.error = None;
-        self.state.output_channels = 0;
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
     }
@@ -397,6 +419,7 @@ impl RunController {
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
 
+        self.pending_source = fs::read(&self.onda_path).ok();
         match ChildSession::spawn(&self.onda_path, &self.options, self.events_tx.clone()) {
             Ok(child) => {
                 self.child = child;
@@ -404,6 +427,7 @@ impl RunController {
                 Ok(())
             }
             Err(e) => {
+                self.pending_source = None;
                 self.state.status = "Failed to start".to_owned();
                 self.state.error = Some(e.clone());
                 Err(e)
@@ -411,38 +435,39 @@ impl RunController {
         }
     }
 
-    fn refresh_stopped_state(&mut self) {
-        match load_run_metadata(&self.onda_path, &self.options) {
-            Ok(metadata) => {
-                reconcile_preserved_params(
-                    &mut self.preserved_params,
-                    &self.state.params,
-                    &metadata.params,
-                );
-                self.state.params = metadata.params;
-                apply_preserved_param_state(&mut self.state.params, &self.preserved_params);
-                self.state.buffers = metadata.buffers;
-                apply_preserved_buffer_state(&mut self.state.buffers, &self.preserved_buffers);
-                self.state.events = metadata.events;
-                apply_preserved_event_state(&mut self.state.events, &self.preserved_events);
-                self.state.path = metadata.path;
-                self.state.output_channels = metadata.output_channels;
-                self.state.status = "Stopped".to_owned();
-                self.state.error = None;
-                self.state.scope_channels = 0;
-                self.state.scope_samples.clear();
-            }
-            Err(error) => {
-                self.state.status = "Stopped".to_owned();
-                self.state.error = Some(error);
-                self.state.output_channels = 0;
-                self.state.scope_channels = 0;
-                self.state.scope_samples.clear();
-            }
-        }
+    fn can_reuse_compiled_child(&self) -> bool {
+        self.bridge.is_connected()
+            && self.child.is_active()
+            && self.compiled_source.is_some()
+            && self.compiled_source == fs::read(&self.onda_path).ok()
+    }
+
+    fn source_requires_recompile(&self) -> bool {
+        let current = fs::read(&self.onda_path).ok();
+        source_differs_from_cached(
+            current.as_deref(),
+            self.compiled_source.as_deref(),
+            self.pending_source.as_deref(),
+        )
+    }
+
+    fn invalidate_compiled_child(&mut self) {
+        self.child.kill();
+        self.bridge.disconnect();
+        self.compiled_source = None;
+        self.pending_source = None;
+        self.state.connected = false;
+        self.state.status = "Stopped".to_owned();
+        self.state.error = None;
+        self.state.scope_channels = 0;
+        self.state.scope_samples.clear();
     }
 
     fn handle_child_ready(&mut self, ready: ReadyEvent) {
+        self.compiled_source = self
+            .pending_source
+            .take()
+            .or_else(|| fs::read(&self.onda_path).ok());
         let bridge_error = self
             .bridge
             .connect(ready.port, self.events_tx.clone())
@@ -527,6 +552,14 @@ impl RunController {
     }
 }
 
+fn source_differs_from_cached(
+    current: Option<&[u8]>,
+    compiled: Option<&[u8]>,
+    pending: Option<&[u8]>,
+) -> bool {
+    current != compiled && pending.is_none_or(|pending| current != Some(pending))
+}
+
 impl Drop for RunController {
     fn drop(&mut self) {
         self.child.kill();
@@ -537,49 +570,6 @@ impl Drop for RunController {
 struct ChildSession {
     child: Option<Child>,
     stderr_buffer: Arc<Mutex<String>>,
-}
-
-struct RunMetadata {
-    path: String,
-    output_channels: usize,
-    params: Vec<Value>,
-    buffers: Vec<Value>,
-    events: Vec<Value>,
-}
-
-fn load_run_metadata(path: &Path, options: &RunHostOptions) -> Result<RunMetadata, String> {
-    let mut session = DaemonSession::new(DaemonConfig {
-        analysis: AnalysisOptions {
-            sample_rate: options.sample_rate_hz as f32,
-            block_size: options.block_frames,
-        },
-        run: RunOptions {
-            sample_rate: options.sample_rate_hz as f32,
-            block_size: options.block_frames,
-            fast_math: options.fast_math,
-            opt_level: parse_run_opt_level(&options.opt_level),
-            ..RunOptions::default()
-        },
-    });
-    let run = session
-        .start_run(path)
-        .map_err(|err| format_run_build_error("run refresh failed", &err))?;
-    Ok(RunMetadata {
-        path: display_path(run.path()),
-        output_channels: run.output_channel_count(),
-        params: run.param_info().iter().map(run_param_json).collect(),
-        buffers: run.buffer_info().iter().map(run_buffer_json).collect(),
-        events: run.event_info().iter().map(run_event_json).collect(),
-    })
-}
-
-fn parse_run_opt_level(value: &str) -> TargetOptLevel {
-    match value {
-        "0" => TargetOptLevel::O0,
-        "1" => TargetOptLevel::O1,
-        "2" => TargetOptLevel::O2,
-        _ => TargetOptLevel::O3,
-    }
 }
 
 fn format_run_build_error(prefix: &str, err: &RunBuildError) -> String {
@@ -660,6 +650,10 @@ fn run_event_value_json(value: &RunEventValue) -> Value {
 }
 
 impl ChildSession {
+    fn is_active(&self) -> bool {
+        self.child.is_some()
+    }
+
     fn spawn(
         onda_path: &Path,
         options: &RunHostOptions,
@@ -1175,7 +1169,10 @@ fn display_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{params_are_compatible_for_preservation, reconcile_preserved_params, FileWatcher};
+    use super::{
+        params_are_compatible_for_preservation, reconcile_preserved_params,
+        source_differs_from_cached, FileWatcher,
+    };
     use serde_json::{json, Value};
     use std::fs;
     use std::path::Path;
@@ -1234,6 +1231,26 @@ mod tests {
             preserved.is_empty(),
             "changed default should reset preserved param"
         );
+    }
+
+    #[test]
+    fn source_cache_only_invalidates_for_different_contents() {
+        assert!(!source_differs_from_cached(
+            Some(b"same"),
+            Some(b"same"),
+            None,
+        ));
+        assert!(!source_differs_from_cached(
+            Some(b"pending"),
+            Some(b"old"),
+            Some(b"pending"),
+        ));
+        assert!(source_differs_from_cached(
+            Some(b"changed"),
+            Some(b"old"),
+            None,
+        ));
+        assert!(source_differs_from_cached(None, Some(b"old"), None));
     }
 
     #[test]

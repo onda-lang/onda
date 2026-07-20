@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use onda_codegen_llvm::TargetOptLevel;
 use onda_cpal::{
@@ -60,6 +60,12 @@ struct PlaybackStartup {
 }
 
 enum PlaybackControlCommand {
+    Pause {
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Play {
+        reply: mpsc::Sender<Result<(), String>>,
+    },
     GetParams {
         reply: mpsc::Sender<Result<Vec<RunParamInfo>, String>>,
     },
@@ -537,6 +543,7 @@ fn spawn_run_render_thread(
         };
 
         let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
+        let mut playing = true;
         let mut captured = vec![0.0_f32; launch.block_frames.saturating_mul(render_input_channels)];
         let mut interleaved =
             vec![0.0_f32; launch.block_frames.saturating_mul(render_output_channels)];
@@ -548,6 +555,43 @@ fn spawn_run_render_thread(
                         break;
                     };
                     match command {
+                        PlaybackControlCommand::Pause { reply } => {
+                            playing = false;
+                            let _ = reply.send(Ok(()));
+                        }
+                        PlaybackControlCommand::Play { reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
+                            let drain_deadline = Instant::now() + Duration::from_millis(75);
+                            while !sample_queue.is_empty() && Instant::now() < drain_deadline {
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                            input_queue.discard_buffered();
+                            let result = session
+                                .run_mut(&launch.input)
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .and_then(|run| {
+                                    run.restart().map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "daemon play restart failed",
+                                            &diag,
+                                        )
+                                    })
+                                });
+                            playing = result.is_ok();
+                            if playing {
+                                if let Ok(mut ring) = scope_ring.try_lock() {
+                                    *ring = ScopeRing::new(
+                                        SCOPE_CAPACITY_FRAMES,
+                                        render_output_channels,
+                                    );
+                                }
+                            }
+                            let _ = reply.send(result);
+                        }
                         PlaybackControlCommand::GetParams { reply } => {
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
@@ -669,6 +713,11 @@ fn spawn_run_render_thread(
                     &mut session,
                     &launch.input,
                 );
+            }
+
+            if !playing {
+                thread::sleep(Duration::from_millis(1));
+                continue;
             }
 
             if render_input_channels > 0 {
@@ -901,6 +950,28 @@ fn run_control_response(
 ) -> Option<Value> {
     let request_id = request.id;
     let result = match request.command.as_str() {
+        "pause" | "play" => {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            let command = if request.command == "pause" {
+                PlaybackControlCommand::Pause { reply: reply_tx }
+            } else {
+                PlaybackControlCommand::Play { reply: reply_tx }
+            };
+            control_tx
+                .send(command)
+                .map_err(|_| "run control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "run control reply channel closed".to_owned())
+                })
+                .map(|result| {
+                    request_id.clone().map(|id| match result {
+                        Ok(()) => json!({ "id": id, "ok": true }),
+                        Err(err) => json!({ "id": id, "ok": false, "error": err }),
+                    })
+                })
+        }
         "getParams" => {
             let (reply_tx, reply_rx) = mpsc::channel();
             control_tx
@@ -1302,5 +1373,39 @@ mod tests {
             }
             _ => panic!("expected triggerEvent command"),
         }
+    }
+
+    #[test]
+    fn run_play_command_waits_for_runtime_restart() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let worker =
+            std::thread::spawn(
+                move || match control_rx.recv().expect("play should be queued") {
+                    PlaybackControlCommand::Play { reply } => {
+                        reply.send(Ok(())).expect("play reply should be received");
+                    }
+                    _ => panic!("expected play command"),
+                },
+            );
+
+        let response = run_control_response(
+            PlaybackControlRequest {
+                id: Some(Value::from(7)),
+                command: "play".to_owned(),
+                name: None,
+                path: None,
+                value: None,
+                values: None,
+                max_frames: None,
+            },
+            &control_tx,
+            &scope_ring,
+        )
+        .expect("play request should return a response");
+
+        worker.join().expect("play worker should finish");
+        assert_eq!(response.get("id"), Some(&Value::from(7)));
+        assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
     }
 }

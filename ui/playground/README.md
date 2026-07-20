@@ -17,7 +17,7 @@ Hosts provide the required DOM elements and `globalThis.__ONDA_PLAYGROUND_ASSETS
 copies of the IDE runtime. `scripts/bundle-web-playground.mjs` is the single bundling entry point.
 
 The editor uses compact, draggable project tabs, calls the compiler entry point the **Main file**, runs with
-Cmd/Ctrl+Enter, stops with Ctrl+Period, and follows definitions with Cmd/Ctrl+click. Run and stop
+Cmd/Ctrl+Enter, stops with Ctrl+Period, and follows definitions with Cmd/Ctrl+click. Play and stop
 shortcuts work anywhere in the playground, including inside the run view. Embedded standard
 library targets open as read-only virtual tabs supplied by the Wasm LSP. Closing a project tab deletes
 that file from the browser project; closing a standard-library tab only dismisses the virtual document.
@@ -25,7 +25,12 @@ Definition navigation remains available inside those virtual standard-library ta
 Autocomplete uses one local SVG cube for every completion kind, so its appearance does not depend
 on the selected editor font. Programs with top-level audio inputs request microphone permission once and reuse that
 stream across recompiles; projects without those inputs never request media-device access.
+Play reuses the compiled Wasm artifact when the project and compile options are unchanged, but always
+creates a fresh AudioWorklet processor so stopped runtime state is never resumed.
+**New patch** stops execution and replaces the browser project with one empty `main.onda` file.
 
 The **Share** action writes a versioned, compressed snapshot to the URL fragment. The snapshot
 contains every project source, the main and active files, sample rate, and block size. URL fragments
 remain client-side; browser-selected WAV data is intentionally not embedded in the link.
+The compact `#p=z…` form uses the browser's built-in gzip streams without exposing compression details
+in the visible link prefix.

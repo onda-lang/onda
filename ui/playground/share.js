@@ -11,7 +11,7 @@ export async function encodeSharedSession(session) {
     throw new Error("this project is too large to share in a URL");
   }
 
-  let format = "json";
+  let format = "j";
   let payload = source;
   if (typeof CompressionStream === "function") {
     try {
@@ -21,7 +21,7 @@ export async function encodeSharedSession(session) {
         MAX_DECODED_BYTES,
       );
       if (compressed.byteLength < source.byteLength) {
-        format = "gzip";
+        format = "z";
         payload = compressed;
       }
     } catch {
@@ -29,7 +29,7 @@ export async function encodeSharedSession(session) {
     }
   }
 
-  const encoded = `${format}.${bytesToBase64Url(payload)}`;
+  const encoded = `${format}${bytesToBase64Url(payload)}`;
   if (encoded.length > MAX_ENCODED_CHARACTERS) {
     throw new Error("this project is too large to share in a URL");
   }
@@ -37,21 +37,20 @@ export async function encodeSharedSession(session) {
 }
 
 export async function decodeSharedSession(hash) {
-  const encoded = new URLSearchParams(String(hash ?? "").replace(/^#/, "")).get("share");
+  const encoded = new URLSearchParams(String(hash ?? "").replace(/^#/, "")).get("p");
   if (!encoded) return null;
   if (encoded.length > MAX_ENCODED_CHARACTERS) {
     throw new Error("the shared playground URL is too large");
   }
 
-  const separator = encoded.indexOf(".");
-  const format = encoded.slice(0, separator);
-  const data = encoded.slice(separator + 1);
-  if (separator <= 0 || !/^[A-Za-z0-9_-]+$/.test(data)) {
+  const format = encoded[0];
+  const data = encoded.slice(1);
+  if (!/^[A-Za-z0-9_-]+$/.test(data)) {
     throw new Error("the shared playground URL is malformed");
   }
 
   let bytes = base64UrlToBytes(data);
-  if (format === "gzip") {
+  if (format === "z") {
     if (typeof DecompressionStream !== "function") {
       throw new Error("this browser cannot decompress the shared playground URL");
     }
@@ -60,7 +59,7 @@ export async function decodeSharedSession(hash) {
       new DecompressionStream("gzip"),
       MAX_DECODED_BYTES,
     );
-  } else if (format !== "json") {
+  } else if (format !== "j") {
     throw new Error(`unsupported shared playground format '${format}'`);
   }
   if (bytes.byteLength > MAX_DECODED_BYTES) {
@@ -80,7 +79,7 @@ export async function decodeSharedSession(hash) {
 }
 
 export function sharedSessionHash(encoded) {
-  return `#share=${encoded}`;
+  return `#p=${encoded}`;
 }
 
 async function transformBytes(bytes, transformer, maximumBytes) {

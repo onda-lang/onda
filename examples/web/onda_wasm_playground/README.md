@@ -16,7 +16,7 @@ editable Onda source
 The shared UI consumes the public `@onda-lang/wasm-compiler`, `@onda-lang/processor-abi`, and
 `@onda-lang/webaudio` APIs. It contains a CodeMirror project editor with line numbers and multiple
 in-memory files, backed by the same Onda LSP implementation as `onda-vscode`. The existing shared
-`ui/run/run.html` view provides scope, parameter, event, WAV-buffer, reset, stop, and start controls.
+`ui/run/run.html` view provides scope, parameter, event, WAV-buffer, reset, stop, and play controls.
 Rust analysis, semantic compilation, and Binaryen O4 optimization run through the compiler package's
 module worker, so neither LSP requests nor compilation block editor interaction.
 The source is compiled in the browser; there is no compiler service, native Onda CLI, LLVM, or
@@ -50,8 +50,9 @@ macOS/Linux:
 bash ./examples/web/onda_wasm_playground/build-demo.sh --serve
 ```
 
-Open `http://127.0.0.1:8787/`. Edit the source and select **Start** in the shared run view (or press
-Cmd/Ctrl+Enter). This compiles the current main file and starts its AudioWorklet; Ctrl+Period stops
+Open `http://127.0.0.1:8787/`. Edit the source and select **Play** in the shared run view (or press
+Cmd/Ctrl+Enter). This compiles changed project files and starts a fresh AudioWorklet; unchanged
+projects reuse their compiled artifact. Ctrl+Period stops
 execution. Both shortcuts work anywhere on the page, including inside the run view. Cmd/Ctrl+click
 navigates to project definitions and opens standard-library definitions
 in read-only tabs. Each compact tab has a close control: project tabs delete the browser-project file,
