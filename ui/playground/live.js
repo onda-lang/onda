@@ -692,9 +692,6 @@ function updateFileActions() {
   const projectDocument = projectEditor.isProjectDocument();
   renameFileButton.disabled = !projectDocument;
   mainFileButton.disabled = !projectDocument || projectEditor.active === projectEditor.entry;
-  mainFileButton.textContent = projectEditor.active === projectEditor.entry
-    ? "Main file"
-    : "Set as main";
 }
 
 function editProject(action) {
