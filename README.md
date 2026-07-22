@@ -6,7 +6,7 @@ Onda is an expressive and performant JIT-compiled audio programming language.
 
 This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
 
-Visit the project's [website](https://onda-lang.github.io/onda) for an introduction to the language.
+Visit the project's [website](https://onda-lang.github.io/onda) to try the web compiler and get an introduction to the language.
 
 ## Code example
 
@@ -49,12 +49,27 @@ Take a look at the `examples/` folder for more usage examples.
 
 ## Documentation
 
-- [docs/SYNTAX.md](docs/SYNTAX.md): language syntax and semantics
-- [docs/INFO.md](docs/INFO.md): project structure and implementation notes
+- [CHANGELOG.md](CHANGELOG.md): release history and migration notes
+- [docs/syntax.md](docs/syntax.md): language syntax and semantics
+- [docs/info.md](docs/info.md): project structure and implementation notes
+- [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
+- [docs/processor-abi.md](docs/processor-abi.md): generic processor ABI and target/artifact profiles
+- [crates/onda_compiler_web](crates/onda_compiler_web/README.md): in-browser Onda source-to-MIR compiler API
+- [packages/onda_wasm_compiler](packages/onda_wasm_compiler/README.md): packaged source-to-WebAssembly compiler and `onda-wasm` CLI
+- [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): current MIR-to-Wasm backend
+- [packages/onda_processor_abi](packages/onda_processor_abi/README.md): compiler-free artifact schema, validation, and integrity helpers
+- [packages/onda_webaudio](packages/onda_webaudio/README.md): optional reusable Web Audio adapter
+- [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground
+- [examples/web/onda_wasm_aot_sample_player](examples/web/onda_wasm_aot_sample_player/README.md): precompiled Wasm sample player and AudioWorklet host
+- [examples/native/raw_processor_object](examples/native/raw_processor_object/README.md): link and call a native relocatable processor object directly
 
 ## Precompiled releases
 
-[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, static and shared C libraries, the public header, language guide and examples.
+[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, static and shared C libraries, public headers, language guide and examples.
+
+Tagged releases attach portable tarballs and publish the four public npm packages with provenance:
+`@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and
+`@onda-lang/wasm-compiler`.
 
 ## The `onda` CLI
 
@@ -79,6 +94,7 @@ Compiles an Onda file and optionally emits IR or an object file.
 Typical uses:
 - syntax and semantic checking
 - inspect graph lowering with `--dump-graph`
+- emit backend-neutral MIR for inspection with `--emit mir`, versioned JSON with `--emit mir-json`, or compact production transport with `--emit mir-messagepack`
 - emit LLVM IR with `--emit llvm-ir` or `--ir`
 - emit a native object file with `--emit obj`
 
@@ -86,6 +102,9 @@ Examples:
 
 ```bash
 onda compile examples/foundations/sine.onda
+onda compile examples/foundations/sine.onda --emit mir
+onda compile examples/foundations/sine.onda --emit mir-json --output sine.mir.json
+onda compile examples/foundations/sine.onda --emit mir-messagepack --output sine.mir.msgpack
 onda compile examples/processors-and-graphs/proc_gain_graph.onda --dump-graph
 onda compile examples/foundations/sine.onda --emit llvm-ir
 onda compile examples/foundations/sine.onda --emit obj
@@ -184,6 +203,27 @@ Current LSP support includes:
 - immediate diagnostics on open/save and debounced diagnostics while editing
 - semantic tokens for constants, params, ports, and init-scoped variables
 
+## Updating the project version
+
+After changing `[workspace.package].version` in `Cargo.toml`, synchronize `Cargo.lock`, the npm
+package manifests, internal package dependencies, and `package-lock.json`:
+
+```bash
+./scripts/sync-versions.sh
+```
+
+PowerShell:
+
+```powershell
+.\scripts\sync-versions.ps1
+```
+
+Pass `--check` to the Bash script or `-Check` to the PowerShell script to verify without modifying
+files. CI and release workflows run this check automatically.
+
+Wire-format versions are maintained independently in `format-versions.json`. The same sync command
+propagates them to the Rust, JavaScript, TypeScript, C, and example-facing constants.
+
 ## Building `onda` from source
 
 1. Initialize submodules.
@@ -228,6 +268,11 @@ cargo build -p onda_api --release
 This produces the `onda` C API library artifacts in `target/release/` along with the public header in `include/onda.h`.
 Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 On Windows, the shipped static `onda.lib` is built with the static MSVC CRT (`/MT`), so hosts linking that library should use a compatible runtime choice.
+
+Already-compiled native processor objects do not require `libonda`: include
+`include/onda_processor_abi.h`, link the emitted object with the application, and call its raw
+entrypoints directly. The paired JSON descriptor supplies storage sizes, alignments, defaults, and
+interface layouts. See the native raw-object example for a complete link command.
 
 ## Editor support
 

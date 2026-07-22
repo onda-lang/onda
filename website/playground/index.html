@@ -1,0 +1,86 @@
+---
+layout: play
+title: Playground
+description: Write, compile, and play Onda directly in your browser.
+section: playground
+permalink: /playground/
+---
+
+<main class="play-main" id="main-content">
+  <header class="play-intro">
+    <div>
+      <h1>Onda playground</h1>
+    </div>
+    <div class="play-intro-meta">
+      <p class="play-shortcuts" aria-label="Playground keyboard shortcuts">
+        <span class="play-shortcut"><kbd>Ctrl/Cmd + Enter</kbd><span>Play</span></span>
+        <span aria-hidden="true">·</span>
+        <span class="play-shortcut"><kbd>Ctrl + Period</kbd><span>Stop</span></span>
+      </p>
+      <span class="status" aria-live="polite" data-status>Loading</span>
+    </div>
+  </header>
+
+  <div class="play-workspace">
+    <section class="play-panel play-editor">
+      <div class="play-toolbar">
+        <div class="play-control-grid">
+          <label>
+            <span>Sample rate</span>
+            <select data-sample-rate>
+              <option value="48000" selected>48000 Hz</option>
+              <option value="44100">44100 Hz</option>
+            </select>
+          </label>
+          <label>
+            <span>Block size</span>
+            <select data-block-size>
+              <option value="128">128 frames</option>
+              <option value="256">256 frames</option>
+              <option value="512" selected>512 frames</option>
+              <option value="1024">1024 frames</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="project-files">
+        <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
+        <button class="project-file-add" type="button" data-new-file aria-label="New file" title="New file">+</button>
+        <div class="project-file-actions">
+          <button type="button" data-new-patch>New patch</button>
+          <button type="button" data-rename-file>Rename</button>
+          <button type="button" data-main-file>Set as main</button>
+          <button type="button" data-share-project>Share</button>
+        </div>
+      </div>
+      <div class="play-source-editor" aria-label="Onda project editor" data-editor></div>
+    </section>
+
+    <aside class="play-panel play-run-panel" aria-label="Onda run controls">
+      <iframe class="play-run-view" title="Onda run view" data-run-view></iframe>
+    </aside>
+  </div>
+</main>
+
+<script type="importmap">
+  {
+    "imports": {
+      "@onda-lang/processor-abi": "{{ site.data.onda.asset_path | append: '/processor-abi.js' | relative_url }}",
+      "@onda-lang/wasm-compiler": "{{ site.data.onda.asset_path | append: '/compiler/src/index.js' | relative_url }}",
+      "@onda-lang/webaudio": "{{ site.data.onda.asset_path | append: '/webaudio.js' | relative_url }}",
+      "#onda-frontend-loader": "{{ site.data.onda.asset_path | append: '/compiler/src/frontend-browser.js' | relative_url }}"
+    }
+  }
+</script>
+<script>
+  globalThis.__ONDA_PLAYGROUND_ASSETS__ = {
+    workerUrl: {{ site.data.onda.asset_path | append: '/compiler-worker.js' | relative_url | jsonify }},
+    frontendWasm: {{ site.data.onda.asset_path | append: '/onda_compiler_web_bg.wasm' | relative_url | jsonify }},
+    workletUrl: {{ site.data.onda.asset_path | append: '/worklet.js' | relative_url | jsonify }},
+    runViewUrl: {{ site.data.onda.asset_path | append: '/run.html' | relative_url | jsonify }},
+    exampleCatalogUrl: {{ site.data.onda.asset_path | append: '/example-projects.json' | relative_url | jsonify }},
+    smokeResultUrl: {{ '/__result' | relative_url | jsonify }}
+  };
+</script>
+<script type="module" src="{{ site.data.onda.asset_path | append: '/playground.js' | relative_url }}"></script>

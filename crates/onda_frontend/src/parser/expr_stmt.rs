@@ -344,10 +344,7 @@ fn parse_const_type(pair: Pair<'_, Rule>) -> Result<ConstType, Vec<Diagnostic>> 
 fn parse_const_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&pair);
     let decl = parse_const_decl(pair)?;
-    Ok(Stmt::Const {
-        loc: loc.clone(),
-        decl,
-    })
+    Ok(Stmt::Const { loc, decl })
 }
 
 pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
@@ -399,7 +396,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                     };
                     let decl_ty = parse_primitive_type(ty_pair.as_str()).map_err(|d| vec![d])?;
                     Ok(Stmt::Assign {
-                        loc: loc.clone(),
+                        loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: Some(decl_ty),
@@ -430,18 +427,14 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         None
                     };
                     Ok(Stmt::Assign {
-                        loc: loc.clone(),
+                        loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
-                        expr: Expr::ArrayCtor {
-                            loc: loc.clone(),
-                            spec,
-                            init,
-                        },
+                        expr: Expr::ArrayCtor { loc, spec, init },
                     })
                 }
                 Rule::named_type => {
@@ -451,7 +444,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         parse_expr(expr_pair)?
                     } else {
                         Expr::UserCall {
-                            loc: loc.clone(),
+                            loc,
                             name: decl_name.clone(),
                             type_args: Vec::new(),
                             args: Vec::new(),
@@ -464,7 +457,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         if *name == decl_name && type_args.is_empty() {
                             *type_args = decl_type_args;
                             return Ok(Stmt::Assign {
-                                loc: loc.clone(),
+                                loc,
                                 target_loc: stmt_loc_from_pair(&name_pair),
                                 target: AssignTarget::Var(name_pair.as_str().to_owned()),
                                 decl_ty: None,
@@ -476,7 +469,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         }
                     }
                     Ok(Stmt::Assign {
-                        loc: loc.clone(),
+                        loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,
@@ -500,7 +493,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         )]);
                     };
                     Ok(Stmt::Assign {
-                        loc: loc.clone(),
+                        loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,

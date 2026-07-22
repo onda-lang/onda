@@ -1,0 +1,25 @@
+[package]
+name = "onda_wasm_math_kernel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libm = { version = "0.2.16", default-features = false }
+
+# This support crate is built independently and embedded in the Binaryen npm
+# package. It is intentionally not part of Onda's main Cargo workspace.
+[workspace]
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+# Binaryen uses the retained internal names when it copies the reachable
+# helper closure into the generated DSP module.
+strip = false

@@ -348,8 +348,8 @@ fn resolve_graph_proc_dest(
             errors,
             loc,
             format!(
-                "{owner_context} graph destination '{}' cannot target processor outputs",
-                format!("{}.{}", node_ref_name(key), field)
+                "{owner_context} graph destination '{}.{field}' cannot target processor outputs",
+                node_ref_name(key)
             ),
         );
         return Err(());
@@ -358,8 +358,8 @@ fn resolve_graph_proc_dest(
         errors,
         loc,
         format!(
-            "{owner_context} graph destination '{}' references an unknown endpoint",
-            format!("{}.{}", node_ref_name(key), field)
+            "{owner_context} graph destination '{}.{field}' references an unknown endpoint",
+            node_ref_name(key)
         ),
     );
     Err(())
@@ -1010,8 +1010,6 @@ pub(super) fn infer_graph_source_value_type(
                     Some(GraphValueType::Scalar(
                         if can_implicitly_assign(lhs_ty, rhs_ty) {
                             rhs_ty
-                        } else if can_implicitly_assign(rhs_ty, lhs_ty) {
-                            lhs_ty
                         } else {
                             lhs_ty
                         },
@@ -1041,8 +1039,6 @@ pub(super) fn infer_graph_source_value_type(
                         Some(GraphValueType::Array {
                             elem_ty: if can_implicitly_assign(lhs_elem_ty, rhs_elem_ty) {
                                 rhs_elem_ty
-                            } else if can_implicitly_assign(rhs_elem_ty, lhs_elem_ty) {
-                                lhs_elem_ty
                             } else {
                                 lhs_elem_ty
                             },
@@ -1524,8 +1520,8 @@ fn validate_graph_proc_field_source(
         errors,
         loc,
         format!(
-            "{owner_context} graph source '{}' references an unknown endpoint",
-            format!("{}.{}", node_ref_name(key), field)
+            "{owner_context} graph source '{}.{field}' references an unknown endpoint",
+            node_ref_name(key)
         ),
     );
 }

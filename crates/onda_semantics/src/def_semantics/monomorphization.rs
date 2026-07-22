@@ -16,6 +16,8 @@ pub(crate) enum MonoParamKey {
     ResolvedBuffer(PrimitiveType, TypedBufferChannels),
     /// Resolved tuple element types (inferred from tuple literal arg).
     ResolvedTuple(Vec<PrimitiveType>),
+    /// Resolved primitive type for an untyped scalar parameter.
+    ResolvedScalar(PrimitiveType),
     /// Resolved generic def type parameter (e.g. T = f32).
     GenericType(PrimitiveType),
 }
@@ -24,7 +26,10 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
     let mut suffix = String::new();
     for key in keys {
         match key {
-            MonoParamKey::Passthrough => {}
+            // Keep passthrough positions in the symbol. Omitting them makes
+            // `[I32, passthrough]` and `[passthrough, I32]` collide even though
+            // they describe different concrete signatures.
+            MonoParamKey::Passthrough => suffix.push_str("__pass"),
             MonoParamKey::ResolvedStruct(s) => {
                 suffix.push_str("__");
                 suffix.push_str(&sanitize_symbol_component(s));
@@ -51,6 +56,10 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
                     suffix.push_str(&format!("{ty:?}").to_lowercase());
                 }
             }
+            MonoParamKey::ResolvedScalar(prim) => {
+                suffix.push_str("__scalar_");
+                suffix.push_str(&format!("{prim:?}").to_lowercase());
+            }
             MonoParamKey::GenericType(prim) => {
                 suffix.push_str("__g_");
                 suffix.push_str(&format!("{prim:?}").to_lowercase());
@@ -60,12 +69,128 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
     format!("{base}.__mono{suffix}")
 }
 
+fn builtin_requires_float_arguments(func: BuiltinFn) -> bool {
+    !matches!(
+        func,
+        BuiltinFn::Abs | BuiltinFn::Min | BuiltinFn::Max | BuiltinFn::Pow
+    )
+}
+
+fn expr_value_depends_on_param(expr: &Expr, param: &str) -> bool {
+    match expr {
+        Expr::Var { name, .. } => name == param,
+        // An explicit cast severs the source parameter's scalar constraint.
+        Expr::Cast { .. } => false,
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. } => {
+            expr_value_depends_on_param(lhs, param) || expr_value_depends_on_param(rhs, param)
+        }
+        Expr::Call { args, .. } => args
+            .iter()
+            .any(|arg| expr_value_depends_on_param(arg, param)),
+        Expr::UserCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_value_depends_on_param(&arg.expr, param)),
+        Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            expr_value_depends_on_param(expr, param)
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
+            .iter()
+            .any(|value| expr_value_depends_on_param(value, param)),
+        // An index affects selection, not the selected value's scalar type.
+        Expr::Index { .. }
+        | Expr::Slice { .. }
+        | Expr::ArrayCtor { .. }
+        | Expr::Number { .. }
+        | Expr::Int { .. }
+        | Expr::Bool { .. } => false,
+    }
+}
+
+fn expr_requires_float_param(expr: &Expr, param: &str) -> bool {
+    let directly_required = match expr {
+        Expr::Call { func, args, .. } if builtin_requires_float_arguments(*func) => args
+            .iter()
+            .any(|arg| expr_value_depends_on_param(arg, param)),
+        _ => false,
+    };
+    if directly_required {
+        return true;
+    }
+
+    match expr {
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. } => {
+            expr_requires_float_param(lhs, param) || expr_requires_float_param(rhs, param)
+        }
+        Expr::Call { args, .. } => args.iter().any(|arg| expr_requires_float_param(arg, param)),
+        Expr::UserCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_requires_float_param(&arg.expr, param)),
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            expr_requires_float_param(expr, param)
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
+            .iter()
+            .any(|value| expr_requires_float_param(value, param)),
+        Expr::Index { index, .. } => expr_requires_float_param(index, param),
+        Expr::Slice { start, end, .. } => start
+            .iter()
+            .chain(end.iter())
+            .any(|bound| expr_requires_float_param(bound, param)),
+        Expr::ArrayCtor { init, .. } => init
+            .iter()
+            .flatten()
+            .any(|value| expr_requires_float_param(value, param)),
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => false,
+    }
+}
+
+fn statements_require_float_param(statements: &[Stmt], param: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
+        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            expr_requires_float_param(expr, param)
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_requires_float_param(cond, param)
+                || statements_require_float_param(then_branch, param)
+                || statements_require_float_param(else_branch, param)
+        }
+        Stmt::For {
+            step,
+            start,
+            end,
+            body,
+            ..
+        } => {
+            step.as_ref()
+                .is_some_and(|step| expr_requires_float_param(step, param))
+                || expr_requires_float_param(start, param)
+                || expr_requires_float_param(end, param)
+                || statements_require_float_param(body, param)
+        }
+        Stmt::While { cond, body, .. } => {
+            expr_requires_float_param(cond, param) || statements_require_float_param(body, param)
+        }
+    })
+}
+
 fn infer_mono_arg_key(
     arg_expr: &Expr,
     param_ty: Option<&FnParamType>,
     env: &OverloadRewriteEnv,
     generic_templates: &HashSet<String>,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    requires_float: bool,
 ) -> Option<MonoParamKey> {
     match param_ty {
         Some(FnParamType::Struct(struct_name)) if generic_templates.contains(struct_name) => {
@@ -83,14 +208,18 @@ fn infer_mono_arg_key(
             None // Can't determine concrete struct type
         }
         Some(FnParamType::Array(None)) => {
-            if let Some(elem_ty) = infer_array_arg_elem_type(arg_expr, env, return_types) {
+            if let Some(elem_ty) =
+                infer_array_arg_elem_type(arg_expr, env, return_types, struct_defs)
+            {
                 return Some(MonoParamKey::ResolvedArray(elem_ty));
             }
             // Default to f32 if we can't infer
             Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
         }
         Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
-            if let Some(elem_ty) = infer_array_arg_elem_type(arg_expr, env, return_types) {
+            if let Some(elem_ty) =
+                infer_array_arg_elem_type(arg_expr, env, return_types, struct_defs)
+            {
                 return Some(MonoParamKey::ResolvedArray(elem_ty));
             }
             Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
@@ -105,9 +234,22 @@ fn infer_mono_arg_key(
                 TypedBufferChannels::Mono,
             ))
         }
-        _ => {
-            // For untyped params, check if the arg is a tuple literal — if so,
-            // monomorphize with the inferred tuple element types.
+        None => {
+            // Untyped parameters are structural duck types. Resolve resource
+            // shapes before scalar shapes so one source def can be called with
+            // arrays and buffers (including different element types) without a
+            // later inference pass collapsing all call sites into one ABI.
+            if let Some((elem_ty, channels)) = infer_buffer_arg_info(arg_expr, env) {
+                return Some(MonoParamKey::ResolvedBuffer(elem_ty, channels));
+            }
+            if let Some(elem_ty) =
+                infer_array_arg_elem_type(arg_expr, env, return_types, struct_defs)
+            {
+                return Some(MonoParamKey::ResolvedArray(elem_ty));
+            }
+            // Untyped scalar values are semantic polymorphism, not a backend
+            // choice. Resolve primitive and tuple shapes at the call site so
+            // every backend receives concrete function signatures.
             if let Expr::Tuple { values, .. } = arg_expr {
                 let elem_tys: Vec<PrimitiveType> = values
                     .iter()
@@ -115,8 +257,75 @@ fn infer_mono_arg_key(
                     .collect();
                 return Some(MonoParamKey::ResolvedTuple(elem_tys));
             }
+            if let Some(primitive) =
+                infer_concrete_untyped_scalar_arg_type(arg_expr, env, return_types, struct_defs)
+            {
+                if requires_float && !matches!(primitive, PrimitiveType::F32 | PrimitiveType::F64) {
+                    return Some(MonoParamKey::Passthrough);
+                }
+                if primitive != PrimitiveType::F32 {
+                    return Some(MonoParamKey::ResolvedScalar(primitive));
+                }
+            }
             Some(MonoParamKey::Passthrough)
         }
+        _ => Some(MonoParamKey::Passthrough),
+    }
+}
+
+/// Resolves the default scalar type of an argument to an untyped parameter.
+/// Pure numeric expressions use the same default-narrowing rule as an untyped
+/// assignment; explicit casts and non-literal expressions retain their
+/// resolved type.
+fn infer_concrete_untyped_scalar_arg_type(
+    expr: &Expr,
+    env: &OverloadRewriteEnv,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<PrimitiveType> {
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } => untyped_literal_type(expr),
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
+        Expr::Cast { to, .. } => Some(*to),
+        Expr::Var { name, .. } => builtin_constant_type(name)
+            .or_else(|| lookup_scalar_symbol_type(name, env, struct_defs)),
+        Expr::Index { base, .. } => lookup_slice_base_elem_type(base, env),
+        Expr::UserCall { name, .. } => return_types.get(name).and_then(ReturnType::scalar),
+        Expr::Binary { .. } | Expr::Call { .. } | Expr::UnaryBitNot { .. } => {
+            let inferred = infer_expr_primitive_type(expr, env, return_types, struct_defs);
+            if is_pure_numeric_literal_expr(expr) {
+                effective_untyped_assignment_type(expr, inferred)
+            } else {
+                inferred
+            }
+        }
+        Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
+            Some(PrimitiveType::Bool)
+        }
+        Expr::ArrayLiteral { .. }
+        | Expr::Tuple { .. }
+        | Expr::Slice { .. }
+        | Expr::ArrayCtor { .. } => None,
+    }
+}
+
+fn lookup_scalar_symbol_type(
+    name: &str,
+    env: &OverloadRewriteEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<PrimitiveType> {
+    if let Some(ty) = env.scalar_types.get(name).copied() {
+        return Some(ty);
+    }
+    let (base, field) = split_simple_field_path(name)?;
+    if let Some(ty) = env.scalar_types.get(&format!("{base}.{field}")).copied() {
+        return Some(ty);
+    }
+    let struct_name = env.struct_instances.get(base)?;
+    let field = resolve_struct_field_decl(struct_name, field, struct_defs)?;
+    match field.ty {
+        TypedFieldType::Scalar(ty) => Some(ty),
+        TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => None,
     }
 }
 
@@ -164,13 +373,14 @@ fn infer_array_arg_elem_type(
     expr: &Expr,
     env: &OverloadRewriteEnv,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
     match expr {
         Expr::Var { name, .. } => lookup_array_symbol_elem_type(name, env),
         Expr::Slice { base, .. } => lookup_slice_base_elem_type(base, env),
         Expr::ArrayLiteral { values, .. } => values
             .first()
-            .and_then(|value| infer_expr_primitive_type(value, env, return_types)),
+            .and_then(|value| infer_expr_primitive_type(value, env, return_types, struct_defs)),
         Expr::ArrayCtor { spec, .. } => match &spec.elem {
             ArrayElemType::Primitive(elem_ty) => Some(*elem_ty),
             ArrayElemType::Struct(_) => None,
@@ -218,7 +428,7 @@ fn update_mono_env_after_assign(
         return;
     }
 
-    if let Some(elem_ty) = infer_array_arg_elem_type(expr, env, return_types) {
+    if let Some(elem_ty) = infer_array_arg_elem_type(expr, env, return_types, struct_defs) {
         env.array_elem_types.insert(name.clone(), elem_ty);
         env.scalar_types.remove(name);
         env.struct_instances.remove(name);
@@ -243,7 +453,7 @@ fn update_mono_env_after_assign(
         }
     }
 
-    if let Some(ty) = infer_expr_primitive_type(expr, env, return_types) {
+    if let Some(ty) = infer_expr_primitive_type(expr, env, return_types, struct_defs) {
         env.scalar_types.insert(name.clone(), ty);
         env.array_elem_types.remove(name);
         env.struct_instances.remove(name);
@@ -336,6 +546,14 @@ fn generate_mono_def(
                 }
                 if let Some(pt) = new_sig.param_types.get_mut(idx) {
                     *pt = Some(FnParamType::Tuple(elem_tys.clone()));
+                }
+            }
+            MonoParamKey::ResolvedScalar(prim) => {
+                if let Some(param) = new_def.params.get_mut(idx) {
+                    param.ty = Some(FnParamType::Primitive(*prim));
+                }
+                if let Some(pt) = new_sig.param_types.get_mut(idx) {
+                    *pt = Some(FnParamType::Primitive(*prim));
                 }
             }
             MonoParamKey::GenericType(prim) => {
@@ -481,6 +699,9 @@ fn resolve_generic_def_type_bindings(
     args: &[CallArg],
     env: &OverloadRewriteEnv,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    call_name: &str,
+    errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, PrimitiveType> {
     let mut bindings = HashMap::new();
 
@@ -493,8 +714,10 @@ fn resolve_generic_def_type_bindings(
             // CallTypeArg::Generic would mean a forwarded generic — not applicable here.
         }
     } else {
-        // Infer from argument types: for each param typed as Struct("T"), ArrayGeneric("T"),
-        // or Buffer(Generic("T")) where T is a type_param, infer T from the argument.
+        // Infer from every occurrence of a type parameter. Scalar occurrences
+        // contribute widening-compatible constraints; array and buffer element
+        // occurrences are exact because runtime aggregate elements are not
+        // implicitly converted at a call boundary.
         let resolved_args = super::resolve_call_args(
             args,
             &sig.params,
@@ -504,6 +727,7 @@ fn resolve_generic_def_type_bindings(
             "generic def type inference",
             &mut Vec::new(),
         );
+        let mut constraints = HashMap::<String, Vec<(PrimitiveType, bool, &Expr)>>::new();
         for (idx, param_ty) in sig.param_types.iter().enumerate() {
             let type_param_name = match param_ty {
                 Some(FnParamType::Struct(ref name)) if sig.type_params.contains(name) => {
@@ -525,25 +749,93 @@ fn resolve_generic_def_type_bindings(
             let Some(name) = type_param_name else {
                 continue;
             };
-            if bindings.contains_key(&name) {
-                continue; // Already inferred this type param
-            }
             if let Some(Some(arg_expr)) = resolved_args.get(idx) {
                 // For array/buffer params, infer from the arg's element type.
-                let inferred = match param_ty {
-                    Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
-                        infer_array_arg_elem_type(arg_expr, env, return_types)
-                    }
+                let (inferred, exact) = match param_ty {
+                    Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => (
+                        infer_array_arg_elem_type(arg_expr, env, return_types, struct_defs),
+                        true,
+                    ),
                     Some(FnParamType::Buffer(BufferType {
                         elem: BufferElemType::Generic(_),
                         ..
-                    })) => infer_buffer_arg_info(arg_expr, env).map(|(prim, _)| prim),
-                    _ => infer_expr_primitive_type(arg_expr, env, return_types),
+                    })) => (
+                        infer_buffer_arg_info(arg_expr, env).map(|(prim, _)| prim),
+                        true,
+                    ),
+                    _ => (
+                        infer_expr_primitive_type(arg_expr, env, return_types, struct_defs),
+                        false,
+                    ),
                 };
                 if let Some(prim) = inferred {
-                    bindings.insert(name, prim);
+                    constraints
+                        .entry(name)
+                        .or_default()
+                        .push((prim, exact, arg_expr));
                 }
             }
+        }
+
+        for type_param in &sig.type_params {
+            let Some(type_constraints) = constraints.get(type_param) else {
+                continue;
+            };
+            let exact_target = type_constraints
+                .iter()
+                .find_map(|(ty, exact, _)| exact.then_some(*ty));
+            let target = if let Some(exact_target) = exact_target {
+                if let Some((actual, _, expr)) = type_constraints
+                    .iter()
+                    .find(|(ty, exact, _)| *exact && *ty != exact_target)
+                {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "generic function '{call_name}' type parameter '{type_param}' has incompatible exact argument types {} and {}",
+                            exact_target.name(),
+                            actual.name()
+                        ),
+                        expr.loc(),
+                    ));
+                }
+                exact_target
+            } else {
+                let mut inferred = type_constraints[0].0;
+                for (next, _, expr) in type_constraints.iter().skip(1) {
+                    let Some(merged) = merge_monomorphized_numeric_types(inferred, *next) else {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "generic function '{call_name}' type parameter '{type_param}' has incompatible argument types {} and {}",
+                                inferred.name(),
+                                next.name()
+                            ),
+                            expr.loc(),
+                        ));
+                        continue;
+                    };
+                    inferred = merged;
+                }
+                inferred
+            };
+
+            for (actual, exact, expr) in type_constraints {
+                let compatible = if *exact {
+                    *actual == target
+                } else {
+                    can_assign_expr_to_type(expr, *actual, target)
+                };
+                if !compatible {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "generic function '{call_name}' type parameter '{type_param}' resolves to {}, but argument has type {} and cannot be implicitly converted",
+                            target.name(),
+                            actual.name()
+                        ),
+                        expr.loc(),
+                    ));
+                }
+            }
+            bindings.insert(type_param.clone(), target);
         }
     }
 
@@ -555,20 +847,15 @@ fn infer_expr_primitive_type(
     expr: &Expr,
     env: &OverloadRewriteEnv,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
     match expr {
         Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { .. } => Some(PrimitiveType::I32),
+        Expr::Int { .. } => untyped_literal_type(expr),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::Cast { to, .. } => Some(*to),
         Expr::Var { name, .. } => builtin_constant_type(name)
-            .or_else(|| env.scalar_types.get(name).copied())
-            .or_else(|| {
-                split_simple_field_path(name).and_then(|(base, field)| {
-                    let flat = format!("{base}.{field}");
-                    env.scalar_types.get(&flat).copied()
-                })
-            }),
+            .or_else(|| lookup_scalar_symbol_type(name, env, struct_defs)),
         Expr::Index { base, .. } => lookup_slice_base_elem_type(base, env),
         Expr::UserCall { name, .. } => {
             if let Some(return_ty) = return_types.get(name.as_str()) {
@@ -576,18 +863,90 @@ fn infer_expr_primitive_type(
             }
             None
         }
-        Expr::Binary { lhs, rhs, .. } => {
-            // For binary ops, try to infer from either operand.
-            infer_expr_primitive_type(lhs, env, return_types)
-                .or_else(|| infer_expr_primitive_type(rhs, env, return_types))
+        Expr::Binary { op, lhs, rhs, .. } => {
+            let lhs_ty = infer_expr_primitive_type(lhs, env, return_types, struct_defs)?;
+            let rhs_ty = infer_expr_primitive_type(rhs, env, return_types, struct_defs)?;
+            let (lhs_ty, rhs_ty) = adapt_binary_operand_types(lhs, rhs, lhs_ty, rhs_ty);
+            match op {
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => match (lhs_ty, rhs_ty) {
+                    (PrimitiveType::I64, PrimitiveType::I32)
+                    | (PrimitiveType::I32, PrimitiveType::I64)
+                    | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
+                    (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
+                    _ => None,
+                },
+                _ => merge_monomorphized_numeric_types(lhs_ty, rhs_ty),
+            }
         }
-        _ => None,
+        Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
+            Some(PrimitiveType::Bool)
+        }
+        Expr::UnaryBitNot { expr, .. } => {
+            let ty = infer_expr_primitive_type(expr, env, return_types, struct_defs)?;
+            matches!(ty, PrimitiveType::I32 | PrimitiveType::I64).then_some(ty)
+        }
+        Expr::Call { func, args, .. } => {
+            let arg_types = args
+                .iter()
+                .map(|arg| infer_expr_primitive_type(arg, env, return_types, struct_defs))
+                .collect::<Option<Vec<_>>>()?;
+            let arg_types = adapt_numeric_argument_types(args, &arg_types);
+            match func {
+                BuiltinFn::Abs => arg_types.first().copied(),
+                BuiltinFn::Min | BuiltinFn::Max => {
+                    merge_monomorphized_numeric_types(*arg_types.first()?, *arg_types.get(1)?)
+                }
+                BuiltinFn::Pow
+                | BuiltinFn::Sin
+                | BuiltinFn::Cos
+                | BuiltinFn::Tan
+                | BuiltinFn::Tanh
+                | BuiltinFn::Atan
+                | BuiltinFn::Atan2
+                | BuiltinFn::Exp
+                | BuiltinFn::Log
+                | BuiltinFn::Sqrt
+                | BuiltinFn::Floor
+                | BuiltinFn::Ceil
+                | BuiltinFn::Round
+                | BuiltinFn::Trunc
+                | BuiltinFn::Fma => Some(if arg_types.contains(&PrimitiveType::F64) {
+                    PrimitiveType::F64
+                } else {
+                    PrimitiveType::F32
+                }),
+            }
+        }
+        Expr::ArrayLiteral { .. }
+        | Expr::Tuple { .. }
+        | Expr::Slice { .. }
+        | Expr::ArrayCtor { .. } => None,
+    }
+}
+
+fn merge_monomorphized_numeric_types(
+    lhs: PrimitiveType,
+    rhs: PrimitiveType,
+) -> Option<PrimitiveType> {
+    use PrimitiveType::{Bool, F32, F64, I32, I64};
+    match (lhs, rhs) {
+        (a, b) if a == b => Some(a),
+        (Bool, _) | (_, Bool) => None,
+        (F64, _) | (_, F64) => Some(F64),
+        (F32, I64) | (I64, F32) => Some(F64),
+        (F32, I32) | (I32, F32) | (F32, F32) => Some(F32),
+        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
+        (I32, I32) => Some(I32),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn monomorphize_calls_in_stmts(
-    stmts: &mut Vec<Stmt>,
+    stmts: &mut [Stmt],
     env: &OverloadRewriteEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -600,7 +959,7 @@ pub(crate) fn monomorphize_calls_in_stmts(
     return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
     enclosing_type_params: &[String],
-) {
+) -> OverloadRewriteEnv {
     let mut local_env = env.clone();
     for stmt in stmts.iter_mut() {
         monomorphize_calls_in_stmt(
@@ -619,6 +978,7 @@ pub(crate) fn monomorphize_calls_in_stmts(
             enclosing_type_params,
         );
     }
+    local_env
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -789,7 +1149,103 @@ fn monomorphize_calls_in_stmt(
                 })
                 .collect::<HashMap<_, _>>();
         }
-        Stmt::For { body, .. } | Stmt::While { body, .. } => {
+        Stmt::For {
+            var,
+            step,
+            start,
+            end,
+            body,
+            ..
+        } => {
+            monomorphize_calls_in_expr(
+                start,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                enclosing_type_params,
+            );
+            monomorphize_calls_in_expr(
+                end,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                enclosing_type_params,
+            );
+            if let Some(step) = step {
+                monomorphize_calls_in_expr(
+                    step,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    struct_defs,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    return_types,
+                    errors,
+                    enclosing_type_params,
+                );
+            }
+            let mut body_env = env.clone();
+            // Runtime loop induction variables are always i32. Keep that
+            // resolved semantic fact available while specializing calls in the
+            // body; otherwise generated helpers called with `i` silently fall
+            // back to their contextual f32 template.
+            body_env
+                .scalar_types
+                .insert(var.clone(), PrimitiveType::I32);
+            for s in body.iter_mut() {
+                monomorphize_calls_in_stmt(
+                    s,
+                    &mut body_env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    struct_defs,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    return_types,
+                    errors,
+                    enclosing_type_params,
+                );
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            monomorphize_calls_in_expr(
+                cond,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                enclosing_type_params,
+            );
             let mut body_env = env.clone();
             for s in body.iter_mut() {
                 monomorphize_calls_in_stmt(
@@ -866,6 +1322,17 @@ fn monomorphize_calls_in_expr(
             let Some(sig) = fn_signatures.get(name.as_str()) else {
                 return;
             };
+            let float_required_params = original_defs
+                .iter()
+                .find(|def| def.name == *name)
+                .or_else(|| generated_defs.iter().find(|def| def.name == *name))
+                .map(|def| {
+                    def.params
+                        .iter()
+                        .map(|param| statements_require_float_param(&def.body, &param.name))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![false; sig.params.len()]);
 
             // For generic defs, resolve type param bindings from explicit type args
             // or infer from argument types.  Unresolved params default to f32,
@@ -902,8 +1369,16 @@ fn monomorphize_calls_in_expr(
                 }
             }
             let resolved_type_bindings: HashMap<String, PrimitiveType> = if has_def_type_params {
-                let mut bindings =
-                    resolve_generic_def_type_bindings(sig, type_args, args, env, return_types);
+                let mut bindings = resolve_generic_def_type_bindings(
+                    sig,
+                    type_args,
+                    args,
+                    env,
+                    return_types,
+                    struct_defs,
+                    name,
+                    errors,
+                );
                 for tp in &sig.type_params {
                     bindings.entry(tp.clone()).or_insert(PrimitiveType::F32);
                 }
@@ -988,18 +1463,25 @@ fn monomorphize_calls_in_expr(
                     }
                 }
 
-                let arg_expr = resolved_args.get(idx).and_then(|a| a.as_ref());
+                let arg_expr = resolved_args.get(idx).copied().flatten();
                 if let Some(arg_expr) = arg_expr {
-                    if let Some(key) =
-                        infer_mono_arg_key(arg_expr, param_ty, env, generic_templates, return_types)
-                    {
+                    if let Some(key) = infer_mono_arg_key(
+                        arg_expr,
+                        param_ty,
+                        env,
+                        generic_templates,
+                        return_types,
+                        struct_defs,
+                        float_required_params.get(idx).copied().unwrap_or(false),
+                    ) {
                         keys.push(key);
                     } else {
                         all_resolved = false;
                         break;
                     }
                 } else {
-                    // Use default — passthrough
+                    // A genuinely shape-free parameter remains on the
+                    // non-specialized structural inference path.
                     keys.push(MonoParamKey::Passthrough);
                 }
             }
@@ -1185,5 +1667,165 @@ fn monomorphize_calls_in_expr(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use onda_frontend::parse_program;
+
+    fn scalar_param_types(def: &TypedFunction) -> Vec<Option<PrimitiveType>> {
+        def.param_kinds
+            .iter()
+            .map(|param| match param {
+                TypedFnParam::Scalar { ty } => *ty,
+                other => panic!("expected scalar parameter, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn loop_indices_and_proc_fields_specialize_generated_calls() {
+        let source = r#"
+def clamp_idx(i, max_i):
+  if i < 0:
+    return 0
+  if i > max_i:
+    return max_i
+  return i
+
+proc Core:
+  ins 3
+  params:
+    selected: i32 = 0
+  outs 1
+
+  init:
+    sum = 0.0
+
+  sample:
+    sum = 0.0
+    for i in 0..3:
+      sum = sum + ins[i]
+    clamped = clamp_idx(selected, 3 - 1)
+    out1 = sum + f32(clamped)
+
+init:
+  core = Core()
+
+sample:
+  out1 = core(0.1, 0.2, 0.3)
+"#;
+        let parsed = parse_program(source).expect("generated-helper regression should parse");
+        let typed = crate::analyze(parsed).expect("generated-helper regression should analyze");
+
+        let read_helper = typed
+            .defs
+            .iter()
+            .find(|def| {
+                def.name
+                    .starts_with("Core.__arr_read_clamp_3.__mono__scalar_i32")
+                    && scalar_param_types(def).first() == Some(&Some(PrimitiveType::I32))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing i32 loop-index helper specialization: {:?}",
+                    typed
+                        .defs
+                        .iter()
+                        .filter(|def| def.name.contains("__arr_read_clamp_3"))
+                        .map(|def| (&def.name, &def.param_kinds))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            scalar_param_types(read_helper),
+            [Some(PrimitiveType::I32), None, None, None,]
+        );
+
+        let clamp = typed
+            .defs
+            .iter()
+            .find(|def| {
+                def.name == "clamp_idx.__mono__scalar_i32__scalar_i32"
+                    && scalar_param_types(def)
+                        == [Some(PrimitiveType::I32), Some(PrimitiveType::I32)]
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing concrete proc-field/integer-expression specialization: {:?}",
+                    typed
+                        .defs
+                        .iter()
+                        .filter(|def| def.name.starts_with("clamp_idx"))
+                        .map(|def| (&def.name, &def.param_kinds))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(clamp.return_ty, ReturnType::Scalar(PrimitiveType::I32));
+    }
+
+    #[test]
+    fn sparse_scalar_specializations_have_distinct_symbols() {
+        let source = r#"
+def left(a, b):
+  return a
+
+sample:
+  i: i32 = 1
+  first = left(i, 0.0)
+  second = left(0.0, i)
+  out1 = f32(first) + second
+"#;
+        let parsed = parse_program(source).expect("sparse specialization source should parse");
+        let typed = crate::analyze(parsed).expect("sparse specializations should analyze");
+
+        let first = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "left.__mono__scalar_i32__pass")
+            .expect("missing first-parameter specialization");
+        let second = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "left.__mono__pass__scalar_i32")
+            .expect("missing second-parameter specialization");
+        assert_eq!(scalar_param_types(first), [Some(PrimitiveType::I32), None]);
+        assert_eq!(scalar_param_types(second), [None, Some(PrimitiveType::I32)]);
+    }
+
+    #[test]
+    fn integer_arguments_do_not_violate_float_only_body_constraints() {
+        let source = r#"
+def inner(freq):
+  return log(freq / 440.0)
+
+def wrapper(freq):
+  return inner(freq)
+
+sample:
+  out1 = wrapper(440)
+"#;
+        let parsed = parse_program(source).expect("float-constraint source should parse");
+        let typed = crate::analyze(parsed).expect("integer call should adapt to float body");
+
+        assert!(typed
+            .defs
+            .iter()
+            .any(|def| def.name == "wrapper.__mono__scalar_i32"));
+        assert!(
+            typed
+                .defs
+                .iter()
+                .all(|def| def.name != "inner.__mono__scalar_i32"),
+            "float-only callee must not receive an i32 specialization: {:?}",
+            typed
+                .defs
+                .iter()
+                .filter(|def| def.name.starts_with("inner"))
+                .map(|def| (&def.name, &def.param_kinds))
+                .collect::<Vec<_>>()
+        );
     }
 }

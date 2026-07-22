@@ -1,0 +1,24 @@
+outs:
+  out1
+
+kouts:
+  meter
+
+params:
+  gain = 0.5
+
+def pair(x: f32) -> (f32, i32):
+  return (x * 2.0, 2)
+
+init:
+  phase = 0.0
+
+event set_phase(step: i32, values: f32[2] = [0.25, 0.75]):
+  phase = f32(step) + values[1]
+
+block:
+  meter = phase
+  sample:
+    values = pair(gain)
+    phase = phase + values[0] + f32(values[1])
+    out1 = phase

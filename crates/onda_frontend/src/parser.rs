@@ -93,7 +93,8 @@ use module_loading::{parse_loc_from_raw, stmt_loc_from_pair};
 mod type_helpers;
 pub use module_loading::{
     inject_auto_std_math, inject_auto_std_prelude, parse_namespace_ref_text_ast, parse_program,
-    parse_program_file, parse_program_file_with_overlays, parse_program_with_path,
+    parse_program_file, parse_program_file_from_virtual_sources, parse_program_file_with_overlays,
+    parse_program_with_path, parse_stdlib_module,
 };
 use type_helpers::*;
 

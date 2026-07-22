@@ -1,0 +1,18 @@
+outs:
+  note
+  velocity
+
+init:
+  current_note: i32 = 0
+  current_velocity = 0.0
+
+events:
+  note_on(note_value: i32, velocity_value: f32, accent: bool):
+    current_note = note_value
+    current_velocity = velocity_value
+    if accent:
+      current_velocity = current_velocity + 1.0
+
+sample:
+  note = f32(current_note)
+  velocity = current_velocity

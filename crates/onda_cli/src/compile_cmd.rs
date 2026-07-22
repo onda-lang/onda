@@ -3,32 +3,46 @@ use std::fs;
 use std::path::Path;
 
 use onda_codegen_llvm::{
-    lower_to_object_with_options, lower_to_target_llvm_ir_with_options, CodegenOptions,
-    TargetConfig,
+    lower_optimized_mir_to_object_artifact, lower_optimized_mir_to_target_llvm_ir, MirCodegenError,
+    MirTargetOptions, TargetConfig,
 };
 use onda_frontend::{parse_program_file, PrimitiveType, Program};
 use onda_semantics::{
-    analyze_with_options, lower_graphs_for_inspection_with_options, AnalysisOptions,
-    TypedArrayInfo, TypedProgram,
+    analyze_with_options, lower_graphs_for_inspection_with_options, lower_program_to_optimized_mir,
+    AnalysisOptions, TypedArrayInfo, TypedProgram,
 };
 
 use crate::args::{default_metadata_output_path, default_object_output_path};
 use crate::diag_print::format_diagnostics;
-use crate::formatting::{format_program, primitive_type_name};
 use crate::CompileEmit;
+use onda_lsp::formatting::{format_program, primitive_type_name};
 
-pub(crate) fn run_compile(
-    input: &Path,
-    emit: CompileEmit,
-    output: Option<&Path>,
-    meta_out: Option<&Path>,
-    sample_rate_hz: u32,
-    block_frames: usize,
-    dump_graph: bool,
-    show_meta: bool,
-    fast_math: bool,
-    target: TargetConfig,
-) -> Result<(), String> {
+pub(crate) struct CompileRequest<'a> {
+    pub input: &'a Path,
+    pub emit: CompileEmit,
+    pub output: Option<&'a Path>,
+    pub meta_out: Option<&'a Path>,
+    pub sample_rate_hz: u32,
+    pub block_frames: usize,
+    pub dump_graph: bool,
+    pub show_meta: bool,
+    pub fast_math: bool,
+    pub target: TargetConfig,
+}
+
+pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
+    let CompileRequest {
+        input,
+        emit,
+        output,
+        meta_out,
+        sample_rate_hz,
+        block_frames,
+        dump_graph,
+        show_meta,
+        fast_math,
+        target,
+    } = request;
     if dump_graph {
         let lowered = parse_and_lower_graphs(input, sample_rate_hz as f32, block_frames)?;
         print!("{}", format_program(&lowered));
@@ -37,34 +51,83 @@ pub(crate) fn run_compile(
     if show_meta {
         print_program_meta(&typed);
     }
-    let codegen_options = CodegenOptions {
-        sample_rate: sample_rate_hz as f32,
-        block_size: block_frames,
-        fast_math,
-        target,
-    };
+    let mir = lower_program_to_optimized_mir(&typed).map_err(|errors| {
+        let details = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("MIR lowering failed:\n{details}")
+    })?;
+    let codegen_options = MirTargetOptions { fast_math, target };
 
     match emit {
         CompileEmit::Check => {
             if output.is_some() {
-                return Err("--output is only valid with --emit llvm-ir or --emit obj".to_owned());
+                return Err(
+                    "--output is only valid with --emit mir, --emit mir-json, --emit mir-messagepack, --emit llvm-ir, or --emit obj"
+                        .to_owned(),
+                );
             }
             if meta_out.is_some() {
                 return Err("--meta-out is only valid with --emit obj".to_owned());
             }
             if !codegen_options.target.is_host_default() {
-                lower_to_target_llvm_ir_with_options(typed, codegen_options).map_err(|diags| {
-                    format_diagnostics("target codegen validation failed", &diags)
-                })?;
+                lower_optimized_mir_to_target_llvm_ir(&mir, &codegen_options).map_err(
+                    |errors| format_mir_codegen_errors("target codegen validation failed", &errors),
+                )?;
             }
             println!("OK: {}", input.display());
+        }
+        CompileEmit::Mir => {
+            if meta_out.is_some() {
+                return Err("--meta-out is only valid with --emit obj".to_owned());
+            }
+            let dump = onda_mir::format_program(mir.as_program());
+            if let Some(path) = output {
+                fs::write(path, dump.as_bytes())
+                    .map_err(|err| format!("failed to write MIR '{}': {err}", path.display()))?;
+                println!("Wrote MIR: {}", path.display());
+            } else {
+                print!("{dump}");
+            }
+        }
+        CompileEmit::MirJson => {
+            if meta_out.is_some() {
+                return Err("--meta-out is only valid with --emit obj".to_owned());
+            }
+            let json = onda_mir::to_json_pretty_optimized(&mir)
+                .map_err(|err| format!("failed to encode MIR JSON: {err}"))?;
+            if let Some(path) = output {
+                fs::write(path, json.as_bytes()).map_err(|err| {
+                    format!("failed to write MIR JSON '{}': {err}", path.display())
+                })?;
+                println!("Wrote MIR JSON: {}", path.display());
+            } else {
+                println!("{json}");
+            }
+        }
+        CompileEmit::MirMessagePack => {
+            if meta_out.is_some() {
+                return Err("--meta-out is only valid with --emit obj".to_owned());
+            }
+            let output = output.ok_or("--emit mir-messagepack requires --output")?;
+            let bytes = onda_mir::to_messagepack_optimized(&mir)
+                .map_err(|err| format!("failed to encode MIR MessagePack: {err}"))?;
+            fs::write(output, bytes).map_err(|err| {
+                format!(
+                    "failed to write MIR MessagePack '{}': {err}",
+                    output.display()
+                )
+            })?;
+            println!("Wrote MIR MessagePack: {}", output.display());
         }
         CompileEmit::LlvmIr => {
             if meta_out.is_some() {
                 return Err("--meta-out is only valid with --emit obj".to_owned());
             }
-            let ir = lower_to_target_llvm_ir_with_options(typed, codegen_options)
-                .map_err(|diags| format_diagnostics("IR lowering failed", &diags))?;
+            let ir = lower_optimized_mir_to_target_llvm_ir(&mir, &codegen_options)
+                .map_err(|errors| format_mir_codegen_errors("IR lowering failed", &errors))?;
             if let Some(path) = output {
                 fs::write(path, ir.as_bytes()).map_err(|err| {
                     format!("failed to write LLVM IR '{}': {err}", path.display())
@@ -75,8 +138,8 @@ pub(crate) fn run_compile(
             }
         }
         CompileEmit::Object => {
-            let artifact = lower_to_object_with_options(typed, codegen_options)
-                .map_err(|diags| format_diagnostics("object emission failed", &diags))?;
+            let artifact = lower_optimized_mir_to_object_artifact(&mir, &codegen_options)
+                .map_err(|errors| format_mir_codegen_errors("object emission failed", &errors))?;
             let object_path = output.map(Path::to_path_buf).unwrap_or_else(|| {
                 default_object_output_path(input, &artifact.metadata.target.triple)
             });
@@ -219,6 +282,15 @@ fn print_program_meta(typed: &TypedProgram) {
     print_declared_table("ins", &ins);
     print_declared_table("outs", &outs);
     print_declared_table("params", &params);
+}
+
+fn format_mir_codegen_errors(prefix: &str, errors: &[MirCodegenError]) -> String {
+    let details = errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{prefix}:\n{details}")
 }
 
 fn parse_and_analyze(

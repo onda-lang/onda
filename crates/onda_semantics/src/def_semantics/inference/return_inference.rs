@@ -1,5 +1,5 @@
 use super::*;
-use crate::{require_expr_assignable_type, ReturnType};
+use crate::{adapt_numeric_argument_types, require_expr_assignable_type, ReturnType};
 use onda_frontend::{
     ast::{FnReturnScalarType, FnReturnType},
     SourceLoc,
@@ -212,6 +212,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
             if arg_tys.len() != args.len() {
                 return None;
             }
+            let arg_tys = adapt_numeric_argument_types(args, &arg_tys);
             match func {
                 BuiltinFn::Abs => arg_tys.first().copied(),
                 BuiltinFn::Min | BuiltinFn::Max => {
@@ -219,12 +220,12 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
                     let rhs = arg_tys.get(1).copied().unwrap_or(PrimitiveType::F32);
                     merge_inferred_return_types(lhs, rhs)
                 }
-                BuiltinFn::Pow => Some(if arg_tys.iter().any(|t| *t == PrimitiveType::F64) {
+                BuiltinFn::Pow => Some(if arg_tys.contains(&PrimitiveType::F64) {
                     PrimitiveType::F64
                 } else {
                     PrimitiveType::F32
                 }),
-                _ => Some(if arg_tys.iter().any(|t| *t == PrimitiveType::F64) {
+                _ => Some(if arg_tys.contains(&PrimitiveType::F64) {
                     PrimitiveType::F64
                 } else {
                     PrimitiveType::F32
@@ -609,6 +610,77 @@ fn return_type_is_assignable(src: &ReturnType, dst: &ReturnType) -> bool {
             .zip(dst.iter())
             .all(|(src, dst)| *src == *dst || can_implicitly_assign(*src, *dst)),
         _ => false,
+    }
+}
+
+/// Returns `true` when execution entering `statements` cannot reach the end of
+/// the block without returning a value.
+///
+/// Loops are deliberately conservative here: `for` and `while` may execute
+/// zero times (or may terminate via `break`), so a return nested in a loop does
+/// not make the enclosing function total. A return after the loop can still
+/// make the function total in the usual sequential way.
+fn statements_must_return_value(statements: &[Stmt]) -> bool {
+    for statement in statements {
+        match statement {
+            Stmt::Return { .. } => return true,
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } if statements_must_return_value(then_branch)
+                && statements_must_return_value(else_branch) =>
+            {
+                return true;
+            }
+            Stmt::Const { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Expr { .. }
+            | Stmt::If { .. }
+            | Stmt::For { .. }
+            | Stmt::While { .. }
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. } => {}
+        }
+    }
+    false
+}
+
+fn statements_contain_return(statements: &[Stmt]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Stmt::Return { .. } => true,
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => statements_contain_return(then_branch) || statements_contain_return(else_branch),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_return(body),
+        Stmt::Const { .. }
+        | Stmt::Assign { .. }
+        | Stmt::Expr { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => false,
+    })
+}
+
+/// Enforces the source-language result contract before monomorphization can
+/// discard unused generic templates. A function is result-bearing when it has
+/// an explicit return annotation or contains a value return. Result-bearing
+/// functions must return a value on every structurally reachable fallthrough
+/// path; functions with no return and no annotation remain ordinary no-result
+/// functions.
+pub(crate) fn validate_def_return_control_flow(defs: &[FunctionDef], errors: &mut Vec<Diagnostic>) {
+    for def in defs {
+        let returns_value = def.return_ty.is_some() || statements_contain_return(&def.body);
+        if returns_value && !statements_must_return_value(&def.body) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "function '{}' returns a value, but not all reachable paths return a value",
+                    def.name
+                ),
+                def.loc,
+            ));
+        }
     }
 }
 

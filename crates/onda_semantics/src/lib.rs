@@ -1,3 +1,9 @@
+// Semantic passes intentionally keep their data dependencies explicit. Most of
+// these functions are private traversal helpers, where bundling unrelated
+// symbol tables into broad context objects would hide borrowing and mutation
+// boundaries without reducing complexity.
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::{HashMap, HashSet};
 
 use onda_frontend::{
@@ -11,6 +17,8 @@ use onda_frontend::{
     Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
 };
 
+pub mod aggregate_layout;
+mod analysis_session;
 mod array_structs;
 pub mod builtins;
 mod decl_symbols;
@@ -24,6 +32,7 @@ mod expr_validation;
 mod generic_specialization;
 pub mod internal_names;
 mod io_state_helpers;
+mod mir_lowering;
 mod namespacing;
 mod pipeline;
 mod port_coercion;
@@ -33,6 +42,14 @@ mod proc_resolution;
 mod proc_state_rewrite;
 mod processor_lowering;
 mod stmt_analysis;
+pub use aggregate_layout::{
+    AggregateLayout, AggregateLayoutArithmeticError, AggregateLayoutError, AggregateLayoutId,
+    AggregateLayoutTable, AggregateLeafId, AggregateLeafLayout, AggregatePathComponent,
+    AggregateTensorLayout,
+};
+pub use analysis_session::{
+    normalize_session_path, AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument,
+};
 use array_structs::*;
 use builtins::*;
 use decl_symbols::*;
@@ -46,6 +63,7 @@ use expr_validation::*;
 use generic_specialization::*;
 pub(crate) use internal_names::runtime_proc_array_active_symbol;
 use io_state_helpers::*;
+pub use mir_lowering::{lower_program_to_optimized_mir, MirLoweringError};
 use namespacing::*;
 pub use pipeline::{analyze, analyze_with_options, lower_graphs_for_inspection_with_options};
 use port_coercion::*;
@@ -60,6 +78,10 @@ use stmt_analysis::*;
 
 #[derive(Debug, Clone)]
 pub struct TypedProgram {
+    /// The compile-time host configuration used during semantic analysis.
+    /// MIR construction consumes this exact configuration so contextual
+    /// constants and loop bounds cannot drift between compiler stages.
+    pub analysis_options: AnalysisOptions,
     pub ins: Vec<String>,
     pub outs: Vec<String>,
     pub control_outs: Vec<String>,
@@ -73,10 +95,18 @@ pub struct TypedProgram {
     pub out_arrays: HashMap<String, TypedArrayInfo>,
     pub control_out_arrays: HashMap<String, TypedArrayInfo>,
     pub param_arrays: HashMap<String, TypedArrayInfo>,
+    /// Fully resolved dynamic interface-group views (`ins[i]`, `outs[i]`,
+    /// `kouts[i]`, and `params[i]`). Each slot names one concrete scalar ABI
+    /// location, including an explicit element for declared array ports.
+    pub interface_views: ResolvedInterfaceViews,
     pub const_arrays: Vec<TypedConstArray>,
     pub params: Vec<TypedParam>,
     pub buffers: Vec<TypedBufferDecl>,
     pub structs: Vec<TypedStruct>,
+    /// Canonical recursive aggregate layouts produced by semantic analysis.
+    /// Backends consume these stable IDs and resolved primitive leaves instead
+    /// of rediscovering struct flattening and checked array strides.
+    pub aggregate_layouts: AggregateLayoutTable,
     pub defs: Vec<TypedFunction>,
     pub events: Vec<TypedEvent>,
     pub def_sample_oversample_factors: HashMap<String, usize>,
@@ -92,6 +122,11 @@ pub struct TypedProgram {
     pub state_tuples: HashMap<String, Vec<PrimitiveType>>,
     pub array_vars: Vec<TypedArrayVar>,
     pub array_struct_roots: Vec<TypedArrayStructRoot>,
+    /// Canonical processor-array members retained on their owning processor
+    /// struct after processor desugaring has flattened the physical state
+    /// fields. MIR uses this semantic map to resolve nested indexed processor
+    /// references without interpreting generated storage names.
+    pub nested_proc_arrays: Vec<TypedNestedProcArray>,
     pub ins_explicit: bool,
     pub audio_outs_explicit: bool,
     pub control_outs_explicit: bool,
@@ -242,7 +277,20 @@ pub struct TypedFunction {
     pub params: Vec<String>,
     pub param_defaults: Vec<Option<Expr>>,
     pub param_kinds: Vec<TypedFnParam>,
+    /// Primitive array parameters that semantic analysis proved are not
+    /// mutated directly or through calls. MIR uses this to choose the slice
+    /// access contract instead of rediscovering mutability from source AST.
+    pub readonly_array_params: HashSet<String>,
     pub return_ty: ReturnType,
+    /// Whether calls to this function produce the value described by
+    /// `return_ty`. Functions with no `return` are represented as no-result
+    /// functions; `return_ty` is meaningful only when this flag is true.
+    pub returns_value: bool,
+    /// Scalar local types resolved by semantic analysis. The table is keyed by
+    /// source spelling, so MIR uses it for the first unique binding and retains
+    /// the current assignment context when the same spelling denotes distinct
+    /// nested or later bindings.
+    pub local_scalar_types: HashMap<String, PrimitiveType>,
     pub body: Vec<Stmt>,
 }
 
@@ -337,6 +385,49 @@ pub struct TypedArrayInfo {
     pub offset: usize,
 }
 
+/// Stable identity within one resolved dynamic interface view.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct InterfaceSlotId(u32);
+
+impl InterfaceSlotId {
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// One scalar ABI location selected by a dynamic interface-group index.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ResolvedInterfaceSlot {
+    pub id: InterfaceSlotId,
+    /// Logical scalar port/parameter name, or the root name of a declared
+    /// fixed array port/parameter.
+    pub root: String,
+    /// Element within `root` when it is a declared fixed array.
+    pub element: Option<usize>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ResolvedInterfaceView {
+    pub element_type: PrimitiveType,
+    pub slots: Vec<ResolvedInterfaceSlot>,
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct ResolvedInterfaceViews {
+    pub inputs: Option<ResolvedInterfaceView>,
+    pub audio_outputs: Option<ResolvedInterfaceView>,
+    pub control_outputs: Option<ResolvedInterfaceView>,
+    pub params: Option<ResolvedInterfaceView>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TypedArrayVar {
     pub name: String,
@@ -349,6 +440,14 @@ pub struct TypedArrayStructRoot {
     pub name: String,
     pub struct_name: String,
     pub len: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TypedNestedProcArray {
+    pub owner_struct: String,
+    pub field_name: String,
+    pub proc_name: String,
+    pub slots: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -5249,6 +5348,25 @@ sample:
     }
 
     #[test]
+    fn def_param_shadows_same_named_top_level_buffer_during_monomorphization() {
+        let src = r#"
+buffers:
+  buf: buffer[f32]
+
+outs:
+  out1
+
+def read_first(buf: buffer[f32], index: i32):
+  return buf[index]
+
+sample:
+  out1 = read_first(buf, 0)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("def parameter should shadow the top-level buffer binding");
+    }
+
+    #[test]
     fn block_without_nested_sample_reports_only_block_specific_error() {
         let src = "outs { out1 }\nblock { x = 0.0 }\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -5289,6 +5407,88 @@ sample:
     }
 
     #[test]
+    fn value_returning_def_requires_both_if_branches_to_return() {
+        let src = "outs:\n  out1\ndef choose(flag: bool) -> f32:\n  if flag:\n    return 1.0\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("partial return should fail");
+        let diagnostic = errors
+            .iter()
+            .find(|diag| {
+                diag.message.contains("function 'choose' returns a value")
+                    && diag.message.contains("not all reachable paths")
+            })
+            .expect("missing partial-return diagnostic");
+        assert_eq!((diagnostic.line, diagnostic.column), (3, 1));
+    }
+
+    #[test]
+    fn value_returning_def_accepts_complete_if_else() {
+        let src = "outs:\n  out1\ndef choose(flag: bool) -> f32:\n  if flag:\n    return 1.0\n  else:\n    return 2.0\nsample:\n  out1 = choose(true)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("complete branch returns should analyze");
+        let choose = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "choose")
+            .expect("missing choose def");
+        assert!(choose.returns_value);
+    }
+
+    #[test]
+    fn loop_nested_return_is_conservatively_not_total() {
+        let src = "outs:\n  out1\ndef first(n: i32) -> i32:\n  for i in 0..n:\n    return i\nsample:\n  out1 = f32(first(1))\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("loop-only return should fail");
+        assert!(errors.iter().any(|diag| {
+            diag.message.contains("function 'first' returns a value")
+                && diag.message.contains("not all reachable paths")
+        }));
+    }
+
+    #[test]
+    fn nested_branch_return_does_not_cover_outer_fallthrough() {
+        let src = "outs:\n  out1\ndef nested(a: bool, b: bool):\n  if a:\n    if b:\n      return 1.0\n    else:\n      return 2.0\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("outer fallthrough should fail");
+        assert!(errors.iter().any(|diag| {
+            diag.message.contains("function 'nested' returns a value")
+                && diag.message.contains("not all reachable paths")
+        }));
+    }
+
+    #[test]
+    fn return_after_conservative_loop_covers_fallthrough() {
+        let src = "outs:\n  out1\ndef first_or_zero(n: i32) -> i32:\n  for i in 0..n:\n    if i > 0:\n      return i\n  return 0\nsample:\n  out1 = f32(first_or_zero(1))\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("post-loop return should cover loop fallthrough");
+    }
+
+    #[test]
+    fn no_result_def_may_fall_through() {
+        let src = "outs:\n  out1\ndef observe(flag: bool):\n  if flag:\n    value = 1.0\n  while flag:\n    break\nsample:\n  observe(false)\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("no-result def should be allowed to fall through");
+        let observe = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "observe")
+            .expect("missing observe def");
+        assert!(!observe.returns_value);
+    }
+
+    #[test]
+    fn proc_local_value_helper_requires_total_return() {
+        let src = "proc Voice:\n  outs:\n    out1\n  def choose(flag: bool) -> f32:\n    if flag:\n      return 1.0\n  sample:\n    out1 = 0.0\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("partial proc-local helper should fail");
+        assert!(errors.iter().any(|diag| {
+            diag.message.contains("Voice")
+                && diag.message.contains("returns a value")
+                && diag.message.contains("not all reachable paths")
+        }));
+    }
+
+    #[test]
     fn explicit_def_return_type_allows_implicit_widening() {
         let src = "outs:\n  out1\ndef widen(x: i32) -> i64:\n  return x\nsample:\n  out1 = f32(widen(1))\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -5313,6 +5513,110 @@ sample:
                     && diag.message.contains("cannot assign F32 to I32")
             }),
             "expected return mismatch diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn typed_scalar_call_argument_rejects_implicit_narrowing() {
+        let src = r#"
+outs:
+  out1
+
+def take(x: f32) -> f32:
+  return x
+
+sample:
+  wide: f64 = 1.25
+  out1 = take(wide)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("typed f64 call argument must not narrow to f32");
+        assert!(
+            errors.iter().any(|diagnostic| {
+                diagnostic.message.contains("function 'take'")
+                    && diagnostic.message.contains("cannot assign F64 to F32")
+            }),
+            "expected call-argument narrowing diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn typed_scalar_call_argument_accepts_contextual_numeric_literal() {
+        let src = r#"
+outs:
+  out1
+
+def take(x: f32) -> f32:
+  return x
+
+sample:
+  out1 = take(1.25)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("a numeric literal should adopt the f32 parameter context");
+    }
+
+    #[test]
+    fn repeated_generic_scalar_constraints_choose_one_widened_type() {
+        let src = r#"
+outs:
+  out1
+
+def choose<T>(x: T, lo: T, hi: T) -> T:
+  if x < lo:
+    return lo
+  if x > hi:
+    return hi
+  return x
+
+sample:
+  x: f32 = f32(16777216.0)
+  lo: f64 = f64(16777217.0)
+  hi: f64 = f64(16777218.0)
+  out1 = f32(choose(x, lo, hi) - lo)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("mixed scalar constraints should widen T to f64");
+        let choose = typed
+            .defs
+            .iter()
+            .find(|function| function.name.starts_with("choose.__mono__g_f64"))
+            .expect("missing widened f64 specialization");
+        assert!(
+            choose.param_kinds.iter().all(|kind| matches!(
+                kind,
+                TypedFnParam::Scalar {
+                    ty: Some(PrimitiveType::F64)
+                }
+            )),
+            "all repeated T parameters must use the same f64 specialization: {:?}",
+            choose.param_kinds
+        );
+        assert_eq!(choose.return_ty, ReturnType::Scalar(PrimitiveType::F64));
+    }
+
+    #[test]
+    fn explicit_generic_scalar_type_rejects_typed_narrowing_argument() {
+        let src = r#"
+outs:
+  out1
+
+def id<T>(x: T) -> T:
+  return x
+
+sample:
+  wide: f64 = 1.25
+  out1 = id<f32>(wide)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("explicit f32 generic argument must not narrow f64");
+        assert!(
+            errors.iter().any(|diagnostic| {
+                diagnostic.message.contains("function 'id")
+                    && diagnostic.message.contains("cannot assign F64 to F32")
+            }),
+            "expected explicit-generic narrowing diagnostic, got {errors:?}"
         );
     }
 
@@ -5564,7 +5868,7 @@ sample:
         let def = typed
             .defs
             .iter()
-            .find(|def| def.name == "set_gains")
+            .find(|def| def.name.starts_with("set_gains"))
             .expect("missing typed def");
         assert!(
             matches!(
@@ -5651,7 +5955,7 @@ sample:
             let def = typed
                 .defs
                 .iter()
-                .find(|def| def.name == def_name)
+                .find(|def| def.name.starts_with(def_name))
                 .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
             assert!(
                 matches!(
@@ -5674,7 +5978,7 @@ sample:
             let def = typed
                 .defs
                 .iter()
-                .find(|def| def.name == def_name)
+                .find(|def| def.name.starts_with(def_name))
                 .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
             assert!(
                 matches!(
@@ -6388,9 +6692,7 @@ sample:
             } => {
                 expr_contains_proc_index_sentinel(start)
                     || expr_contains_proc_index_sentinel(end)
-                    || step
-                        .as_ref()
-                        .is_some_and(|expr| expr_contains_proc_index_sentinel(expr))
+                    || step.as_ref().is_some_and(expr_contains_proc_index_sentinel)
                     || body.iter().any(def_stmt_contains_proc_index_sentinel)
             }
             Stmt::While { cond, body, .. } => {
@@ -6614,6 +6916,60 @@ sample:
                 .any(|diag| diag.message.contains("unknown symbol 'tmp'")),
             "missing unknown-symbol diagnostic for escaped init loop local: {errors:#?}"
         );
+    }
+
+    #[test]
+    fn sample_scoped_local_name_can_be_reintroduced_with_a_different_type() {
+        let src = r#"
+outs:
+  out1
+
+sample:
+  if in1 > 0.0:
+    temp = 0.0
+  for i in 0..1:
+    temp = f32(i)
+  temp = true
+  if temp:
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("branch- and loop-local bindings must not escape their scopes");
+    }
+
+    #[test]
+    fn multi_argument_numeric_builtins_adapt_literals_to_a_concrete_peer() {
+        let src = r#"
+def bounded(x: f32) -> f32:
+  return fma(max(x, 16777217.0), 1.0, 0.0)
+
+outs:
+  out1
+
+sample:
+  out1 = bounded(f32(16777216.0))
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("builtin literals should adopt the concrete f32 peer width");
+    }
+
+    #[test]
+    fn comparison_literal_accepts_the_concrete_f32_peer_context() {
+        let src = r#"
+outs:
+  out1
+
+sample:
+  x: f32 = f32(16777216.0)
+  if x == 16777217.0:
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("comparison literal should adopt its concrete f32 peer width");
     }
 
     #[test]
@@ -7968,5 +8324,116 @@ sample:
         let src = "proc Voice:\n  outs:\n    out1\n  event ping(x: i32):\n    phase = f32(x)\n  events:\n    reset():\n      phase = 0.0\n  init:\n    phase = 0.0\n  sample:\n    out1 = phase\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
         let program = parse_program(src).expect("parse should succeed");
         analyze(program).expect("merged proc event syntax should analyze");
+    }
+
+    #[test]
+    fn runtime_defs_reject_direct_recursion_as_unbounded_realtime_work() {
+        let src = r#"
+def recurse(x: f32) -> f32:
+  return recurse(x)
+
+sample:
+  out1 = recurse(0.0)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("recursive runtime def should fail");
+        assert!(errors.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("recursive runtime def cycle is not realtime-safe: recurse -> recurse")));
+    }
+
+    #[test]
+    fn runtime_defs_reject_mutual_recursion_as_unbounded_realtime_work() {
+        let src = r#"
+def first(x: f32) -> f32:
+  return second(x)
+
+def second(x: f32) -> f32:
+  return first(x)
+
+sample:
+  out1 = first(0.0)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("mutually recursive runtime defs should fail");
+        assert!(errors.iter().any(|diagnostic| {
+            diagnostic.message.contains(
+                "recursive runtime def cycle is not realtime-safe: first -> second -> first",
+            )
+        }));
+    }
+
+    #[test]
+    fn typed_program_resolves_dynamic_interface_views_to_concrete_slots() {
+        let src = r#"
+ins:
+  dry: f32 = 0.0
+  bands: f32[2] = [0.0, 0.0]
+
+outs:
+  main: f32
+  pair: f32[2]
+
+kouts:
+  meter: f32
+  leds: f32[2]
+
+params:
+  gain: f32 = 0.5
+  controls: f32[2] = [0.25, 0.75]
+
+block:
+  kouts[0] = params[0]
+  sample:
+    outs[0] = ins[0]
+    outs[1] = ins[1] * params[1]
+    outs[2] = ins[2] * params[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("uniform interface views should resolve");
+
+        let inputs = typed.interface_views.inputs.as_ref().expect("input view");
+        assert_eq!(inputs.element_type, PrimitiveType::F32);
+        assert_eq!(
+            inputs
+                .slots
+                .iter()
+                .map(|slot| (slot.id.raw(), slot.root.as_str(), slot.element))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "dry", None),
+                (1, "bands", Some(0)),
+                (2, "bands", Some(1))
+            ]
+        );
+        let outputs = typed
+            .interface_views
+            .audio_outputs
+            .as_ref()
+            .expect("audio output view");
+        assert_eq!(outputs.slots[0].root, "main");
+        assert_eq!(outputs.slots[1].root, "pair");
+        assert_eq!(outputs.slots[1].element, Some(0));
+        assert_eq!(outputs.slots[2].element, Some(1));
+        assert_eq!(
+            typed
+                .interface_views
+                .control_outputs
+                .as_ref()
+                .expect("control output view")
+                .slots
+                .len(),
+            3
+        );
+        assert_eq!(
+            typed
+                .interface_views
+                .params
+                .as_ref()
+                .expect("parameter view")
+                .slots
+                .len(),
+            3
+        );
     }
 }

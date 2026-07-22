@@ -1,5 +1,5 @@
 use onda_frontend::PrimitiveType;
-use onda_semantics::TypedConstValue;
+use onda_mir::ScalarValue;
 
 pub(crate) fn primitive_type_name(ty: PrimitiveType) -> &'static str {
     ty.name()
@@ -13,35 +13,32 @@ pub(crate) fn primitive_type_bytes(ty: PrimitiveType) -> usize {
     }
 }
 
-pub(crate) fn append_typed_const_bytes(
-    out: &mut Vec<u8>,
-    value: TypedConstValue,
-    ty: PrimitiveType,
-) {
+#[cfg(any(feature = "llvm-orc", test))]
+pub(crate) fn append_scalar_value_bytes(out: &mut Vec<u8>, value: ScalarValue, ty: PrimitiveType) {
     match (ty, value) {
-        (PrimitiveType::F32, TypedConstValue::F32(v)) => out.extend_from_slice(&v.to_ne_bytes()),
-        (PrimitiveType::F64, TypedConstValue::F64(v)) => out.extend_from_slice(&v.to_ne_bytes()),
-        (PrimitiveType::I32, TypedConstValue::I32(v)) => out.extend_from_slice(&v.to_ne_bytes()),
-        (PrimitiveType::I64, TypedConstValue::I64(v)) => out.extend_from_slice(&v.to_ne_bytes()),
-        (PrimitiveType::Bool, TypedConstValue::Bool(v)) => out.push(if v { 1 } else { 0 }),
+        (PrimitiveType::F32, ScalarValue::F32(v)) => out.extend_from_slice(&v.to_ne_bytes()),
+        (PrimitiveType::F64, ScalarValue::F64(v)) => out.extend_from_slice(&v.to_ne_bytes()),
+        (PrimitiveType::I32, ScalarValue::I32(v)) => out.extend_from_slice(&v.to_ne_bytes()),
+        (PrimitiveType::I64, ScalarValue::I64(v)) => out.extend_from_slice(&v.to_ne_bytes()),
+        (PrimitiveType::Bool, ScalarValue::Bool(v)) => out.push(if v { 1 } else { 0 }),
         (PrimitiveType::F32, other) => {
-            let v = typed_const_to_f64(other) as f32;
+            let v = scalar_value_to_f64(other) as f32;
             out.extend_from_slice(&v.to_ne_bytes());
         }
         (PrimitiveType::F64, other) => {
-            let v = typed_const_to_f64(other);
+            let v = scalar_value_to_f64(other);
             out.extend_from_slice(&v.to_ne_bytes());
         }
         (PrimitiveType::I32, other) => {
-            let v = typed_const_to_f64(other) as i32;
+            let v = scalar_value_to_f64(other) as i32;
             out.extend_from_slice(&v.to_ne_bytes());
         }
         (PrimitiveType::I64, other) => {
-            let v = typed_const_to_f64(other) as i64;
+            let v = scalar_value_to_f64(other) as i64;
             out.extend_from_slice(&v.to_ne_bytes());
         }
         (PrimitiveType::Bool, other) => {
-            out.push(if typed_const_to_f64(other) != 0.0 {
+            out.push(if scalar_value_to_f64(other) != 0.0 {
                 1
             } else {
                 0
@@ -50,70 +47,13 @@ pub(crate) fn append_typed_const_bytes(
     }
 }
 
-pub(crate) fn write_typed_const_bytes(
-    out: &mut [u8],
-    value: TypedConstValue,
-    ty: PrimitiveType,
-) -> usize {
-    match (ty, value) {
-        (PrimitiveType::F32, TypedConstValue::F32(v)) => {
-            out[..4].copy_from_slice(&v.to_ne_bytes());
-            4
-        }
-        (PrimitiveType::F64, TypedConstValue::F64(v)) => {
-            out[..8].copy_from_slice(&v.to_ne_bytes());
-            8
-        }
-        (PrimitiveType::I32, TypedConstValue::I32(v)) => {
-            out[..4].copy_from_slice(&v.to_ne_bytes());
-            4
-        }
-        (PrimitiveType::I64, TypedConstValue::I64(v)) => {
-            out[..8].copy_from_slice(&v.to_ne_bytes());
-            8
-        }
-        (PrimitiveType::Bool, TypedConstValue::Bool(v)) => {
-            out[0] = if v { 1 } else { 0 };
-            1
-        }
-        (PrimitiveType::F32, other) => {
-            let v = typed_const_to_f64(other) as f32;
-            out[..4].copy_from_slice(&v.to_ne_bytes());
-            4
-        }
-        (PrimitiveType::F64, other) => {
-            let v = typed_const_to_f64(other);
-            out[..8].copy_from_slice(&v.to_ne_bytes());
-            8
-        }
-        (PrimitiveType::I32, other) => {
-            let v = typed_const_to_f64(other) as i32;
-            out[..4].copy_from_slice(&v.to_ne_bytes());
-            4
-        }
-        (PrimitiveType::I64, other) => {
-            let v = typed_const_to_f64(other) as i64;
-            out[..8].copy_from_slice(&v.to_ne_bytes());
-            8
-        }
-        (PrimitiveType::Bool, other) => {
-            out[0] = if typed_const_to_f64(other) != 0.0 {
-                1
-            } else {
-                0
-            };
-            1
-        }
-    }
-}
-
-pub(crate) fn typed_const_to_f64(value: TypedConstValue) -> f64 {
+pub(crate) fn scalar_value_to_f64(value: ScalarValue) -> f64 {
     match value {
-        TypedConstValue::F32(v) => v as f64,
-        TypedConstValue::F64(v) => v,
-        TypedConstValue::I32(v) => v as f64,
-        TypedConstValue::I64(v) => v as f64,
-        TypedConstValue::Bool(v) => {
+        ScalarValue::F32(v) => v as f64,
+        ScalarValue::F64(v) => v,
+        ScalarValue::I32(v) => v as f64,
+        ScalarValue::I64(v) => v as f64,
+        ScalarValue::Bool(v) => {
             if v {
                 1.0
             } else {

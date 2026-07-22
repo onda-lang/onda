@@ -1,27 +1,17 @@
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub enum TargetCpu {
+    #[default]
     Host,
     Explicit(String),
 }
 
-impl Default for TargetCpu {
-    fn default() -> Self {
-        Self::Host
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub enum TargetRelocMode {
+    #[default]
     Default,
     Static,
     Pic,
     DynamicNoPic,
-}
-
-impl Default for TargetRelocMode {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 impl TargetRelocMode {
@@ -35,19 +25,14 @@ impl TargetRelocMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub enum TargetCodeModel {
+    #[default]
     Default,
     Small,
     Kernel,
     Medium,
     Large,
-}
-
-impl Default for TargetCodeModel {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 impl TargetCodeModel {
@@ -62,18 +47,13 @@ impl TargetCodeModel {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub enum TargetOptLevel {
     O0,
     O1,
     O2,
+    #[default]
     O3,
-}
-
-impl Default for TargetOptLevel {
-    fn default() -> Self {
-        Self::O3
-    }
 }
 
 impl TargetOptLevel {
@@ -123,24 +103,5 @@ impl TargetConfig {
             && self.code_model == TargetCodeModel::Default
             && self.opt_level == TargetOptLevel::O3
             && self.abi_name.is_none()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct CodegenOptions {
-    pub sample_rate: f32,
-    pub block_size: usize,
-    pub fast_math: bool,
-    pub target: TargetConfig,
-}
-
-impl Default for CodegenOptions {
-    fn default() -> Self {
-        Self {
-            sample_rate: 48_000.0,
-            block_size: 512,
-            fast_math: false,
-            target: TargetConfig::host(),
-        }
     }
 }

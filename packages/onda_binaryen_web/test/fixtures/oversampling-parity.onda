@@ -1,0 +1,13 @@
+proc Ramp:
+  init:
+    phase = 0.0
+
+  sample 4:
+    phase = phase + 0.125
+    out1 = phase
+
+init:
+  ramp = Ramp()
+
+sample:
+  out1 = ramp()

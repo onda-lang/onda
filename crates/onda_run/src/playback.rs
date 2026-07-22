@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use onda_codegen_llvm::TargetOptLevel;
 use onda_cpal::{
@@ -59,37 +59,56 @@ struct PlaybackStartup {
     current_output_device: Option<String>,
 }
 
+type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
+type AudioDeviceLists = (Vec<String>, Vec<String>);
+
+struct RenderThreadContext {
+    sample_queue: SampleProducer,
+    input_queue: SampleConsumer,
+    scope_ring: Arc<Mutex<ScopeRing>>,
+    stop_flag: Arc<AtomicBool>,
+    render_error: Arc<Mutex<Option<String>>>,
+    startup_tx: PlaybackReply<PlaybackStartup>,
+    control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
+}
+
 enum PlaybackControlCommand {
+    Pause {
+        reply: PlaybackReply<()>,
+    },
+    Play {
+        reply: PlaybackReply<()>,
+    },
     GetParams {
-        reply: mpsc::Sender<Result<Vec<RunParamInfo>, String>>,
+        reply: PlaybackReply<Vec<RunParamInfo>>,
     },
     GetBuffers {
-        reply: mpsc::Sender<Result<Vec<RunBufferInfo>, String>>,
+        reply: PlaybackReply<Vec<RunBufferInfo>>,
     },
     GetEvents {
-        reply: mpsc::Sender<Result<Vec<RunEventInfo>, String>>,
+        reply: PlaybackReply<Vec<RunEventInfo>>,
     },
     GetDevices {
-        reply: mpsc::Sender<Result<(Vec<String>, Vec<String>), String>>,
+        reply: PlaybackReply<AudioDeviceLists>,
     },
     SetParam {
         name: String,
         value: f64,
-        reply: Option<mpsc::Sender<Result<(), String>>>,
+        reply: Option<PlaybackReply<()>>,
     },
     TriggerEvent {
         name: String,
         values: Vec<RunEventValue>,
-        reply: Option<mpsc::Sender<Result<(), String>>>,
+        reply: Option<PlaybackReply<()>>,
     },
     BindBufferWav {
         name: String,
         path: PathBuf,
-        reply: mpsc::Sender<Result<(), String>>,
+        reply: PlaybackReply<()>,
     },
     ClearBuffer {
         name: String,
-        reply: mpsc::Sender<Result<(), String>>,
+        reply: PlaybackReply<()>,
     },
 }
 
@@ -107,7 +126,7 @@ struct ScopeRing {
 
 struct PendingParamUpdate {
     value: f64,
-    replies: Vec<mpsc::Sender<Result<(), String>>>,
+    replies: Vec<PlaybackReply<()>>,
 }
 
 impl ScopeRing {
@@ -197,13 +216,15 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
     let render_thread = spawn_run_render_thread(
         launch.clone(),
-        sample_producer,
-        input_consumer,
-        Arc::clone(&scope_ring),
-        Arc::clone(&stop_flag),
-        Arc::clone(&render_error),
-        startup_tx,
-        control_rx,
+        RenderThreadContext {
+            sample_queue: sample_producer,
+            input_queue: input_consumer,
+            scope_ring: Arc::clone(&scope_ring),
+            stop_flag: Arc::clone(&stop_flag),
+            render_error: Arc::clone(&render_error),
+            startup_tx,
+            control_rx,
+        },
     );
     let startup = startup_rx
         .recv()
@@ -442,15 +463,18 @@ fn wait_for_playback_completion(
 
 fn spawn_run_render_thread(
     launch: PlaybackLaunch,
-    sample_queue: SampleProducer,
-    input_queue: SampleConsumer,
-    scope_ring: Arc<Mutex<ScopeRing>>,
-    stop_flag: Arc<AtomicBool>,
-    render_error: Arc<Mutex<Option<String>>>,
-    startup_tx: mpsc::Sender<Result<PlaybackStartup, String>>,
-    control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
+    context: RenderThreadContext,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let RenderThreadContext {
+            sample_queue,
+            input_queue,
+            scope_ring,
+            stop_flag,
+            render_error,
+            startup_tx,
+            control_rx,
+        } = context;
         configure_current_thread_fp_mode();
         let control_rx = control_rx;
         let mut session = DaemonSession::new(DaemonConfig {
@@ -537,6 +561,7 @@ fn spawn_run_render_thread(
         };
 
         let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
+        let mut playing = true;
         let mut captured = vec![0.0_f32; launch.block_frames.saturating_mul(render_input_channels)];
         let mut interleaved =
             vec![0.0_f32; launch.block_frames.saturating_mul(render_output_channels)];
@@ -548,6 +573,43 @@ fn spawn_run_render_thread(
                         break;
                     };
                     match command {
+                        PlaybackControlCommand::Pause { reply } => {
+                            playing = false;
+                            let _ = reply.send(Ok(()));
+                        }
+                        PlaybackControlCommand::Play { reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
+                            let drain_deadline = Instant::now() + Duration::from_millis(75);
+                            while !sample_queue.is_empty() && Instant::now() < drain_deadline {
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                            input_queue.discard_buffered();
+                            let result = session
+                                .run_mut(&launch.input)
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .and_then(|run| {
+                                    run.restart().map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "daemon play restart failed",
+                                            &diag,
+                                        )
+                                    })
+                                });
+                            playing = result.is_ok();
+                            if playing {
+                                if let Ok(mut ring) = scope_ring.try_lock() {
+                                    *ring = ScopeRing::new(
+                                        SCOPE_CAPACITY_FRAMES,
+                                        render_output_channels,
+                                    );
+                                }
+                            }
+                            let _ = reply.send(result);
+                        }
                         PlaybackControlCommand::GetParams { reply } => {
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
@@ -669,6 +731,11 @@ fn spawn_run_render_thread(
                     &mut session,
                     &launch.input,
                 );
+            }
+
+            if !playing {
+                thread::sleep(Duration::from_millis(1));
+                continue;
             }
 
             if render_input_channels > 0 {
@@ -901,6 +968,28 @@ fn run_control_response(
 ) -> Option<Value> {
     let request_id = request.id;
     let result = match request.command.as_str() {
+        "pause" | "play" => {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            let command = if request.command == "pause" {
+                PlaybackControlCommand::Pause { reply: reply_tx }
+            } else {
+                PlaybackControlCommand::Play { reply: reply_tx }
+            };
+            control_tx
+                .send(command)
+                .map_err(|_| "run control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "run control reply channel closed".to_owned())
+                })
+                .map(|result| {
+                    request_id.clone().map(|id| match result {
+                        Ok(()) => json!({ "id": id, "ok": true }),
+                        Err(err) => json!({ "id": id, "ok": false, "error": err }),
+                    })
+                })
+        }
         "getParams" => {
             let (reply_tx, reply_rx) = mpsc::channel();
             control_tx
@@ -1010,159 +1099,150 @@ fn run_control_response(
                     })
                 })
         }
-        "setParam" => {
-            let result = (|| -> Result<Option<Value>, String> {
-                let name = request
-                    .name
-                    .ok_or_else(|| "setParam requires 'name'".to_owned())?;
-                let raw_value = request
-                    .value
-                    .ok_or_else(|| "setParam requires 'value'".to_owned())?;
-                let value = match raw_value {
-                    Value::Bool(value) => {
-                        if value {
-                            1.0
-                        } else {
-                            0.0
-                        }
+        "setParam" => (|| -> Result<Option<Value>, String> {
+            let name = request
+                .name
+                .ok_or_else(|| "setParam requires 'name'".to_owned())?;
+            let raw_value = request
+                .value
+                .ok_or_else(|| "setParam requires 'value'".to_owned())?;
+            let value = match raw_value {
+                Value::Bool(value) => {
+                    if value {
+                        1.0
+                    } else {
+                        0.0
                     }
-                    Value::Number(value) => value
-                        .as_f64()
-                        .ok_or_else(|| "setParam value must be numeric".to_owned())?,
-                    _ => return Err("setParam value must be number or boolean".to_owned()),
-                };
-                if request_id.is_none() {
-                    control_tx
-                        .send(PlaybackControlCommand::SetParam {
-                            name,
-                            value,
-                            reply: None,
-                        })
-                        .map_err(|_| "run control channel closed".to_owned())?;
-                    return Ok(None);
                 }
-                let (reply_tx, reply_rx) = mpsc::channel();
+                Value::Number(value) => value
+                    .as_f64()
+                    .ok_or_else(|| "setParam value must be numeric".to_owned())?,
+                _ => return Err("setParam value must be number or boolean".to_owned()),
+            };
+            if request_id.is_none() {
                 control_tx
                     .send(PlaybackControlCommand::SetParam {
                         name,
                         value,
-                        reply: Some(reply_tx),
+                        reply: None,
                     })
                     .map_err(|_| "run control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "run control reply channel closed".to_owned())?
-                {
-                    Ok(()) => Ok(request_id.clone().map(|id| {
-                        json!({
-                            "id": id,
-                            "ok": true,
-                        })
-                    })),
-                    Err(err) => Ok(request_id.clone().map(|id| {
-                        json!({
-                            "id": id,
-                            "ok": false,
-                            "error": err,
-                        })
-                    })),
-                }
-            })();
-            result
-        }
-        "triggerEvent" => {
-            let result = (|| -> Result<Option<Value>, String> {
-                let name = request
-                    .name
-                    .ok_or_else(|| "triggerEvent requires 'name'".to_owned())?;
-                let raw_values = request.values.unwrap_or_default();
-                let values = raw_values
-                    .into_iter()
-                    .map(|value| match value {
-                        Value::Bool(value) => Ok(RunEventValue::Bool(value)),
-                        Value::Number(value) => value
-                            .as_f64()
-                            .map(RunEventValue::Number)
-                            .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
-                        _ => Err("triggerEvent values must be numbers or booleans".to_owned()),
+                return Ok(None);
+            }
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::SetParam {
+                    name,
+                    value,
+                    reply: Some(reply_tx),
+                })
+                .map_err(|_| "run control channel closed".to_owned())?;
+            match reply_rx
+                .recv()
+                .map_err(|_| "run control reply channel closed".to_owned())?
+            {
+                Ok(()) => Ok(request_id.clone().map(|id| {
+                    json!({
+                        "id": id,
+                        "ok": true,
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
-                if request_id.is_none() {
-                    control_tx
-                        .send(PlaybackControlCommand::TriggerEvent {
-                            name,
-                            values,
-                            reply: None,
-                        })
-                        .map_err(|_| "run control channel closed".to_owned())?;
-                    return Ok(None);
-                }
-                let (reply_tx, reply_rx) = mpsc::channel();
+                })),
+                Err(err) => Ok(request_id.clone().map(|id| {
+                    json!({
+                        "id": id,
+                        "ok": false,
+                        "error": err,
+                    })
+                })),
+            }
+        })(),
+        "triggerEvent" => (|| -> Result<Option<Value>, String> {
+            let name = request
+                .name
+                .ok_or_else(|| "triggerEvent requires 'name'".to_owned())?;
+            let raw_values = request.values.unwrap_or_default();
+            let values = raw_values
+                .into_iter()
+                .map(|value| match value {
+                    Value::Bool(value) => Ok(RunEventValue::Bool(value)),
+                    Value::Number(value) => value
+                        .as_f64()
+                        .map(RunEventValue::Number)
+                        .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
+                    _ => Err("triggerEvent values must be numbers or booleans".to_owned()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if request_id.is_none() {
                 control_tx
                     .send(PlaybackControlCommand::TriggerEvent {
                         name,
                         values,
-                        reply: Some(reply_tx),
+                        reply: None,
                     })
                     .map_err(|_| "run control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "run control reply channel closed".to_owned())?
-                {
-                    Ok(()) => Ok(request_id.clone().map(|id| {
-                        json!({
-                            "id": id,
-                            "ok": true,
-                        })
-                    })),
-                    Err(err) => Ok(request_id.clone().map(|id| {
-                        json!({
-                            "id": id,
-                            "ok": false,
-                            "error": err,
-                        })
-                    })),
-                }
-            })();
-            result
-        }
-        "bindBufferWav" => {
-            let result = (|| -> Result<Option<Value>, String> {
-                let name = request
-                    .name
-                    .ok_or_else(|| "bindBufferWav requires 'name'".to_owned())?;
-                let path = request
-                    .path
-                    .ok_or_else(|| "bindBufferWav requires 'path'".to_owned())?;
-                let (reply_tx, reply_rx) = mpsc::channel();
-                control_tx
-                    .send(PlaybackControlCommand::BindBufferWav {
-                        name,
-                        path: PathBuf::from(path),
-                        reply: reply_tx,
+                return Ok(None);
+            }
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::TriggerEvent {
+                    name,
+                    values,
+                    reply: Some(reply_tx),
+                })
+                .map_err(|_| "run control channel closed".to_owned())?;
+            match reply_rx
+                .recv()
+                .map_err(|_| "run control reply channel closed".to_owned())?
+            {
+                Ok(()) => Ok(request_id.clone().map(|id| {
+                    json!({
+                        "id": id,
+                        "ok": true,
                     })
-                    .map_err(|_| "run control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "run control reply channel closed".to_owned())?
-                {
-                    Ok(()) => Ok(request_id.clone().map(|id| {
-                        json!({
-                            "id": id,
-                            "ok": true,
-                        })
-                    })),
-                    Err(err) => Ok(request_id.clone().map(|id| {
-                        json!({
-                            "id": id,
-                            "ok": false,
-                            "error": err,
-                        })
-                    })),
-                }
-            })();
-            result
-        }
+                })),
+                Err(err) => Ok(request_id.clone().map(|id| {
+                    json!({
+                        "id": id,
+                        "ok": false,
+                        "error": err,
+                    })
+                })),
+            }
+        })(),
+        "bindBufferWav" => (|| -> Result<Option<Value>, String> {
+            let name = request
+                .name
+                .ok_or_else(|| "bindBufferWav requires 'name'".to_owned())?;
+            let path = request
+                .path
+                .ok_or_else(|| "bindBufferWav requires 'path'".to_owned())?;
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::BindBufferWav {
+                    name,
+                    path: PathBuf::from(path),
+                    reply: reply_tx,
+                })
+                .map_err(|_| "run control channel closed".to_owned())?;
+            match reply_rx
+                .recv()
+                .map_err(|_| "run control reply channel closed".to_owned())?
+            {
+                Ok(()) => Ok(request_id.clone().map(|id| {
+                    json!({
+                        "id": id,
+                        "ok": true,
+                    })
+                })),
+                Err(err) => Ok(request_id.clone().map(|id| {
+                    json!({
+                        "id": id,
+                        "ok": false,
+                        "error": err,
+                    })
+                })),
+            }
+        })(),
         "getScopeData" => scope_ring
             .lock()
             .map_err(|_| "failed to lock scope ring".to_owned())
@@ -1177,39 +1257,36 @@ fn run_control_response(
                     }
                 }))
             }),
-        "clearBuffer" => {
-            let result = (|| -> Result<Option<Value>, String> {
-                let name = request
-                    .name
-                    .ok_or_else(|| "clearBuffer requires 'name'".to_owned())?;
-                let (reply_tx, reply_rx) = mpsc::channel();
-                control_tx
-                    .send(PlaybackControlCommand::ClearBuffer {
-                        name,
-                        reply: reply_tx,
+        "clearBuffer" => (|| -> Result<Option<Value>, String> {
+            let name = request
+                .name
+                .ok_or_else(|| "clearBuffer requires 'name'".to_owned())?;
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::ClearBuffer {
+                    name,
+                    reply: reply_tx,
+                })
+                .map_err(|_| "run control channel closed".to_owned())?;
+            match reply_rx
+                .recv()
+                .map_err(|_| "run control reply channel closed".to_owned())?
+            {
+                Ok(()) => Ok(request_id.clone().map(|id| {
+                    json!({
+                        "id": id,
+                        "ok": true,
                     })
-                    .map_err(|_| "run control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "run control reply channel closed".to_owned())?
-                {
-                    Ok(()) => Ok(request_id.clone().map(|id| {
-                        json!({
-                            "id": id,
-                            "ok": true,
-                        })
-                    })),
-                    Err(err) => Ok(request_id.clone().map(|id| {
-                        json!({
-                            "id": id,
-                            "ok": false,
-                            "error": err,
-                        })
-                    })),
-                }
-            })();
-            result
-        }
+                })),
+                Err(err) => Ok(request_id.clone().map(|id| {
+                    json!({
+                        "id": id,
+                        "ok": false,
+                        "error": err,
+                    })
+                })),
+            }
+        })(),
         other => Err(format!("unknown command '{other}'")),
     };
 
@@ -1302,5 +1379,39 @@ mod tests {
             }
             _ => panic!("expected triggerEvent command"),
         }
+    }
+
+    #[test]
+    fn run_play_command_waits_for_runtime_restart() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let worker =
+            std::thread::spawn(
+                move || match control_rx.recv().expect("play should be queued") {
+                    PlaybackControlCommand::Play { reply } => {
+                        reply.send(Ok(())).expect("play reply should be received");
+                    }
+                    _ => panic!("expected play command"),
+                },
+            );
+
+        let response = run_control_response(
+            PlaybackControlRequest {
+                id: Some(Value::from(7)),
+                command: "play".to_owned(),
+                name: None,
+                path: None,
+                value: None,
+                values: None,
+                max_frames: None,
+            },
+            &control_tx,
+            &scope_ring,
+        )
+        .expect("play request should return a response");
+
+        worker.join().expect("play worker should finish");
+        assert_eq!(response.get("id"), Some(&Value::from(7)));
+        assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
     }
 }

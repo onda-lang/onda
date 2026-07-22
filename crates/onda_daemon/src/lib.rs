@@ -1,7 +1,6 @@
-mod analysis_session;
 mod run_session;
 
-pub use analysis_session::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
+pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
     RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo, RunEventParamInfo,
     RunEventValue, RunOptions, RunParamInfo, RunSession,
@@ -13,21 +12,12 @@ use std::path::{Path, PathBuf};
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
 
-use crate::analysis_session::normalize_session_path;
+use onda_semantics::normalize_session_path;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DaemonConfig {
     pub analysis: AnalysisOptions,
     pub run: RunOptions,
-}
-
-impl Default for DaemonConfig {
-    fn default() -> Self {
-        Self {
-            analysis: AnalysisOptions::default(),
-            run: RunOptions::default(),
-        }
-    }
 }
 
 #[derive(Debug, Default)]
@@ -496,6 +486,51 @@ mod tests {
             .expect("run render with rebound buffer should succeed");
         assert!((second[0][0] - 1.0).abs() < 1e-6);
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_restart_reuses_compiled_program_with_fresh_runtime_state() {
+        let dir = mk_temp_dir("run_restart");
+        let main = dir.join("main.onda");
+
+        write_file(
+            &main,
+            "outs:\n  out1\nparams:\n  offset = 2.0\ninit:\n  counter = 1.0\nsample:\n  out1 = counter + offset\n  counter = counter + 1.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    float_param_smoothing_ms: 0.0,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should compile and start");
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .set_param_f64("offset", 4.0)
+            .expect("param update should succeed");
+
+        let first = session
+            .render_run_block(&main)
+            .expect("first render should succeed");
+        assert!((first[0][0] - 5.0).abs() < 1e-6);
+        assert!(first[0][1] > first[0][0]);
+
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .restart()
+            .expect("cached program should create a fresh instance");
+        let restarted = session
+            .render_run_block(&main)
+            .expect("restarted render should succeed");
+
+        assert!((restarted[0][0] - 5.0).abs() < 1e-6);
         fs::remove_dir_all(&dir).ok();
     }
 

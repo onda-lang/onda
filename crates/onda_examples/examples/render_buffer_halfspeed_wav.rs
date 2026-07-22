@@ -4,11 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use onda_codegen_llvm::{
-    lower_and_jit_with_options, CompileOptions, ExecutionBackend, TargetOptLevel,
+    jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{bind_buffer, bind_output, create_instance, process_checked, InstanceConfig};
-use onda_semantics::{analyze_with_options, AnalysisOptions};
+use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const DEFAULT_INPUT: &str = "target/garden.wav";
 const DEFAULT_OUTPUT: &str = "target/garden_half_speed.wav";
@@ -52,12 +52,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    let jit = lower_and_jit_with_options(
-        typed,
-        CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-            sample_rate: sample_rate_hz as f32,
-            block_size: BLOCK_FRAMES,
+    let mir = lower_program_to_optimized_mir(&typed)
+        .map_err(|errors| format!("MIR lowering failed: {errors:?}"))?;
+    let jit = jit_program_from_optimized_mir_with_options(
+        mir,
+        MirCompileOptions {
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -75,22 +74,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     )
     .map_err(|d| format!("instance creation failed: {d:?}"))?;
 
-    bind_buffer(
-        &mut instance,
-        0,
-        in_interleaved.as_mut_ptr().cast::<u8>(),
-        input_frames,
-        in_channels,
-        sample_rate_hz as f32,
-        onda_frontend::PrimitiveType::F32,
-    )
+    unsafe {
+        bind_buffer(
+            &mut instance,
+            0,
+            in_interleaved.as_mut_ptr().cast::<u8>(),
+            input_frames,
+            in_channels,
+            sample_rate_hz as f32,
+            onda_frontend::PrimitiveType::F32,
+        )
+    }
     .map_err(|d| format!("bind buffer failed: {d:?}"))?;
 
     let mut bound_out = (0..out_channels)
         .map(|_| vec![0_u8; BLOCK_FRAMES * std::mem::size_of::<f32>()])
         .collect::<Vec<_>>();
     for (idx, out_buf) in bound_out.iter_mut().enumerate() {
-        bind_output(&mut instance, idx, out_buf.as_mut_ptr(), out_buf.len())
+        unsafe { bind_output(&mut instance, idx, out_buf.as_mut_ptr(), out_buf.len()) }
             .map_err(|d| format!("bind output[{idx}] failed: {d:?}"))?;
     }
 
@@ -230,7 +231,7 @@ fn write_wav_interleaved_i16(
     if channels == 0 {
         return Err("cannot write wav with zero channels".into());
     }
-    if samples.len() % channels != 0 {
+    if !samples.len().is_multiple_of(channels) {
         return Err(format!(
             "sample buffer length {} is not divisible by channel count {}",
             samples.len(),

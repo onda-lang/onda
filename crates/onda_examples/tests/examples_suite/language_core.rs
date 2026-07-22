@@ -1502,7 +1502,7 @@ fn io_and_param_count_shorthand_compiles_and_runs() {
     process_interleaved(&mut instance, &input, &mut output, frames)
         .expect("process should succeed");
 
-    let expected = vec![
+    let expected = [
         1.5_f32, 9.0_f32, //
         2.5_f32, 19.0_f32, //
         3.5_f32, 29.0_f32, //
@@ -3698,11 +3698,9 @@ sample {
     )
     .expect("semantic analysis");
 
-    let jit = onda_codegen_llvm::lower_and_jit_with_options(
+    let jit = lower_typed_and_jit(
         typed,
         CompileOptions {
-            backend: ExecutionBackend::Auto,
-
             sample_rate: 48_000.0,
 
             block_size: 64,

@@ -78,15 +78,9 @@ pub(crate) fn infer_scope_slice_alias_info(
         });
     }
 
-    let Some((root, field)) = split_field_path(base, errors) else {
-        return None;
-    };
-    let Some(struct_name) = owner_structs.get(root) else {
-        return None;
-    };
-    let Some(field_decl) = resolve_struct_field_decl(struct_name, field, struct_defs) else {
-        return None;
-    };
+    let (root, field) = split_field_path(base, errors)?;
+    let struct_name = owner_structs.get(root)?;
+    let field_decl = resolve_struct_field_decl(struct_name, field, struct_defs)?;
     if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
         push_semantic(
             DiagCtx::default(),

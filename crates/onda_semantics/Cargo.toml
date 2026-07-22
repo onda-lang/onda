@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 onda_frontend = { path = "../onda_frontend" }
+onda_mir = { path = "../onda_mir" }
 
 [lib]
 path = "src/lib.rs"

@@ -7,9 +7,7 @@
     <style>
       :root {
         color-scheme: dark light;
-        --bg-top: #08111d;
-        --bg-bottom: #111e31;
-        --shell-glow: rgba(201, 219, 242, 0.08);
+        --bg: #081522;
         --panel: #0c1e33;
         --panel-strong: #122134;
         --panel-soft: #16273d;
@@ -28,14 +26,15 @@
         --scope-2: #7bade6;
         --scope-3: #7ad7ba;
         --scope-4: #f3b57b;
+        --scrollbar-track: #081522;
+        --scrollbar-thumb: #2d5278;
+        --scrollbar-thumb-hover: #47739f;
         --shadow: 0 20px 60px rgba(3, 10, 18, 0.34);
       }
 
       :root[data-theme="light"] {
         color-scheme: light;
-        --bg-top: #edf4fb;
-        --bg-bottom: #dbe8f7;
-        --shell-glow: rgba(20, 58, 99, 0.08);
+        --bg: #e8f1fc;
         --panel: #f5f9ff;
         --panel-strong: #f4f9ff;
         --panel-soft: #eaf2fb;
@@ -54,16 +53,32 @@
         --scope-2: #2f76c5;
         --scope-3: #21956e;
         --scope-4: #bf7925;
+        --scrollbar-track: #e8f1fc;
+        --scrollbar-thumb: #9bb8d8;
+        --scrollbar-thumb-hover: #6f94ba;
         --shadow: 0 18px 44px rgba(76, 109, 145, 0.18);
       }
 
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+        scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+        scrollbar-width: thin;
+      }
       html {
         min-height: 100%;
-        background:
-          radial-gradient(circle at top, var(--shell-glow), transparent 42%),
-          linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+        scrollbar-width: auto;
+        background: var(--bg);
       }
+      *::-webkit-scrollbar { width: 10px; height: 10px; }
+      html::-webkit-scrollbar { width: 12px; height: 12px; }
+      *::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+      *::-webkit-scrollbar-thumb {
+        border: 2px solid var(--scrollbar-track);
+        border-radius: 999px;
+        background: var(--scrollbar-thumb);
+      }
+      *::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+      *::-webkit-scrollbar-corner { background: var(--scrollbar-track); }
       body {
         margin: 0;
         min-height: 100vh;
@@ -442,7 +457,7 @@
           <div class="hero-rule"></div>
           <div class="status" id="status"></div>
           <div class="actions">
-            <button class="primary" id="start">Start</button>
+            <button class="primary" id="start">Play</button>
             <button class="secondary" id="stop">Stop</button>
             <button class="secondary" id="reset">Reset</button>
             <button class="secondary" id="refresh-devices">Refresh Devices</button>
@@ -507,6 +522,10 @@
       //   window.__hostBridge = { mode: "wry" }
       //   (uses window.ipc.postMessage / window._onHostMessage callback)
       //
+      // Browser playground host sets:
+      //   window.__hostBridge = { mode: "browser" }
+      //   (uses structured parent/iframe postMessage envelopes)
+      //
       // If no bridge is injected we auto-detect VS Code by trying acquireVsCodeApi.
       // ---------------------------------------------------------------------------
 
@@ -518,6 +537,7 @@
         if (mode === "vscode" || (mode === "auto" && typeof acquireVsCodeApi === "function")) {
           const vscode = acquireVsCodeApi();
           return {
+            mode: "vscode",
             postMessage(msg) { vscode.postMessage(msg); },
             onMessage(callback) {
               window.addEventListener("message", (event) => {
@@ -527,8 +547,47 @@
           };
         }
 
+        // --- browser iframe path ---
+        if (mode === "browser" || (mode === "auto" && window.parent !== window)) {
+          const targetOrigin = cfg.targetOrigin || window.location.origin;
+          return {
+            mode: "browser",
+            postMessage(msg) {
+              window.parent.postMessage({ __ondaRunWebview: true, message: msg }, targetOrigin);
+            },
+            chooseBufferFile(name) {
+              const input = document.createElement("input");
+              input.type = "file";
+              input.accept = ".wav,audio/wav,audio/x-wav";
+              input.addEventListener("change", () => {
+                const file = input.files && input.files[0];
+                if (file) {
+                  window.parent.postMessage({
+                    __ondaRunWebview: true,
+                    message: { type: "bindBufferFile", name, file },
+                  }, targetOrigin);
+                }
+                input.remove();
+              }, { once: true });
+              document.body.appendChild(input);
+              input.click();
+            },
+            onMessage(callback) {
+              window.addEventListener("message", (event) => {
+                if (
+                  event.source !== window.parent
+                  || event.origin !== targetOrigin
+                  || !event.data?.__ondaRunHost
+                ) return;
+                callback(event.data.message);
+              });
+            },
+          };
+        }
+
         // --- wry (native window) path ---
         return {
+          mode: "wry",
           postMessage(msg) {
             if (window.ipc && window.ipc.postMessage) {
               window.ipc.postMessage(JSON.stringify(msg));
@@ -591,6 +650,7 @@
         outputDevices: [],
         currentInputDevice: null,
         currentOutputDevice: null,
+        supportsDeviceSelection: hostBridge.mode !== "browser",
       };
 
       const startButton = document.getElementById("start");
@@ -603,6 +663,8 @@
       const ioSettingsNode = document.getElementById("io-settings");
       const inputDeviceNode = document.getElementById("input-device");
       const outputDeviceNode = document.getElementById("output-device");
+      refreshDevicesButton.hidden = !state.supportsDeviceSelection;
+      ioSettingsNode.hidden = !state.supportsDeviceSelection;
       const buffersSection = document.getElementById("buffers-section");
       const buffersNode = document.getElementById("buffers");
       const eventsSection = document.getElementById("events-section");
@@ -671,6 +733,22 @@
       outputDeviceNode.addEventListener("change", () => {
         hostBridge.postMessage({ type: "setOutputDevice", name: outputDeviceNode.value || null });
       });
+      document.addEventListener("keydown", (event) => {
+        if (
+          hostBridge.mode !== "browser"
+          || event.isComposing
+          || event.altKey
+          || (!event.ctrlKey && !event.metaKey)
+        ) return;
+        const run = event.key === "Enter";
+        const stop = event.key === "." || event.code === "Period";
+        if (!run && !stop) return;
+        event.preventDefault();
+        if (event.repeat) return;
+        hostBridge.postMessage(run
+          ? { type: "start", path: state.path || undefined }
+          : { type: "stop" });
+      }, { capture: true });
 
       // ---------------------------------------------------------------------------
       // Scope rendering
@@ -1127,11 +1205,15 @@
         const hasBuffers = state.buffers.length > 0;
         const hasEvents = state.events.length > 0;
         const hasParams = state.params.length > 0;
-        const hasIoSettings = state.inputDevices.length > 0 || state.outputDevices.length > 0;
+        const supportsDeviceSelection = state.supportsDeviceSelection !== false;
+        const hasIoSettings = supportsDeviceSelection
+          && (state.inputDevices.length > 0 || state.outputDevices.length > 0);
         const canEditRun = canEditRunControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
         eventsSection.style.display = hasEvents ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
+        refreshDevicesButton.hidden = !supportsDeviceSelection;
+        ioSettingsNode.hidden = !supportsDeviceSelection;
         ioSettingsNode.style.display = hasIoSettings ? "grid" : "none";
         startButton.disabled = !state.path || state.running;
         stopButton.disabled = !state.running;
@@ -1165,7 +1247,11 @@
             choose.textContent = "Choose File";
             choose.disabled = !canEditRun;
             choose.addEventListener("click", () => {
-              hostBridge.postMessage({ type: "chooseBufferFile", name: buffer.name });
+              if (typeof hostBridge.chooseBufferFile === "function") {
+                hostBridge.chooseBufferFile(buffer.name);
+              } else {
+                hostBridge.postMessage({ type: "chooseBufferFile", name: buffer.name });
+              }
             });
             const clear = document.createElement("button");
             clear.className = "secondary";

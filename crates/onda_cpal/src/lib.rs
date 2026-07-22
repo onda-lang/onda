@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
+pub use onda_realtime::configure_current_thread_audio_fp_mode as configure_current_thread_fp_mode;
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
@@ -248,6 +249,14 @@ impl SampleProducer {
     pub fn push_slice(&self, input: &[f32]) -> usize {
         self.inner.push_slice(input)
     }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl SampleConsumer {
@@ -265,6 +274,12 @@ impl SampleConsumer {
             .consume(output.len(), alignment, |index, sample| {
                 output[index] = sample
             })
+    }
+
+    /// Drops every sample that was published before this call.
+    pub fn discard_buffered(&self) {
+        let write = self.inner.write_index.load(Ordering::Acquire);
+        self.inner.read_index.store(write, Ordering::Release);
     }
 }
 
@@ -581,36 +596,6 @@ fn with_stderr_silenced<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-thread_local! {
-    static REALTIME_FP_MODE_CONFIGURED: Cell<bool> = const { Cell::new(false) };
-}
-
-pub fn configure_current_thread_fp_mode() {
-    REALTIME_FP_MODE_CONFIGURED.with(|configured| {
-        if configured.get() {
-            return;
-        }
-        configure_fp_mode();
-        configured.set(true);
-    });
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn configure_fp_mode() {
-    // Flush denormals to zero to prevent stalls in feedback/smoothing paths.
-    unsafe {
-        let mut csr = 0_u32;
-        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags));
-        let desired = csr | (1 << 15) | (1 << 6);
-        if desired != csr {
-            std::arch::asm!("ldmxcsr [{}]", in(reg) &desired, options(nostack, preserves_flags));
-        }
-    }
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn configure_fp_mode() {}
-
 #[cfg(test)]
 mod tests {
     use super::{sample_ring, write_input_data, write_output_data};
@@ -647,5 +632,19 @@ mod tests {
         let mut captured = [99.0_f32; 4];
         assert_eq!(consumer.pop_slice_aligned(&mut captured, 2), 4);
         assert_eq!(captured, [1.0, 0.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn consumer_can_discard_buffered_samples() {
+        let (producer, consumer) = sample_ring(8);
+        assert_eq!(producer.push_slice(&[1.0, 2.0, 3.0]), 3);
+
+        consumer.discard_buffered();
+
+        assert!(consumer.is_empty());
+        assert_eq!(producer.push_slice(&[4.0, 5.0]), 2);
+        let mut captured = [0.0; 2];
+        assert_eq!(consumer.pop_slice_aligned(&mut captured, 1), 2);
+        assert_eq!(captured, [4.0, 5.0]);
     }
 }

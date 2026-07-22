@@ -7,8 +7,6 @@ mod args;
 mod compile_cmd;
 mod daemon_stdio;
 mod diag_print;
-mod formatting;
-mod lsp_stdio;
 mod run_cmd;
 
 use args::parse_args;
@@ -28,7 +26,7 @@ const USAGE_BODY: &str = r#"Commands:
   
   onda compile <input.onda>          Check, inspect, or emit compile artifacts
     
-    [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
+    [--emit <check|mir|mir-json|mir-messagepack|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]  
     [--dump-graph] [--ir] [--meta] 
@@ -78,8 +76,8 @@ Shared Options:
 
 Compile Options:
   
-  --emit                 Compile artifact for `onda compile`: `check`, `llvm-ir`, or `obj`
-  --output, -o           Output path for `llvm-ir` or `obj`
+  --emit                 Compile artifact: `check`, `mir`, `mir-json`, `mir-messagepack`, `llvm-ir`, or `obj`
+  --output, -o           Output path for `mir`, `mir-json`, `mir-messagepack`, `llvm-ir`, or `obj`
   --meta-out             Write AOT sidecar metadata JSON for `onda compile --emit obj`
   --dump-graph           Print program after graph lowering, before proc desugaring/codegen
   --ir                   Alias for `onda compile --emit llvm-ir`
@@ -140,6 +138,9 @@ enum Command {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum CompileEmit {
     Check,
+    Mir,
+    MirJson,
+    MirMessagePack,
     LlvmIr,
     Object,
 }
@@ -220,19 +221,19 @@ fn main() {
             show_meta,
             fast_math,
             target,
-        } => run_compile(
-            &input,
+        } => run_compile(compile_cmd::CompileRequest {
+            input: &input,
             emit,
-            output.as_deref(),
-            meta_out.as_deref(),
+            output: output.as_deref(),
+            meta_out: meta_out.as_deref(),
             sample_rate_hz,
             block_frames,
             dump_graph,
             show_meta,
             fast_math,
             target,
-        ),
-        Command::Lsp => lsp_stdio::run_stdio_loop(),
+        }),
+        Command::Lsp => onda_lsp::run_stdio_loop(),
         Command::Run(cmd) => run_run(cmd),
         Command::Daemon(cmd) => run_daemon(cmd),
     };

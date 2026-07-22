@@ -4,8 +4,13 @@ members = [
   "crates/onda_daemon",
   "crates/onda_frontend",
   "crates/onda_semantics",
+  "crates/onda_mir",
+  "crates/onda_compiler_web",
+  "crates/onda_lsp",
   "crates/onda_codegen_llvm",
+  "crates/onda_processor_abi",
   "crates/onda_runtime",
+  "crates/onda_realtime",
   "crates/onda_api",
   "crates/onda_cpal",
   "crates/onda_run",
@@ -13,12 +18,16 @@ members = [
   "crates/onda_webview",
   "crates/onda_examples",
 ]
+default-members = [
+  "crates/onda_cli",
+  "crates/onda_api",
+]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.4.4"
+version = "0.5.0"
 authors = ["onda contributors"]
 
 [workspace.lints.clippy]

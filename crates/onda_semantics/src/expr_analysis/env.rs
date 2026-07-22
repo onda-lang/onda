@@ -15,8 +15,12 @@ pub(crate) struct FnSignature {
 #[derive(Clone, Copy)]
 pub(crate) struct ExprEnv<'a> {
     pub(crate) known_scalars: &'a HashSet<String>,
+    pub(crate) state_scalars: &'a HashMap<String, PrimitiveType>,
     pub(crate) locals: &'a HashSet<String>,
     pub(crate) local_aliases: &'a LocalAliasTypes,
+    pub(crate) input_names: &'a HashSet<String>,
+    pub(crate) output_names: &'a HashSet<String>,
+    pub(crate) param_names: &'a HashSet<String>,
     pub(crate) outputs: &'a HashSet<String>,
     pub(crate) output_arrays: &'a HashSet<String>,
     pub(crate) io_surface_names: &'a HashSet<String>,
@@ -90,6 +94,7 @@ static EMPTY_DYNAMIC_PARAM_ARRAYS: std::sync::LazyLock<HashSet<String>> =
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_expr_env<'a>(
     known_scalars: &'a HashSet<String>,
+    state_scalars: &'a HashMap<String, PrimitiveType>,
     locals: &'a HashSet<String>,
     outputs: &'a HashSet<String>,
     array_vars: &'a HashMap<String, usize>,
@@ -102,8 +107,12 @@ pub(crate) fn build_expr_env<'a>(
 ) -> ExprEnv<'a> {
     ExprEnv {
         known_scalars,
+        state_scalars,
         locals,
         local_aliases: &EMPTY_LOCAL_ALIASES,
+        input_names: &EMPTY_IO_SURFACES,
+        output_names: outputs,
+        param_names: &EMPTY_IO_SURFACES,
         outputs,
         output_arrays: &EMPTY_OUTPUT_ARRAYS,
         io_surface_names: &EMPTY_IO_SURFACES,
@@ -139,6 +148,7 @@ pub(crate) fn build_scope_expr_env<'a>(
 ) -> ExprEnv<'a> {
     let mut env = build_expr_env(
         known_scalars,
+        inputs.state_scalars,
         inputs.locals,
         inputs.expr_outputs,
         array_vars,
@@ -150,6 +160,9 @@ pub(crate) fn build_scope_expr_env<'a>(
         scope,
     );
     env.local_aliases = local_aliases;
+    env.input_names = inputs.input_names;
+    env.output_names = inputs.output_names;
+    env.param_names = inputs.param_names;
     env.output_arrays = inputs.output_array_names;
     env.io_surface_names = inputs.io_surface_names;
     env.io_surface_array_names = inputs.io_surface_array_names;

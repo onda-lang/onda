@@ -2,18 +2,18 @@ use std::path::{Path, PathBuf};
 use std::{collections::HashMap, mem};
 
 use onda_codegen_llvm::{
-    lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, DeclaredEvent,
-    DeclaredEventParam, ExecutionBackend, JitProgram, TargetOptLevel,
+    jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredEvent,
+    DeclaredEventParam, JitProgram, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, prepare_unchecked_process,
-    process_unchecked, reset_instance_state, set_param_by_index, trigger_event_by_index, Instance,
-    InstanceConfig,
+    process_unchecked_segment, reset_instance_state, set_param_by_index, trigger_event_by_index,
+    Instance, InstanceConfig,
 };
-use onda_semantics::{AnalysisOptions, TypedProgram};
+use onda_semantics::{lower_program_to_optimized_mir, AnalysisOptions, TypedProgram};
 
-use crate::analysis_session::{normalize_session_path, AnalysisSession, DocumentVersion};
+use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RunOptions {
@@ -22,7 +22,6 @@ pub struct RunOptions {
     pub float_param_smoothing_ms: f64,
     pub fast_math: bool,
     pub opt_level: TargetOptLevel,
-    pub backend: ExecutionBackend,
 }
 
 impl Default for RunOptions {
@@ -33,7 +32,6 @@ impl Default for RunOptions {
             float_param_smoothing_ms: 20.0,
             fast_math: false,
             opt_level: TargetOptLevel::O3,
-            backend: ExecutionBackend::Auto,
         }
     }
 }
@@ -46,11 +44,8 @@ impl RunOptions {
         }
     }
 
-    pub fn compile_options(&self) -> CompileOptions {
-        CompileOptions {
-            backend: self.backend,
-            sample_rate: self.sample_rate,
-            block_size: self.block_size,
+    pub fn mir_compile_options(&self) -> MirCompileOptions {
+        MirCompileOptions {
             fast_math: self.fast_math,
             opt_level: self.opt_level,
         }
@@ -149,7 +144,15 @@ impl RunSession {
             return Err(RunBuildError::Diagnostics(snapshot.diagnostics));
         };
 
-        let jit = lower_and_jit_with_options(typed.clone(), options.compile_options())
+        let mir = lower_program_to_optimized_mir(&typed).map_err(|errors| {
+            RunBuildError::Diagnostics(
+                errors
+                    .into_iter()
+                    .map(|error| Diagnostic::internal(format!("MIR lowering failed: {error}")))
+                    .collect(),
+            )
+        })?;
+        let jit = jit_program_from_optimized_mir_with_options(mir, options.mir_compile_options())
             .map_err(RunBuildError::Diagnostics)?;
 
         let config = InstanceConfig {
@@ -166,12 +169,14 @@ impl RunSession {
             .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
             .collect::<Vec<_>>();
         for (index, buffer) in input_buffers.iter_mut().enumerate() {
-            bind_input(
-                &mut instance,
-                index,
-                buffer.as_ptr().cast::<u8>(),
-                std::mem::size_of_val(buffer.as_slice()),
-            )
+            unsafe {
+                bind_input(
+                    &mut instance,
+                    index,
+                    buffer.as_ptr().cast::<u8>(),
+                    std::mem::size_of_val(buffer.as_slice()),
+                )
+            }
             .map_err(RunBuildError::Runtime)?;
         }
 
@@ -181,12 +186,14 @@ impl RunSession {
             .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
             .collect::<Vec<_>>();
         for (index, buffer) in output_buffers.iter_mut().enumerate() {
-            bind_output(
-                &mut instance,
-                index,
-                buffer.as_mut_ptr().cast::<u8>(),
-                std::mem::size_of_val(buffer.as_slice()),
-            )
+            unsafe {
+                bind_output(
+                    &mut instance,
+                    index,
+                    buffer.as_mut_ptr().cast::<u8>(),
+                    std::mem::size_of_val(buffer.as_slice()),
+                )
+            }
             .map_err(RunBuildError::Runtime)?;
         }
 
@@ -368,13 +375,24 @@ impl RunSession {
     }
 
     pub fn render_block(&mut self) -> Result<Vec<Vec<f32>>, Diagnostic> {
+        self.render_block_segments(&[(
+            0,
+            self.options.block_size,
+            onda_runtime::PROCESS_FULL_BLOCK,
+        )])
+    }
+
+    pub fn render_block_segments(
+        &mut self,
+        segments: &[(usize, usize, u32)],
+    ) -> Result<Vec<Vec<f32>>, Diagnostic> {
         let mut rendered = vec![
             0.0;
             self.options
                 .block_size
                 .saturating_mul(self.jit.required_out_channels())
         ];
-        self.render_block_interleaved(&mut rendered)?;
+        self.render_block_segments_interleaved(&mut rendered, segments)?;
 
         let mut channels = Vec::with_capacity(self.jit.required_out_channels());
         for channel in 0..self.jit.required_out_channels() {
@@ -394,6 +412,20 @@ impl RunSession {
     /// The buffer must contain exactly one block. Once the session has been
     /// built, this path performs no host allocations.
     pub fn render_block_interleaved(&mut self, rendered: &mut [f32]) -> Result<(), Diagnostic> {
+        self.render_block_segments_interleaved(
+            rendered,
+            &[(0, self.options.block_size, onda_runtime::PROCESS_FULL_BLOCK)],
+        )
+    }
+
+    /// Renders one block through an explicit segmented process schedule.
+    /// Segments may include zero-frame begin/end notifications and must each
+    /// satisfy the runtime process ABI.
+    pub fn render_block_segments_interleaved(
+        &mut self,
+        rendered: &mut [f32],
+        segments: &[(usize, usize, u32)],
+    ) -> Result<(), Diagnostic> {
         let output_channels = self.jit.required_out_channels();
         let expected_samples = self.options.block_size.saturating_mul(output_channels);
         if rendered.len() != expected_samples {
@@ -414,7 +446,11 @@ impl RunSession {
         // SAFETY: all input, output, and declared-buffer bindings are installed
         // and prepared during build/rebuild. Their backing allocations remain
         // stable for the lifetime of this instance.
-        unsafe { process_unchecked(&mut self.instance)? };
+        for &(start_frame, frames, flags) in segments {
+            unsafe {
+                process_unchecked_segment(&mut self.instance, start_frame, frames, flags)?;
+            }
+        }
 
         let mut output_channel = 0;
         for (buffer, desc) in self.output_buffers.iter().zip(self.jit.outputs()) {
@@ -428,6 +464,15 @@ impl RunSession {
             }
         }
         Ok(())
+    }
+
+    pub fn snapshot_state_bytes(&self) -> Vec<u8> {
+        self.instance.snapshot_state_bytes()
+    }
+
+    pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
+        self.instance.restore_state_bytes(bytes)?;
+        prepare_unchecked_process(&mut self.instance)
     }
 
     pub fn set_input_block(&mut self, interleaved: &[f32], source_channels: usize) {
@@ -460,6 +505,14 @@ impl RunSession {
         reset_instance_state(&mut self.instance);
         prepare_unchecked_process(&mut self.instance)
             .expect("run session bindings remain valid across state reset");
+    }
+
+    /// Creates a new runtime instance from the already-compiled JIT program.
+    /// Host-owned parameter targets and buffer bindings are retained, while all
+    /// processor state and parameter-smoothing history start fresh.
+    pub fn restart(&mut self) -> Result<(), Diagnostic> {
+        self.param_runtime_values = self.param_values.clone();
+        self.rebuild_instance()
     }
 
     pub fn bind_buffer_wav_path(
@@ -528,7 +581,7 @@ impl RunSession {
                 0,
             ));
         }
-        if channels == 0 || samples.is_empty() || samples.len() % channels != 0 {
+        if channels == 0 || samples.is_empty() || !samples.len().is_multiple_of(channels) {
             return Err(Diagnostic::runtime(
                 format!(
                     "buffer '{}' data is not a valid interleaved f32 audio buffer",
@@ -570,31 +623,37 @@ impl RunSession {
         let mut instance = create_instance(self.jit.clone(), config)?;
 
         for (index, buffer) in self.input_buffers.iter_mut().enumerate() {
-            bind_input(
-                &mut instance,
-                index,
-                buffer.as_ptr().cast::<u8>(),
-                mem::size_of_val(buffer.as_slice()),
-            )?;
+            unsafe {
+                bind_input(
+                    &mut instance,
+                    index,
+                    buffer.as_ptr().cast::<u8>(),
+                    mem::size_of_val(buffer.as_slice()),
+                )?;
+            }
         }
         for (index, buffer) in self.output_buffers.iter_mut().enumerate() {
-            bind_output(
-                &mut instance,
-                index,
-                buffer.as_mut_ptr().cast::<u8>(),
-                mem::size_of_val(buffer.as_slice()),
-            )?;
+            unsafe {
+                bind_output(
+                    &mut instance,
+                    index,
+                    buffer.as_mut_ptr().cast::<u8>(),
+                    mem::size_of_val(buffer.as_slice()),
+                )?;
+            }
         }
         for (index, binding) in self.buffer_bindings.iter_mut().enumerate() {
-            bind_buffer(
-                &mut instance,
-                index,
-                binding._samples.as_mut_ptr().cast::<u8>(),
-                binding.frames,
-                binding.channels,
-                binding.sample_rate_hz,
-                PrimitiveType::F32,
-            )?;
+            unsafe {
+                bind_buffer(
+                    &mut instance,
+                    index,
+                    binding._samples.as_mut_ptr().cast::<u8>(),
+                    binding.frames,
+                    binding.channels,
+                    binding.sample_rate_hz,
+                    PrimitiveType::F32,
+                )?;
+            }
         }
         for (name, value) in self.param_values.clone() {
             let Some(index) = self.jit.param_index(&name) else {
@@ -619,7 +678,7 @@ impl RunSession {
     fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
         if self.options.float_param_smoothing_ms <= 0.0 {
             for (name, &target_value) in &self.param_values {
-                let Some(index) = self.jit.param_index(&name) else {
+                let Some(index) = self.jit.param_index(name) else {
                     continue;
                 };
                 let Some(desc) = self.jit.param_descriptor(index) else {
@@ -641,7 +700,7 @@ impl RunSession {
             / f64::from(self.options.sample_rate.max(1.0));
         let alpha = (block_ms / self.options.float_param_smoothing_ms).clamp(0.0, 1.0);
         for (name, &target_value) in &self.param_values {
-            let Some(index) = self.jit.param_index(&name) else {
+            let Some(index) = self.jit.param_index(name) else {
                 continue;
             };
             let Some(desc) = self.jit.param_descriptor(index) else {
@@ -692,15 +751,17 @@ fn bind_placeholder_buffers(
         let channels = default_run_buffer_channels(desc.channels());
         let frames = block_size.max(1);
         let mut samples = vec![0.0_f32; frames.saturating_mul(channels)];
-        bind_buffer(
-            instance,
-            index,
-            samples.as_mut_ptr().cast::<u8>(),
-            frames,
-            channels,
-            sample_rate,
-            PrimitiveType::F32,
-        )?;
+        unsafe {
+            bind_buffer(
+                instance,
+                index,
+                samples.as_mut_ptr().cast::<u8>(),
+                frames,
+                channels,
+                sample_rate,
+                PrimitiveType::F32,
+            )?;
+        }
         bindings.push(RunBufferBinding {
             _samples: samples,
             frames,

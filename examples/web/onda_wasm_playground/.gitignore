@@ -1,0 +1,15 @@
+onda-wasm-compiler/
+onda-webaudio/
+# Legacy staged names may remain after switching an existing checkout.
+binaryen.js
+onda-binaryen-web.js
+artifact.js
+onda-webaudio.js
+onda-wasm-processor.js
+math-kernel.generated.js
+onda-compiler-web/
+run.html
+default.mir.json
+default.o
+default.wasm
+default.onda.json

@@ -5,6 +5,7 @@
     <span>Onda</span>
   </a>
   <nav class="main-nav" id="main-nav" aria-label="Main navigation">
+    <a href="{{ '/playground/' | relative_url }}"{% if page.section == 'playground' %} aria-current="page"{% endif %}>Playground</a>
     <a href="{{ '/docs/' | relative_url }}"{% if page.section == 'learn' %} aria-current="page"{% endif %}>Docs</a>
     <a href="{{ '/docs/language/' | relative_url }}"{% if page.section == 'reference' %} aria-current="page"{% endif %}>Language</a>
     <a href="{{ '/docs/examples/' | relative_url }}"{% if page.section == 'examples' %} aria-current="page"{% endif %}>Examples</a>

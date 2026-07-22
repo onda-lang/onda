@@ -1,0 +1,1168 @@
+const ONDA_PROCESS_BEGIN_BLOCK = 1 << 0;
+const ONDA_PROCESS_END_BLOCK = 1 << 1;
+const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
+const DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES = 64 * 1024;
+const HOST_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+class OndaWasmProcessor extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+
+    const processorOptions = options.processorOptions ?? {};
+    const wasmBytes = processorOptions.wasmBytes;
+    const wasmModule = processorOptions.wasmModule;
+    const metadata = processorOptions.metadata ?? {};
+
+    if (
+      metadata.artifact_kind !== "webassembly_module"
+      || metadata.target?.pointer_model !== "linear_memory_offset"
+      || metadata.target?.pointer_width_bits !== 32
+    ) {
+      throw new Error("expected an Onda wasm32 executable-module artifact");
+    }
+
+    let module;
+    if (wasmModule !== undefined) {
+      if (!(wasmModule instanceof WebAssembly.Module)) {
+        throw new Error("processorOptions.wasmModule must be a WebAssembly.Module");
+      }
+      module = wasmModule;
+    } else {
+      const bytes =
+        wasmBytes instanceof Uint8Array ? wasmBytes : new Uint8Array(wasmBytes);
+      module = new WebAssembly.Module(bytes);
+    }
+    const instance = new WebAssembly.Instance(module);
+    this.exports = instance.exports;
+    this.memory = this.exports.memory;
+
+    if (!(this.memory instanceof WebAssembly.Memory)) {
+      throw new Error("expected exported wasm memory");
+    }
+
+    this.memoryBuffer = null;
+    this.dataViewCache = null;
+    this.viewsReady = false;
+    this.allocationLocked = false;
+    this.stateBytes = null;
+    this.inputViews = [];
+    this.outputViews = [];
+
+    const heapBase = Number(
+      this.exports.__heap_base?.value ?? this.exports.__heap_base ?? 0,
+    );
+    if (
+      !Number.isInteger(heapBase)
+      || heapBase < -0x8000_0000
+      || heapBase > 0xffff_ffff
+    ) {
+      throw new Error(`invalid wasm32 heap base: ${heapBase}`);
+    }
+    this.heap = heapBase >>> 0;
+    this.stateSizeBytes = Number(metadata.runtime?.state_size_bytes ?? 0);
+    this.paramInfo = Array.isArray(metadata.metadata?.params) ? metadata.metadata.params : [];
+    this.eventInfo = Array.isArray(metadata.metadata?.events)
+      ? metadata.metadata.events
+      : [];
+    this.controlOutputInfo = Array.isArray(metadata.metadata?.control_outputs)
+      ? metadata.metadata.control_outputs
+      : [];
+    this.bufferInfo = Array.isArray(metadata.metadata?.buffers)
+      ? metadata.metadata.buffers
+      : [];
+    this.inputInfo = Array.isArray(metadata.metadata?.inputs)
+      ? metadata.metadata.inputs
+      : [];
+    this.outputInfo = Array.isArray(metadata.metadata?.outputs)
+      ? metadata.metadata.outputs
+      : [];
+    this.snapshotInfo = Array.isArray(metadata.metadata?.states)
+      ? metadata.metadata.states
+      : [];
+    this.snapshotSizeBytes = Number(metadata.runtime?.snapshot_size_bytes ?? 0);
+    this.inputChannels = this.flattenAudioChannels(this.inputInfo, "input");
+    this.outputChannels = this.flattenAudioChannels(this.outputInfo, "output");
+    this.inputCount = this.inputChannels.length;
+    this.outputCount = this.outputChannels.length;
+    if (this.inputCount === 0 && this.outputCount === 0) {
+      throw new Error(
+        "the Onda Web Audio processor requires at least one audio input or output",
+      );
+    }
+    this.blockSize = Number(metadata.compile?.block_size ?? 128);
+    this.compileSampleRate = Number(metadata.compile?.sample_rate ?? sampleRate);
+    if (!Number.isInteger(this.blockSize) || this.blockSize <= 0) {
+      throw new Error(`invalid compile-time block size: ${this.blockSize}`);
+    }
+    if (!Number.isFinite(this.compileSampleRate) || this.compileSampleRate <= 0) {
+      throw new Error(`invalid compile-time sample rate: ${this.compileSampleRate}`);
+    }
+    const renderSampleRate = Number(globalThis.sampleRate);
+    if (
+      Number.isFinite(renderSampleRate)
+      && renderSampleRate > 0
+      && renderSampleRate !== this.compileSampleRate
+    ) {
+      throw new Error(
+        `processor was compiled for ${this.compileSampleRate} Hz but the AudioWorklet runs at ${renderSampleRate} Hz`,
+      );
+    }
+    this.inputPtrs = [];
+    this.inputCapacityFrames = 0;
+    this.outputPtrs = [];
+    this.outputCapacityFrames = 0;
+    this.blockCursor = 0;
+
+    const paramBytes = Number(metadata.runtime?.param_size_bytes ?? 0);
+    if (!Number.isInteger(paramBytes) || paramBytes < 0) {
+      throw new Error(`invalid parameter storage size: ${paramBytes}`);
+    }
+    this.paramSizeBytes = paramBytes;
+
+    this.paramsPtr = paramBytes ? this.alloc(paramBytes, 4) : 0;
+    this.statePtr = this.stateSizeBytes ? this.alloc(this.stateSizeBytes, 16) : 0;
+    this.inPtrsPtr = this.inputCount ? this.alloc(this.inputCount * 4, 4) : 0;
+    this.outPtrsPtr = this.outputCount ? this.alloc(this.outputCount * 4, 4) : 0;
+    const bufferTableBytes = this.bufferInfo.length * 4;
+    this.bufferPointersPtr = this.bufferInfo.length
+      ? this.alloc(bufferTableBytes, 4)
+      : 0;
+    this.bufferFramesPtr = this.bufferInfo.length
+      ? this.alloc(bufferTableBytes, 4)
+      : 0;
+    this.bufferChannelsPtr = this.bufferInfo.length
+      ? this.alloc(bufferTableBytes, 4)
+      : 0;
+    this.bufferSampleRatesPtr = this.bufferInfo.length
+      ? this.alloc(bufferTableBytes, 4)
+      : 0;
+    this.bufferBindings = [];
+    this.bindInitialBuffers(processorOptions.buffers ?? {});
+    this.eventPayloadCapacity = this.configuredEventPayloadCapacity(
+      processorOptions.eventPayloadCapacityBytes,
+    );
+    this.eventPayloadPtr = this.eventPayloadCapacity
+      ? this.alloc(this.eventPayloadCapacity, 8)
+      : 0;
+    this.writeParamDefaults();
+    this.writeInitialParams(processorOptions.params ?? {});
+    this.ensureInputCapacity(this.blockSize);
+    this.ensureOutputCapacity(this.blockSize);
+    this.viewsReady = true;
+    this.refreshMemoryCache(true);
+    this.reset();
+    this.allocationLocked = true;
+    this.port.onmessage = (event) => this.handleMessage(event.data ?? {});
+  }
+
+  ensureMemoryCapacity(requiredBytes) {
+    const pageBytes = 64 * 1024;
+    const current = this.memory.buffer.byteLength;
+    if (requiredBytes <= current) {
+      return;
+    }
+    const extraPages = Math.ceil((requiredBytes - current) / pageBytes);
+    this.memory.grow(extraPages);
+  }
+
+  alignUp(value, align) {
+    return Math.ceil(value / align) * align;
+  }
+
+  alloc(size, align) {
+    if (this.allocationLocked) {
+      throw new Error("Onda worklet memory allocation is locked after initialization");
+    }
+    const ptr = this.alignUp(this.heap, align);
+    const next = ptr + size;
+    this.ensureMemoryCapacity(next);
+    this.heap = next;
+    return ptr;
+  }
+
+  refreshMemoryCache(force = false) {
+    const buffer = this.memory.buffer;
+    if (!force && buffer === this.memoryBuffer) return;
+    this.memoryBuffer = buffer;
+    this.dataViewCache = new DataView(buffer);
+    if (!this.viewsReady) return;
+
+    this.stateBytes = new Uint8Array(
+      buffer,
+      this.statePtr,
+      this.stateSizeBytes,
+    );
+    this.inputViews = this.inputChannels.map((channel, index) => {
+      channel.pointer = this.inputPtrs[index];
+      return this.scalarView(
+        channel.pointer,
+        channel.scalar,
+        this.inputCapacityFrames,
+      );
+    });
+    this.outputViews = this.outputChannels.map((channel, index) => {
+      channel.pointer = this.outputPtrs[index];
+      return this.scalarView(
+        channel.pointer,
+        channel.scalar,
+        this.outputCapacityFrames,
+      );
+    });
+  }
+
+  memoryView() {
+    this.refreshMemoryCache();
+    return this.dataViewCache;
+  }
+
+  scalarView(address, scalar, length) {
+    if (!HOST_LITTLE_ENDIAN) return null;
+    if (address % this.scalarByteSize(scalar) !== 0) return null;
+    if (scalar === "bool") return new Uint8Array(this.memoryBuffer, address, length);
+    if (scalar === "i32") return new Int32Array(this.memoryBuffer, address, length);
+    if (scalar === "i64") return new BigInt64Array(this.memoryBuffer, address, length);
+    if (scalar === "f32") return new Float32Array(this.memoryBuffer, address, length);
+    if (scalar === "f64") return new Float64Array(this.memoryBuffer, address, length);
+    throw new Error(`unsupported ABI scalar '${String(scalar)}'`);
+  }
+
+  configuredEventPayloadCapacity(configuredCapacity) {
+    let minimum = 0;
+    let dynamic = false;
+    for (const event of this.eventInfo) {
+      minimum = Math.max(
+        minimum,
+        Number(event.payload_size_bytes ?? event.payload_min_size_bytes ?? 0),
+      );
+      dynamic ||= event.has_dynamic_payload === true;
+    }
+    const capacity = configuredCapacity
+      ?? (dynamic ? Math.max(minimum, DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES) : minimum);
+    if (
+      !Number.isSafeInteger(capacity)
+      || capacity < minimum
+      || capacity < 0
+      || capacity > 0x7fff_ffff
+    ) {
+      throw new Error(
+        `event payload capacity must be an integer from ${minimum} through 2147483647 bytes`,
+      );
+    }
+    return capacity;
+  }
+
+  flattenAudioChannels(ports, kind) {
+    const channels = [];
+    for (const port of ports) {
+      const channelOffset = Number(port.slot_offset);
+      const channelCount = Number(port.array_len);
+      const scalar = port.scalar ?? "f32";
+      const elementSize = this.scalarByteSize(scalar);
+      if (
+        !Number.isInteger(channelOffset) ||
+        channelOffset !== channels.length ||
+        !Number.isInteger(channelCount) ||
+        channelCount <= 0
+      ) {
+        throw new Error(`invalid flattened Onda ${kind} channel metadata`);
+      }
+      if (
+        port.element_size_bytes !== undefined &&
+        Number(port.element_size_bytes) !== elementSize
+      ) {
+        throw new Error(
+          `Onda ${kind} '${port.name}' has inconsistent scalar byte width`,
+        );
+      }
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        channels.push({
+          name: port.name,
+          scalar,
+          elementSize,
+        });
+      }
+    }
+    return channels;
+  }
+
+  writeInitialParams(values) {
+    if (Array.isArray(values)) {
+      values.forEach((value, index) => this.setParam(index, value));
+      return;
+    }
+    if (values && typeof values === "object") {
+      for (const [name, value] of Object.entries(values)) {
+        this.setParam(name, value);
+      }
+      return;
+    }
+    throw new Error("processorOptions.params must be an array or object");
+  }
+
+  writeParamDefaults() {
+    for (const param of this.paramInfo) {
+      const value = this.metadataDefaultValue(param);
+      if (value !== undefined) {
+        this.writeStorage(
+          this.paramsPtr + Number(param.byte_offset),
+          param,
+          value,
+        );
+      }
+    }
+  }
+
+  setParam(selector, value) {
+    const paramId = Number.isInteger(selector)
+      ? selector
+      : this.paramInfo.findIndex((param) => param.name === selector);
+    const param = this.paramInfo[paramId];
+    if (!param) {
+      throw new Error(`unknown Onda parameter '${String(selector)}'`);
+    }
+    if (value === undefined) {
+      throw new Error(`Onda parameter '${param.name}' requires a value`);
+    }
+    const offset = Number(param.byte_offset);
+    const byteSize = Number(param.byte_size);
+    const length = Number(param.array_len);
+    const expectedByteSize = length * this.scalarByteSize(param.scalar);
+    if (
+      !Number.isInteger(offset) ||
+      offset < 0 ||
+      !Number.isInteger(byteSize) ||
+      !Number.isInteger(length) ||
+      length <= 0 ||
+      byteSize !== expectedByteSize ||
+      offset + byteSize > this.paramSizeBytes
+    ) {
+      throw new Error(`Onda parameter '${param.name}' has invalid storage metadata`);
+    }
+    this.writeStorage(this.paramsPtr + offset, param, value);
+  }
+
+  reset() {
+    this.refreshMemoryCache();
+    this.stateBytes.fill(0);
+    this.blockCursor = 0;
+    this.exports.onda_init(this.paramsPtr, this.statePtr);
+  }
+
+  createSnapshot() {
+    const snapshot = new Uint8Array(this.snapshotSizeBytes);
+    this.refreshMemoryCache();
+    const state = this.stateBytes;
+    for (const entry of this.snapshotInfo) {
+      const packedOffset = Number(entry.packed_snapshot_byte_offset);
+      const physicalOffset = Number(entry.physical_state_byte_offset);
+      const byteSize = Number(entry.byte_size);
+      this.validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize);
+      snapshot.set(
+        state.subarray(physicalOffset, physicalOffset + byteSize),
+        packedOffset,
+      );
+    }
+    return snapshot;
+  }
+
+  restoreSnapshot(value) {
+    const snapshot = this.snapshotBytes(value);
+    if (snapshot.byteLength !== this.snapshotSizeBytes) {
+      throw new Error(
+        `snapshot has ${snapshot.byteLength} bytes; expected ${this.snapshotSizeBytes}`,
+      );
+    }
+    // The ABI restore base is a fresh post-init image, so scratch and
+    // control-mirror state never leak across a restore.
+    this.reset();
+    const state = this.stateBytes;
+    for (const entry of this.snapshotInfo) {
+      const packedOffset = Number(entry.packed_snapshot_byte_offset);
+      const physicalOffset = Number(entry.physical_state_byte_offset);
+      const byteSize = Number(entry.byte_size);
+      this.validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize);
+      state.set(
+        snapshot.subarray(packedOffset, packedOffset + byteSize),
+        physicalOffset,
+      );
+    }
+  }
+
+  snapshotBytes(value) {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    throw new Error("snapshot restore requires byte storage");
+  }
+
+  validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize) {
+    if (
+      !Number.isSafeInteger(packedOffset)
+      || packedOffset < 0
+      || !Number.isSafeInteger(physicalOffset)
+      || physicalOffset < 0
+      || !Number.isSafeInteger(byteSize)
+      || byteSize < 0
+      || packedOffset + byteSize > this.snapshotSizeBytes
+      || physicalOffset + byteSize > this.stateSizeBytes
+    ) {
+      throw new Error(
+        `state '${String(entry.name)}' has invalid snapshot metadata`,
+      );
+    }
+  }
+
+  postResponse(message, response, always = false, transfer = []) {
+    if (!always && message.requestId === undefined) return;
+    this.port.postMessage(
+      message.requestId === undefined
+        ? response
+        : { ...response, requestId: message.requestId },
+      transfer,
+    );
+  }
+
+  handleMessage(message) {
+    try {
+      if (message.type === "set-param") {
+        this.setParam(
+          message.param ?? message.name ?? message.index,
+          message.value,
+        );
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "reset") {
+        this.reset();
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "event") {
+        this.dispatchEvent(
+          message.event ?? message.name ?? message.index,
+          message.values ?? message.args ?? {},
+        );
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "read-control-outputs") {
+        this.postResponse(message, {
+          type: "control-outputs",
+          values: this.readControlOutputs(),
+        }, true);
+      } else if (message.type === "read-buffer") {
+        this.postResponse(
+          message,
+          { type: "buffer", ...this.readBuffer(message.buffer) },
+          true,
+        );
+      } else if (message.type === "snapshot") {
+        const snapshot = this.createSnapshot();
+        this.postResponse(
+          message,
+          { type: "snapshot", bytes: snapshot },
+          true,
+          [snapshot.buffer],
+        );
+      } else if (message.type === "restore-snapshot") {
+        this.restoreSnapshot(message.snapshot ?? message.bytes);
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else {
+        throw new Error(`unknown Onda worklet operation '${String(message.type)}'`);
+      }
+    } catch (error) {
+      this.port.postMessage({
+        type: "onda-error",
+        operation: message.type ?? "unknown",
+        requestId: message.requestId,
+        error: String(error && error.message ? error.message : error),
+      });
+    }
+  }
+
+  dispatchEvent(selector, values) {
+    const eventId = Number.isInteger(selector)
+      ? selector
+      : this.eventInfo.findIndex((event) => event.name === selector);
+    const event = this.eventInfo[eventId];
+    if (!event) {
+      throw new Error(`unknown Onda event '${String(selector)}'`);
+    }
+    let payloadSize = 0;
+    for (let paramId = 0; paramId < event.params.length; paramId += 1) {
+      const param = event.params[paramId];
+      const value = this.eventValue(event, param, paramId, values);
+      if (param.is_slice) {
+        const length = this.sequenceLength(
+          value,
+          `event '${event.name}' slice '${param.name}'`,
+        );
+        payloadSize = this.checkedEventPayloadSize(
+          payloadSize,
+          4 + length * this.scalarByteSize(param.scalar),
+          event.name,
+        );
+      } else {
+        this.validateStorageValue(param, value);
+        payloadSize = this.checkedEventPayloadSize(
+          payloadSize,
+          Number(param.byte_size ?? 0),
+          event.name,
+        );
+      }
+    }
+    if (payloadSize > this.eventPayloadCapacity) {
+      throw new Error(
+        `event '${event.name}' requires ${payloadSize} payload bytes; configured capacity is ${this.eventPayloadCapacity}`,
+      );
+    }
+
+    let offset = 0;
+    const view = this.memoryView();
+    for (let paramId = 0; paramId < event.params.length; paramId += 1) {
+      const param = event.params[paramId];
+      const value = this.eventValue(event, param, paramId, values);
+      const address = this.eventPayloadPtr + offset;
+      if (param.is_slice) {
+        const length = this.sequenceLength(
+          value,
+          `event '${event.name}' slice '${param.name}'`,
+        );
+        view.setInt32(address, length, true);
+        this.writeScalarValues(address + 4, param.scalar, value, length, view);
+        offset += 4 + length * this.scalarByteSize(param.scalar);
+      } else {
+        this.writeStorage(address, param, value, view);
+        offset += Number(param.byte_size ?? 0);
+      }
+    }
+    const handler = this.exports[event.export];
+    if (typeof handler !== "function") {
+      throw new Error(`missing WebAssembly export '${event.export}'`);
+    }
+    handler(
+      this.eventPayloadPtr,
+      this.paramsPtr,
+      this.statePtr,
+      this.bufferPointersPtr,
+      this.bufferFramesPtr,
+      this.bufferChannelsPtr,
+      this.bufferSampleRatesPtr,
+    );
+  }
+
+  eventValue(event, param, paramId, values) {
+    const supplied = Array.isArray(values)
+      ? values[paramId]
+      : values?.[param.name];
+    const value = supplied === undefined
+      ? this.metadataDefaultValue(param)
+      : supplied;
+    if (value === undefined) {
+      throw new Error(
+        `event '${event.name}' requires parameter '${param.name}'`,
+      );
+    }
+    return value;
+  }
+
+  checkedEventPayloadSize(current, additional, eventName) {
+    const next = current + additional;
+    if (
+      !Number.isSafeInteger(additional)
+      || additional < 0
+      || !Number.isSafeInteger(next)
+      || next > 0x7fff_ffff
+    ) {
+      throw new Error(`event '${eventName}' payload exceeds the 32-bit ABI limit`);
+    }
+    return next;
+  }
+
+  readControlOutputs() {
+    return Object.fromEntries(
+      this.controlOutputInfo.map((output) => [
+        output.name,
+        this.readStorage(
+          this.statePtr + Number(output.state_byte_offset),
+          output,
+        ),
+      ]),
+    );
+  }
+
+  bindInitialBuffers(options) {
+    this.bufferInfo.forEach((buffer, bufferId) => {
+      const supplied = Array.isArray(options)
+        ? options[bufferId]
+        : options[buffer.name];
+      if (supplied === undefined) {
+        throw new Error(`Onda buffer '${buffer.name}' is not bound`);
+      }
+      const descriptor =
+        Array.isArray(supplied) || ArrayBuffer.isView(supplied)
+          ? { data: supplied }
+          : supplied;
+      const data = descriptor?.data;
+      const length = this.sequenceLength(data, `Onda buffer '${buffer.name}'`);
+      const sampleRate = Math.fround(
+        Number(
+          descriptor.sampleRate ?? descriptor.sample_rate ?? this.compileSampleRate,
+        ),
+      );
+      if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+        throw new Error(`Onda buffer '${buffer.name}' has an invalid sample rate`);
+      }
+      let frames;
+      let channels;
+      let pointer;
+      if (length === 0) {
+        if (
+          (descriptor.frames !== undefined && descriptor.frames !== 0)
+          || (descriptor.channels !== undefined && descriptor.channels !== 0)
+        ) {
+          throw new Error(
+            `Onda buffer '${buffer.name}' empty data requires zero frames and channels`,
+          );
+        }
+        frames = 0;
+        channels = 0;
+        pointer = 0;
+      } else {
+        const declaredChannels = Number(buffer.static_channels ?? 0);
+        channels = Number(descriptor.channels ?? declaredChannels);
+        if (!Number.isInteger(channels) || channels <= 0) {
+          throw new Error(`Onda buffer '${buffer.name}' requires channels > 0`);
+        }
+        if (declaredChannels && channels !== declaredChannels) {
+          throw new Error(
+            `Onda buffer '${buffer.name}' requires ${declaredChannels} channel(s)`,
+          );
+        }
+        frames = Number(descriptor.frames ?? length / channels);
+        if (
+          !Number.isInteger(frames)
+          || frames <= 0
+          || frames * channels !== length
+        ) {
+          throw new Error(
+            `Onda buffer '${buffer.name}' data does not match its frame/channel shape`,
+          );
+        }
+        const elementSize = this.scalarByteSize(buffer.scalar);
+        pointer = this.alloc(length * elementSize, elementSize);
+        this.writeScalarValues(pointer, buffer.scalar, data, length);
+      }
+      const view = this.memoryView();
+      view.setUint32(this.bufferPointersPtr + bufferId * 4, pointer, true);
+      view.setInt32(this.bufferFramesPtr + bufferId * 4, frames, true);
+      view.setInt32(this.bufferChannelsPtr + bufferId * 4, channels, true);
+      view.setFloat32(
+        this.bufferSampleRatesPtr + bufferId * 4,
+        sampleRate,
+        true,
+      );
+      this.bufferBindings[bufferId] = {
+        ...buffer,
+        pointer,
+        frames,
+        channels,
+        sampleRate,
+      };
+    });
+  }
+
+  readBuffer(selector) {
+    const bufferId = Number.isInteger(selector)
+      ? selector
+      : this.bufferInfo.findIndex((buffer) => buffer.name === selector);
+    const binding = this.bufferBindings[bufferId];
+    if (!binding) {
+      throw new Error(`unknown Onda buffer '${String(selector)}'`);
+    }
+    const length = binding.frames * binding.channels;
+    const elementSize = this.scalarByteSize(binding.scalar);
+    const view = this.memoryView();
+    return {
+      name: binding.name,
+      frames: binding.frames,
+      channels: binding.channels,
+      sampleRate: binding.sampleRate,
+      data: Array.from({ length }, (_, index) =>
+        this.readScalar(
+          binding.pointer + index * elementSize,
+          binding.scalar,
+          view,
+        ),
+      ),
+    };
+  }
+
+  constantValue(constant) {
+    if (constant?.kind === "scalar") {
+      return this.decodeConstantScalar(constant.data);
+    }
+    if (constant?.kind === "aggregate" && Array.isArray(constant.data)) {
+      return constant.data.map((value) => this.constantValue(value));
+    }
+    return undefined;
+  }
+
+  metadataDefaultValue(info) {
+    if (!Array.isArray(info?.default_reprs)) return undefined;
+    const values = info.default_reprs.map((value) =>
+      this.decodeConstantScalar({ type: info.scalar, value })
+    );
+    return this.isFixedArray(info) ? values : values[0];
+  }
+
+  isFixedArray(info) {
+    return info?.is_slice !== true && /\[[0-9]+\]$/.test(info?.type_repr ?? "");
+  }
+
+  decodeConstantScalar(scalar) {
+    const type = scalar?.type;
+    const value = scalar?.value;
+    if (typeof value !== "string") return value;
+    if (type === "bool") {
+      if (value === "true") return true;
+      if (value === "false") return false;
+      throw new Error(`invalid bool constant '${value}'`);
+    }
+    if (type === "i32") return Number(value);
+    if (type === "i64") return BigInt(value);
+    if (type !== "f32" && type !== "f64") return value;
+    if (!value.startsWith("0x")) {
+      const decoded = Number(value);
+      if (Number.isNaN(decoded) && value !== "NaN") {
+        throw new Error(`invalid ${type} constant '${value}'`);
+      }
+      return decoded;
+    }
+    const width = type === "f32" ? 32 : 64;
+    const digits = value.startsWith("0x") ? value.slice(2) : "";
+    if (digits.length !== width / 4 || !/^[0-9a-f]+$/.test(digits)) {
+      throw new Error(`invalid MIR ${type} bit-pattern constant '${String(value)}'`);
+    }
+    const bytes = new ArrayBuffer(width / 8);
+    const view = new DataView(bytes);
+    if (width === 32) {
+      view.setUint32(0, Number.parseInt(digits, 16), false);
+      return view.getFloat32(0, false);
+    }
+    view.setBigUint64(0, BigInt(value), false);
+    return view.getFloat64(0, false);
+  }
+
+  sequenceLength(value, description) {
+    const valid = Array.isArray(value)
+      || (ArrayBuffer.isView(value) && typeof value.length === "number");
+    if (!valid || !Number.isSafeInteger(value.length) || value.length < 0) {
+      throw new Error(`${description} requires array data`);
+    }
+    return value.length;
+  }
+
+  validateStorageValue(info, value) {
+    const length = Number(info.array_len);
+    const isFixedArray = this.isFixedArray(info);
+    const isArrayValue = Array.isArray(value)
+      || (ArrayBuffer.isView(value) && typeof value.length === "number");
+    if (isFixedArray !== isArrayValue) {
+      throw new Error(
+        isFixedArray
+          ? `'${info.name}' requires exactly ${length} ${info.scalar} value(s)`
+          : `'${info.name}' requires one ${info.scalar} value`,
+      );
+    }
+    if (isFixedArray && value.length !== length) {
+      throw new Error(
+        `'${info.name}' requires exactly ${length} ${info.scalar} value(s)`,
+      );
+    }
+    return length;
+  }
+
+  writeStorage(address, info, value, view = this.memoryView()) {
+    const length = this.validateStorageValue(info, value);
+    if (!this.isFixedArray(info)) {
+      this.writeScalar(address, info.scalar, value, view);
+      return;
+    }
+    this.writeScalarValues(address, info.scalar, value, length, view);
+  }
+
+  writeScalarValues(address, scalar, values, length, view = this.memoryView()) {
+    const size = this.scalarByteSize(scalar);
+    const target = this.scalarView(address, scalar, length);
+    if (target !== null) {
+      if (scalar === "bool") {
+        for (let index = 0; index < length; index += 1) {
+          target[index] = values[index] ? 1 : 0;
+        }
+      } else if (scalar === "i64") {
+        for (let index = 0; index < length; index += 1) {
+          target[index] = BigInt(values[index]);
+        }
+      } else {
+        target.set(values);
+      }
+      return;
+    }
+    for (let index = 0; index < length; index += 1) {
+      this.writeScalar(address + index * size, scalar, values[index], view);
+    }
+  }
+
+  readStorage(address, info) {
+    const length = Number(info.array_len);
+    const size = this.scalarByteSize(info.scalar);
+    const view = this.memoryView();
+    const values = Array.from({ length }, (_, index) =>
+      this.readScalar(address + index * size, info.scalar, view),
+    );
+    return this.isFixedArray(info) ? values : values[0];
+  }
+
+  scalarByteSize(scalar) {
+    if (scalar === "bool") return 1;
+    if (scalar === "i32" || scalar === "f32") return 4;
+    if (scalar === "i64" || scalar === "f64") return 8;
+    throw new Error(`unsupported ABI scalar '${String(scalar)}'`);
+  }
+
+  writeScalar(address, scalar, value, view = this.memoryView()) {
+    if (scalar === "bool") view.setUint8(address, value ? 1 : 0);
+    else if (scalar === "i32") view.setInt32(address, Number(value), true);
+    else if (scalar === "i64") view.setBigInt64(address, BigInt(value), true);
+    else if (scalar === "f32") view.setFloat32(address, Number(value), true);
+    else if (scalar === "f64") view.setFloat64(address, Number(value), true);
+    else throw new Error(`unsupported ABI scalar '${String(scalar)}'`);
+  }
+
+  readScalar(address, scalar, view = this.memoryView()) {
+    if (scalar === "bool") return view.getUint8(address) !== 0;
+    if (scalar === "i32") return view.getInt32(address, true);
+    if (scalar === "i64") return view.getBigInt64(address, true);
+    if (scalar === "f32") return view.getFloat32(address, true);
+    if (scalar === "f64") return view.getFloat64(address, true);
+    throw new Error(`unsupported ABI scalar '${String(scalar)}'`);
+  }
+
+  ensureInputCapacity(frames) {
+    if (frames <= this.inputCapacityFrames) {
+      return;
+    }
+
+    this.inputPtrs = [];
+    for (const channel of this.inputChannels) {
+      const ptr = this.alloc(frames * channel.elementSize, 16);
+      this.inputPtrs.push(ptr);
+    }
+
+    const view = this.memoryView();
+    for (let channel = 0; channel < this.inputCount; channel += 1) {
+      view.setUint32(this.inPtrsPtr + channel * 4, this.inputPtrs[channel], true);
+    }
+    this.inputCapacityFrames = frames;
+  }
+
+  ensureOutputCapacity(frames) {
+    if (frames <= this.outputCapacityFrames) {
+      return;
+    }
+
+    this.outputPtrs = [];
+    for (const channel of this.outputChannels) {
+      const ptr = this.alloc(frames * channel.elementSize, 16);
+      this.outputPtrs.push(ptr);
+    }
+
+    const view = this.memoryView();
+    for (let channel = 0; channel < this.outputCount; channel += 1) {
+      const ptr = this.outputPtrs[channel];
+      view.setUint32(this.outPtrsPtr + channel * 4, ptr, true);
+    }
+    this.outputCapacityFrames = frames;
+  }
+
+  audioFrameCount(inputs, outputs) {
+    for (let busId = 0; busId < outputs.length; busId += 1) {
+      const bus = outputs[busId];
+      if (bus.length > 0) return bus[0].length;
+    }
+    for (let busId = 0; busId < inputs.length; busId += 1) {
+      const bus = inputs[busId];
+      if (bus.length > 0) return bus[0].length;
+    }
+    throw new Error("AudioWorklet callback has no audio channel from which to derive its frame count");
+  }
+
+  copyInputSamples(
+    source,
+    info,
+    target,
+    callbackOffset,
+    startFrame,
+    segmentFrames,
+    view,
+  ) {
+    if (target !== null) {
+      if (info.scalar === "f32") {
+        if (callbackOffset === 0 && segmentFrames === source.length) {
+          target.set(source, startFrame);
+        } else {
+          for (let frame = 0; frame < segmentFrames; frame += 1) {
+            target[startFrame + frame] = source[callbackOffset + frame];
+          }
+        }
+        return;
+      }
+      if (info.scalar === "f64") {
+        for (let frame = 0; frame < segmentFrames; frame += 1) {
+          target[startFrame + frame] = source[callbackOffset + frame];
+        }
+        return;
+      }
+      if (info.scalar === "i32") {
+        for (let frame = 0; frame < segmentFrames; frame += 1) {
+          target[startFrame + frame] = Math.trunc(source[callbackOffset + frame]);
+        }
+        return;
+      }
+      if (info.scalar === "i64") {
+        for (let frame = 0; frame < segmentFrames; frame += 1) {
+          target[startFrame + frame] = BigInt(
+            Math.trunc(source[callbackOffset + frame]),
+          );
+        }
+        return;
+      }
+      if (info.scalar === "bool") {
+        for (let frame = 0; frame < segmentFrames; frame += 1) {
+          target[startFrame + frame] = source[callbackOffset + frame] !== 0 ? 1 : 0;
+        }
+        return;
+      }
+      throw new Error(`unsupported audio input scalar '${String(info.scalar)}'`);
+    }
+
+    for (let frame = 0; frame < segmentFrames; frame += 1) {
+      const value = source[callbackOffset + frame];
+      this.writeScalar(
+        info.pointer + (startFrame + frame) * info.elementSize,
+        info.scalar,
+        info.scalar === "bool"
+          ? value !== 0
+          : info.scalar === "i64"
+            ? BigInt(Math.trunc(value))
+            : info.scalar === "i32"
+              ? Math.trunc(value)
+              : value,
+        view,
+      );
+    }
+  }
+
+  zeroInputSamples(info, target, startFrame, segmentFrames, view) {
+    if (target !== null) {
+      target.fill(
+        info.scalar === "i64" ? 0n : 0,
+        startFrame,
+        startFrame + segmentFrames,
+      );
+      return;
+    }
+    for (let frame = 0; frame < segmentFrames; frame += 1) {
+      this.writeScalar(
+        info.pointer + (startFrame + frame) * info.elementSize,
+        info.scalar,
+        info.scalar === "i64" ? 0n : 0,
+        view,
+      );
+    }
+  }
+
+  marshalInputSegment(
+    inputs,
+    callbackFrames,
+    callbackOffset,
+    startFrame,
+    segmentFrames,
+  ) {
+    const view = this.dataViewCache;
+    let inputChannel = 0;
+    for (let busId = 0; busId < inputs.length; busId += 1) {
+      const bus = inputs[busId];
+      for (let busChannel = 0; busChannel < bus.length; busChannel += 1) {
+        const source = bus[busChannel];
+        if (source.length !== callbackFrames) {
+          throw new Error("AudioWorklet input channels have inconsistent block sizes");
+        }
+        if (inputChannel < this.inputCount) {
+          const info = this.inputChannels[inputChannel];
+          this.copyInputSamples(
+            source,
+            info,
+            this.inputViews[inputChannel],
+            callbackOffset,
+            startFrame,
+            segmentFrames,
+            view,
+          );
+        }
+        inputChannel += 1;
+      }
+    }
+
+    for (; inputChannel < this.inputCount; inputChannel += 1) {
+      const info = this.inputChannels[inputChannel];
+      this.zeroInputSamples(
+        info,
+        this.inputViews[inputChannel],
+        startFrame,
+        segmentFrames,
+        view,
+      );
+    }
+  }
+
+  copyOutputSamples(
+    destination,
+    info,
+    source,
+    callbackOffset,
+    startFrame,
+    segmentFrames,
+    view,
+  ) {
+    if (source !== null) {
+      if (
+        info.scalar === "f32"
+        && callbackOffset === 0
+        && startFrame === 0
+        && segmentFrames === destination.length
+        && source.length === destination.length
+      ) {
+        destination.set(source);
+        return;
+      }
+      if (info.scalar === "bool") {
+        for (let frame = 0; frame < segmentFrames; frame += 1) {
+          destination[callbackOffset + frame] = source[startFrame + frame] ? 1 : 0;
+        }
+        return;
+      }
+      for (let frame = 0; frame < segmentFrames; frame += 1) {
+        destination[callbackOffset + frame] = Number(source[startFrame + frame]);
+      }
+      return;
+    }
+
+    for (let frame = 0; frame < segmentFrames; frame += 1) {
+      const value = this.readScalar(
+        info.pointer + (startFrame + frame) * info.elementSize,
+        info.scalar,
+        view,
+      );
+      destination[callbackOffset + frame] = info.scalar === "bool"
+        ? (value ? 1 : 0)
+        : Number(value);
+    }
+  }
+
+  marshalOutputSegment(
+    outputs,
+    callbackFrames,
+    callbackOffset,
+    startFrame,
+    segmentFrames,
+  ) {
+    const view = this.dataViewCache;
+    let outputChannel = 0;
+    for (let busId = 0; busId < outputs.length; busId += 1) {
+      const bus = outputs[busId];
+      for (let busChannel = 0; busChannel < bus.length; busChannel += 1) {
+        const destination = bus[busChannel];
+        if (destination.length !== callbackFrames) {
+          throw new Error("AudioWorklet output channels have inconsistent block sizes");
+        }
+        if (outputChannel < this.outputCount) {
+          const info = this.outputChannels[outputChannel];
+          this.copyOutputSamples(
+            destination,
+            info,
+            this.outputViews[outputChannel],
+            callbackOffset,
+            startFrame,
+            segmentFrames,
+            view,
+          );
+        } else {
+          destination.fill(
+            0,
+            callbackOffset,
+            callbackOffset + segmentFrames,
+          );
+        }
+        outputChannel += 1;
+      }
+    }
+  }
+
+  invokeProcessSegment(startFrame, frames, flags) {
+    return this.exports.onda_process(
+      this.statePtr,
+      this.paramsPtr,
+      this.inPtrsPtr,
+      this.outPtrsPtr,
+      startFrame,
+      frames,
+      flags,
+      this.bufferPointersPtr,
+      this.bufferFramesPtr,
+      this.bufferChannelsPtr,
+      this.bufferSampleRatesPtr,
+    );
+  }
+
+  process(inputs, outputs) {
+    this.refreshMemoryCache();
+    const frames = this.audioFrameCount(inputs, outputs);
+
+    let callbackOffset = 0;
+    while (callbackOffset < frames) {
+      const startFrame = this.blockCursor;
+      const segmentFrames = Math.min(
+        frames - callbackOffset,
+        this.blockSize - startFrame,
+      );
+      const endsBlock = startFrame + segmentFrames === this.blockSize;
+      const flags = (startFrame === 0 ? ONDA_PROCESS_BEGIN_BLOCK : 0)
+        | (endsBlock ? ONDA_PROCESS_END_BLOCK : 0);
+
+      this.marshalInputSegment(
+        inputs,
+        frames,
+        callbackOffset,
+        startFrame,
+        segmentFrames,
+      );
+      this.invokeProcessSegment(
+        startFrame,
+        segmentFrames,
+        flags,
+      );
+      this.marshalOutputSegment(
+        outputs,
+        frames,
+        callbackOffset,
+        startFrame,
+        segmentFrames,
+      );
+
+      callbackOffset += segmentFrames;
+      this.blockCursor = endsBlock ? 0 : startFrame + segmentFrames;
+    }
+
+    return true;
+  }
+}
+
+registerProcessor(ONDA_AUDIO_WORKLET_PROCESSOR_NAME, OndaWasmProcessor);

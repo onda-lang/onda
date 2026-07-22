@@ -14,6 +14,26 @@ fn init_buffer_runtime_message(what: &str) -> String {
     )
 }
 
+fn infer_call_argument_scalar_type(expr: &Expr, env: ExprEnv<'_>) -> Option<PrimitiveType> {
+    let mut discarded = Vec::new();
+    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+        expr,
+        env.state_scalars,
+        env.declared_symbols,
+        Some(env.param_structs),
+        env.local_aliases,
+        env.local_array_aliases,
+        env.locals,
+        env.input_names,
+        env.output_names,
+        env.param_names,
+        env.struct_instances,
+        env.struct_defs,
+        env.proc_array_roots,
+        &mut discarded,
+    )
+}
+
 pub(crate) fn dynamic_param_surface_value_name<'a>(
     expr: &'a Expr,
     env: ExprEnv<'_>,
@@ -617,13 +637,12 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_expr(index, env, errors);
                 return;
             }
-            if matches!(
-                match base.as_str() {
-                    "ins" => env.port_index_ins,
-                    _ => None,
-                },
-                Some(_)
-            ) {
+            if (match base.as_str() {
+                "ins" => env.port_index_ins,
+                _ => None,
+            })
+            .is_some()
+            {
                 if env.scope == ScopeKind::Init {
                     push_expr_error(
                         errors,
@@ -1160,6 +1179,16 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         {
                             continue;
                         }
+                        if let Some(FnParamType::Primitive(expected)) = param_ty {
+                            let actual = infer_call_argument_scalar_type(arg, env);
+                            require_expr_assignable_type(
+                                arg,
+                                actual,
+                                *expected,
+                                &format!("function '{name}' argument '{}'", sig.params[idx]),
+                                errors,
+                            );
+                        }
                         validate_expr(arg, env, errors);
                     } else if let Some(default) = sig.defaults.get(idx).and_then(|d| d.as_ref()) {
                         validate_default_expr(
@@ -1358,9 +1387,7 @@ fn protected_array_pointer_arg_name<'a>(expr: &'a Expr, env: ExprEnv<'_>) -> Opt
 }
 
 fn protected_proc_view_arg_name<'a>(name: &'a str, env: ExprEnv<'_>) -> Option<&'a str> {
-    let Some((receiver, field)) = split_simple_field_path(name) else {
-        return None;
-    };
+    let (receiver, field) = split_simple_field_path(name)?;
     let protected_field = matches!(field, "ins" | "outs" | "kouts" | "params" | "kins");
     if protected_field && env.proc_array_roots.contains_key(receiver) {
         Some(name)
@@ -1486,35 +1513,33 @@ fn validate_data_len_builtin_call(
     }
 
     let before = errors.len();
-    let is_data_symbol = if env.array_vars.contains_key(base) {
-        true
-    } else if has_declared_buffer_symbol_info(env.declared_symbols, base) {
-        true
-    } else if is_builtin_array_like_receiver_with_resolver(
-        base,
-        env.declared_symbols,
-        env.struct_defs,
-        env.proc_array_roots,
-        |root| {
-            env.param_structs
+    let is_data_symbol = env.array_vars.contains_key(base)
+        || has_declared_buffer_symbol_info(env.declared_symbols, base)
+        || is_builtin_array_like_receiver_with_resolver(
+            base,
+            env.declared_symbols,
+            env.struct_defs,
+            env.proc_array_roots,
+            |root| {
+                env.param_structs
+                    .get(root)
+                    .or_else(|| env.struct_instances.get(root))
+                    .map(String::as_str)
+            },
+        )
+        || if let Some((root, field)) = split_field_path(base, errors) {
+            let struct_name = env
+                .param_structs
                 .get(root)
-                .or_else(|| env.struct_instances.get(root))
-                .map(String::as_str)
-        },
-    ) {
-        true
-    } else if let Some((root, field)) = split_field_path(base, errors) {
-        let struct_name = env
-            .param_structs
-            .get(root)
-            .or_else(|| env.struct_instances.get(root));
-        if let Some(struct_name) = struct_name {
-            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, env.struct_defs)
-            {
-                match field_decl.ty {
-                    TypedFieldType::Array(_) => true,
-                    TypedFieldType::Struct => {
-                        push_loc_error(
+                .or_else(|| env.struct_instances.get(root));
+            if let Some(struct_name) = struct_name {
+                if let Some(field_decl) =
+                    resolve_struct_field_decl(struct_name, field, env.struct_defs)
+                {
+                    match field_decl.ty {
+                        TypedFieldType::Array(_) => true,
+                        TypedFieldType::Struct => {
+                            push_loc_error(
                             errors,
                             loc,
                             format!(
@@ -1522,10 +1547,10 @@ fn validate_data_len_builtin_call(
                                 name, root, field
                             ),
                         );
-                        false
-                    }
-                    TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => {
-                        push_loc_error(
+                            false
+                        }
+                        TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => {
+                            push_loc_error(
                             errors,
                             loc,
                             format!(
@@ -1533,34 +1558,34 @@ fn validate_data_len_builtin_call(
                                 name, root, field
                             ),
                         );
-                        false
+                            false
+                        }
                     }
+                } else {
+                    if env.struct_defs.contains_key(struct_name) {
+                        push_loc_error(
+                            errors,
+                            loc,
+                            format!(
+                                "struct instance '{}' (type '{}') has no field '{}'",
+                                root, struct_name, field
+                            ),
+                        );
+                    } else {
+                        push_loc_error(
+                            errors,
+                            loc,
+                            format!("unknown struct type '{}'", struct_name),
+                        );
+                    }
+                    false
                 }
             } else {
-                if env.struct_defs.contains_key(struct_name) {
-                    push_loc_error(
-                        errors,
-                        loc,
-                        format!(
-                            "struct instance '{}' (type '{}') has no field '{}'",
-                            root, struct_name, field
-                        ),
-                    );
-                } else {
-                    push_loc_error(
-                        errors,
-                        loc,
-                        format!("unknown struct type '{}'", struct_name),
-                    );
-                }
                 false
             }
         } else {
             false
-        }
-    } else {
-        false
-    };
+        };
 
     if !is_data_symbol && errors.len() == before {
         push_loc_error(

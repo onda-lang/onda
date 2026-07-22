@@ -1,12 +1,12 @@
 namespace std::math:
-  def clamp(x, lo, hi):
+  def clamp<T>(x: T, lo: T, hi: T) -> T:
     if (x < lo):
       return lo
     if (x > hi):
       return hi
     return x
 
-  def lerp(a, b, t):
+  def lerp<T>(a: T, b: T, t: T) -> T:
     return a + (b - a) * t
 
   def inverse_lerp(a, b, x):
@@ -89,11 +89,11 @@ namespace std::math:
   def cpsoct(freq):
     return log(freq / 440.0) / log(2.0) + 4.75
 
-def clamp(x, lo, hi):
-  return std::math::clamp(x, lo, hi)
+def clamp<T>(x: T, lo: T, hi: T) -> T:
+  return std::math::clamp<T>(x, lo, hi)
 
-def lerp(a, b, t):
-  return std::math::lerp(a, b, t)
+def lerp<T>(a: T, b: T, t: T) -> T:
+  return std::math::lerp<T>(a, b, t)
 
 def inverse_lerp(a, b, x):
   return std::math::inverse_lerp(a, b, x)

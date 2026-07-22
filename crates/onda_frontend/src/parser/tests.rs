@@ -4315,24 +4315,6 @@ sample { out1 = clamp(2.0, 0.0, 1.0) }
 }
 
 #[test]
-fn parse_program_in_memory_supports_std_export_math_module() {
-    let src = r#"
-import std/export_math
-outs { out1 }
-sample { out1 = std::export_math::sin(0.5) + std::export_math::exp(0.0) }
-"#;
-    let program = parse_program(src).expect("in-memory std/export_math import should parse");
-    assert!(
-        program
-            .blocks
-            .iter()
-            .any(|b| matches!(b, Block::Namespace(ns) if ns.name == "std::export_math"
-                && ns.items.iter().any(|item| matches!(item, NamespaceItem::Def(d) if d.name == "sin")))),
-        "expected std/export_math declarations to be imported"
-    );
-}
-
-#[test]
 fn parse_program_in_memory_supports_std_prelude_module() {
     let src = r#"
 import std/prelude

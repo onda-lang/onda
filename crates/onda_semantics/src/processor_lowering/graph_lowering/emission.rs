@@ -228,8 +228,8 @@ pub(super) fn lower_graph(
                     GraphDestKind::ProcParam { node, param },
                     GraphValueType::Scalar(_),
                 ) => {
-                    if reachable.contains(&node) {
-                        block_pre.push(assign_node_field_stmt(&node, param, edge_source));
+                    if reachable.contains(node) {
+                        block_pre.push(assign_node_field_stmt(node, param, edge_source));
                     }
                 }
                 (
@@ -237,7 +237,7 @@ pub(super) fn lower_graph(
                     GraphDestKind::ProcParam { node, param },
                     GraphValueType::Array { .. },
                 ) => {
-                    if reachable.contains(&node) {
+                    if reachable.contains(node) {
                         block_pre.extend(assign_node_array_field_stmts(
                             node,
                             param,
@@ -256,7 +256,7 @@ pub(super) fn lower_graph(
                     GraphDestKind::ProcInput { node, port },
                     GraphValueType::Scalar(_),
                 ) => {
-                    if reachable.contains(&node) {
+                    if reachable.contains(node) {
                         note_graph_use_point(
                             &mut sample_temp_use_points,
                             edge.source_plan,
@@ -274,7 +274,7 @@ pub(super) fn lower_graph(
                     GraphDestKind::ProcInput { node, port },
                     GraphValueType::Array { len, .. },
                 ) => {
-                    if reachable.contains(&node) {
+                    if reachable.contains(node) {
                         note_graph_use_point(
                             &mut sample_temp_use_points,
                             edge.source_plan,
@@ -306,7 +306,7 @@ pub(super) fn lower_graph(
                     GraphDestKind::ProcParam { node, param },
                     GraphValueType::Scalar(_),
                 ) => {
-                    if reachable.contains(&node) {
+                    if reachable.contains(node) {
                         note_graph_use_point(
                             &mut sample_temp_use_points,
                             edge.source_plan,
@@ -324,7 +324,7 @@ pub(super) fn lower_graph(
                     GraphDestKind::ProcParam { node, param },
                     GraphValueType::Array { .. },
                 ) => {
-                    if reachable.contains(&node) {
+                    if reachable.contains(node) {
                         note_graph_use_point(
                             &mut sample_temp_use_points,
                             edge.source_plan,

@@ -2335,6 +2335,7 @@ fn insert_declared_array_bases(
 #[derive(Default)]
 struct SurfaceValidationScratch {
     known_scalars: HashSet<String>,
+    state_scalars: HashMap<String, PrimitiveType>,
     outputs: HashSet<String>,
     array_vars: HashMap<String, usize>,
     declared_symbols: DeclaredSymbolMap,
@@ -2354,6 +2355,7 @@ fn proc_local_surface_expr_env<'a>(
 ) -> ExprEnv<'a> {
     let mut env = build_expr_env(
         &scratch.known_scalars,
+        &scratch.state_scalars,
         locals,
         &scratch.outputs,
         &scratch.array_vars,
@@ -3558,11 +3560,8 @@ pub(super) fn resolve_proc_state_struct_def(
         return Some(struct_template.clone());
     }
 
-    let Some(specialized) =
-        specialize_generic_struct_template(struct_template, &state_struct.type_args, errors)
-    else {
-        return None;
-    };
+    let specialized =
+        specialize_generic_struct_template(struct_template, &state_struct.type_args, errors)?;
     Some(specialized)
 }
 

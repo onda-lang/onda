@@ -1,0 +1,29 @@
+{
+  "name": "onda-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/onda_binaryen_web",
+    "packages/onda_processor_abi",
+    "packages/onda_wasm_compiler",
+    "packages/onda_webaudio"
+  ],
+  "scripts": {
+    "sync:versions": "node ./scripts/sync-package-versions.mjs",
+    "build:website": "npm run build --workspace @onda-lang/wasm-compiler && node ./scripts/build-website-playground.mjs",
+    "check:versions": "node ./scripts/sync-package-versions.mjs --check",
+    "test:playground": "node --test ./ui/playground/*.test.js",
+    "test:web": "npm run test:playground && npm test --workspace @onda-lang/processor-abi && npm test --workspace @onda-lang/binaryen-web && npm test --workspace @onda-lang/webaudio && npm test --workspace @onda-lang/wasm-compiler"
+  },
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "6.10.4",
+    "@codemirror/language": "6.11.3",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/state": "6.7.1",
+    "@codemirror/view": "6.43.6",
+    "@lezer/highlight": "1.2.1",
+    "codemirror": "6.0.2",
+    "esbuild": "0.25.6"
+  }
+}

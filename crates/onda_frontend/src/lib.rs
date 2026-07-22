@@ -17,6 +17,7 @@ pub use diagnostics::{DiagCode, DiagCtx, Diagnostic};
 pub use parser::{
     inject_auto_std_math, inject_auto_std_prelude, is_language_keyword, is_language_type_name,
     is_reserved_identifier, is_reserved_word, language_type_names, parse_namespace_ref_text_ast,
-    parse_program, parse_program_file, parse_program_file_with_overlays, parse_program_with_path,
+    parse_program, parse_program_file, parse_program_file_from_virtual_sources,
+    parse_program_file_with_overlays, parse_program_with_path, parse_stdlib_module,
     stdlib_module_names, stdlib_module_source, LANGUAGE_KEYWORDS, RESERVED_IDENTIFIER_WORDS,
 };

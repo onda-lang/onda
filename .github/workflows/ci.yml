@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "assets/**"
+      - "docs/**"
+      - "website/**"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "assets/**"
+      - "docs/**"
+      - "website/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_VERSION: 21.1.2
+
+jobs:
+  native:
+    name: Native compiler and backend parity
+    runs-on: ubuntu-latest
+    env:
+      ONDA_CLI: ${{ github.workspace }}/target/debug/onda
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Install native system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libpipewire-0.3-dev \
+            libdbus-1-dev \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Bootstrap LLVM
+        run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
+
+      - name: Test and lint Rust
+        shell: bash
+        run: |
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          cargo test --workspace \
+            --exclude onda_cpal \
+            --exclude onda_run \
+            --exclude onda_cli \
+            --exclude onda_egui \
+            --exclude onda_webview
+          cargo clippy --workspace --all-targets --no-deps -- -D warnings
+          cargo build -p onda_cli
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install JavaScript workspace
+        run: npm ci
+
+      - name: Test LLVM and Binaryen parity
+        shell: bash
+        run: |
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          npm run test:onda --workspace @onda-lang/binaryen-web
+          npm run test:corpus --workspace @onda-lang/binaryen-web
+
+  browser:
+    name: Browser and npm packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install browser build tools
+        run: |
+          npm ci
+          cargo install wasm-pack --locked
+
+      - name: Test browser and npm packages
+        run: |
+          npm run check:versions
+          npm run test:playground
+          npm test --workspace @onda-lang/processor-abi
+          npm test --workspace @onda-lang/binaryen-web
+          npm test --workspace @onda-lang/webaudio
+          npm run build --workspace @onda-lang/wasm-compiler
+          npm run test:built --workspace @onda-lang/wasm-compiler
+          npm run test:pack:built --workspace @onda-lang/wasm-compiler

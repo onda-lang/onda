@@ -769,18 +769,20 @@ pub(super) fn build_top_level_range_hoist_assign(
     }
 }
 
-pub(super) fn expand_port_decls(
-    ports: &[PortDecl],
-    kind: &str,
-    options: AnalysisOptions,
-    errors: &mut Vec<Diagnostic>,
-) -> (
+type ExpandedPortDecls = (
     Vec<String>,
     HashMap<String, PrimitiveType>,
     HashMap<String, TypedArrayInfo>,
     HashMap<String, TypedConstValue>,
     HashMap<String, TypedValueRange>,
-) {
+);
+
+pub(super) fn expand_port_decls(
+    ports: &[PortDecl],
+    kind: &str,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> ExpandedPortDecls {
     let mut flat = Vec::new();
     let mut types = HashMap::new();
     let mut arrays = HashMap::new();

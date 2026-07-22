@@ -246,12 +246,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                     collect_guards_from_expr(arg, managed_arrays, proc_api, used_arrays, guards);
                 }
             }
-            Expr::UserCall {
-                name,
-                args,
-                type_args: _,
-                ..
-            } => {
+            Expr::UserCall { name, args, .. } => {
                 for arg in args {
                     collect_guards_from_expr(
                         &arg.expr,
@@ -518,7 +513,7 @@ fn generate_nested_wrapper_defs(
 ) -> Vec<Block> {
     let mut nested_defs = Vec::<Block>::new();
     let mut nested_paths = Vec::<(String, String)>::new();
-    collect_nested_proc_instances(&shape, None, &lowering_shapes, &mut nested_paths);
+    collect_nested_proc_instances(shape, None, lowering_shapes, &mut nested_paths);
     for (nested_path, callee_proc_name) in nested_paths {
         let Some(callee_proc) = proc_defs_by_name.get(&callee_proc_name) else {
             continue;
@@ -579,7 +574,7 @@ fn generate_nested_wrapper_defs(
             &mut callee_init_stmts,
             &callee_nested_instances,
             &callee_shape.nested_proc_array_slots,
-            &proc_api,
+            proc_api,
             errors,
         );
         for stmt in &callee_init_stmts {
@@ -746,7 +741,7 @@ fn generate_nested_wrapper_defs(
                                     &callee_shape.field_array_slots,
                                     &callee_shape.in_array_slots,
                                     &callee_shape.nested_proc_array_slots,
-                                    &proc_api,
+                                    proc_api,
                                     errors,
                                 ),
                             })
@@ -770,13 +765,13 @@ fn generate_nested_wrapper_defs(
                                 &proc.name,
                                 &shape.field_names,
                                 &shape.array_field_names,
-                                &ins_names,
+                                ins_names,
                                 &shape.field_array_slots,
                                 &shape.in_array_slots,
                                 &shape.nested_proc_array_slots,
                                 &shape.nested_fields,
-                                &nested_instances,
-                                &proc_api,
+                                nested_instances,
+                                proc_api,
                                 errors,
                             ) {
                                 constructor_setup_indices.insert(nested_init_body.len());
@@ -846,7 +841,7 @@ fn generate_nested_wrapper_defs(
                                 &callee_shape.field_array_slots,
                                 &callee_shape.in_array_slots,
                                 &callee_shape.nested_proc_array_slots,
-                                &proc_api,
+                                proc_api,
                                 errors,
                             ),
                         })
@@ -870,13 +865,13 @@ fn generate_nested_wrapper_defs(
                             &proc.name,
                             &shape.field_names,
                             &shape.array_field_names,
-                            &ins_names,
+                            ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
                             &shape.nested_proc_array_slots,
                             &shape.nested_fields,
-                            &nested_instances,
-                            &proc_api,
+                            nested_instances,
+                            proc_api,
                             errors,
                         ) {
                             constructor_setup_indices.insert(nested_init_body.len());
@@ -901,7 +896,7 @@ fn generate_nested_wrapper_defs(
                         &callee_proc_name,
                         var,
                         state_struct,
-                        &struct_defs_by_name,
+                        struct_defs_by_name,
                         errors,
                     ) else {
                         continue;
@@ -942,13 +937,13 @@ fn generate_nested_wrapper_defs(
                                     &callee_shape.field_array_slots,
                                     &callee_shape.in_array_slots,
                                     &callee_shape.nested_proc_array_slots,
-                                    &proc_api,
+                                    proc_api,
                                     errors,
                                 ),
                             })
                             .collect::<Vec<_>>(),
                         &struct_def,
-                        &struct_defs_by_name,
+                        struct_defs_by_name,
                         errors,
                     );
                     for expanded_stmt in expanded {
@@ -957,13 +952,13 @@ fn generate_nested_wrapper_defs(
                             &proc.name,
                             &shape.field_names,
                             &shape.array_field_names,
-                            &ins_names,
+                            ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
                             &shape.nested_proc_array_slots,
                             &shape.nested_fields,
-                            &nested_instances,
-                            &proc_api,
+                            nested_instances,
+                            proc_api,
                             errors,
                         ) {
                             nested_init_body.push(rewritten);
@@ -983,7 +978,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
                 &callee_shape.nested_proc_array_slots,
-                &proc_api,
+                proc_api,
                 errors,
             ) {
                 nested_init_body.push(rewritten);
@@ -1071,13 +1066,13 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
                 &callee_shape.nested_proc_array_slots,
-                &proc_api,
+                proc_api,
                 errors,
             ) {
                 body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                     rewritten,
                     &nested_managed_dynamic_arrays,
-                    &proc_api,
+                    proc_api,
                     &mut used_nested_managed_dynamic_arrays,
                 ));
             }
@@ -1112,13 +1107,13 @@ fn generate_nested_wrapper_defs(
             &callee_shape.field_array_slots,
             &callee_shape.in_array_slots,
             &callee_shape.nested_proc_array_slots,
-            &proc_api,
+            proc_api,
             errors,
         ) {
             nested_step_body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                 rewritten,
                 &nested_managed_dynamic_arrays,
-                &proc_api,
+                proc_api,
                 &mut used_nested_managed_dynamic_arrays,
             ));
         }
@@ -1356,7 +1351,7 @@ fn generate_nested_wrapper_defs(
                             &callee_shape.field_array_slots,
                             &callee_event_in_array_slots,
                             &callee_shape.nested_proc_array_slots,
-                            &proc_api,
+                            proc_api,
                             errors,
                         );
                         inject_bound_proc_param_hooks_in_stmts(
@@ -1419,7 +1414,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
                 &callee_shape.nested_proc_array_slots,
-                &proc_api,
+                proc_api,
                 errors,
             ));
             let mut called_callee_nested = collect_called_proc_instances_in_stmts(
@@ -1562,7 +1557,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
                 &callee_shape.nested_proc_array_slots,
-                &proc_api,
+                proc_api,
                 errors,
             ));
             for managed in &nested_managed_arrays {
@@ -1685,6 +1680,13 @@ fn generate_nested_wrapper_defs(
     nested_defs
 }
 
+type GeneratedProcBlocks = (
+    Vec<Block>,
+    Vec<Block>,
+    HashMap<String, usize>,
+    HashMap<String, ProcStepOversampleMeta>,
+);
+
 pub(super) fn generate_lowered_proc_blocks(
     proc_order: &[String],
     proc_defs_by_name: &HashMap<String, ProcessorDef>,
@@ -1692,12 +1694,7 @@ pub(super) fn generate_lowered_proc_blocks(
     struct_defs_by_name: &HashMap<String, StructDef>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
-) -> (
-    Vec<Block>,
-    Vec<Block>,
-    HashMap<String, usize>,
-    HashMap<String, ProcStepOversampleMeta>,
-) {
+) -> GeneratedProcBlocks {
     let mut generated_structs = Vec::<Block>::new();
     let mut generated_defs = Vec::<Block>::new();
     let mut def_sample_oversample_factors = HashMap::<String, usize>::new();
@@ -1837,7 +1834,7 @@ pub(super) fn generate_lowered_proc_blocks(
             &mut proc_init_stmts,
             &nested_instances,
             &shape.nested_proc_array_slots,
-            &proc_api,
+            proc_api,
             errors,
         );
         for stmt in &proc_init_stmts {
@@ -2013,7 +2010,7 @@ pub(super) fn generate_lowered_proc_blocks(
                                 &shape.nested_proc_array_slots,
                                 &shape.nested_fields,
                                 &nested_instances,
-                                &proc_api,
+                                proc_api,
                                 errors,
                             ) {
                                 constructor_setup_indices.insert(init_body.len());
@@ -2043,7 +2040,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         &shape.nested_proc_array_slots,
                         &shape.nested_fields,
                         &nested_instances,
-                        &proc_api,
+                        proc_api,
                         errors,
                     ) {
                         init_body.push(rewritten);
@@ -2073,7 +2070,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &shape.nested_proc_array_slots,
                             &shape.nested_fields,
                             &nested_instances,
-                            &proc_api,
+                            proc_api,
                             errors,
                         ) {
                             init_body.push(rewritten);
@@ -2113,7 +2110,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         &shape.nested_proc_array_slots,
                         &shape.nested_fields,
                         &nested_instances,
-                        &proc_api,
+                        proc_api,
                         errors,
                     ) {
                         init_body.push(rewritten);
@@ -2191,7 +2188,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &shape.nested_proc_array_slots,
                             &shape.nested_fields,
                             &nested_instances,
-                            &proc_api,
+                            proc_api,
                             errors,
                         ) {
                             constructor_setup_indices.insert(init_body.len());
@@ -2216,7 +2213,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         &proc.name,
                         var,
                         state_struct,
-                        &struct_defs_by_name,
+                        struct_defs_by_name,
                         errors,
                     ) else {
                         continue;
@@ -2246,7 +2243,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         ctor_name,
                         args,
                         &struct_def,
-                        &struct_defs_by_name,
+                        struct_defs_by_name,
                         errors,
                     );
                     for expanded_stmt in expanded {
@@ -2261,7 +2258,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &shape.nested_proc_array_slots,
                             &shape.nested_fields,
                             &nested_instances,
-                            &proc_api,
+                            proc_api,
                             errors,
                         ) {
                             init_body.push(rewritten);
@@ -2281,7 +2278,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 &shape.nested_proc_array_slots,
                 &shape.nested_fields,
                 &nested_instances,
-                &proc_api,
+                proc_api,
                 errors,
             ) {
                 init_body.push(rewritten);
@@ -2402,7 +2399,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         &shape.nested_proc_array_slots,
                         &shape.nested_fields,
                         &nested_instances,
-                        &proc_api,
+                        proc_api,
                         errors,
                     );
                     inject_bound_proc_param_hooks_in_stmts(
@@ -2473,13 +2470,13 @@ pub(super) fn generate_lowered_proc_blocks(
                 &shape.nested_proc_array_slots,
                 &shape.nested_fields,
                 &nested_instances,
-                &proc_api,
+                proc_api,
                 errors,
             ) {
                 body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                     rewritten,
                     &managed_dynamic_arrays,
-                    &proc_api,
+                    proc_api,
                     &mut used_managed_dynamic_arrays,
                 ));
             }
@@ -2514,13 +2511,13 @@ pub(super) fn generate_lowered_proc_blocks(
             &shape.nested_proc_array_slots,
             &shape.nested_fields,
             &nested_instances,
-            &proc_api,
+            proc_api,
             errors,
         ) {
             step_body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                 rewritten,
                 &managed_dynamic_arrays,
-                &proc_api,
+                proc_api,
                 &mut used_managed_dynamic_arrays,
             ));
         }
@@ -2567,7 +2564,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 &shape.nested_proc_array_slots,
                 &shape.nested_fields,
                 &nested_instances,
-                &proc_api,
+                proc_api,
                 errors,
             ));
             let mut called_nested = collect_called_proc_instances_in_stmts(
@@ -2697,7 +2694,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 &shape.nested_proc_array_slots,
                 &shape.nested_fields,
                 &nested_instances,
-                &proc_api,
+                proc_api,
                 errors,
             ));
             for managed in &managed_arrays {

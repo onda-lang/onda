@@ -1,0 +1,23 @@
+[package]
+name = "onda_compiler_web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Browser-safe Onda source-to-MIR compiler"
+repository = "https://github.com/onda-lang/onda"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+onda_frontend = { path = "../onda_frontend" }
+onda_mir = { path = "../onda_mir" }
+onda_lsp = { path = "../onda_lsp" }
+onda_semantics = { path = "../onda_semantics" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.117"

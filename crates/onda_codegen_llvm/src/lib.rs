@@ -1,58 +1,48 @@
+//! LLVM execution and object-code backend for validated Onda MIR.
+
 use std::alloc::Layout;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
+#[cfg(feature = "llvm-orc")]
+use std::rc::Rc;
 use std::sync::Arc;
 
 use onda_frontend::{Diagnostic, PrimitiveType};
-use onda_semantics::{TypedConstValue, TypedProgram, TypedValueRange};
+use onda_mir::{ScalarValue, ValueRange};
 
 mod aot_artifact;
-mod metadata;
+#[cfg(any(feature = "llvm-orc", test))]
+mod mir_metadata;
 #[cfg(feature = "llvm-orc")]
 mod orc_backend;
 mod primitives;
+mod runtime_metadata;
 mod runtime_validation;
-mod state_layout;
 mod target_config;
 
-pub use aot_artifact::{AotMetadata, AotObjectArtifact};
-pub use target_config::{
-    CodegenOptions, TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
+pub use aot_artifact::{
+    AotMetadata, AotObjectArtifact, AotStateMetadata, AOT_METADATA_FORMAT_VERSION,
+    AOT_SNAPSHOT_FORMAT_VERSION, PROCESSOR_ABI_VERSION, PROCESSOR_ARTIFACT_FORMAT,
 };
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum ExecutionBackend {
-    Auto,
-    OrcJit,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct CompileOptions {
-    pub backend: ExecutionBackend,
-    pub sample_rate: f32,
-    pub block_size: usize,
-    pub fast_math: bool,
-    pub opt_level: TargetOptLevel,
-}
-
-impl Default for CompileOptions {
-    fn default() -> Self {
-        Self {
-            backend: ExecutionBackend::Auto,
-            sample_rate: 48_000.0,
-            block_size: 512,
-            fast_math: false,
-            opt_level: TargetOptLevel::O3,
-        }
-    }
-}
+#[cfg(feature = "llvm-orc")]
+pub use orc_backend::{
+    lower_mir_and_jit, lower_mir_and_jit_with_options, lower_mir_to_llvm_ir,
+    lower_mir_to_llvm_ir_with_options, lower_mir_to_object, lower_mir_to_object_artifact,
+    lower_mir_to_target_llvm_ir, lower_optimized_mir_and_jit,
+    lower_optimized_mir_and_jit_with_options, lower_optimized_mir_to_llvm_ir,
+    lower_optimized_mir_to_llvm_ir_with_options, lower_optimized_mir_to_object,
+    lower_optimized_mir_to_object_artifact, lower_optimized_mir_to_target_llvm_ir, MirCodegenError,
+    MirCodegenErrorKind, MirCompileOptions, MirEventPayloadShape, MirJitProgram, MirTargetOptions,
+};
+pub use target_config::{
+    TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
+};
 
 #[derive(Debug, Clone)]
 pub struct JitProgram {
-    pub typed: Arc<TypedProgram>,
     sample_rate: f32,
     block_size: usize,
     inputs: Arc<Vec<DeclaredIo>>,
@@ -68,8 +58,18 @@ pub struct JitProgram {
     event_index: Arc<HashMap<String, usize>>,
     buffer_index: Arc<HashMap<String, usize>>,
     state_entries: Arc<Vec<DeclaredState>>,
+    snapshot_segments: Arc<Vec<StateSnapshotSegment>>,
+    snapshot_size_bytes: usize,
     #[cfg(feature = "llvm-orc")]
-    compiled: Arc<orc_backend::OrcProcess>,
+    compiled: Rc<orc_backend::MirJitProgram>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StateSnapshotSegment {
+    snapshot_offset: usize,
+    state_offset: usize,
+    byte_size: usize,
+    element_size: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -287,7 +287,7 @@ fn allocate_custom_runtime_buffer<T>(
     let Some(ptr) = NonNull::new(raw.cast::<T>()) else {
         return Err(Diagnostic::runtime("runtime allocator returned null", 0, 0));
     };
-    if (ptr.as_ptr() as usize) % layout.align() != 0 {
+    if !(ptr.as_ptr() as usize).is_multiple_of(layout.align()) {
         unsafe {
             (allocator.free)(allocator.context, raw, layout.size(), layout.align());
         }
@@ -305,7 +305,9 @@ pub struct DeclaredState {
     name: String,
     elem_ty: PrimitiveType,
     array_len: usize,
+    is_array: bool,
     byte_offset: usize,
+    storage_byte_offset: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -313,12 +315,13 @@ pub struct DeclaredIo {
     name: String,
     elem_ty: PrimitiveType,
     array_len: usize,
+    is_array: bool,
     slot_offset: usize,
     byte_offset: usize,
     state_byte_offset: Option<usize>,
-    default: Option<TypedConstValue>,
+    default_values: Option<Vec<ScalarValue>>,
     default_bytes: Option<Vec<u8>>,
-    range: Option<TypedValueRange>,
+    range: Option<ValueRange>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -333,7 +336,7 @@ pub struct DeclaredBuffer {
     name: String,
     elem_ty: PrimitiveType,
     channels: DeclaredBufferChannels,
-    may_write: bool,
+    access: onda_mir::AccessMode,
 }
 
 #[derive(Debug, Clone)]
@@ -348,91 +351,93 @@ pub struct DeclaredEventParam {
     name: String,
     elem_ty: PrimitiveType,
     array_len: usize,
+    is_array: bool,
     is_slice: bool,
     byte_offset: usize,
     default_bytes: Option<Vec<u8>>,
+    default_values: Option<Vec<ScalarValue>>,
 }
 
-pub fn lower_and_jit(typed: TypedProgram) -> Result<JitProgram, Vec<Diagnostic>> {
-    lower_and_jit_with_options(typed, CompileOptions::default())
+/// Compiles validated MIR into the full runtime-facing JIT program contract.
+#[cfg(feature = "llvm-orc")]
+pub fn jit_program_from_mir(program: onda_mir::Program) -> Result<JitProgram, Vec<Diagnostic>> {
+    jit_program_from_mir_with_options(program, MirCompileOptions::default())
 }
 
-pub fn lower_and_jit_with_options(
-    typed: TypedProgram,
-    options: CompileOptions,
+/// Compiles validated MIR with explicit backend policy while retaining MIR as
+/// the sole semantic input to native code generation and runtime metadata.
+#[cfg(feature = "llvm-orc")]
+pub fn jit_program_from_mir_with_options(
+    program: onda_mir::Program,
+    options: MirCompileOptions,
 ) -> Result<JitProgram, Vec<Diagnostic>> {
-    runtime_validation::validate_compile_options(&options).map_err(|diag| vec![diag])?;
-    match options.backend {
-        ExecutionBackend::Auto | ExecutionBackend::OrcJit => build_orc_program(
-            typed,
-            options.sample_rate,
-            options.block_size,
-            options.fast_math,
-            options.opt_level,
-        ),
-    }
+    let compiled =
+        orc_backend::lower_mir_and_jit_with_options(program, options).map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| Diagnostic::internal(format!("MIR LLVM lowering failed: {error}")))
+                .collect::<Vec<_>>()
+        })?;
+    wrap_mir_orc_program(compiled)
 }
 
-pub fn lower_to_llvm_ir_with_options(
-    typed: TypedProgram,
-    options: CompileOptions,
-) -> Result<String, Vec<Diagnostic>> {
-    runtime_validation::validate_compile_options(&options).map_err(|diag| vec![diag])?;
-    match options.backend {
-        ExecutionBackend::Auto | ExecutionBackend::OrcJit => emit_orc_ir(
-            typed,
-            options.sample_rate,
-            options.block_size,
-            options.fast_math,
-            options.opt_level,
-        ),
-    }
+/// Compiles backend-neutral optimized MIR without repeating validation or MIR
+/// optimization.
+#[cfg(feature = "llvm-orc")]
+pub fn jit_program_from_optimized_mir(
+    program: onda_mir::OptimizedProgram,
+) -> Result<JitProgram, Vec<Diagnostic>> {
+    jit_program_from_optimized_mir_with_options(program, MirCompileOptions::default())
 }
 
-pub fn lower_to_target_llvm_ir_with_options(
-    typed: TypedProgram,
-    options: CodegenOptions,
-) -> Result<String, Vec<Diagnostic>> {
-    runtime_validation::validate_codegen_options(&options).map_err(|diag| vec![diag])?;
-    emit_targeted_ir(
-        typed,
-        options.sample_rate,
-        options.block_size,
-        options.fast_math,
-        options.target,
-    )
-}
-
-pub fn lower_to_object_with_options(
-    typed: TypedProgram,
-    options: CodegenOptions,
-) -> Result<AotObjectArtifact, Vec<Diagnostic>> {
-    runtime_validation::validate_codegen_options(&options).map_err(|diag| vec![diag])?;
-    emit_targeted_object(
-        typed,
-        options.sample_rate,
-        options.block_size,
-        options.fast_math,
-        options.target,
-    )
+/// Compiles optimized MIR with explicit backend policy.
+#[cfg(feature = "llvm-orc")]
+pub fn jit_program_from_optimized_mir_with_options(
+    program: onda_mir::OptimizedProgram,
+    options: MirCompileOptions,
+) -> Result<JitProgram, Vec<Diagnostic>> {
+    let compiled = orc_backend::lower_optimized_mir_and_jit_with_options(program, options)
+        .map_err(mir_codegen_diagnostics)?;
+    wrap_mir_orc_program(compiled)
 }
 
 #[cfg(feature = "llvm-orc")]
-fn build_orc_program(
-    typed: TypedProgram,
-    sample_rate: f32,
-    block_size: usize,
-    fast_math: bool,
-    opt_level: TargetOptLevel,
-) -> Result<JitProgram, Vec<Diagnostic>> {
-    let compiled = orc_backend::compile_orc(&typed, sample_rate, block_size, fast_math, opt_level)
-        .map_err(|diag| vec![diag])?;
-    let metadata = metadata::build_program_metadata(&typed);
+fn mir_codegen_diagnostics(errors: Vec<MirCodegenError>) -> Vec<Diagnostic> {
+    errors
+        .into_iter()
+        .map(|error| Diagnostic::internal(format!("MIR LLVM lowering failed: {error}")))
+        .collect()
+}
 
+#[cfg(feature = "llvm-orc")]
+fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagnostic>> {
+    let event_fixed_sizes = (0..compiled.mir().interface.events.len())
+        .map(|index| compiled.event_payload_byte_size(index))
+        .collect::<Vec<_>>();
+    let metadata = mir_metadata::build_mir_program_metadata(
+        compiled.mir(),
+        mir_metadata::MirMetadataLayoutView {
+            state_offsets: compiled.state_byte_offsets(),
+            param_offsets: compiled.param_byte_offsets(),
+            control_output_offsets: compiled.control_output_storage_byte_offsets(),
+            input_bases: compiled.input_channel_bases(),
+            output_bases: compiled.output_channel_bases(),
+            event_fixed_sizes: &event_fixed_sizes,
+        },
+    )
+    .map_err(|error| {
+        vec![Diagnostic::internal(format!(
+            "MIR runtime metadata failed: {error}"
+        ))]
+    })?;
+
+    let snapshot_segments = build_snapshot_segments(&metadata.state_entries);
+    let snapshot_size_bytes = snapshot_segments
+        .last()
+        .map_or(0, |segment| segment.snapshot_offset + segment.byte_size);
     Ok(JitProgram {
-        typed: Arc::new(typed),
-        sample_rate,
-        block_size,
+        sample_rate: compiled.mir().config.sample_rate,
+        block_size: compiled.mir().config.block_size as usize,
         input_index: Arc::new(metadata.input_index),
         output_index: Arc::new(metadata.output_index),
         control_output_index: Arc::new(metadata.control_output_index),
@@ -446,96 +451,23 @@ fn build_orc_program(
         events: Arc::new(metadata.events),
         buffers: Arc::new(metadata.buffers),
         state_entries: Arc::new(metadata.state_entries),
-        compiled: Arc::new(compiled),
+        snapshot_segments: Arc::new(snapshot_segments),
+        snapshot_size_bytes,
+        compiled: Rc::new(compiled),
     })
 }
 
 #[cfg(feature = "llvm-orc")]
-fn emit_orc_ir(
-    typed: TypedProgram,
-    sample_rate: f32,
-    block_size: usize,
-    fast_math: bool,
-    opt_level: TargetOptLevel,
-) -> Result<String, Vec<Diagnostic>> {
-    orc_backend::emit_optimized_ir(&typed, sample_rate, block_size, fast_math, opt_level)
-        .map_err(|diag| vec![diag])
-}
-
-#[cfg(feature = "llvm-orc")]
-fn emit_targeted_ir(
-    typed: TypedProgram,
-    sample_rate: f32,
-    block_size: usize,
-    fast_math: bool,
-    target: TargetConfig,
-) -> Result<String, Vec<Diagnostic>> {
-    orc_backend::emit_targeted_ir(&typed, sample_rate, block_size, fast_math, &target)
-        .map_err(|diag| vec![diag])
-}
-
-#[cfg(feature = "llvm-orc")]
-fn emit_targeted_object(
-    typed: TypedProgram,
-    sample_rate: f32,
-    block_size: usize,
-    fast_math: bool,
-    target: TargetConfig,
-) -> Result<AotObjectArtifact, Vec<Diagnostic>> {
-    orc_backend::emit_targeted_object(&typed, sample_rate, block_size, fast_math, &target)
-        .map_err(|diag| vec![diag])
-}
-
-#[cfg(not(feature = "llvm-orc"))]
-fn emit_orc_ir(
-    _typed: TypedProgram,
-    _sample_rate: f32,
-    _block_size: usize,
-    _fast_math: bool,
-    _opt_level: TargetOptLevel,
-) -> Result<String, Vec<Diagnostic>> {
-    Err(vec![Diagnostic::internal(
-        "ORC backend is required but onda_codegen_llvm was built without 'llvm-orc' feature",
-    )])
-}
-
-#[cfg(not(feature = "llvm-orc"))]
-fn emit_targeted_ir(
-    _typed: TypedProgram,
-    _sample_rate: f32,
-    _block_size: usize,
-    _fast_math: bool,
-    _target: TargetConfig,
-) -> Result<String, Vec<Diagnostic>> {
-    Err(vec![Diagnostic::internal(
-        "LLVM backend is required but onda_codegen_llvm was built without 'llvm-orc' feature",
-    )])
-}
-
-#[cfg(not(feature = "llvm-orc"))]
-fn emit_targeted_object(
-    _typed: TypedProgram,
-    _sample_rate: f32,
-    _block_size: usize,
-    _fast_math: bool,
-    _target: TargetConfig,
-) -> Result<AotObjectArtifact, Vec<Diagnostic>> {
-    Err(vec![Diagnostic::internal(
-        "LLVM backend is required but onda_codegen_llvm was built without 'llvm-orc' feature",
-    )])
-}
-
-#[cfg(not(feature = "llvm-orc"))]
-fn build_orc_program(
-    _typed: TypedProgram,
-    _sample_rate: f32,
-    _block_size: usize,
-    _fast_math: bool,
-    _opt_level: TargetOptLevel,
-) -> Result<JitProgram, Vec<Diagnostic>> {
-    Err(vec![Diagnostic::internal(
-        "ORC backend is required but onda_codegen_llvm was built without 'llvm-orc' feature",
-    )])
+fn build_snapshot_segments(entries: &[DeclaredState]) -> Vec<StateSnapshotSegment> {
+    entries
+        .iter()
+        .map(|entry| StateSnapshotSegment {
+            snapshot_offset: entry.byte_offset,
+            state_offset: entry.storage_byte_offset,
+            byte_size: entry.byte_size(),
+            element_size: primitives::primitive_type_bytes(entry.elem_ty),
+        })
+        .collect()
 }
 
 #[cfg(all(test, feature = "llvm-orc"))]
@@ -543,15 +475,163 @@ mod tests {
     use super::*;
 
     use onda_frontend::parse_program;
-    use onda_semantics::{analyze_with_options, AnalysisOptions};
+    use onda_semantics::{analyze_with_options, AnalysisOptions, TypedProgram};
+
+    #[derive(Debug, Clone, Copy)]
+    struct SourceCompileOptions {
+        sample_rate: f32,
+        block_size: usize,
+        fast_math: bool,
+        opt_level: TargetOptLevel,
+    }
+
+    impl Default for SourceCompileOptions {
+        fn default() -> Self {
+            Self {
+                sample_rate: 48_000.0,
+                block_size: 512,
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SourceCodegenOptions {
+        sample_rate: f32,
+        block_size: usize,
+        fast_math: bool,
+        target: TargetConfig,
+    }
+
+    impl Default for SourceCodegenOptions {
+        fn default() -> Self {
+            Self {
+                sample_rate: 48_000.0,
+                block_size: 512,
+                fast_math: false,
+                target: TargetConfig::host(),
+            }
+        }
+    }
+
+    fn lower_typed_program(
+        typed: &TypedProgram,
+    ) -> Result<onda_mir::OptimizedProgram, Vec<Diagnostic>> {
+        onda_semantics::lower_program_to_optimized_mir(typed).map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| Diagnostic::internal(format!("MIR lowering failed: {error}")))
+                .collect()
+        })
+    }
+
+    fn validate_source_config(
+        typed: &TypedProgram,
+        sample_rate: f32,
+        block_size: usize,
+    ) -> Result<(), Vec<Diagnostic>> {
+        if typed.analysis_options.sample_rate.to_bits() == sample_rate.to_bits()
+            && typed.analysis_options.block_size == block_size
+        {
+            return Ok(());
+        }
+        Err(vec![Diagnostic::internal(format!(
+            "MIR compile configuration must match semantic analysis: analyzed at {} Hz / {} frames, requested {} Hz / {} frames",
+            typed.analysis_options.sample_rate,
+            typed.analysis_options.block_size,
+            sample_rate,
+            block_size,
+        ))])
+    }
+
+    fn lower_and_jit(typed: TypedProgram) -> Result<JitProgram, Vec<Diagnostic>> {
+        let options = SourceCompileOptions {
+            sample_rate: typed.analysis_options.sample_rate,
+            block_size: typed.analysis_options.block_size,
+            ..SourceCompileOptions::default()
+        };
+        lower_and_jit_with_options(typed, options)
+    }
+
+    fn lower_and_jit_with_options(
+        typed: TypedProgram,
+        options: SourceCompileOptions,
+    ) -> Result<JitProgram, Vec<Diagnostic>> {
+        validate_source_config(&typed, options.sample_rate, options.block_size)?;
+        let mir = lower_typed_program(&typed)?;
+        jit_program_from_optimized_mir_with_options(
+            mir,
+            MirCompileOptions {
+                fast_math: options.fast_math,
+                opt_level: options.opt_level,
+            },
+        )
+    }
+
+    fn lower_to_llvm_ir_with_options(
+        typed: TypedProgram,
+        options: SourceCompileOptions,
+    ) -> Result<String, Vec<Diagnostic>> {
+        validate_source_config(&typed, options.sample_rate, options.block_size)?;
+        let mir = lower_typed_program(&typed)?;
+        lower_optimized_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: options.fast_math,
+                opt_level: options.opt_level,
+            },
+        )
+        .map_err(mir_codegen_diagnostics)
+    }
+
+    fn lower_to_object_with_options(
+        typed: TypedProgram,
+        options: SourceCodegenOptions,
+    ) -> Result<AotObjectArtifact, Vec<Diagnostic>> {
+        validate_source_config(&typed, options.sample_rate, options.block_size)?;
+        let mir = lower_typed_program(&typed)?;
+        lower_optimized_mir_to_object_artifact(
+            &mir,
+            &MirTargetOptions {
+                fast_math: options.fast_math,
+                target: options.target,
+            },
+        )
+        .map_err(mir_codegen_diagnostics)
+    }
 
     fn typed_program(src: &str) -> TypedProgram {
         let program = parse_program(src).expect("source should parse");
         analyze_with_options(program, AnalysisOptions::default()).expect("source should analyze")
     }
 
+    fn typed_program_with_options(src: &str, sample_rate: f32, block_size: usize) -> TypedProgram {
+        let program = parse_program(src).expect("source should parse");
+        analyze_with_options(
+            program,
+            AnalysisOptions {
+                sample_rate,
+                block_size,
+            },
+        )
+        .expect("source should analyze")
+    }
+
     fn run_one_sample(src: &str) -> f32 {
-        let program = lower_and_jit(typed_program(src)).expect("source should lower to JIT");
+        run_one_sample_with_options(src, 48_000.0, 512)
+    }
+
+    fn run_one_sample_with_options(src: &str, sample_rate: f32, block_size: usize) -> f32 {
+        let program = lower_and_jit_with_options(
+            typed_program_with_options(src, sample_rate, block_size),
+            SourceCompileOptions {
+                sample_rate,
+                block_size,
+                ..SourceCompileOptions::default()
+            },
+        )
+        .expect("source should lower to JIT");
         let params = program.default_param_bytes();
         let mut state = program
             .initialize_state(&params)
@@ -563,8 +643,8 @@ mod tests {
         let buffer_frames: Vec<i32> = Vec::new();
         let buffer_channels: Vec<i32> = Vec::new();
         let buffer_sample_rates: Vec<f32> = Vec::new();
-        program
-            .process_checked(
+        unsafe {
+            program.process_checked(
                 &mut state,
                 &params,
                 0,
@@ -577,8 +657,175 @@ mod tests {
                 &buffer_channels,
                 &buffer_sample_rates,
             )
-            .expect("process should succeed");
+        }
+        .expect("process should succeed");
         output[0]
+    }
+    #[test]
+    fn convenience_jit_uses_the_analyzed_program_configuration() {
+        let typed = typed_program_with_options("sample:\n  out1 = SR\n", 44_100.0, 64);
+        let program = lower_and_jit(typed).expect("configured source should lower");
+        assert_eq!(program.sample_rate(), 44_100.0);
+        assert_eq!(program.block_size(), 64);
+    }
+
+    #[test]
+    fn snapshots_pack_only_persistent_state_and_restore_scratch_to_initial_values() {
+        let source = r#"
+proc Voice:
+  init:
+    phase = 0.0
+
+  sample:
+    phase = phase + 1.0
+    out1 = phase
+
+def step_at(voices, index: i32):
+  return voices[index]()
+
+def relay(voices, index: i32):
+  return step_at(voices, index)
+
+init:
+  voices: Voice[2] = Voice()
+
+sample:
+  out1 = relay(voices, 0)
+"#;
+        let typed = typed_program(source);
+        let mir = onda_semantics::lower_program_to_optimized_mir(&typed)
+            .expect("source should lower to MIR");
+        assert!(mir
+            .as_program()
+            .state
+            .iter()
+            .any(|slot| { slot.persistence == onda_mir::StatePersistence::InstanceScratch }));
+
+        let program = lower_and_jit(typed).expect("source should lower to JIT");
+        let params = program.default_param_bytes();
+        let initial = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        assert_eq!(program.physical_state_size_bytes(), initial.byte_size());
+        assert!(program.state_size_bytes() < initial.byte_size());
+
+        let mut snapshot = vec![0_u8; program.state_size_bytes()];
+        program
+            .write_state_snapshot(&initial, &mut snapshot)
+            .expect("snapshot should pack");
+        let mut live = initial
+            .try_clone_with_allocator(None)
+            .expect("state should clone");
+        live.bytes_mut().fill(0xff);
+        program
+            .restore_state_snapshot(&mut live, &initial, &snapshot)
+            .expect("snapshot should restore");
+        assert_eq!(live.bytes(), initial.bytes());
+    }
+
+    #[test]
+    fn optimized_mir_preserves_vectorization_for_stateless_sample_loops() {
+        let scenarios = [
+            r#"
+ins:
+  in1
+params:
+  gain = 0.75
+sample:
+  out1 = in1 * gain
+"#,
+            r#"
+ins:
+  in1
+params:
+  amount = 0.35
+def shape(x: f32, a: f32):
+  return (x + a) * (x - a)
+sample:
+  out1 = shape(shape(in1, amount), amount * 0.5)
+"#,
+        ];
+        for source in scenarios {
+            let typed = typed_program_with_options(source, 48_000.0, 64);
+            let ir = lower_to_llvm_ir_with_options(
+                typed,
+                SourceCompileOptions {
+                    sample_rate: 48_000.0,
+                    block_size: 64,
+                    opt_level: TargetOptLevel::O3,
+                    ..SourceCompileOptions::default()
+                },
+            )
+            .expect("stateless sample loop should lower to optimized LLVM IR");
+            assert!(ir.contains("vector.body"));
+            assert!(ir.contains("llvm.loop.isvectorized"));
+            assert!(ir.contains("ptr noalias readonly"));
+        }
+    }
+
+    #[test]
+    fn mir_orc_compatibility_program_runs_through_jit_contract() {
+        let source = r#"
+params:
+  gain = 0.75 { 0.0, 1.0 }
+
+sample:
+  out1 = gain
+"#;
+        let program = lower_and_jit_with_options(
+            typed_program(source),
+            SourceCompileOptions {
+                opt_level: TargetOptLevel::O0,
+                ..SourceCompileOptions::default()
+            },
+        )
+        .expect("MIR ORC source should lower through the compatibility contract");
+        assert_eq!(program.required_in_channels(), 0);
+        assert_eq!(program.required_out_channels(), 1);
+        assert_eq!(program.param_slot_count(), 1);
+        assert_eq!(program.param_name(0), Some("gain"));
+
+        let params = program.default_param_bytes();
+        assert_eq!(params, 0.75_f32.to_ne_bytes());
+        let mut state = program.initialize_state(&params).unwrap();
+        let inputs: [*const u8; 0] = [];
+        let mut output = [0.0_f32; 1];
+        let outputs = [output.as_mut_ptr().cast::<u8>()];
+        let buffers: [*mut u8; 0] = [];
+        let metadata_i32: [i32; 0] = [];
+        let metadata_f32: [f32; 0] = [];
+        unsafe {
+            program.process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &metadata_i32,
+                &metadata_i32,
+                &metadata_f32,
+            )
+        }
+        .unwrap();
+        assert!((output[0] - 0.75).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn mir_orc_rejects_codegen_config_different_from_semantic_config() {
+        let diagnostics = lower_and_jit_with_options(
+            typed_program("sample:\n  out1 = SR\n"),
+            SourceCompileOptions {
+                block_size: 4,
+                ..SourceCompileOptions::default()
+            },
+        )
+        .expect_err("mismatched compile config must fail closed");
+        assert!(diagnostics[0]
+            .message
+            .contains("must match semantic analysis"));
     }
 
     fn run_one_block_control_outputs(src: &str) -> Vec<f32> {
@@ -593,8 +840,8 @@ mod tests {
         let buffer_frames: Vec<i32> = Vec::new();
         let buffer_channels: Vec<i32> = Vec::new();
         let buffer_sample_rates: Vec<f32> = Vec::new();
-        program
-            .process_checked(
+        unsafe {
+            program.process_checked(
                 &mut state,
                 &params,
                 0,
@@ -607,7 +854,8 @@ mod tests {
                 &buffer_channels,
                 &buffer_sample_rates,
             )
-            .expect("process should succeed");
+        }
+        .expect("process should succeed");
 
         let state_bytes = unsafe {
             std::slice::from_raw_parts(
@@ -749,7 +997,7 @@ block:
 
     #[test]
     fn emits_cross_target_object_when_backend_is_available() {
-        let typed = typed_program(
+        let typed = typed_program_with_options(
             r#"
 outs:
   out1
@@ -757,11 +1005,13 @@ outs:
 sample:
   out1 = 0.0
 "#,
+            48_000.0,
+            128,
         );
 
         let result = lower_to_object_with_options(
             typed,
-            CodegenOptions {
+            SourceCodegenOptions {
                 sample_rate: 48_000.0,
                 block_size: 128,
                 fast_math: false,
@@ -800,15 +1050,14 @@ sample:
 "#,
         );
 
-        let ir = lower_to_llvm_ir_with_options(typed, CompileOptions::default())
+        let ir = lower_to_llvm_ir_with_options(typed, SourceCompileOptions::default())
             .expect("const array program should lower to LLVM IR");
-        assert!(ir.contains("__onda_const_array_Table"));
+        assert!(ir.contains("__onda_mir_const_0"));
     }
 
     #[test]
     fn oversampled_proc_local_defs_specialize_with_effective_sample_rate() {
-        let typed = typed_program(
-            r#"
+        let source = r#"
 proc Voice:
   params:
     gain = 1.0 => update
@@ -827,30 +1076,21 @@ init:
   voice = Voice(gain = 2.0)
 sample:
   out1 = voice()
-"#,
-        );
-
-        let ir = lower_to_llvm_ir_with_options(
-            typed,
-            CompileOptions {
-                backend: ExecutionBackend::Auto,
-                sample_rate: 48_000.0,
-                block_size: 4,
-                fast_math: false,
-                opt_level: TargetOptLevel::O0,
-            },
-        )
-        .expect("oversampled proc-local bind hook should lower to LLVM IR");
-        assert!(
-            ir.contains("2.400000e+04"),
-            "expected bind hook to fold SR / BS as 96000 / 4, proving effective SR and host BS"
+"#;
+        let typed = typed_program_with_options(source, 48_000.0, 4);
+        let mir = onda_semantics::lower_program_to_optimized_mir(&typed)
+            .expect("oversampled proc-local bind hook should lower to MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+        assert_eq!(
+            dump.matches("f32(24000.0)").count(),
+            1,
+            "effective SR / host BS should fold to 24000"
         );
     }
 
     #[test]
     fn oversampled_proc_local_consts_specialize_with_effective_sample_rate() {
-        let typed = typed_program(
-            r#"
+        let source = r#"
 proc Voice:
   const Frames = SR
   params:
@@ -871,30 +1111,21 @@ init:
   voice = Voice(gain = 2.0)
 sample:
   out1 = voice()
-"#,
-        );
-
-        let ir = lower_to_llvm_ir_with_options(
-            typed,
-            CompileOptions {
-                backend: ExecutionBackend::Auto,
-                sample_rate: 48_000.0,
-                block_size: 4,
-                fast_math: false,
-                opt_level: TargetOptLevel::O0,
-            },
-        )
-        .expect("oversampled proc-local constants should lower to LLVM IR");
-        assert!(
-            ir.contains("1.920000e+05"),
-            "expected proc-local and local SR constants to fold as 96000 + 96000 under sample 2"
+"#;
+        let typed = typed_program_with_options(source, 48_000.0, 4);
+        let mir = onda_semantics::lower_program_to_optimized_mir(&typed)
+            .expect("oversampled proc-local constants should lower to MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+        assert_eq!(
+            dump.matches("f32(192000.0)").count(),
+            1,
+            "two effective-rate constants should fold to 192000"
         );
     }
 
     #[test]
     fn host_sr_builtin_stays_host_when_proc_sr_is_oversampled() {
-        let typed = typed_program(
-            r#"
+        let source = r#"
 proc Voice:
   params:
     gain = 1.0 => update
@@ -913,23 +1144,15 @@ init:
   voice = Voice(gain = 2.0)
 sample:
   out1 = voice()
-"#,
-        );
-
-        let ir = lower_to_llvm_ir_with_options(
-            typed,
-            CompileOptions {
-                backend: ExecutionBackend::Auto,
-                sample_rate: 48_000.0,
-                block_size: 4,
-                fast_math: false,
-                opt_level: TargetOptLevel::O0,
-            },
-        )
-        .expect("HOST_SR in an oversampled proc should lower to LLVM IR");
-        assert!(
-            ir.contains("3.360000e+05"),
-            "expected SR plus five HOST_SR aliases to fold as 96000 + 5 * 48000 under sample 2"
+"#;
+        let typed = typed_program_with_options(source, 48_000.0, 4);
+        let mir = onda_semantics::lower_program_to_optimized_mir(&typed)
+            .expect("HOST_SR aliases should lower to MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+        assert_eq!(
+            dump.matches("f32(336000.0)").count(),
+            1,
+            "effective SR and five host-rate aliases should fold to 336000 total:\n{dump}"
         );
     }
 
@@ -1074,7 +1297,7 @@ sample:
 "#,
         );
 
-        let artifact = lower_to_object_with_options(typed, CodegenOptions::default())
+        let artifact = lower_to_object_with_options(typed, SourceCodegenOptions::default())
             .expect("namespaced const array AOT object should emit");
         assert!(!artifact.object_bytes.is_empty());
     }
@@ -1146,10 +1369,11 @@ sample:
 "#
         );
         let with_const = typed_program(&with_const_src);
-        let base_artifact = lower_to_object_with_options(base, CodegenOptions::default())
+        let base_artifact = lower_to_object_with_options(base, SourceCodegenOptions::default())
             .expect("base AOT object should emit");
-        let const_artifact = lower_to_object_with_options(with_const, CodegenOptions::default())
-            .expect("const AOT object should emit");
+        let const_artifact =
+            lower_to_object_with_options(with_const, SourceCodegenOptions::default())
+                .expect("const AOT object should emit");
 
         assert!(!const_artifact.object_bytes.is_empty());
         assert_eq!(
@@ -1176,7 +1400,7 @@ block {
 "#,
         );
 
-        let artifact = lower_to_object_with_options(typed, CodegenOptions::default())
+        let artifact = lower_to_object_with_options(typed, SourceCodegenOptions::default())
             .expect("control-output AOT object should emit");
         let meter = artifact
             .metadata
@@ -1186,11 +1410,15 @@ block {
             .expect("control output metadata should exist");
 
         assert_eq!(meter.name, "meter");
-        assert_eq!(meter.byte_offset, 0);
+        assert_eq!(meter.byte_offset, Some(0));
         let state_offset = meter
             .state_byte_offset
             .expect("control output should expose state byte offset");
-        assert_ne!(state_offset, meter.byte_offset);
         assert!(state_offset < artifact.metadata.runtime.state_size_bytes);
+        assert_eq!(
+            state_offset % std::mem::align_of::<f64>(),
+            0,
+            "physical control mirror must retain target ABI alignment"
+        );
     }
 }

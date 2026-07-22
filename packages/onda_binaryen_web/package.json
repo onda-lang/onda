@@ -1,0 +1,53 @@
+{
+  "name": "@onda-lang/binaryen-web",
+  "version": "0.5.0",
+  "type": "module",
+  "description": "Binaryen backend for versioned Onda MIR in browsers and Node.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/onda-lang/onda.git",
+    "directory": "packages/onda_binaryen_web"
+  },
+  "homepage": "https://onda-lang.github.io/onda/",
+  "bugs": {
+    "url": "https://github.com/onda-lang/onda/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./artifact": {
+      "types": "./src/artifact.d.ts",
+      "default": "./src/artifact.js"
+    }
+  },
+  "files": [
+    "src",
+    "math-kernel/LICENSE-libm.txt",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build:math-kernel": "node ./scripts/build-math-kernel.mjs",
+    "test": "node --test",
+    "test:onda": "node ./scripts/verify-language-slice.mjs && node ./scripts/verify-backend-parity.mjs && node ./scripts/verify-fma-oracle.mjs",
+    "test:corpus": "node ./scripts/verify-source-corpus.mjs",
+    "test:fma-oracle": "node ./scripts/verify-fma-oracle.mjs",
+    "test:parity": "node ./scripts/verify-backend-parity.mjs",
+    "bench": "node ./scripts/benchmark-backends.mjs",
+    "verify-mir": "node ./scripts/verify-mir.mjs"
+  },
+  "dependencies": {
+    "@onda-lang/processor-abi": "0.5.0",
+    "binaryen": "130.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

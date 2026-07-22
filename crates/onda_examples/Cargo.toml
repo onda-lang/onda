@@ -11,9 +11,11 @@ llvm-orc = ["onda_codegen_llvm/llvm-orc"]
 
 [dependencies]
 onda_frontend = { path = "../onda_frontend" }
+onda_mir = { path = "../onda_mir" }
 onda_semantics = { path = "../onda_semantics" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_runtime = { path = "../onda_runtime" }
+onda_realtime = { path = "../onda_realtime" }
 hound = "3.5.1"
 
 [dev-dependencies]

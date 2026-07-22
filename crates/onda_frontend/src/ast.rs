@@ -14,6 +14,10 @@ impl Program {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// This public, mutation-heavy AST intentionally keeps declaration payloads inline. Boxing only the
+// processor variant would add allocation and dereference churn throughout parser/semantic passes
+// and would be a breaking representation change; executable size is normalized at the MIR boundary.
+#[allow(clippy::large_enum_variant)]
 pub enum Block {
     Ins(PortBlock),
     Outs(PortBlock),
@@ -448,6 +452,8 @@ pub struct NamespaceTemplateParam {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// Keep namespace declarations representation-compatible with top-level `Block` declarations.
+#[allow(clippy::large_enum_variant)]
 pub enum NamespaceItem {
     Assert(AssertDecl),
     Const(ConstDecl),

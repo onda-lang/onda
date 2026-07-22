@@ -38,19 +38,19 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             show_meta,
             control_json,
             param_sets,
-        } => run_daemon_play(
-            &input,
+        } => play_run_realtime(PlaybackLaunch {
+            input,
             dur_seconds,
             sample_rate_hz,
             block_frames,
             opt_level,
-            input_device.as_deref(),
-            output_device.as_deref(),
+            input_device,
+            output_device,
             fast_math,
             show_meta,
             control_json,
-            &param_sets,
-        ),
+            param_sets,
+        }),
         RunCommand::Render {
             input,
             output,
@@ -61,17 +61,17 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             param_sets,
-        } => run_daemon_run(
-            &input,
-            &output,
+        } => run_daemon_run(DaemonRenderRequest {
+            input: &input,
+            output: &output,
             dur_seconds,
             sample_rate_hz,
             block_frames,
             opt_level,
             fast_math,
             show_meta,
-            &param_sets,
-        ),
+            param_sets: &param_sets,
+        }),
         RunCommand::Window {
             input,
             sample_rate_hz,
@@ -162,17 +162,30 @@ fn run_daemon_diagnose(
     ))
 }
 
-fn run_daemon_run(
-    input: &Path,
-    output: &Path,
+struct DaemonRenderRequest<'a> {
+    input: &'a Path,
+    output: &'a Path,
     dur_seconds: u32,
     sample_rate_hz: u32,
     block_frames: usize,
     opt_level: TargetOptLevel,
     fast_math: bool,
     show_meta: bool,
-    param_sets: &[(String, f64)],
-) -> Result<(), String> {
+    param_sets: &'a [(String, f64)],
+}
+
+fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
+    let DaemonRenderRequest {
+        input,
+        output,
+        dur_seconds,
+        sample_rate_hz,
+        block_frames,
+        opt_level,
+        fast_math,
+        show_meta,
+        param_sets,
+    } = request;
     let mut session = DaemonSession::new(DaemonConfig {
         analysis: AnalysisOptions {
             sample_rate: sample_rate_hz as f32,
@@ -247,34 +260,6 @@ fn run_daemon_run(
     Ok(())
 }
 
-fn run_daemon_play(
-    input: &Path,
-    dur_seconds: Option<u32>,
-    sample_rate_hz: u32,
-    block_frames: usize,
-    opt_level: TargetOptLevel,
-    input_device: Option<&str>,
-    output_device: Option<&str>,
-    fast_math: bool,
-    show_meta: bool,
-    control_json: bool,
-    param_sets: &[(String, f64)],
-) -> Result<(), String> {
-    play_run_realtime(PlaybackLaunch {
-        input: input.to_path_buf(),
-        dur_seconds,
-        sample_rate_hz,
-        block_frames,
-        opt_level,
-        input_device: input_device.map(str::to_owned),
-        output_device: output_device.map(str::to_owned),
-        fast_math,
-        show_meta,
-        control_json,
-        param_sets: param_sets.to_vec(),
-    })
-}
-
 fn write_wav_interleaved_i16(
     path: &Path,
     channels: usize,
@@ -284,7 +269,7 @@ fn write_wav_interleaved_i16(
     if channels == 0 {
         return Err("cannot write wav with zero channels".to_owned());
     }
-    if samples.len() % channels != 0 {
+    if !samples.len().is_multiple_of(channels) {
         return Err(format!(
             "sample buffer length {} is not divisible by channel count {}",
             samples.len(),

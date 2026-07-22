@@ -1,74 +1,7 @@
 use onda_frontend::Diagnostic;
 
-use crate::primitives::{append_typed_const_bytes, primitive_type_bytes, write_typed_const_bytes};
-use crate::{
-    CodegenOptions, CompileOptions, DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer,
-    RuntimeState, TargetCpu,
-};
-
-pub(crate) fn validate_compile_options(options: &CompileOptions) -> Result<(), Diagnostic> {
-    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
-        return Err(Diagnostic::internal(
-            "compile option 'sample_rate' must be finite and greater than zero",
-        ));
-    }
-    if options.block_size == 0 {
-        return Err(Diagnostic::internal(
-            "compile option 'block_size' must be greater than zero",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_codegen_options(options: &CodegenOptions) -> Result<(), Diagnostic> {
-    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
-        return Err(Diagnostic::internal(
-            "codegen option 'sample_rate' must be finite and greater than zero",
-        ));
-    }
-    if options.block_size == 0 {
-        return Err(Diagnostic::internal(
-            "codegen option 'block_size' must be greater than zero",
-        ));
-    }
-
-    if let Some(triple) = &options.target.triple {
-        if triple.trim().is_empty() {
-            return Err(Diagnostic::internal(
-                "target config 'triple' must not be empty when provided",
-            ));
-        }
-    }
-
-    match &options.target.cpu {
-        TargetCpu::Host => {}
-        TargetCpu::Explicit(cpu) => {
-            if cpu.trim().is_empty() {
-                return Err(Diagnostic::internal(
-                    "target config 'cpu' must not be empty when explicitly provided",
-                ));
-            }
-        }
-    }
-
-    if let Some(features) = &options.target.features {
-        if features.contains(char::is_whitespace) {
-            return Err(Diagnostic::internal(
-                "target config 'features' must be a comma-separated LLVM feature string without whitespace",
-            ));
-        }
-    }
-
-    if let Some(abi_name) = &options.target.abi_name {
-        if abi_name.trim().is_empty() {
-            return Err(Diagnostic::internal(
-                "target config 'abi_name' must not be empty when provided",
-            ));
-        }
-    }
-
-    Ok(())
-}
+use crate::primitives::primitive_type_bytes;
+use crate::{DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState};
 
 pub(crate) fn validate_event_payload(
     desc: &DeclaredEvent,
@@ -121,7 +54,20 @@ pub(crate) fn validate_event_payload(
                 ));
             }
             let len = len as usize;
-            let data_bytes = primitive_type_bytes(param.elem_ty()).saturating_mul(len);
+            let data_bytes = primitive_type_bytes(param.elem_ty())
+                .checked_mul(len)
+                .filter(|bytes| *bytes <= i32::MAX as usize)
+                .ok_or_else(|| {
+                    Diagnostic::runtime(
+                        format!(
+                            "event '{}' slice parameter '{}' byte extent exceeds i32 runtime limit",
+                            desc.name(),
+                            param.name()
+                        ),
+                        0,
+                        0,
+                    )
+                })?;
             offset = offset.saturating_add(4);
             if payload.len().saturating_sub(offset) < data_bytes {
                 return Err(Diagnostic::runtime(
@@ -172,17 +118,30 @@ pub(crate) fn validate_event_payload(
 
 impl JitProgram {
     pub fn required_in_channels(&self) -> usize {
-        self.typed.ins.len()
+        self.inputs
+            .iter()
+            .map(|input| input.slot_offset().saturating_add(input.array_len()))
+            .max()
+            .unwrap_or(0)
     }
 
     pub fn required_out_channels(&self) -> usize {
-        self.typed.outs.len()
+        self.outputs
+            .iter()
+            .map(|output| output.slot_offset().saturating_add(output.array_len()))
+            .max()
+            .unwrap_or(0)
     }
 
     pub fn default_param_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        for param in &self.typed.params {
-            append_typed_const_bytes(&mut out, param.default, param.ty);
+        let mut out = vec![0_u8; self.param_byte_size()];
+        for param in self.params.iter() {
+            let default = param
+                .default_bytes()
+                .expect("validated parameter metadata has default bytes");
+            let start = param.byte_offset();
+            let end = start.saturating_add(default.len());
+            out[start..end].copy_from_slice(default);
         }
         out
     }
@@ -196,13 +155,26 @@ impl JitProgram {
                 0,
             ));
         }
-        let mut offset = 0usize;
-        for param in &self.typed.params {
-            offset = offset.saturating_add(write_typed_const_bytes(
-                &mut out[offset..],
-                param.default,
-                param.ty,
-            ));
+        for param in self.params.iter() {
+            let default = param.default_bytes().ok_or_else(|| {
+                Diagnostic::runtime(
+                    format!("parameter '{}' has no compiled default bytes", param.name()),
+                    0,
+                    0,
+                )
+            })?;
+            let start = param.byte_offset();
+            let end = start.checked_add(default.len()).ok_or_else(|| {
+                Diagnostic::runtime("runtime parameter default byte range overflow", 0, 0)
+            })?;
+            let Some(destination) = out.get_mut(start..end) else {
+                return Err(Diagnostic::runtime(
+                    "runtime parameter default byte range exceeds compiled storage",
+                    0,
+                    0,
+                ));
+            };
+            destination.copy_from_slice(default);
         }
         Ok(())
     }
@@ -392,7 +364,7 @@ impl JitProgram {
     }
 
     pub fn param_slot_count(&self) -> usize {
-        self.typed.params.len()
+        self.params.iter().map(|param| param.array_len()).sum()
     }
 
     pub fn param_byte_size(&self) -> usize {
@@ -407,15 +379,98 @@ impl JitProgram {
         self.sample_rate
     }
 
+    /// Packed, target-independent persistent snapshot size.
     pub fn state_size_bytes(&self) -> usize {
+        self.snapshot_size_bytes
+    }
+
+    /// Physical target-layout state storage required by generated code.
+    pub fn physical_state_size_bytes(&self) -> usize {
         #[cfg(feature = "llvm-orc")]
         {
-            return self.compiled.state_size_bytes();
+            self.compiled.state_size_bytes()
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
             0
         }
+    }
+
+    pub fn write_state_snapshot(
+        &self,
+        state: &RuntimeState,
+        destination: &mut [u8],
+    ) -> Result<(), Diagnostic> {
+        if destination.len() != self.snapshot_size_bytes {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "state snapshot byte size mismatch: expected {}, got {}",
+                    self.snapshot_size_bytes,
+                    destination.len()
+                ),
+                0,
+                0,
+            ));
+        }
+        let state_bytes = state.bytes();
+        for segment in self.snapshot_segments.iter() {
+            let state_end = segment
+                .state_offset
+                .checked_add(segment.byte_size)
+                .filter(|end| *end <= state_bytes.len())
+                .ok_or_else(|| {
+                    Diagnostic::internal("snapshot segment exceeds physical state storage")
+                })?;
+            let snapshot_end = segment.snapshot_offset + segment.byte_size;
+            copy_snapshot_segment(
+                &state_bytes[segment.state_offset..state_end],
+                &mut destination[segment.snapshot_offset..snapshot_end],
+                segment.element_size,
+            );
+        }
+        Ok(())
+    }
+
+    pub fn restore_state_snapshot(
+        &self,
+        state: &mut RuntimeState,
+        initial_state: &RuntimeState,
+        snapshot: &[u8],
+    ) -> Result<(), Diagnostic> {
+        if snapshot.len() != self.snapshot_size_bytes {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "state snapshot byte size mismatch: expected {}, got {}",
+                    self.snapshot_size_bytes,
+                    snapshot.len()
+                ),
+                0,
+                0,
+            ));
+        }
+        if state.byte_size() != initial_state.byte_size() {
+            return Err(Diagnostic::internal(
+                "initial and live physical state layouts differ",
+            ));
+        }
+        state.bytes_mut().copy_from_slice(initial_state.bytes());
+        let state_bytes = state.bytes_mut();
+        for segment in self.snapshot_segments.iter() {
+            let state_end = segment
+                .state_offset
+                .checked_add(segment.byte_size)
+                .filter(|end| *end <= state_bytes.len())
+                .ok_or_else(|| {
+                    Diagnostic::internal("snapshot segment exceeds physical state storage")
+                })?;
+            let snapshot_end = segment.snapshot_offset + segment.byte_size;
+            copy_snapshot_segment(
+                &snapshot[segment.snapshot_offset..snapshot_end],
+                &mut state_bytes[segment.state_offset..state_end],
+                segment.element_size,
+            );
+        }
+        Ok(())
     }
 
     pub fn event_descriptor(&self, index: usize) -> Option<&crate::DeclaredEvent> {
@@ -433,7 +488,8 @@ impl JitProgram {
     ) -> Result<RuntimeState, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            return initialize_state_orc(&self.compiled, params, allocator);
+            self.compiled
+                .initialize_state_with_allocator(params, allocator)
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -444,7 +500,15 @@ impl JitProgram {
         }
     }
 
-    pub fn process_checked(
+    /// Validates ABI shape before entering generated code.
+    ///
+    /// # Safety
+    ///
+    /// The raw input, output, and external-buffer pointers must remain valid,
+    /// correctly sized/aligned, and mutually non-overlapping for the duration
+    /// of the call.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn process_checked(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -460,20 +524,21 @@ impl JitProgram {
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            return process_checked_orc(
-                &self.compiled,
-                state,
-                params,
-                start_frame,
-                frames,
-                flags,
-                in_ptrs,
-                out_ptrs,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-            );
+            unsafe {
+                self.compiled.process_checked(
+                    state,
+                    params,
+                    start_frame,
+                    frames,
+                    flags,
+                    in_ptrs,
+                    out_ptrs,
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                )
+            }
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -496,7 +561,12 @@ impl JitProgram {
         }
     }
 
-    pub fn sync_proc_buffer_refs_for_process_checked(
+    /// Prepares any backend-derived buffer references from raw host tables.
+    ///
+    /// # Safety
+    ///
+    /// The raw buffer pointers and metadata must describe live host regions.
+    pub unsafe fn sync_proc_buffer_refs_for_process_checked(
         &self,
         state: &mut RuntimeState,
         buffer_ptrs: &[*mut u8],
@@ -505,15 +575,19 @@ impl JitProgram {
         buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
+        let _ = (
+            state,
+            buffer_ptrs,
+            buffer_frames,
+            buffer_channels,
+            buffer_sample_rates,
+        );
+        #[cfg(feature = "llvm-orc")]
         {
-            return sync_proc_buffer_refs_for_process_checked_orc(
-                &self.compiled,
-                state,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-            );
+            // MIR represents external buffer references as transient symbolic call values.
+            // Both direct and processor-dispatched accesses consume the current validated
+            // host table, so preparation has no pointer-bearing derived state to refresh.
+            Ok(())
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -530,6 +604,15 @@ impl JitProgram {
         }
     }
 
+    /// Enters generated process code without validating any raw ABI tables.
+    ///
+    /// # Safety
+    ///
+    /// The state and parameter storage must match this program. Frame ranges,
+    /// flags, pointer counts, buffer metadata, pointee extents/alignment, and
+    /// all aliasing relationships must satisfy the same invariants enforced by
+    /// [`Self::process_checked`] and remain valid for the duration of the call.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn process_unchecked(
         &self,
         state: &mut RuntimeState,
@@ -546,21 +629,22 @@ impl JitProgram {
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            process_unchecked_orc(
-                &self.compiled,
-                state,
-                params,
-                start_frame,
-                frames,
-                flags,
-                in_ptrs,
-                out_ptrs,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-            );
-            return Ok(());
+            unsafe {
+                self.compiled.process_unchecked(
+                    state,
+                    params,
+                    start_frame,
+                    frames,
+                    flags,
+                    in_ptrs,
+                    out_ptrs,
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                );
+            }
+            Ok(())
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -583,7 +667,14 @@ impl JitProgram {
         }
     }
 
-    pub fn trigger_event_by_index(
+    /// Validates payload shape before entering generated event code.
+    ///
+    /// # Safety
+    ///
+    /// Raw external-buffer pointers must satisfy their complete binding
+    /// contract and remain valid for the duration of the call.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_by_index(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -600,17 +691,18 @@ impl JitProgram {
         validate_event_payload(desc, payload)?;
         #[cfg(feature = "llvm-orc")]
         {
-            return trigger_event_orc(
-                &self.compiled,
-                state,
-                params,
-                event_index,
-                payload,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-            );
+            unsafe {
+                self.compiled.trigger_event_by_index(
+                    state,
+                    params,
+                    event_index,
+                    payload,
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                )
+            }
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -630,6 +722,15 @@ impl JitProgram {
         }
     }
 
+    /// Enters generated event code without validating payload or buffer shape.
+    ///
+    /// # Safety
+    ///
+    /// The state, parameters, event payload, and raw external-buffer tables
+    /// must satisfy the same invariants enforced by
+    /// [`Self::trigger_event_by_index`] and remain valid for the duration of
+    /// the call.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn trigger_event_by_index_unchecked(
         &self,
         state: &mut RuntimeState,
@@ -646,18 +747,19 @@ impl JitProgram {
         }
         #[cfg(feature = "llvm-orc")]
         {
-            trigger_event_orc_unchecked(
-                &self.compiled,
-                state,
-                params,
-                event_index,
-                payload,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-            );
-            return Ok(());
+            unsafe {
+                self.compiled.trigger_event_by_index_unchecked(
+                    state,
+                    params,
+                    event_index,
+                    payload,
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                );
+            }
+            Ok(())
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -674,6 +776,23 @@ impl JitProgram {
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
+        }
+    }
+}
+
+fn copy_snapshot_segment(source: &[u8], destination: &mut [u8], element_size: usize) {
+    debug_assert_eq!(source.len(), destination.len());
+    debug_assert!(element_size > 0 && source.len().is_multiple_of(element_size));
+    if cfg!(target_endian = "little") || element_size == 1 {
+        destination.copy_from_slice(source);
+        return;
+    }
+    for (source, destination) in source
+        .chunks_exact(element_size)
+        .zip(destination.chunks_exact_mut(element_size))
+    {
+        for (output, input) in destination.iter_mut().zip(source.iter().rev()) {
+            *output = *input;
         }
     }
 }
@@ -736,298 +855,4 @@ impl RuntimeState {
             state_size_bytes: self.state_size_bytes,
         })
     }
-}
-
-#[cfg(feature = "llvm-orc")]
-fn required_state_words(state_size_bytes: usize) -> usize {
-    (state_size_bytes + 7) / 8
-}
-
-#[cfg(feature = "llvm-orc")]
-fn validate_buffer_metadata_counts(
-    compiled: &crate::orc_backend::OrcProcess,
-    buffer_ptrs: &[*mut u8],
-    buffer_frames: &[i32],
-    buffer_channels: &[i32],
-    buffer_sample_rates: &[f32],
-) -> Result<(), Diagnostic> {
-    if buffer_ptrs.len() != compiled.buffer_count()
-        || buffer_frames.len() != compiled.buffer_count()
-        || buffer_channels.len() != compiled.buffer_count()
-        || buffer_sample_rates.len() != compiled.buffer_count()
-    {
-        return Err(Diagnostic::runtime(
-            format!(
-                "runtime buffer metadata count mismatch: ptrs={}, frames={}, chans={}, samplerates={}, expected={}",
-                buffer_ptrs.len(),
-                buffer_frames.len(),
-                buffer_channels.len(),
-                buffer_sample_rates.len(),
-                compiled.buffer_count()
-            ),
-            0,
-            0,
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(feature = "llvm-orc")]
-fn validate_runtime_state(
-    compiled: &crate::orc_backend::OrcProcess,
-    state: &RuntimeState,
-) -> Result<(), Diagnostic> {
-    if state.state_size_bytes != compiled.state_size_bytes() {
-        return Err(Diagnostic::runtime(
-            "runtime state buffer size does not match compiled program state layout",
-            0,
-            0,
-        ));
-    }
-    if state.state_words.len() < required_state_words(state.state_size_bytes) {
-        return Err(Diagnostic::runtime(
-            "runtime state backing storage is smaller than required by compiled program",
-            0,
-            0,
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(feature = "llvm-orc")]
-fn validate_param_bytes(
-    compiled: &crate::orc_backend::OrcProcess,
-    params: &[u8],
-) -> Result<(), Diagnostic> {
-    let expected_param_bytes = compiled.param_size_bytes();
-    if params.len() != expected_param_bytes {
-        return Err(Diagnostic::runtime(
-            format!(
-                "runtime parameter byte count {} does not match compiled program ({expected_param_bytes})",
-                params.len()
-            ),
-            0,
-            0,
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(feature = "llvm-orc")]
-fn process_checked_orc(
-    compiled: &crate::orc_backend::OrcProcess,
-    state: &mut RuntimeState,
-    params: &[u8],
-    start_frame: usize,
-    frames: usize,
-    flags: u32,
-    in_ptrs: &[*const u8],
-    out_ptrs: &[*mut u8],
-    buffer_ptrs: &[*mut u8],
-    buffer_frames: &[i32],
-    buffer_channels: &[i32],
-    buffer_sample_rates: &[f32],
-) -> Result<(), Diagnostic> {
-    let start_frame = u32::try_from(start_frame).map_err(|_| {
-        Diagnostic::runtime(
-            "start frame does not fit u32 for ORC process entrypoint",
-            0,
-            0,
-        )
-    })?;
-    let frames = u32::try_from(frames).map_err(|_| {
-        Diagnostic::runtime(
-            "frame count does not fit u32 for ORC process entrypoint",
-            0,
-            0,
-        )
-    })?;
-    if in_ptrs.len() != compiled.in_channels() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "runtime input channel pointer count {} does not match compiled program ({})",
-                in_ptrs.len(),
-                compiled.in_channels()
-            ),
-            0,
-            0,
-        ));
-    }
-    if out_ptrs.len() != compiled.out_channels() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "runtime output channel pointer count {} does not match compiled program ({})",
-                out_ptrs.len(),
-                compiled.out_channels()
-            ),
-            0,
-            0,
-        ));
-    }
-    validate_buffer_metadata_counts(
-        compiled,
-        buffer_ptrs,
-        buffer_frames,
-        buffer_channels,
-        buffer_sample_rates,
-    )?;
-    validate_runtime_state(compiled, state)?;
-    validate_param_bytes(compiled, params)?;
-
-    compiled.run(
-        in_ptrs.as_ptr(),
-        out_ptrs.as_ptr(),
-        start_frame,
-        frames,
-        flags,
-        params.as_ptr(),
-        state.state_words.as_mut_ptr().cast::<u8>(),
-        buffer_ptrs.as_ptr(),
-        buffer_frames.as_ptr(),
-        buffer_channels.as_ptr(),
-        buffer_sample_rates.as_ptr(),
-    );
-    Ok(())
-}
-
-#[cfg(feature = "llvm-orc")]
-fn sync_proc_buffer_refs_for_process_checked_orc(
-    compiled: &crate::orc_backend::OrcProcess,
-    state: &mut RuntimeState,
-    buffer_ptrs: &[*mut u8],
-    buffer_frames: &[i32],
-    buffer_channels: &[i32],
-    buffer_sample_rates: &[f32],
-) -> Result<(), Diagnostic> {
-    validate_buffer_metadata_counts(
-        compiled,
-        buffer_ptrs,
-        buffer_frames,
-        buffer_channels,
-        buffer_sample_rates,
-    )?;
-    validate_runtime_state(compiled, state)?;
-    compiled.sync_proc_buffer_refs(
-        state.state_words.as_mut_ptr().cast::<u8>(),
-        buffer_ptrs,
-        buffer_frames,
-        buffer_channels,
-        buffer_sample_rates,
-    )?;
-    Ok(())
-}
-
-#[cfg(feature = "llvm-orc")]
-unsafe fn process_unchecked_orc(
-    compiled: &crate::orc_backend::OrcProcess,
-    state: &mut RuntimeState,
-    params: &[u8],
-    start_frame: u32,
-    frames: u32,
-    flags: u32,
-    in_ptrs: &[*const u8],
-    out_ptrs: &[*mut u8],
-    buffer_ptrs: &[*mut u8],
-    buffer_frames: &[i32],
-    buffer_channels: &[i32],
-    buffer_sample_rates: &[f32],
-) {
-    compiled.run(
-        in_ptrs.as_ptr(),
-        out_ptrs.as_ptr(),
-        start_frame,
-        frames,
-        flags,
-        params.as_ptr(),
-        state.state_words.as_mut_ptr().cast::<u8>(),
-        buffer_ptrs.as_ptr(),
-        buffer_frames.as_ptr(),
-        buffer_channels.as_ptr(),
-        buffer_sample_rates.as_ptr(),
-    );
-}
-
-#[cfg(feature = "llvm-orc")]
-fn trigger_event_orc(
-    compiled: &crate::orc_backend::OrcProcess,
-    state: &mut RuntimeState,
-    params: &[u8],
-    event_index: usize,
-    payload: &[u8],
-    buffer_ptrs: &[*mut u8],
-    buffer_frames: &[i32],
-    buffer_channels: &[i32],
-    buffer_sample_rates: &[f32],
-) -> Result<(), Diagnostic> {
-    validate_buffer_metadata_counts(
-        compiled,
-        buffer_ptrs,
-        buffer_frames,
-        buffer_channels,
-        buffer_sample_rates,
-    )?;
-    validate_runtime_state(compiled, state)?;
-    validate_param_bytes(compiled, params)?;
-
-    let event_index_u32 = u32::try_from(event_index).map_err(|_| {
-        Diagnostic::runtime(
-            "event index does not fit u32 for ORC event entrypoint",
-            0,
-            0,
-        )
-    })?;
-    compiled.run_event(
-        event_index_u32,
-        payload.as_ptr(),
-        params.as_ptr(),
-        state.state_words.as_mut_ptr().cast::<u8>(),
-        buffer_ptrs.as_ptr(),
-        buffer_frames.as_ptr(),
-        buffer_channels.as_ptr(),
-        buffer_sample_rates.as_ptr(),
-    );
-    Ok(())
-}
-
-#[cfg(feature = "llvm-orc")]
-unsafe fn trigger_event_orc_unchecked(
-    compiled: &crate::orc_backend::OrcProcess,
-    state: &mut RuntimeState,
-    params: &[u8],
-    event_index: usize,
-    payload: &[u8],
-    buffer_ptrs: &[*mut u8],
-    buffer_frames: &[i32],
-    buffer_channels: &[i32],
-    buffer_sample_rates: &[f32],
-) {
-    if let Ok(event_index_u32) = u32::try_from(event_index) {
-        compiled.run_event(
-            event_index_u32,
-            payload.as_ptr(),
-            params.as_ptr(),
-            state.state_words.as_mut_ptr().cast::<u8>(),
-            buffer_ptrs.as_ptr(),
-            buffer_frames.as_ptr(),
-            buffer_channels.as_ptr(),
-            buffer_sample_rates.as_ptr(),
-        );
-    }
-}
-
-#[cfg(feature = "llvm-orc")]
-fn initialize_state_orc(
-    compiled: &crate::orc_backend::OrcProcess,
-    params: &[u8],
-    allocator: Option<RuntimeAllocator>,
-) -> Result<RuntimeState, Diagnostic> {
-    validate_param_bytes(compiled, params)?;
-    let state_size_bytes = compiled.state_size_bytes();
-    let mut state_words =
-        RuntimeBuffer::try_from_elem_in(required_state_words(state_size_bytes), 0_u64, allocator)?;
-    compiled.run_init(params.as_ptr(), state_words.as_mut_ptr().cast::<u8>());
-    Ok(RuntimeState {
-        state_words,
-        state_size_bytes,
-    })
 }

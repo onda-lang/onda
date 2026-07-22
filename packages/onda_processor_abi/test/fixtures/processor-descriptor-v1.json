@@ -1,0 +1,119 @@
+{
+  "format": "onda-processor",
+  "format_version": 1,
+  "artifact_kind": "webassembly_module",
+  "abi_version": 1,
+  "backend": "conformance-fixture",
+  "mir_schema_version": 1,
+  "target": {
+    "triple": "wasm32-unknown-unknown",
+    "cpu": "generic",
+    "features": "",
+    "reloc_model": "static",
+    "code_model": "default",
+    "opt_level": "4",
+    "abi_name": null,
+    "data_layout": "e-m:e-p:32:32-i64:64-n32:64-S128",
+    "pointer_width_bits": 32,
+    "byte_order": "little_endian",
+    "pointer_model": "linear_memory_offset",
+    "calling_convention": "core_webassembly"
+  },
+  "integration": {
+    "required_symbols": ["memory", "__heap_base", "onda_init", "onda_process", "onda_event_0"],
+    "one_processor_per_artifact": true,
+    "profile": {
+      "kind": "core_webassembly_module",
+      "imports": [],
+      "memory_export": "memory",
+      "heap_base_export": "__heap_base"
+    }
+  },
+  "compile": { "sample_rate": 48000.0, "block_size": 128, "fast_math": false },
+  "exports": {
+    "memory": "memory",
+    "heap_base": "__heap_base",
+    "init": "onda_init",
+    "process": "onda_process",
+    "events": ["onda_event_0"]
+  },
+  "runtime": {
+    "state_size_bytes": 16,
+    "state_align_bytes": 16,
+    "param_size_bytes": 16,
+    "param_align_bytes": 16,
+    "state_initialization": "zeroed",
+    "snapshot_size_bytes": 4,
+    "snapshot_format_version": 1,
+    "snapshot_byte_order": "little_endian",
+    "snapshot_restore_base": "post_init_physical_state_image",
+    "requires_full_blocks": false
+  },
+  "metadata": {
+    "inputs": [{
+      "name": "in1",
+      "type_repr": "f32",
+      "scalar": "f32",
+      "array_len": 1,
+      "element_size_bytes": 4,
+      "slot_offset": 0,
+      "byte_offset": null,
+      "state_byte_offset": null,
+      "byte_size": 4,
+      "default_reprs": null,
+      "range_min_repr": null,
+      "range_max_repr": null
+    }],
+    "outputs": [],
+    "control_outputs": [],
+    "params": [],
+    "buffers": [{
+      "name": "scratch",
+      "type_repr": "buffer[f32]",
+      "scalar": "f32",
+      "element_size_bytes": 4,
+      "channels": "mono",
+      "static_channels": 1,
+      "access": "read_write",
+      "may_write": true
+    }],
+    "events": [{
+      "name": "trigger",
+      "export": "onda_event_0",
+      "payload_size_bytes": 4,
+      "payload_min_size_bytes": 4,
+      "has_dynamic_payload": false,
+      "params": [{
+        "name": "value",
+        "type_repr": "f32",
+        "scalar": "f32",
+        "array_len": 1,
+        "is_slice": false,
+        "byte_offset": 0,
+        "byte_size": 4,
+        "element_size_bytes": 4,
+        "has_default": false,
+        "default_reprs": null
+      }]
+    }],
+    "states": [{
+      "name": "phase",
+      "type_repr": "f32",
+      "scalar": "f32",
+      "array_len": 1,
+      "element_size_bytes": 4,
+      "packed_snapshot_byte_offset": 0,
+      "physical_state_byte_offset": 0,
+      "byte_size": 4
+    }]
+  },
+  "required_features": [],
+  "optimization": {
+    "enabled": true,
+    "level": 4,
+    "shrink_level": 0,
+    "fast_math": false,
+    "simd": true,
+    "inline_functions_with_loops": false
+  }
+}

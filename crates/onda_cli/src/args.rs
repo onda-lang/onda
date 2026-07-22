@@ -131,7 +131,10 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         match arg.as_str() {
             "--emit" => {
                 let Some(value) = args.next() else {
-                    return Err("--emit requires check, llvm-ir, or obj".to_owned());
+                    return Err(
+                        "--emit requires check, mir, mir-json, mir-messagepack, llvm-ir, or obj"
+                            .to_owned(),
+                    );
                 };
                 if emit == CompileEmit::LlvmIr && !emit_explicit {
                     return Err("cannot use both --ir and --emit".to_owned());
@@ -753,10 +756,13 @@ fn parse_block_frames(value: &str) -> Result<usize, String> {
 fn parse_compile_emit(value: &str) -> Result<CompileEmit, String> {
     match value {
         "check" => Ok(CompileEmit::Check),
+        "mir" => Ok(CompileEmit::Mir),
+        "mir-json" => Ok(CompileEmit::MirJson),
+        "mir-messagepack" => Ok(CompileEmit::MirMessagePack),
         "llvm-ir" => Ok(CompileEmit::LlvmIr),
         "obj" => Ok(CompileEmit::Object),
         _ => Err(format!(
-            "invalid compile emit mode '{value}', expected check|llvm-ir|obj"
+            "invalid compile emit mode '{value}', expected check|mir|mir-json|mir-messagepack|llvm-ir|obj"
         )),
     }
 }
