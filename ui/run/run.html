@@ -559,6 +559,21 @@
               const input = document.createElement("input");
               input.type = "file";
               input.accept = ".wav,audio/wav,audio/x-wav";
+              input.hidden = true;
+
+              let settled = false;
+              const cleanup = () => {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener("focus", cleanupAfterCancel);
+                input.remove();
+              };
+              const cleanupAfterCancel = () => {
+                setTimeout(() => {
+                  if (!input.files?.length) cleanup();
+                }, 0);
+              };
+
               input.addEventListener("change", () => {
                 const file = input.files && input.files[0];
                 if (file) {
@@ -567,8 +582,10 @@
                     message: { type: "bindBufferFile", name, file },
                   }, targetOrigin);
                 }
-                input.remove();
+                cleanup();
               }, { once: true });
+              input.addEventListener("cancel", cleanup, { once: true });
+              window.addEventListener("focus", cleanupAfterCancel, { once: true });
               document.body.appendChild(input);
               input.click();
             },

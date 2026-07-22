@@ -68,3 +68,11 @@ test("both playground hosts expose new-patch and stable shortcut controls", asyn
     /createNewPatch\(\) \{\s+if \(!window\.confirm\("Create a new patch\? This will delete your current project\."\)\) return;\s+await stopExecution\(\);/,
   );
 });
+
+test("the browser buffer picker stays hidden and cleans up after cancellation", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /input\.hidden = true/);
+  assert.match(runView, /input\.addEventListener\("cancel", cleanup, \{ once: true \}\)/);
+  assert.match(runView, /window\.addEventListener\("focus", cleanupAfterCancel, \{ once: true \}\)/);
+});
