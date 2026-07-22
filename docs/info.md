@@ -110,7 +110,7 @@ Non-crate directories of note:
 - `passes.rs`, `passes/{cse,state_promotion}.rs` — fixed-point backend-neutral canonicalization,
   pure-expression value numbering, bounded alias-safe scalar-state promotion, and cleanup.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
-- The production MIR contract is documented in `docs/MIR.md`.
+- The production MIR contract is documented in `docs/mir.md`.
 
 ### `onda_codegen_llvm` (`crates/onda_codegen_llvm/src`)
 - `lib.rs` — public JIT/AOT API. The sole `TypedProgram` JIT path lowers to validated MIR before
@@ -224,7 +224,7 @@ Non-crate directories of note:
   `packages/onda_binaryen_web` consumes the current schema, including explicit control mirrors, checked slice
   construction, reference windows, and function attributes, and returns DSP Wasm plus physical
   state, snapshot, interface, event, buffer, and import metadata.
-- [`PROCESSOR_ABI.md`](PROCESSOR_ABI.md) defines the shared logical processor contract. LLVM emits
+- [`processor-abi.md`](processor-abi.md) defines the shared logical processor contract. LLVM emits
   relocatable objects for native and WebAssembly targets and leaves linking to the application;
   Binaryen emits a complete core-Wasm module because browsers expose no linker. Target triples
   select LLVM's platform ABI and object representation without changing the logical Onda ABI.
@@ -287,7 +287,7 @@ Non-crate directories of note:
   Wasm. These source-driven commands require a working native Rust/LLVM Onda build; `npm test` and
   the browser asset build do not.
 - `npm run bench` runs the reproducible native LLVM versus Binaryen/Wasm comparison documented in
-  [`docs/BACKEND_BENCHMARKS.md`](BACKEND_BENCHMARKS.md). It is a development benchmark, not a
+  [`docs/backend-benchmarks.md`](backend-benchmarks.md). It is a development benchmark, not a
   universal browser-performance claim.
 - The browser build is static after staging and requires no CLI, LLVM, or server-side compiler.
   Compiler and Binaryen work run in a module worker; `packages/onda_webaudio` registers and hosts the

@@ -5834,7 +5834,7 @@ mod tests {
 
     use onda_frontend::{parse_program, parse_program_file};
     use onda_semantics::{
-        analyze_with_options, lower_program_to_mir, AnalysisOptions, TypedProgram,
+        analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedProgram,
     };
 
     fn source_program(source: &str, block_size: usize) -> (TypedProgram, Program) {
@@ -5847,7 +5847,9 @@ mod tests {
             },
         )
         .expect("source should analyze");
-        let mir = lower_program_to_mir(&typed).expect("source should lower to MIR");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("source should lower to MIR")
+            .into_program();
         (typed, mir)
     }
 
@@ -6260,11 +6262,11 @@ block:
                     },
                 )
                 .map_err(|diagnostics| format!("analysis failed: {diagnostics:?}"))?;
-                let mir = lower_program_to_mir(&typed)
+                let mir = lower_program_to_optimized_mir(&typed)
                     .map_err(|diagnostics| format!("MIR lowering failed: {diagnostics:?}"))?;
                 let mut target = crate::TargetConfig::host();
                 target.opt_level = TargetOptLevel::O0;
-                lower_mir_to_target_llvm_ir(
+                lower_optimized_mir_to_target_llvm_ir(
                     &mir,
                     &MirTargetOptions {
                         fast_math: false,

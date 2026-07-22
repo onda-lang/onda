@@ -49,10 +49,11 @@ Take a look at the `examples/` folder for more usage examples.
 
 ## Documentation
 
-- [docs/SYNTAX.md](docs/SYNTAX.md): language syntax and semantics
-- [docs/INFO.md](docs/INFO.md): project structure and implementation notes
-- [docs/MIR.md](docs/MIR.md): backend-neutral MIR and backend boundary
-- [docs/PROCESSOR_ABI.md](docs/PROCESSOR_ABI.md): generic processor ABI and target/artifact profiles
+- [CHANGELOG.md](CHANGELOG.md): release history and migration notes
+- [docs/syntax.md](docs/syntax.md): language syntax and semantics
+- [docs/info.md](docs/info.md): project structure and implementation notes
+- [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
+- [docs/processor-abi.md](docs/processor-abi.md): generic processor ABI and target/artifact profiles
 - [crates/onda_compiler_web](crates/onda_compiler_web/README.md): in-browser Onda source-to-MIR compiler API
 - [packages/onda_wasm_compiler](packages/onda_wasm_compiler/README.md): packaged source-to-WebAssembly compiler and `onda-wasm` CLI
 - [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): current MIR-to-Wasm backend

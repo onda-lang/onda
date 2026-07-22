@@ -5,6 +5,19 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { main } from "../bin/onda-wasm.js";
+import { MAX_BLOCK_SIZE } from "../src/config.js";
+
+test("onda-wasm rejects block sizes outside the MIR index boundary", async () => {
+  await assert.rejects(
+    main([
+      "compile",
+      "main.onda",
+      "--block-size",
+      String(MAX_BLOCK_SIZE + 1),
+    ]),
+    new RegExp(`--block-size requires an integer from 1 to ${MAX_BLOCK_SIZE}`),
+  );
+});
 
 test("onda-wasm writes the reusable artifact pair", async () => {
   const temporary = await mkdtemp(resolve(tmpdir(), "onda-wasm-cli-"));

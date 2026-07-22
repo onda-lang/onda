@@ -73,8 +73,7 @@ jobs:
             --exclude onda_cli \
             --exclude onda_egui \
             --exclude onda_webview
-          cargo clippy -p onda_mir -p onda_realtime -p onda_compiler_web \
-            --all-targets --no-deps -- -D warnings
+          cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
 
       - uses: actions/setup-node@v4

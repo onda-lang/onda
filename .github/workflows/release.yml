@@ -179,7 +179,8 @@ jobs:
           Copy-Item include\onda_processor_abi.h $includeDir
           Copy-Item LICENSE $packageRoot
           Copy-Item README.md $packageRoot
-          Copy-Item docs\SYNTAX.md $packageRoot
+          Copy-Item CHANGELOG.md $packageRoot
+          Copy-Item docs\syntax.md $packageRoot
           Copy-Item examples $packageRoot -Recurse
 
           $archive = Join-Path $PWD ("dist/onda-" + $version + "-windows-x64.zip")
@@ -212,7 +213,8 @@ jobs:
           cp include/onda_processor_abi.h "$include_dir/"
           cp LICENSE "$package_root/"
           cp README.md "$package_root/"
-          cp docs/SYNTAX.md "$package_root/"
+          cp CHANGELOG.md "$package_root/"
+          cp docs/syntax.md "$package_root/"
           cp -R examples "$package_root/"
 
           archive="$PWD/dist/onda-$version-${{ matrix.platform }}-${{ matrix.arch }}.tar.xz"

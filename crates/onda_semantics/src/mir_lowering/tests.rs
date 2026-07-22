@@ -4,6 +4,12 @@ use onda_mir::{format_program, CompileConfig, Function, FunctionKind, Program};
 use super::*;
 use crate::{analyze, analyze_with_options};
 
+/// Test-only raw access for structural assertions. Production callers retain
+/// the proof-carrying `OptimizedProgram` returned by semantic lowering.
+fn lower_test_program(program: &TypedProgram) -> Result<Program, Vec<MirLoweringError>> {
+    lower_program_to_optimized_mir(program).map(onda_mir::OptimizedProgram::into_program)
+}
+
 fn validate(program: &Program) -> Result<(), Vec<onda_mir::ValidationError>> {
     // SAFETY: these tests inspect MIR produced by this module or construct
     // explicit producer fixtures whose unchecked accesses are intentional.
@@ -320,7 +326,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("mixed generic call should analyze");
-    let mir = lower_program_to_mir(&typed).expect("mixed generic call should lower");
+    let mir = lower_test_program(&typed).expect("mixed generic call should lower");
     validate(&mir).expect("mixed generic MIR should validate");
 
     let choose = mir
@@ -354,7 +360,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("literal call should analyze");
-    let mir = lower_program_to_mir(&typed).expect("literal call should lower");
+    let mir = lower_test_program(&typed).expect("literal call should lower");
     validate(&mir).expect("literal-call MIR should validate");
 
     let take_id = FunctionId::new(
@@ -400,7 +406,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("named slice call should analyze");
-    let mir = lower_program_to_mir(&typed).expect("named slice call should lower");
+    let mir = lower_test_program(&typed).expect("named slice call should lower");
     validate(&mir).expect("named slice MIR should validate");
 
     let mark_id = FunctionId::new(
@@ -447,7 +453,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("named tuple call should analyze");
-    let mir = lower_program_to_mir(&typed).expect("named tuple call should lower");
+    let mir = lower_test_program(&typed).expect("named tuple call should lower");
     validate(&mir).expect("named tuple MIR should validate");
 
     let mark_id = FunctionId::new(
@@ -498,7 +504,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("named indexed-struct call should analyze");
-    let mir = lower_program_to_mir(&typed).expect("named indexed-struct call should lower");
+    let mir = lower_test_program(&typed).expect("named indexed-struct call should lower");
     validate(&mir).expect("named indexed-struct MIR should validate");
 
     let mark_id = FunctionId::new(
@@ -541,7 +547,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("defaulted named call should analyze");
-    let mir = lower_program_to_mir(&typed).expect("defaulted named call should lower");
+    let mir = lower_test_program(&typed).expect("defaulted named call should lower");
     validate(&mir).expect("defaulted named-call MIR should validate");
 
     let function_id = |expected: &str| {
@@ -860,7 +866,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("tuple parameter should lower");
+    let mir = lower_test_program(&typed).expect("tuple parameter should lower");
     validate(&mir).expect("tuple-parameter MIR should validate");
 
     let combine = mir
@@ -905,7 +911,7 @@ sample:
         panic!("bump should begin with an assignment");
     };
     *target = AssignTarget::Var("value".to_owned());
-    let mir = lower_program_to_mir(&typed).expect("mutable scalar parameter should lower");
+    let mir = lower_test_program(&typed).expect("mutable scalar parameter should lower");
     validate(&mir).expect("mutable scalar-parameter MIR should validate");
 
     let bump = mir
@@ -1002,7 +1008,7 @@ sample:
         panic!("bump should begin with an assignment");
     };
     *target = AssignTarget::Var("values".to_owned());
-    let mir = lower_program_to_mir(&typed).expect("mutable tuple parameter should lower");
+    let mir = lower_test_program(&typed).expect("mutable tuple parameter should lower");
     validate(&mir).expect("mutable tuple-parameter MIR should validate");
 
     let bump = mir
@@ -1155,7 +1161,7 @@ sample 2 { out1 = voice() }
         Some(2)
     );
 
-    let mir = lower_program_to_mir(&typed).expect("oversampled proc should lower");
+    let mir = lower_test_program(&typed).expect("oversampled proc should lower");
     validate(&mir).expect("lowered MIR should validate");
     assert!(mir
         .functions
@@ -1179,7 +1185,7 @@ sample 2:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("top-level oversampling should lower");
+    let mir = lower_test_program(&typed).expect("top-level oversampling should lower");
     validate(&mir).expect("top-level oversampling MIR should validate");
 
     assert_eq!(
@@ -1230,7 +1236,7 @@ sample {factor} {{
         );
         let parsed = parse_program(&source).expect("source should parse");
         let typed = analyze(parsed).expect("source should analyze");
-        let mir = lower_program_to_mir(&typed).expect("oversampling should lower");
+        let mir = lower_test_program(&typed).expect("oversampling should lower");
         validate(&mir).expect("oversampling MIR should validate");
 
         let process = &mir.functions[mir.entry_points.process.index()];
@@ -1282,7 +1288,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("processor oversampling should lower");
+    let mir = lower_test_program(&typed).expect("processor oversampling should lower");
     validate(&mir).expect("processor oversampling MIR should validate");
 
     let step = mir
@@ -1404,7 +1410,7 @@ block:
         },
     )
     .expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("complete scalar program should lower");
+    let mir = lower_test_program(&typed).expect("complete scalar program should lower");
     validate(&mir).expect("complete MIR should validate");
 
     assert_eq!(mir.config.sample_rate, 44_100.0);
@@ -1466,7 +1472,7 @@ block:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("segmented process source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("segmented process should lower");
+    let mir = lower_test_program(&typed).expect("segmented process should lower");
     validate(&mir).expect("segmented process MIR should validate");
 
     let process = &mir.functions[mir.entry_points.process.index()];
@@ -1607,7 +1613,7 @@ block:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("fixed array surfaces should lower");
+    let mir = lower_test_program(&typed).expect("fixed array surfaces should lower");
     validate(&mir).expect("interface array MIR should validate");
 
     assert_eq!(mir.interface.inputs.len(), 1);
@@ -1662,7 +1668,7 @@ block:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("control-output source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("control-output source should lower");
+    let mir = lower_test_program(&typed).expect("control-output source should lower");
     validate(&mir).expect("control-output MIR should validate");
 
     let process = &mir.functions[mir.entry_points.process.index()];
@@ -1693,7 +1699,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("output initialization source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("output initialization should lower");
+    let mir = lower_test_program(&typed).expect("output initialization should lower");
     validate(&mir).expect("output initialization MIR should validate");
 
     let dump = format_program(&mir);
@@ -1740,7 +1746,7 @@ block:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("dynamic interface views should analyze");
-    let mir = lower_program_to_mir(&typed).expect("dynamic interface views should lower");
+    let mir = lower_test_program(&typed).expect("dynamic interface views should lower");
     validate(&mir).expect("dynamic interface MIR should validate");
 
     let pick = mir
@@ -1838,7 +1844,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("kins alias source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("kins alias source should lower");
+    let mir = lower_test_program(&typed).expect("kins alias source should lower");
     validate(&mir).expect("kins alias MIR should validate");
 
     let dump = format_program(&mir);
@@ -1863,7 +1869,7 @@ sample 2:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("oversampled dynamic ports should analyze");
-    let mir = lower_program_to_mir(&typed).expect("oversampled dynamic ports should lower");
+    let mir = lower_test_program(&typed).expect("oversampled dynamic ports should lower");
     validate(&mir).expect("oversampled dynamic port MIR should validate");
 
     let dump = format_program(&mir);
@@ -1896,7 +1902,7 @@ sample 2:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("oversampled array ports should analyze");
-    let mir = lower_program_to_mir(&typed).expect("oversampled array ports should lower");
+    let mir = lower_test_program(&typed).expect("oversampled array ports should lower");
     validate(&mir).expect("oversampled array port MIR should validate");
 
     let dump = format_program(&mir);
@@ -1922,7 +1928,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed)
+    let mir = lower_test_program(&typed)
         .expect("semantic monomorphization should make the signature concrete");
     let dump = format_program(&mir);
     assert!(dump.contains("identity.__mono__scalar_f64"));
@@ -1956,7 +1962,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("scalar event should lower");
+    let mir = lower_test_program(&typed).expect("scalar event should lower");
     validate(&mir).expect("event MIR should validate");
 
     assert_eq!(mir.interface.events.len(), 1);
@@ -1992,7 +1998,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("fixed event array should lower");
+    let mir = lower_test_program(&typed).expect("fixed event array should lower");
     validate(&mir).expect("event-array MIR should validate");
 
     let event = &mir.interface.events[0];
@@ -2035,7 +2041,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("primitive slices should lower");
+    let mir = lower_test_program(&typed).expect("primitive slices should lower");
     validate(&mir).expect("slice MIR should validate");
 
     let total = mir
@@ -2090,7 +2096,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("local arrays should lower");
+    let mir = lower_test_program(&typed).expect("local arrays should lower");
     validate(&mir).expect("local-array MIR should validate");
 
     let function = mir
@@ -2187,7 +2193,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("buffer parameters should lower");
+    let mir = lower_test_program(&typed).expect("buffer parameters should lower");
     validate(&mir).expect("buffer-parameter MIR should validate");
 
     let touch = mir
@@ -2259,7 +2265,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("data structs should lower");
+    let mir = lower_test_program(&typed).expect("data structs should lower");
     validate(&mir).expect("data-struct MIR should validate");
 
     for state in [
@@ -2339,7 +2345,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("struct-array aliases should lower");
+    let mir = lower_test_program(&typed).expect("struct-array aliases should lower");
     validate(&mir).expect("struct-array alias MIR should validate");
 
     for (name, len) in [
@@ -2394,7 +2400,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("nested struct arrays should lower");
+    let mir = lower_test_program(&typed).expect("nested struct arrays should lower");
     validate(&mir).expect("nested struct-array MIR should validate");
 
     for (name, len) in [("single.leaves.value", 2), ("single.leaves.bins", 4)] {
@@ -2460,7 +2466,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed)
+    let mir = lower_test_program(&typed)
         .expect("direct indexed struct and proc-array calls should lower");
     validate(&mir).expect("direct indexed call MIR should validate");
 
@@ -2521,7 +2527,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("forwarded proc arrays should lower");
+    let mir = lower_test_program(&typed).expect("forwarded proc arrays should lower");
     validate(&mir).expect("forwarded proc-array MIR should validate");
 
     let active_name = runtime_proc_array_active_symbol("voices");
@@ -2610,7 +2616,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("event slices should lower");
+    let mir = lower_test_program(&typed).expect("event slices should lower");
     validate(&mir).expect("event slice MIR should validate");
     let event = &mir.interface.events[0];
     assert!(matches!(
@@ -2653,7 +2659,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("external buffer should lower");
+    let mir = lower_test_program(&typed).expect("external buffer should lower");
     validate(&mir).expect("buffer MIR should validate");
 
     assert_eq!(mir.interface.buffers.len(), 2);
@@ -2691,7 +2697,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("tuple state should lower");
+    let mir = lower_test_program(&typed).expect("tuple state should lower");
     validate(&mir).expect("tuple-state MIR should validate");
 
     assert!(mir.state.iter().any(|state| state.name == "pair.__0"));
@@ -2720,7 +2726,7 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_mir(&typed).expect("primitive arrays should lower");
+    let mir = lower_test_program(&typed).expect("primitive arrays should lower");
     validate(&mir).expect("array MIR should validate");
 
     let taps = mir

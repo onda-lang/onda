@@ -3,7 +3,7 @@
 ## Current contract
 
 Onda owns one backend-neutral processor ABI, documented in
-[`docs/PROCESSOR_ABI.md`](../PROCESSOR_ABI.md). MIR and the logical processor interface do not change
+[`docs/processor-abi.md`](../processor-abi.md). MIR and the logical processor interface do not change
 with the target:
 
 - LLVM emits optimized relocatable objects for native and WebAssembly target triples. Onda does not

@@ -33,7 +33,7 @@ for inspection; the browser compiler and test corpus use MessagePack as the prod
 The generated module exports `memory`, `__heap_base`, `onda_init(params_ptr, state_ptr)`, the
 11-argument processor `onda_process`, and one `onda_event_N` function per declared event. These are
 the complete wasm32-module profile of the generic
-[`Onda processor ABI`](../../docs/PROCESSOR_ABI.md), not a Web Audio-specific interface. The host
+[`Onda processor ABI`](../../docs/processor-abi.md), not a Web Audio-specific interface. The host
 owns allocation in linear memory. Metadata contains resolved target/integration facts,
 state/parameter layouts, state-backed control-output offsets, flattened audio-port channels, packed
 event payload layouts, and all exported ABI names.
@@ -134,14 +134,16 @@ npm run test:corpus
 compiles real Onda sources, runs LLVM/MIR-Binaryen render parity through MessagePack, and verifies
 exact FMA against Rust's `mul_add`; `npm run test:parity` selects only the differential renderer.
 That renderer covers full/segmented/zero-frame scheduling, events, snapshots/restores, numeric edge
-semantics, buffers, slices, processor arrays, and oversampling. The source-driven
+semantics, buffers, slices, processor arrays, and oversampling. Strict arithmetic scenarios compare
+raw f32 output bits and f64 snapshot storage, with NaN payloads treated as unspecified; only scenarios
+that exercise approximate transcendental kernels use numeric tolerances. The source-driven
 and parity commands require the native Rust/LLVM Onda build. `npm run test:corpus` continuously
 discovers every `.onda` program under `examples/` and this package's positive fixtures, compiles each
 through the CLI to current-schema MIR, lowers it with Binaryen, and validates the generated Wasm. It also
 requires the native build. `npm test` does not.
 
 Run `npm run bench` for the reproducible development comparison documented in
-[`docs/BACKEND_BENCHMARKS.md`](../../docs/BACKEND_BENCHMARKS.md). Those measurements validate output
+[`docs/backend-benchmarks.md`](../../docs/backend-benchmarks.md). Those measurements validate output
 and compare native LLVM JIT/processing with Binaryen compilation, Wasm instantiation, and Wasm
 processing; they require the native Rust/LLVM Onda build and are not universal browser-performance
 claims. The benchmark fails by default if Binaryen/Wasm beats LLVM in any checked scenario; the

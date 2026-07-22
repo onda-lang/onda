@@ -83,4 +83,3 @@ Once the smaller examples feel familiar, explore:
 - [`schroeder_reverb_impulse.onda`]({{ '/playground/?example=larger-patches/schroeder_reverb_impulse.onda' | relative_url }}) for a classic reverberator structure.
 - [`matrix_feedback_blipblop.onda`]({{ '/playground/?example=larger-patches/matrix_feedback_blipblop.onda' | relative_url }}) and its `lush` and `chaos` variants for complex feedback systems.
 - [`cybernetic_feedback_graph.onda`]({{ '/playground/?example=larger-patches/cybernetic_feedback_graph.onda' | relative_url }}) for a graph-heavy generative patch.
-

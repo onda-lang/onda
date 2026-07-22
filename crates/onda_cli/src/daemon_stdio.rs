@@ -91,10 +91,14 @@ enum Request {
     },
     RunRender {
         path: String,
+        #[serde(default)]
+        include_sample_bits: bool,
     },
     RunRenderSegments {
         path: String,
         segments: Vec<ProcessSegmentRequest>,
+        #[serde(default)]
+        include_sample_bits: bool,
     },
     RunTriggerEvent {
         path: String,
@@ -262,11 +266,18 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                     .map_err(|diag| diagnostic_string("run_set_param failed", &diag))
             })
             .map(|_| json!({ "status": "ok" })),
-        Request::RunRender { path } => session
+        Request::RunRender {
+            path,
+            include_sample_bits,
+        } => session
             .render_run_block(path)
-            .map(rendered_channels_json)
+            .map(|channels| rendered_channels_json(channels, include_sample_bits))
             .map_err(|diag| diagnostic_string("run_render failed", &diag)),
-        Request::RunRenderSegments { path, segments } => session
+        Request::RunRenderSegments {
+            path,
+            segments,
+            include_sample_bits,
+        } => session
             .run_mut(path)
             .ok_or_else(|| "run is not active".to_owned())
             .and_then(|run| {
@@ -277,7 +288,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 run.render_block_segments(&segments)
                     .map_err(|diag| diagnostic_string("run_render_segments failed", &diag))
             })
-            .map(rendered_channels_json),
+            .map(|channels| rendered_channels_json(channels, include_sample_bits)),
         Request::RunTriggerEvent { path, name, values } => session
             .run_mut(path)
             .ok_or_else(|| "run is not active".to_owned())
@@ -307,12 +318,27 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
     }
 }
 
-fn rendered_channels_json(channels: Vec<Vec<f32>>) -> Value {
+fn rendered_channels_json(channels: Vec<Vec<f32>>, include_sample_bits: bool) -> Value {
     let frames = channels.first().map(Vec::len).unwrap_or(0);
-    json!({
+    let channel_bits = include_sample_bits.then(|| {
+        channels
+            .iter()
+            .map(|channel| {
+                channel
+                    .iter()
+                    .map(|sample| sample.to_bits())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut result = json!({
         "frames": frames,
         "channels": channels,
-    })
+    });
+    if let Some(channel_bits) = channel_bits {
+        result["channel_bits"] = json!(channel_bits);
+    }
+    result
 }
 
 fn diagnostic_json(diag: &Diagnostic) -> Value {
@@ -449,6 +475,7 @@ mod tests {
                 id: Some(3),
                 request: Request::RunRender {
                     path: main.to_string_lossy().into_owned(),
+                    include_sample_bits: true,
                 },
             },
         );
@@ -456,6 +483,11 @@ mod tests {
         let result = render.result.expect("render result");
         assert_eq!(result["frames"].as_u64(), Some(512));
         assert_eq!(result["channels"].as_array().map(Vec::len), Some(1));
+        assert_eq!(result["channel_bits"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            result["channel_bits"][0][0].as_u64(),
+            Some(0.25_f32.to_bits().into())
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -481,7 +513,16 @@ mod tests {
         };
 
         assert!(request(&mut session, Request::RunStart { path: path.clone() }).ok);
-        assert!(request(&mut session, Request::RunRender { path: path.clone() }).ok);
+        assert!(
+            request(
+                &mut session,
+                Request::RunRender {
+                    path: path.clone(),
+                    include_sample_bits: false,
+                }
+            )
+            .ok
+        );
         let snapshot = request(&mut session, Request::RunSnapshot { path: path.clone() });
         assert!(snapshot.ok, "snapshot response: {:?}", snapshot.error);
         let bytes = snapshot.result.expect("snapshot result")["bytes"]
@@ -491,7 +532,13 @@ mod tests {
             .map(|byte| byte.as_u64().expect("byte") as u8)
             .collect::<Vec<_>>();
 
-        let advanced = request(&mut session, Request::RunRender { path: path.clone() });
+        let advanced = request(
+            &mut session,
+            Request::RunRender {
+                path: path.clone(),
+                include_sample_bits: false,
+            },
+        );
         let advanced_first = advanced.result.expect("advanced render")["channels"][0][0]
             .as_f64()
             .expect("advanced sample");
@@ -503,7 +550,13 @@ mod tests {
             },
         );
         assert!(restored.ok, "restore response: {:?}", restored.error);
-        let replayed = request(&mut session, Request::RunRender { path });
+        let replayed = request(
+            &mut session,
+            Request::RunRender {
+                path,
+                include_sample_bits: false,
+            },
+        );
         let replayed_first = replayed.result.expect("replayed render")["channels"][0][0]
             .as_f64()
             .expect("replayed sample");

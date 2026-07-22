@@ -16,6 +16,7 @@ import { SUPPORTED_MIR_SCHEMA_VERSION } from "../dist/backend/constants.js";
 import { OndaBinaryenError } from "../dist/backend/errors.js";
 import { defaultFrontendInput } from "#onda-frontend-loader";
 import { ONDA_VERSION } from "../dist/version.js";
+import { MAX_BLOCK_SIZE } from "./config.js";
 
 export const MIR_SCHEMA_VERSION = SUPPORTED_MIR_SCHEMA_VERSION;
 export { ONDA_VERSION };
@@ -297,8 +298,8 @@ function normalizeCompileOptions(options) {
   if (typeof sampleRate !== "number" || !Number.isFinite(sampleRate) || sampleRate <= 0) {
     throw configurationError("sampleRate must be finite and greater than zero");
   }
-  if (!Number.isInteger(blockSize) || blockSize <= 0 || blockSize > 0x7fff_ffff) {
-    throw configurationError("blockSize must be between 1 and 2147483647 frames");
+  if (!Number.isInteger(blockSize) || blockSize <= 0 || blockSize > MAX_BLOCK_SIZE) {
+    throw configurationError(`blockSize must be between 1 and ${MAX_BLOCK_SIZE} frames`);
   }
   if (
     options.codegen !== undefined

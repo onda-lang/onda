@@ -58,6 +58,7 @@ const scenarios = [
       "examples/foundations/dual_osc_oversampled_8x.onda",
     ),
     blocks: 3,
+    comparison: "approximate",
   },
   {
     name: "oversampled saturator input interpolation",
@@ -66,6 +67,7 @@ const scenarios = [
       "examples/processors-and-graphs/saw_filter_saturator.onda",
     ),
     blocks: 3,
+    comparison: "approximate",
   },
   {
     name: "processor-array initialization, indexed dispatch, and block updates",
@@ -74,6 +76,7 @@ const scenarios = [
       "examples/processors-and-graphs/proc_array_init_harmonics.onda",
     ),
     blocks: 3,
+    comparison: "approximate",
   },
   {
     name: "host event dispatch and scalar payload layout",
@@ -113,14 +116,21 @@ const scenarios = [
     blocks: 2,
   },
   {
+    name: "strict float non-finite, signed-zero, and width-rounding behavior",
+    source: join(packageDir, "test/fixtures/strict-float-parity.onda"),
+    actions: [{ kind: "render" }, { kind: "snapshot" }],
+  },
+  {
     name: "complete f32/f64 math intrinsic surface",
     source: join(packageDir, "test/fixtures/math-intrinsics-parity.onda"),
     blocks: 3,
+    comparison: "approximate",
   },
 ];
 
 try {
-  let comparedSamples = 0;
+  let exactSamples = 0;
+  let approximateSamples = 0;
   let maximumAbsoluteError = 0;
 
   for (const [scenarioIndex, scenario] of scenarios.entries()) {
@@ -131,11 +141,13 @@ try {
     const wasm = await renderWasmBlocks(mirPath, scenario);
     const comparison = compareChannels(
       scenario.name,
-      native.channels,
-      wasm.channels,
+      native,
+      wasm,
+      scenario.comparison ?? "exact",
     );
     compareSnapshots(scenario.name, native.snapshots, wasm.snapshots);
-    comparedSamples += comparison.samples;
+    if (comparison.mode === "exact") exactSamples += comparison.samples;
+    else approximateSamples += comparison.samples;
     maximumAbsoluteError = Math.max(
       maximumAbsoluteError,
       comparison.maximumAbsoluteError,
@@ -143,7 +155,7 @@ try {
   }
 
   process.stdout.write(
-    `Verified native LLVM/MIR-Binaryen parity: ${scenarios.length} scenarios, ${comparedSamples} samples, max abs error ${maximumAbsoluteError.toExponential(3)} (abs ${absoluteTolerance}, rel ${relativeTolerance})\n`,
+    `Verified native LLVM/MIR-Binaryen parity: ${scenarios.length} scenarios, ${exactSamples} bit-exact samples, ${approximateSamples} approximate samples, max approximate abs error ${maximumAbsoluteError.toExponential(3)} (abs ${absoluteTolerance}, rel ${relativeTolerance})\n`,
   );
 } finally {
   rmSync(temporary, { recursive: true, force: true });
@@ -175,6 +187,7 @@ async function renderNativeBlocks(scenario) {
   let requestId = 0;
   const request = (body) => daemon.request({ id: ++requestId, ...body });
   const renderedBlocks = [];
+  const renderedBitBlocks = [];
   const snapshots = [];
   let savedSnapshot = null;
   try {
@@ -188,12 +201,17 @@ async function renderNativeBlocks(scenario) {
     for (const action of actions) {
       let response;
       if (action.kind === "render") {
-        response = await request({ command: "run_render", path: source });
+        response = await request({
+          command: "run_render",
+          path: source,
+          include_sample_bits: (scenario.comparison ?? "exact") === "exact",
+        });
       } else if (action.kind === "segments") {
         response = await request({
           command: "run_render_segments",
           path: source,
           segments: action.segments,
+          include_sample_bits: (scenario.comparison ?? "exact") === "exact",
         });
       } else if (action.kind === "event") {
         await request({
@@ -221,16 +239,26 @@ async function renderNativeBlocks(scenario) {
       } else {
         throw new Error(`unknown native parity action '${String(action.kind)}'`);
       }
-      const { channels, frames } = response.result;
-      if (!Array.isArray(channels) || frames !== blockSize) {
+      const { channels, channel_bits: channelBits, frames } = response.result;
+      const exact = (scenario.comparison ?? "exact") === "exact";
+      if (
+        !Array.isArray(channels) ||
+        frames !== blockSize ||
+        (exact && !Array.isArray(channelBits))
+      ) {
         throw new Error("native LLVM render returned an invalid block shape");
       }
       renderedBlocks.push(channels);
+      if (exact) renderedBitBlocks.push(channelBits);
     }
   } finally {
     await daemon.close();
   }
-  return { channels: concatenateBlocks(renderedBlocks), snapshots };
+  return {
+    channels: concatenateBlocks(renderedBlocks),
+    channelBits: concatenateBlocks(renderedBitBlocks),
+    snapshots,
+  };
 }
 
 function createNativeDaemon() {
@@ -353,6 +381,7 @@ async function renderWasmBlocks(mirPath, scenario) {
       bufferSampleRates,
     );
   const renderedBlocks = [];
+  const renderedBitBlocks = [];
   const snapshots = [];
   let savedSnapshot = null;
   for (const action of scenarioActions(scenario)) {
@@ -404,8 +433,25 @@ async function renderWasmBlocks(mirPath, scenario) {
         ),
       ),
     );
+    if ((scenario.comparison ?? "exact") === "exact") {
+      renderedBitBlocks.push(
+        outputPointers.map((pointer, index) => {
+          const scalar = outputChannels[index].scalar;
+          if (scalar !== "f32") {
+            throw new Error(
+              `bit-exact parity requires f32 outputs, got '${scalar}'`,
+            );
+          }
+          return [...new Uint32Array(memory.buffer, pointer, blockSize)];
+        }),
+      );
+    }
   }
-  return { channels: concatenateBlocks(renderedBlocks), snapshots };
+  return {
+    channels: concatenateBlocks(renderedBlocks),
+    channelBits: concatenateBlocks(renderedBitBlocks),
+    snapshots,
+  };
 }
 
 function scenarioActions(scenario) {
@@ -608,7 +654,56 @@ function bufferChannelCount(buffer) {
   );
 }
 
-function compareChannels(label, nativeChannels, wasmChannels) {
+function compareChannels(label, native, wasm, mode) {
+  if (mode === "exact") {
+    return compareExactChannels(label, native.channelBits, wasm.channelBits);
+  }
+  if (mode !== "approximate") {
+    throw new Error(`${label}: unknown comparison mode '${String(mode)}'`);
+  }
+  return compareApproximateChannels(label, native.channels, wasm.channels);
+}
+
+function compareExactChannels(label, nativeChannels, wasmChannels) {
+  if (nativeChannels.length !== wasmChannels.length) {
+    throw new Error(
+      `${label}: channel count differs (LLVM ${nativeChannels.length}, Wasm ${wasmChannels.length})`,
+    );
+  }
+  let samples = 0;
+  for (let channel = 0; channel < nativeChannels.length; channel += 1) {
+    const native = nativeChannels[channel];
+    const wasm = wasmChannels[channel];
+    if (native.length !== wasm.length) {
+      throw new Error(
+        `${label}: channel ${channel} length differs (LLVM ${native.length}, Wasm ${wasm.length})`,
+      );
+    }
+    for (let frame = 0; frame < native.length; frame += 1) {
+      const expected = native[frame] >>> 0;
+      const actual = wasm[frame] >>> 0;
+      // MIR specifies NaN behavior, but not a canonical sign or payload.
+      if (expected !== actual && !(isF32NaN(expected) && isF32NaN(actual))) {
+        throw new Error(
+          `${label}: sample bits differ at channel ${channel}, frame ${frame} (LLVM ${hexU32(expected)}, Wasm ${hexU32(actual)})`,
+        );
+      }
+      samples += 1;
+    }
+  }
+  return { mode: "exact", samples, maximumAbsoluteError: 0 };
+}
+
+function isF32NaN(bits) {
+  return (bits & 0x7f80_0000) === 0x7f80_0000 &&
+    (bits & 0x007f_ffff) !== 0;
+}
+
+function hexU32(value) {
+  return `0x${value.toString(16).padStart(8, "0")}`;
+}
+
+function compareApproximateChannels(label, nativeChannels, wasmChannels) {
   if (nativeChannels.length !== wasmChannels.length) {
     throw new Error(
       `${label}: channel count differs (LLVM ${nativeChannels.length}, Wasm ${wasmChannels.length})`,
@@ -645,7 +740,7 @@ function compareChannels(label, nativeChannels, wasmChannels) {
       maximumAbsoluteError = Math.max(maximumAbsoluteError, absoluteError);
     }
   }
-  return { samples, maximumAbsoluteError };
+  return { mode: "approximate", samples, maximumAbsoluteError };
 }
 
 function compareSnapshots(label, nativeSnapshots, wasmSnapshots) {

@@ -693,8 +693,10 @@ sample:
   out1 = relay(voices, 0)
 "#;
         let typed = typed_program(source);
-        let mir = onda_semantics::lower_program_to_mir(&typed).expect("source should lower to MIR");
+        let mir = onda_semantics::lower_program_to_optimized_mir(&typed)
+            .expect("source should lower to MIR");
         assert!(mir
+            .as_program()
             .state
             .iter()
             .any(|slot| { slot.persistence == onda_mir::StatePersistence::InstanceScratch }));

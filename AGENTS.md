@@ -1,5 +1,5 @@
-Read README.md, docs/INFO.md.
+Read README.md, docs/info.md.
 
-Only read docs/SYNTAX.md if the request is about the language use or design.
+Only read docs/syntax.md if the request is about the language use or design.
 
 Ignore all concerns about backward compatibility.

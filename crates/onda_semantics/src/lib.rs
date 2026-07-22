@@ -63,10 +63,7 @@ use expr_validation::*;
 use generic_specialization::*;
 pub(crate) use internal_names::runtime_proc_array_active_symbol;
 use io_state_helpers::*;
-pub use mir_lowering::{
-    lower_program_to_mir, lower_program_to_optimized_mir, lower_scalar_user_functions_to_mir,
-    MirLoweringError,
-};
+pub use mir_lowering::{lower_program_to_optimized_mir, MirLoweringError};
 use namespacing::*;
 pub use pipeline::{analyze, analyze_with_options, lower_graphs_for_inspection_with_options};
 use port_coercion::*;

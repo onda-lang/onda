@@ -109,4 +109,3 @@ Offline rendering uses the same run pipeline without opening an audio device:
 ```bash
 onda run render sine.onda --output first.wav --dur 5 --set freq=330
 ```
-

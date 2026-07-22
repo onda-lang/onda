@@ -90,10 +90,13 @@ impl fmt::Display for MirLoweringError {
 
 impl std::error::Error for MirLoweringError {}
 
-/// Lowers the reachable closure of specialized user functions whose storage
-/// uses scalars, scalar tuples, and primitive slices into `mir`.
+/// Low-level transactional helper for complete-program lowering and focused
+/// MIR tests. It lowers the reachable closure of specialized user functions
+/// whose storage uses scalars, scalar tuples, and primitive slices into `mir`.
 ///
-/// This is the first production migration boundary. It supports scalar value
+/// Production callers should use [`lower_program_to_optimized_mir`], which
+/// returns a complete program with its validation and optimization proof.
+/// This helper supports scalar value
 /// parameters, primitive slice parameters, scalarized tuple parameters/results,
 /// resolved direct calls (including named/default arguments), tuple locals/destructuring/indexing,
 /// scalar locals, casts, arithmetic, comparisons, intrinsics, short-circuit
@@ -103,7 +106,7 @@ impl std::error::Error for MirLoweringError {}
 ///
 /// The operation is transactional: on error, types, immutable constant data,
 /// source files, and functions in `mir` are left unchanged.
-pub fn lower_scalar_user_functions_to_mir(
+fn lower_scalar_user_functions_to_mir(
     program: &TypedProgram,
     mir: &mut onda_mir::Program,
 ) -> Result<Vec<FunctionId>, Vec<MirLoweringError>> {
@@ -327,15 +330,6 @@ pub fn lower_program_to_optimized_mir(
         .map_err(mir_validation_errors)?;
     let (optimized, _) = onda_mir::optimize(validated).map_err(mir_validation_errors)?;
     Ok(optimized)
-}
-
-/// Compatibility helper for callers that still need an owned MIR schema
-/// value. The returned program is the same optimized canonical unit wrapped by
-/// [`lower_program_to_optimized_mir`].
-pub fn lower_program_to_mir(
-    program: &TypedProgram,
-) -> Result<onda_mir::Program, Vec<MirLoweringError>> {
-    lower_program_to_optimized_mir(program).map(onda_mir::OptimizedProgram::into_program)
 }
 
 fn lower_program_to_raw_mir(

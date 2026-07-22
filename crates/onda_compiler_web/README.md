@@ -47,7 +47,7 @@ This crate deliberately stops at optimized validated MIR transport. DSP Wasm emi
 Wasm math legalization, runtime layout metadata, and AudioWorklet hosting live in the Binaryen
 package and browser example. Backend
 compile/render measurements are documented in
-[`docs/BACKEND_BENCHMARKS.md`](../../docs/BACKEND_BENCHMARKS.md).
+[`docs/backend-benchmarks.md`](../../docs/backend-benchmarks.md).
 
 Application consumers should normally install
 [`@onda-lang/wasm-compiler`](../../packages/onda_wasm_compiler/README.md), which packages this

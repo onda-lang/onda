@@ -10,7 +10,9 @@ fn lower_test_mir(src: &str) -> onda_mir::Program {
         },
     )
     .expect("analysis should succeed");
-    onda_semantics::lower_program_to_mir(&typed).expect("MIR lowering should succeed")
+    onda_semantics::lower_program_to_optimized_mir(&typed)
+        .expect("MIR lowering should succeed")
+        .into_program()
 }
 
 fn assert_mir_scalar_specialization(

@@ -1,6 +1,6 @@
 # Onda examples
 
-The examples are grouped by the same learning path used in the [example cookbook](../docs/EXAMPLES.md).
+The examples are grouped by the same learning path used in the [example cookbook](../docs/examples.md).
 
 | Directory | Contents |
 | --- | --- |

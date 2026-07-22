@@ -339,9 +339,6 @@ The lowering owns:
 - deterministic function specialization by sample-rate/block-size context for contextual `SR`/`BS`
 - source spans and deterministic structural type interning
 
-`onda_semantics::lower_scalar_user_functions_to_mir` remains available as the narrower transactional
-API for focused compiler tests and MIR tooling.
-
 Semantic analysis retains each function's resolved scalar-local table, including declarations that
 only occur inside nested control flow. It also records whether a function produces a value and
 proves that every reachable path in such a function returns; no-result functions therefore do not
@@ -397,7 +394,7 @@ The AOT processor descriptor includes the packed persistent-state segment manife
 snapshot/restore without confusing packed offsets with the target's physical state layout.
 It also records the resolved LLVM pointer width, byte order, data layout, pointer model, and
 relocatable-object integration profile. The logical entry points are specified once in
-[`PROCESSOR_ABI.md`](PROCESSOR_ABI.md); target triples select the platform representation rather than
+[`processor-abi.md`](processor-abi.md); target triples select the platform representation rather than
 creating a separate Wasm ABI.
 
 The former direct `TypedProgram`/frontend-AST-to-LLVM implementation has been removed. Native JIT,
@@ -470,7 +467,7 @@ strict software FMA from its internal pure-Wasm math kernel. It matches one-roun
 semantics without a JavaScript import or allocation, but native LLVM can still select hardware FMA;
 dense per-sample FMA may therefore remain a browser performance limitation rather than a semantic
 mismatch. The reproducible development comparison and its measurement caveats are recorded in
-[the backend benchmark report](BACKEND_BENCHMARKS.md).
+[the backend benchmark report](backend-benchmarks.md).
 
 ## Backend invariants
 

@@ -9,6 +9,7 @@ import {
   createCompiler,
   createProcessorArtifactFiles,
 } from "../src/index.js";
+import { MAX_BLOCK_SIZE } from "../src/config.js";
 
 const HELP = `Usage:
   onda-wasm compile <input.onda> [options]
@@ -144,7 +145,7 @@ function parseCompileArguments(args) {
         result.sampleRate = numberValue(args, ++index, argument);
         break;
       case "--block-size":
-        result.blockSize = integerValue(args, ++index, argument, 1, 0xffff_ffff);
+        result.blockSize = integerValue(args, ++index, argument, 1, MAX_BLOCK_SIZE);
         break;
       case "--optimize-level":
         result.optimizeLevel = integerValue(args, ++index, argument, 0, 4);

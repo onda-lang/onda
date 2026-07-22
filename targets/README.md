@@ -4,7 +4,7 @@ This folder contains checked-in example target-spec TOML files for `onda compile
 
 These are low-level codegen presets only. They do not describe sysroots, SDKs, linkers, or full platform toolchains.
 Every target emits a relocatable object plus the generic Onda processor descriptor documented in
-[`docs/PROCESSOR_ABI.md`](../docs/PROCESSOR_ABI.md); the consuming application owns final linking.
+[`docs/processor-abi.md`](../docs/processor-abi.md); the consuming application owns final linking.
 
 Examples:
 
