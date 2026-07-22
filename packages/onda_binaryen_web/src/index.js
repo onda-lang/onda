@@ -1816,6 +1816,7 @@ class MirCompiler {
       rawIndex,
       () => this.compileBufferParamTotalScalarLen(data.parameter, context),
       data.bounds,
+      true,
     );
     return this.module.i32.add(
       this.loadBufferParamComponent(data.parameter, 0, "i32", context),
@@ -1848,6 +1849,7 @@ class MirCompiler {
       rawIndex,
       () => this.compileBufferTotalScalarLen(data.buffer),
       data.bounds,
+      true,
     );
     const pointer = this.loadBufferTableValue(
       POINTER_GLOBALS.buffers,
@@ -2186,6 +2188,7 @@ class MirCompiler {
         () => this.compileValue(source.data.channel, context),
         channels,
         "clamp",
+        true,
       );
       return [
         this.module.i32.add(
@@ -2218,6 +2221,7 @@ class MirCompiler {
         () => this.compileValue(source.data.channel, context),
         channels,
         "clamp",
+        true,
       );
       return [
         this.module.i32.add(
@@ -2908,16 +2912,14 @@ class MirCompiler {
     this.fail(`unknown bounds mode '${String(bounds)}'`);
   }
 
-  compileDynamicBoundedIndex(index, length, bounds) {
+  compileDynamicBoundedIndex(index, length, bounds, clampLengthKnownPositive = false) {
     if (bounds === "unchecked") {
       return index();
     }
     if (bounds === "clamp") {
       const maximum = () =>
         this.module.i32.sub(length(), this.module.i32.const(1));
-      return this.module.if(
-        this.module.i32.le_s(length(), this.module.i32.const(0)),
-        this.module.unreachable(),
+      const clamped = () =>
         this.module.select(
           this.module.i32.lt_s(index(), this.module.i32.const(0)),
           this.module.i32.const(0),
@@ -2926,7 +2928,12 @@ class MirCompiler {
             maximum(),
             index(),
           ),
-        ),
+        );
+      if (clampLengthKnownPositive) return clamped();
+      return this.module.if(
+        this.module.i32.le_s(length(), this.module.i32.const(0)),
+        this.module.unreachable(),
+        clamped(),
       );
     }
     if (bounds === "trap") {

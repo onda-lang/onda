@@ -609,46 +609,34 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
         throw new Error(`Onda buffer '${buffer.name}' has an invalid sample rate`);
       }
-      let frames;
-      let channels;
-      let pointer;
       if (length === 0) {
-        if (
-          (descriptor.frames !== undefined && descriptor.frames !== 0)
-          || (descriptor.channels !== undefined && descriptor.channels !== 0)
-        ) {
-          throw new Error(
-            `Onda buffer '${buffer.name}' empty data requires zero frames and channels`,
-          );
-        }
-        frames = 0;
-        channels = 0;
-        pointer = 0;
-      } else {
-        const declaredChannels = Number(buffer.static_channels ?? 0);
-        channels = Number(descriptor.channels ?? declaredChannels);
-        if (!Number.isInteger(channels) || channels <= 0) {
-          throw new Error(`Onda buffer '${buffer.name}' requires channels > 0`);
-        }
-        if (declaredChannels && channels !== declaredChannels) {
-          throw new Error(
-            `Onda buffer '${buffer.name}' requires ${declaredChannels} channel(s)`,
-          );
-        }
-        frames = Number(descriptor.frames ?? length / channels);
-        if (
-          !Number.isInteger(frames)
-          || frames <= 0
-          || frames * channels !== length
-        ) {
-          throw new Error(
-            `Onda buffer '${buffer.name}' data does not match its frame/channel shape`,
-          );
-        }
-        const elementSize = this.scalarByteSize(buffer.scalar);
-        pointer = this.alloc(length * elementSize, elementSize);
-        this.writeScalarValues(pointer, buffer.scalar, data, length);
+        throw new Error(
+          `Onda buffer '${buffer.name}' requires non-empty bound data`,
+        );
       }
+      const declaredChannels = Number(buffer.static_channels ?? 0);
+      const channels = Number(descriptor.channels ?? declaredChannels);
+      if (!Number.isInteger(channels) || channels <= 0) {
+        throw new Error(`Onda buffer '${buffer.name}' requires channels > 0`);
+      }
+      if (declaredChannels && channels !== declaredChannels) {
+        throw new Error(
+          `Onda buffer '${buffer.name}' requires ${declaredChannels} channel(s)`,
+        );
+      }
+      const frames = Number(descriptor.frames ?? length / channels);
+      if (
+        !Number.isInteger(frames)
+        || frames <= 0
+        || frames * channels !== length
+      ) {
+        throw new Error(
+          `Onda buffer '${buffer.name}' data does not match its frame/channel shape`,
+        );
+      }
+      const elementSize = this.scalarByteSize(buffer.scalar);
+      const pointer = this.alloc(length * elementSize, elementSize);
+      this.writeScalarValues(pointer, buffer.scalar, data, length);
       const view = this.memoryView();
       view.setUint32(this.bufferPointersPtr + bufferId * 4, pointer, true);
       view.setInt32(this.bufferFramesPtr + bufferId * 4, frames, true);

@@ -1174,19 +1174,27 @@ pub unsafe extern "C" fn onda_bind_buffer(
     sample_rate: f32,
     elem_type: i32,
 ) -> i32 {
-    if instance.is_null() || index < 0 || frames < 0 || channels < 0 {
+    if instance.is_null() || index < 0 {
         return -1;
     }
     let Some(elem_ty) = primitive_type_from_i32(elem_type) else {
         return -1;
     };
+    let (ptr, frames, channels) = if sample_rate == 0.0 {
+        (std::ptr::null_mut(), 0, 0)
+    } else {
+        if frames < 0 || channels < 0 {
+            return -1;
+        }
+        (ptr.cast::<u8>(), frames as usize, channels as usize)
+    };
     match unsafe {
         bind_buffer(
             &mut (*instance).inner,
             index as usize,
-            ptr.cast::<u8>(),
-            frames as usize,
-            channels as usize,
+            ptr,
+            frames,
+            channels,
             sample_rate,
             elem_ty,
         )

@@ -146,7 +146,10 @@ host interaction use explicit operations:
 - structured `if`, `loop`, `break`, `continue`, and return
 
 Indexed operations carry `Clamp`, `Trap`, or `Unchecked` bounds behavior. A backend never infers
-safety semantics from a function name.
+safety semantics from a function name. Runtime and raw-processor ABI validation guarantee that
+every bound external buffer has positive dimensions, so backends implement external-buffer Clamp
+without a redundant empty-range branch. Empty slices remain valid values, but indexed access to one
+traps because there is no element to clamp to.
 
 `make_slice` applies its bounds mode to the complete `(start, len)` range. Clamp normalizes the start
 to `0..=source_len`, negative lengths to zero, and the length to the remaining range. Trap rejects an

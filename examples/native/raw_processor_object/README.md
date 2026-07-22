@@ -150,9 +150,9 @@ descriptor count or storage size is zero:
 - an event payload when that event's `payload_size_bytes == 0`.
 
 When a surface is declared, its table is required even if the application considers it unused. In
-particular, a non-empty `metadata.buffers` list requires all four parallel tables. An empty
-individual buffer binding uses a null data-pointer entry and zero frame/channel entries, rather
-than null buffer tables. Every declared input and output channel must likewise have valid
+particular, a non-empty `metadata.buffers` list requires all four parallel tables and every entry
+must identify nonempty bound storage with a non-null pointer, positive frame/channel counts, and a
+finite positive sample rate. Every declared input and output channel must likewise have valid
 compile-block storage.
 
 The calling application also owns ordinary final-link dependencies and any thread-local

@@ -1307,7 +1307,7 @@ sample:
 }
 
 #[test]
-fn c_api_accepts_canonical_empty_buffer_bindings() {
+fn c_api_zero_sample_rate_or_null_zero_shape_unbinds_the_buffer() {
     unsafe {
         let program = compile_program(
             r#"
@@ -1339,8 +1339,37 @@ sample { out1 = 0.25 }
             onda_bind_buffer(instance.0, 0, std::ptr::null_mut(), 0, 0, 48_000.0, 0,),
             0
         );
+        assert_eq!(onda_process_checked(instance.0, 512), -2);
+
+        let mut samples = [1.0_f32];
+        assert_eq!(
+            onda_bind_buffer(
+                instance.0,
+                0,
+                samples.as_mut_ptr().cast::<c_void>(),
+                1,
+                1,
+                48_000.0,
+                0,
+            ),
+            0
+        );
         assert_eq!(onda_process_checked(instance.0, 512), 0);
         assert!(output.iter().all(|sample| (*sample - 0.25).abs() < 1e-6));
+
+        assert_eq!(
+            onda_bind_buffer(
+                instance.0,
+                0,
+                samples.as_mut_ptr().cast::<c_void>(),
+                -1,
+                -1,
+                0.0,
+                0,
+            ),
+            0
+        );
+        assert_eq!(onda_prepare_unchecked_process(instance.0), -2);
 
         assert_eq!(
             onda_bind_buffer(instance.0, 0, std::ptr::null_mut(), 1, 1, 48_000.0, 0,),

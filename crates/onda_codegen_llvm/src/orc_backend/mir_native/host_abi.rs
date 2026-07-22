@@ -176,13 +176,10 @@ pub(super) fn validate_buffer_abi(
                 0,
             ));
         }
-        if frames == 0 && channels == 0 && pointer_is_null {
-            continue;
-        }
         if frames <= 0 || channels <= 0 || pointer_is_null {
             return Err(Diagnostic::runtime(
                 format!(
-                    "runtime buffer {index} must be either non-empty or canonical empty (null pointer, zero frames, zero channels); got pointer_null={pointer_is_null}, {frames} * {channels}"
+                    "runtime buffer {index} must be bound with a non-null pointer and positive dimensions; got pointer_null={pointer_is_null}, {frames} * {channels}"
                 ),
                 0,
                 0,

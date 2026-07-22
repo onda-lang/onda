@@ -49,7 +49,9 @@ After construction, the normal f32 render callback reuses cached Wasm-memory vie
 host-side allocation or memory growth. Full-block f32 inputs and outputs use typed-array bulk copies;
 segmented callbacks and other ABI scalar widths use preallocated typed views with conversion loops
 (i64 input conversion necessarily creates JavaScript `BigInt` values). External buffers are copied
-into Wasm with typed-array bulk operations during construction.
+into Wasm with typed-array bulk operations during construction. Every declared external buffer must
+be supplied with nonempty data; the adapter rejects missing or empty bindings before creating the
+rendering node.
 
 Artifact descriptors and module exports are validated by the shared, compiler-free
 `@onda-lang/processor-abi` package before anything reaches the rendering thread.

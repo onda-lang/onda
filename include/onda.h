@@ -150,9 +150,10 @@ int onda_bind_output(
 
 /* Binds one buffer entry; elem_type must be an ONDA_PRIMITIVE_* value.
    Zero-copy contract: runtime stores ptr and accesses it directly (no internal copy).
-   ptr must remain valid, correctly sized for the declared shape, and at a stable address until
-   this slot is rebound or the instance is destroyed. A required but empty buffer is bound with
-   null + 0 frames + 0 channels; this is distinct from an unbound slot.
+   sample_rate == 0 unbinds the slot regardless of ptr and shape. Null + 0 frames + 0 channels also
+   unbinds the slot, regardless of sample_rate. Otherwise, ptr must be non-null and remain valid,
+   correctly sized for positive frame/channel counts, and at a stable address until this slot is
+   rebound/unbound or the instance is destroyed.
    ptr memory must be writable during processing and naturally aligned for elem_type;
    misaligned bindings are rejected.
    Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */

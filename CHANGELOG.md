@@ -3,9 +3,17 @@
 All notable changes to Onda are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). This changelog starts with the upcoming
-0.5.0 release; earlier releases are available on the
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). This changelog starts with the 0.5.0
+release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
+
+## [0.5.1]
+
+### Fixed
+
+- Made zero-sample-rate runtime buffer bindings explicitly unbind their slots, and required every
+  bound buffer to have a non-null pointer, positive dimensions, and a finite positive sample rate.
+  This also removes redundant empty-range checks from generated external-buffer accesses.
 
 ## [0.5.0]
 
@@ -81,7 +89,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Reworked process entry points around explicit `(start_frame, frames, flags)` segments. Hosts can
   submit arbitrary render-quantum sizes, including zero-frame boundary calls, without changing Onda's
   compile-block scheduling semantics.
-- Tightened host binding validation for element alignment, non-overlap, required empty buffers,
+- Tightened host binding validation for element alignment, non-overlap, required buffers,
   sample-rate compatibility, event payload capacity, and processor descriptor/module consistency.
 - Moved reusable formatting and language-server behavior out of the CLI and into `onda_lsp`.
 - Reorganized examples into foundations, processors and graphs, standard library, buffers, FFT and
@@ -127,4 +135,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
-[0.5.0]: https://github.com/onda-lang/onda/compare/0.4.4...HEAD
+[0.5.1]: https://github.com/onda-lang/onda/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/onda-lang/onda/compare/0.4.4...0.5.0

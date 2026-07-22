@@ -319,6 +319,9 @@ Rules:
 - `buffers N` expands to `buf1..bufN`.
 - Explicit declarations and count shorthand cannot currently be mixed in one `buffers` block.
 - Runtime binding validates element type and channel constraints.
+- A bound buffer always has a non-null pointer, positive frame and channel counts, and a finite
+  positive sample rate. Hosts must not process while a declared buffer is unbound.
+- Binding with a zero sample rate unbinds the buffer; the pointer and dimensions are ignored.
 - Primitive buffer slices are supported with the same slice syntax as arrays.
 
 ### Top-Level Events

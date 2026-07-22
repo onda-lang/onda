@@ -74,41 +74,34 @@ function metadata() {
   };
 }
 
-test("worklet uses canonical null pointers for absent storage and empty buffers", () => {
+test("worklet uses null pointers only for absent processor surfaces", () => {
+  const descriptor = metadata();
+  descriptor.metadata.buffers = [];
   const processor = new Processor({
     processorOptions: {
       wasmBytes: wasm,
-      metadata: metadata(),
-      buffers: { samples: { data: [] } },
+      metadata: descriptor,
     },
   });
 
   assert.equal(processor.paramsPtr, 0);
   assert.equal(processor.statePtr, 0);
-  assert.deepEqual(processor.readBuffer("samples"), {
-    name: "samples",
-    frames: 0,
-    channels: 0,
-    sampleRate: 48_000,
-    data: [],
-  });
-
-  const view = new DataView(processor.memory.buffer);
-  assert.equal(view.getUint32(processor.bufferPointersPtr, true), 0);
-  assert.equal(view.getInt32(processor.bufferFramesPtr, true), 0);
-  assert.equal(view.getInt32(processor.bufferChannelsPtr, true), 0);
+  assert.equal(processor.bufferPointersPtr, 0);
+  assert.equal(processor.bufferFramesPtr, 0);
+  assert.equal(processor.bufferChannelsPtr, 0);
+  assert.equal(processor.bufferSampleRatesPtr, 0);
 });
 
-test("worklet rejects partially empty external-buffer shapes", () => {
+test("worklet rejects empty external-buffer bindings", () => {
   assert.throws(
     () => new Processor({
       processorOptions: {
         wasmBytes: wasm,
         metadata: metadata(),
-        buffers: { samples: { data: [], frames: 1 } },
+        buffers: { samples: { data: [] } },
       },
     }),
-    /empty data requires zero frames and channels/,
+    /requires non-empty bound data/,
   );
 });
 
@@ -119,7 +112,7 @@ test("worklet validates and reports the f32 buffer sample rate seen by Wasm", ()
         processorOptions: {
           wasmBytes: wasm,
           metadata: metadata(),
-          buffers: { samples: { data: [], sampleRate } },
+          buffers: { samples: { data: [1], sampleRate } },
         },
       }),
       /invalid sample rate/,
@@ -132,7 +125,7 @@ test("worklet validates and reports the f32 buffer sample rate seen by Wasm", ()
       wasmBytes: wasm,
       metadata: metadata(),
       buffers: {
-        samples: { data: [], sampleRate: requestedSampleRate },
+        samples: { data: [1], sampleRate: requestedSampleRate },
       },
     },
   });
@@ -164,7 +157,7 @@ test("worklet interprets the wasm32 heap base as an unsigned address", () => {
       processorOptions: {
         wasmBytes: highBitHeapBaseWasm,
         metadata: metadata(),
-        buffers: { samples: { data: [] } },
+        buffers: { samples: { data: [0] } },
       },
     });
     assert.equal(processor.heap, 0x8000_0000);

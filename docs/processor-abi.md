@@ -174,9 +174,10 @@ host passes null exactly when the corresponding surface is absent:
 
 A declared surface is not absent merely because the application does not use it. Every declared
 input/output slot requires valid compile-block storage. A non-empty buffer declaration list
-requires all four parallel tables; an empty individual binding is represented by a null data entry
-and zero frame/channel entries, not by null tables. This rule lets generated code omit redundant
-surface-count branches while keeping zero-surface processors minimal.
+requires all four parallel tables, and every individual entry must have a non-null data pointer,
+positive frame/channel counts, and a finite positive sample rate. An unbound buffer is a host state
+and must not be passed to generated code. This rule lets generated code omit redundant binding and
+empty-range branches while keeping zero-surface processors minimal.
 
 ## Segmented processing
 
@@ -207,8 +208,9 @@ External buffers use four parallel tables in declaration order:
 
 Samples use interleaved frame-major storage. Metadata declares scalar width, read/write access, and
 mono, static, or dynamic channel constraints. Every sample-rate entry is finite and positive,
-including for a canonically empty binding. Control outputs are state-backed values at declared
-physical offsets and may be observed between processor calls.
+and every data pointer, frame count, and channel count denotes nonempty bound storage. Control
+outputs are state-backed values at declared physical offsets and may be observed between processor
+calls.
 
 ## Numerical and failure behavior
 

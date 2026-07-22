@@ -576,13 +576,16 @@ pub unsafe fn bind_output(
 
 /// Binds borrowed external-buffer memory without copying it.
 ///
+/// A zero `sample_rate_hz` unbinds the slot regardless of pointer and shape. A null pointer with
+/// zero frames and channels also unbinds the slot. Otherwise the binding must be nonempty and
+/// `sample_rate_hz` must be finite and positive.
+///
 /// # Safety
 ///
-/// `ptr` must remain valid for `frames * channels` elements of `elem_ty`, with
-/// the element's required alignment, until rebound/unbound or instance
-/// destruction. The region must be writable when the declaration permits
-/// writes, and all bound host regions must be mutually non-overlapping while
-/// processing.
+/// When this call binds the slot, `ptr` must remain valid for `frames * channels` elements of
+/// `elem_ty`, with the element's required alignment, until rebound/unbound or instance destruction.
+/// The region must be writable when the declaration permits writes, and all bound host regions must
+/// be mutually non-overlapping while processing. Unbind calls do not access `ptr`.
 pub unsafe fn bind_buffer(
     instance: &mut Instance,
     index: usize,
@@ -599,6 +602,11 @@ pub unsafe fn bind_buffer(
             0,
         ));
     };
+    if sample_rate_hz == 0.0 || (ptr.is_null() && frames == 0 && channels == 0) {
+        instance.buffer_bindings[index] = None;
+        instance.buffers_validated = false;
+        return Ok(());
+    }
     if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 {
         return Err(Diagnostic::runtime(
             format!(
@@ -623,19 +631,9 @@ pub unsafe fn bind_buffer(
         ));
     }
     if frames == 0 || channels == 0 || ptr.is_null() {
-        if frames == 0 && channels == 0 && ptr.is_null() {
-            instance.buffer_bindings[index] = Some(BoundBuffer {
-                ptr,
-                frames_i32: 0,
-                channels_i32: 0,
-                sample_rate_hz,
-            });
-            instance.buffers_validated = false;
-            return Ok(());
-        }
         return Err(Diagnostic::runtime(
             format!(
-                "buffer '{}' must be either non-empty or canonical empty (null pointer, zero frames, zero channels)",
+                "buffer '{}' must be unbound with null + zero frames/channels or bound with a non-null pointer and positive frames/channels",
                 desc.name()
             ),
             0,

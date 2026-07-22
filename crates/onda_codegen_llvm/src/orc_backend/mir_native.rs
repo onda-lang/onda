@@ -2762,7 +2762,11 @@ impl FunctionEmitter<'_, '_> {
         } else {
             index
         };
-        let flat = self.apply_dynamic_bounds(flat, total_len, bounds)?;
+        let flat = if bounds == onda_mir::BoundsMode::Clamp {
+            self.clamp_dynamic_index(flat, total_len)?
+        } else {
+            self.apply_dynamic_bounds(flat, total_len, bounds)?
+        };
         Ok(LLVMBuildGEP2(
             self.builder,
             llvm_scalar_type(self.module.context, parts.element),
@@ -3038,8 +3042,7 @@ impl FunctionEmitter<'_, '_> {
         );
         let (base_offset, stride_bytes) = if let Some(channel) = channel {
             let channel = self.lower_value(channel)?;
-            let channel =
-                self.apply_dynamic_bounds(channel, parts.channels, onda_mir::BoundsMode::Clamp)?;
+            let channel = self.clamp_dynamic_index(channel, parts.channels)?;
             let channel_offset = LLVMBuildMul(
                 self.builder,
                 channel,
@@ -3755,41 +3758,7 @@ impl FunctionEmitter<'_, '_> {
                 // runtime sequence has no such element, so it must trap rather
                 // than fabricate an access to index zero.
                 self.emit_trap_if(empty, "dynamic_clamp_nonempty")?;
-                let below = LLVMBuildICmp(
-                    self.builder,
-                    LLVMIntPredicate::LLVMIntSLT,
-                    index,
-                    zero,
-                    c_name("dynamic_index_below")?.as_ptr(),
-                );
-                let low = LLVMBuildSelect(
-                    self.builder,
-                    below,
-                    zero,
-                    index,
-                    c_name("dynamic_index_low")?.as_ptr(),
-                );
-                let one = LLVMConstInt(i32_ty, 1, 0);
-                let max = LLVMBuildSub(
-                    self.builder,
-                    len,
-                    one,
-                    c_name("dynamic_index_max")?.as_ptr(),
-                );
-                let above = LLVMBuildICmp(
-                    self.builder,
-                    LLVMIntPredicate::LLVMIntSGT,
-                    low,
-                    max,
-                    c_name("dynamic_index_above")?.as_ptr(),
-                );
-                Ok(LLVMBuildSelect(
-                    self.builder,
-                    above,
-                    max,
-                    low,
-                    c_name("dynamic_index_clamped")?.as_ptr(),
-                ))
+                self.clamp_dynamic_index(index, len)
             }
             onda_mir::BoundsMode::Trap => {
                 let in_bounds = LLVMBuildICmp(
@@ -3827,6 +3796,50 @@ impl FunctionEmitter<'_, '_> {
                 Ok(index)
             }
         }
+    }
+
+    unsafe fn clamp_dynamic_index(
+        &self,
+        index: LLVMValueRef,
+        len: LLVMValueRef,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let i32_ty = LLVMInt32TypeInContext(self.module.context);
+        let zero = LLVMConstInt(i32_ty, 0, 0);
+        let below = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntSLT,
+            index,
+            zero,
+            c_name("dynamic_index_below")?.as_ptr(),
+        );
+        let low = LLVMBuildSelect(
+            self.builder,
+            below,
+            zero,
+            index,
+            c_name("dynamic_index_low")?.as_ptr(),
+        );
+        let one = LLVMConstInt(i32_ty, 1, 0);
+        let max = LLVMBuildSub(
+            self.builder,
+            len,
+            one,
+            c_name("dynamic_index_max")?.as_ptr(),
+        );
+        let above = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntSGT,
+            low,
+            max,
+            c_name("dynamic_index_above")?.as_ptr(),
+        );
+        Ok(LLVMBuildSelect(
+            self.builder,
+            above,
+            max,
+            low,
+            c_name("dynamic_index_clamped")?.as_ptr(),
+        ))
     }
 
     unsafe fn lower_const_data_load(
@@ -7088,7 +7101,32 @@ sample:
     }
 
     #[test]
-    fn raw_checked_buffer_abi_accepts_only_canonical_empty_bindings() {
+    fn clamped_buffer_accesses_omit_empty_range_guards() {
+        let (_, mir) = source_program(
+            r#"
+buffers:
+  data: f32
+sample:
+  out1 = data[0]
+"#,
+            1,
+        );
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("buffer read MIR should emit LLVM IR");
+        assert!(ir.contains("buffer_total_len"));
+        assert!(ir.contains("dynamic_index_clamped"));
+        assert!(!ir.contains("dynamic_len_positive"));
+        assert!(!ir.contains("dynamic_clamp_nonempty"));
+    }
+
+    #[test]
+    fn raw_checked_buffer_abi_requires_nonempty_bound_buffers() {
         let (_, mir) = source_program(
             r#"
 buffers:
@@ -7098,20 +7136,22 @@ sample:
 "#,
             1,
         );
-        let null = std::ptr::null_mut();
-        validate_buffer_abi(&mir, &[null], &[0], &[0], &[48_000.0])
-            .expect("null + zero frames/channels is a bound empty buffer");
-
         let mut storage = [0_u32; 1];
         let pointer = storage.as_mut_ptr().cast::<u8>();
-        for (pointer, frames, channels) in [(pointer, 0, 0), (pointer, 1, 0), (null, 1, 1)] {
+        validate_buffer_abi(&mir, &[pointer], &[1], &[1], &[48_000.0])
+            .expect("positive, non-null buffer binding should be accepted");
+
+        let null = std::ptr::null_mut();
+        for (pointer, frames, channels) in
+            [(null, 0, 0), (pointer, 0, 0), (pointer, 1, 0), (null, 1, 1)]
+        {
             let error = validate_buffer_abi(&mir, &[pointer], &[frames], &[channels], &[48_000.0])
-                .expect_err("partial empty-buffer shapes must be rejected");
-            assert!(error.message.contains("canonical empty"));
+                .expect_err("raw processor ABI requires every declared buffer to be bound");
+            assert!(error.message.contains("must be bound"));
         }
 
         let error = validate_buffer_abi(&mir, &[null], &[0], &[0], &[f32::NAN])
-            .expect_err("empty bindings still require valid sample-rate metadata");
+            .expect_err("invalid sample-rate metadata must be rejected");
         assert!(error.message.contains("finite positive sample rate"));
 
         let error = validate_buffer_abi(&mir, &[pointer], &[1], &[2], &[48_000.0])
