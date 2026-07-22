@@ -1,7 +1,7 @@
 title: Onda
 description: A JIT-compiled audio programming language.
-url: "https://onda-lang.github.io"
-baseurl: "/onda"
+url: "https://onda-lang.org"
+baseurl: ""
 repository: onda-lang/onda
 lang: en
 permalink: pretty

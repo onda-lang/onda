@@ -6,7 +6,7 @@ Onda is an expressive and performant JIT-compiled audio programming language.
 
 This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
 
-Visit the project's [website](https://onda-lang.github.io/onda) to try the web compiler and get an introduction to the language.
+Visit the project's [website](https://onda-lang.org) to try the web compiler and get an introduction to the language.
 
 ## Code example
 

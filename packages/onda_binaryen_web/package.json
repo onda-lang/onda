@@ -9,7 +9,7 @@
     "url": "git+https://github.com/onda-lang/onda.git",
     "directory": "packages/onda_binaryen_web"
   },
-  "homepage": "https://onda-lang.github.io/onda/",
+  "homepage": "https://onda-lang.org/",
   "bugs": {
     "url": "https://github.com/onda-lang/onda/issues"
   },
