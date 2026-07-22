@@ -547,13 +547,23 @@ impl RunSession {
     ) -> Result<(), Diagnostic> {
         let path = path.as_ref();
         let (samples, channels, sample_rate_hz) = read_wav_interleaved_f32(path)?;
-        self.bind_buffer_samples(
+        self.bind_buffer_samples_with_path(
             name,
             samples,
             channels,
             sample_rate_hz as f32,
             Some(path.to_path_buf()),
         )
+    }
+
+    pub fn bind_buffer_samples(
+        &mut self,
+        name: &str,
+        samples: Vec<f32>,
+        channels: usize,
+        sample_rate_hz: f32,
+    ) -> Result<(), Diagnostic> {
+        self.bind_buffer_samples_with_path(name, samples, channels, sample_rate_hz, None)
     }
 
     pub fn clear_buffer(&mut self, name: &str) -> Result<(), Diagnostic> {
@@ -568,7 +578,7 @@ impl RunSession {
         self.rebuild_instance()
     }
 
-    fn bind_buffer_samples(
+    fn bind_buffer_samples_with_path(
         &mut self,
         name: &str,
         samples: Vec<f32>,

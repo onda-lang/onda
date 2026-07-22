@@ -102,6 +102,12 @@ You can also run without the UI and set parameters from the command line:
 onda run play sine.onda --dur 3 --set freq=220
 ```
 
+Programs with declared buffers can bind WAV files by name:
+
+```bash
+onda run play buffer_looper.onda --buffer src=sample.wav
+```
+
 ## Render a WAV file
 
 Offline rendering uses the same run pipeline without opening an audio device:
@@ -109,3 +115,5 @@ Offline rendering uses the same run pipeline without opening an audio device:
 ```bash
 onda run render sine.onda --output first.wav --dur 5 --set freq=330
 ```
+
+The same `--buffer name=path` option is available for offline rendering.

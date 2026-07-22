@@ -132,6 +132,19 @@ const semanticTokenField = StateField.define({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+function visibleEditorMargins(view) {
+  const viewport = window.visualViewport;
+  if (!viewport) return null;
+  const editor = view.scrollDOM.getBoundingClientRect();
+  const viewportTop = viewport.offsetTop;
+  const viewportBottom = viewportTop + viewport.height;
+  const padding = 16;
+  return {
+    top: Math.max(0, viewportTop - editor.top + padding),
+    bottom: Math.max(0, editor.bottom - viewportBottom + padding),
+  };
+}
+
 const ondaEditorTheme = EditorView.theme({
   "&": {
     height: "100%",
@@ -242,7 +255,28 @@ export class OndaProjectEditor {
     this.tabs.addEventListener("dragover", (event) => this.dragTabOver(event));
     this.tabs.addEventListener("drop", (event) => this.dropTab(event));
     this.view = new EditorView({ state: this.states.get(this.active), parent });
+    this.visualViewportResize = () => this.keepCaretVisible(this.view);
+    window.visualViewport?.addEventListener("resize", this.visualViewportResize);
     this.renderFiles();
+  }
+
+  keepCaretVisible(view) {
+    if (!view.hasFocus) return;
+    cancelAnimationFrame(this.caretVisibilityFrame);
+    this.caretVisibilityFrame = requestAnimationFrame(() => {
+      if (!view.hasFocus) return;
+      view.dispatch({
+        effects: EditorView.scrollIntoView(view.state.selection.main.head, {
+          y: "nearest",
+          yMargin: 16,
+        }),
+      });
+    });
+  }
+
+  setFontSize(fontSize) {
+    this.view.dom.style.fontSize = `${fontSize}px`;
+    this.view.requestMeasure();
   }
 
   createState(path, source, { readOnly = false } = {}) {
@@ -266,10 +300,14 @@ export class OndaProjectEditor {
         Prec.high(keymap.of([indentWithTab])),
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
+        EditorView.scrollMargins.of(visibleEditorMargins),
         EditorView.updateListener.of((update) => {
           this.states.set(path, update.state);
           if (update.docChanged) {
             this.onChange?.(this.project());
+          }
+          if ((update.docChanged || update.selectionSet) && update.view.hasFocus) {
+            this.keepCaretVisible(update.view);
           }
         }),
         EditorView.domEventHandlers({

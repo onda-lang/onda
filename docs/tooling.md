@@ -67,6 +67,7 @@ For playback without the standalone UI:
 ```bash
 onda run play examples/foundations/sine.onda --dur 2
 onda run play examples/foundations/sine.onda --forever --set freq=220
+onda run play examples/buffers-fft-convolution/buffer_looper_read.onda --buffer src=sample.wav
 ```
 
 ## Offline rendering

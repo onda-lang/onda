@@ -17,7 +17,7 @@ jekyll serve --source _site_source --baseurl "" --livereload
 The homepage links its displayed example into the browser playground without loading the compiler;
 it does not start audio. The `/playground/` route loads the same `wasm-opt -O4` frontend and Binaryen
 backend, runs the real `onda lsp` implementation in the compiler worker, and offers only 44100/48000 Hz
-sample rates and 128/256/512/1024-frame compile blocks (defaulting to 512). The editor keeps a
+sample rates and 128/256/512/1024/2048-frame compile blocks (defaulting to 512). The editor keeps a
 multi-file virtual project in local storage and uses the same shared run webview as `onda-vscode`
 for audio, scope, parameters, events, and WAV buffers. Share links encode a compressed, versioned
 multi-file source snapshot and compile settings in the client-side URL fragment; selected WAV data

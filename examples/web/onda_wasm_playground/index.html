@@ -62,7 +62,7 @@
         box-shadow: 0 20px 70px rgb(0 0 0 / 24%);
       }
       .toolbar { justify-content: space-between; margin-bottom: 12px; }
-      .control-grid { flex: 1 1 460px; }
+      .control-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(90px, .6fr); flex: 1 1 460px; }
       .control-grid label { display: grid; gap: 5px; flex: 1 1 130px; color: var(--text); }
       button, input, select { font: inherit; }
       button {
@@ -74,7 +74,7 @@
         cursor: pointer;
       }
       button:disabled { cursor: default; opacity: .55; }
-      select {
+      select, input[type="number"] {
         min-width: 0;
         padding: 7px 9px;
         border: 1px solid var(--line);
@@ -182,8 +182,40 @@
         .header-meta { justify-content: flex-start; flex-wrap: wrap; }
         .shortcut-help { flex-wrap: wrap; }
         .workspace { grid-template-columns: 1fr; }
-        .source-editor { height: 540px; }
+        .source-editor { height: min(64vh, 620px); }
         .run-view { min-height: 680px; }
+      }
+      @media (max-width: 720px) {
+        main { width: min(100% - 20px, 1500px); padding-top: 16px; }
+        .panel { padding: 12px; border-radius: 12px; }
+        .control-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(72px, .6fr); }
+        .project-files {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 44px;
+          gap: 10px 0;
+          align-items: end;
+        }
+        .project-file-actions {
+          grid-column: 1 / -1;
+          grid-row: 1;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+          width: 100%;
+          padding: 0;
+        }
+        .project-file-actions button { min-height: 44px; font-size: 12px; }
+        .project-file-tabs { grid-column: 1; grid-row: 2; }
+        .project-file-add { grid-column: 2; grid-row: 2; width: 44px; min-height: 44px; font-size: 20px; }
+        .project-file { flex-basis: 176px; width: 176px; min-width: 176px; max-width: 176px; min-height: 44px; font-size: 12px; }
+        .project-file-select { padding-left: 11px; }
+        .project-file-close { flex-basis: 40px; width: 40px; font-size: 16px; }
+        .source-editor { height: min(62svh, 540px); min-height: 360px; }
+      }
+      @media (max-width: 390px) {
+        .control-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 68px; gap: 7px; }
+        .control-grid label { min-width: 0; font-size: 12px; }
+        .control-grid select, .control-grid input { padding: 7px 6px; font-size: 12px; }
       }
     </style>
   </head>
@@ -222,7 +254,12 @@
                   <option value="256">256 frames</option>
                   <option value="512" selected>512 frames</option>
                   <option value="1024">1024 frames</option>
+                  <option value="2048">2048 frames</option>
                 </select>
+              </label>
+              <label>
+                <span>Font size</span>
+                <input type="number" min="8" max="40" step="1" value="14" inputmode="numeric" aria-label="Editor font size in pixels" data-editor-font-size>
               </label>
             </div>
           </div>

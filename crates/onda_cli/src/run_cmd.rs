@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{DaemonConfig, DaemonSession, RunOptions};
@@ -38,6 +38,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             show_meta,
             control_json,
             param_sets,
+            buffer_bindings,
         } => play_run_realtime(PlaybackLaunch {
             input,
             dur_seconds,
@@ -50,6 +51,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             show_meta,
             control_json,
             param_sets,
+            buffer_bindings,
         }),
         RunCommand::Render {
             input,
@@ -61,6 +63,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             param_sets,
+            buffer_bindings,
         } => run_daemon_run(DaemonRenderRequest {
             input: &input,
             output: &output,
@@ -71,6 +74,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             param_sets: &param_sets,
+            buffer_bindings: &buffer_bindings,
         }),
         RunCommand::Window {
             input,
@@ -172,6 +176,7 @@ struct DaemonRenderRequest<'a> {
     fast_math: bool,
     show_meta: bool,
     param_sets: &'a [(String, f64)],
+    buffer_bindings: &'a [(String, PathBuf)],
 }
 
 fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
@@ -185,6 +190,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         fast_math,
         show_meta,
         param_sets,
+        buffer_bindings,
     } = request;
     let mut session = DaemonSession::new(DaemonConfig {
         analysis: AnalysisOptions {
@@ -220,6 +226,14 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
             .expect("run should be active while applying params")
             .set_param_f64(name, *value)
             .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
+    }
+
+    for (name, path) in buffer_bindings {
+        session
+            .run_mut(input)
+            .expect("run should be active while binding buffers")
+            .bind_buffer_wav_path(name, path)
+            .map_err(|diag| format_single_diagnostic("daemon run buffer failed", &diag))?;
     }
 
     let total_frames = sample_rate_hz as usize * dur_seconds as usize;

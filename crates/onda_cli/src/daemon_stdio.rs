@@ -89,6 +89,13 @@ enum Request {
         name: String,
         value: f64,
     },
+    RunBindBuffer {
+        path: String,
+        name: String,
+        samples: Vec<f32>,
+        channels: usize,
+        sample_rate_hz: f32,
+    },
     RunRender {
         path: String,
         #[serde(default)]
@@ -264,6 +271,20 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             .and_then(|run| {
                 run.set_param_f64(&name, value)
                     .map_err(|diag| diagnostic_string("run_set_param failed", &diag))
+            })
+            .map(|_| json!({ "status": "ok" })),
+        Request::RunBindBuffer {
+            path,
+            name,
+            samples,
+            channels,
+            sample_rate_hz,
+        } => session
+            .run_mut(path)
+            .ok_or_else(|| "run is not active".to_owned())
+            .and_then(|run| {
+                run.bind_buffer_samples(&name, samples, channels, sample_rate_hz)
+                    .map_err(|diag| diagnostic_string("run_bind_buffer failed", &diag))
             })
             .map(|_| json!({ "status": "ok" })),
         Request::RunRender {
@@ -488,6 +509,52 @@ mod tests {
             result["channel_bits"][0][0].as_u64(),
             Some(0.25_f32.to_bits().into())
         );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_bind_buffer_command_supplies_render_data() {
+        let dir = mk_temp_dir("run_bind_buffer");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "buffers:\n  src: f32\nouts:\n  out1\nsample:\n  out1 = src[0]\n",
+        );
+        let path = main.to_string_lossy().into_owned();
+        let mut session = DaemonSession::default();
+        let request = |session: &mut DaemonSession, request| {
+            handle_request(
+                session,
+                RequestEnvelope {
+                    id: Some(1),
+                    request,
+                },
+            )
+        };
+
+        assert!(request(&mut session, Request::RunStart { path: path.clone() }).ok);
+        let bind = request(
+            &mut session,
+            Request::RunBindBuffer {
+                path: path.clone(),
+                name: "src".to_owned(),
+                samples: vec![0.5],
+                channels: 1,
+                sample_rate_hz: 48_000.0,
+            },
+        );
+        assert!(bind.ok, "bind response: {:?}", bind.error);
+
+        let render = request(
+            &mut session,
+            Request::RunRender {
+                path,
+                include_sample_bits: false,
+            },
+        );
+        assert!(render.ok, "render response: {:?}", render.error);
+        assert_eq!(render.result.expect("render result")["channels"][0][0], 0.5);
 
         fs::remove_dir_all(&dir).ok();
     }

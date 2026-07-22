@@ -143,6 +143,7 @@ Parameters can be set via the `--set` argument.
 ```bash
 onda run play examples/foundations/sine.onda --dur 2
 onda run play examples/foundations/sine.onda --forever --set freq=220
+onda run play examples/buffers-fft-convolution/buffer_looper_read.onda --buffer src=sample.wav
 ```
 
 Useful flags:
@@ -152,6 +153,7 @@ Useful flags:
 - `--input-device`
 - `--output-device`
 - `--set name=value`
+- `--buffer name=path`
 
 With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
 
@@ -170,6 +172,7 @@ Useful flags:
 - `--sample-rate`
 - `--block-size`
 - `--set name=value`
+- `--buffer name=path`
 
 ### `onda daemon diagnose`
 

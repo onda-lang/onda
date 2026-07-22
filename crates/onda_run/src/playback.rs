@@ -44,6 +44,7 @@ pub struct PlaybackLaunch {
     pub show_meta: bool,
     pub control_json: bool,
     pub param_sets: Vec<(String, f64)>,
+    pub buffer_bindings: Vec<(String, PathBuf)>,
 }
 
 struct PlaybackStartup {
@@ -507,6 +508,22 @@ fn spawn_run_render_thread(
                 .start_run(&launch.input)
                 .map_err(|err| format_run_build_error("daemon play start failed", &err))?;
 
+            for (name, value) in &launch.param_sets {
+                session
+                    .run_mut(&launch.input)
+                    .expect("run should be active while applying params")
+                    .set_param_f64(name, *value)
+                    .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
+            }
+
+            for (name, path) in &launch.buffer_bindings {
+                session
+                    .run_mut(&launch.input)
+                    .expect("run should be active while binding buffers")
+                    .bind_buffer_wav_path(name, path)
+                    .map_err(|diag| format_single_diagnostic("daemon play buffer failed", &diag))?;
+            }
+
             let run = session
                 .run(&launch.input)
                 .expect("run should be active after successful start");
@@ -526,14 +543,6 @@ fn spawn_run_render_thread(
             let input_channels = run.input_channel_count();
             let output_channels = run.output_channel_count();
             let path = run.path().to_path_buf();
-
-            for (name, value) in &launch.param_sets {
-                session
-                    .run_mut(&launch.input)
-                    .expect("run should be active while applying params")
-                    .set_param_f64(name, *value)
-                    .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
-            }
 
             Ok(PlaybackStartup {
                 path,

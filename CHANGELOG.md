@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.5.3]
+
+### Added
+
+- Added `--buffer name=path` to `onda run play` and `onda run render` for binding declared buffers
+  to WAV files from the command line.
+
+### Fixed
+
+- Fixed LLVM/Binaryen parity verification after native run hosts stopped creating implicit buffer
+  bindings; the verifier now explicitly binds identical zero-filled buffers for both backends.
+
 ## [0.5.2]
 
 ### Added
@@ -154,6 +166,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
-[0.5.2]: https://github.com/onda-lang/onda/compare/0.5.1...HEAD
+[0.5.3]: https://github.com/onda-lang/onda/compare/0.5.2...HEAD
+[0.5.2]: https://github.com/onda-lang/onda/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/onda-lang/onda/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/onda-lang/onda/compare/0.4.4...0.5.0

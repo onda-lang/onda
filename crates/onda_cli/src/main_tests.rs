@@ -597,6 +597,8 @@ fn parse_run_play_accepts_meta_and_param_sets() {
             "--control-json",
             "--set",
             "gain=0.5",
+            "--buffer",
+            "table=samples.wav",
             "--fast-math",
         ]
         .into_iter()
@@ -609,12 +611,17 @@ fn parse_run_play_accepts_meta_and_param_sets() {
             control_json,
             fast_math,
             param_sets,
+            buffer_bindings,
             ..
         }) => {
             assert!(show_meta);
             assert!(control_json);
             assert!(fast_math);
             assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
+            assert_eq!(
+                buffer_bindings,
+                vec![("table".to_owned(), PathBuf::from("samples.wav"))]
+            );
         }
         _ => panic!("expected run play command"),
     }
@@ -684,6 +691,7 @@ fn parse_run_render_accepts_meta_and_param_sets() {
             "--meta",
             "--set",
             "gain=0.5",
+            "--buffer=table=samples.wav",
             "--fast-math",
         ]
         .into_iter()
@@ -695,11 +703,16 @@ fn parse_run_render_accepts_meta_and_param_sets() {
             show_meta,
             fast_math,
             param_sets,
+            buffer_bindings,
             ..
         }) => {
             assert!(show_meta);
             assert!(fast_math);
             assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
+            assert_eq!(
+                buffer_bindings,
+                vec![("table".to_owned(), PathBuf::from("samples.wav"))]
+            );
         }
         _ => panic!("expected run render command"),
     }

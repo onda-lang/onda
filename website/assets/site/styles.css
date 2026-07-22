@@ -243,7 +243,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .play-panel { min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 .play-panel h2 { margin: 0 0 .75rem; color: var(--ink); font-size: .92rem; }
 .play-toolbar { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: .75rem; }
-.play-control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1 1 360px; gap: .75rem; }
+.play-control-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(5.5rem, .6fr); flex: 1 1 480px; gap: .75rem; }
 .play-control-grid label { display: grid; gap: .35rem; color: var(--text); font-size: .78rem; }
 .play-page input[type="number"], .play-page input[type="text"], .play-page select { width: 100%; min-width: 0; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--ink); font: .82rem var(--mono); }
 .play-source-editor { height: min(68vh, 760px); min-height: 420px; overflow: hidden; border: 1px solid var(--line); border-radius: 0 0 5px 5px; background: var(--code-bg); }
@@ -334,6 +334,11 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
   .play-workspace { grid-template-columns: minmax(0, 1fr) 380px; }
 }
 
+@media (max-width: 900px) {
+  .play-workspace { grid-template-columns: 1fr; }
+  .play-source-editor { height: min(64vh, 620px); }
+}
+
 @media (max-width: 720px) {
   .site-header { height: 58px; padding: 0 1.25rem; }
   .menu-toggle { display: inline-block; }
@@ -344,15 +349,61 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
   .docs-sidebar { display: none; }
   .prose table { display: block; overflow-x: auto; }
   .home-main { padding-top: 1.25rem; }
+  .home-example-code .primary-button {
+    top: .5rem;
+    right: .5rem;
+    padding: .42rem .62rem;
+    font-size: .78rem;
+  }
   .section-title, .doc-list a { grid-template-columns: 1fr; gap: .25rem; }
   .section-title p { text-align: left; }
   .play-main { width: min(100% - 1.5rem, 1360px); padding-top: 1.25rem; }
-  .play-intro { display: grid; gap: 1rem; }
-  .play-intro .status { justify-self: start; }
-  .play-intro-meta { justify-content: flex-start; }
-  .play-intro-meta, .play-shortcuts { flex-wrap: wrap; }
-  .play-workspace { grid-template-columns: 1fr; }
-  .play-control-grid { grid-template-columns: 1fr; }
-  .play-source-editor { height: 440px; }
+  .play-intro { align-items: center; gap: 1rem; }
+  .play-intro-meta { flex: 0 1 auto; justify-content: flex-end; }
+  .play-intro p.play-shortcuts { flex-wrap: nowrap; margin: 0; }
+  .play-panel { padding: .75rem; }
+  .play-control-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(4.5rem, .6fr); }
+  .project-files {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 2.75rem;
+    gap: .65rem 0;
+    align-items: end;
+  }
+  .project-file-actions {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .5rem;
+    width: 100%;
+    padding: 0;
+  }
+  .project-file-actions button { justify-content: center; min-height: 2.75rem; font-size: .75rem; }
+  .project-file-tabs { grid-column: 1; grid-row: 2; }
+  .project-file-add { grid-column: 2; grid-row: 2; width: 2.75rem; min-height: 2.75rem; font-size: 1.25rem !important; }
+  .project-file { flex-basis: 11rem; width: 11rem; min-width: 11rem; max-width: 11rem; min-height: 2.75rem; font-size: .75rem; }
+  .project-file-select { padding-left: .7rem !important; }
+  .project-file-close { flex-basis: 2.5rem; width: 2.5rem; font-size: 1rem !important; }
+  .play-source-editor { height: min(62svh, 540px); min-height: 360px; }
   .play-run-view { min-height: 680px; }
+}
+
+@media (max-width: 390px) {
+  .play-control-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 4.25rem; gap: .45rem; }
+  .play-control-grid label { min-width: 0; font-size: .7rem; }
+  .play-page .play-control-grid input, .play-page .play-control-grid select { padding: .45rem .35rem; font-size: .72rem; }
+}
+
+@media (max-width: 580px) {
+  .play-intro { display: grid; grid-template-columns: 1fr; gap: .75rem; }
+  .play-intro-meta { flex-wrap: nowrap; justify-content: flex-start; width: 100%; }
+  .play-intro-meta .status {
+    flex: 0 0 4.75rem;
+    inline-size: 4.75rem;
+    min-height: 1.8rem;
+    margin-left: auto;
+    padding: .3rem .35rem;
+    font-size: .68rem;
+  }
+  .play-shortcuts { min-width: 0; }
 }

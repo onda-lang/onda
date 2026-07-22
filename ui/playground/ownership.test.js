@@ -51,6 +51,8 @@ test("both playground hosts expose new-patch and stable shortcut controls", asyn
     assert.match(host, /Ctrl\/Cmd \+ Enter/);
     assert.match(host, /Ctrl \+ Period/);
     assert.match(host, /data-status>Loading<\/span>/);
+    assert.match(host, /data-editor-font-size/);
+    assert.match(host, /<option value="2048">2048 frames<\/option>/);
   }
 
   const styles = await readFile(resolve(repoRoot, "website/assets/site/styles.css"), "utf8");

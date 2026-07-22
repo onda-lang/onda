@@ -416,6 +416,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut fast_math = false;
     let mut show_meta = false;
     let mut param_sets = Vec::new();
+    let mut buffer_bindings = Vec::new();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -455,6 +456,12 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 };
                 param_sets.push(parse_param_setting(&value)?);
             }
+            "--buffer" => {
+                let Some(value) = args.next() else {
+                    return Err("--buffer requires a name=path pair".to_owned());
+                };
+                buffer_bindings.push(parse_buffer_binding(&value)?);
+            }
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(usage().to_owned()),
@@ -479,6 +486,9 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
             _ if arg.starts_with("--set=") => {
                 param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
             }
+            _ if arg.starts_with("--buffer=") => {
+                buffer_bindings.push(parse_buffer_binding(&arg["--buffer=".len()..])?);
+            }
             _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
@@ -493,6 +503,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         fast_math,
         show_meta,
         param_sets,
+        buffer_bindings,
     })
 }
 
@@ -617,6 +628,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut show_meta = false;
     let mut control_json = false;
     let mut param_sets = Vec::new();
+    let mut buffer_bindings = Vec::new();
     let mut forever = false;
 
     while let Some(arg) = args.next() {
@@ -653,6 +665,12 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                     return Err("--set requires a name=value pair".to_owned());
                 };
                 param_sets.push(parse_param_setting(&value)?);
+            }
+            "--buffer" => {
+                let Some(value) = args.next() else {
+                    return Err("--buffer requires a name=path pair".to_owned());
+                };
+                buffer_bindings.push(parse_buffer_binding(&value)?);
             }
             "--input-device" => {
                 let Some(value) = args.next() else {
@@ -704,6 +722,9 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
             _ if arg.starts_with("--set=") => {
                 param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
             }
+            _ if arg.starts_with("--buffer=") => {
+                buffer_bindings.push(parse_buffer_binding(&arg["--buffer=".len()..])?);
+            }
             _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
@@ -720,6 +741,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         show_meta,
         control_json,
         param_sets,
+        buffer_bindings,
     })
 }
 
@@ -1091,4 +1113,19 @@ fn parse_param_setting(value: &str) -> Result<(String, f64), String> {
         format!("invalid parameter value '{raw_value}' for '{name}', expected number")
     })?;
     Ok((name.to_owned(), parsed))
+}
+
+fn parse_buffer_binding(value: &str) -> Result<(String, PathBuf), String> {
+    let Some((name, path)) = value.split_once('=') else {
+        return Err(format!(
+            "invalid buffer binding '{value}', expected name=path"
+        ));
+    };
+    if name.is_empty() {
+        return Err("buffer binding requires a non-empty name".to_owned());
+    }
+    if path.is_empty() {
+        return Err(format!("buffer binding for '{name}' requires a file path"));
+    }
+    Ok((name.to_owned(), PathBuf::from(path)))
 }

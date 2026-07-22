@@ -48,14 +48,14 @@ const USAGE_BODY: &str = r#"Commands:
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]
     [--input-device <name>] [--output-device <name>]
-    [--set <name=value>] [--control-json] [--meta]
+    [--set <name=value>] [--buffer <name=path>] [--control-json] [--meta]
   
   onda run render <input.onda>       Render offline through the run pipeline
     
     [--output <path>] [--dur <seconds>]
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]
-    [--set <name=value>] [--meta] 
+    [--set <name=value>] [--buffer <name=path>] [--meta]
   
   onda daemon diagnose <input.onda>  Run daemon-backed analysis and diagnostics
     
@@ -97,6 +97,7 @@ Run Options:
   --input-device         Select audio input device by exact name for run playback
   --output-device        Select audio output device by exact name for run playback
   --set                  Override a scalar run param with `name=value`
+  --buffer               Bind a declared buffer to a WAV file with `name=path`
   --control-json         Emit run control handshake on stdout and serve param control over localhost
   --theme                Run window theme: `auto`, `dark`, or `light` (default: auto)
   --webview              Use the webview run host instead of egui
@@ -158,6 +159,7 @@ enum RunCommand {
         show_meta: bool,
         control_json: bool,
         param_sets: Vec<(String, f64)>,
+        buffer_bindings: Vec<(String, PathBuf)>,
     },
     Render {
         input: PathBuf,
@@ -169,6 +171,7 @@ enum RunCommand {
         fast_math: bool,
         show_meta: bool,
         param_sets: Vec<(String, f64)>,
+        buffer_bindings: Vec<(String, PathBuf)>,
     },
     Window {
         input: PathBuf,

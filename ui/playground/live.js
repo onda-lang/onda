@@ -34,15 +34,17 @@ const mainFileButton = document.querySelector("[data-main-file]");
 const shareProjectButton = document.querySelector("[data-share-project]");
 const sampleRateEl = document.querySelector("[data-sample-rate]");
 const blockSizeEl = document.querySelector("[data-block-size]");
+const editorFontSizeEl = document.querySelector("[data-editor-font-size]");
 const runViewFrame = document.querySelector("[data-run-view]");
 
 const pageParams = new URLSearchParams(window.location.search);
 const smokeMode = pageParams.has("smoke");
 const requestedExample = pageParams.get("example");
 const projectStorageKey = "onda.browser-ide.project.v1";
+const editorFontSizeStorageKey = "onda.browser-ide.editor-font-size.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
-const supportedBlockSizes = new Set([128, 256, 512, 1024]);
+const supportedBlockSizes = new Set([128, 256, 512, 1024, 2048]);
 const UNBOUND_STATUS = "Unbound";
 
 let compiler = null;
@@ -57,6 +59,7 @@ let compiling = false;
 let processingRequested = false;
 let runGeneration = 0;
 let projectSaveTimer = 0;
+let editorFontSize = 14;
 let needsBundledExample = false;
 let sharedSession = null;
 let sharedSessionError = null;
@@ -111,9 +114,36 @@ function compileOptions() {
     throw new Error("sample rate must be 44100 or 48000 Hz");
   }
   if (!supportedBlockSizes.has(blockSize)) {
-    throw new Error("block size must be 128, 256, 512, or 1024 frames");
+    throw new Error("block size must be 128, 256, 512, 1024, or 2048 frames");
   }
   return { sampleRate, blockSize };
+}
+
+function validEditorFontSize(value) {
+  const fontSize = Number(value);
+  return Number.isInteger(fontSize) && fontSize >= 8 && fontSize <= 40
+    ? fontSize
+    : null;
+}
+
+function restoreEditorFontSize() {
+  try {
+    const fontSize = validEditorFontSize(localStorage.getItem(editorFontSizeStorageKey));
+    if (fontSize !== null) editorFontSize = fontSize;
+  } catch {
+    // The default remains available when browser storage is disabled.
+  }
+  editorFontSizeEl.value = String(editorFontSize);
+}
+
+function applyEditorFontSize(fontSize) {
+  editorFontSize = fontSize;
+  projectEditor.setFontSize(fontSize);
+  try {
+    localStorage.setItem(editorFontSizeStorageKey, String(fontSize));
+  } catch {
+    // Font sizing still works for this page when browser storage is disabled.
+  }
 }
 
 function handlePlaygroundShortcut(event) {
@@ -691,6 +721,7 @@ function smokeBufferFile() {
 }
 
 function initializeEditor(initialSharedSession, initialExampleProject) {
+  restoreEditorFontSize();
   let storedProject = normalizeStoredProject(initialSharedSession ?? initialExampleProject);
   if (!storedProject && !smokeMode && !requestedExample) {
     try {
@@ -725,6 +756,7 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
       sources: { "main.onda": "# Loading the bundled Onda example…\n" },
     },
   });
+  projectEditor.setFontSize(editorFontSize);
   updateFileActions();
 }
 
@@ -814,6 +846,15 @@ for (const select of [sampleRateEl, blockSizeEl]) {
     setStatus("Ready", "ready");
   });
 }
+editorFontSizeEl.addEventListener("input", () => {
+  const fontSize = validEditorFontSize(editorFontSizeEl.value);
+  if (fontSize !== null) applyEditorFontSize(fontSize);
+});
+editorFontSizeEl.addEventListener("change", () => {
+  const fontSize = validEditorFontSize(editorFontSizeEl.value);
+  if (fontSize !== null) applyEditorFontSize(fontSize);
+  editorFontSizeEl.value = String(editorFontSize);
+});
 document.addEventListener("keydown", handlePlaygroundShortcut, { capture: true });
 document.addEventListener("pointerdown", () => {
   if (context?.state === "suspended") void context.resume().catch(() => {});

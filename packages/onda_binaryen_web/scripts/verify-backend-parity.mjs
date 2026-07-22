@@ -136,9 +136,10 @@ try {
   for (const [scenarioIndex, scenario] of scenarios.entries()) {
     const mirPath = join(temporary, `scenario-${scenarioIndex}.mir.msgpack`);
     compileSourceToMir(scenario.source, mirPath);
+    const artifact = compileMir(readFileSync(mirPath));
 
-    const native = await renderNativeBlocks(scenario);
-    const wasm = await renderWasmBlocks(mirPath, scenario);
+    const native = await renderNativeBlocks(scenario, artifact.metadata);
+    const wasm = await renderWasmBlocks(artifact, scenario);
     const comparison = compareChannels(
       scenario.name,
       native,
@@ -180,7 +181,7 @@ function compileSourceToMir(source, mirPath) {
   );
 }
 
-async function renderNativeBlocks(scenario) {
+async function renderNativeBlocks(scenario, metadata) {
   const { source } = scenario;
   const actions = scenarioActions(scenario);
   const daemon = createNativeDaemon();
@@ -198,6 +199,17 @@ async function renderNativeBlocks(scenario) {
       fast_math: false,
     });
     await request({ command: "run_start", path: source });
+    for (const buffer of metadata.metadata.buffers) {
+      const channels = bufferChannelCount(buffer);
+      await request({
+        command: "run_bind_buffer",
+        path: source,
+        name: buffer.name,
+        samples: Array(blockSize * channels).fill(0),
+        channels,
+        sample_rate_hz: sampleRate,
+      });
+    }
     for (const action of actions) {
       let response;
       if (action.kind === "render") {
@@ -292,8 +304,7 @@ function createNativeDaemon() {
   };
 }
 
-async function renderWasmBlocks(mirPath, scenario) {
-  const artifact = compileMir(readFileSync(mirPath));
+async function renderWasmBlocks(artifact, scenario) {
   if (!WebAssembly.validate(artifact.wasm)) {
     throw new Error("Binaryen emitted invalid WebAssembly");
   }
