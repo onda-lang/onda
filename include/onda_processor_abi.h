@@ -8,6 +8,7 @@
 extern "C" {
 #endif
 
+/* Synchronized from format-versions.json; do not edit this copy directly. */
 #define ONDA_PROCESSOR_ABI_VERSION 1u
 
 typedef void (*onda_processor_init_fn)(const void* params, void* state);
@@ -43,7 +44,7 @@ enum {
 };
 
 /*
- * ABI-v1 symbols emitted by every native processor object. Pointer tables and
+ * ABI symbols emitted by every native processor object. Pointer tables and
  * storage pointers are NULL exactly when the paired descriptor reports that
  * surface count or storage size as zero.
  */

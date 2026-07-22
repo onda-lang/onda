@@ -172,8 +172,12 @@ impl InitAnalysisState {
 }
 
 fn build_decl_check_state(st: &InitAnalysisState) -> ProcStateFields {
-    let mut psf = ProcStateFields::default();
-    psf.scalars = st.state_scalars.clone();
+    let mut psf = ProcStateFields {
+        scalars: st.state_scalars.clone(),
+        nested_procs: st.nested_procs.clone(),
+        nested_proc_arrays: st.nested_proc_arrays.clone(),
+        ..ProcStateFields::default()
+    };
     for name in st.state_arrays.keys() {
         psf.data
             .entry(name.clone())
@@ -193,8 +197,6 @@ fn build_decl_check_state(st: &InitAnalysisState) -> ProcStateFields {
                 size: Box::new(Expr::int(0)),
             });
     }
-    psf.nested_procs = st.nested_procs.clone();
-    psf.nested_proc_arrays = st.nested_proc_arrays.clone();
     for (k, v) in &st.struct_instances {
         let type_args = st
             .struct_instance_type_args
@@ -2270,9 +2272,7 @@ fn analyze_struct_field_init_assign(
                         state_arrays,
                         state_array_struct_roots,
                         errors,
-                    ) {
-                        return;
-                    }
+                    ) {}
                 }
                 (Some(expected_struct), ArrayElemType::Struct(actual_struct)) => {
                     with_expr_diag_context(expr, |expr_diag| {

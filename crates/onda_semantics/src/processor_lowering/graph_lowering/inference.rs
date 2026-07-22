@@ -86,7 +86,7 @@ fn upsert_top_level_port_block(blocks: &mut Vec<Block>, kind: BlockKind, ports: 
         match block {
             Block::Ins(existing) | Block::Outs(existing) => {
                 *existing = PortBlock {
-                    loc: existing.loc.clone(),
+                    loc: existing.loc,
                     decls: ports,
                     deferred_count: None,
                     deferred_default_ty: None,

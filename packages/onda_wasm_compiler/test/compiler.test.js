@@ -17,6 +17,17 @@ sample:
   out1 = gain
 `;
 
+test("retries direct frontend initialization after a failure", async () => {
+  await assert.rejects(
+    createCompiler({ frontendWasm: new Uint8Array([0]) }),
+    /failed to initialize the Onda frontend Wasm/,
+  );
+  const compiler = await createCompiler();
+  const artifact = await compiler.compileSource(SOURCE);
+  assert.equal(WebAssembly.validate(artifact.wasm), true);
+  await compiler.dispose();
+});
+
 test("compiles Onda source to a complete processor artifact", async () => {
   const compiler = await createCompiler();
   const artifact = await compiler.compileSource(SOURCE, {
@@ -69,6 +80,26 @@ sample:
     artifact.metadata.metadata.buffers.map((buffer) => buffer.name),
     ["clip"],
   );
+});
+
+test("confines in-memory projects inside the browser virtual namespace", async () => {
+  const compiler = await createCompiler();
+  for (const source of [
+    `include "../outside.onda"\n`,
+    `include "/tmp/outside.onda"\n`,
+  ]) {
+    await assert.rejects(
+      compiler.compileProject({
+        entry: "main.onda",
+        sources: { "main.onda": source },
+      }),
+      (error) => {
+        assert.equal(error instanceof OndaCompileError, true);
+        assert.match(error.diagnostics[0].message, /escapes project root/);
+        return true;
+      },
+    );
+  }
 });
 
 test("returns structured frontend diagnostics", async () => {
@@ -228,4 +259,46 @@ test("offers an asynchronous browser-worker client", async () => {
   );
   await compiler.dispose();
   assert.equal(compiler.worker.terminated, true);
+});
+
+test("terminates a worker whose frontend initialization fails", async () => {
+  let worker;
+  class FailingWorker {
+    constructor() {
+      worker = this;
+      this.listeners = new Map();
+      this.terminated = false;
+    }
+
+    addEventListener(type, listener) {
+      this.listeners.set(type, listener);
+    }
+
+    removeEventListener(type) {
+      this.listeners.delete(type);
+    }
+
+    postMessage(message) {
+      queueMicrotask(() => {
+        this.listeners.get("message")?.({
+          data: {
+            type: "error",
+            requestId: message.requestId,
+            error: { message: "frontend initialization failed" },
+          },
+        });
+      });
+    }
+
+    terminate() {
+      this.terminated = true;
+    }
+  }
+
+  await assert.rejects(
+    createCompiler({ worker: true, Worker: FailingWorker }),
+    /frontend initialization failed/,
+  );
+  assert.equal(worker.terminated, true);
+  assert.equal(worker.listeners.size, 0);
 });

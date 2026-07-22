@@ -1,3 +1,8 @@
+// This crate is the implementation of the C ABI declared in `include/onda.h`.
+// Pointer lifetime, alignment, ownership, and nullability contracts live with
+// that public C surface instead of being duplicated on every Rust export.
+#![allow(clippy::missing_safety_doc)]
+
 use std::alloc::Layout;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
@@ -53,7 +58,6 @@ fn compile_typed_mir(typed: TypedProgram, fast_math: bool) -> Result<JitProgram,
         MirCompileOptions {
             fast_math,
             opt_level: TargetOptLevel::O3,
-            ..MirCompileOptions::default()
         },
     )
 }
@@ -248,7 +252,7 @@ fn allocate_instance_handle(
         drop(inner);
         return ptr::null_mut();
     }
-    if (raw as usize) % layout.align() != 0 {
+    if !(raw as usize).is_multiple_of(layout.align()) {
         unsafe {
             (allocator.free)(allocator.context, raw, layout.size(), layout.align());
         }
@@ -308,9 +312,7 @@ unsafe fn onda_compile_impl(
                 column: 0,
                 end_line: 0,
                 end_column: 0,
-                message: b"compile options require finite sample_rate > 0\0"
-                    .as_ptr()
-                    .cast::<c_char>(),
+                message: c"compile options require finite sample_rate > 0".as_ptr(),
                 file: ptr::null(),
                 trace: ptr::null(),
             },
@@ -326,9 +328,7 @@ unsafe fn onda_compile_impl(
                 column: 0,
                 end_line: 0,
                 end_column: 0,
-                message: b"compile options require block_size > 0\0"
-                    .as_ptr()
-                    .cast::<c_char>(),
+                message: c"compile options require block_size > 0".as_ptr(),
                 file: ptr::null(),
                 trace: ptr::null(),
             },
@@ -638,9 +638,7 @@ unsafe fn onda_compile_file_impl(
                 column: 0,
                 end_line: 0,
                 end_column: 0,
-                message: b"compile options require finite sample_rate > 0\0"
-                    .as_ptr()
-                    .cast::<c_char>(),
+                message: c"compile options require finite sample_rate > 0".as_ptr(),
                 file: ptr::null(),
                 trace: ptr::null(),
             },
@@ -656,9 +654,7 @@ unsafe fn onda_compile_file_impl(
                 column: 0,
                 end_line: 0,
                 end_column: 0,
-                message: b"compile options require block_size > 0\0"
-                    .as_ptr()
-                    .cast::<c_char>(),
+                message: c"compile options require block_size > 0".as_ptr(),
                 file: ptr::null(),
                 trace: ptr::null(),
             },
@@ -1682,7 +1678,8 @@ pub unsafe extern "C" fn onda_event_param_name(
     if program.is_null() || event_index < 0 || param_index < 0 {
         return ptr::null();
     }
-    (&(*program).event_param_names)
+    let event_param_names = &*ptr::addr_of!((*program).event_param_names);
+    event_param_names
         .get(event_index as usize)
         .map_or(ptr::null(), |names| cstr_ptr_at(names, param_index))
 }

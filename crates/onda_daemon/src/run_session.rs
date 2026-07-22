@@ -48,7 +48,6 @@ impl RunOptions {
         MirCompileOptions {
             fast_math: self.fast_math,
             opt_level: self.opt_level,
-            ..MirCompileOptions::default()
         }
     }
 }
@@ -582,7 +581,7 @@ impl RunSession {
                 0,
             ));
         }
-        if channels == 0 || samples.is_empty() || samples.len() % channels != 0 {
+        if channels == 0 || samples.is_empty() || !samples.len().is_multiple_of(channels) {
             return Err(Diagnostic::runtime(
                 format!(
                     "buffer '{}' data is not a valid interleaved f32 audio buffer",
@@ -679,7 +678,7 @@ impl RunSession {
     fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
         if self.options.float_param_smoothing_ms <= 0.0 {
             for (name, &target_value) in &self.param_values {
-                let Some(index) = self.jit.param_index(&name) else {
+                let Some(index) = self.jit.param_index(name) else {
                     continue;
                 };
                 let Some(desc) = self.jit.param_descriptor(index) else {
@@ -701,7 +700,7 @@ impl RunSession {
             / f64::from(self.options.sample_rate.max(1.0));
         let alpha = (block_ms / self.options.float_param_smoothing_ms).clamp(0.0, 1.0);
         for (name, &target_value) in &self.param_values {
-            let Some(index) = self.jit.param_index(&name) else {
+            let Some(index) = self.jit.param_index(name) else {
                 continue;
             };
             let Some(desc) = self.jit.param_descriptor(index) else {

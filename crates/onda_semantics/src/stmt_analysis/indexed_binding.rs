@@ -82,9 +82,7 @@ pub(crate) fn classify_runtime_like_indexed_binding(
     {
         return Some(IndexedBindingKind::ProcArrayAlias);
     }
-    let Some((root, field)) = split_field_path(base, errors) else {
-        return None;
-    };
+    let (root, field) = split_field_path(base, errors)?;
     let struct_name = struct_instances.get(root)?;
     classify_named_or_flattened_field(struct_name, field, struct_defs)
 }

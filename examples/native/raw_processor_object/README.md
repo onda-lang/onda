@@ -147,7 +147,7 @@ descriptor count or storage size is zero:
 - `state` when `runtime.state_size_bytes == 0`;
 - `inputs` or `outputs` when their flattened metadata slot count is zero;
 - all four buffer-table arguments when `metadata.buffers` is empty;
-- an event payload when that event's `payload_bytes == 0`.
+- an event payload when that event's `payload_size_bytes == 0`.
 
 When a surface is declared, its table is required even if the application considers it unused. In
 particular, a non-empty `metadata.buffers` list requires all four parallel tables. An empty

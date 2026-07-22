@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.slice(2).includes("--check");
 const cargoToml = await readFile(resolve(repoRoot, "Cargo.toml"), "utf8");
+const formatVersions = JSON.parse(
+  await readFile(resolve(repoRoot, "format-versions.json"), "utf8"),
+);
 const workspaceVersion = cargoToml.match(
   /\[workspace\.package\][\s\S]*?\nversion = "([^"]+)"/,
 )?.[1];
@@ -13,7 +16,14 @@ if (!workspaceVersion) {
   throw new Error("failed to read [workspace.package].version from Cargo.toml");
 }
 
+for (const [name, version] of Object.entries(formatVersions)) {
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error(`format-versions.json ${name} must be a positive integer`);
+  }
+}
+
 const mismatches = [];
+await synchronizeFormatVersions();
 const packageDirectories = await ondaPackageDirectories();
 for (const packageDirectory of packageDirectories) {
   const manifestPath = resolve(packageDirectory, "package.json");
@@ -42,8 +52,66 @@ if (mismatches.length > 0) {
 
 const action = checkOnly ? "Verified" : "Synchronized";
 process.stdout.write(
-  `${action} Onda version ${workspaceVersion} across Cargo.lock and ${packageDirectories.length} npm packages\n`,
+  `${action} Onda version ${workspaceVersion} and format versions across Cargo, npm, TypeScript, C, and example sources\n`,
 );
+
+async function synchronizeFormatVersions() {
+  const v = formatVersions;
+  await synchronizeText("crates/onda_mir/src/lib.rs", [
+    constant(/pub const MIR_SCHEMA_VERSION: u32 = \d+;/, `pub const MIR_SCHEMA_VERSION: u32 = ${v.mir_schema};`),
+  ]);
+  await synchronizeText("crates/onda_processor_abi/src/lib.rs", [
+    constant(/pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = \d+;/, `pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = ${v.processor_artifact};`),
+    constant(/pub const PROCESSOR_ABI_VERSION: u32 = \d+;/, `pub const PROCESSOR_ABI_VERSION: u32 = ${v.processor_abi};`),
+    constant(/pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = \d+;/, `pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = ${v.processor_snapshot};`),
+  ]);
+  await synchronizeText("packages/onda_processor_abi/src/index.js", [
+    constant(/export const PROCESSOR_ARTIFACT_FORMAT_VERSION = \d+;/, `export const PROCESSOR_ARTIFACT_FORMAT_VERSION = ${v.processor_artifact};`),
+    constant(/export const PROCESSOR_ABI_VERSION = \d+;/, `export const PROCESSOR_ABI_VERSION = ${v.processor_abi};`),
+    constant(/export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = \d+;/, `export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = ${v.processor_snapshot};`),
+  ]);
+  await synchronizeText("packages/onda_processor_abi/src/index.d.ts", [
+    constant(/export const PROCESSOR_ARTIFACT_FORMAT_VERSION: \d+;/, `export const PROCESSOR_ARTIFACT_FORMAT_VERSION: ${v.processor_artifact};`),
+    constant(/export const PROCESSOR_ABI_VERSION: \d+;/, `export const PROCESSOR_ABI_VERSION: ${v.processor_abi};`),
+    constant(/export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: \d+;/, `export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: ${v.processor_snapshot};`),
+    constant(/  format_version: \d+;/, `  format_version: ${v.processor_artifact};`),
+    constant(/  abi_version: \d+;/, `  abi_version: ${v.processor_abi};`),
+    constant(/  snapshot_format_version: \d+;/, `  snapshot_format_version: ${v.processor_snapshot};`),
+  ]);
+  await synchronizeText("packages/onda_binaryen_web/src/constants.js", [
+    constant(/export const SUPPORTED_MIR_SCHEMA_VERSION = \d+;/, `export const SUPPORTED_MIR_SCHEMA_VERSION = ${v.mir_schema};`),
+  ]);
+  await synchronizeText("include/onda_processor_abi.h", [
+    constant(/#define ONDA_PROCESSOR_ABI_VERSION \d+u/, `#define ONDA_PROCESSOR_ABI_VERSION ${v.processor_abi}u`),
+  ]);
+  await synchronizeText("examples/native/raw_processor_object/generate_config.py", [
+    constant(/PROCESSOR_ARTIFACT_FORMAT_VERSION = \d+/, `PROCESSOR_ARTIFACT_FORMAT_VERSION = ${v.processor_artifact}`),
+    constant(/PROCESSOR_ABI_VERSION = \d+/, `PROCESSOR_ABI_VERSION = ${v.processor_abi}`),
+  ]);
+}
+
+function constant(pattern, replacement) {
+  return { pattern, replacement };
+}
+
+async function synchronizeText(path, replacements) {
+  const absolutePath = resolve(repoRoot, path);
+  const input = await readFile(absolutePath, "utf8");
+  let output = input;
+  for (const { pattern, replacement } of replacements) {
+    const matches = output.match(new RegExp(pattern.source, "g")) ?? [];
+    if (matches.length !== 1) {
+      throw new Error(`${path} must contain exactly one ${pattern}`);
+    }
+    output = output.replace(pattern, replacement);
+  }
+  if (output === input) return;
+  if (checkOnly) {
+    mismatches.push(`${path} has stale format versions`);
+  } else {
+    await writeFile(absolutePath, output);
+  }
+}
 
 async function ondaPackageDirectories() {
   const packagesRoot = resolve(repoRoot, "packages");

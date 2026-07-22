@@ -1,12 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use onda_codegen_llvm::{CompileOptions, TargetOptLevel};
+use onda_codegen_llvm::{
+    jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
+};
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{
     bind_output, create_instance, process_checked, trigger_event_by_index, InstanceConfig,
 };
-use onda_semantics::{analyze_with_options, AnalysisOptions};
+use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 fn read_wav_mono_f32(path: &Path) -> Vec<f32> {
     let mut reader = hound::WavReader::open(path).expect("wav should open");
@@ -93,11 +95,10 @@ fn main() -> Result<(), Diagnostic> {
     )
     .expect("semantic analysis should succeed");
 
-    let jit = onda_codegen_llvm::lower_and_jit_with_options(
-        typed,
-        CompileOptions {
-            sample_rate,
-            block_size: frames,
+    let mir = lower_program_to_optimized_mir(&typed).expect("MIR lowering should succeed");
+    let jit = jit_program_from_optimized_mir_with_options(
+        mir,
+        MirCompileOptions {
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },

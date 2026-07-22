@@ -22,7 +22,7 @@ const { instance } = await WebAssembly.instantiate(
 const { memory, __heap_base, onda_init, onda_process } = instance.exports;
 const blockSize = artifact.metadata.compile.block_size;
 const outputCount = artifact.metadata.metadata.outputs.reduce(
-  (count, output) => count + output.channel_count,
+  (count, output) => count + output.array_len,
   0,
 );
 let heap = Number(__heap_base.value);
@@ -41,9 +41,8 @@ const state = allocate(artifact.metadata.runtime.state_size_bytes);
 const outputTable = allocate(outputCount * 4, 4);
 const view = new DataView(memory.buffer);
 for (const param of artifact.metadata.metadata.params) {
-  const scalar = param.default?.kind === "scalar" ? param.default.data : null;
-  if (scalar?.type === "f32") {
-    view.setFloat32(params + param.byte_offset, scalar.value, true);
+  if (param.scalar === "f32" && param.default_reprs?.length === 1) {
+    view.setFloat32(params + param.byte_offset, JSON.parse(param.default_reprs[0]), true);
   }
 }
 

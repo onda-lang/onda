@@ -4,6 +4,8 @@
 //! source-language typing, rewriting, scheduling, and specialization stay
 //! above this boundary.
 
+mod host_abi;
+
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::ptr::null_mut;
@@ -30,10 +32,13 @@ use llvm_sys::{
 
 use onda_frontend::Diagnostic;
 use onda_mir::{
-    Block, CallArgument, FunctionKind, Place, Program, Projection, Rvalue, StatementKind, Type,
+    Block, CallArgument, FunctionKind, Place, Program, Projection, Rvalue, ScalarType,
+    StatementKind, Type,
 };
 
 use crate::{RuntimeAllocator, RuntimeBuffer, RuntimeState, TargetOptLevel};
+
+use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_buffer_abi};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 /// Classification for failures at the validated MIR-to-LLVM boundary.
@@ -468,24 +473,27 @@ fn interface_port_layout(
     let mut count = 0usize;
     for id in ids {
         bases.push(count);
-        let width = match &program.types[id.index()] {
-            Type::Scalar(_) => 1,
-            Type::Array { element, len }
-                if matches!(program.types[element.index()], Type::Scalar(_)) =>
-            {
-                *len as usize
-            }
-            _ => {
-                return Err(MirCodegenError::unsupported(
-                    "audio interfaces support only scalars and one-dimensional scalar arrays",
-                ));
-            }
-        };
+        let (_, width) = audio_port_shape(program, id).ok_or_else(|| {
+            MirCodegenError::unsupported(
+                "audio interfaces support only scalars and one-dimensional scalar arrays",
+            )
+        })?;
         count = count
             .checked_add(width)
             .ok_or_else(|| MirCodegenError::unsupported("audio port count overflow"))?;
     }
     Ok((bases, count))
+}
+
+fn audio_port_shape(program: &Program, id: onda_mir::TypeId) -> Option<(ScalarType, usize)> {
+    match &program.types[id.index()] {
+        Type::Scalar(scalar) => Some((*scalar, 1)),
+        Type::Array { element, len } => match program.types[element.index()] {
+            Type::Scalar(scalar) => Some((scalar, *len as usize)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -4925,7 +4933,10 @@ impl MirJitProgram {
         let words = self.layouts.state.size.saturating_add(7) / 8;
         let mut state_words = RuntimeBuffer::try_from_elem_in(words, 0_u64, allocator)?;
         unsafe {
-            (self.compiled.init)(params.as_ptr(), state_words.as_mut_ptr().cast::<u8>());
+            (self.compiled.init)(
+                abi_const_ptr(params),
+                abi_mut_ptr(state_words.as_mut_slice()).cast::<u8>(),
+            );
         }
         Ok(RuntimeState {
             state_words,
@@ -4937,10 +4948,11 @@ impl MirJitProgram {
     ///
     /// # Safety
     ///
-    /// Every non-null pointer in the input, output, and external-buffer tables
-    /// must remain valid for the complete region described by the MIR
-    /// interface and buffer metadata. Rust slices validate the tables
-    /// themselves, but cannot validate memory behind their raw pointers.
+    /// Every channel pointer in the input and output tables, and every
+    /// non-null pointer in the external-buffer table, must remain valid for
+    /// the complete region described by the MIR interface and buffer metadata.
+    /// This method validates channel presence and alignment, but Rust slices
+    /// cannot validate the extents, lifetimes, or aliasing of their pointees.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn process_checked(
         &self,
@@ -4976,20 +4988,7 @@ impl MirJitProgram {
                 0,
             ));
         }
-        if in_ptrs.len() != self.layouts.input_count {
-            return Err(Diagnostic::runtime(
-                "runtime input pointer count does not match native MIR interface",
-                0,
-                0,
-            ));
-        }
-        if out_ptrs.len() != self.layouts.output_count {
-            return Err(Diagnostic::runtime(
-                "runtime output pointer count does not match native MIR interface",
-                0,
-                0,
-            ));
-        }
+        validate_audio_abi(&self.mir, in_ptrs, out_ptrs)?;
         self.validate_runtime_regions(state, params)?;
         validate_buffer_abi(
             &self.mir,
@@ -5004,17 +5003,17 @@ impl MirJitProgram {
             .map_err(|_| Diagnostic::runtime("frame count does not fit u32", 0, 0))?;
         unsafe {
             (self.compiled.process)(
-                state.state_words.as_mut_ptr().cast::<u8>(),
-                params.as_ptr(),
-                in_ptrs.as_ptr(),
-                out_ptrs.as_ptr(),
+                abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
+                abi_const_ptr(params),
+                abi_const_ptr(in_ptrs),
+                abi_const_ptr(out_ptrs),
                 start_frame,
                 frames,
                 flags,
-                buffer_ptrs.as_ptr(),
-                buffer_frames.as_ptr(),
-                buffer_channels.as_ptr(),
-                buffer_sample_rates.as_ptr(),
+                abi_const_ptr(buffer_ptrs),
+                abi_const_ptr(buffer_frames),
+                abi_const_ptr(buffer_channels),
+                abi_const_ptr(buffer_sample_rates),
             );
         }
         Ok(())
@@ -5043,17 +5042,17 @@ impl MirJitProgram {
     ) {
         unsafe {
             (self.compiled.process)(
-                state.state_words.as_mut_ptr().cast::<u8>(),
-                params.as_ptr(),
-                in_ptrs.as_ptr(),
-                out_ptrs.as_ptr(),
+                abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
+                abi_const_ptr(params),
+                abi_const_ptr(in_ptrs),
+                abi_const_ptr(out_ptrs),
                 start_frame,
                 frames,
                 flags,
-                buffer_ptrs.as_ptr(),
-                buffer_frames.as_ptr(),
-                buffer_channels.as_ptr(),
-                buffer_sample_rates.as_ptr(),
+                abi_const_ptr(buffer_ptrs),
+                abi_const_ptr(buffer_frames),
+                abi_const_ptr(buffer_channels),
+                abi_const_ptr(buffer_sample_rates),
             );
         }
     }
@@ -5090,13 +5089,13 @@ impl MirJitProgram {
         )?;
         unsafe {
             event(
-                payload.as_ptr(),
-                params.as_ptr(),
-                state.state_words.as_mut_ptr().cast::<u8>(),
-                buffer_ptrs.as_ptr(),
-                buffer_frames.as_ptr(),
-                buffer_channels.as_ptr(),
-                buffer_sample_rates.as_ptr(),
+                abi_const_ptr(payload),
+                abi_const_ptr(params),
+                abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
+                abi_const_ptr(buffer_ptrs),
+                abi_const_ptr(buffer_frames),
+                abi_const_ptr(buffer_channels),
+                abi_const_ptr(buffer_sample_rates),
             );
         }
         Ok(())
@@ -5124,13 +5123,13 @@ impl MirJitProgram {
         };
         unsafe {
             event(
-                payload.as_ptr(),
-                params.as_ptr(),
-                state.state_words.as_mut_ptr().cast::<u8>(),
-                buffer_ptrs.as_ptr(),
-                buffer_frames.as_ptr(),
-                buffer_channels.as_ptr(),
-                buffer_sample_rates.as_ptr(),
+                abi_const_ptr(payload),
+                abi_const_ptr(params),
+                abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
+                abi_const_ptr(buffer_ptrs),
+                abi_const_ptr(buffer_frames),
+                abi_const_ptr(buffer_channels),
+                abi_const_ptr(buffer_sample_rates),
             );
         }
     }
@@ -5266,87 +5265,6 @@ impl MirJitProgram {
         }
         Ok(())
     }
-}
-
-fn validate_buffer_abi(
-    program: &Program,
-    buffer_ptrs: &[*mut u8],
-    buffer_frames: &[i32],
-    buffer_channels: &[i32],
-    buffer_sample_rates: &[f32],
-) -> Result<(), Diagnostic> {
-    let expected = program.interface.buffers.len();
-    if buffer_ptrs.len() != expected
-        || buffer_frames.len() != expected
-        || buffer_channels.len() != expected
-        || buffer_sample_rates.len() != expected
-    {
-        return Err(Diagnostic::runtime(
-            format!(
-                "runtime buffer metadata count mismatch: ptrs={}, frames={}, chans={}, samplerates={}, expected={expected}",
-                buffer_ptrs.len(),
-                buffer_frames.len(),
-                buffer_channels.len(),
-                buffer_sample_rates.len(),
-            ),
-            0,
-            0,
-        ));
-    }
-    for index in 0..expected {
-        if buffer_ptrs[index].is_null() {
-            return Err(Diagnostic::runtime(
-                format!("runtime buffer {index} pointer is null"),
-                0,
-                0,
-            ));
-        }
-        let frames = buffer_frames[index];
-        let channels = buffer_channels[index];
-        if frames <= 0 || channels <= 0 {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "runtime buffer {index} requires positive frames and channels, got {frames} * {channels}"
-                ),
-                0,
-                0,
-            ));
-        }
-        if frames.checked_mul(channels).is_none() {
-            return Err(Diagnostic::runtime(
-                format!("runtime buffer {index} element count {frames} * {channels} exceeds i32"),
-                0,
-                0,
-            ));
-        }
-        let element_size =
-            i32::try_from(scalar_store_size(program.interface.buffers[index].element))
-                .expect("primitive scalar size fits i32");
-        if frames
-            .checked_mul(channels)
-            .and_then(|elements| elements.checked_mul(element_size))
-            .is_none()
-        {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "runtime buffer {index} byte extent {frames} * {channels} * {element_size} exceeds i32"
-                ),
-                0,
-                0,
-            ));
-        }
-        let sample_rate = buffer_sample_rates[index];
-        if !sample_rate.is_finite() || sample_rate <= 0.0 {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "runtime buffer {index} requires finite positive sample rate, got {sample_rate}"
-                ),
-                0,
-                0,
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn append_constant_bytes(
@@ -6248,6 +6166,55 @@ block:
     }
 
     #[test]
+    fn checked_process_rejects_null_and_misaligned_audio_channels() {
+        let (_, mir) = source_program("ins:\n  in1 = 0.0\n\nsample:\n  out1 = in1\n", 8);
+        let native = lower_mir_and_jit(mir).unwrap();
+        let params = native.default_param_bytes();
+        let mut state = native.initialize_state(&params).unwrap();
+        let input = [0.0_f32; 8];
+        let mut output = [0.0_f32; 8];
+        let valid_inputs = [input.as_ptr().cast::<u8>()];
+        let valid_outputs = [output.as_mut_ptr().cast::<u8>()];
+        let buffers: [*mut u8; 0] = [];
+        let metadata_i32: [i32; 0] = [];
+        let metadata_f32: [f32; 0] = [];
+        let mut run = |inputs: &[*const u8], outputs: &[*mut u8]| {
+            native.test_process_checked(
+                &mut state,
+                &params,
+                0,
+                8,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                inputs,
+                outputs,
+                &buffers,
+                &metadata_i32,
+                &metadata_i32,
+                &metadata_f32,
+            )
+        };
+
+        let null_inputs = [std::ptr::null()];
+        assert!(run(&null_inputs, &valid_outputs)
+            .unwrap_err()
+            .message
+            .contains("input channel 0 (`in1`) pointer is null"));
+
+        let null_outputs = [std::ptr::null_mut()];
+        assert!(run(&valid_inputs, &null_outputs)
+            .unwrap_err()
+            .message
+            .contains("output channel 0 (`out1`) pointer is null"));
+
+        let mut aligned_storage = [0_u32; 9];
+        let misaligned_outputs = [aligned_storage.as_mut_ptr().cast::<u8>().wrapping_add(1)];
+        assert!(run(&valid_inputs, &misaligned_outputs)
+            .unwrap_err()
+            .message
+            .contains("requires 4-byte alignment"));
+    }
+
+    #[test]
     fn real_sine_source_executes_through_mir_llvm() {
         let outputs = run_native_outputs(
             include_str!("../../../../examples/foundations/sine.onda"),
@@ -7093,13 +7060,14 @@ sample:
         let (_, mir) = source_program(
             r#"
 buffers:
-  data: f64
+  data: f64[]
 sample:
   out1 = 0.0
 "#,
             1,
         );
-        let pointer = std::ptr::NonNull::<u8>::dangling().as_ptr();
+        let mut storage = [0_u64; 1];
+        let pointer = storage.as_mut_ptr().cast::<u8>();
         let pointers = [pointer];
         let overflow = validate_buffer_abi(&mir, &pointers, &[i32::MAX], &[2], &[48_000.0])
             .expect_err("wrapping buffer element count must be rejected");
@@ -7115,6 +7083,62 @@ sample:
                 .expect_err("invalid sample rate metadata must be rejected");
             assert!(error.message.contains("finite positive sample rate"));
         }
+    }
+
+    #[test]
+    fn raw_checked_buffer_abi_accepts_only_canonical_empty_bindings() {
+        let (_, mir) = source_program(
+            r#"
+buffers:
+  data: f32
+sample:
+  out1 = 0.0
+"#,
+            1,
+        );
+        let null = std::ptr::null_mut();
+        validate_buffer_abi(&mir, &[null], &[0], &[0], &[48_000.0])
+            .expect("null + zero frames/channels is a bound empty buffer");
+
+        let mut storage = [0_u32; 1];
+        let pointer = storage.as_mut_ptr().cast::<u8>();
+        for (pointer, frames, channels) in [(pointer, 0, 0), (pointer, 1, 0), (null, 1, 1)] {
+            let error = validate_buffer_abi(&mir, &[pointer], &[frames], &[channels], &[48_000.0])
+                .expect_err("partial empty-buffer shapes must be rejected");
+            assert!(error.message.contains("canonical empty"));
+        }
+
+        let error = validate_buffer_abi(&mir, &[null], &[0], &[0], &[f32::NAN])
+            .expect_err("empty bindings still require valid sample-rate metadata");
+        assert!(error.message.contains("finite positive sample rate"));
+
+        let error = validate_buffer_abi(&mir, &[pointer], &[1], &[2], &[48_000.0])
+            .expect_err("non-empty bindings must honor declared channel constraints");
+        assert!(
+            error.message.contains("requires 1 channels"),
+            "{}",
+            error.message
+        );
+
+        let mut aligned_storage = [0_u32; 2];
+        let misaligned = aligned_storage.as_mut_ptr().cast::<u8>().wrapping_add(1);
+        let error = validate_buffer_abi(&mir, &[misaligned], &[1], &[1], &[48_000.0])
+            .expect_err("non-empty bindings must honor scalar alignment");
+        assert!(error.message.contains("requires 4-byte alignment"));
+    }
+
+    #[test]
+    fn raw_abi_uses_null_pointers_for_absent_surfaces() {
+        assert!(abi_const_ptr::<u8>(&[]).is_null());
+        assert!(abi_mut_ptr::<u8>(&mut []).is_null());
+
+        let values = [1_u8];
+        let mut mutable_values = [1_u8];
+        assert_eq!(abi_const_ptr(&values), values.as_ptr());
+        assert_eq!(
+            abi_mut_ptr(&mut mutable_values),
+            mutable_values.as_mut_ptr()
+        );
     }
 
     #[test]
@@ -7527,7 +7551,7 @@ events {
         assert_eq!(meter.name, "meter");
         assert_eq!(meter.type_repr, "f64");
         assert_eq!(meter.slot_offset, 0);
-        assert_eq!(meter.byte_offset, 0);
+        assert_eq!(meter.byte_offset, Some(0));
         assert_eq!(meter.byte_size, 8);
         assert_eq!(
             meter.state_byte_offset,
@@ -7536,10 +7560,10 @@ events {
 
         let fixed = &artifact.metadata.metadata.events[0];
         assert_eq!(fixed.name, "fixed");
-        assert_eq!(fixed.payload_bytes, native.event_payload_byte_size(0));
-        assert_eq!(fixed.payload_bytes, Some(16));
+        assert_eq!(fixed.payload_size_bytes, native.event_payload_byte_size(0));
+        assert_eq!(fixed.payload_size_bytes, Some(16));
         assert_eq!(fixed.params[0].type_repr, "f32[2]");
-        assert_eq!(fixed.params[0].byte_offset, 0);
+        assert_eq!(fixed.params[0].byte_offset, Some(0));
         assert_eq!(fixed.params[0].byte_size, Some(8));
         assert!(fixed.params[0].has_default);
         assert_eq!(
@@ -7547,22 +7571,25 @@ events {
             Some(vec!["0.25".to_owned(), "0.5".to_owned()])
         );
         assert_eq!(fixed.params[1].type_repr, "i64");
-        assert_eq!(fixed.params[1].byte_offset, 8);
+        assert_eq!(fixed.params[1].byte_offset, Some(8));
         assert_eq!(fixed.params[1].byte_size, Some(8));
         assert!(fixed.params[1].has_default);
         assert_eq!(fixed.params[1].default_reprs, Some(vec!["7".to_owned()]));
 
         let dynamic = &artifact.metadata.metadata.events[1];
         assert_eq!(dynamic.name, "dynamic");
-        assert_eq!(dynamic.payload_bytes, native.event_payload_byte_size(1));
-        assert_eq!(dynamic.payload_bytes, None);
-        assert_eq!(dynamic.params[0].byte_offset, 0);
+        assert_eq!(
+            dynamic.payload_size_bytes,
+            native.event_payload_byte_size(1)
+        );
+        assert_eq!(dynamic.payload_size_bytes, None);
+        assert_eq!(dynamic.params[0].byte_offset, Some(0));
         assert_eq!(dynamic.params[0].byte_size, Some(8));
         assert_eq!(dynamic.params[1].type_repr, "f32[]");
         assert!(dynamic.params[1].is_slice);
-        assert_eq!(dynamic.params[1].byte_offset, 8);
+        assert_eq!(dynamic.params[1].byte_offset, Some(8));
         assert_eq!(dynamic.params[1].byte_size, None);
-        assert_eq!(dynamic.params[2].byte_offset, 12);
+        assert_eq!(dynamic.params[2].byte_offset, None);
         assert_eq!(dynamic.params[2].byte_size, Some(8));
     }
 

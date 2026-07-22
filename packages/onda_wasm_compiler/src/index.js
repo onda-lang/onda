@@ -3,6 +3,7 @@ import {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_SNAPSHOT_FORMAT_VERSION,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
   parseProcessorMetadata,
@@ -25,6 +26,7 @@ export {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_SNAPSHOT_FORMAT_VERSION,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
   parseProcessorMetadata,
@@ -180,11 +182,15 @@ class WorkerOndaCompiler {
     try {
       await this.request("dispose");
     } finally {
-      this.worker.removeEventListener("message", this.onMessage);
-      this.worker.removeEventListener("error", this.onError);
-      this.worker.terminate();
-      this.failAll(new OndaCompilerError("compiler worker was disposed"));
+      this.terminate(new OndaCompilerError("compiler worker was disposed"));
     }
+  }
+
+  terminate(error) {
+    this.worker.removeEventListener("message", this.onMessage);
+    this.worker.removeEventListener("error", this.onError);
+    this.worker.terminate();
+    this.failAll(error);
   }
 
   request(type, fields = {}) {
@@ -233,11 +239,27 @@ export async function createCompiler(options = {}) {
         name: "onda-wasm-compiler",
       }),
     );
-    await compiler.initialize(options.frontendWasm);
-    return compiler;
+    try {
+      await compiler.initialize(options.frontendWasm);
+      return compiler;
+    } catch (error) {
+      compiler.terminate(
+        new OndaCompilerError("compiler worker initialization failed", { cause: error }),
+      );
+      throw error;
+    }
   }
 
-  toolchainInitialization ??= initializeToolchain(options.frontendWasm);
+  if (!toolchainInitialization) {
+    let initialization;
+    initialization = initializeToolchain(options.frontendWasm).catch((error) => {
+      if (toolchainInitialization === initialization) {
+        toolchainInitialization = undefined;
+      }
+      throw error;
+    });
+    toolchainInitialization = initialization;
+  }
   const toolchain = await toolchainInitialization;
   return new OndaCompiler(toolchain.frontend, toolchain.compileTrustedMir);
 }
@@ -275,8 +297,8 @@ function normalizeCompileOptions(options) {
   if (typeof sampleRate !== "number" || !Number.isFinite(sampleRate) || sampleRate <= 0) {
     throw configurationError("sampleRate must be finite and greater than zero");
   }
-  if (!Number.isInteger(blockSize) || blockSize <= 0 || blockSize > 0xffff_ffff) {
-    throw configurationError("blockSize must be a positive 32-bit integer");
+  if (!Number.isInteger(blockSize) || blockSize <= 0 || blockSize > 0x7fff_ffff) {
+    throw configurationError("blockSize must be between 1 and 2147483647 frames");
   }
   if (
     options.codegen !== undefined

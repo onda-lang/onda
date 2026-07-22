@@ -31,7 +31,7 @@ if (imports.length !== 0) {
 
 const expectedExports = [
   "memory",
-  ...["sin", "cos", "tan", "tanh", "atan", "atan2", "exp", "log", "pow", "fma"]
+  ...["sin", "cos", "tan", "tanh", "atan", "atan2", "exp", "log", "pow", "remainder", "fma"]
     .flatMap((intrinsic) => [
       `onda_math_${intrinsic}_f32`,
       `onda_math_${intrinsic}_f64`,

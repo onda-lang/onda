@@ -14,19 +14,10 @@ use onda_semantics::AnalysisOptions;
 
 use onda_semantics::normalize_session_path;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DaemonConfig {
     pub analysis: AnalysisOptions,
     pub run: RunOptions,
-}
-
-impl Default for DaemonConfig {
-    fn default() -> Self {
-        Self {
-            analysis: AnalysisOptions::default(),
-            run: RunOptions::default(),
-        }
-    }
 }
 
 #[derive(Debug, Default)]

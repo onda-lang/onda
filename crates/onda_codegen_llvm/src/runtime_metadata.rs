@@ -2,9 +2,9 @@
 use std::collections::HashMap;
 
 use onda_frontend::PrimitiveType;
-use onda_semantics::{TypedConstValue, TypedValueRange};
+use onda_mir::{ScalarValue, ValueRange};
 
-use crate::primitives::{primitive_type_bytes, primitive_type_name, typed_const_to_f64};
+use crate::primitives::{primitive_type_bytes, primitive_type_name, scalar_value_to_f64};
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
     DeclaredState,
@@ -40,6 +40,10 @@ impl DeclaredIo {
         self.array_len
     }
 
+    pub fn is_array(&self) -> bool {
+        self.is_array
+    }
+
     pub fn slot_offset(&self) -> usize {
         self.slot_offset
     }
@@ -52,8 +56,12 @@ impl DeclaredIo {
         self.state_byte_offset
     }
 
-    pub fn default(&self) -> Option<TypedConstValue> {
-        self.default
+    pub fn default(&self) -> Option<ScalarValue> {
+        if self.is_array {
+            None
+        } else {
+            self.default_values.as_deref()?.first().copied()
+        }
     }
 
     pub fn has_default(&self) -> bool {
@@ -64,31 +72,35 @@ impl DeclaredIo {
         self.default_bytes.as_deref()
     }
 
+    pub fn default_values(&self) -> Option<&[ScalarValue]> {
+        self.default_values.as_deref()
+    }
+
     pub fn default_as_f64(&self) -> Option<f64> {
-        self.default.map(typed_const_to_f64)
+        self.default().map(scalar_value_to_f64)
     }
 
     pub fn has_range(&self) -> bool {
         self.range.is_some()
     }
 
-    pub fn range(&self) -> Option<TypedValueRange> {
+    pub fn range(&self) -> Option<ValueRange> {
         self.range
     }
 
     pub fn range_min_as_f64(&self) -> Option<f64> {
-        self.range.map(|r| typed_const_to_f64(r.min))
+        self.range.map(|r| scalar_value_to_f64(r.min))
     }
 
     pub fn range_max_as_f64(&self) -> Option<f64> {
-        self.range.map(|r| typed_const_to_f64(r.max))
+        self.range.map(|r| scalar_value_to_f64(r.max))
     }
 
     pub fn type_repr(&self) -> String {
-        if self.array_len == 1 {
-            primitive_type_name(self.elem_ty).to_owned()
-        } else {
+        if self.is_array {
             format!("{}[{}]", primitive_type_name(self.elem_ty), self.array_len)
+        } else {
+            primitive_type_name(self.elem_ty).to_owned()
         }
     }
 
@@ -110,6 +122,10 @@ impl DeclaredState {
         self.array_len
     }
 
+    pub fn is_array(&self) -> bool {
+        self.is_array
+    }
+
     pub fn byte_offset(&self) -> usize {
         self.byte_offset
     }
@@ -123,10 +139,10 @@ impl DeclaredState {
     }
 
     pub fn type_repr(&self) -> String {
-        if self.array_len == 1 {
-            primitive_type_name(self.elem_ty).to_owned()
-        } else {
+        if self.is_array {
             format!("{}[{}]", primitive_type_name(self.elem_ty), self.array_len)
+        } else {
+            primitive_type_name(self.elem_ty).to_owned()
         }
     }
 }
@@ -144,8 +160,12 @@ impl DeclaredBuffer {
         self.channels
     }
 
+    pub fn access(&self) -> onda_mir::AccessMode {
+        self.access
+    }
+
     pub fn may_write(&self) -> bool {
-        self.may_write
+        self.access == onda_mir::AccessMode::ReadWrite
     }
 
     pub fn type_repr(&self) -> String {
@@ -185,6 +205,10 @@ impl DeclaredEventParam {
         self.array_len
     }
 
+    pub fn is_array(&self) -> bool {
+        self.is_array
+    }
+
     pub fn is_slice(&self) -> bool {
         self.is_slice
     }
@@ -201,7 +225,7 @@ impl DeclaredEventParam {
         self.default_bytes.as_deref()
     }
 
-    pub fn default_values(&self) -> Option<&[TypedConstValue]> {
+    pub fn default_values(&self) -> Option<&[ScalarValue]> {
         self.default_values.as_deref()
     }
 
@@ -209,10 +233,10 @@ impl DeclaredEventParam {
         if self.is_slice {
             return format!("{}[]", primitive_type_name(self.elem_ty));
         }
-        if self.array_len == 1 {
-            primitive_type_name(self.elem_ty).to_owned()
-        } else {
+        if self.is_array {
             format!("{}[{}]", primitive_type_name(self.elem_ty), self.array_len)
+        } else {
+            primitive_type_name(self.elem_ty).to_owned()
         }
     }
 

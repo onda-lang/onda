@@ -641,13 +641,8 @@ fn format_assign_target(target: &AssignTarget) -> String {
         AssignTarget::Index { base, index } => format!("{base}[{}]", format_expr(index)),
         AssignTarget::Slice { base, start, end } => format!(
             "{base}[{}:{}]",
-            start
-                .as_ref()
-                .map(|expr| format_expr(expr))
-                .unwrap_or_default(),
-            end.as_ref()
-                .map(|expr| format_expr(expr))
-                .unwrap_or_default()
+            start.as_ref().map(format_expr).unwrap_or_default(),
+            end.as_ref().map(format_expr).unwrap_or_default()
         ),
         AssignTarget::Tuple(names) => format!("({})", names.join(", ")),
     }

@@ -52,13 +52,11 @@ where
         for use_info in visible_uses_in_namespace(ctx, current_namespace) {
             let target = resolve_use_target(ctx, use_info);
             match use_info.alias.as_deref() {
-                Some(alias) if alias == head => {
-                    if ctx.has_namespace(&target) {
-                        for candidate in
-                            namespace_alias_path_candidates(ctx, &namespace_join(&target, tail))
-                        {
-                            push_unique_candidate(&mut candidates, candidate);
-                        }
+                Some(alias) if alias == head && ctx.has_namespace(&target) => {
+                    for candidate in
+                        namespace_alias_path_candidates(ctx, &namespace_join(&target, tail))
+                    {
+                        push_unique_candidate(&mut candidates, candidate);
                     }
                 }
                 None => {
@@ -276,9 +274,7 @@ where
                 suffix.to_owned(),
             ));
         }
-        let Some((parent, _)) = prefix.rsplit_once("::") else {
-            return None;
-        };
+        let (parent, _) = prefix.rsplit_once("::")?;
         prefix = parent;
     }
 }

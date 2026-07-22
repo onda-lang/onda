@@ -7,7 +7,7 @@ Onda owns one backend-neutral processor ABI, documented in
 with the target:
 
 - LLVM emits optimized relocatable objects for native and WebAssembly target triples. Onda does not
-  bundle a linker; the application uses its normal platform toolchain and the format-3 descriptor.
+  bundle a linker; the application uses its normal platform toolchain and the processor descriptor.
 - The browser-safe Binaryen backend emits a complete, self-contained core-Wasm module because the
   browser has no object-linking interface.
 - `packages/onda_webaudio` is an optional host adapter, not part of the ABI or either backend.
@@ -37,7 +37,7 @@ does not need LLVM, a server-side compiler, `wasm-ld`, or JavaScript math callba
 
 ## Processor ABI evolution
 
-- Keep ABI version 1 stable while metadata format 3 evolves through additive optional fields.
+- Keep the ABI stable while the metadata format evolves through additive optional fields.
 - Consider a future namespaced-symbol profile for linking several Onda processors into one artifact.
 - Add a portable descriptor parser/validator crate so native C/Rust hosts need not duplicate JSON
   validation. The generated C API remains a separate higher-level embedding surface.

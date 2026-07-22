@@ -171,7 +171,7 @@ fn lower_top_level_graph_block(
             init.body.extend(lowered.init_stmts);
         } else {
             program.blocks.push(Block::Init(InitBlock {
-                loc: graph.loc.clone(),
+                loc: graph.loc,
                 default_ty: None,
                 default_ty_loc: Default::default(),
                 body: lowered.init_stmts,
@@ -180,7 +180,7 @@ fn lower_top_level_graph_block(
     }
 
     let sample_block = SampleBlock {
-        loc: graph.loc.clone(),
+        loc: graph.loc,
         oversample_factor: None,
         body: lowered.sample,
     };
@@ -188,7 +188,7 @@ fn lower_top_level_graph_block(
         program.blocks.push(Block::Sample(sample_block));
     } else {
         program.blocks.push(Block::Block(BlockExec {
-            loc: graph.loc.clone(),
+            loc: graph.loc,
             pre: lowered.block_pre,
             sample: Some(sample_block),
             post: Vec::new(),

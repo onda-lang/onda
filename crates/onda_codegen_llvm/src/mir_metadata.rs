@@ -3,13 +3,11 @@ use std::fmt;
 
 use onda_frontend::PrimitiveType;
 use onda_mir::{
-    AccessMode, Block, BufferChannels, CallArgument, ConstantValue, Function, Place, PlaceBase,
-    Program, Rvalue, ScalarType, ScalarValue, SliceSource, StatePersistence, StatementKind, Type,
-    Value, ValueRange,
+    BufferChannels, ConstantValue, Program, ScalarType, ScalarValue, StatePersistence, Type,
+    ValueRange,
 };
-use onda_semantics::{TypedConstValue, TypedValueRange};
 
-use crate::primitives::{append_typed_const_bytes, primitive_type_bytes};
+use crate::primitives::{append_scalar_value_bytes, primitive_type_bytes};
 use crate::runtime_metadata::ProgramMetadata;
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
@@ -279,11 +277,9 @@ fn build_io_descriptor(
     let default_bytes = default
         .map(|value| constant_bytes(program, value, ty))
         .transpose()?;
-    let scalar_default = if shape.is_array {
-        None
-    } else {
-        default.map(scalar_constant_value).transpose()?
-    };
+    let default_values = default
+        .map(|value| constant_values(program, value, ty))
+        .transpose()?;
     let range = range
         .map(|range| typed_range(range, shape.element))
         .transpose()?;
@@ -292,10 +288,11 @@ fn build_io_descriptor(
         name: name.to_owned(),
         elem_ty: shape.element,
         array_len: shape.len,
+        is_array: shape.is_array,
         slot_offset,
         byte_offset,
         state_byte_offset,
-        default: scalar_default,
+        default_values,
         default_bytes,
         range,
     })
@@ -323,6 +320,7 @@ fn build_state_entries(
             name: slot.name.clone(),
             elem_ty: shape.element,
             array_len: shape.len,
+            is_array: shape.is_array,
             byte_offset: snapshot_offset,
             storage_byte_offset: offsets[index],
         });
@@ -362,6 +360,7 @@ fn build_events(
                         name: param.name.clone(),
                         elem_ty: element,
                         array_len: 1,
+                        is_array: false,
                         is_slice: false,
                         byte_offset: minimum_wire_offset,
                         default_bytes,
@@ -408,6 +407,7 @@ fn build_events(
                         name: param.name.clone(),
                         elem_ty,
                         array_len: len,
+                        is_array: true,
                         is_slice: false,
                         byte_offset: minimum_wire_offset,
                         default_bytes,
@@ -430,6 +430,7 @@ fn build_events(
                         name: param.name.clone(),
                         elem_ty: primitive_type(*element),
                         array_len: 0,
+                        is_array: false,
                         is_slice: true,
                         byte_offset: minimum_wire_offset,
                         default_bytes: None,
@@ -470,20 +471,11 @@ fn build_events(
 }
 
 fn build_buffers(program: &Program) -> Result<Vec<DeclaredBuffer>, MirMetadataError> {
-    let written = infer_written_interface_buffers(program)?;
     program
         .interface
         .buffers
         .iter()
-        .enumerate()
-        .map(|(index, buffer)| {
-            let may_write = written.contains(&index);
-            if may_write && buffer.access != AccessMode::ReadWrite {
-                return Err(MirMetadataError::new(format!(
-                    "MIR writes read-only interface buffer '{}'",
-                    buffer.name
-                )));
-            }
+        .map(|buffer| {
             let channels = match buffer.channels {
                 BufferChannels::Mono => DeclaredBufferChannels::Mono,
                 BufferChannels::Static(channels) => {
@@ -497,389 +489,10 @@ fn build_buffers(program: &Program) -> Result<Vec<DeclaredBuffer>, MirMetadataEr
                 name: buffer.name.clone(),
                 elem_ty: primitive_type(buffer.element),
                 channels,
-                may_write,
+                access: buffer.access,
             })
         })
         .collect()
-}
-
-#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
-enum ResourceOrigin {
-    Buffer(usize),
-    Parameter(usize),
-}
-
-#[derive(Debug, Clone, Default, Eq, PartialEq)]
-struct FunctionWriteSummary {
-    buffers: HashSet<usize>,
-    parameters: HashSet<usize>,
-}
-
-fn infer_written_interface_buffers(program: &Program) -> Result<HashSet<usize>, MirMetadataError> {
-    let mut summaries = vec![FunctionWriteSummary::default(); program.functions.len()];
-    loop {
-        let mut changed = false;
-        let previous = summaries.clone();
-        for (function_index, function) in program.functions.iter().enumerate() {
-            let aliases = infer_local_resource_aliases(program, function);
-            let unsupported_results = unsupported_resource_call_results(program, function);
-            let mut next = FunctionWriteSummary::default();
-            collect_block_resource_writes(
-                program,
-                function,
-                &function.body,
-                &aliases,
-                &unsupported_results,
-                &previous,
-                &mut next,
-            )?;
-            if next != summaries[function_index] {
-                summaries[function_index] = next;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    let mut written = HashSet::new();
-    let mut roots = vec![
-        program.entry_points.init.index(),
-        program.entry_points.process.index(),
-    ];
-    roots.extend(
-        program
-            .interface
-            .events
-            .iter()
-            .map(|event| event.handler.index()),
-    );
-    for root in roots {
-        let summary = summaries.get(root).ok_or_else(|| {
-            MirMetadataError::new(format!("MIR metadata root function {root} is missing"))
-        })?;
-        written.extend(summary.buffers.iter().copied());
-    }
-    Ok(written)
-}
-
-fn infer_local_resource_aliases(
-    program: &Program,
-    function: &Function,
-) -> Vec<HashSet<ResourceOrigin>> {
-    let mut aliases = vec![HashSet::new(); function.locals.len()];
-    loop {
-        let previous = aliases.clone();
-        collect_block_aliases(program, function, &function.body, &previous, &mut aliases);
-        if aliases == previous {
-            return aliases;
-        }
-    }
-}
-
-fn collect_block_aliases(
-    program: &Program,
-    function: &Function,
-    block: &Block,
-    previous: &[HashSet<ResourceOrigin>],
-    aliases: &mut [HashSet<ResourceOrigin>],
-) {
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Assign { destination, value }
-                if destination.projections.is_empty()
-                    && matches!(destination.base, PlaceBase::Local(_)) =>
-            {
-                let PlaceBase::Local(local) = destination.base else {
-                    unreachable!()
-                };
-                let origins = rvalue_resource_origins(value, previous);
-                aliases[local.index()].extend(origins);
-            }
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_block_aliases(program, function, then_block, previous, aliases);
-                collect_block_aliases(program, function, else_block, previous, aliases);
-            }
-            StatementKind::Loop { body } => {
-                collect_block_aliases(program, function, body, previous, aliases);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn rvalue_resource_origins(
-    value: &Rvalue,
-    aliases: &[HashSet<ResourceOrigin>],
-) -> HashSet<ResourceOrigin> {
-    match value {
-        Rvalue::Use(value) => value_resource_origins(*value, aliases),
-        Rvalue::Load(place) => place_resource_origins(place, aliases),
-        Rvalue::MakeSlice { source, .. } => match source {
-            SliceSource::Buffer { buffer, .. } => {
-                HashSet::from([ResourceOrigin::Buffer(buffer.index())])
-            }
-            SliceSource::BufferParam { parameter, .. } => {
-                HashSet::from([ResourceOrigin::Parameter(parameter.index())])
-            }
-            SliceSource::Place(place) => place_resource_origins(place, aliases),
-            SliceSource::ConstData(_) => HashSet::new(),
-        },
-        _ => HashSet::new(),
-    }
-}
-
-fn value_resource_origins(
-    value: Value,
-    aliases: &[HashSet<ResourceOrigin>],
-) -> HashSet<ResourceOrigin> {
-    match value {
-        Value::Local(local) => aliases.get(local.index()).cloned().unwrap_or_default(),
-        Value::Constant(_) => HashSet::new(),
-    }
-}
-
-fn place_resource_origins(
-    place: &Place,
-    aliases: &[HashSet<ResourceOrigin>],
-) -> HashSet<ResourceOrigin> {
-    match place.base {
-        PlaceBase::Parameter(parameter) => {
-            HashSet::from([ResourceOrigin::Parameter(parameter.index())])
-        }
-        PlaceBase::Local(local) => aliases.get(local.index()).cloned().unwrap_or_default(),
-        PlaceBase::State(_) | PlaceBase::Param(_) | PlaceBase::EventParam(_) => HashSet::new(),
-    }
-}
-
-fn unsupported_resource_call_results(program: &Program, function: &Function) -> HashSet<usize> {
-    let mut locals = HashSet::new();
-    collect_unsupported_resource_call_results(program, function, &function.body, &mut locals);
-    locals
-}
-
-fn collect_unsupported_resource_call_results(
-    program: &Program,
-    function: &Function,
-    block: &Block,
-    locals: &mut HashSet<usize>,
-) {
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Call { results, .. } => {
-                for result in results {
-                    let Some(local) = function.locals.get(result.index()) else {
-                        continue;
-                    };
-                    if matches!(
-                        program.types.get(local.ty.index()),
-                        Some(Type::Slice { .. } | Type::Buffer { .. })
-                    ) {
-                        locals.insert(result.index());
-                    }
-                }
-            }
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_unsupported_resource_call_results(program, function, then_block, locals);
-                collect_unsupported_resource_call_results(program, function, else_block, locals);
-            }
-            StatementKind::Loop { body } => {
-                collect_unsupported_resource_call_results(program, function, body, locals);
-            }
-            _ => {}
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn collect_block_resource_writes(
-    program: &Program,
-    function: &Function,
-    block: &Block,
-    aliases: &[HashSet<ResourceOrigin>],
-    unsupported_results: &HashSet<usize>,
-    summaries: &[FunctionWriteSummary],
-    output: &mut FunctionWriteSummary,
-) -> Result<(), MirMetadataError> {
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Assign { destination, .. } => {
-                if let PlaceBase::Parameter(parameter) = destination.base {
-                    output.parameters.insert(parameter.index());
-                }
-            }
-            StatementKind::BufferStore { buffer, .. } => {
-                output.buffers.insert(buffer.index());
-            }
-            StatementKind::BufferParamStore { parameter, .. } => {
-                output.parameters.insert(parameter.index());
-            }
-            StatementKind::SliceStore { slice, .. } => {
-                mark_value_resource_write(
-                    *slice,
-                    aliases,
-                    unsupported_results,
-                    "slice store",
-                    output,
-                )?;
-            }
-            StatementKind::SliceFill { destination, .. }
-            | StatementKind::SliceCopy { destination, .. } => {
-                mark_value_resource_write(
-                    *destination,
-                    aliases,
-                    unsupported_results,
-                    "slice write",
-                    output,
-                )?;
-            }
-            StatementKind::Call {
-                function: callee,
-                args,
-                ..
-            } => {
-                let callee_summary = summaries.get(callee.index()).ok_or_else(|| {
-                    MirMetadataError::new(format!(
-                        "MIR call references missing function {}",
-                        callee.raw()
-                    ))
-                })?;
-                output
-                    .buffers
-                    .extend(callee_summary.buffers.iter().copied());
-                for parameter in &callee_summary.parameters {
-                    let argument = args.get(*parameter).ok_or_else(|| {
-                        MirMetadataError::new(format!(
-                            "MIR call to function {} has no argument for writable parameter {parameter}",
-                            callee.raw()
-                        ))
-                    })?;
-                    let origins = call_argument_resource_origins(argument, aliases);
-                    if call_argument_uses_unsupported_result(argument, unsupported_results) {
-                        return Err(MirMetadataError::new(
-                            "cannot infer interface-buffer writes through a slice or buffer returned by a MIR call",
-                        ));
-                    }
-                    mark_resource_origins(origins, output);
-                }
-            }
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_block_resource_writes(
-                    program,
-                    function,
-                    then_block,
-                    aliases,
-                    unsupported_results,
-                    summaries,
-                    output,
-                )?;
-                collect_block_resource_writes(
-                    program,
-                    function,
-                    else_block,
-                    aliases,
-                    unsupported_results,
-                    summaries,
-                    output,
-                )?;
-            }
-            StatementKind::Loop { body } => collect_block_resource_writes(
-                program,
-                function,
-                body,
-                aliases,
-                unsupported_results,
-                summaries,
-                output,
-            )?,
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn mark_value_resource_write(
-    value: Value,
-    aliases: &[HashSet<ResourceOrigin>],
-    unsupported_results: &HashSet<usize>,
-    context: &str,
-    output: &mut FunctionWriteSummary,
-) -> Result<(), MirMetadataError> {
-    if let Value::Local(local) = value {
-        if unsupported_results.contains(&local.index()) {
-            return Err(MirMetadataError::new(format!(
-                "cannot infer interface-buffer writes for {context} through a slice returned by a MIR call"
-            )));
-        }
-    }
-    mark_resource_origins(value_resource_origins(value, aliases), output);
-    Ok(())
-}
-
-fn call_argument_resource_origins(
-    argument: &CallArgument,
-    aliases: &[HashSet<ResourceOrigin>],
-) -> HashSet<ResourceOrigin> {
-    match argument {
-        CallArgument::Buffer(buffer) => HashSet::from([ResourceOrigin::Buffer(buffer.index())]),
-        CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => {
-            place_resource_origins(place, aliases)
-        }
-        CallArgument::Value(value)
-        | CallArgument::SliceElement { slice: value, .. }
-        | CallArgument::SliceWindow { slice: value, .. } => value_resource_origins(*value, aliases),
-    }
-}
-
-fn call_argument_uses_unsupported_result(
-    argument: &CallArgument,
-    unsupported_results: &HashSet<usize>,
-) -> bool {
-    let value = match argument {
-        CallArgument::Value(value)
-        | CallArgument::SliceElement { slice: value, .. }
-        | CallArgument::SliceWindow { slice: value, .. } => Some(*value),
-        CallArgument::Place(Place {
-            base: PlaceBase::Local(local),
-            ..
-        })
-        | CallArgument::ArrayWindow {
-            array:
-                Place {
-                    base: PlaceBase::Local(local),
-                    ..
-                },
-            ..
-        } => return unsupported_results.contains(&local.index()),
-        CallArgument::Place(_) | CallArgument::ArrayWindow { .. } | CallArgument::Buffer(_) => None,
-    };
-    matches!(value, Some(Value::Local(local)) if unsupported_results.contains(&local.index()))
-}
-
-fn mark_resource_origins(origins: HashSet<ResourceOrigin>, output: &mut FunctionWriteSummary) {
-    for origin in origins {
-        match origin {
-            ResourceOrigin::Buffer(buffer) => {
-                output.buffers.insert(buffer);
-            }
-            ResourceOrigin::Parameter(parameter) => {
-                output.parameters.insert(parameter);
-            }
-        }
-    }
 }
 
 fn scalar_array_shape(
@@ -929,37 +542,13 @@ fn primitive_type(ty: ScalarType) -> PrimitiveType {
     }
 }
 
-fn scalar_constant_value(value: &ConstantValue) -> Result<TypedConstValue, MirMetadataError> {
-    let ConstantValue::Scalar(value) = value else {
-        return Err(MirMetadataError::new(
-            "MIR scalar descriptor has an aggregate constant",
-        ));
-    };
-    Ok(typed_scalar(*value))
-}
-
-fn typed_scalar(value: ScalarValue) -> TypedConstValue {
-    match value {
-        ScalarValue::F32(value) => TypedConstValue::F32(value),
-        ScalarValue::F64(value) => TypedConstValue::F64(value),
-        ScalarValue::I32(value) => TypedConstValue::I32(value),
-        ScalarValue::I64(value) => TypedConstValue::I64(value),
-        ScalarValue::Bool(value) => TypedConstValue::Bool(value),
-    }
-}
-
-fn typed_range(
-    range: ValueRange,
-    expected: PrimitiveType,
-) -> Result<TypedValueRange, MirMetadataError> {
-    let min = typed_scalar(range.min);
-    let max = typed_scalar(range.max);
+fn typed_range(range: ValueRange, expected: PrimitiveType) -> Result<ValueRange, MirMetadataError> {
     if primitive_type(range.min.ty()) != expected || primitive_type(range.max.ty()) != expected {
         return Err(MirMetadataError::new(
             "MIR scalar range does not match its descriptor element type",
         ));
     }
-    Ok(TypedValueRange { min, max })
+    Ok(range)
 }
 
 fn constant_bytes(
@@ -976,7 +565,7 @@ fn constant_values(
     program: &Program,
     value: &ConstantValue,
     ty: onda_mir::TypeId,
-) -> Result<Vec<TypedConstValue>, MirMetadataError> {
+) -> Result<Vec<ScalarValue>, MirMetadataError> {
     let mut values = Vec::new();
     append_constant_values(program, value, ty, &mut values)?;
     Ok(values)
@@ -986,11 +575,11 @@ fn append_constant_values(
     program: &Program,
     value: &ConstantValue,
     ty: onda_mir::TypeId,
-    output: &mut Vec<TypedConstValue>,
+    output: &mut Vec<ScalarValue>,
 ) -> Result<(), MirMetadataError> {
     match (program.types.get(ty.index()), value) {
         (Some(Type::Scalar(expected)), ConstantValue::Scalar(value)) if *expected == value.ty() => {
-            output.push(typed_scalar(*value));
+            output.push(*value);
             Ok(())
         }
         (Some(Type::Array { element, len }), ConstantValue::Aggregate(values))
@@ -1019,7 +608,7 @@ fn append_constant_bytes(
 ) -> Result<(), MirMetadataError> {
     match (program.types.get(ty.index()), value) {
         (Some(Type::Scalar(expected)), ConstantValue::Scalar(value)) if *expected == value.ty() => {
-            append_typed_const_bytes(output, typed_scalar(*value), primitive_type(*expected));
+            append_scalar_value_bytes(output, *value, primitive_type(*expected));
             Ok(())
         }
         (Some(Type::Array { element, len }), ConstantValue::Aggregate(values))
@@ -1058,9 +647,9 @@ mod tests {
     use super::*;
 
     use onda_mir::{
-        process_function_params, Buffer, BufferId, CompileConfig, EntryPoints, Event, EventParam,
-        FunctionId, FunctionKind, FunctionParam, Input, Interface, Local, LocalId, Output, Param,
-        ParameterId, PassingMode, SourceSpan, StateSlot, Statement,
+        process_function_params, AccessMode, Block, Buffer, CompileConfig, EntryPoints, Event,
+        EventParam, Function, FunctionId, FunctionKind, FunctionParam, Input, Interface, Output,
+        Param, SourceSpan, StateSlot,
     };
 
     fn empty_function(name: &str, kind: FunctionKind, params: Vec<FunctionParam>) -> Function {
@@ -1072,13 +661,6 @@ mod tests {
             results: Vec::new(),
             locals: Vec::new(),
             body: Block::default(),
-            source: SourceSpan::UNKNOWN,
-        }
-    }
-
-    fn statement(kind: StatementKind) -> Statement {
-        Statement {
-            kind,
             source: SourceSpan::UNKNOWN,
         }
     }
@@ -1307,21 +889,22 @@ mod tests {
         assert_eq!(metadata.inputs[0].name(), "gain");
         assert_eq!(metadata.inputs[0].slot_offset(), 0);
         assert_eq!(metadata.inputs[0].byte_offset(), 0);
-        assert_eq!(
-            metadata.inputs[0].default(),
-            Some(TypedConstValue::F32(0.25))
-        );
+        assert_eq!(metadata.inputs[0].default(), Some(ScalarValue::F32(0.25)));
         assert_eq!(
             metadata.inputs[0].range(),
-            Some(TypedValueRange {
-                min: TypedConstValue::F32(0.0),
-                max: TypedConstValue::F32(1.0),
+            Some(ValueRange {
+                min: ScalarValue::F32(0.0),
+                max: ScalarValue::F32(1.0),
             })
         );
         assert_eq!(metadata.inputs[1].type_repr(), "f64[2]");
         assert_eq!(metadata.inputs[1].slot_offset(), 1);
         assert_eq!(metadata.inputs[1].byte_offset(), 4);
         assert_eq!(metadata.inputs[1].default(), None);
+        assert_eq!(
+            metadata.inputs[1].default_values(),
+            Some([ScalarValue::F64(0.5), ScalarValue::F64(0.75)].as_slice())
+        );
         let stereo = metadata.inputs[1].default_bytes().unwrap();
         assert_eq!(f64::from_ne_bytes(stereo[0..8].try_into().unwrap()), 0.5);
         assert_eq!(f64::from_ne_bytes(stereo[8..16].try_into().unwrap()), 0.75);
@@ -1352,7 +935,9 @@ mod tests {
             metadata.buffers[2].channels(),
             DeclaredBufferChannels::Dynamic
         );
-        assert!(metadata.buffers.iter().all(|buffer| !buffer.may_write()));
+        assert!(metadata.buffers[0].may_write());
+        assert!(metadata.buffers[1].may_write());
+        assert!(!metadata.buffers[2].may_write());
 
         let note = &metadata.events[0];
         assert_eq!(note.payload_bytes(), Some(12));
@@ -1374,188 +959,42 @@ mod tests {
         assert_eq!(metadata.buffer_index["samples"], 2);
     }
 
-    fn buffer_write_program() -> Program {
-        let i32_ty = onda_mir::TypeId::new(1);
-        let buffer_ty = onda_mir::TypeId::new(2);
-        let slice_ty = onda_mir::TypeId::new(3);
-
-        let init = empty_function("init", FunctionKind::Init, Vec::new());
-        let mut process = empty_function(
-            "process",
-            FunctionKind::Process,
-            process_function_params(i32_ty),
-        );
-        process.locals.push(Local {
-            name: Some("buffer_slice".to_owned()),
-            ty: slice_ty,
-        });
-        process.body.statements = vec![
-            statement(StatementKind::Assign {
-                destination: Place::local(LocalId::new(0)),
-                value: Rvalue::MakeSlice {
-                    source: SliceSource::Buffer {
-                        buffer: BufferId::new(1),
-                        channel: None,
-                    },
-                    start: Value::Constant(ScalarValue::I32(0)),
-                    len: Value::Constant(ScalarValue::I32(1)),
-                    bounds: onda_mir::BoundsMode::Clamp,
-                    access: AccessMode::ReadWrite,
-                },
-            }),
-            statement(StatementKind::Call {
-                results: Vec::new(),
-                function: FunctionId::new(2),
-                args: vec![CallArgument::Buffer(BufferId::new(0))],
-            }),
-            statement(StatementKind::Call {
-                results: Vec::new(),
-                function: FunctionId::new(4),
-                args: vec![CallArgument::Value(Value::Local(LocalId::new(0)))],
-            }),
-        ];
-
-        let mut forward = empty_function(
-            "forward",
-            FunctionKind::User,
-            vec![FunctionParam {
-                name: "buffer".to_owned(),
-                ty: buffer_ty,
-                mode: PassingMode::ReadWriteReference,
-            }],
-        );
-        forward.body.statements.push(statement(StatementKind::Call {
-            results: Vec::new(),
-            function: FunctionId::new(3),
-            args: vec![CallArgument::Place(Place {
-                base: PlaceBase::Parameter(ParameterId::new(0)),
-                projections: Vec::new(),
-            })],
-        }));
-
-        let mut write_buffer = empty_function(
-            "write_buffer",
-            FunctionKind::User,
-            vec![FunctionParam {
-                name: "buffer".to_owned(),
-                ty: buffer_ty,
-                mode: PassingMode::ReadWriteReference,
-            }],
-        );
-        write_buffer
-            .body
-            .statements
-            .push(statement(StatementKind::BufferParamStore {
-                parameter: ParameterId::new(0),
-                channel: None,
-                index: Value::Constant(ScalarValue::I32(0)),
-                value: Value::Constant(ScalarValue::F32(1.0)),
-                bounds: onda_mir::BoundsMode::Clamp,
-            }));
-
-        let mut write_slice = empty_function(
-            "write_slice",
-            FunctionKind::User,
-            vec![FunctionParam {
-                name: "slice".to_owned(),
-                ty: slice_ty,
-                mode: PassingMode::Value,
-            }],
-        );
-        write_slice.locals.push(Local {
-            name: Some("slice.local".to_owned()),
-            ty: slice_ty,
-        });
-        write_slice.body.statements = vec![
-            statement(StatementKind::Assign {
-                destination: Place::local(LocalId::new(0)),
-                value: Rvalue::Load(Place {
-                    base: PlaceBase::Parameter(ParameterId::new(0)),
-                    projections: Vec::new(),
-                }),
-            }),
-            statement(StatementKind::SliceStore {
-                slice: Value::Local(LocalId::new(0)),
-                index: Value::Constant(ScalarValue::I32(0)),
-                value: Value::Constant(ScalarValue::F32(0.5)),
-                bounds: onda_mir::BoundsMode::Clamp,
-            }),
-        ];
-
-        Program {
-            schema_version: onda_mir::MIR_SCHEMA_VERSION,
-            config: CompileConfig {
-                sample_rate: 48_000.0,
-                block_size: 64,
-            },
-            source_files: Vec::new(),
-            types: vec![
-                Type::Scalar(ScalarType::F32),
-                Type::Scalar(ScalarType::I32),
-                Type::Buffer {
-                    element: ScalarType::F32,
-                    channels: BufferChannels::Mono,
-                    access: AccessMode::ReadWrite,
-                },
-                Type::Slice {
-                    element: ScalarType::F32,
-                    access: AccessMode::ReadWrite,
-                },
-            ],
-            structs: Vec::new(),
-            interface: Interface {
-                buffers: vec![
-                    Buffer {
-                        name: "forwarded".to_owned(),
-                        element: ScalarType::F32,
-                        channels: BufferChannels::Mono,
-                        access: AccessMode::ReadWrite,
-                    },
-                    Buffer {
-                        name: "sliced".to_owned(),
-                        element: ScalarType::F32,
-                        channels: BufferChannels::Mono,
-                        access: AccessMode::ReadWrite,
-                    },
-                    Buffer {
-                        name: "untouched".to_owned(),
-                        element: ScalarType::F32,
-                        channels: BufferChannels::Mono,
-                        access: AccessMode::ReadWrite,
-                    },
-                ],
-                ..Interface::default()
-            },
-            state: Vec::new(),
-            const_data: Vec::new(),
-            functions: vec![init, process, forward, write_buffer, write_slice],
-            entry_points: EntryPoints {
-                init: FunctionId::new(0),
-                process: FunctionId::new(1),
-            },
-        }
-    }
-
     #[test]
-    fn infers_reachable_buffer_writes_through_calls_and_slice_aliases() {
-        let program = buffer_write_program();
-        onda_mir::validate(&program).expect("buffer-write fixture should be valid MIR");
+    fn preserves_one_element_array_shape_and_defaults() {
+        let mut program = descriptor_program();
+        let array_ty = onda_mir::TypeId::new(
+            u32::try_from(program.types.len()).expect("test type table should fit u32"),
+        );
+        program.types.push(Type::Array {
+            element: onda_mir::TypeId::new(0),
+            len: 1,
+        });
+        program.interface.inputs[0].ty = array_ty;
+        program.interface.inputs[0].default =
+            Some(ConstantValue::Aggregate(vec![ConstantValue::Scalar(
+                ScalarValue::F32(0.25),
+            )]));
+        program.interface.inputs[0].range = None;
+
         let metadata = build_mir_program_metadata(
             &program,
             MirMetadataLayoutView {
-                state_offsets: &[],
-                param_offsets: &[],
-                control_output_offsets: &[],
-                input_bases: &[],
-                output_bases: &[],
-                event_fixed_sizes: &[],
+                state_offsets: &[0, 8, 12, 16],
+                param_offsets: &[0, 4],
+                control_output_offsets: &[8],
+                input_bases: &[0, 1],
+                output_bases: &[0, 2],
+                event_fixed_sizes: &[Some(12), None],
             },
         )
-        .expect("MIR metadata should build");
+        .expect("one-element arrays should retain their declared shape");
 
-        assert!(metadata.buffers[0].may_write());
-        assert!(metadata.buffers[1].may_write());
-        assert!(!metadata.buffers[2].may_write());
+        assert!(metadata.inputs[0].is_array());
+        assert_eq!(metadata.inputs[0].type_repr(), "f32[1]");
+        assert_eq!(
+            metadata.inputs[0].default_values(),
+            Some([ScalarValue::F32(0.25)].as_slice())
+        );
     }
 
     #[test]

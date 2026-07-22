@@ -183,7 +183,7 @@ fn port_index_ins_dynamic_read() {
     let mut input = vec![0.0_f32; frames * 4];
 
     for f in 0..frames {
-        input[f * 4 + 0] = 10.0; // ch0
+        input[f * 4] = 10.0; // ch0
 
         input[f * 4 + 1] = 20.0; // ch1
 
@@ -197,8 +197,8 @@ fn port_index_ins_dynamic_read() {
     process_interleaved(&mut instance, &input, &mut output, frames)
         .expect("process should succeed");
 
-    for f in 0..frames {
-        assert_near(output[f], 30.0, 1e-6); // should read ch2
+    for sample in output.iter().take(frames) {
+        assert_near(*sample, 30.0, 1e-6); // should read ch2
     }
 }
 

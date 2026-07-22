@@ -179,6 +179,33 @@ fn source_path_normalization_coalesces_files_and_remaps_nested_spans() {
     );
 }
 
+#[test]
+fn source_path_normalization_disambiguates_distinct_matching_suffixes() {
+    let mut mir = empty_mir();
+    mir.source_files = vec![
+        SourceFile {
+            path: "/alpha/project/src/shared.onda".to_owned(),
+        },
+        SourceFile {
+            path: "/beta/vendor/src/shared.onda".to_owned(),
+        },
+    ];
+    mir.functions[0].source.file = Some(SourceFileId::new(0));
+    mir.functions[1].source.file = Some(SourceFileId::new(1));
+
+    normalize_mir_source_paths(&mut mir);
+
+    assert_eq!(
+        mir.source_files
+            .iter()
+            .map(|source| source.path.as_str())
+            .collect::<Vec<_>>(),
+        ["external/src/shared.onda", "external/src/shared.onda~2"]
+    );
+    assert_eq!(mir.functions[0].source.file, Some(SourceFileId::new(0)));
+    assert_eq!(mir.functions[1].source.file, Some(SourceFileId::new(1)));
+}
+
 fn block_has_call_with_arity(block: &MirBlock, arity: usize) -> bool {
     block
         .statements
@@ -2642,7 +2669,10 @@ sample:
     assert!(dump.contains("buffer_len @buffer0"));
     assert!(dump.contains("buffer_channels @buffer0"));
     assert!(dump.contains("buffer_sample_rate @buffer0"));
-    assert!(dump.contains("load_buffer @buffer0") && dump.contains("unchecked"));
+    assert!(dump.contains("load_buffer @buffer0[i32(2)] trap"));
+    assert!(dump.contains("store_buffer @buffer0[i32(3)] trap"));
+    assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(6)] trap"));
+    assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(7)] trap"));
     assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(2)] clamp"));
     assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(3)] clamp"));
     assert!(dump.contains("] clamp"));

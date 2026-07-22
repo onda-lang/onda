@@ -568,9 +568,9 @@ pub(crate) fn analyze_def_stmt(
                                 let had_expr_validation_error =
                                     errors.len() > expr_error_count_before;
                                 let suppress_type_mismatch =
-                                    is_invalid_placeholder_symbol(&declared_symbols, field)
+                                    is_invalid_placeholder_symbol(declared_symbols, field)
                                         || is_invalid_placeholder_symbol(
-                                            &declared_symbols,
+                                            declared_symbols,
                                             &format!("{base}.{field}"),
                                         );
                                 if !suppress_type_mismatch
@@ -778,7 +778,7 @@ pub(crate) fn analyze_def_stmt(
                         untyped_ty.unwrap_or(PrimitiveType::F32)
                     };
                     let suppress_type_mismatch =
-                        is_invalid_placeholder_symbol(&declared_symbols, name);
+                        is_invalid_placeholder_symbol(declared_symbols, name);
                     if !suppress_type_mismatch
                         && !had_expr_validation_error
                         && !has_use_before_declaration_error(errors)
@@ -901,8 +901,8 @@ pub(crate) fn analyze_def_stmt(
                         );
                         return;
                     }
-                    if has_declared_buffer_symbol_info(&declared_symbols, base) {
-                        if is_declared_multichannel_buffer_info(&declared_symbols, base) {
+                    if has_declared_buffer_symbol_info(declared_symbols, base) {
+                        if is_declared_multichannel_buffer_info(declared_symbols, base) {
                             push_semantic(
                             target_diag,
                             errors,
@@ -952,7 +952,7 @@ pub(crate) fn analyze_def_stmt(
                             proc_array_roots,
                             errors,
                         );
-                        let expected_ty = declared_symbol_scalar_type(&declared_symbols, base)
+                        let expected_ty = declared_symbol_scalar_type(declared_symbols, base)
                             .unwrap_or(PrimitiveType::F32);
                         require_expr_assignable_type(
                             expr,

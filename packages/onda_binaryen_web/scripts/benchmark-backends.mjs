@@ -412,13 +412,16 @@ function writeFirstBlockFixture(path, channels) {
 
 function flattenPorts(ports) {
   return ports.flatMap((port) =>
-    Array.from({ length: port.channel_count }, () => ({ scalar: port.scalar })),
+    Array.from({ length: port.array_len }, () => ({ scalar: port.scalar })),
   );
 }
 
 function writeParameterDefaults(memory, paramsPointer, params) {
   for (const param of params) {
-    const values = flattenConstants(param.default);
+    const values = (param.default_reprs ?? []).map((value) => ({
+      type: param.scalar,
+      value: JSON.parse(value),
+    }));
     const elementSize = scalarSize(param.scalar);
     for (const [index, value] of values.entries()) {
       writeScalar(

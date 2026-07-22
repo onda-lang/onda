@@ -2,7 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use onda_codegen_llvm::{CompileOptions, TargetOptLevel};
+use onda_codegen_llvm::{
+    jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
+};
 use onda_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use onda_runtime::{
     bind_buffer as bind_buffer_raw, bind_input as bind_input_raw, bind_output as bind_output_raw,
@@ -14,6 +16,14 @@ use onda_runtime::{
 use onda_semantics::{analyze, analyze_with_options, AnalysisOptions};
 include!("examples_suite/fixtures.rs");
 include!("examples_suite/support.rs");
+
+#[derive(Debug, Clone, Copy)]
+struct CompileOptions {
+    sample_rate: f32,
+    block_size: usize,
+    fast_math: bool,
+    opt_level: TargetOptLevel,
+}
 
 fn bind_input(
     instance: &mut Instance,

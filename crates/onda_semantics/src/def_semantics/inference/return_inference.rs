@@ -220,12 +220,12 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
                     let rhs = arg_tys.get(1).copied().unwrap_or(PrimitiveType::F32);
                     merge_inferred_return_types(lhs, rhs)
                 }
-                BuiltinFn::Pow => Some(if arg_tys.iter().any(|t| *t == PrimitiveType::F64) {
+                BuiltinFn::Pow => Some(if arg_tys.contains(&PrimitiveType::F64) {
                     PrimitiveType::F64
                 } else {
                     PrimitiveType::F32
                 }),
-                _ => Some(if arg_tys.iter().any(|t| *t == PrimitiveType::F64) {
+                _ => Some(if arg_tys.contains(&PrimitiveType::F64) {
                     PrimitiveType::F64
                 } else {
                     PrimitiveType::F32

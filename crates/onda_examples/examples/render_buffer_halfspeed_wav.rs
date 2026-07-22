@@ -3,10 +3,12 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use onda_codegen_llvm::{lower_and_jit_with_options, CompileOptions, TargetOptLevel};
+use onda_codegen_llvm::{
+    jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
+};
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{bind_buffer, bind_output, create_instance, process_checked, InstanceConfig};
-use onda_semantics::{analyze_with_options, AnalysisOptions};
+use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const DEFAULT_INPUT: &str = "target/garden.wav";
 const DEFAULT_OUTPUT: &str = "target/garden_half_speed.wav";
@@ -50,11 +52,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    let jit = lower_and_jit_with_options(
-        typed,
-        CompileOptions {
-            sample_rate: sample_rate_hz as f32,
-            block_size: BLOCK_FRAMES,
+    let mir = lower_program_to_optimized_mir(&typed)
+        .map_err(|errors| format!("MIR lowering failed: {errors:?}"))?;
+    let jit = jit_program_from_optimized_mir_with_options(
+        mir,
+        MirCompileOptions {
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -229,7 +231,7 @@ fn write_wav_interleaved_i16(
     if channels == 0 {
         return Err("cannot write wav with zero channels".into());
     }
-    if samples.len() % channels != 0 {
+    if !samples.len().is_multiple_of(channels) {
         return Err(format!(
             "sample buffer length {} is not divisible by channel count {}",
             samples.len(),

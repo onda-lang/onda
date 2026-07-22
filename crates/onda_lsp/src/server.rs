@@ -91,7 +91,10 @@ fn spawn_diagnostic_worker(
     thread::spawn(move || {
         while let Ok(job) = diagnostic_rx.recv() {
             let result = run_diagnostic_job(job);
-            if core_tx.send(CoreEvent::DiagnosticsReady(result)).is_err() {
+            if core_tx
+                .send(CoreEvent::DiagnosticsReady(Box::new(result)))
+                .is_err()
+            {
                 break;
             }
         }
@@ -106,7 +109,7 @@ enum LoopControl {
 
 enum CoreEvent {
     ClientMessage(Value),
-    DiagnosticsReady(DiagnosticJobResult),
+    DiagnosticsReady(Box<DiagnosticJobResult>),
     ReaderClosed,
     ReaderError(String),
 }
@@ -182,8 +185,10 @@ impl LspCore {
         immediate_diagnostic_tx: mpsc::Sender<DiagnosticJob>,
         background_diagnostic_tx: mpsc::Sender<DiagnosticJob>,
     ) -> Self {
-        let mut server = LspServer::default();
-        server.defer_diagnostics = true;
+        let server = LspServer {
+            defer_diagnostics: true,
+            ..LspServer::default()
+        };
         Self {
             server,
             immediate_diagnostic_tx,
@@ -225,7 +230,7 @@ impl LspCore {
                     self.dispatch_due_diagnostics();
                 }
                 CoreEvent::DiagnosticsReady(result) => {
-                    self.publish_diagnostic_result(result, writer)?;
+                    self.publish_diagnostic_result(*result, writer)?;
                 }
                 CoreEvent::ReaderClosed => return Ok(()),
                 CoreEvent::ReaderError(err) => return Err(err),
@@ -286,9 +291,8 @@ impl LspCore {
         let due_entries = self
             .pending_diagnostics
             .iter()
-            .filter_map(|(entry, scheduled)| {
-                (scheduled.due_at <= now).then(|| (entry.clone(), scheduled.generation))
-            })
+            .filter(|&(_entry, scheduled)| scheduled.due_at <= now)
+            .map(|(entry, scheduled)| (entry.clone(), scheduled.generation))
             .collect::<Vec<_>>();
         for (entry, generation) in due_entries {
             let Some(scheduled) = self.pending_diagnostics.remove(&entry) else {
@@ -2163,6 +2167,12 @@ mod tests {
         }
         let mut permissions = metadata.permissions();
         if permissions.readonly() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                permissions.set_mode(permissions.mode() | 0o200);
+            }
+            #[cfg(not(unix))]
             permissions.set_readonly(false);
             fs::set_permissions(path, permissions).ok();
         }
@@ -2765,8 +2775,10 @@ namespace sc:
         write_file(&lib, old_lib_source);
         write_file(&main, main_source);
 
-        let mut server = LspServer::default();
-        server.semantic_tokens_refresh = true;
+        let mut server = LspServer {
+            semantic_tokens_refresh: true,
+            ..LspServer::default()
+        };
         let main_path =
             server
                 .session
@@ -6251,8 +6263,10 @@ namespace DSP<N = 4>:
 "#;
         write_file(&main, source);
 
-        let mut server = LspServer::default();
-        server.completion_snippets = true;
+        let mut server = LspServer {
+            completion_snippets: true,
+            ..LspServer::default()
+        };
         let items = completion_items_for(&mut server, &main, source, "return V");
         let voice = items
             .iter()
@@ -6322,8 +6336,10 @@ sample:
 "#;
         write_file(&main, source);
 
-        let mut server = LspServer::default();
-        server.completion_snippets = true;
+        let mut server = LspServer {
+            completion_snippets: true,
+            ..LspServer::default()
+        };
         let items = completion_items_for(&mut server, &main, source, "std::complex::C");
         let complex = items
             .iter()

@@ -156,11 +156,10 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                 kind: SourceProcScopeKind::ProcOwner,
             });
 
-            let after_kw = if trimmed.starts_with("processor ") {
-                &trimmed["processor ".len()..]
-            } else {
-                &trimmed["proc ".len()..]
-            };
+            let after_kw = trimmed
+                .strip_prefix("processor ")
+                .or_else(|| trimmed.strip_prefix("proc "))
+                .unwrap_or_default();
             if let Some(name) = extract_leading_ident(after_kw.trim_start()) {
                 index.document_scope.types.insert(name.to_owned());
                 index.scopes[idx].scope.types.insert(name.to_owned());
@@ -653,11 +652,8 @@ pub(super) fn collect_source_declaration_symbols(source: &str, scope: &mut Seman
             continue;
         }
 
-        if trimmed.starts_with("namespace ") {
-            let rest = &trimmed["namespace ".len()..];
-            let path_end = rest
-                .find(|c: char| c == '<' || c == ':' || c == '=')
-                .unwrap_or(rest.len());
+        if let Some(rest) = trimmed.strip_prefix("namespace ") {
+            let path_end = rest.find(['<', ':', '=']).unwrap_or(rest.len());
             let path = rest[..path_end].trim();
             for segment in path.split("::") {
                 let segment = segment.trim();
@@ -680,13 +676,11 @@ pub(super) fn collect_source_declaration_symbols(source: &str, scope: &mut Seman
             || trimmed.starts_with("processor ")
             || trimmed.starts_with("struct ")
         {
-            let after_kw = if trimmed.starts_with("processor ") {
-                &trimmed["processor ".len()..]
-            } else if trimmed.starts_with("proc ") {
-                &trimmed["proc ".len()..]
-            } else {
-                &trimmed["struct ".len()..]
-            };
+            let after_kw = trimmed
+                .strip_prefix("processor ")
+                .or_else(|| trimmed.strip_prefix("proc "))
+                .or_else(|| trimmed.strip_prefix("struct "))
+                .unwrap_or_default();
             if let Some(name) = extract_leading_ident(after_kw.trim_start()) {
                 scope.types.insert(name.to_owned());
             }
@@ -733,8 +727,7 @@ fn detect_source_top_level_section_header(trimmed: &str) -> Option<SourceTopLeve
 
 fn detect_source_section_header<K: Copy>(trimmed: &str, pairs: &[(&str, K)]) -> Option<K> {
     for &(kw, kind) in pairs {
-        if trimmed.starts_with(kw) {
-            let rest = &trimmed[kw.len()..];
+        if let Some(rest) = trimmed.strip_prefix(kw) {
             if rest.is_empty()
                 || rest.starts_with(':')
                 || rest.starts_with('<')

@@ -12,6 +12,20 @@ import {
 const FIXTURE_MIR_SCHEMA_VERSION = 1;
 
 function artifact() {
+  const port = (name, arrayLen) => ({
+    name,
+    type_repr: arrayLen === 1 ? "f32" : `f32[${arrayLen}]`,
+    scalar: "f32",
+    array_len: arrayLen,
+    element_size_bytes: 4,
+    slot_offset: 0,
+    byte_offset: null,
+    state_byte_offset: null,
+    byte_size: arrayLen * 4,
+    default_reprs: null,
+    range_min_repr: null,
+    range_max_repr: null,
+  });
   return {
     wasm: new Uint8Array([
       0, 97, 115, 109, 1, 0, 0, 0,
@@ -28,7 +42,7 @@ function artifact() {
     ]),
     metadata: {
       format: "onda-processor",
-      format_version: 3,
+      format_version: 1,
       abi_version: 1,
       artifact_kind: "webassembly_module",
       backend: "test",
@@ -38,24 +52,37 @@ function artifact() {
         one_processor_per_artifact: true,
         profile: {
           kind: "core_webassembly_module",
+          imports: [],
           memory_export: "memory",
           heap_base_export: "__heap_base",
         },
       },
       target: {
         triple: "wasm32-unknown-unknown",
+        cpu: "generic",
+        features: "",
+        reloc_model: "static",
+        code_model: "default",
+        opt_level: "4",
+        abi_name: null,
+        data_layout: "e-m:e-p:32:32-i64:64-n32:64-S128",
         byte_order: "little_endian",
         pointer_model: "linear_memory_offset",
         pointer_width_bits: 32,
         calling_convention: "core-wasm",
       },
-      compile: { sample_rate: 48_000, block_size: 128 },
+      compile: { sample_rate: 48_000, block_size: 128, fast_math: false },
       runtime: {
         state_size_bytes: 0,
         state_align_bytes: 1,
         param_size_bytes: 0,
         param_align_bytes: 1,
         snapshot_size_bytes: 0,
+        state_initialization: "zeroed",
+        snapshot_format_version: 1,
+        snapshot_byte_order: "little_endian",
+        snapshot_restore_base: "post_init_physical_state_image",
+        requires_full_blocks: false,
       },
       exports: {
         memory: "memory",
@@ -66,8 +93,8 @@ function artifact() {
       },
       metadata: {
         states: [],
-        inputs: [{ channel_count: 2 }],
-        outputs: [{ channel_count: 1 }],
+        inputs: [port("in1", 2)],
+        outputs: [port("out1", 1)],
         control_outputs: [],
         params: [],
         buffers: [],
@@ -129,10 +156,10 @@ test("derives explicit Web Audio channel options from processor metadata", () =>
 
 test("rejects invalid processor channel metadata", () => {
   const source = artifact();
-  source.metadata.metadata.outputs[0].channel_count = -1;
+  source.metadata.metadata.outputs[0].array_len = -1;
   assert.throws(
     () => ondaAudioWorkletNodeOptions(source),
-    /invalid channel_count/,
+    /array_len/,
   );
 });
 

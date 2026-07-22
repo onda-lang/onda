@@ -994,9 +994,8 @@ fn validate_const_def_body_shape(
             def.params
                 .iter()
                 .zip(kinds.iter())
-                .filter_map(|(param, kind)| {
-                    matches!(kind, ConstDefParamKind::Slice { .. }).then(|| param.name.clone())
-                })
+                .filter(|&(_param, kind)| matches!(kind, ConstDefParamKind::Slice { .. }))
+                .map(|(param, _kind)| param.name.clone())
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
@@ -1823,10 +1822,10 @@ fn check_const_eval_array_expected(
     }
     let elem_ok = expected
         .elem_ty
-        .map_or(true, |expected_elem| array.elem_ty == expected_elem);
+        .is_none_or(|expected_elem| array.elem_ty == expected_elem);
     let len_ok = expected
         .len
-        .map_or(true, |expected_len| array.len() == expected_len);
+        .is_none_or(|expected_len| array.len() == expected_len);
     if elem_ok && len_ok {
         return true;
     }
@@ -2545,9 +2544,7 @@ fn eval_const_def_stmt_list(
                         call_stack,
                         errors,
                     )?;
-                    let Some(array) = local_arrays.get_mut(base) else {
-                        return None;
-                    };
+                    let array = local_arrays.get_mut(base)?;
                     array.values[idx] = value;
                     continue;
                 }
@@ -7597,7 +7594,7 @@ pub fn analyze_with_options(
                 );
             }
             defs.push(FunctionDef {
-                loc: method.loc.clone(),
+                loc: method.loc,
                 is_const: false,
                 type_params: method.type_params.clone(),
                 name: fq_name,
@@ -11112,13 +11109,7 @@ fn try_indexed_proc_call_meta_in_def<'a>(
     expr: &'a Expr,
     proc_api: &HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a [CallArg], &'a str, &'a Expr)> {
-    let Expr::UserCall {
-        name,
-        args,
-        type_args: _,
-        ..
-    } = expr
-    else {
+    let Expr::UserCall { name, args, .. } = expr else {
         return None;
     };
     let proc_name = if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
@@ -11821,13 +11812,7 @@ fn stmt_has_proc_block_hook_for_instance(
     global_proc_instances: &HashMap<String, ProcCallInstance>,
 ) -> bool {
     let Stmt::Expr {
-        expr:
-            Expr::UserCall {
-                name,
-                args,
-                type_args: _,
-                ..
-            },
+        expr: Expr::UserCall { name, args, .. },
         ..
     } = stmt
     else {

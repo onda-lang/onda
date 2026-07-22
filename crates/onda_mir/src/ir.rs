@@ -5,6 +5,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default, Serialize, Deserialize)]
 pub struct SourceSpan {
@@ -38,6 +39,62 @@ pub struct SourceFile {
 pub struct CompileConfig {
     pub sample_rate: f32,
     pub block_size: u32,
+}
+
+/// Largest block representable by MIR's signed-i32 indexing and processor ABI.
+pub const MAX_BLOCK_SIZE: u32 = i32::MAX as u32;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CompileConfigError {
+    InvalidSampleRate,
+    InvalidBlockSize,
+}
+
+impl fmt::Display for CompileConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSampleRate => {
+                formatter.write_str("sample rate must be finite and greater than zero")
+            }
+            Self::InvalidBlockSize => write!(
+                formatter,
+                "block size must be between 1 and {MAX_BLOCK_SIZE} frames"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CompileConfigError {}
+
+impl CompileConfig {
+    /// Creates the canonical compile configuration accepted by all MIR producers
+    /// and consumers.
+    pub fn new(sample_rate: f32, block_size: u32) -> Result<Self, CompileConfigError> {
+        let config = Self {
+            sample_rate,
+            block_size,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Creates a configuration from a host-sized block count without allowing
+    /// target-width or signed-index truncation.
+    pub fn from_usize(sample_rate: f32, block_size: usize) -> Result<Self, CompileConfigError> {
+        let block_size =
+            u32::try_from(block_size).map_err(|_| CompileConfigError::InvalidBlockSize)?;
+        Self::new(sample_rate, block_size)
+    }
+
+    pub fn validate(self) -> Result<(), CompileConfigError> {
+        if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
+            return Err(CompileConfigError::InvalidSampleRate);
+        }
+        if self.block_size == 0 || self.block_size > MAX_BLOCK_SIZE {
+            return Err(CompileConfigError::InvalidBlockSize);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

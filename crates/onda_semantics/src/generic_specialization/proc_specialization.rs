@@ -440,7 +440,7 @@ pub(crate) fn expand_inline_array_ctor_initializers(stmts: &mut Vec<Stmt>) {
             if let Some(values) = init.take() {
                 for (idx, value) in values.into_iter().enumerate() {
                     index_writes.push(Stmt::Assign {
-                        loc: loc.clone(),
+                        loc: *loc,
                         target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: base.clone(),
@@ -491,7 +491,7 @@ pub(crate) fn specialize_generic_proc_template(
         .ins
         .iter()
         .map(|decl| PortDecl {
-            loc: decl.loc.clone(),
+            loc: decl.loc,
             name: decl.name.clone(),
             output_timing: decl.output_timing,
             output_timing_loc: decl.output_timing_loc,
@@ -506,7 +506,7 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 )
             }),
-            ty_loc: decl.ty_loc.clone(),
+            ty_loc: decl.ty_loc,
             default: decl.default.clone(),
             range: decl.range.clone(),
         })
@@ -515,7 +515,7 @@ pub(crate) fn specialize_generic_proc_template(
         .outs
         .iter()
         .map(|decl| PortDecl {
-            loc: decl.loc.clone(),
+            loc: decl.loc,
             name: decl.name.clone(),
             output_timing: decl.output_timing,
             output_timing_loc: decl.output_timing_loc,
@@ -530,7 +530,7 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 )
             }),
-            ty_loc: decl.ty_loc.clone(),
+            ty_loc: decl.ty_loc,
             default: decl.default.clone(),
             range: decl.range.clone(),
         })
@@ -539,7 +539,7 @@ pub(crate) fn specialize_generic_proc_template(
         .params
         .iter()
         .map(|decl| ParamDecl {
-            loc: decl.loc.clone(),
+            loc: decl.loc,
             name: decl.name.clone(),
             pinned: decl.pinned,
             ty: decl.ty.as_ref().map(|ty| {
@@ -553,7 +553,7 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 )
             }),
-            ty_loc: decl.ty_loc.clone(),
+            ty_loc: decl.ty_loc,
             default: decl.default.clone(),
             range: decl.range.clone(),
             bind: decl.bind.clone(),
@@ -641,7 +641,7 @@ pub(crate) fn specialize_generic_proc_template(
         .buffers
         .iter()
         .map(|decl| BufferDecl {
-            loc: decl.loc.clone(),
+            loc: decl.loc,
             name: decl.name.clone(),
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_buffer_type(
@@ -653,7 +653,7 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 )
             }),
-            ty_loc: decl.ty_loc.clone(),
+            ty_loc: decl.ty_loc,
         })
         .collect::<Vec<_>>();
     let mut init = template.init.clone();
@@ -868,12 +868,9 @@ pub(crate) fn specialize_generic_proc_template(
                     elem: *elem,
                     size: size.clone(),
                 },
-                FnReturnType::Tuple(elems) => FnReturnType::Tuple(
-                    elems
-                        .iter()
-                        .map(|elem| specialize_return_scalar(elem))
-                        .collect(),
-                ),
+                FnReturnType::Tuple(elems) => {
+                    FnReturnType::Tuple(elems.iter().map(specialize_return_scalar).collect())
+                }
             };
         }
         for stmt in &mut def.body {
@@ -892,7 +889,7 @@ pub(crate) fn specialize_generic_proc_template(
     }
 
     Some(ProcessorDef {
-        loc: template.loc.clone(),
+        loc: template.loc,
         name: specialized_struct_name(&template.name, type_args),
         type_params: Vec::new(),
         consts: template.consts.clone(),

@@ -9,8 +9,8 @@ Target and artifact profiles define how that interface is represented on a parti
 
 Every processor artifact is paired with a JSON descriptor whose common envelope contains:
 
-- `format: "onda-processor"` and `format_version: 3` for the descriptor schema.
-- `abi_version: 1` for the logical entry-point and storage contract in this document.
+- `format: "onda-processor"` and `format_version` for the descriptor schema.
+- `abi_version` for the logical entry-point and storage contract in this document.
 - `artifact_kind`, currently `relocatable_object` or `webassembly_module`.
 - `backend` and `mir_schema_version` for provenance.
 - `target`, including the resolved triple, pointer width, byte order, pointer model, and calling
@@ -21,6 +21,10 @@ Every processor artifact is paired with a JSON descriptor whose common envelope 
 
 Hosts must reject unknown descriptor or ABI versions. A descriptor belongs to the exact bytes with
 which it was emitted; physical layouts must not be borrowed from another backend or compilation.
+The Rust `onda_processor_abi` types and the TypeScript `@onda-lang/processor-abi` declarations are
+the same schema. A shared conformance fixture exercises the complete logical metadata record and
+the directly loadable core-WebAssembly profile; profile-specific facts use one tagged integration
+record rather than backend-specific descriptor shapes.
 
 ## Logical processor interface
 
@@ -56,7 +60,7 @@ onda_event_N(
 ) -> void
 ```
 
-There is one `onda_event_N` for each declared event, in metadata order. ABI version 1 uses
+There is one `onda_event_N` for each declared event, in metadata order. The current ABI uses
 unprefixed symbol names and therefore permits one public processor namespace per artifact. A future
 ABI may add namespacing for multi-processor libraries without changing MIR.
 
@@ -103,7 +107,7 @@ relocatable `linking` section. It does not pretend that the object is directly i
 
 ### Direct native use
 
-`include/onda_processor_abi.h` is the canonical C declaration of ABI-version-1 entry points. An
+`include/onda_processor_abi.h` is the canonical C declaration of the current ABI entry points. An
 application links the emitted object, allocates storage from the exact paired descriptor, builds the
 input/output and external-buffer pointer tables, and calls `onda_init`, `onda_process`, and any
 `onda_event_N` functions directly. No Onda runtime or compiler library is required.
@@ -137,7 +141,7 @@ artifact descriptor. Scratch state is deliberately absent from snapshots.
 
 ## Portable snapshots
 
-The packed persistent-state snapshot is target-independent. `snapshot_format_version: 1` encodes
+The packed persistent-state snapshot is target-independent. The current snapshot format encodes
 declared scalar elements in little-endian byte order, in metadata order, without physical padding or
 scratch state. This is distinct from the target-native physical state image, which can use another
 byte order or alignment.
@@ -166,7 +170,7 @@ host passes null exactly when the corresponding surface is absent:
 - `state` when `runtime.state_size_bytes` is zero;
 - `inputs` or `outputs` when the corresponding flattened metadata slot count is zero;
 - all four external-buffer table pointers when `metadata.buffers` is empty;
-- an event's `payload` when that event's `payload_bytes` is zero.
+- an event's `payload` when that event's `payload_size_bytes` is zero.
 
 A declared surface is not absent merely because the application does not use it. Every declared
 input/output slot requires valid compile-block storage. A non-empty buffer declaration list
@@ -202,7 +206,8 @@ External buffers use four parallel tables in declaration order:
 - `buffer_sample_rates`: f32 sample rates.
 
 Samples use interleaved frame-major storage. Metadata declares scalar width, read/write access, and
-mono, static, or dynamic channel constraints. Control outputs are state-backed values at declared
+mono, static, or dynamic channel constraints. Every sample-rate entry is finite and positive,
+including for a canonically empty binding. Control outputs are state-backed values at declared
 physical offsets and may be observed between processor calls.
 
 ## Numerical and failure behavior

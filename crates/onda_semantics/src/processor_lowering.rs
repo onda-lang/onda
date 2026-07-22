@@ -126,15 +126,13 @@ fn coerce_fixed_array_event_default(
     }
     let mut coerced = Vec::with_capacity(len);
     for (idx, value) in values.iter().enumerate() {
-        let Some(typed) = coerce_scalar_event_default(
+        let typed = coerce_scalar_event_default(
             value,
             elem_ty,
             &format!("{context} default element {idx}"),
             options,
             errors,
-        ) else {
-            return None;
-        };
+        )?;
         coerced.push(typed);
     }
     Some(coerced)
@@ -190,9 +188,7 @@ fn validate_proc_event_default_expr(
             None
         }
         EventParamType::Array { elem, .. } => {
-            let Some(len) = len else {
-                return None;
-            };
+            let len = len?;
             coerce_fixed_array_event_default(default_expr, *elem, len, context, options, errors)?;
             Some(default_expr.clone())
         }
@@ -895,7 +891,7 @@ fn build_proc_lowering_env(
                 );
             }
             pre_desugar_defs.push(FunctionDef {
-                loc: method.loc.clone(),
+                loc: method.loc,
                 is_const: false,
                 type_params: Vec::new(),
                 name: format!("{struct_name}.{}", method.name),

@@ -1,5 +1,5 @@
 #[cfg(feature = "llvm-orc")]
-use onda_semantics::TypedConstValue;
+use onda_mir::ScalarValue;
 use serde::Serialize;
 
 pub use onda_processor_abi::{
@@ -151,6 +151,8 @@ fn build_aot_metadata_from_descriptors(
             fast_math,
         },
         exports: AotExports {
+            memory: None,
+            heap_base: None,
             init: "onda_init".to_owned(),
             process: "onda_process".to_owned(),
             events: event_exports,
@@ -165,6 +167,7 @@ fn build_aot_metadata_from_descriptors(
             snapshot_format_version: AOT_SNAPSHOT_FORMAT_VERSION,
             snapshot_byte_order: "little_endian".to_owned(),
             snapshot_restore_base: "post_init_physical_state_image".to_owned(),
+            requires_full_blocks: false,
         },
         metadata: AotProgramMetadata {
             inputs: metadata.inputs.iter().map(map_io_metadata).collect(),
@@ -176,13 +179,21 @@ fn build_aot_metadata_from_descriptors(
                 .collect(),
             params: metadata.params.iter().map(map_io_metadata).collect(),
             buffers: metadata.buffers.iter().map(map_buffer_metadata).collect(),
-            events: metadata.events.iter().map(map_event_metadata).collect(),
+            events: metadata
+                .events
+                .iter()
+                .enumerate()
+                .map(|(index, event)| map_event_metadata(index, event))
+                .collect(),
             states: metadata
                 .state_entries
                 .iter()
                 .map(map_state_metadata)
                 .collect(),
         },
+        required_features: Vec::new(),
+        optimization: None,
+        integrity: None,
     }
 }
 
@@ -191,12 +202,16 @@ fn map_io_metadata(io: &crate::DeclaredIo) -> AotIoMetadata {
     AotIoMetadata {
         name: io.name().to_owned(),
         type_repr: io.type_repr(),
+        scalar: primitive_type_name(io.elem_ty()).to_owned(),
         array_len: io.array_len(),
+        element_size_bytes: crate::primitives::primitive_type_bytes(io.elem_ty()),
         slot_offset: io.slot_offset(),
-        byte_offset: io.byte_offset(),
+        byte_offset: Some(io.byte_offset()),
         state_byte_offset: io.state_byte_offset(),
         byte_size: io.byte_size(),
-        default_repr: io.default().map(format_const_value),
+        default_reprs: io
+            .default_values()
+            .map(|values| values.iter().copied().map(format_const_value).collect()),
         range_min_repr: io.range().map(|range| format_const_value(range.min)),
         range_max_repr: io.range().map(|range| format_const_value(range.max)),
     }
@@ -212,22 +227,44 @@ fn map_buffer_metadata(buffer: &crate::DeclaredBuffer) -> AotBufferMetadata {
     AotBufferMetadata {
         name: buffer.name().to_owned(),
         type_repr: buffer.type_repr(),
+        scalar: primitive_type_name(buffer.elem_ty()).to_owned(),
+        element_size_bytes: crate::primitives::primitive_type_bytes(buffer.elem_ty()),
         channels,
         static_channels,
+        access: match buffer.access() {
+            onda_mir::AccessMode::ReadOnly => "read_only",
+            onda_mir::AccessMode::ReadWrite => "read_write",
+        }
+        .to_owned(),
         may_write: buffer.may_write(),
     }
 }
 
 #[cfg(feature = "llvm-orc")]
-fn map_event_metadata(event: &crate::DeclaredEvent) -> AotEventMetadata {
+fn map_event_metadata(index: usize, event: &crate::DeclaredEvent) -> AotEventMetadata {
+    let payload_min_size_bytes = event
+        .params()
+        .iter()
+        .map(|param| param.byte_offset() + param.byte_size().unwrap_or(std::mem::size_of::<i32>()))
+        .max()
+        .unwrap_or(0);
+    let mut has_preceding_slice = false;
+    let params = event
+        .params()
+        .iter()
+        .map(|param| {
+            let byte_offset = (!has_preceding_slice).then(|| param.byte_offset());
+            has_preceding_slice |= param.is_slice();
+            map_event_param_metadata(param, byte_offset)
+        })
+        .collect();
     AotEventMetadata {
         name: event.name().to_owned(),
-        payload_bytes: event.payload_bytes(),
-        params: event
-            .params()
-            .iter()
-            .map(map_event_param_metadata)
-            .collect(),
+        export: format!("onda_event_{index}"),
+        payload_size_bytes: event.payload_bytes(),
+        payload_min_size_bytes,
+        has_dynamic_payload: event.payload_bytes().is_none(),
+        params,
     }
 }
 
@@ -236,6 +273,7 @@ fn map_state_metadata(state: &crate::DeclaredState) -> AotStateMetadata {
     AotStateMetadata {
         name: state.name().to_owned(),
         type_repr: state.type_repr(),
+        scalar: primitive_type_name(state.elem_ty()).to_owned(),
         array_len: state.array_len(),
         element_size_bytes: state.byte_size() / state.array_len(),
         packed_snapshot_byte_offset: state.byte_offset(),
@@ -245,14 +283,19 @@ fn map_state_metadata(state: &crate::DeclaredState) -> AotStateMetadata {
 }
 
 #[cfg(feature = "llvm-orc")]
-fn map_event_param_metadata(param: &crate::DeclaredEventParam) -> AotEventParamMetadata {
+fn map_event_param_metadata(
+    param: &crate::DeclaredEventParam,
+    byte_offset: Option<usize>,
+) -> AotEventParamMetadata {
     AotEventParamMetadata {
         name: param.name().to_owned(),
         type_repr: param.type_repr(),
+        scalar: primitive_type_name(param.elem_ty()).to_owned(),
         array_len: param.array_len(),
         is_slice: param.is_slice(),
-        byte_offset: param.byte_offset(),
+        byte_offset,
         byte_size: param.byte_size(),
+        element_size_bytes: crate::primitives::primitive_type_bytes(param.elem_ty()),
         has_default: param.has_default(),
         default_reprs: param
             .default_values()
@@ -261,12 +304,77 @@ fn map_event_param_metadata(param: &crate::DeclaredEventParam) -> AotEventParamM
 }
 
 #[cfg(feature = "llvm-orc")]
-fn format_const_value(value: TypedConstValue) -> String {
+fn primitive_type_name(ty: onda_frontend::PrimitiveType) -> &'static str {
+    match ty {
+        onda_frontend::PrimitiveType::F32 => "f32",
+        onda_frontend::PrimitiveType::F64 => "f64",
+        onda_frontend::PrimitiveType::I32 => "i32",
+        onda_frontend::PrimitiveType::I64 => "i64",
+        onda_frontend::PrimitiveType::Bool => "bool",
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+fn format_const_value(value: ScalarValue) -> String {
     match value {
-        TypedConstValue::F32(v) => v.to_string(),
-        TypedConstValue::F64(v) => v.to_string(),
-        TypedConstValue::I32(v) => v.to_string(),
-        TypedConstValue::I64(v) => v.to_string(),
-        TypedConstValue::Bool(v) => v.to_string(),
+        ScalarValue::F32(v) if v.is_finite() => v.to_string(),
+        ScalarValue::F32(v) => format!("0x{:08x}", v.to_bits()),
+        ScalarValue::F64(v) if v.is_finite() => v.to_string(),
+        ScalarValue::F64(v) => format!("0x{:016x}", v.to_bits()),
+        ScalarValue::I32(v) => v.to_string(),
+        ScalarValue::I64(v) => v.to_string(),
+        ScalarValue::Bool(v) => v.to_string(),
+    }
+}
+
+#[cfg(all(test, feature = "llvm-orc"))]
+mod tests {
+    use super::*;
+    use onda_frontend::PrimitiveType;
+
+    #[test]
+    fn dynamic_event_offsets_are_only_static_before_the_first_slice() {
+        let event = crate::DeclaredEvent {
+            name: "curve".to_owned(),
+            params: vec![
+                crate::DeclaredEventParam {
+                    name: "enabled".to_owned(),
+                    elem_ty: PrimitiveType::F32,
+                    array_len: 1,
+                    is_array: false,
+                    is_slice: false,
+                    byte_offset: 0,
+                    default_bytes: None,
+                    default_values: None,
+                },
+                crate::DeclaredEventParam {
+                    name: "values".to_owned(),
+                    elem_ty: PrimitiveType::F64,
+                    array_len: 0,
+                    is_array: false,
+                    is_slice: true,
+                    byte_offset: 4,
+                    default_bytes: None,
+                    default_values: None,
+                },
+                crate::DeclaredEventParam {
+                    name: "stamp".to_owned(),
+                    elem_ty: PrimitiveType::I64,
+                    array_len: 1,
+                    is_array: false,
+                    is_slice: false,
+                    byte_offset: 8,
+                    default_bytes: None,
+                    default_values: None,
+                },
+            ],
+            payload_bytes: None,
+        };
+
+        let mapped = map_event_metadata(0, &event);
+        assert_eq!(mapped.payload_min_size_bytes, 16);
+        assert_eq!(mapped.params[0].byte_offset, Some(0));
+        assert_eq!(mapped.params[1].byte_offset, Some(4));
+        assert_eq!(mapped.params[2].byte_offset, None);
     }
 }

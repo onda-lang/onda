@@ -8,6 +8,11 @@ import sys
 from typing import Optional
 
 
+PROCESSOR_ARTIFACT_FORMAT = "onda-processor"
+# Synchronized from format-versions.json; do not edit these copies directly.
+PROCESSOR_ARTIFACT_FORMAT_VERSION = 1
+PROCESSOR_ABI_VERSION = 1
+
 SCALAR_FORMATS = {
     "bool": "?",
     "f32": "f",
@@ -49,14 +54,12 @@ def parse_scalar(text: str) -> object:
     return json.loads(text)
 
 
-def parse_default(text: Optional[str], count: int) -> list[object]:
-    if text is None:
+def parse_default(values: Optional[list[str]], count: int) -> list[object]:
+    if values is None:
         return [0] * count
-    value = json.loads(text)
-    values = value if isinstance(value, list) else [value]
     if len(values) != count:
-        fail(f"default {text!r} has {len(values)} elements, expected {count}")
-    return values
+        fail(f"default has {len(values)} elements, expected {count}")
+    return [parse_scalar(value) for value in values]
 
 
 def target_endian(descriptor: dict) -> str:
@@ -76,7 +79,7 @@ def encode_parameter_defaults(descriptor: dict) -> bytes:
     for param in descriptor["metadata"]["params"]:
         scalar = scalar_name(param["type_repr"])
         count = param.get("array_len", 1)
-        values = parse_default(param.get("default_repr"), count)
+        values = parse_default(param.get("default_reprs"), count)
         encoded = struct.pack(endian + SCALAR_FORMATS[scalar] * count, *values)
         if len(encoded) != param["byte_size"]:
             fail(f"encoded size for parameter {param['name']!r} disagrees with sidecar")
@@ -90,7 +93,7 @@ def encode_parameter_defaults(descriptor: dict) -> bytes:
 
 
 def encode_event_payload(descriptor: dict, event: dict) -> Optional[bytes]:
-    payload_size = event.get("payload_bytes")
+    payload_size = event.get("payload_size_bytes")
     if payload_size is None:
         return None
     if not isinstance(payload_size, int) or payload_size < 0:
@@ -186,10 +189,19 @@ def generated_events(descriptor: dict) -> tuple[str, list[str], list[str], list[
 
 
 def generate(descriptor: dict) -> str:
-    if descriptor.get("format") != "onda-processor" or descriptor.get("format_version") != 3:
-        fail("expected an onda-processor format-version-3 sidecar")
-    if descriptor.get("abi_version") != 1:
-        fail("the example implements only processor ABI version 1")
+    if (
+        descriptor.get("format") != PROCESSOR_ARTIFACT_FORMAT
+        or descriptor.get("format_version") != PROCESSOR_ARTIFACT_FORMAT_VERSION
+    ):
+        fail(
+            f"expected an {PROCESSOR_ARTIFACT_FORMAT} "
+            f"format-version-{PROCESSOR_ARTIFACT_FORMAT_VERSION} sidecar"
+        )
+    if descriptor.get("abi_version") != PROCESSOR_ABI_VERSION:
+        fail(
+            "the example implements only processor ABI version "
+            f"{PROCESSOR_ABI_VERSION}"
+        )
     if descriptor.get("artifact_kind") != "relocatable_object":
         fail("the example requires a relocatable native object")
     if descriptor["target"].get("pointer_model") != "native_address":

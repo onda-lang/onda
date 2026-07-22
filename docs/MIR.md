@@ -124,12 +124,12 @@ deterministic MIR state order, with no target ABI padding. Control-output mirror
 and then overlays the packed persistent slots, so transient caches cannot leak across restore and
 the snapshot contract is independent of a backend's native alignment and byte-order choices.
 
-AOT sidecar snapshot format 1 serializes each scalar element independently in little-endian byte
+AOT sidecar snapshots serialize each scalar element independently in little-endian byte
 order: floats use their IEEE-754 bits, signed integers use two's-complement bits, and booleans are
 one byte containing `0` or `1`. The persistent-state manifest records the element size, packed
 snapshot offset, target-layout physical offset, and byte size of every included segment. An AOT
 host must preserve the complete post-`init` physical state image; restore copies that image first,
-then decodes and overlays the manifest's persistent segments. Processor descriptor format 3 carries
+then decodes and overlays the manifest's persistent segments. The processor descriptor carries
 this manifest and the explicit `little_endian` / `post_init_physical_state_image` contract.
 
 ## Operations
@@ -228,14 +228,16 @@ explicit check. `OptimizedProgram` additionally proves that the shared MIR clean
 its fixed point. Raw `Program` entry points must validate and optimize before delegating to backend
 codegen.
 
-Unchecked bounds are a separate producer proof, not an assertion a serialized program may make
-about itself. The safe `validate`, `validate_owned`, `from_json`, and `from_messagepack` entry points
-reject every reachable `BoundsMode::Unchecked` operation. Onda's semantic lowerer may use the
-explicit unsafe trusted-producer constructors only after it has proved those accesses while
-constructing MIR. That provenance is retained by `ValidatedProgram` and revalidated without being
-downgraded after every shared pass. Raw LLVM and Binaryen APIs therefore cannot accidentally turn
-untrusted unchecked indexing into memory unsafety; a trusted backend boundary must be named at the
-call site and document the producer whose proof it accepts.
+Unchecked bounds are a separate producer proof, not an assertion source code or a serialized
+program may make about itself. The safe `validate`, `validate_owned`, `from_json`, and
+`from_messagepack` entry points reject every reachable `BoundsMode::Unchecked` operation. Public
+source-level `unsafe_read`/`unsafe_write` operations use `BoundsMode::Trap`: they skip clamping but
+remain memory-safe when their index is invalid. Onda's semantic lowerer may use the explicit unsafe
+trusted-producer constructors only for accesses whose bounds it established while constructing
+MIR. That provenance is retained by `ValidatedProgram` and revalidated without being downgraded
+after every shared pass. Raw LLVM and Binaryen APIs therefore cannot accidentally turn untrusted
+unchecked indexing into memory unsafety; a trusted backend boundary must be named at the call site
+and document the producer whose proof it accepts.
 
 Invalid MIR is always a compiler bug and must be reported as an internal diagnostic with source
 context where possible.
@@ -307,7 +309,7 @@ The lowering owns:
   range/default, and state IDs
 - persistent scalar, scalarized tuple, and fixed primitive-array state with `init` assignments
 - immutable primitive constant arrays with typed, bounds-explicit loads
-- symbolic external buffers with safe/unchecked reads and writes plus length/channel/sample-rate metadata
+- symbolic external buffers with clamping/non-clamping reads and writes plus length/channel/sample-rate metadata
 - logical buffer-reference function parameters, including forwarding, metadata, mutation, and slicing
 - scalar, fixed primitive-array, and dynamic primitive-slice event interfaces with direct handler IDs
 - top-level parameter/input clamp rewrites already produced by semantic analysis
@@ -316,7 +318,7 @@ The lowering owns:
 - direct calls from runtime sections into the reachable user-function closure
 - exact propagation of the semantic analysis sample rate and block size
 - resolved scalar value parameters, scalar/no-result functions, and scalar locals
-- fixed primitive local arrays with safe/unchecked indexing, mutation, length, and slicing
+- fixed primitive local arrays with clamping/non-clamping indexing, mutation, length, and slicing
 - primitive slice aliases and function parameters with inferred read-only/read-write access
 - negative/clamped slice bounds, indexed slice access, fill, defined-overlap copy, and buffer slices
 - tuple returns as ordered MIR multi-values, including forwarding calls
@@ -391,7 +393,7 @@ program to optimized validated MIR and then uses the MIR-native LLVM ORC impleme
 LLVM IR and object emission use the same MIR lowering. Runtime and AOT metadata are derived from the
 MIR interface together with the physical offsets selected by codegen, so `TypedProgram` is no
 longer a semantic side channel for production JIT, object, state-layout, or host-interface data.
-The AOT format-3 processor descriptor includes the packed persistent-state segment manifest needed to implement
+The AOT processor descriptor includes the packed persistent-state segment manifest needed to implement
 snapshot/restore without confusing packed offsets with the target's physical state layout.
 It also records the resolved LLVM pointer width, byte order, data layout, pointer model, and
 relocatable-object integration profile. The logical entry points are specified once in

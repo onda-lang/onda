@@ -302,7 +302,9 @@ sample:
   sr = src.samplerate()
 ```
 
-Unchecked access exists as both methods and free functions:
+Non-clamping access exists as both methods and free functions. Despite the
+historical `unsafe_` spelling, these operations trap on an invalid index; only
+compiler-proven accesses may be unchecked in MIR:
 
 ```onda
 sample:

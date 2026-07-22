@@ -3560,11 +3560,8 @@ pub(super) fn resolve_proc_state_struct_def(
         return Some(struct_template.clone());
     }
 
-    let Some(specialized) =
-        specialize_generic_struct_template(struct_template, &state_struct.type_args, errors)
-    else {
-        return None;
-    };
+    let specialized =
+        specialize_generic_struct_template(struct_template, &state_struct.type_args, errors)?;
     Some(specialized)
 }
 

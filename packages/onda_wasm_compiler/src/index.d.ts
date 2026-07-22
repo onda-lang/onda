@@ -5,6 +5,7 @@ export {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_SNAPSHOT_FORMAT_VERSION,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
   parseProcessorMetadata,

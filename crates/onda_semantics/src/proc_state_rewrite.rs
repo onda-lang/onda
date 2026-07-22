@@ -894,7 +894,6 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                     args: call_args,
                                 };
                             }
-                            return;
                         }
                     }
                 }
@@ -968,7 +967,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 format!("cannot assign to processor input '{name}'"),
                             );
                             return Some(Stmt::Assign {
-                                loc: source_loc.clone().into(),
+                                loc: source_loc.into(),
                                 target_loc: Default::default(),
                                 target: AssignTarget::Var(name.clone()),
                                 decl_ty: *decl_ty,
@@ -984,7 +983,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 return None;
                             }
                             return Some(Stmt::Assign {
-                                loc: source_loc.clone().into(),
+                                loc: source_loc.into(),
                                 target_loc: Default::default(),
                                 target: AssignTarget::Var(format!("self.{name}")),
                                 decl_ty: None,
@@ -997,7 +996,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         if let Some((base, field)) = split_field_path(name, errors) {
                             if field_names.contains(base) && is_plain_symbol(base) {
                                 return Some(Stmt::Assign {
-                                    loc: source_loc.clone().into(),
+                                    loc: source_loc.into(),
                                     target_loc: Default::default(),
                                     target: AssignTarget::Var(format!("self.{base}.{field}")),
                                     decl_ty: None,
@@ -1009,7 +1008,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             }
                         }
                         Some(Stmt::Assign {
-                            loc: source_loc.clone().into(),
+                            loc: source_loc.into(),
                             target_loc: Default::default(),
                             target: AssignTarget::Var(name.clone()),
                             decl_ty: *decl_ty,
@@ -1066,7 +1065,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                     errors,
                                 ) else {
                                     return Some(Stmt::Assign {
-                                        loc: source_loc.clone().into(),
+                                        loc: source_loc.into(),
                                         target_loc: Default::default(),
                                         target: AssignTarget::Index {
                                             base: base.clone(),
@@ -1081,7 +1080,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 };
                                 if let Some(slot_name) = slots.get(slot_idx) {
                                     return Some(Stmt::Assign {
-                                        loc: source_loc.clone().into(),
+                                        loc: source_loc.into(),
                                         target_loc: Default::default(),
                                         target: AssignTarget::Var(format!("self.{slot_name}")),
                                         decl_ty: None,
@@ -1093,7 +1092,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 }
                             } else {
                                 return Some(Stmt::Expr {
-                                    loc: source_loc.clone().into(),
+                                    loc: source_loc.into(),
                                     expr: Expr::UserCall {
                                         loc: Default::default(),
                                         name: proc_write_helper_name(owner_proc, slots, false),
@@ -1128,7 +1127,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             base.clone()
                         };
                         Some(Stmt::Assign {
-                            loc: source_loc.clone().into(),
+                            loc: source_loc.into(),
                             target_loc: Default::default(),
                             target: AssignTarget::Index {
                                 base: target_base,
@@ -1183,7 +1182,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             base.clone()
                         };
                         Some(Stmt::Assign {
-                            loc: source_loc.clone().into(),
+                            loc: source_loc.into(),
                             target_loc: Default::default(),
                             target: AssignTarget::Slice {
                                 base: target_base,
@@ -1198,7 +1197,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         })
                     }
                     AssignTarget::Tuple(_) => Some(Stmt::Assign {
-                        loc: source_loc.clone().into(),
+                        loc: source_loc.into(),
                         target_loc: Default::default(),
                         target: target.clone(),
                         decl_ty: *decl_ty,
@@ -1233,7 +1232,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                         let slot_idx = raw_idx as usize;
                                         if let Some(slot_name) = slots.get(slot_idx) {
                                             return Some(Stmt::Assign {
-                                                loc: source_loc.clone().into(),
+                                                loc: source_loc.into(),
                                                 target_loc: Default::default(),
                                                 target: AssignTarget::Var(slot_name.clone()),
                                                 decl_ty: None,
@@ -1252,7 +1251,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                         let slot_idx = raw_idx as usize;
                                         if let Some(slot_name) = slots.get(slot_idx) {
                                             return Some(Stmt::Assign {
-                                                loc: source_loc.clone().into(),
+                                                loc: source_loc.into(),
                                                 target_loc: Default::default(),
                                                 target: AssignTarget::Var(format!(
                                                     "self.{slot_name}"
@@ -1267,7 +1266,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                     }
                                 }
                                 return Some(Stmt::Expr {
-                                    loc: source_loc.clone().into(),
+                                    loc: source_loc.into(),
                                     expr: Expr::UserCall {
                                         loc: Default::default(),
                                         name: proc_write_helper_name(owner_proc, slots, true),
@@ -1293,7 +1292,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     }
                 }
                 Some(Stmt::Expr {
-                    loc: source_loc.clone().into(),
+                    loc: source_loc.into(),
                     expr: expr_rewritten,
                 })
             }
@@ -1308,7 +1307,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     errors,
                 );
                 Some(Stmt::Return {
-                    loc: source_loc.clone().into(),
+                    loc: source_loc.into(),
                     expr: expr_rewritten,
                 })
             }
@@ -1358,7 +1357,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     })
                     .collect::<Vec<_>>();
                 Some(Stmt::If {
-                    loc: source_loc.clone().into(),
+                    loc: source_loc.into(),
                     cond: cond_rewritten,
                     then_branch,
                     else_branch,

@@ -50,5 +50,7 @@ export_unary!(onda_math_log_f32, f32, libm::logf);
 export_unary!(onda_math_log_f64, f64, libm::log);
 export_binary!(onda_math_pow_f32, f32, libm::powf);
 export_binary!(onda_math_pow_f64, f64, libm::pow);
+export_binary!(onda_math_remainder_f32, f32, libm::fmodf);
+export_binary!(onda_math_remainder_f64, f64, libm::fmod);
 export_ternary!(onda_math_fma_f32, f32, libm::fmaf);
 export_ternary!(onda_math_fma_f64, f64, libm::fma);

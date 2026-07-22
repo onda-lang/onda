@@ -326,6 +326,31 @@ test("AudioWorklet marshals Web Audio f32 through f64 MIR input/output storage",
   assert.deepEqual([...output], [...input]);
 });
 
+test("AudioWorklet preserves signed-zero parameter defaults", () => {
+  const mir = f64PassthroughMir();
+  mir.interface.params[0].default = {
+    kind: "scalar",
+    data: { type: "f64", value: -0 },
+  };
+  const artifact = compileMir(mir);
+  const processor = new WorkletProcessor({
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+    },
+  });
+  const info = artifact.metadata.metadata.params[0];
+
+  assert.equal(info.default_reprs[0], "-0");
+  assert.equal(
+    Object.is(
+      processor.readStorage(processor.paramsPtr + info.byte_offset, info),
+      -0,
+    ),
+    true,
+  );
+});
+
 test("AudioWorklet does not special-case parameters named freq as f32 scalars", () => {
   const scalarMir = f64PassthroughMir();
   scalarMir.interface.params[0].name = "freq";
@@ -492,9 +517,9 @@ test("AudioWorklet reset zeroes physical state before re-running init", () => {
   const [initialized, untouched] = artifact.metadata.metadata.states;
   const view = processor.memoryView();
   const initializedAddress =
-    processor.statePtr + initialized.storage_byte_offset;
+    processor.statePtr + initialized.physical_state_byte_offset;
   const untouchedAddress =
-    processor.statePtr + untouched.storage_byte_offset;
+    processor.statePtr + untouched.physical_state_byte_offset;
 
   assert.equal(view.getFloat64(initializedAddress, true), 2.5);
   assert.equal(view.getFloat64(untouchedAddress, true), 0);
@@ -531,7 +556,7 @@ test("AudioWorklet snapshots persistent state and restores from a post-init base
     },
   });
   const remembered = artifact.metadata.metadata.states[0];
-  const rememberedAddress = processor.statePtr + remembered.storage_byte_offset;
+  const rememberedAddress = processor.statePtr + remembered.physical_state_byte_offset;
   const scratchAddress = processor.statePtr + 8;
   const view = processor.memoryView();
 

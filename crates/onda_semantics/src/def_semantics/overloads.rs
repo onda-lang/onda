@@ -138,12 +138,8 @@ fn infer_scalar_expr_type_for_overload(
             }
             let mut acc = PrimitiveType::F32;
             for arg in args {
-                let Some(arg_ty) = infer_scalar_expr_type_for_overload(arg, env) else {
-                    return None;
-                };
-                let Some(merged) = merge_numeric_types_no_diag(acc, arg_ty) else {
-                    return None;
-                };
+                let arg_ty = infer_scalar_expr_type_for_overload(arg, env)?;
+                let merged = merge_numeric_types_no_diag(acc, arg_ty)?;
                 acc = merged;
             }
             Some(acc)

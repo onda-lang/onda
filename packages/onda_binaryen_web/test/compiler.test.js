@@ -3,6 +3,7 @@ import { webcrypto } from "node:crypto";
 import test from "node:test";
 import binaryen from "binaryen";
 import * as backend from "../src/index.js";
+import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
 
 import {
   OndaBinaryenError,
@@ -215,14 +216,73 @@ test("does not expose a partial validator for arbitrary MIR", () => {
   assert.equal("compileMir" in backend, false);
 });
 
+test("declares the complete MIR scalar operation capability matrix", () => {
+  assert.deepEqual(Object.keys(MIR_OPERATION_CAPABILITIES.binary), [
+    "add",
+    "subtract",
+    "multiply",
+    "divide",
+    "remainder",
+    "bit_and",
+    "bit_or",
+    "bit_xor",
+    "shift_left",
+    "shift_right",
+  ]);
+  assert.deepEqual(MIR_OPERATION_CAPABILITIES.binary.remainder, [
+    "f32",
+    "f64",
+    "i32",
+    "i64",
+  ]);
+});
+
+test("compiles floating-point remainder through the embedded libm kernel", () => {
+  const mir = executableMir();
+  mir.types.push(type("scalar", "f64"));
+  mir.functions[0].locals = [
+    { name: null, ty: 0 },
+    { name: null, ty: 0 },
+    { name: null, ty: 0 },
+    { name: null, ty: 3 },
+    { name: null, ty: 3 },
+    { name: null, ty: 3 },
+  ];
+  mir.functions[0].body.statements.unshift(
+    assign(place("local", 0), { kind: "use", data: constant("f32", 5.5) }),
+    assign(place("local", 1), { kind: "use", data: constant("f32", 2) }),
+    assign(place("local", 2), {
+      kind: "binary",
+      data: { op: "remainder", lhs: local(0), rhs: local(1) },
+    }),
+    assign(place("local", 3), { kind: "use", data: constant("f64", 5.5) }),
+    assign(place("local", 4), { kind: "use", data: constant("f64", 2) }),
+    assign(place("local", 5), {
+      kind: "binary",
+      data: { op: "remainder", lhs: local(3), rhs: local(4) },
+    }),
+  );
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  assert.ok(artifact.wasm.byteLength > 0);
+  assert.match(artifact.wat, /onda_math_remainder_f32/);
+  assert.match(artifact.wat, /onda_math_remainder_f64/);
+});
+
 test("compiles versioned MIR into an executable persistent DSP module", async () => {
   const artifact = compileMir(executableMir(), { emitText: true });
   assert.equal(WebAssembly.validate(artifact.wasm), true);
   assert.match(artifact.wat, /export "onda_process"/);
   assert.equal(artifact.metadata.backend, "binaryen-js");
   assert.equal(artifact.metadata.format, "onda-processor");
-  assert.equal(artifact.metadata.format_version, 3);
-  assert.equal(artifact.metadata.abi_version, 1);
+  assert.equal(
+    artifact.metadata.format_version,
+    backend.PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  );
+  assert.equal(artifact.metadata.abi_version, backend.PROCESSOR_ABI_VERSION);
+  assert.equal(
+    artifact.metadata.runtime.snapshot_format_version,
+    backend.PROCESSOR_SNAPSHOT_FORMAT_VERSION,
+  );
   assert.equal(artifact.metadata.artifact_kind, "webassembly_module");
   assert.equal(artifact.metadata.target.pointer_width_bits, 32);
   assert.equal(artifact.metadata.target.pointer_model, "linear_memory_offset");
@@ -235,12 +295,12 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
   assert.deepEqual(artifact.metadata.metadata.states, [
     {
       name: "phase",
-      type: "f32",
+      type_repr: "f32",
       scalar: "f32",
-      array_length: 1,
-      is_array: false,
-      byte_offset: 0,
-      storage_byte_offset: 0,
+      array_len: 1,
+      element_size_bytes: 4,
+      packed_snapshot_byte_offset: 0,
+      physical_state_byte_offset: 0,
       byte_size: 4,
     },
   ]);
@@ -281,6 +341,21 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
     [...new Float32Array(memory.buffer, output, 4)],
     [1.25, 1.5, 1.75, 2],
   );
+});
+
+test("preserves signed zero in processor metadata", () => {
+  const mir = executableMir();
+  mir.interface.params[0].default.data.value = -0;
+  mir.interface.params[0].range = {
+    min: { type: "f32", value: -0 },
+    max: { type: "f32", value: 0 },
+  };
+
+  const artifact = compileMir(mir);
+  const [param] = artifact.metadata.metadata.params;
+  assert.deepEqual(param.default_reprs, ["-0"]);
+  assert.equal(param.range_min_repr, "-0");
+  assert.equal(param.range_max_repr, "0");
 });
 
 test("serializes a reusable Wasm artifact with integrity metadata", async () => {
@@ -799,6 +874,47 @@ test("rejects block sizes outside the signed process ABI", () => {
   assert.throws(() => compileMir(mir), /fit the signed i32 process ABI/);
 });
 
+test("rejects compile-time layouts that exceed the wasm32 address space", () => {
+  const stateMir = executableMir();
+  stateMir.types.push(type("array", { element: 0, len: 500_000_000 }));
+  stateMir.state = ["a", "b", "c"].map((name) => ({
+    name,
+    ty: 3,
+    persistence: "snapshot",
+  }));
+  stateMir.functions[0].body.statements = [];
+  stateMir.functions[1].body.statements = [];
+  assert.throws(
+    () => compileMir(stateMir),
+    /physical state storage must fit within the wasm32 4 GiB address space/,
+  );
+
+  const audioMir = executableMir();
+  audioMir.config.block_size = 0x4000_0000;
+  assert.throws(
+    () => compileMir(audioMir),
+    /audio port 0 channel storage must fit within the wasm32 4 GiB address space/,
+  );
+
+  const combinedMir = executableMir();
+  combinedMir.types.push(
+    type("array", { element: 0, len: 600_000_000 }),
+    type("array", { element: 0, len: 500_000_000 }),
+  );
+  combinedMir.state = [{
+    name: "large_state",
+    ty: 3,
+    persistence: "snapshot",
+  }];
+  combinedMir.functions[0].locals = [{ name: null, ty: 4 }];
+  combinedMir.functions[0].body.statements = [];
+  combinedMir.functions[1].body.statements = [];
+  assert.throws(
+    () => compileMir(combinedMir),
+    /static, parameter, and physical state storage must fit within the wasm32 4 GiB address space/,
+  );
+});
+
 test("rejects recursive MIR call graphs as unbounded realtime work", () => {
   const mir = executableMir();
   const userFunction = (name, callee) => ({
@@ -942,7 +1058,7 @@ test("links the complete LLVM math surface into a self-contained module", async 
   ];
   thenStatements.splice(2, 1, ...mathStatements, ...sumStatements);
   const artifact = compileMir(mir);
-  assert.deepEqual(artifact.metadata.imports, []);
+  assert.deepEqual(artifact.metadata.integration.profile.imports, []);
   assert.deepEqual(
     WebAssembly.Module.imports(new WebAssembly.Module(artifact.wasm)),
     [],
@@ -1006,7 +1122,7 @@ test("implements LLVM half-away-from-zero round without reserving the math kerne
     };
 
     const artifact = compileMir(mir);
-    assert.deepEqual(artifact.metadata.imports, []);
+    assert.deepEqual(artifact.metadata.integration.profile.imports, []);
     const { instance } = await WebAssembly.instantiate(artifact.wasm);
     const { memory, __heap_base, onda_init, onda_process } = instance.exports;
     const params = Number(__heap_base.value);
@@ -1071,7 +1187,7 @@ test("links strict f32 and f64 FMA into the generated Wasm module", async () => 
     };
 
     const artifact = compileMir(mir);
-    assert.deepEqual(artifact.metadata.imports, []);
+    assert.deepEqual(artifact.metadata.integration.profile.imports, []);
     const imports = WebAssembly.Module.imports(
       new WebAssembly.Module(artifact.wasm),
     );
@@ -1443,6 +1559,10 @@ test("exports packed scalar and fixed-array event handlers", async () => {
     artifact.metadata.metadata.events[0].params.map((param) => param.byte_offset),
     [0, 4],
   );
+  assert.deepEqual(
+    artifact.metadata.metadata.events[0].params.map((param) => param.is_slice),
+    [false, false],
+  );
   assert.equal(artifact.metadata.metadata.events[0].payload_size_bytes, 12);
 
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
@@ -1524,8 +1644,8 @@ test("preserves indexing for fixed arrays of length one", async () => {
   outputStore.bounds = "clamp";
 
   const artifact = compileMir(mir);
-  assert.equal(artifact.metadata.metadata.outputs[0].is_array, true);
-  assert.equal(artifact.metadata.metadata.outputs[0].channel_count, 1);
+  assert.equal(artifact.metadata.metadata.outputs[0].type_repr, "f32[1]");
+  assert.equal(artifact.metadata.metadata.outputs[0].array_len, 1);
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const { memory, __heap_base, onda_init, onda_process } = instance.exports;
   const params = Number(__heap_base.value);
@@ -1678,6 +1798,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
   assert.deepEqual(artifact.metadata.metadata.buffers, [
     {
       name: "table",
+      type_repr: "buffer[f32]",
       scalar: "f32",
       element_size_bytes: 4,
       channels: "mono",

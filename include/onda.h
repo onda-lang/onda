@@ -151,7 +151,8 @@ int onda_bind_output(
 /* Binds one buffer entry; elem_type must be an ONDA_PRIMITIVE_* value.
    Zero-copy contract: runtime stores ptr and accesses it directly (no internal copy).
    ptr must remain valid, correctly sized for the declared shape, and at a stable address until
-   this slot is rebound/unbound (null + 0 frames + 0 channels) or the instance is destroyed.
+   this slot is rebound or the instance is destroyed. A required but empty buffer is bound with
+   null + 0 frames + 0 channels; this is distinct from an unbound slot.
    ptr memory must be writable during processing and naturally aligned for elem_type;
    misaligned bindings are rejected.
    Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
@@ -340,7 +341,9 @@ int onda_buffer_elem_type_bytes(const onda_program_t* program, int index);
 int onda_buffer_channels_kind(const onda_program_t* program, int index);
 /* Returns static channel count (mono=1), or -1 for dynamic/invalid. */
 int onda_buffer_channels_static(const onda_program_t* program, int index);
-/* Returns 1 if buffer may be written by program code, 0 if read-only, -1 if invalid. */
+/* Returns 1 for a declared read-write buffer, 0 for a declared read-only buffer,
+   or -1 if program/index is invalid. This reports host-facing access capability,
+   not whether the current program body contains a reachable write. */
 int onda_buffer_may_write(const onda_program_t* program, int index);
 
 /* Returns input element primitive type id, or -1 if invalid. */

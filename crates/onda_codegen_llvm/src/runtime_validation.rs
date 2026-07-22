@@ -1,74 +1,7 @@
 use onda_frontend::Diagnostic;
 
 use crate::primitives::primitive_type_bytes;
-use crate::{
-    CodegenOptions, CompileOptions, DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer,
-    RuntimeState, TargetCpu,
-};
-
-pub(crate) fn validate_compile_options(options: &CompileOptions) -> Result<(), Diagnostic> {
-    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
-        return Err(Diagnostic::internal(
-            "compile option 'sample_rate' must be finite and greater than zero",
-        ));
-    }
-    if options.block_size == 0 {
-        return Err(Diagnostic::internal(
-            "compile option 'block_size' must be greater than zero",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_codegen_options(options: &CodegenOptions) -> Result<(), Diagnostic> {
-    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
-        return Err(Diagnostic::internal(
-            "codegen option 'sample_rate' must be finite and greater than zero",
-        ));
-    }
-    if options.block_size == 0 {
-        return Err(Diagnostic::internal(
-            "codegen option 'block_size' must be greater than zero",
-        ));
-    }
-
-    if let Some(triple) = &options.target.triple {
-        if triple.trim().is_empty() {
-            return Err(Diagnostic::internal(
-                "target config 'triple' must not be empty when provided",
-            ));
-        }
-    }
-
-    match &options.target.cpu {
-        TargetCpu::Host => {}
-        TargetCpu::Explicit(cpu) => {
-            if cpu.trim().is_empty() {
-                return Err(Diagnostic::internal(
-                    "target config 'cpu' must not be empty when explicitly provided",
-                ));
-            }
-        }
-    }
-
-    if let Some(features) = &options.target.features {
-        if features.contains(char::is_whitespace) {
-            return Err(Diagnostic::internal(
-                "target config 'features' must be a comma-separated LLVM feature string without whitespace",
-            ));
-        }
-    }
-
-    if let Some(abi_name) = &options.target.abi_name {
-        if abi_name.trim().is_empty() {
-            return Err(Diagnostic::internal(
-                "target config 'abi_name' must not be empty when provided",
-            ));
-        }
-    }
-
-    Ok(())
-}
+use crate::{DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState};
 
 pub(crate) fn validate_event_payload(
     desc: &DeclaredEvent,
@@ -574,6 +507,7 @@ impl JitProgram {
     /// The raw input, output, and external-buffer pointers must remain valid,
     /// correctly sized/aligned, and mutually non-overlapping for the duration
     /// of the call.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn process_checked(
         &self,
         state: &mut RuntimeState,
@@ -678,6 +612,7 @@ impl JitProgram {
     /// flags, pointer counts, buffer metadata, pointee extents/alignment, and
     /// all aliasing relationships must satisfy the same invariants enforced by
     /// [`Self::process_checked`] and remain valid for the duration of the call.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn process_unchecked(
         &self,
         state: &mut RuntimeState,
@@ -738,6 +673,7 @@ impl JitProgram {
     ///
     /// Raw external-buffer pointers must satisfy their complete binding
     /// contract and remain valid for the duration of the call.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn trigger_event_by_index(
         &self,
         state: &mut RuntimeState,
@@ -794,6 +730,7 @@ impl JitProgram {
     /// must satisfy the same invariants enforced by
     /// [`Self::trigger_event_by_index`] and remain valid for the duration of
     /// the call.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn trigger_event_by_index_unchecked(
         &self,
         state: &mut RuntimeState,

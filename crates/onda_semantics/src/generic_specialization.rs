@@ -366,10 +366,10 @@ pub(crate) fn specialize_generic_struct_template(
             FieldType::Tuple(elem_tys) => FieldType::Tuple(elem_tys.clone()),
         };
         fields.push(StructField {
-            loc: field.loc.clone(),
+            loc: field.loc,
             name: field.name.clone(),
             ty: specialized_ty,
-            ty_loc: field.ty_loc.clone(),
+            ty_loc: field.ty_loc,
             default,
         });
     }
@@ -404,7 +404,7 @@ pub(crate) fn specialize_generic_struct_template(
                 FnReturnType::Tuple(elems) => FnReturnType::Tuple(
                     elems
                         .iter()
-                        .map(|elem| specialize_fn_return_scalar_type(elem))
+                        .map(&specialize_fn_return_scalar_type)
                         .collect(),
                 ),
             };
@@ -424,7 +424,7 @@ pub(crate) fn specialize_generic_struct_template(
     }
 
     Some(StructDef {
-        loc: template.loc.clone(),
+        loc: template.loc,
         name: specialized_struct_name(&template.name, type_args),
         type_params: Vec::new(),
         fields,

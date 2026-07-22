@@ -270,9 +270,7 @@ fn value_type_from_decl_type(
         Some(DeclType::Scalar(ty)) => Some(GraphValueType::Scalar(*ty)),
         Some(DeclType::Generic(_)) => Some(GraphValueType::Scalar(PrimitiveType::F32)),
         Some(DeclType::Array { elem, .. }) => {
-            let Some((size_expr, context)) = size_context else {
-                return None;
-            };
+            let (size_expr, context) = size_context?;
             let len = eval_data_size_expr(size_expr, options, &context, errors)?;
             Some(GraphValueType::Array {
                 elem_ty: *elem,
@@ -281,9 +279,7 @@ fn value_type_from_decl_type(
         }
         Some(DeclType::Tuple(_)) => Some(GraphValueType::Scalar(PrimitiveType::F32)),
         Some(DeclType::ArrayGeneric { .. }) => {
-            let Some((size_expr, context)) = size_context else {
-                return None;
-            };
+            let (size_expr, context) = size_context?;
             let len = eval_data_size_expr(size_expr, options, &context, errors)?;
             Some(GraphValueType::Array {
                 elem_ty: PrimitiveType::F32,

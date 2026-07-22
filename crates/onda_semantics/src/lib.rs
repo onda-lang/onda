@@ -1,3 +1,9 @@
+// Semantic passes intentionally keep their data dependencies explicit. Most of
+// these functions are private traversal helpers, where bundling unrelated
+// symbol tables into broad context objects would hide borrowing and mutation
+// boundaries without reducing complexity.
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::{HashMap, HashSet};
 
 use onda_frontend::{
@@ -6689,9 +6695,7 @@ sample:
             } => {
                 expr_contains_proc_index_sentinel(start)
                     || expr_contains_proc_index_sentinel(end)
-                    || step
-                        .as_ref()
-                        .is_some_and(|expr| expr_contains_proc_index_sentinel(expr))
+                    || step.as_ref().is_some_and(expr_contains_proc_index_sentinel)
                     || body.iter().any(def_stmt_contains_proc_index_sentinel)
             }
             Stmt::While { cond, body, .. } => {

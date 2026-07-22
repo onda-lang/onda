@@ -17,18 +17,32 @@ use crate::diag_print::format_diagnostics;
 use crate::CompileEmit;
 use onda_lsp::formatting::{format_program, primitive_type_name};
 
-pub(crate) fn run_compile(
-    input: &Path,
-    emit: CompileEmit,
-    output: Option<&Path>,
-    meta_out: Option<&Path>,
-    sample_rate_hz: u32,
-    block_frames: usize,
-    dump_graph: bool,
-    show_meta: bool,
-    fast_math: bool,
-    target: TargetConfig,
-) -> Result<(), String> {
+pub(crate) struct CompileRequest<'a> {
+    pub input: &'a Path,
+    pub emit: CompileEmit,
+    pub output: Option<&'a Path>,
+    pub meta_out: Option<&'a Path>,
+    pub sample_rate_hz: u32,
+    pub block_frames: usize,
+    pub dump_graph: bool,
+    pub show_meta: bool,
+    pub fast_math: bool,
+    pub target: TargetConfig,
+}
+
+pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
+    let CompileRequest {
+        input,
+        emit,
+        output,
+        meta_out,
+        sample_rate_hz,
+        block_frames,
+        dump_graph,
+        show_meta,
+        fast_math,
+        target,
+    } = request;
     if dump_graph {
         let lowered = parse_and_lower_graphs(input, sample_rate_hz as f32, block_frames)?;
         print!("{}", format_program(&lowered));
@@ -45,11 +59,7 @@ pub(crate) fn run_compile(
             .join("\n");
         format!("MIR lowering failed:\n{details}")
     })?;
-    let codegen_options = MirTargetOptions {
-        fast_math,
-        target,
-        ..MirTargetOptions::default()
-    };
+    let codegen_options = MirTargetOptions { fast_math, target };
 
     match emit {
         CompileEmit::Check => {

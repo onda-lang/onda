@@ -226,8 +226,7 @@ impl CompletionContext {
         let line_before_prefix = &source[line_start..prefix_start];
         let before_prefix_trimmed = before_prefix.trim_end();
 
-        if before_prefix_trimmed.ends_with('.') {
-            let without_dot = &before_prefix_trimmed[..before_prefix_trimmed.len() - 1];
+        if let Some(without_dot) = before_prefix_trimmed.strip_suffix('.') {
             if let Some(receiver) = scan_receiver_left(without_dot) {
                 return Self {
                     prefix,
@@ -237,8 +236,7 @@ impl CompletionContext {
             }
         }
 
-        if before_prefix_trimmed.ends_with("::") {
-            let without_colons = &before_prefix_trimmed[..before_prefix_trimmed.len() - 2];
+        if let Some(without_colons) = before_prefix_trimmed.strip_suffix("::") {
             if let Some(namespace) = scan_namespace_left(without_colons) {
                 return Self {
                     prefix,
@@ -2115,12 +2113,11 @@ impl CompletionIndex {
 
     fn resolve_type_name_in_namespace(&self, name: &str, namespace: &str) -> Option<String> {
         let clean = strip_type_args_from_path(name);
-        for candidate in self.qualified_name_candidates(&clean, namespace) {
-            if self.procs.contains_key(&candidate) || self.structs.contains_key(&candidate) {
-                return Some(candidate);
-            }
-        }
-        None
+        self.qualified_name_candidates(&clean, namespace)
+            .into_iter()
+            .find(|candidate| {
+                self.procs.contains_key(candidate) || self.structs.contains_key(candidate)
+            })
     }
 
     fn instance_from_fn_param(&self, param: &FnParamDecl, namespace: &str) -> Option<InstanceInfo> {
@@ -3191,7 +3188,7 @@ fn filter_and_encode(items: Vec<CompletionItem>, prefix: &str, snippets: bool) -
         dedup.entry(key).or_insert(item);
     }
     let mut items = dedup.into_values().collect::<Vec<_>>();
-    items.sort_by(|left, right| completion_order_key(left).cmp(&completion_order_key(right)));
+    items.sort_by_key(completion_order_key);
     items
         .into_iter()
         .map(|item| item.to_lsp(snippets))

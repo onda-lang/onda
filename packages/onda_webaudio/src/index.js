@@ -12,10 +12,10 @@ export function flattenedAudioChannelCount(ports = []) {
     throw new Error("processor audio ports must be an array");
   }
   return ports.reduce((count, port, index) => {
-    const channels = Number(port?.channel_count ?? 1);
+    const channels = Number(port?.array_len);
     if (!Number.isSafeInteger(channels) || channels <= 0) {
       throw new Error(
-        `processor audio port ${index} has invalid channel_count '${String(port?.channel_count)}'`,
+        `processor audio port ${index} has invalid array_len '${String(port?.array_len)}'`,
       );
     }
     return count + channels;

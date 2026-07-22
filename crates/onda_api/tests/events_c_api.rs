@@ -1153,7 +1153,7 @@ sample { out1 = SAMPLE_RATE }
 }
 
 #[test]
-fn c_api_buffer_may_write_metadata_tracks_reachable_writes() {
+fn c_api_buffer_may_write_reports_declared_write_capability() {
     unsafe {
         let program = compile_program(
             r#"
@@ -1189,14 +1189,14 @@ sample:
         assert!(read_idx >= 0);
 
         assert_eq!(onda_buffer_may_write(program.0, write_idx), 1);
-        assert_eq!(onda_buffer_may_write(program.0, read_idx), 0);
+        assert_eq!(onda_buffer_may_write(program.0, read_idx), 1);
         assert_eq!(onda_buffer_may_write(program.0, -1), -1);
         assert_eq!(onda_buffer_may_write(std::ptr::null(), write_idx), -1);
     }
 }
 
 #[test]
-fn c_api_buffer_may_write_marks_conditional_and_multichannel_writes() {
+fn c_api_buffer_may_write_is_independent_of_reachable_write_shapes() {
     unsafe {
         let program = compile_program(
             r#"
@@ -1239,7 +1239,7 @@ sample:
 
         assert_eq!(onda_buffer_may_write(program.0, branch_idx), 1);
         assert_eq!(onda_buffer_may_write(program.0, stereo_idx), 1);
-        assert_eq!(onda_buffer_may_write(program.0, read_idx), 0);
+        assert_eq!(onda_buffer_may_write(program.0, read_idx), 1);
     }
 }
 
@@ -1267,7 +1267,7 @@ sample:
 }
 
 #[test]
-fn c_api_buffer_may_write_tracks_method_style_buffer_calls() {
+fn c_api_buffer_may_write_is_independent_of_call_syntax() {
     unsafe {
         let program = compile_program(
             r#"
@@ -1302,7 +1302,50 @@ sample:
         assert!(write_idx >= 0);
         assert!(read_idx >= 0);
         assert_eq!(onda_buffer_may_write(program.0, write_idx), 1);
-        assert_eq!(onda_buffer_may_write(program.0, read_idx), 0);
+        assert_eq!(onda_buffer_may_write(program.0, read_idx), 1);
+    }
+}
+
+#[test]
+fn c_api_accepts_canonical_empty_buffer_bindings() {
+    unsafe {
+        let program = compile_program(
+            r#"
+outs { out1 }
+buffers { samples: buffer[f32] }
+sample { out1 = 0.25 }
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut output = vec![0.0_f32; 512];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast::<c_void>(),
+                std::mem::size_of_val(output.as_slice()) as i32,
+            ),
+            0
+        );
+        assert_eq!(
+            onda_bind_buffer(instance.0, 0, std::ptr::null_mut(), 0, 0, 48_000.0, 0,),
+            0
+        );
+        assert_eq!(onda_process_checked(instance.0, 512), 0);
+        assert!(output.iter().all(|sample| (*sample - 0.25).abs() < 1e-6));
+
+        assert_eq!(
+            onda_bind_buffer(instance.0, 0, std::ptr::null_mut(), 1, 1, 48_000.0, 0,),
+            -2
+        );
     }
 }
 

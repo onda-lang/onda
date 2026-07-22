@@ -349,14 +349,8 @@ impl Validator<'_> {
                 self.program.schema_version, MIR_SCHEMA_VERSION
             ));
         }
-        if !self.program.config.sample_rate.is_finite() || self.program.config.sample_rate <= 0.0 {
-            self.program_error("sample rate must be finite and greater than zero");
-        }
-        if self.program.config.block_size == 0 {
-            self.program_error("block size must be greater than zero");
-        }
-        if self.program.config.block_size > i32::MAX as u32 {
-            self.program_error("block size must fit the signed i32 process ABI");
+        if let Err(error) = self.program.config.validate() {
+            self.program_error(error.to_string());
         }
 
         for (index, ty) in self.program.types.iter().enumerate() {
@@ -4200,7 +4194,7 @@ mod tests {
         let errors = super::validate(&program).expect_err("oversized block should fail");
         assert!(errors
             .iter()
-            .any(|error| error.message.contains("signed i32 process ABI")));
+            .any(|error| error.message.contains("2147483647")));
     }
 
     #[test]

@@ -101,7 +101,7 @@ import { compileTrustedMir } from "@onda-lang/binaryen-web";
 import { MIR_SCHEMA_VERSION, createCompiler } from "@onda-lang/wasm-compiler";
 import { flattenedAudioChannelCount } from "@onda-lang/webaudio";
 if (typeof compileTrustedMir !== "function") throw new Error("missing packaged Binaryen backend");
-if (flattenedAudioChannelCount([{ channel_count: 2 }]) !== 2) throw new Error("invalid packaged Web Audio adapter");
+if (flattenedAudioChannelCount([{ array_len: 2 }]) !== 2) throw new Error("invalid packaged Web Audio adapter");
 const compiler = await createCompiler();
 const artifact = await compiler.compileSource("sample:\\n  out1 = 0.125\\n");
 validateProcessorArtifact(artifact);

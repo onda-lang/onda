@@ -279,7 +279,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                         });
                     }
                 }
-                if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &field) {
+                if let Some(ty) = declared_symbol_scalar_type(declared_symbols, field) {
                     return Some(ty);
                 }
                 None
@@ -289,17 +289,10 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 Some(ty)
             } else if locals.contains(name) {
                 Some(PrimitiveType::I32)
-            } else if input_names.contains(name) {
-                Some(
-                    declared_symbol_scalar_type(declared_symbols, name)
-                        .unwrap_or(PrimitiveType::F32),
-                )
-            } else if output_names.contains(name) {
-                Some(
-                    declared_symbol_scalar_type(declared_symbols, name)
-                        .unwrap_or(PrimitiveType::F32),
-                )
-            } else if param_names.contains(name) {
+            } else if input_names.contains(name)
+                || output_names.contains(name)
+                || param_names.contains(name)
+            {
                 Some(
                     declared_symbol_scalar_type(declared_symbols, name)
                         .unwrap_or(PrimitiveType::F32),
@@ -349,10 +342,10 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 }
                 // Proc-lowered state fields are often addressed as `self.field[...]` while
                 // declared element metadata is keyed by bare field name.
-                if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &field) {
+                if let Some(ty) = declared_symbol_scalar_type(declared_symbols, field) {
                     return Some(ty);
                 }
-                if let Some((ty, _)) = declared_buffer_info(declared_symbols, &field) {
+                if let Some((ty, _)) = declared_buffer_info(declared_symbols, field) {
                     return Some(ty);
                 }
             }
@@ -465,7 +458,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                             return None;
                         }
                     }
-                    Some(if arg_types.iter().any(|t| *t == PrimitiveType::F64) {
+                    Some(if arg_types.contains(&PrimitiveType::F64) {
                         PrimitiveType::F64
                     } else {
                         PrimitiveType::F32
@@ -485,7 +478,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                             return None;
                         }
                     }
-                    Some(if arg_types.iter().any(|t| *t == PrimitiveType::F64) {
+                    Some(if arg_types.contains(&PrimitiveType::F64) {
                         PrimitiveType::F64
                     } else {
                         PrimitiveType::F32
@@ -742,7 +735,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
     infer_scalar_expr_type_with_proc_arrays(
         expr,
         state_scalars,
-        &declared_symbols,
+        declared_symbols,
         local_aliases,
         local_array_aliases,
         locals,

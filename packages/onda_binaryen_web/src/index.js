@@ -2,11 +2,13 @@ import binaryen from "binaryen";
 import { SUPPORTED_MIR_SCHEMA_VERSION } from "./constants.js";
 import { OndaBinaryenError } from "./errors.js";
 import { decodeMirMessagePack } from "./messagepack.js";
+import { supportsMirOperation } from "./operations.js";
 import { ONDA_MATH_KERNEL_WASM } from "./math-kernel.generated.js";
 import {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_SNAPSHOT_FORMAT_VERSION,
   validateProcessorMetadata,
 } from "./artifact.js";
 
@@ -15,6 +17,7 @@ export {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_SNAPSHOT_FORMAT_VERSION,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
   parseProcessorMetadata,
@@ -32,8 +35,8 @@ const MATH_KERNEL_RESERVED_END = 32 * 1024;
 const MATH_KERNEL_DATA_SEGMENT = ".rodata";
 const MATH_KERNEL_STACK_GLOBAL = "__stack_pointer";
 const MAX_MEMORY_PAGES = 65_536;
+const WASM32_ADDRESS_SPACE_BYTES = MAX_MEMORY_PAGES * PAGE_BYTES;
 const DEFAULT_OPTIMIZE_LEVEL = 4;
-const SNAPSHOT_FORMAT_VERSION = 1;
 const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
 const MATH_KERNEL_INTRINSICS = new Set([
   "sin",
@@ -45,6 +48,7 @@ const MATH_KERNEL_INTRINSICS = new Set([
   "exp",
   "log",
   "pow",
+  "remainder",
   "fma",
 ]);
 
@@ -114,6 +118,15 @@ function collectMathKernelHelpers(mir) {
             && (scalar === "f32" || scalar === "f64")
           ) {
             result.add(`onda_math_${intrinsic}_${scalar}`);
+          }
+        } else if (
+          kind === "assign"
+          && data?.value?.kind === "binary"
+          && data.value.data?.op === "remainder"
+        ) {
+          const scalar = valueScalar(data.value.data?.lhs);
+          if (scalar === "f32" || scalar === "f64") {
+            result.add(`onda_math_remainder_${scalar}`);
           }
         } else if (kind === "if") {
           visitBlock(data?.then_block);
@@ -440,6 +453,20 @@ class MirCompiler {
     this.eventLayout = this.mir.interface.events.map((event) =>
       this.layoutEventValues(event.params),
     );
+    this.requireWasm32Extent(
+      this.stateLayout.byteLength,
+      "MIR physical state storage",
+    );
+    this.requireWasm32Extent(
+      this.paramLayout.byteLength,
+      "MIR parameter storage",
+    );
+    for (const [eventId, layout] of this.eventLayout.entries()) {
+      this.requireWasm32Extent(
+        layout.minimumByteLength,
+        `MIR event ${eventId} fixed payload storage`,
+      );
+    }
 
     for (let id = 0; id < this.mir.const_data.length; id += 1) {
       const data = this.mir.const_data[id];
@@ -481,6 +508,13 @@ class MirCompiler {
       });
     });
     this.nextStaticAddress = alignUp(this.nextStaticAddress, 16);
+    this.requireWasm32Extent(this.nextStaticAddress, "MIR static storage");
+    this.requireWasm32Extent(
+      this.nextStaticAddress
+        + this.paramLayout.byteLength
+        + this.stateLayout.byteLength,
+      "MIR static, parameter, and physical state storage",
+    );
   }
 
   collectAddressTakenScalarLocals(functionId) {
@@ -569,9 +603,13 @@ class MirCompiler {
 
   layoutPorts(ports) {
     let channel = 0;
-    return ports.map((port) => {
+    return ports.map((port, portId) => {
       const type = this.type(port.ty);
       const flattened = this.flattenPortType(type);
+      this.requireWasm32Extent(
+        this.scalarSize(flattened.scalar) * this.mir.config.block_size,
+        `MIR audio port ${portId} channel storage`,
+      );
       const result = {
         channel,
         channels: flattened.channels,
@@ -2905,6 +2943,9 @@ class MirCompiler {
   }
 
   compileUnary(op, scalar, value) {
+    if (!supportsMirOperation("unary", op, scalar)) {
+      this.fail(`unary operation '${String(op)}' does not support scalar '${scalar}'`);
+    }
     switch (op) {
       case "negate":
         if (scalar === "f32" || scalar === "f64") return this.module[scalar].neg(value);
@@ -2919,6 +2960,9 @@ class MirCompiler {
   }
 
   compileBinary(op, scalar, lhs, rhs) {
+    if (!supportsMirOperation("binary", op, scalar)) {
+      this.fail(`binary operation '${String(op)}' does not support scalar '${scalar}'`);
+    }
     const wasm = this.module[scalar === "bool" ? "i32" : scalar];
     const integer = scalar === "i32" || scalar === "i64" || scalar === "bool";
     switch (op) {
@@ -2942,7 +2986,9 @@ class MirCompiler {
         return this.module.if(overflow, minimum(), wasm.div_s(lhs(), rhs()));
       }
       case "remainder":
-        if (!integer) this.fail("floating-point remainder requires an explicit MIR intrinsic");
+        if (!integer) {
+          return this.compileMathKernelCall("remainder", scalar, [lhs(), rhs()]);
+        }
         return wasm.rem_s(lhs(), rhs());
       case "bit_and": return wasm.and(lhs(), rhs());
       case "bit_or": return wasm.or(lhs(), rhs());
@@ -2955,6 +3001,9 @@ class MirCompiler {
   }
 
   compileCompare(op, scalar, lhs, rhs) {
+    if (!supportsMirOperation("compare", op, scalar)) {
+      this.fail(`comparison '${String(op)}' does not support scalar '${scalar}'`);
+    }
     const type = scalar === "bool" ? "i32" : scalar;
     const wasm = this.module[type];
     const integer = type === "i32" || type === "i64";
@@ -3201,6 +3250,16 @@ class MirCompiler {
     }
   }
 
+  requireWasm32Extent(byteLength, description) {
+    if (
+      !Number.isSafeInteger(byteLength)
+      || byteLength < 0
+      || byteLength >= WASM32_ADDRESS_SPACE_BYTES
+    ) {
+      this.fail(`${description} must fit within the wasm32 4 GiB address space`);
+    }
+  }
+
   wasmType(scalar) {
     return binaryen[scalar === "bool" ? "i32" : scalar];
   }
@@ -3282,6 +3341,7 @@ class MirCompiler {
         code_model: "default",
         opt_level: String(this.options.optimizeLevel),
         abi_name: null,
+        data_layout: "e-m:e-p:32:32-i64:64-n32:64-S128",
         pointer_width_bits: 32,
         byte_order: "little_endian",
         pointer_model: "linear_memory_offset",
@@ -3310,6 +3370,7 @@ class MirCompiler {
       compile: {
         sample_rate: this.mir.config.sample_rate,
         block_size: this.mir.config.block_size,
+        fast_math: this.options.fastMath,
       },
       exports: {
         memory: "memory",
@@ -3323,7 +3384,7 @@ class MirCompiler {
         state_align_bytes: 16,
         state_initialization: "zeroed",
         snapshot_size_bytes: snapshot.byteLength,
-        snapshot_format_version: SNAPSHOT_FORMAT_VERSION,
+        snapshot_format_version: PROCESSOR_SNAPSHOT_FORMAT_VERSION,
         snapshot_byte_order: "little_endian",
         snapshot_restore_base: "post_init_physical_state_image",
         param_size_bytes: paramSize,
@@ -3336,28 +3397,40 @@ class MirCompiler {
         outputs: this.portMetadata(this.mir.interface.outputs, this.outputLayout),
         control_outputs: this.mir.interface.control_outputs.map((output, id) => ({
           name: output.name,
-          type: typeName(this.type(output.ty), this),
+          type_repr: typeName(this.type(output.ty), this),
           scalar: this.storageShape(output.ty).scalar,
-          array_length: this.storageShape(output.ty).length,
-          is_array: this.storageShape(output.ty).isArray,
+          array_len: this.storageShape(output.ty).length,
+          element_size_bytes: this.scalarSize(this.storageShape(output.ty).scalar),
+          slot_offset: this.interfaceSlotOffset(
+            this.mir.interface.control_outputs,
+            id,
+          ),
+          byte_offset: null,
           state_byte_offset: this.controlOutputLayout[id].offset,
           byte_size: this.controlOutputLayout[id].size,
+          default_reprs: null,
+          range_min_repr: null,
+          range_max_repr: null,
         })),
         params: this.mir.interface.params.map((param, id) => ({
           name: param.name,
-          type: typeName(this.type(param.ty), this),
+          type_repr: typeName(this.type(param.ty), this),
           scalar: this.storageShape(param.ty).scalar,
-          array_length: this.storageShape(param.ty).length,
-          is_array: this.storageShape(param.ty).isArray,
+          array_len: this.storageShape(param.ty).length,
+          element_size_bytes: this.scalarSize(this.storageShape(param.ty).scalar),
+          slot_offset: this.interfaceSlotOffset(this.mir.interface.params, id),
           byte_offset: this.paramLayout[id].offset,
+          state_byte_offset: null,
           byte_size: this.paramLayout[id].size,
-          default: param.default,
-          range: param.range,
+          default_reprs: this.constantReprs(param.default),
+          range_min_repr: this.scalarRepr(param.range?.min),
+          range_max_repr: this.scalarRepr(param.range?.max),
         })),
         buffers: this.mir.interface.buffers.map((buffer) => {
           const channels = this.bufferChannelMetadata(buffer.channels);
           return {
             name: buffer.name,
+            type_repr: this.bufferTypeRepr(buffer, channels),
             scalar: buffer.element,
             element_size_bytes: this.scalarSize(buffer.element),
             channels: channels.kind,
@@ -3374,21 +3447,20 @@ class MirCompiler {
           has_dynamic_payload: this.eventLayout[eventId].dynamic,
           params: event.params.map((param, paramId) => ({
             name: param.name,
-            type: typeName(this.type(param.ty), this),
+            type_repr: typeName(this.type(param.ty), this),
             scalar: this.storageShape(param.ty).scalar,
-            array_length: this.storageShape(param.ty).length,
-            is_array: this.storageShape(param.ty).isArray,
-            is_slice: this.storageShape(param.ty).isSlice,
+            array_len: this.storageShape(param.ty).length ?? 0,
+            is_slice: this.storageShape(param.ty).isSlice === true,
             byte_offset: this.eventLayout[eventId][paramId].offset,
             byte_size: this.eventLayout[eventId][paramId].size,
             element_size_bytes: this.scalarSize(
               this.storageShape(param.ty).scalar,
             ),
-            default: param.default,
+            has_default: param.default !== null && param.default !== undefined,
+            default_reprs: this.constantReprs(param.default),
           })),
         })),
       },
-      imports: [],
     };
   }
 
@@ -3403,12 +3475,12 @@ class MirCompiler {
       const layout = this.stateLayout[id];
       entries.push({
         name: slot.name,
-        type: typeName(this.type(slot.ty), this),
+        type_repr: typeName(this.type(slot.ty), this),
         scalar: shape.scalar,
-        array_length: shape.length,
-        is_array: shape.isArray,
-        byte_offset: byteOffset,
-        storage_byte_offset: layout.offset,
+        array_len: shape.length,
+        element_size_bytes: this.scalarSize(shape.scalar),
+        packed_snapshot_byte_offset: byteOffset,
+        physical_state_byte_offset: layout.offset,
         byte_size: layout.size,
       });
       byteOffset += layout.size;
@@ -3419,13 +3491,49 @@ class MirCompiler {
   portMetadata(ports, layouts) {
     return ports.map((port, id) => ({
       name: port.name,
-      type: typeName(this.type(port.ty), this),
+      type_repr: typeName(this.type(port.ty), this),
       scalar: layouts[id].scalar,
+      array_len: layouts[id].channels,
       element_size_bytes: layouts[id].size,
-      is_array: layouts[id].isArray,
-      channel_offset: layouts[id].channel,
-      channel_count: layouts[id].channels,
+      slot_offset: layouts[id].channel,
+      byte_offset: null,
+      state_byte_offset: null,
+      byte_size: layouts[id].size * layouts[id].channels,
+      default_reprs: null,
+      range_min_repr: null,
+      range_max_repr: null,
     }));
+  }
+
+  interfaceSlotOffset(values, end) {
+    let offset = 0;
+    for (let id = 0; id < end; id += 1) {
+      offset += this.storageShape(values[id].ty).length;
+    }
+    return offset;
+  }
+
+  constantReprs(value) {
+    if (value === null || value === undefined) return null;
+    if (value.kind === "scalar") return [this.scalarRepr(value.data)];
+    if (value.kind === "aggregate") {
+      return value.data.flatMap((entry) => this.constantReprs(entry) ?? []);
+    }
+    this.fail(`unknown MIR constant kind '${String(value.kind)}'`);
+  }
+
+  scalarRepr(value) {
+    if (value === null || value === undefined) return null;
+    if (Object.is(value.value, -0)) return "-0";
+    return String(value.value);
+  }
+
+  bufferTypeRepr(buffer, channels) {
+    if (channels.kind === "mono") return `buffer[${buffer.element}]`;
+    if (channels.kind === "static") {
+      return `buffer[${buffer.element}[${channels.count}]]`;
+    }
+    return `buffer[${buffer.element}[]]`;
   }
 
   storageShape(typeId) {

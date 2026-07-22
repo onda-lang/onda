@@ -322,7 +322,7 @@ fn merge_const_integer_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<P
 
 pub(crate) fn infer_const_expr_type(
     expr: &Expr,
-    options: AnalysisOptions,
+    _options: AnalysisOptions,
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
@@ -342,7 +342,7 @@ pub(crate) fn infer_const_expr_type(
             Some(PrimitiveType::Bool)
         }
         Expr::UnaryBitNot { expr, .. } => {
-            let inner = infer_const_expr_type(expr, options, context, errors)?;
+            let inner = infer_const_expr_type(expr, _options, context, errors)?;
             merge_const_integer_types(inner, inner).or_else(|| {
                 errors.push(Diagnostic::semantic_span(
                     format!(
@@ -355,8 +355,8 @@ pub(crate) fn infer_const_expr_type(
             })
         }
         Expr::Binary { op, lhs, rhs, .. } => {
-            let lhs_ty = infer_const_expr_type(lhs, options, context, errors)?;
-            let rhs_ty = infer_const_expr_type(rhs, options, context, errors)?;
+            let lhs_ty = infer_const_expr_type(lhs, _options, context, errors)?;
+            let rhs_ty = infer_const_expr_type(rhs, _options, context, errors)?;
             match op {
                 BinaryOp::BitAnd
                 | BinaryOp::BitOr

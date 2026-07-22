@@ -239,28 +239,29 @@ pub(super) fn build_proc_write_helper(
     slots: &[String],
     unsafe_mode: bool,
 ) -> FunctionDef {
-    let mut params = Vec::<onda_frontend::FnParamDecl>::new();
-    params.push(onda_frontend::FnParamDecl {
-        loc: Default::default(),
-        name: "self".to_owned(),
-        ty: Some(FnParamType::Struct(owner_proc.to_owned())),
-        ty_loc: Default::default(),
-        default: None,
-    });
-    params.push(onda_frontend::FnParamDecl {
-        loc: Default::default(),
-        name: "idx".to_owned(),
-        ty: None,
-        ty_loc: Default::default(),
-        default: None,
-    });
-    params.push(onda_frontend::FnParamDecl {
-        loc: Default::default(),
-        name: "value".to_owned(),
-        ty: None,
-        ty_loc: Default::default(),
-        default: None,
-    });
+    let params = vec![
+        onda_frontend::FnParamDecl {
+            loc: Default::default(),
+            name: "self".to_owned(),
+            ty: Some(FnParamType::Struct(owner_proc.to_owned())),
+            ty_loc: Default::default(),
+            default: None,
+        },
+        onda_frontend::FnParamDecl {
+            loc: Default::default(),
+            name: "idx".to_owned(),
+            ty: None,
+            ty_loc: Default::default(),
+            default: None,
+        },
+        onda_frontend::FnParamDecl {
+            loc: Default::default(),
+            name: "value".to_owned(),
+            ty: None,
+            ty_loc: Default::default(),
+            default: None,
+        },
+    ];
 
     let len = slots.len();
     let mut body = Vec::<Stmt>::new();
@@ -470,11 +471,7 @@ pub(super) fn resolve_proc_index_target_mut(
         return None;
     };
     if let Some(raw_idx) = try_constant_index_i64(&index_expr) {
-        let Some(slot_idx) =
-            resolve_proc_constant_slot_index(raw_idx, slots.len(), context, errors)
-        else {
-            return None;
-        };
+        let slot_idx = resolve_proc_constant_slot_index(raw_idx, slots.len(), context, errors)?;
         let Some(slot_name) = slots.get(slot_idx) else {
             push_semantic(
                 DiagCtx::default(),
@@ -492,13 +489,15 @@ pub(super) fn resolve_proc_index_target_mut(
     })
 }
 
+type ProcArrayDispatchContext = (String, ProcApi, Vec<(String, ProcCallInstance)>);
+
 pub(super) fn resolve_proc_array_dispatch_context(
     slots: &[String],
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_api: &HashMap<String, ProcApi>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
-) -> Option<(String, ProcApi, Vec<(String, ProcCallInstance)>)> {
+) -> Option<ProcArrayDispatchContext> {
     let Some(first_slot) = slots.first() else {
         push_semantic(
             DiagCtx::default(),
@@ -981,7 +980,7 @@ pub(super) fn dynamic_proc_array_buffer_call_args(
 }
 
 pub(super) fn build_dynamic_proc_array_dispatch_args(
-    args: &mut Vec<CallArg>,
+    args: &mut [CallArg],
     api: &ProcApi,
     slot_instances: &[(String, ProcCallInstance)],
     array_base: &str,
@@ -1262,14 +1261,9 @@ fn proc_named_arg_call_target_from_parts(
         return None;
     }
 
-    let Some((array_base, index_expr)) =
-        proc_index_base_and_expr_from_args(args, "processor indexed call", errors)
-    else {
-        return None;
-    };
-    let Some(slots) = proc_array_slots.get(&array_base) else {
-        return None;
-    };
+    let (array_base, index_expr) =
+        proc_index_base_and_expr_from_args(args, "processor indexed call", errors)?;
+    let slots = proc_array_slots.get(&array_base)?;
     let (proc_name, api, _) = resolve_proc_array_dispatch_context(
         slots,
         proc_vars,
@@ -2238,18 +2232,20 @@ pub(super) fn expand_proc_event_call_args(
     expanded
 }
 
+type ExpandedProcPortSpecs = (
+    Vec<String>,
+    HashMap<String, PrimitiveType>,
+    Vec<ProcPortSpec>,
+    HashMap<String, Vec<String>>,
+);
+
 pub(super) fn expand_proc_port_specs(
     proc_name: &str,
     ports: &[PortDecl],
     kind: &str,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) -> (
-    Vec<String>,
-    HashMap<String, PrimitiveType>,
-    Vec<ProcPortSpec>,
-    HashMap<String, Vec<String>>,
-) {
+) -> ExpandedProcPortSpecs {
     let (flat, flat_types, arrays, defaults, ranges) = expand_port_decls(
         ports,
         &format!("processor '{proc_name}' {kind}"),
@@ -2954,9 +2950,9 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     name: None,
                     expr: proc_instance_self_expr(name, proc_array_slots),
                 });
-                let expanded_args = expand_proc_call_args(args, &api, name, errors);
+                let expanded_args = expand_proc_call_args(args, api, name, errors);
                 rewritten.extend(expanded_args);
-                let expanded_buffers = expand_proc_buffer_call_args(instance, &api, name, errors);
+                let expanded_buffers = expand_proc_buffer_call_args(instance, api, name, errors);
                 rewritten.extend(expanded_buffers);
                 *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
                 *args = rewritten;
@@ -3129,7 +3125,6 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     rewritten.extend(expanded);
                     *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                     *args = rewritten;
-                    return;
                 }
             }
         }
@@ -4959,12 +4954,10 @@ pub(super) fn desugar_expr_instance_method_calls(
                 _ => {}
             }
         }
-        if base.is_none() || index.is_none() {
-            if args.len() >= 2 {
-                if let Expr::Var { name, .. } = &args[0].expr {
-                    base = Some(name.as_str());
-                    index = Some(args[1].expr.clone());
-                }
+        if (base.is_none() || index.is_none()) && args.len() >= 2 {
+            if let Expr::Var { name, .. } = &args[0].expr {
+                base = Some(name.as_str());
+                index = Some(args[1].expr.clone());
             }
         }
         Some((base?, index?))

@@ -946,7 +946,7 @@ fn merge_monomorphized_numeric_types(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn monomorphize_calls_in_stmts(
-    stmts: &mut Vec<Stmt>,
+    stmts: &mut [Stmt],
     env: &OverloadRewriteEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,

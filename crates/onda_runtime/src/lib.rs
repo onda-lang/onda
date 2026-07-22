@@ -55,7 +55,6 @@ pub struct BoundBuffer {
     frames_i32: i32,
     channels_i32: i32,
     sample_rate_hz: f32,
-    elem_ty: PrimitiveType,
 }
 
 impl Instance {
@@ -600,28 +599,6 @@ pub unsafe fn bind_buffer(
             0,
         ));
     };
-    if ptr.is_null() {
-        if frames == 0 && channels == 0 {
-            instance.buffer_bindings[index] = None;
-            instance.buffers_validated = false;
-            return Ok(());
-        }
-        return Err(Diagnostic::runtime(
-            format!("buffer '{}' binding pointer is null", desc.name()),
-            0,
-            0,
-        ));
-    }
-    if frames == 0 || channels == 0 {
-        return Err(Diagnostic::runtime(
-            format!(
-                "buffer '{}' requires frames > 0 and channels > 0",
-                desc.name()
-            ),
-            0,
-            0,
-        ));
-    }
     if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 {
         return Err(Diagnostic::runtime(
             format!(
@@ -640,6 +617,26 @@ pub unsafe fn bind_buffer(
                 desc.name(),
                 desc.elem_ty(),
                 elem_ty
+            ),
+            0,
+            0,
+        ));
+    }
+    if frames == 0 || channels == 0 || ptr.is_null() {
+        if frames == 0 && channels == 0 && ptr.is_null() {
+            instance.buffer_bindings[index] = Some(BoundBuffer {
+                ptr,
+                frames_i32: 0,
+                channels_i32: 0,
+                sample_rate_hz,
+            });
+            instance.buffers_validated = false;
+            return Ok(());
+        }
+        return Err(Diagnostic::runtime(
+            format!(
+                "buffer '{}' must be either non-empty or canonical empty (null pointer, zero frames, zero channels)",
+                desc.name()
             ),
             0,
             0,
@@ -704,7 +701,6 @@ pub unsafe fn bind_buffer(
         frames_i32,
         channels_i32,
         sample_rate_hz,
-        elem_ty,
     });
     instance.buffers_validated = false;
     Ok(())
@@ -993,7 +989,6 @@ fn prepare_buffer_ptrs_from_bindings(instance: &mut Instance) -> Result<(), Diag
         instance.buffer_frames[idx] = bound.frames_i32;
         instance.buffer_channels[idx] = bound.channels_i32;
         instance.buffer_sample_rates[idx] = bound.sample_rate_hz;
-        let _ = bound.elem_ty;
     }
     Ok(())
 }
@@ -1023,7 +1018,7 @@ fn validate_pointer_alignment(
     name: &str,
 ) -> Result<(), Diagnostic> {
     let required = primitive_type_alignment(ty);
-    if (ptr as usize) % required == 0 {
+    if (ptr as usize).is_multiple_of(required) {
         return Ok(());
     }
     Err(Diagnostic::runtime(

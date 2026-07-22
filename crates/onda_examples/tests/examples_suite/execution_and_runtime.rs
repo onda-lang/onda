@@ -4259,7 +4259,7 @@ fn data_constant_out_of_range_index_is_rejected_in_codegen() {
 
     let typed = analyze(parsed).expect("semantic analysis should succeed");
 
-    let result = onda_codegen_llvm::lower_and_jit_with_options(
+    let result = lower_typed_and_jit(
         typed,
         CompileOptions {
             sample_rate: 48_000.0,
@@ -4905,7 +4905,7 @@ fn generic_proc_buffer_decl_type_analyzes_and_codegen_compiles() {
     )
     .expect("semantic analysis should succeed");
 
-    let result = onda_codegen_llvm::lower_and_jit_with_options(
+    let result = lower_typed_and_jit(
         typed,
         CompileOptions {
             sample_rate: 48_000.0,
@@ -7910,7 +7910,6 @@ fn proc_sample_oversample_keeps_local_sine_pitch_constant() {
 
 #[test]
 #[ignore = "perf benchmark; run manually"]
-
 fn sample_oversample_n4_performance_budget_benchmark() {
     const FRAMES: usize = 128;
 

@@ -141,7 +141,7 @@ Non-crate directories of note:
 
 ### `onda_processor_abi`
 
-- `onda_processor_abi/src/lib.rs` — serializable/deserializable format-3 processor descriptor owned
+- `onda_processor_abi/src/lib.rs` — serializable/deserializable processor descriptor owned
   outside every compiler/backend crate.
 
 ### `onda_runtime` (`crates/onda_runtime/src`)
@@ -214,8 +214,8 @@ Non-crate directories of note:
 - Native JIT metadata and AOT sidecar metadata come from validated MIR plus codegen's selected byte
   offsets. Parameter, state, audio/control I/O, buffer, event, export, and target information
   therefore cannot drift from the executable layout through a separate `TypedProgram` walk. The
-  format-3 processor descriptor also maps each packed snapshot segment to its physical state offset,
-  records the little-endian format-1 scalar encoding and post-init restore base, and declares the
+  processor descriptor also maps each packed snapshot segment to its physical state offset,
+  records the little-endian scalar encoding and post-init restore base, and declares the
   resolved target pointer model plus artifact integration profile.
 - `onda compile <file> --emit mir` exposes deterministic MIR for inspection, while `--emit mir-json`
   emits inspectable current-schema interchange and `--emit mir-messagepack` emits the compact production

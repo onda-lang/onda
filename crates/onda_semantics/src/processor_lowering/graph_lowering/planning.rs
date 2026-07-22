@@ -151,8 +151,7 @@ pub(super) fn build_graph_lowering_plan(
                     }
                 }
                 GraphSourceExpansion::PerDest(exprs) => {
-                    for (expr, (dest, dest_key, dest_value_ty)) in
-                        exprs.into_iter().zip(edge_dests.into_iter())
+                    for (expr, (dest, dest_key, dest_value_ty)) in exprs.into_iter().zip(edge_dests)
                     {
                         let single_dest = vec![(dest.clone(), dest_key, dest_value_ty.clone())];
                         let source_plan = push_graph_source_plan(

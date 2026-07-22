@@ -11,13 +11,7 @@ fn try_dynamic_proc_call_meta<'a>(
     expr: &'a Expr,
     proc_api: &HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a [CallArg], &'a str, &'a Expr)> {
-    let Expr::UserCall {
-        name,
-        args,
-        type_args: _,
-        ..
-    } = expr
-    else {
+    let Expr::UserCall { name, args, .. } = expr else {
         return None;
     };
     let proc_name = if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
@@ -135,12 +129,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     );
                 }
             }
-            Expr::UserCall {
-                name: _,
-                args,
-                type_args: _,
-                ..
-            } => {
+            Expr::UserCall { name: _, args, .. } => {
                 for arg in args {
                     collect_guards_from_expr(
                         &arg.expr,
@@ -394,13 +383,7 @@ fn is_static_block_hook_for_managed_array(
     suffix: &str,
 ) -> bool {
     let Stmt::Expr {
-        expr:
-            Expr::UserCall {
-                name,
-                args,
-                type_args: _,
-                ..
-            },
+        expr: Expr::UserCall { name, args, .. },
         ..
     } = stmt
     else {
@@ -796,7 +779,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     &mut stmt,
                     &global_proc_instances,
                     &global_proc_array_slots,
-                    &proc_api,
+                    proc_api,
                     errors,
                 );
                 if let Stmt::Assign {
@@ -917,7 +900,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             &mut init.body,
             &global_proc_instances,
             &global_proc_array_slots,
-            &proc_api,
+            proc_api,
             errors,
         );
         inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
@@ -925,7 +908,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             &mut init.body,
             &global_proc_instances,
             &global_proc_array_slots,
-            &proc_api,
+            proc_api,
             errors,
             &constructor_setup_indices,
         );
@@ -984,7 +967,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 instance_name,
                 sample_oversample_factor,
                 &global_proc_instances,
-                &proc_api,
+                proc_api,
                 &mut global_proc_instance_oversample_factors,
                 errors,
             );
@@ -1122,7 +1105,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     &mut exec.pre,
                     &global_proc_instances,
                     &global_proc_array_slots,
-                    &proc_api,
+                    proc_api,
                     errors,
                 );
                 if let Some(sample) = &mut exec.sample {
@@ -1130,7 +1113,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         sample,
                         &global_proc_instances,
                         &global_proc_array_slots,
-                        &proc_api,
+                        proc_api,
                         errors,
                     );
                     let mut rewritten_sample = Vec::<Stmt>::new();
@@ -1138,7 +1121,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         rewritten_sample.extend(
                             rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                                 stmt,
-                                &proc_api,
+                                proc_api,
                                 &global_proc_array_slots,
                                 &mut runtime_managed_arrays,
                             ),
@@ -1150,7 +1133,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     &mut exec.post,
                     &global_proc_instances,
                     &global_proc_array_slots,
-                    &proc_api,
+                    proc_api,
                     errors,
                 );
             }
@@ -1159,14 +1142,14 @@ pub(super) fn rewrite_top_level_proc_calls(
                     stmts,
                     &global_proc_instances,
                     &global_proc_array_slots,
-                    &proc_api,
+                    proc_api,
                     errors,
                 );
                 let mut rewritten_sample = Vec::<Stmt>::new();
                 for stmt in std::mem::take(&mut stmts.body) {
                     rewritten_sample.extend(rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                         stmt,
-                        &proc_api,
+                        proc_api,
                         &global_proc_array_slots,
                         &mut runtime_managed_arrays,
                     ));
@@ -1180,7 +1163,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         &mut event.body,
                         &global_proc_instances,
                         &global_proc_array_slots,
-                        &proc_api,
+                        proc_api,
                         errors,
                     );
                 }
@@ -1196,7 +1179,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             .find(|b| b.kind() == BlockKind::Init)
         {
             let mut managed = runtime_managed_arrays.iter().collect::<Vec<_>>();
-            managed.sort_by(|(a, _), (b, _)| a.cmp(b));
+            managed.sort_by_key(|(a, _)| *a);
             for (_base, info) in managed {
                 let len = info.slots.len();
                 init.body.push(Stmt::Assign {
@@ -1252,7 +1235,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         {
             let mut reset_prefix = Vec::<Stmt>::new();
             let mut managed = runtime_managed_arrays.iter().collect::<Vec<_>>();
-            managed.sort_by(|(a, _), (b, _)| a.cmp(b));
+            managed.sort_by_key(|(a, _)| *a);
             for (_base, info) in &managed {
                 for slot_idx in 0..info.slots.len() {
                     reset_prefix.push(Stmt::Assign {

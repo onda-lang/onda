@@ -912,7 +912,6 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                             *name = nested_event_fn_name(owner_proc, base.as_str(), event_name);
                         }
                         *args = rewritten;
-                        return;
                     }
                 }
             } else {

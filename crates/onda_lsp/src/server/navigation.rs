@@ -754,7 +754,6 @@ impl NavigationIndex {
         prefix: &str,
         count: Option<&Expr>,
         span: Span,
-        kind: DefinitionKind,
         detail: &str,
         out: &mut HashMap<String, usize>,
     ) {
@@ -763,7 +762,13 @@ impl NavigationIndex {
         };
         for index in 1..=count {
             let name = format!("{prefix}{index}");
-            let idx = self.add_synthetic_port_definition(owner, &name, kind, detail, span);
+            let idx = self.add_synthetic_port_definition(
+                owner,
+                &name,
+                DefinitionKind::Port,
+                detail,
+                span,
+            );
             out.entry(name).or_insert(idx);
         }
     }
@@ -1037,7 +1042,6 @@ impl NavigationIndex {
                         &ports.deferred_prefix,
                         ports.deferred_count.as_ref(),
                         ports.loc,
-                        DefinitionKind::Port,
                         "port",
                         &mut definitions,
                     );
@@ -1130,7 +1134,6 @@ impl NavigationIndex {
                 .as_ref()
                 .map(|expr| expr.loc().span())
                 .unwrap_or(proc_def.loc),
-            DefinitionKind::Port,
             "proc input",
             &mut definitions,
         );
@@ -1147,7 +1150,6 @@ impl NavigationIndex {
                 .as_ref()
                 .map(|expr| expr.loc().span())
                 .unwrap_or(proc_def.loc),
-            DefinitionKind::Port,
             "proc output",
             &mut definitions,
         );
@@ -2296,9 +2298,7 @@ impl NavigationIndex {
                 return None;
             }
         }
-        let Some(function) = self.resolve_qualified_at(&callee, line, column) else {
-            return None;
-        };
+        let function = self.resolve_qualified_at(&callee, line, column)?;
         if !matches!(function.kind, DefinitionKind::Def | DefinitionKind::Method) {
             return None;
         }
@@ -2354,12 +2354,11 @@ impl NavigationIndex {
     }
 
     fn resolve_type_name_in_namespace(&self, name: &str, namespace: &str) -> Option<String> {
-        for candidate in self.qualified_path_candidates(name, namespace) {
-            if self.procs.contains_key(&candidate) || self.structs.contains_key(&candidate) {
-                return Some(candidate);
-            }
-        }
-        None
+        self.qualified_path_candidates(name, namespace)
+            .into_iter()
+            .find(|candidate| {
+                self.procs.contains_key(candidate) || self.structs.contains_key(candidate)
+            })
     }
 
     fn instance_from_fn_param(&self, param: &FnParamDecl, namespace: &str) -> Option<InstanceInfo> {
@@ -3202,7 +3201,7 @@ fn source_namespace_const_definition(
         return Some(definition);
     }
     let namespace_line = enclosing_source_namespace_line(&lines, token.line as usize)?;
-    let namespace_indent = source_line_indent(*lines.get(namespace_line)?);
+    let namespace_indent = source_line_indent(lines.get(namespace_line)?);
     let child_indent = source_namespace_child_indent(&lines, namespace_line)?;
     find_source_namespace_const(
         &lines,
@@ -3306,7 +3305,7 @@ fn source_const_from_line(
 }
 
 fn enclosing_source_namespace_line(lines: &[&str], line_idx: usize) -> Option<usize> {
-    let current_indent = source_line_indent(*lines.get(line_idx)?);
+    let current_indent = source_line_indent(lines.get(line_idx)?);
     let mut idx = line_idx;
     while idx > 0 {
         idx -= 1;
@@ -3327,7 +3326,7 @@ fn enclosing_source_namespace_line(lines: &[&str], line_idx: usize) -> Option<us
 }
 
 fn source_namespace_child_indent(lines: &[&str], namespace_line: usize) -> Option<usize> {
-    let namespace_indent = source_line_indent(*lines.get(namespace_line)?);
+    let namespace_indent = source_line_indent(lines.get(namespace_line)?);
     let mut best = None::<usize>;
     for line_text in lines.iter().skip(namespace_line + 1) {
         let trimmed = line_text.trim_start();
@@ -3365,7 +3364,7 @@ fn find_source_struct_field(
     child_indent: usize,
     name: &str,
 ) -> Option<SourceStructFieldDefinition> {
-    let struct_indent = source_line_indent(*lines.get(struct_line)?);
+    let struct_indent = source_line_indent(lines.get(struct_line)?);
     for line_idx in (struct_line + 1)..lines.len() {
         let line_text = lines[line_idx];
         let trimmed = line_text.trim_start();
@@ -3455,7 +3454,7 @@ fn enclosing_source_struct_line(lines: &[&str], line_idx: usize) -> Option<usize
 }
 
 fn source_struct_child_indent(lines: &[&str], struct_line: usize) -> Option<usize> {
-    let struct_indent = source_line_indent(*lines.get(struct_line)?);
+    let struct_indent = source_line_indent(lines.get(struct_line)?);
     let mut best = None::<usize>;
     for line_text in lines.iter().skip(struct_line + 1) {
         let trimmed = line_text.trim_start();

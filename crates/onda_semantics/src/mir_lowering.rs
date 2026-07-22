@@ -342,39 +342,20 @@ fn lower_program_to_raw_mir(
     program: &TypedProgram,
 ) -> Result<onda_mir::Program, Vec<MirLoweringError>> {
     let mut errors = mir_program_boundary_errors(program);
-    let block_size = match u32::try_from(program.analysis_options.block_size) {
-        Ok(block_size) if block_size > 0 && block_size <= i32::MAX as u32 => block_size,
-        Ok(_) => {
-            errors.push(MirLoweringError::new(
-                "compile-time block size must be between 1 and i32::MAX for scalar MIR",
-                SourceLoc::ZERO,
-            ));
-            1
-        }
-        Err(_) => {
-            errors.push(MirLoweringError::new(
-                "compile-time block size does not fit the MIR u32 representation",
-                SourceLoc::ZERO,
-            ));
-            1
-        }
-    };
-    if !program.analysis_options.sample_rate.is_finite()
-        || program.analysis_options.sample_rate <= 0.0
-    {
+    let config = onda_mir::CompileConfig::from_usize(
+        program.analysis_options.sample_rate,
+        program.analysis_options.block_size,
+    )
+    .unwrap_or_else(|error| {
         errors.push(MirLoweringError::new(
-            "compile-time sample rate must be finite and greater than zero",
+            format!("invalid compile configuration: {error}"),
             SourceLoc::ZERO,
         ));
-    }
+        onda_mir::CompileConfig::new(48_000.0, 1).expect("fallback config is valid")
+    });
     if !errors.is_empty() {
         return Err(errors);
     }
-
-    let config = onda_mir::CompileConfig {
-        sample_rate: program.analysis_options.sample_rate,
-        block_size,
-    };
     let mut mir = onda_mir::Program::new(config, FunctionId::new(0), FunctionId::new(1));
     mir.functions.push(empty_entry_function(
         "onda_init",
@@ -433,7 +414,7 @@ fn lower_program_to_raw_mir(
         &program.block_pre,
         &program.sample,
         &program.block_post,
-        block_size,
+        config.block_size,
         program.sample_oversample_factor,
     )
     .map_err(|error| vec![error])?;
@@ -460,9 +441,10 @@ fn mir_validation_errors(
         .collect()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct SourcePathParts {
     absolute: bool,
+    volume: Option<String>,
     opaque: Option<String>,
     segments: Vec<String>,
     stdlib_anchor: Option<usize>,
@@ -485,14 +467,16 @@ fn normalize_mir_source_paths(program: &mut onda_mir::Program) {
         .collect::<Vec<_>>();
 
     let mut remap = Vec::with_capacity(normalized.len());
-    let mut paths = HashMap::<String, SourceFileId>::new();
+    let mut identities = HashMap::<SourcePathParts, SourceFileId>::new();
+    let mut used_paths = HashSet::<String>::new();
     let mut source_files = Vec::new();
-    for path in normalized {
-        let id = if let Some(id) = paths.get(&path).copied() {
+    for (identity, preferred_path) in parts.into_iter().zip(normalized) {
+        let id = if let Some(id) = identities.get(&identity).copied() {
             id
         } else {
             let id = SourceFileId::new(source_files.len() as u32);
-            paths.insert(path.clone(), id);
+            let path = unique_source_path(preferred_path, &mut used_paths);
+            identities.insert(identity, id);
             source_files.push(SourceFile { path });
             id
         };
@@ -506,12 +490,26 @@ fn normalize_mir_source_paths(program: &mut onda_mir::Program) {
     program.source_files = source_files;
 }
 
+fn unique_source_path(preferred: String, used_paths: &mut HashSet<String>) -> String {
+    if used_paths.insert(preferred.clone()) {
+        return preferred;
+    }
+    for disambiguator in 2_u64.. {
+        let candidate = format!("{preferred}~{disambiguator}");
+        if used_paths.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("the source-path disambiguator space is unbounded")
+}
+
 fn split_source_path(path: &str) -> SourcePathParts {
     let replaced = path.replace('\\', "/");
     let path = replaced.strip_prefix("//?/").unwrap_or(&replaced);
     if path.contains("://") || (path.starts_with('<') && path.ends_with('>')) {
         return SourcePathParts {
             absolute: false,
+            volume: None,
             opaque: Some(path.to_owned()),
             segments: Vec::new(),
             stdlib_anchor: None,
@@ -521,6 +519,7 @@ fn split_source_path(path: &str) -> SourcePathParts {
     let drive_absolute =
         path.as_bytes().get(1) == Some(&b':') && path.as_bytes().get(2) == Some(&b'/');
     let absolute = path.starts_with('/') || drive_absolute;
+    let volume = drive_absolute.then(|| path[..2].to_ascii_lowercase());
     let path = if drive_absolute { &path[3..] } else { path };
     let mut segments = Vec::<String>::new();
     for component in path.split('/') {
@@ -541,6 +540,7 @@ fn split_source_path(path: &str) -> SourcePathParts {
         .position(|window| window[0] == "stdlib" && window[1] == "std");
     SourcePathParts {
         absolute,
+        volume,
         opaque: None,
         segments,
         stdlib_anchor,
@@ -551,12 +551,20 @@ fn common_absolute_user_source_directory(paths: &[SourcePathParts]) -> Vec<Strin
     let mut paths = paths
         .iter()
         .filter(|path| path.absolute && path.stdlib_anchor.is_none() && !path.segments.is_empty())
-        .map(|path| &path.segments[..path.segments.len() - 1]);
-    let Some(first) = paths.next() else {
+        .map(|path| {
+            (
+                path.volume.as_deref(),
+                &path.segments[..path.segments.len() - 1],
+            )
+        });
+    let Some((volume, first)) = paths.next() else {
         return Vec::new();
     };
     let mut common = first.to_vec();
-    for directory in paths {
+    for (directory_volume, directory) in paths {
+        if directory_volume != volume {
+            return Vec::new();
+        }
         let shared = common
             .iter()
             .zip(directory.iter())

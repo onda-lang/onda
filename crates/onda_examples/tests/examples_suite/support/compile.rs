@@ -40,8 +40,7 @@ fn compile_instance_with_options(
     .expect("semantic analysis should succeed");
     let in_channels = typed.ins.len();
     let out_channels = typed.outs.len();
-    let jit = onda_codegen_llvm::lower_and_jit_with_options(typed, options)
-        .expect("jit lowering should succeed");
+    let jit = lower_typed_and_jit(typed, options).expect("jit lowering should succeed");
 
     let instance = create_instance(
         jit,
@@ -72,8 +71,7 @@ fn compile_instance_file_with_options(
     .expect("semantic analysis should succeed");
     let in_channels = typed.ins.len();
     let out_channels = typed.outs.len();
-    let jit = onda_codegen_llvm::lower_and_jit_with_options(typed, options)
-        .expect("jit lowering should succeed");
+    let jit = lower_typed_and_jit(typed, options).expect("jit lowering should succeed");
 
     let instance = create_instance(
         jit,
@@ -86,6 +84,33 @@ fn compile_instance_file_with_options(
     )
     .expect("instance should be created");
     (instance, in_channels, out_channels)
+}
+
+fn lower_typed_and_jit(
+    typed: onda_semantics::TypedProgram,
+    options: CompileOptions,
+) -> Result<onda_codegen_llvm::JitProgram, String> {
+    if typed.analysis_options.sample_rate.to_bits() != options.sample_rate.to_bits()
+        || typed.analysis_options.block_size != options.block_size
+    {
+        return Err(format!(
+            "analysis/codegen configuration mismatch: analyzed at {} Hz / {} frames, requested {} Hz / {} frames",
+            typed.analysis_options.sample_rate,
+            typed.analysis_options.block_size,
+            options.sample_rate,
+            options.block_size,
+        ));
+    }
+    let mir = onda_semantics::lower_program_to_optimized_mir(&typed)
+        .map_err(|errors| format!("MIR lowering failed: {errors:?}"))?;
+    jit_program_from_optimized_mir_with_options(
+        mir,
+        MirCompileOptions {
+            fast_math: options.fast_math,
+            opt_level: options.opt_level,
+        },
+    )
+    .map_err(|errors| format!("LLVM JIT lowering failed: {errors:?}"))
 }
 
 fn state_type_of(typed: &onda_semantics::TypedProgram, name: &str) -> Option<PrimitiveType> {

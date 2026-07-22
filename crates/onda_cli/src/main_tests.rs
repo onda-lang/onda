@@ -1,9 +1,10 @@
 use super::{
-    parse_args, run_compile, Command, CompileEmit, DaemonCommand, RunCommand, RunHostKind,
-    DEFAULT_PLAY_BLOCK_FRAMES,
+    compile_cmd, parse_args, run_compile, Command, CompileEmit, DaemonCommand, RunCommand,
+    RunHostKind, DEFAULT_PLAY_BLOCK_FRAMES,
 };
 use onda_codegen_llvm::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
+    AOT_METADATA_FORMAT_VERSION, AOT_SNAPSHOT_FORMAT_VERSION, PROCESSOR_ABI_VERSION,
 };
 use onda_frontend::{
     parse_program, Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
@@ -302,18 +303,18 @@ fn compile_emits_complete_portable_mir_slice() {
     )
     .expect("source should write");
 
-    let result = run_compile(
-        &source_path,
-        CompileEmit::Mir,
-        Some(&output_path),
-        None,
-        48_000,
-        32,
-        false,
-        false,
-        false,
-        TargetConfig::host(),
-    );
+    let result = run_compile(compile_cmd::CompileRequest {
+        input: &source_path,
+        emit: CompileEmit::Mir,
+        output: Some(&output_path),
+        meta_out: None,
+        sample_rate_hz: 48_000,
+        block_frames: 32,
+        dump_graph: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    });
     let dump = std::fs::read_to_string(&output_path).expect("MIR output should exist");
     let _ = std::fs::remove_file(&source_path);
     let _ = std::fs::remove_file(&output_path);
@@ -346,18 +347,18 @@ fn compile_emits_versioned_mir_json() {
     )
     .expect("source should write");
 
-    let result = run_compile(
-        &source_path,
-        CompileEmit::MirJson,
-        Some(&output_path),
-        None,
-        48_000,
-        32,
-        false,
-        false,
-        false,
-        TargetConfig::host(),
-    );
+    let result = run_compile(compile_cmd::CompileRequest {
+        input: &source_path,
+        emit: CompileEmit::MirJson,
+        output: Some(&output_path),
+        meta_out: None,
+        sample_rate_hz: 48_000,
+        block_frames: 32,
+        dump_graph: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    });
     let json = std::fs::read_to_string(&output_path).expect("MIR JSON output should exist");
     let _ = std::fs::remove_file(&source_path);
     let _ = std::fs::remove_file(&output_path);
@@ -390,18 +391,18 @@ fn compile_emits_versioned_mir_messagepack() {
     )
     .expect("source should write");
 
-    let result = run_compile(
-        &source_path,
-        CompileEmit::MirMessagePack,
-        Some(&output_path),
-        None,
-        48_000,
-        32,
-        false,
-        false,
-        false,
-        TargetConfig::host(),
-    );
+    let result = run_compile(compile_cmd::CompileRequest {
+        input: &source_path,
+        emit: CompileEmit::MirMessagePack,
+        output: Some(&output_path),
+        meta_out: None,
+        sample_rate_hz: 48_000,
+        block_frames: 32,
+        dump_graph: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    });
     let bytes = std::fs::read(&output_path).expect("MIR MessagePack output should exist");
     let _ = std::fs::remove_file(&source_path);
     let _ = std::fs::remove_file(&output_path);
@@ -443,18 +444,18 @@ events {
     )
     .expect("source should write");
 
-    let result = run_compile(
-        &source_path,
-        CompileEmit::Object,
-        Some(&object_path),
-        Some(&metadata_path),
-        48_000,
-        64,
-        false,
-        false,
-        false,
-        TargetConfig::host(),
-    );
+    let result = run_compile(compile_cmd::CompileRequest {
+        input: &source_path,
+        emit: CompileEmit::Object,
+        output: Some(&object_path),
+        meta_out: Some(&metadata_path),
+        sample_rate_hz: 48_000,
+        block_frames: 64,
+        dump_graph: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    });
     let object = std::fs::read(&object_path).expect("object output should exist");
     let metadata_bytes = std::fs::read(&metadata_path).expect("metadata sidecar should exist");
     let _ = std::fs::remove_file(&source_path);
@@ -466,9 +467,9 @@ events {
     let metadata: serde_json::Value =
         serde_json::from_slice(&metadata_bytes).expect("metadata should be valid JSON");
     assert_eq!(metadata["format"], "onda-processor");
-    assert_eq!(metadata["format_version"], 3);
+    assert_eq!(metadata["format_version"], AOT_METADATA_FORMAT_VERSION);
     assert_eq!(metadata["artifact_kind"], "relocatable_object");
-    assert_eq!(metadata["abi_version"], 1);
+    assert_eq!(metadata["abi_version"], PROCESSOR_ABI_VERSION);
     assert_eq!(metadata["backend"], "llvm");
     assert_eq!(metadata["mir_schema_version"], onda_mir::MIR_SCHEMA_VERSION);
     assert_eq!(metadata["target"]["pointer_model"], "native_address");
@@ -499,12 +500,16 @@ events {
     assert!(metadata["runtime"]["param_align_bytes"].as_u64().unwrap() >= 1);
     assert!(snapshot_size <= state_size);
     assert_eq!(metadata["runtime"]["state_initialization"], "zeroed");
-    assert_eq!(metadata["runtime"]["snapshot_format_version"], 1);
-    assert_eq!(metadata["metadata"]["events"][0]["payload_bytes"], 8);
+    assert_eq!(
+        metadata["runtime"]["snapshot_format_version"],
+        AOT_SNAPSHOT_FORMAT_VERSION
+    );
+    assert_eq!(metadata["metadata"]["events"][0]["payload_size_bytes"], 8);
     assert_eq!(
         metadata["metadata"]["events"][0]["params"][0]["byte_size"],
         8
     );
+    assert!(metadata["metadata"]["events"][0]["params"][0]["default_reprs"].is_null());
 }
 
 #[test]

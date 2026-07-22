@@ -220,6 +220,9 @@ PowerShell:
 Pass `--check` to the Bash script or `-Check` to the PowerShell script to verify without modifying
 files. CI and release workflows run this check automatically.
 
+Wire-format versions are maintained independently in `format-versions.json`. The same sync command
+propagates them to the Rust, JavaScript, TypeScript, C, and example-facing constants.
+
 ## Building `onda` from source
 
 1. Initialize submodules.

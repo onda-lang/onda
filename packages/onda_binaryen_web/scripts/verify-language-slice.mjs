@@ -43,7 +43,7 @@ try {
     artifact.metadata.exports.events[0] !== "onda_event_0" ||
     event.payload_size_bytes !== 12 ||
     event.params[1].byte_offset !== 4 ||
-    event.params[1].is_array !== true
+    event.params[1].array_len !== 2
   ) {
     throw new Error("event ABI metadata does not match the Onda payload layout");
   }
@@ -229,7 +229,7 @@ try {
   if (
     sliceEvent?.has_dynamic_payload !== true ||
     sliceEvent.params[1]?.is_slice !== true ||
-    sliceEvent.params[1]?.type !== "f32[]" ||
+    sliceEvent.params[1]?.type_repr !== "f32[]" ||
     sliceEvent.params[2]?.byte_offset !== null
   ) {
     throw new Error("slice event metadata does not describe its dynamic payload");

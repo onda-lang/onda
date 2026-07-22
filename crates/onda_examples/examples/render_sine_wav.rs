@@ -3,10 +3,12 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use onda_codegen_llvm::{lower_and_jit_with_options, CompileOptions, TargetOptLevel};
+use onda_codegen_llvm::{
+    jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
+};
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{bind_output, create_instance, process_checked, InstanceConfig};
-use onda_semantics::{analyze_with_options, AnalysisOptions};
+use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const SAMPLE_RATE: u32 = 48_000;
 const DURATION_SECONDS: u32 = 3;
@@ -52,11 +54,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    let jit = lower_and_jit_with_options(
-        typed,
-        CompileOptions {
-            sample_rate: SAMPLE_RATE as f32,
-            block_size: BLOCK_FRAMES,
+    let mir = lower_program_to_optimized_mir(&typed)
+        .map_err(|errors| format!("MIR lowering failed: {errors:?}"))?;
+    let jit = jit_program_from_optimized_mir_with_options(
+        mir,
+        MirCompileOptions {
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -75,7 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     .map_err(|d| format!("instance creation failed: {d:?}"))?;
 
     let total_frames = SAMPLE_RATE as usize * DURATION_SECONDS as usize;
-    if total_frames % BLOCK_FRAMES != 0 {
+    if !total_frames.is_multiple_of(BLOCK_FRAMES) {
         return Err(format!(
             "total_frames ({total_frames}) must be a multiple of BLOCK_FRAMES ({BLOCK_FRAMES})"
         )

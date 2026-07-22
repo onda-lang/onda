@@ -2159,9 +2159,7 @@ fn resolve_visible_unqualified_namespace_root(
             use_site_span,
             depth + 1,
         ) {
-            let Some(alias_target) = alias_target else {
-                return None;
-            };
+            let alias_target = alias_target?;
             resolved_candidates.push(alias_target);
         } else {
             resolved_candidates.push(candidate);

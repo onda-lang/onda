@@ -19,12 +19,12 @@ pub(super) fn rewrite_graph_source_expr(
                         let resolved_out = resolve_graph_proc_output_name(surface, field);
                         if let Some(slots) = surface.out_array_slots.get(resolved_out) {
                             return Expr::ArrayLiteral {
-                                loc: expr_loc.clone().into(),
+                                loc: expr_loc.into(),
                                 values: slots
                                     .iter()
                                     .map(|slot_name| {
                                         Expr::var(format!("{node_name}.{slot_name}"))
-                                            .with_loc(expr_loc.clone())
+                                            .with_loc(expr_loc)
                                     })
                                     .collect(),
                             };
@@ -39,7 +39,7 @@ pub(super) fn rewrite_graph_source_expr(
                         let resolved_out = resolve_graph_proc_output_name(surface, field);
                         if resolved_out != field {
                             return Expr::var(format!("{node_name}.{resolved_out}"))
-                                .with_loc(expr_loc.clone());
+                                .with_loc(expr_loc);
                         }
                     }
                 }
@@ -72,7 +72,7 @@ pub(super) fn rewrite_graph_source_expr(
                             {
                                 if let Some(slot_name) = slots.get(idx) {
                                     return Expr::var(format!("{node_name}.{slot_name}"))
-                                        .with_loc(expr_loc.clone());
+                                        .with_loc(expr_loc);
                                 }
                                 errors.push(Diagnostic::semantic_span(
                                     format!(
@@ -227,11 +227,11 @@ pub(super) fn rewrite_graph_source_expr(
                                 let resolved_out = resolve_graph_proc_output_name(surface, &field);
                                 if let Some(slots) = surface.out_array_slots.get(resolved_out) {
                                     return Expr::ArrayLiteral {
-                                        loc: expr_loc.clone().into(),
+                                        loc: expr_loc.into(),
                                         values: slots
                                             .iter()
                                             .map(|slot_name| Expr::UserCall {
-                                                loc: expr_loc.clone().into(),
+                                                loc: expr_loc.into(),
                                                 name: format!(
                                                     "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
                                                 ),
@@ -240,7 +240,7 @@ pub(super) fn rewrite_graph_source_expr(
                                                     CallArg {
                                                         name: Some(PROC_INDEX_BASE_ARG.to_owned()),
                                                         expr: Expr::var(base.clone())
-                                                            .with_loc(expr_loc.clone()),
+                                                            .with_loc(expr_loc),
                                                     },
                                                     CallArg {
                                                         name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
@@ -250,7 +250,7 @@ pub(super) fn rewrite_graph_source_expr(
                                                     CallArg {
                                                         name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
                                                         expr: Expr::var(slot_name.clone())
-                                                            .with_loc(expr_loc.clone()),
+                                                            .with_loc(expr_loc),
                                                     },
                                                 ],
                                             })
@@ -305,7 +305,7 @@ pub(super) fn rewrite_graph_source_expr(
                                     ) {
                                         if let Some(slot_name) = slots.get(field_idx) {
                                             return Expr::UserCall {
-                                                loc: expr_loc.clone().into(),
+                                                loc: expr_loc.into(),
                                                 name: format!(
                                                     "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
                                                 ),
@@ -314,7 +314,7 @@ pub(super) fn rewrite_graph_source_expr(
                                                     CallArg {
                                                         name: Some(PROC_INDEX_BASE_ARG.to_owned()),
                                                         expr: Expr::var(base.clone())
-                                                            .with_loc(expr_loc.clone()),
+                                                            .with_loc(expr_loc),
                                                     },
                                                     CallArg {
                                                         name: Some(PROC_INDEX_EXPR_ARG.to_owned()),

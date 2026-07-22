@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use onda_frontend::{
-    parse_program, parse_program_file_with_overlays, DiagCode, Diagnostic, Program,
+    parse_program, parse_program_file_from_virtual_sources, DiagCode, Diagnostic, Program,
 };
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 use serde::Serialize;
@@ -108,13 +108,14 @@ fn lower_source_to_mir(
     sample_rate: f32,
     block_size: u32,
 ) -> Result<onda_mir::OptimizedProgram, Vec<CompilerDiagnostic>> {
+    let config = compile_config(sample_rate, block_size)?;
     let parsed = parse_program(source).map_err(|diagnostics| {
         diagnostics
             .into_iter()
             .map(|diagnostic| CompilerDiagnostic::source("parse", diagnostic))
             .collect::<Vec<_>>()
     })?;
-    lower_parsed_program(parsed, sample_rate, block_size)
+    lower_parsed_program(parsed, config)
 }
 
 fn lower_project_sources_to_mir(
@@ -123,7 +124,12 @@ fn lower_project_sources_to_mir(
     sample_rate: f32,
     block_size: u32,
 ) -> Result<onda_mir::OptimizedProgram, Vec<CompilerDiagnostic>> {
-    let root = PathBuf::from("/onda-project");
+    let config = compile_config(sample_rate, block_size)?;
+    // This is a logical namespace rather than a host filesystem path. Keeping
+    // it relative avoids target-specific `Path::is_absolute` behavior on
+    // `wasm32-unknown-unknown` while the virtual loader still confines every
+    // lookup beneath the namespace.
+    let root = PathBuf::from("onda-project");
     let mut overlays = HashMap::with_capacity(sources.len());
     for (path, source) in sources {
         let path = checked_project_path(path)?;
@@ -141,19 +147,23 @@ fn lower_project_sources_to_mir(
             entry_path = entry_path.display()
         ))]);
     }
-    let parsed =
-        parse_program_file_with_overlays(&entry_path, &overlays).map_err(|diagnostics| {
+    let parsed = parse_program_file_from_virtual_sources(&root, &entry_path, &overlays).map_err(
+        |diagnostics| {
             diagnostics
                 .into_iter()
                 .map(|diagnostic| CompilerDiagnostic::source("parse", diagnostic))
                 .collect::<Vec<_>>()
-        })?;
-    lower_parsed_program(parsed, sample_rate, block_size)
+        },
+    )?;
+    lower_parsed_program(parsed, config)
 }
 
 fn checked_project_path(path: &str) -> Result<PathBuf, Vec<CompilerDiagnostic>> {
+    let portable_absolute = path.starts_with('/')
+        || path.starts_with('\\')
+        || matches!(path.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic());
     let path = Path::new(path);
-    if path.as_os_str().is_empty() || path.is_absolute() {
+    if path.as_os_str().is_empty() || portable_absolute || path.is_absolute() {
         return Err(vec![CompilerDiagnostic::configuration(
             "project source paths must be non-empty and relative",
         )]);
@@ -181,30 +191,13 @@ fn checked_project_path(path: &str) -> Result<PathBuf, Vec<CompilerDiagnostic>> 
 
 fn lower_parsed_program(
     parsed: Program,
-    sample_rate: f32,
-    block_size: u32,
+    config: onda_mir::CompileConfig,
 ) -> Result<onda_mir::OptimizedProgram, Vec<CompilerDiagnostic>> {
-    if !sample_rate.is_finite() || sample_rate <= 0.0 {
-        return Err(vec![CompilerDiagnostic::configuration(
-            "sample rate must be finite and greater than zero",
-        )]);
-    }
-    let block_size = usize::try_from(block_size).map_err(|_| {
-        vec![CompilerDiagnostic::configuration(
-            "block size does not fit the compiler target",
-        )]
-    })?;
-    if block_size == 0 {
-        return Err(vec![CompilerDiagnostic::configuration(
-            "block size must be greater than zero",
-        )]);
-    }
-
     let typed = analyze_with_options(
         parsed,
         AnalysisOptions {
-            sample_rate,
-            block_size,
+            sample_rate: config.sample_rate,
+            block_size: config.block_size as usize,
         },
     )
     .map_err(|diagnostics| {
@@ -229,6 +222,14 @@ fn lower_parsed_program(
             })
             .collect::<Vec<_>>()
     })
+}
+
+fn compile_config(
+    sample_rate: f32,
+    block_size: u32,
+) -> Result<onda_mir::CompileConfig, Vec<CompilerDiagnostic>> {
+    onda_mir::CompileConfig::new(sample_rate, block_size)
+        .map_err(|error| vec![CompilerDiagnostic::configuration(error.to_string())])
 }
 
 fn mir_encoding_error(stage: &'static str, error: impl ToString) -> Vec<CompilerDiagnostic> {
@@ -273,21 +274,11 @@ impl OndaLsp {
         sample_rate: f32,
         block_size: u32,
     ) -> Result<(), wasm_bindgen::JsValue> {
-        if !sample_rate.is_finite() || sample_rate <= 0.0 {
-            return Err(wasm_bindgen::JsValue::from_str(
-                "sample rate must be finite and greater than zero",
-            ));
-        }
-        let block_size = usize::try_from(block_size)
-            .map_err(|_| wasm_bindgen::JsValue::from_str("block size is too large"))?;
-        if block_size == 0 {
-            return Err(wasm_bindgen::JsValue::from_str(
-                "block size must be greater than zero",
-            ));
-        }
+        let config = onda_mir::CompileConfig::new(sample_rate, block_size)
+            .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))?;
         self.session.set_analysis_options(AnalysisOptions {
-            sample_rate,
-            block_size,
+            sample_rate: config.sample_rate,
+            block_size: config.block_size as usize,
         });
         Ok(())
     }
@@ -492,6 +483,21 @@ sample:
     }
 
     #[test]
+    fn rejects_nested_imports_and_includes_that_escape_the_virtual_root() {
+        for source in [
+            "include \"../outside.onda\"\n",
+            "include \"/tmp/outside.onda\"\n",
+            "import ../outside\n",
+        ] {
+            let sources = HashMap::from([("main.onda".to_owned(), source.to_owned())]);
+            let errors = compile_project_sources_to_mir_json("main.onda", &sources, 48_000.0, 128)
+                .expect_err("nested virtual path escape should fail");
+            assert_eq!(errors[0].stage, "parse");
+            assert!(errors[0].message.contains("escapes project root"));
+        }
+    }
+
+    #[test]
     fn returns_structured_source_diagnostics() {
         let errors = compile_source_to_mir_json("sample:\n  out1 = missing\n", 48_000.0, 128)
             .expect_err("invalid source should fail");
@@ -507,6 +513,15 @@ sample:
         let errors = compile_source_to_mir_json("", f32::NAN, 0)
             .expect_err("invalid configuration should fail before parsing");
         assert_eq!(errors[0].stage, "configuration");
+
+        let errors = compile_source_to_mir_json(
+            "this source must not be parsed",
+            48_000.0,
+            i32::MAX as u32 + 1,
+        )
+        .expect_err("oversized blocks should fail before parsing");
+        assert_eq!(errors[0].stage, "configuration");
+        assert!(errors[0].message.contains("2147483647"));
     }
 
     #[test]

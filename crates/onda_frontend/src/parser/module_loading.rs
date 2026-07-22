@@ -195,8 +195,31 @@ pub fn parse_program_file_with_overlays(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<Program, Vec<Diagnostic>> {
-    let normalized_overlays = normalize_overlay_paths(overlays);
-    let canonical = resolve_file_or_overlay_path(path, &normalized_overlays).map_err(|err| {
+    let loader = SourceLoader::filesystem(overlays);
+    parse_program_file_with_loader(path, &loader)
+}
+
+/// Parses an in-memory source tree without consulting the host filesystem.
+///
+/// `root`, `path`, and every source key belong to the same lexical namespace;
+/// they need not follow the host target's notion of an absolute path. Every
+/// include/import is confined to `root` and must resolve to an entry in
+/// `sources` (apart from embedded standard-library modules).
+pub fn parse_program_file_from_virtual_sources(
+    root: &Path,
+    path: &Path,
+    sources: &HashMap<PathBuf, String>,
+) -> Result<Program, Vec<Diagnostic>> {
+    let loader = SourceLoader::virtual_tree(root, sources)
+        .map_err(|message| vec![Diagnostic::syntax(message, 0, 0)])?;
+    parse_program_file_with_loader(path, &loader)
+}
+
+fn parse_program_file_with_loader(
+    path: &Path,
+    loader: &SourceLoader,
+) -> Result<Program, Vec<Diagnostic>> {
+    let canonical = loader.resolve(path).map_err(|err| {
         vec![Diagnostic::syntax(
             format!("failed to resolve '{}': {err}", path.display()),
             0,
@@ -207,8 +230,7 @@ pub fn parse_program_file_with_overlays(
     state
         .file_modes
         .insert(canonical.clone(), FileLoadMode::Entry);
-    let blocks =
-        load_program_blocks_from_file(&canonical, false, &mut state, &[], &normalized_overlays)?;
+    let blocks = load_program_blocks_from_file(&canonical, false, &mut state, &[], loader)?;
     Ok(Program { blocks })
 }
 
@@ -307,9 +329,9 @@ fn load_program_blocks_from_file(
     import_module_mode: bool,
     state: &mut LoadState,
     trace: &[String],
-    overlays: &HashMap<PathBuf, String>,
+    loader: &SourceLoader,
 ) -> Result<Vec<Block>, Vec<Diagnostic>> {
-    let canonical = resolve_file_or_overlay_path(file_path, overlays).map_err(|err| {
+    let canonical = loader.resolve(file_path).map_err(|err| {
         annotate_diagnostics_with_file(
             vec![Diagnostic::syntax(
                 format!("failed to resolve '{}': {err}", display_path(file_path)),
@@ -339,21 +361,17 @@ fn load_program_blocks_from_file(
     state.stack.push(canonical.clone());
 
     let result = (|| {
-        let source = if let Some(source) = overlays.get(&canonical) {
-            source.clone()
-        } else {
-            fs::read_to_string(&canonical).map_err(|err| {
-                annotate_diagnostics_with_file(
-                    vec![Diagnostic::syntax(
-                        format!("failed to read '{}': {err}", display_path(&canonical)),
-                        0,
-                        0,
-                    )],
-                    &canonical,
+        let source = loader.read(&canonical).map_err(|err| {
+            annotate_diagnostics_with_file(
+                vec![Diagnostic::syntax(
+                    format!("failed to read '{}': {err}", display_path(&canonical)),
                     0,
-                )
-            })?
-        };
+                    0,
+                )],
+                &canonical,
+                0,
+            )
+        })?;
         let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(&source)
             .map_err(|diags| annotate_diagnostics_with_file(diags, &canonical, 0))?;
         let items = split_top_level_items(&preprocessed, &preprocessed_line_map, &canonical)?;
@@ -387,16 +405,14 @@ fn load_program_blocks_from_file(
                     blocks.append(&mut parsed.blocks);
                 }
                 TopLevelItem::Include { path, line } => {
-                    let include_path = resolve_include_path_with_overlays(
-                        &canonical, &path, overlays,
-                    )
-                    .map_err(|msg| {
-                        annotate_diagnostics_with_file(
-                            vec![Diagnostic::syntax(msg, line, 1)],
-                            &canonical,
-                            0,
-                        )
-                    })?;
+                    let include_path =
+                        loader.resolve_include(&canonical, &path).map_err(|msg| {
+                            annotate_diagnostics_with_file(
+                                vec![Diagnostic::syntax(msg, line, 1)],
+                                &canonical,
+                                0,
+                            )
+                        })?;
                     validate_file_mode_transition(
                         &include_path,
                         FileLoadMode::Include,
@@ -413,7 +429,7 @@ fn load_program_blocks_from_file(
                         import_module_mode,
                         state,
                         &nested_trace,
-                        overlays,
+                        loader,
                     )
                     .map_err(|diags| append_diagnostics_trace(diags, trace_entry))?;
                     blocks.append(&mut included);
@@ -434,16 +450,14 @@ fn load_program_blocks_from_file(
                         blocks.append(&mut imported);
                         continue;
                     }
-                    let import_path = resolve_import_path_with_overlays(
-                        &canonical, &module, overlays,
-                    )
-                    .map_err(|msg| {
-                        annotate_diagnostics_with_file(
-                            vec![Diagnostic::syntax(msg, line, 1)],
-                            &canonical,
-                            0,
-                        )
-                    })?;
+                    let import_path =
+                        loader.resolve_import(&canonical, &module).map_err(|msg| {
+                            annotate_diagnostics_with_file(
+                                vec![Diagnostic::syntax(msg, line, 1)],
+                                &canonical,
+                                0,
+                            )
+                        })?;
                     validate_file_mode_transition(
                         &import_path,
                         FileLoadMode::Import,
@@ -464,7 +478,7 @@ fn load_program_blocks_from_file(
                         true,
                         state,
                         &nested_trace,
-                        overlays,
+                        loader,
                     )
                     .map_err(|diags| append_diagnostics_trace(diags, trace_entry))?;
                     blocks.append(&mut imported);
@@ -511,6 +525,166 @@ fn normalize_overlay_paths(overlays: &HashMap<PathBuf, String>) -> HashMap<PathB
     for (path, source) in overlays {
         let key = normalize_overlay_path(path);
         normalized.insert(key, source.clone());
+    }
+    normalized
+}
+
+#[derive(Debug, Clone)]
+enum SourcePolicy {
+    Filesystem,
+    Virtual { root: PathBuf },
+}
+
+#[derive(Debug, Clone)]
+struct SourceLoader {
+    overlays: HashMap<PathBuf, String>,
+    policy: SourcePolicy,
+}
+
+impl SourceLoader {
+    fn filesystem(overlays: &HashMap<PathBuf, String>) -> Self {
+        Self {
+            overlays: normalize_overlay_paths(overlays),
+            policy: SourcePolicy::Filesystem,
+        }
+    }
+
+    fn virtual_tree(root: &Path, sources: &HashMap<PathBuf, String>) -> Result<Self, String> {
+        let root = normalize_path_lexically(root);
+        if root.as_os_str().is_empty() {
+            return Err("virtual source root must identify a lexical namespace".to_owned());
+        }
+        let mut overlays = HashMap::with_capacity(sources.len());
+        for (path, source) in sources {
+            let path = normalize_path_lexically(path);
+            ensure_virtual_root(&root, &path)?;
+            if overlays.insert(path.clone(), source.clone()).is_some() {
+                return Err(format!(
+                    "duplicate normalized virtual source path '{}'",
+                    path.display()
+                ));
+            }
+        }
+        Ok(Self {
+            overlays,
+            policy: SourcePolicy::Virtual { root },
+        })
+    }
+
+    fn resolve(&self, path: &Path) -> Result<PathBuf, String> {
+        match &self.policy {
+            SourcePolicy::Filesystem => resolve_file_or_overlay_path(path, &self.overlays)
+                .map_err(|error| error.to_string()),
+            SourcePolicy::Virtual { root } => {
+                let path = normalize_path_lexically(path);
+                ensure_virtual_root(root, &path)?;
+                if self.overlays.contains_key(&path) {
+                    Ok(path)
+                } else {
+                    Err(format!(
+                        "virtual source '{}' is not present in the source map",
+                        path.display()
+                    ))
+                }
+            }
+        }
+    }
+
+    fn read(&self, path: &Path) -> Result<String, String> {
+        if let Some(source) = self.overlays.get(path) {
+            return Ok(source.clone());
+        }
+        match self.policy {
+            SourcePolicy::Filesystem => fs::read_to_string(path).map_err(|error| error.to_string()),
+            SourcePolicy::Virtual { .. } => Err(format!(
+                "virtual source '{}' is not present in the source map",
+                path.display()
+            )),
+        }
+    }
+
+    fn resolve_include(&self, current_file: &Path, include_path: &str) -> Result<PathBuf, String> {
+        match &self.policy {
+            SourcePolicy::Filesystem => {
+                resolve_include_path_with_overlays(current_file, include_path, &self.overlays)
+            }
+            SourcePolicy::Virtual { root } => {
+                if is_portable_absolute_virtual_path(include_path) {
+                    return Err(format!(
+                        "virtual source path '{include_path}' escapes project root '{}'",
+                        root.display()
+                    ));
+                }
+                let include = Path::new(include_path);
+                let unresolved = current_file.parent().unwrap_or(root).join(include);
+                let resolved = normalize_path_lexically(&unresolved);
+                ensure_virtual_root(root, &resolved)?;
+                self.resolve(&resolved)
+            }
+        }
+    }
+
+    fn resolve_import(&self, current_file: &Path, module_path: &str) -> Result<PathBuf, String> {
+        match &self.policy {
+            SourcePolicy::Filesystem => {
+                resolve_import_path_with_overlays(current_file, module_path, &self.overlays)
+            }
+            SourcePolicy::Virtual { root } => {
+                if is_portable_absolute_virtual_path(module_path) {
+                    return Err(format!(
+                        "virtual source path '{module_path}' escapes project root '{}'",
+                        root.display()
+                    ));
+                }
+                let module = Path::new(module_path);
+                let base = current_file.parent().unwrap_or(root).join(module);
+                for extension in ["onda", "on"] {
+                    let candidate = normalize_path_lexically(&base.with_extension(extension));
+                    ensure_virtual_root(root, &candidate)?;
+                    if self.overlays.contains_key(&candidate) {
+                        return Ok(candidate);
+                    }
+                }
+                Err(format!(
+                    "failed to resolve imported module '{module_path}' from '{}'",
+                    display_path(current_file)
+                ))
+            }
+        }
+    }
+}
+
+fn is_portable_absolute_virtual_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || path.starts_with('\\')
+        || matches!(bytes, [drive, b':', ..] if drive.is_ascii_alphabetic())
+}
+
+fn ensure_virtual_root(root: &Path, path: &Path) -> Result<(), String> {
+    if path.starts_with(root) {
+        Ok(())
+    } else {
+        Err(format!(
+            "virtual source path '{}' escapes project root '{}'",
+            path.display(),
+            root.display()
+        ))
+    }
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
     }
     normalized
 }

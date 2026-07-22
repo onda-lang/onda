@@ -351,7 +351,7 @@ fn run_build_error_string(context: &str, err: &RunBuildError) -> String {
 fn diagnostics_string(context: &str, diagnostics: &[Diagnostic]) -> String {
     let messages = diagnostics
         .iter()
-        .map(|diag| diagnostic_summary(diag))
+        .map(diagnostic_summary)
         .collect::<Vec<_>>()
         .join(" | ");
     format!("{context}: {messages}")

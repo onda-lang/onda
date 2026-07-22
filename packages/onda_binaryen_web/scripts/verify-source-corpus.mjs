@@ -78,7 +78,9 @@ try {
     try {
       compileSourceToMir(ondaCli, source, mirPath);
       const artifact = compileMir(readFileSync(mirPath));
-      if (artifact.metadata.mir_schema_version !== 1) {
+      if (
+        artifact.metadata.mir_schema_version !== SUPPORTED_MIR_SCHEMA_VERSION
+      ) {
         throw new Error(
           `Binaryen metadata reports MIR schema ${String(
             artifact.metadata.mir_schema_version,

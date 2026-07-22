@@ -429,7 +429,7 @@ function triggerWasmEvent(context) {
   }
   const payload = allocate(event.payload_size_bytes, 8);
   for (const [index, param] of event.params.entries()) {
-    if (!param.scalar || param.is_array || param.is_slice) {
+    if (!param.scalar || param.array_len !== 1 || param.is_slice) {
       throw new Error("parity event helper only supports scalar payloads");
     }
     writeScalar(
@@ -452,7 +452,7 @@ function triggerWasmEvent(context) {
 
 function flattenPorts(ports) {
   return ports.flatMap((port) =>
-    Array.from({ length: port.channel_count }, () => ({ scalar: port.scalar })),
+    Array.from({ length: port.array_len }, () => ({ scalar: port.scalar })),
   );
 }
 
@@ -469,10 +469,10 @@ function snapshotWasmState(memory, statePointer, metadata) {
     snapshot.set(
       new Uint8Array(
         memory.buffer,
-        statePointer + entry.storage_byte_offset,
+        statePointer + entry.physical_state_byte_offset,
         entry.byte_size,
       ),
-      entry.byte_offset,
+      entry.packed_snapshot_byte_offset,
     );
   }
   return snapshot;
@@ -485,20 +485,26 @@ function restoreWasmState(memory, statePointer, metadata, snapshot) {
   for (const entry of metadata.metadata.states) {
     new Uint8Array(
       memory.buffer,
-      statePointer + entry.storage_byte_offset,
+      statePointer + entry.physical_state_byte_offset,
       entry.byte_size,
-    ).set(snapshot.subarray(entry.byte_offset, entry.byte_offset + entry.byte_size));
+    ).set(snapshot.subarray(
+      entry.packed_snapshot_byte_offset,
+      entry.packed_snapshot_byte_offset + entry.byte_size,
+    ));
   }
 }
 
 function writeParameterDefaults(memory, paramsPointer, params) {
   for (const param of params) {
-    if (param.default === null) continue;
-    const values = flattenConstants(param.default);
+    if (param.default_reprs === null) continue;
+    const values = param.default_reprs.map((value) => ({
+      type: param.scalar,
+      value: JSON.parse(value),
+    }));
     const elementSize = scalarSize(param.scalar);
-    if (values.length !== param.array_length) {
+    if (values.length !== param.array_len) {
       throw new Error(
-        `parameter '${param.name}' default has ${values.length} values, expected ${param.array_length}`,
+        `parameter '${param.name}' default has ${values.length} values, expected ${param.array_len}`,
       );
     }
     for (const [index, value] of values.entries()) {
