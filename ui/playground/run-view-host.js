@@ -264,18 +264,18 @@ export class BrowserScopeSource {
   }
 }
 
-function mergeParams(params, existing) {
+export function mergeParams(params, existing) {
   return params
-    .filter((param) => !param.is_array)
+    .filter((param) => param.array_len === 1)
     .map((param, index) => {
       const previous = existing.find((item) => item.name === param.name);
       const next = {
         index,
         name: param.name,
-        type: param.type ?? param.scalar ?? "f32",
-        default: decodeConstant(param.default),
-        rangeMin: decodeScalar(param.range?.min),
-        rangeMax: decodeScalar(param.range?.max),
+        type: param.scalar,
+        default: decodeScalarRepr(param.scalar, param.default_reprs?.[0]),
+        rangeMin: decodeScalarRepr(param.scalar, param.range_min_repr),
+        rangeMax: decodeScalarRepr(param.scalar, param.range_max_repr),
         scalar: true,
       };
       return {
@@ -291,8 +291,8 @@ function mergeBuffers(buffers, existing, bufferFiles) {
   return buffers.map((buffer, index) => ({
     index,
     name: buffer.name,
-    type: `buffer[${buffer.scalar ?? "f32"}]`,
-    channelsKind: buffer.channels ?? (buffer.static_channels === 1 ? "mono" : "dynamic"),
+    type: buffer.type_repr,
+    channelsKind: buffer.channels,
     channelsStatic: buffer.static_channels ?? null,
     loadedPath: bufferFiles.get(buffer.name)?.name
       ?? existing.find((item) => item.name === buffer.name)?.loadedPath
@@ -311,8 +311,10 @@ function mergeEvents(events, existing) {
         const next = {
           index: argIndex,
           name: param.name,
-          type: param.type ?? param.scalar ?? "f32",
-          default: decodeConstant(param.default),
+          type: param.scalar,
+          default: param.array_len === 1
+            ? decodeScalarRepr(param.scalar, param.default_reprs?.[0])
+            : null,
         };
         return { ...next, value: prior?.value ?? initialEventArgValue(next) };
       }),
@@ -339,20 +341,12 @@ function initialEventArgValue(arg) {
   return Number.isFinite(Number(arg.default)) ? Number(arg.default) : 0;
 }
 
-function decodeConstant(constant) {
-  if (constant?.kind === "scalar") return decodeScalar(constant.data);
-  if (constant?.kind === "aggregate") return constant.data.map(decodeConstant);
-  return constant ?? null;
-}
-
-function decodeScalar(scalar) {
-  if (scalar === null || scalar === undefined) return null;
-  if (typeof scalar !== "object") return scalar;
-  const value = scalar.value;
-  if ((scalar.type !== "f32" && scalar.type !== "f64") || typeof value !== "string") {
-    return value;
-  }
-  const width = scalar.type === "f32" ? 32 : 64;
+function decodeScalarRepr(type, value) {
+  if (value === null || value === undefined) return null;
+  if (type === "bool") return value === "true";
+  if (type !== "f32" && type !== "f64") return Number(value);
+  if (!value.startsWith("0x")) return Number(value);
+  const width = type === "f32" ? 32 : 64;
   const digits = value.startsWith("0x") ? value.slice(2) : "";
   if (digits.length !== width / 4) return Number.NaN;
   const bytes = new ArrayBuffer(width / 8);
