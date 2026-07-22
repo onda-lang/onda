@@ -76,3 +76,10 @@ test("the browser buffer picker stays hidden and cleans up after cancellation", 
   assert.match(runView, /input\.addEventListener\("cancel", cleanup, \{ once: true \}\)/);
   assert.match(runView, /window\.addEventListener\("focus", cleanupAfterCancel, \{ once: true \}\)/);
 });
+
+test("the shared run view only shows its scope during playback", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /scopeSection\.style\.display = state\.running \? "block" : "none"/);
+  assert.doesNotMatch(runView, /scopeSection\.style\.display = state\.connected/);
+});

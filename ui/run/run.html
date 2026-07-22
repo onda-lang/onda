@@ -1221,7 +1221,7 @@
         statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
         errorNode.textContent = state.error || "";
         errorNode.style.display = state.error ? "block" : "none";
-        scopeSection.style.display = state.connected ? "block" : "none";
+        scopeSection.style.display = state.running ? "block" : "none";
         const hasBuffers = state.buffers.length > 0;
         const hasEvents = state.events.length > 0;
         const hasParams = state.params.length > 0;
