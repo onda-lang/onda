@@ -50,6 +50,51 @@ const INSERT_TEXT_FORMAT_SNIPPET: u32 = 2;
 
 const MAX_DEFERRED_COUNT_COMPLETIONS: usize = 128;
 
+#[derive(Debug, Clone, Copy)]
+struct BufferBuiltinMethod {
+    name: &'static str,
+    signature: &'static str,
+    snippet: &'static str,
+}
+
+const BUFFER_BUILTIN_METHODS: &[BufferBuiltinMethod] = &[
+    BufferBuiltinMethod {
+        name: "len",
+        signature: "()",
+        snippet: "len()",
+    },
+    BufferBuiltinMethod {
+        name: "chans",
+        signature: "()",
+        snippet: "chans()",
+    },
+    BufferBuiltinMethod {
+        name: "samplerate",
+        signature: "()",
+        snippet: "samplerate()",
+    },
+    BufferBuiltinMethod {
+        name: "unsafe_read",
+        signature: "(index: i32)",
+        snippet: "unsafe_read($1)",
+    },
+    BufferBuiltinMethod {
+        name: "unsafe_write",
+        signature: "(index: i32, value)",
+        snippet: "unsafe_write($1, $2)",
+    },
+    BufferBuiltinMethod {
+        name: "unsafe_read2",
+        signature: "(channel: i32, index: i32)",
+        snippet: "unsafe_read2($1, $2)",
+    },
+    BufferBuiltinMethod {
+        name: "unsafe_write2",
+        signature: "(channel: i32, index: i32, value)",
+        snippet: "unsafe_write2($1, $2, $3)",
+    },
+];
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct CompletionPosition {
     pub(super) line: u32,
@@ -542,9 +587,9 @@ struct FunctionInfo {
 }
 
 #[derive(Debug, Clone)]
-struct InstanceInfo {
-    type_name: String,
-    is_array: bool,
+enum InstanceInfo {
+    UserType { type_name: String, is_array: bool },
+    Buffer,
 }
 
 #[derive(Debug, Clone)]
@@ -914,14 +959,14 @@ impl CompletionIndex {
         match expr {
             Expr::UserCall { name, .. } => self
                 .resolve_type_name_in_namespace(name, namespace)
-                .map(|type_name| InstanceInfo {
+                .map(|type_name| InstanceInfo::UserType {
                     type_name,
                     is_array: false,
                 }),
             Expr::ArrayCtor { spec, .. } => match &spec.elem {
                 ArrayElemType::Struct(name) => self
                     .resolve_type_name_in_namespace(name, namespace)
-                    .map(|type_name| InstanceInfo {
+                    .map(|type_name| InstanceInfo::UserType {
                         type_name,
                         is_array: true,
                     }),
@@ -1020,6 +1065,7 @@ impl CompletionIndex {
                     extend_span(&mut span, buffers.loc);
                     for name in buffer_block_names(buffers) {
                         items.push(port_item(&name, "buffer"));
+                        instances.insert(name, InstanceInfo::Buffer);
                     }
                 }
                 Block::Events(events) => {
@@ -1105,11 +1151,13 @@ impl CompletionIndex {
         }
         for decl in &proc_def.buffers {
             items.push(port_item(&decl.name, "proc buffer"));
+            instances.insert(decl.name.clone(), InstanceInfo::Buffer);
         }
         for buffer in
             proc_deferred_buffer_infos(&proc_def.buffers, proc_def.buffers_deferred_count.as_ref())
         {
             items.push(port_item(&buffer.name, "proc buffer"));
+            instances.insert(buffer.name, InstanceInfo::Buffer);
         }
         for event in &proc_def.events {
             items.push(event_item(event));
@@ -1183,7 +1231,7 @@ impl CompletionIndex {
         let mut instances = HashMap::<String, InstanceInfo>::new();
         instances.insert(
             "self".to_owned(),
-            InstanceInfo {
+            InstanceInfo::UserType {
                 type_name: owner,
                 is_array: false,
             },
@@ -1808,8 +1856,22 @@ impl CompletionIndex {
         let Some(instance) = self.resolve_instance(root) else {
             return Vec::new();
         };
+        if matches!(instance, InstanceInfo::Buffer) {
+            return self
+                .buffer_member_items()
+                .into_iter()
+                .filter(|item| prefix_matches(&item.label, prefix))
+                .collect();
+        }
+        let InstanceInfo::UserType {
+            type_name,
+            is_array,
+        } = instance
+        else {
+            unreachable!();
+        };
         let mut out = Vec::new();
-        if let Some(proc_info) = self.procs.get(&instance.type_name) {
+        if let Some(proc_info) = self.procs.get(type_name) {
             for name in &proc_info.ins {
                 out.push(
                     CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_PROPERTY)
@@ -1873,7 +1935,7 @@ impl CompletionIndex {
                     .snippet("init($1)")
                     .sort_text(completion_sort_text(CompletionSortGroup::Event, "init")),
             );
-        } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
+        } else if let Some(struct_info) = self.structs.get(type_name) {
             for field in &struct_info.fields {
                 out.push(
                     CompletionItem::new(field.clone(), COMPLETION_ITEM_KIND_FIELD)
@@ -1901,7 +1963,7 @@ impl CompletionIndex {
                 );
             }
         }
-        if instance.is_array {
+        if *is_array {
             out.push(
                 CompletionItem::new(ARRAY_LEN_METHOD, COMPLETION_ITEM_KIND_METHOD)
                     .detail("built-in call .len()")
@@ -1917,11 +1979,43 @@ impl CompletionIndex {
             .collect()
     }
 
+    fn buffer_member_items(&self) -> Vec<CompletionItem> {
+        let mut out = BUFFER_BUILTIN_METHODS
+            .iter()
+            .map(|method| buffer_builtin_method_item(*method))
+            .collect::<Vec<_>>();
+        if let Some(catalog) = stdlib_discovery_index() {
+            for symbol in catalog
+                .members_by_namespace
+                .get("std::lookup")
+                .into_iter()
+                .flatten()
+                .filter(|symbol| {
+                    symbol.kind == SymbolKind::Def
+                        && symbol
+                            .label_detail
+                            .as_deref()
+                            .is_some_and(|signature| signature.starts_with("(buf,"))
+                })
+            {
+                out.push(
+                    self.with_required_std_import(
+                        "std::lookup",
+                        buffer_extension_method_item(symbol),
+                    ),
+                );
+            }
+        }
+        out
+    }
+
     fn call_arg_items(&self, callee: &str) -> Vec<CompletionItem> {
         let callee = normalize_call_callee(callee);
         if let Some((receiver, member)) = split_member_callee(&callee) {
-            if let Some(instance) = self.resolve_instance(receiver_root(receiver)) {
-                if let Some(proc_info) = self.procs.get(&instance.type_name) {
+            if let Some(InstanceInfo::UserType { type_name, .. }) =
+                self.resolve_instance(receiver_root(receiver))
+            {
+                if let Some(proc_info) = self.procs.get(type_name) {
                     if member == "init" {
                         return proc_info
                             .params
@@ -1940,8 +2034,10 @@ impl CompletionIndex {
                 }
             }
         }
-        if let Some(instance) = self.resolve_instance(receiver_root(&callee)) {
-            if let Some(proc_info) = self.procs.get(&instance.type_name) {
+        if let Some(InstanceInfo::UserType { type_name, .. }) =
+            self.resolve_instance(receiver_root(&callee))
+        {
+            if let Some(proc_info) = self.procs.get(type_name) {
                 let mut out = Vec::new();
                 for input in &proc_info.ins {
                     out.push(named_arg_item(input, "proc input"));
@@ -2125,14 +2221,15 @@ impl CompletionIndex {
         match ty {
             FnParamType::Struct(name) => {
                 self.resolve_type_name_in_namespace(name, namespace)
-                    .map(|type_name| InstanceInfo {
+                    .map(|type_name| InstanceInfo::UserType {
                         type_name,
                         is_array: false,
                     })
             }
+            FnParamType::Buffer(_) | FnParamType::BareBuffer => Some(InstanceInfo::Buffer),
             FnParamType::ArrayGeneric(name) => self
                 .resolve_type_name_in_namespace(name, namespace)
-                .map(|type_name| InstanceInfo {
+                .map(|type_name| InstanceInfo::UserType {
                     type_name,
                     is_array: true,
                 }),
@@ -2141,7 +2238,7 @@ impl CompletionIndex {
                 ..
             } => self
                 .resolve_type_name_in_namespace(name, namespace)
-                .map(|type_name| InstanceInfo {
+                .map(|type_name| InstanceInfo::UserType {
                     type_name,
                     is_array: true,
                 }),
@@ -2563,6 +2660,53 @@ fn function_item_with_sort_group(
         .insert_text(callable_insert_text(&info.name, &info.type_params))
         .snippet(callable_snippet(&info.name, &info.type_params))
         .sort_text(completion_sort_text(sort_group, &info.name))
+}
+
+fn buffer_builtin_method_item(method: BufferBuiltinMethod) -> CompletionItem {
+    CompletionItem::new(method.name, COMPLETION_ITEM_KIND_METHOD)
+        .maybe_label_detail(Some(method.signature.to_owned()))
+        .detail(format!(
+            "built-in buffer method {}{}",
+            method.name, method.signature
+        ))
+        .insert_text(format!("{}(", method.name))
+        .snippet(method.snippet)
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::ScopeDef,
+            method.name,
+        ))
+}
+
+fn buffer_extension_method_item(symbol: &SymbolInfo) -> CompletionItem {
+    let signature = symbol
+        .label_detail
+        .as_deref()
+        .map(signature_without_receiver)
+        .unwrap_or_else(|| "(...)".to_owned());
+    CompletionItem::new(symbol.label.clone(), COMPLETION_ITEM_KIND_METHOD)
+        .maybe_label_detail(Some(signature.clone()))
+        .detail(format!(
+            "buffer extension def {}{}",
+            symbol.label, signature
+        ))
+        .insert_text(format!("{}(", symbol.label))
+        .snippet(format!("{}($1)", symbol.label))
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::ScopeDef,
+            &symbol.label,
+        ))
+}
+
+fn signature_without_receiver(signature: &str) -> String {
+    let params = signature
+        .strip_prefix('(')
+        .and_then(|signature| signature.strip_suffix(')'))
+        .unwrap_or(signature);
+    let remaining = params
+        .split_once(',')
+        .map(|(_, remaining)| remaining.trim())
+        .unwrap_or_default();
+    format!("({remaining})")
 }
 
 fn span_for_stmt(stmt: &Stmt) -> Span {
@@ -3926,6 +4070,97 @@ sample:
             member_labels.iter().any(|label| label == "gain"),
             "public params should remain externally visible: {member_labels:?}"
         );
+    }
+
+    #[test]
+    fn member_completion_includes_builtin_and_lookup_methods_for_buffers() {
+        let source = r#"buffers:
+  src: f32[]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(src.len())
+"#;
+        let index = index_at(source, "src.len", "src".len());
+        let items = index.member_items("src", "");
+        let member_labels = labels(items.clone());
+
+        for expected in [
+            "len",
+            "chans",
+            "samplerate",
+            "unsafe_read",
+            "unsafe_write",
+            "unsafe_read2",
+            "unsafe_write2",
+            "read",
+            "write",
+            "readL",
+            "readC",
+        ] {
+            assert!(
+                member_labels.iter().any(|label| label == expected),
+                "buffer member completion should include {expected}: {member_labels:?}"
+            );
+        }
+
+        let read_signatures = items
+            .iter()
+            .filter(|item| item.label == "read")
+            .filter_map(|item| item.label_detail.as_deref())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            read_signatures,
+            BTreeSet::from(["(i: i32)", "(ch: i32, i: i32)"])
+        );
+        assert!(
+            !member_labels.iter().any(|label| label == "calcIdx"),
+            "non-extension lookup helpers must not appear as buffer methods: {member_labels:?}"
+        );
+
+        let incomplete_source = source.replace("src.len()", "src.");
+        let result = completion_items_for_document_with_index(
+            &incomplete_source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            position_at(&incomplete_source, "src.", "src.".len()),
+            true,
+        );
+        let encoded_labels = result
+            .items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(encoded_labels.contains("samplerate"));
+        assert!(encoded_labels.contains("readL"));
+    }
+
+    #[test]
+    fn member_completion_recognizes_proc_buffers_and_typed_buffer_params() {
+        let source = r#"def first(buf: buffer[f32[]]):
+  return buf.unsafe_read(0)
+
+proc Player:
+  buffers:
+    clip: f32[]
+  outs:
+    out1
+  sample:
+    out1 = clip.read(0)
+"#;
+        let param_index = index_at(source, "buf.unsafe_read", "buf".len());
+        let param_labels = labels(param_index.member_items("buf", ""));
+        assert!(param_labels.iter().any(|label| label == "unsafe_read"));
+        assert!(param_labels.iter().any(|label| label == "readL"));
+
+        let proc_index = index_at(source, "clip.read", "clip".len());
+        let proc_labels = labels(proc_index.member_items("clip", ""));
+        assert!(proc_labels.iter().any(|label| label == "samplerate"));
+        assert!(proc_labels.iter().any(|label| label == "read"));
     }
 
     #[test]

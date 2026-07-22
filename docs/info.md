@@ -30,7 +30,8 @@ For build, CLI usage, and editor integrations, see the [getting-started guide](h
 | `onda_cpal` | Minimal CPAL/PipeWire backend: device discovery, RT callbacks, sample conversion, and SPSC transport. |
 | `onda_daemon` | Stateful session engine: in-memory analysis overlays and live run sessions. |
 | `onda_run` | Shared run controller / real-time playback transport used by the CLI and run hosts. |
-| `onda_cli` | `onda` binary: argument parsing, `compile`/`run`/`daemon`/`lsp` commands, and the LSP adapter. |
+| `onda_lsp` | JSON-RPC language server: diagnostics, completion, navigation, semantic tokens, and shared source formatting. |
+| `onda_cli` | `onda` binary: argument parsing and `compile`/`run`/`daemon`/`lsp` command dispatch. |
 | `onda_egui` | Native egui run host (default `onda run` UI). |
 | `onda_webview` | Native webview run host (opt-in via `--webview`). |
 | `onda_examples` | Example `.onda` programs surfaced through `examples/`. |
@@ -162,16 +163,21 @@ Non-crate directories of note:
 - `lib.rs` — run controller wiring real-time audio to a daemon run session.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
 
+### `onda_lsp` (`crates/onda_lsp/src`)
+- `lib.rs` — public LSP entry point used by `onda lsp`.
+- `server.rs` — JSON-RPC transport, document state, request dispatch, and server integration tests.
+- `server/diagnostics.rs`, `server/completion.rs`, `server/navigation.rs` — diagnostics, completion, hover, and definition handling.
+- `server/namespace_resolution.rs`, `server/position.rs`, `server/path_utils.rs` — namespace, source-position, and path support.
+- `server/semantic_tokens/{mod,ast_index,source_fallback,tests}.rs` — semantic-token indexing, incomplete-source fallback, and tests.
+- `formatting.rs` — source formatting shared with the CLI.
+
 ### `onda_cli` (`crates/onda_cli/src`)
 - `main.rs`, `main_tests.rs` — binary entry and integration tests.
 - `args.rs` — CLI argument parsing.
 - `compile_cmd.rs` — `onda compile` (check / IR / obj / `--dump-graph` / cross-target).
 - `run_cmd.rs` — `onda run` / `run play` / `run render` dispatch.
 - `daemon_stdio.rs` — `onda daemon stdio` JSON transport.
-- `lsp_stdio.rs`, `lsp_stdio/` — hand-rolled JSON-RPC LSP server:
-  - `diagnostics.rs`, `completion.rs`, `navigation.rs`, `namespace_resolution.rs`, `position.rs`, `path_utils.rs`.
-  - `semantic_tokens/{mod,ast_index,source_fallback,tests}.rs`.
-- `formatting.rs`, `diag_print.rs` — diagnostic formatting/printing.
+- `diag_print.rs` — terminal diagnostic rendering.
 
 ### `onda_egui` (`crates/onda_egui/src`)
 - `lib.rs` — native egui run host (param/buffer panels, device selectors, transport controls).
@@ -203,7 +209,7 @@ Non-crate directories of note:
 - C ABI surface: `onda_api/src/lib.rs`, `include/onda.h`.
 - Daemon analysis/run sessions: `onda_daemon/src/{analysis_session,run_session}.rs`.
 - Real-time playback: `onda_run/src/{lib,playback}.rs`.
-- LSP: `onda_cli/src/lsp_stdio.rs` → `lsp_stdio/*`.
+- LSP: `onda_cli/src/main.rs` dispatches to `onda_lsp/src/lib.rs` → `server.rs` / `server/*`.
 
 ## Runtime and codegen architecture
 
