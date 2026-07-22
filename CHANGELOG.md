@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.5.2]
+
+### Added
+
+- Added LSP member completion for built-in buffer methods and `std::lookup` buffer extensions.
+
+### Changed
+
+- Native and browser run hosts now require every declared buffer to be bound to a valid WAV file
+  before processing starts. Buffer loads and clears update processing state only after the host
+  accepts them, and processing resumes automatically once all requested bindings are ready.
+
+### Fixed
+
+- Fixed browser file-picker cleanup after selecting or cancelling a buffer file.
+- Fixed the webview scope panel remaining visible while processing is stopped.
+- Improved native run-host status and error reporting for rejected control commands and unexpected
+  audio-process exits.
+
 ## [0.5.1]
 
 ### Fixed
@@ -135,5 +154,6 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
-[0.5.1]: https://github.com/onda-lang/onda/compare/0.5.0...HEAD
+[0.5.2]: https://github.com/onda-lang/onda/compare/0.5.1...HEAD
+[0.5.1]: https://github.com/onda-lang/onda/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/onda-lang/onda/compare/0.4.4...0.5.0
