@@ -1,5 +1,6 @@
 // Shared browser adapter for the transport-neutral Onda run view.
 import { flattenedAudioChannelCount } from "@onda-lang/webaudio";
+import { UNBOUND_BUFFERS_MESSAGE } from "./browser-buffers.js";
 
 export class BrowserRunViewHost {
   constructor(iframe, handlers = {}) {
@@ -13,6 +14,7 @@ export class BrowserRunViewHost {
       path: "",
       status: "Stopped",
       error: "",
+      sourceDirty: false,
       outputChannels: 0,
       buffers: [],
       events: [],
@@ -81,7 +83,27 @@ export class BrowserRunViewHost {
     this.state.buffers = mergeBuffers(metadata.buffers ?? [], this.state.buffers, bufferFiles);
     this.state.outputChannels = flattenedAudioChannelCount(metadata.outputs);
     this.state.error = "";
+    this.state.sourceDirty = false;
+    if (!this.buffersReady()) {
+      this.state.running = false;
+      this.state.connected = false;
+      this.state.status = UNBOUND_BUFFERS_MESSAGE;
+    }
     this.postState();
+  }
+
+  buffersReady() {
+    return this.state.buffers.every((buffer) => Boolean(buffer.loadedPath));
+  }
+
+  setWaitingForBuffers() {
+    this.setState({
+      running: false,
+      connected: false,
+      status: UNBOUND_BUFFERS_MESSAGE,
+      error: "",
+    });
+    this.postScope(0, []);
   }
 
   clearArtifact(path = this.state.path) {
@@ -91,12 +113,17 @@ export class BrowserRunViewHost {
       connected: false,
       status: "Stopped",
       error: "",
+      sourceDirty: false,
       outputChannels: 0,
       buffers: [],
       events: [],
       params: [],
     });
     this.postScope(0, []);
+  }
+
+  markSourceDirty(path = this.state.path) {
+    this.setState({ path, sourceDirty: true });
   }
 
   setRunning(sampleRate, status) {
@@ -109,7 +136,11 @@ export class BrowserRunViewHost {
   }
 
   setStopped(status = "Stopped") {
-    this.setState({ running: false, connected: false, status });
+    this.setState({
+      running: false,
+      connected: false,
+      status: this.buffersReady() ? status : UNBOUND_BUFFERS_MESSAGE,
+    });
     this.postScope(0, []);
   }
 
@@ -120,6 +151,10 @@ export class BrowserRunViewHost {
       status: "Stopped",
       error: String(error?.message ?? error),
     });
+  }
+
+  showError(error) {
+    this.setState({ error: String(error?.message ?? error) });
   }
 
   resetValues() {
@@ -138,6 +173,14 @@ export class BrowserRunViewHost {
     this.state.buffers = this.state.buffers.map((buffer) =>
       buffer.name === name ? { ...buffer, loadedPath: file?.name ?? null } : buffer
     );
+    this.state.error = "";
+    if (!this.buffersReady()) {
+      this.state.running = false;
+      this.state.connected = false;
+      this.state.status = UNBOUND_BUFFERS_MESSAGE;
+    } else if (this.state.status === UNBOUND_BUFFERS_MESSAGE) {
+      this.state.status = "Stopped";
+    }
     this.postState();
   }
 
@@ -165,7 +208,8 @@ export class BrowserRunViewHost {
           this.postState();
           break;
         case "start":
-          await this.handlers.start?.();
+          if (this.state.sourceDirty || this.buffersReady()) await this.handlers.start?.();
+          else this.setWaitingForBuffers();
           break;
         case "stop":
           await this.handlers.stop?.();

@@ -1,40 +1,33 @@
 // Shared browser-playground buffer loading and validation.
 const MAX_BUFFER_SAMPLES = 16 * 1024 * 1024;
-
-export function zeroBufferBinding(buffer, compile) {
-  const frames = Number(compile.block_size);
-  const channels = Number(buffer.static_channels ?? 1);
-  return {
-    data: new Float32Array(frames * channels),
-    frames,
-    channels,
-    sampleRate: Number(compile.sample_rate),
-  };
-}
+export const UNBOUND_BUFFERS_MESSAGE = "Bind all buffers to start processing";
 
 export async function prepareBufferBindings(metadata, files) {
+  if (metadata.metadata.buffers.some((buffer) => !files.has(buffer.name))) {
+    throw new Error(UNBOUND_BUFFERS_MESSAGE);
+  }
   const bindings = {};
   for (const buffer of metadata.metadata.buffers) {
     const file = files.get(buffer.name);
-    if (!file) {
-      bindings[buffer.name] = zeroBufferBinding(buffer, metadata.compile);
-      continue;
-    }
-    if (buffer.scalar !== "f32") {
-      throw new Error(
-        `Onda buffer '${buffer.name}' is ${buffer.scalar}; WAV loading supports f32 buffers`,
-      );
-    }
-    const decoded = decodeWav(await file.arrayBuffer());
-    const declaredChannels = Number(buffer.static_channels ?? 0);
-    if (declaredChannels && decoded.channels !== declaredChannels) {
-      throw new Error(
-        `Onda buffer '${buffer.name}' requires ${declaredChannels} channel(s), but '${file.name}' has ${decoded.channels}`,
-      );
-    }
-    bindings[buffer.name] = decoded;
+    bindings[buffer.name] = await prepareBufferBinding(buffer, file);
   }
   return bindings;
+}
+
+export async function prepareBufferBinding(buffer, file) {
+  if (buffer.scalar !== "f32") {
+    throw new Error(
+      `Onda buffer '${buffer.name}' is ${buffer.scalar}; WAV loading supports f32 buffers`,
+    );
+  }
+  const decoded = decodeWav(await file.arrayBuffer());
+  const declaredChannels = Number(buffer.static_channels ?? 0);
+  if (declaredChannels && decoded.channels !== declaredChannels) {
+    throw new Error(
+      `Onda buffer '${buffer.name}' requires ${declaredChannels} channel(s), but '${file.name}' has ${decoded.channels}`,
+    );
+  }
+  return decoded;
 }
 
 export function decodeWav(input) {

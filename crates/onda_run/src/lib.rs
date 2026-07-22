@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::TcpStream;
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
-    RunEventValue, RunParamInfo,
+    RunEventValue, RunParamInfo, UNBOUND_BUFFERS_MESSAGE,
 };
 use onda_frontend::Diagnostic;
 use serde::Deserialize;
@@ -26,7 +27,6 @@ pub use playback::{
 
 const SCOPE_MAX_FRAMES: usize = 1024;
 const SCOPE_POLL_INTERVAL_MS: u64 = 50;
-
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -122,6 +122,13 @@ enum ControllerEvent {
     FileChanged,
 }
 
+#[derive(Debug)]
+enum PendingCommand {
+    BindBuffer { name: String, path: String },
+    ClearBuffer { name: String },
+    Play,
+}
+
 #[derive(Debug, Clone)]
 struct ReadyEvent {
     path: String,
@@ -168,6 +175,8 @@ pub struct RunController {
     preserved_params: Vec<(String, Value)>,
     preserved_buffers: Vec<(String, String)>,
     preserved_events: Vec<(String, Vec<Value>)>,
+    pending_commands: HashMap<u64, PendingCommand>,
+    processing_requested: bool,
     scope_polling_active: bool,
     scope_polling_in_flight: bool,
     last_scope_poll: Instant,
@@ -208,6 +217,8 @@ impl RunController {
             preserved_params: Vec::new(),
             preserved_buffers: Vec::new(),
             preserved_events: Vec::new(),
+            pending_commands: HashMap::new(),
+            processing_requested: true,
             scope_polling_active: false,
             scope_polling_in_flight: false,
             last_scope_poll: Instant::now(),
@@ -230,16 +241,12 @@ impl RunController {
     pub fn poll(&mut self) -> PollResult {
         let mut result = PollResult::default();
 
-        if let Some((code, error)) = self.child.try_take_exit() {
-            self.handle_child_exited(code, error);
-            result.state_changed = true;
-        }
-
         if self.scope_polling_active
             && !self.scope_polling_in_flight
             && self.last_scope_poll.elapsed() >= Duration::from_millis(SCOPE_POLL_INTERVAL_MS)
         {
-            self.bridge
+            let _ = self
+                .bridge
                 .send_command("getScopeData", &json!({ "maxFrames": SCOPE_MAX_FRAMES }));
             self.scope_polling_in_flight = true;
             self.last_scope_poll = Instant::now();
@@ -252,13 +259,13 @@ impl RunController {
                     result.state_changed = true;
                 }
                 ControllerEvent::TcpResponse(line) => {
-                    if self.handle_tcp_response(&line) {
-                        result.scope_changed = true;
-                    }
+                    let response = self.handle_tcp_response(&line);
+                    result.state_changed |= response.state_changed;
+                    result.scope_changed |= response.scope_changed;
                 }
                 ControllerEvent::FileChanged => {
                     if self.source_requires_recompile() {
-                        if self.state.running {
+                        if self.processing_requested {
                             let _ = self.restart_with_status("Restarting...");
                         } else {
                             self.invalidate_compiled_child();
@@ -269,12 +276,29 @@ impl RunController {
             }
         }
 
+        if let Some((code, error)) = self.child.try_take_exit() {
+            self.handle_child_exited(code, error);
+            result.state_changed = true;
+        }
+
         result
     }
 
     pub fn start(&mut self) -> Result<(), String> {
+        self.processing_requested = true;
+        if !all_buffers_bound(&self.state.buffers) {
+            if self.can_reuse_compiled_child() {
+                if let Some(id) = self.bridge.send_command("play", &json!({})) {
+                    self.pending_commands.insert(id, PendingCommand::Play);
+                }
+            }
+            self.refresh_processing_state();
+            return Err(UNBOUND_BUFFERS_MESSAGE.to_owned());
+        }
         if self.can_reuse_compiled_child() {
-            self.bridge.send_command("play", &json!({}));
+            if let Some(id) = self.bridge.send_command("play", &json!({})) {
+                self.pending_commands.insert(id, PendingCommand::Play);
+            }
             self.scope_polling_active = true;
             self.scope_polling_in_flight = false;
             self.last_scope_poll = Instant::now();
@@ -290,8 +314,9 @@ impl RunController {
     }
 
     pub fn stop(&mut self) {
+        self.processing_requested = false;
         if self.state.connected && self.child.is_active() {
-            self.bridge.send_command("pause", &json!({}));
+            let _ = self.bridge.send_command("pause", &json!({}));
         } else {
             self.child.kill();
             self.bridge.disconnect();
@@ -347,7 +372,8 @@ impl RunController {
     }
 
     pub fn trigger_event(&mut self, name: &str, values: Vec<Value>) {
-        self.bridge
+        let _ = self
+            .bridge
             .send_command("triggerEvent", &json!({ "name": name, "values": values }));
         if let Some(entry) = self.preserved_events.iter_mut().find(|(n, _)| n == name) {
             entry.1 = values.clone();
@@ -360,23 +386,33 @@ impl RunController {
     }
 
     pub fn bind_buffer_file(&mut self, name: &str, file_path: &str) {
-        self.bridge
-            .send_command("bindBufferWav", &json!({ "name": name, "path": file_path }));
-        if let Some(entry) = self.preserved_buffers.iter_mut().find(|(n, _)| n == name) {
-            entry.1 = file_path.to_owned();
-        } else {
-            self.preserved_buffers
-                .push((name.to_owned(), file_path.to_owned()));
+        if let Some(id) = self
+            .bridge
+            .send_command("bindBufferWav", &json!({ "name": name, "path": file_path }))
+        {
+            self.pending_commands.insert(
+                id,
+                PendingCommand::BindBuffer {
+                    name: name.to_owned(),
+                    path: file_path.to_owned(),
+                },
+            );
         }
-        update_buffer_loaded_path(&mut self.state.buffers, name, Some(file_path));
         self.state.error = None;
     }
 
     pub fn clear_buffer(&mut self, name: &str) {
-        self.bridge
-            .send_command("clearBuffer", &json!({ "name": name }));
-        self.preserved_buffers.retain(|(n, _)| n != name);
-        update_buffer_loaded_path(&mut self.state.buffers, name, None);
+        if let Some(id) = self
+            .bridge
+            .send_command("clearBuffer", &json!({ "name": name }))
+        {
+            self.pending_commands.insert(
+                id,
+                PendingCommand::ClearBuffer {
+                    name: name.to_owned(),
+                },
+            );
+        }
         self.state.error = None;
     }
 
@@ -409,6 +445,7 @@ impl RunController {
     fn restart_with_status(&mut self, status: &str) -> Result<(), String> {
         self.child.kill();
         self.bridge.disconnect();
+        self.pending_commands.clear();
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
         self.state.running = false;
@@ -454,6 +491,7 @@ impl RunController {
     fn invalidate_compiled_child(&mut self) {
         self.child.kill();
         self.bridge.disconnect();
+        self.pending_commands.clear();
         self.compiled_source = None;
         self.pending_source = None;
         self.state.connected = false;
@@ -481,7 +519,6 @@ impl RunController {
         self.state.params = ready.params;
         apply_preserved_param_state(&mut self.state.params, &self.preserved_params);
         self.state.buffers = ready.buffers;
-        apply_preserved_buffer_state(&mut self.state.buffers, &self.preserved_buffers);
         self.state.events = ready.events;
         apply_preserved_event_state(&mut self.state.events, &self.preserved_events);
         self.state.path = ready.path;
@@ -498,21 +535,25 @@ impl RunController {
         }
         self.state.current_input_device = ready.current_input_device;
         self.state.current_output_device = ready.current_output_device;
-        self.state.running = true;
         self.state.connected = self.bridge.is_connected();
-        self.state.status = "Running".to_owned();
         self.state.error = bridge_error;
 
         for (name, value) in &self.preserved_params {
             self.bridge
                 .send_command_notification("setParam", &json!({ "name": name, "value": value }));
         }
-        for (name, path) in &self.preserved_buffers {
-            self.bridge
-                .send_command("bindBufferWav", &json!({ "name": name, "path": path }));
+        for (name, path) in self.preserved_buffers.clone() {
+            if let Some(id) = self
+                .bridge
+                .send_command("bindBufferWav", &json!({ "name": name, "path": path }))
+            {
+                self.pending_commands
+                    .insert(id, PendingCommand::BindBuffer { name, path });
+            }
         }
 
-        self.scope_polling_active = true;
+        self.refresh_processing_state();
+        self.scope_polling_active = self.state.running;
         self.scope_polling_in_flight = false;
         self.last_scope_poll = Instant::now();
     }
@@ -521,18 +562,64 @@ impl RunController {
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
         self.bridge.disconnect();
+        self.pending_commands.clear();
         self.state.running = false;
         self.state.connected = false;
-        self.state.status = "Stopped".to_owned();
-        self.state.error =
-            error.or_else(|| code.filter(|c| *c != 0).map(|c| format!("exit code {c}")));
+        self.state.status = "Runtime error".to_owned();
+        self.state.error = Some(error.unwrap_or_else(|| child_exit_error(code)));
         self.state.output_channels = 0;
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
     }
 
-    fn handle_tcp_response(&mut self, line: &str) -> bool {
+    fn handle_tcp_response(&mut self, line: &str) -> PollResult {
+        let mut poll = PollResult::default();
         if let Ok(resp) = serde_json::from_str::<Value>(line) {
+            let id = resp.get("id").and_then(Value::as_u64);
+            let succeeded = resp.get("ok").and_then(Value::as_bool).unwrap_or(true);
+            if let Some(command) = id.and_then(|id| self.pending_commands.remove(&id)) {
+                if succeeded {
+                    match command {
+                        PendingCommand::BindBuffer { name, path } => {
+                            set_preserved_buffer(&mut self.preserved_buffers, &name, &path);
+                            update_buffer_loaded_path(&mut self.state.buffers, &name, Some(&path));
+                            self.refresh_processing_state();
+                        }
+                        PendingCommand::ClearBuffer { name } => {
+                            self.preserved_buffers.retain(|(n, _)| n != &name);
+                            update_buffer_loaded_path(&mut self.state.buffers, &name, None);
+                            self.refresh_processing_state();
+                        }
+                        PendingCommand::Play => {
+                            self.state.running = true;
+                            self.state.status = "Running".to_owned();
+                            self.scope_polling_active = true;
+                        }
+                    }
+                } else {
+                    match command {
+                        PendingCommand::BindBuffer { .. } => self.refresh_processing_state(),
+                        PendingCommand::ClearBuffer { .. } => {}
+                        PendingCommand::Play => {
+                            self.state.running = false;
+                            self.scope_polling_active = false;
+                            self.scope_polling_in_flight = false;
+                            self.state.status = if all_buffers_bound(&self.state.buffers) {
+                                "Runtime error".to_owned()
+                            } else {
+                                UNBOUND_BUFFERS_MESSAGE.to_owned()
+                            };
+                        }
+                    }
+                }
+                poll.state_changed = true;
+            }
+            if !succeeded {
+                if let Some(error) = resp.get("error").and_then(Value::as_str) {
+                    self.state.error = Some(error.to_owned());
+                    poll.state_changed = true;
+                }
+            }
             if let Some(result) = resp.get("result") {
                 let channels = result.get("channels").and_then(Value::as_u64);
                 let samples = result.get("samples").and_then(Value::as_array);
@@ -544,11 +631,27 @@ impl RunController {
                         .filter_map(Value::as_f64)
                         .map(|value| value as f32)
                         .collect();
-                    return true;
+                    poll.scope_changed = true;
                 }
             }
         }
-        false
+        poll
+    }
+
+    fn refresh_processing_state(&mut self) {
+        let buffers_ready = all_buffers_bound(&self.state.buffers);
+        self.state.running = self.processing_requested && buffers_ready && self.state.connected;
+        self.state.status = if !buffers_ready {
+            UNBOUND_BUFFERS_MESSAGE.to_owned()
+        } else if self.state.running {
+            "Running".to_owned()
+        } else {
+            "Stopped".to_owned()
+        };
+        self.scope_polling_active = self.state.running;
+        if !self.state.running {
+            self.scope_polling_in_flight = false;
+        }
     }
 }
 
@@ -570,6 +673,7 @@ impl Drop for RunController {
 struct ChildSession {
     child: Option<Child>,
     stderr_buffer: Arc<Mutex<String>>,
+    stderr_reader: Option<thread::JoinHandle<()>>,
 }
 
 fn format_run_build_error(prefix: &str, err: &RunBuildError) -> String {
@@ -704,7 +808,7 @@ impl ChildSession {
         let stderr_buffer = Arc::new(Mutex::new(String::new()));
 
         let stderr_sink = Arc::clone(&stderr_buffer);
-        thread::spawn(move || {
+        let stderr_reader = thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines() {
                 match line {
@@ -762,21 +866,27 @@ impl ChildSession {
         Ok(Self {
             child: Some(child),
             stderr_buffer,
+            stderr_reader: Some(stderr_reader),
         })
     }
 
     fn try_take_exit(&mut self) -> Option<(Option<i32>, Option<String>)> {
         let child = self.child.as_mut()?;
         let status = child.try_wait().ok()??;
+        let status_error = (!status.success()).then(|| format_exit_status(&status));
         self.child = None;
-        let error = self.stderr_buffer.lock().ok().and_then(|slot| {
+        if let Some(reader) = self.stderr_reader.take() {
+            let _ = reader.join();
+        }
+        let stderr_error = self.stderr_buffer.lock().ok().and_then(|slot| {
             let trimmed = slot.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_owned())
-            }
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
         });
+        let error = match (stderr_error, status_error) {
+            (Some(stderr), Some(status)) => Some(format!("{stderr}\n{status}")),
+            (Some(stderr), None) => Some(stderr),
+            (None, status) => status,
+        };
         Some((status.code(), error))
     }
 
@@ -786,6 +896,9 @@ impl ChildSession {
             let _ = child.wait();
         }
         self.child = None;
+        if let Some(reader) = self.stderr_reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 
@@ -866,16 +979,17 @@ impl IpcBridge {
         }
     }
 
-    fn send_command(&self, command: &str, payload: &Value) {
+    fn send_command(&self, command: &str, payload: &Value) -> Option<u64> {
         let id = self.request_id.fetch_add(1, Ordering::Relaxed);
-        self.send_command_inner(Some(id), command, payload);
+        self.send_command_inner(Some(id), command, payload)
+            .then_some(id)
     }
 
     fn send_command_notification(&self, command: &str, payload: &Value) {
-        self.send_command_inner(None, command, payload);
+        let _ = self.send_command_inner(None, command, payload);
     }
 
-    fn send_command_inner(&self, id: Option<u64>, command: &str, payload: &Value) {
+    fn send_command_inner(&self, id: Option<u64>, command: &str, payload: &Value) -> bool {
         let mut request = json!({ "command": command });
         if let Some(id) = id {
             if let Value::Object(ref mut req_map) = request {
@@ -893,13 +1007,14 @@ impl IpcBridge {
 
         if let Ok(mut writer) = self.writer.lock() {
             let Some(writer) = writer.as_mut() else {
-                return;
+                return false;
             };
             let line = serde_json::to_string(&request).unwrap_or_default();
-            let _ = writer.write_all(line.as_bytes());
-            let _ = writer.write_all(b"\n");
-            let _ = writer.flush();
+            return writer.write_all(line.as_bytes()).is_ok()
+                && writer.write_all(b"\n").is_ok()
+                && writer.flush().is_ok();
         }
+        false
     }
 
     fn is_connected(&self) -> bool {
@@ -989,6 +1104,45 @@ fn validated_device(name: Option<&str>, devices: &[String]) -> Result<Option<Str
     }
 }
 
+fn all_buffers_bound(buffers: &[Value]) -> bool {
+    buffers
+        .iter()
+        .all(|buffer| buffer.get("loadedPath").and_then(Value::as_str).is_some())
+}
+
+fn set_preserved_buffer(buffers: &mut Vec<(String, String)>, name: &str, path: &str) {
+    if let Some((_, existing_path)) = buffers
+        .iter_mut()
+        .find(|(buffer_name, _)| buffer_name == name)
+    {
+        *existing_path = path.to_owned();
+    } else {
+        buffers.push((name.to_owned(), path.to_owned()));
+    }
+}
+
+fn child_exit_error(code: Option<i32>) -> String {
+    code.map_or_else(
+        || "Runtime error: audio processing terminated unexpectedly".to_owned(),
+        |code| format!("Runtime error: audio processing exited with code {code}"),
+    )
+}
+
+#[cfg(unix)]
+fn format_exit_status(status: &std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+
+    status.signal().map_or_else(
+        || child_exit_error(status.code()),
+        |signal| format!("Runtime error: audio processing terminated by signal {signal}"),
+    )
+}
+
+#[cfg(not(unix))]
+fn format_exit_status(status: &std::process::ExitStatus) -> String {
+    child_exit_error(status.code())
+}
+
 fn apply_preserved_param_state(params: &mut [Value], preserved_params: &[(String, Value)]) {
     for param in params {
         let Some(name) = param_name(param).map(str::to_owned) else {
@@ -1032,19 +1186,6 @@ fn params_are_compatible_for_preservation(old_param: &Value, new_param: &Value) 
         && old_param.get("rangeMin") == new_param.get("rangeMin")
         && old_param.get("rangeMax") == new_param.get("rangeMax")
         && old_param.get("scalar") == new_param.get("scalar")
-}
-
-fn apply_preserved_buffer_state(buffers: &mut [Value], preserved_buffers: &[(String, String)]) {
-    for buffer in buffers {
-        let Some(name) = buffer_name(buffer).map(str::to_owned) else {
-            continue;
-        };
-        let path = preserved_buffers
-            .iter()
-            .find(|(buffer_name, _)| buffer_name == &name)
-            .map(|(_, path)| path.as_str());
-        update_buffer_loaded_path(std::slice::from_mut(buffer), &name, path);
-    }
 }
 
 fn apply_preserved_event_state(events: &mut [Value], preserved_events: &[(String, Vec<Value>)]) {

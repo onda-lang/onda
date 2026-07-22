@@ -660,6 +660,7 @@
         path: "",
         status: "Stopped",
         error: "",
+        sourceDirty: false,
         buffers: [],
         events: [],
         params: [],
@@ -762,6 +763,8 @@
         if (!run && !stop) return;
         event.preventDefault();
         if (event.repeat) return;
+        if (run && startButton.disabled) return;
+        if (stop && stopButton.disabled) return;
         hostBridge.postMessage(run
           ? { type: "start", path: state.path || undefined }
           : { type: "stop" });
@@ -1232,7 +1235,9 @@
         refreshDevicesButton.hidden = !supportsDeviceSelection;
         ioSettingsNode.hidden = !supportsDeviceSelection;
         ioSettingsNode.style.display = hasIoSettings ? "grid" : "none";
-        startButton.disabled = !state.path || state.running;
+        const buffersReady = state.buffers.every(buffer => Boolean(buffer.loadedPath));
+        const canStart = buffersReady || Boolean(state.sourceDirty);
+        startButton.disabled = !state.path || state.running || !canStart;
         stopButton.disabled = !state.running;
         resetButton.disabled = !hasParams && !hasEvents;
         renderDeviceOptions(inputDeviceNode, state.inputDevices, state.currentInputDevice, true);

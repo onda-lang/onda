@@ -159,9 +159,9 @@ layout. Mono/static channel constraints are checked against compiler metadata.
 
 - Recompiling while audio is active stops and recreates the AudioContext/processor, so DSP state is
   initialized rather than migrated or crossfaded.
-- Browser projects persist in local storage, but selected WAV files do not; buffers without a
-  selected file receive a zero-filled compile-block-sized binding. Loading or clearing a WAV while
-  audio is active recreates the processor so its fixed startup bindings stay coherent.
+- Browser projects persist in local storage, but selected WAV files do not; every declared buffer
+  must be bound to a valid WAV before processing can start. Loading or clearing a WAV while audio
+  is active recreates or stops the processor so its fixed startup bindings stay coherent.
 - The playground loads little-endian PCM or IEEE-float WAV files into f32 buffers. Other Onda buffer
   scalar types still require a host application to provide typed data through `processorOptions`.
 - The worklet can return control-output values, but the page does not yet render them.

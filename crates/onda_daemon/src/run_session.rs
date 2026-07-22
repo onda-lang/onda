@@ -15,6 +15,8 @@ use onda_semantics::{lower_program_to_optimized_mir, AnalysisOptions, TypedProgr
 
 use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 
+pub const UNBOUND_BUFFERS_MESSAGE: &str = "Bind all buffers to start processing";
+
 #[derive(Debug, Clone, Copy)]
 pub struct RunOptions {
     pub sample_rate: f32,
@@ -117,7 +119,7 @@ pub struct RunSession {
     instance: Instance,
     param_values: HashMap<String, f64>,
     param_runtime_values: HashMap<String, f64>,
-    buffer_bindings: Vec<RunBufferBinding>,
+    buffer_bindings: Vec<Option<RunBufferBinding>>,
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
 }
@@ -197,10 +199,13 @@ impl RunSession {
             .map_err(RunBuildError::Runtime)?;
         }
 
-        let buffer_bindings =
-            bind_placeholder_buffers(&jit, &mut instance, options.block_size, options.sample_rate)
-                .map_err(RunBuildError::Runtime)?;
-        prepare_unchecked_process(&mut instance).map_err(RunBuildError::Runtime)?;
+        validate_run_buffers(&jit).map_err(RunBuildError::Runtime)?;
+        let buffer_bindings = std::iter::repeat_with(|| None)
+            .take(jit.buffer_count())
+            .collect::<Vec<_>>();
+        if buffer_bindings.is_empty() {
+            prepare_unchecked_process(&mut instance).map_err(RunBuildError::Runtime)?;
+        }
 
         Ok(Self {
             path,
@@ -281,10 +286,23 @@ impl RunSession {
                 loaded_path: self
                     .buffer_bindings
                     .get(index)
+                    .and_then(Option::as_ref)
                     .and_then(|binding| binding.loaded_path.as_ref())
                     .map(|path| display_path(path)),
             })
             .collect()
+    }
+
+    pub fn buffers_ready(&self) -> bool {
+        self.buffer_bindings.iter().all(Option::is_some)
+    }
+
+    fn ensure_buffers_ready(&self) -> Result<(), Diagnostic> {
+        if self.buffers_ready() {
+            Ok(())
+        } else {
+            Err(Diagnostic::runtime(UNBOUND_BUFFERS_MESSAGE, 0, 0))
+        }
     }
 
     pub fn event_info(&self) -> Vec<RunEventInfo> {
@@ -353,6 +371,7 @@ impl RunSession {
         name: &str,
         values: &[RunEventValue],
     ) -> Result<(), Diagnostic> {
+        self.ensure_buffers_ready()?;
         let Some(index) = self.jit.event_index(name) else {
             return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
         };
@@ -426,6 +445,7 @@ impl RunSession {
         rendered: &mut [f32],
         segments: &[(usize, usize, u32)],
     ) -> Result<(), Diagnostic> {
+        self.ensure_buffers_ready()?;
         let output_channels = self.jit.required_out_channels();
         let expected_samples = self.options.block_size.saturating_mul(output_channels);
         if rendered.len() != expected_samples {
@@ -472,7 +492,10 @@ impl RunSession {
 
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         self.instance.restore_state_bytes(bytes)?;
-        prepare_unchecked_process(&mut self.instance)
+        if self.buffers_ready() {
+            prepare_unchecked_process(&mut self.instance)?;
+        }
+        Ok(())
     }
 
     pub fn set_input_block(&mut self, interleaved: &[f32], source_channels: usize) {
@@ -503,8 +526,10 @@ impl RunSession {
 
     pub fn reset(&mut self) {
         reset_instance_state(&mut self.instance);
-        prepare_unchecked_process(&mut self.instance)
-            .expect("run session bindings remain valid across state reset");
+        if self.buffers_ready() {
+            prepare_unchecked_process(&mut self.instance)
+                .expect("run session bindings remain valid across state reset");
+        }
     }
 
     /// Creates a new runtime instance from the already-compiled JIT program.
@@ -539,15 +564,8 @@ impl RunSession {
                 0,
             ));
         };
-        let desc = self
-            .jit
-            .buffers()
-            .get(index)
-            .ok_or_else(|| Diagnostic::runtime(format!("unknown buffer '{name}'"), 0, 0))?;
-        let channels = default_run_buffer_channels(desc.channels());
-        let frames = self.options.block_size.max(1);
-        let samples = vec![0.0_f32; frames.saturating_mul(channels)];
-        self.bind_buffer_samples(name, samples, channels, self.options.sample_rate, None)
+        self.buffer_bindings[index] = None;
+        self.rebuild_instance()
     }
 
     fn bind_buffer_samples(
@@ -592,23 +610,13 @@ impl RunSession {
             ));
         }
         let frames = samples.len() / channels;
-        if self.buffer_bindings.len() <= index {
-            self.buffer_bindings
-                .resize_with(index + 1, || RunBufferBinding {
-                    _samples: Vec::new(),
-                    frames: 0,
-                    channels: 0,
-                    sample_rate_hz: self.options.sample_rate,
-                    loaded_path: None,
-                });
-        }
-        self.buffer_bindings[index] = RunBufferBinding {
+        self.buffer_bindings[index] = Some(RunBufferBinding {
             _samples: samples,
             frames,
             channels,
             sample_rate_hz,
             loaded_path,
-        };
+        });
         self.rebuild_instance()?;
         Ok(())
     }
@@ -643,6 +651,9 @@ impl RunSession {
             }
         }
         for (index, binding) in self.buffer_bindings.iter_mut().enumerate() {
+            let Some(binding) = binding.as_mut() else {
+                continue;
+            };
             unsafe {
                 bind_buffer(
                     &mut instance,
@@ -670,7 +681,9 @@ impl RunSession {
             let bytes = scalar_param_bytes(desc.elem_ty(), runtime_value)?;
             set_param_by_index(&mut instance, index, bytes.as_slice())?;
         }
-        prepare_unchecked_process(&mut instance)?;
+        if self.buffers_ready() {
+            prepare_unchecked_process(&mut instance)?;
+        }
         self.instance = instance;
         Ok(())
     }
@@ -729,14 +742,8 @@ impl RunSession {
     }
 }
 
-fn bind_placeholder_buffers(
-    jit: &JitProgram,
-    instance: &mut Instance,
-    block_size: usize,
-    sample_rate: f32,
-) -> Result<Vec<RunBufferBinding>, Diagnostic> {
-    let mut bindings = Vec::with_capacity(jit.buffer_count());
-    for (index, desc) in jit.buffers().iter().enumerate() {
+fn validate_run_buffers(jit: &JitProgram) -> Result<(), Diagnostic> {
+    for desc in jit.buffers() {
         if desc.elem_ty() != PrimitiveType::F32 {
             return Err(Diagnostic::runtime(
                 format!(
@@ -748,37 +755,8 @@ fn bind_placeholder_buffers(
                 0,
             ));
         }
-        let channels = default_run_buffer_channels(desc.channels());
-        let frames = block_size.max(1);
-        let mut samples = vec![0.0_f32; frames.saturating_mul(channels)];
-        unsafe {
-            bind_buffer(
-                instance,
-                index,
-                samples.as_mut_ptr().cast::<u8>(),
-                frames,
-                channels,
-                sample_rate,
-                PrimitiveType::F32,
-            )?;
-        }
-        bindings.push(RunBufferBinding {
-            _samples: samples,
-            frames,
-            channels,
-            sample_rate_hz: sample_rate,
-            loaded_path: None,
-        });
     }
-    Ok(bindings)
-}
-
-fn default_run_buffer_channels(channels: DeclaredBufferChannels) -> usize {
-    match channels {
-        DeclaredBufferChannels::Mono => 1,
-        DeclaredBufferChannels::Static(channels) => channels.max(1),
-        DeclaredBufferChannels::Dynamic => 1,
-    }
+    Ok(())
 }
 
 fn should_smooth_run_param(ty: PrimitiveType) -> bool {

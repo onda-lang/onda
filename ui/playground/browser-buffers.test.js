@@ -2,7 +2,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { decodeWav, prepareBufferBindings } from "./browser-buffers.js";
+import {
+  decodeWav,
+  prepareBufferBindings,
+  UNBOUND_BUFFERS_MESSAGE,
+} from "./browser-buffers.js";
 
 function pcm16Wav({ channels = 2, sampleRate = 44_100, samples }) {
   const dataLength = samples.length * 2;
@@ -72,7 +76,7 @@ test("decodes IEEE-float WAV data without resampling", () => {
   assert.deepEqual([...decoded.data], [0.125, -0.75]);
 });
 
-test("prepares loaded and zero-filled bindings from compiler metadata", async () => {
+test("refuses to prepare bindings while any declared buffer is unbound", async () => {
   const wav = pcm16Wav({ channels: 1, sampleRate: 48_000, samples: [8_192, -8_192] });
   const metadata = {
     compile: { sample_rate: 48_000, block_size: 256 },
@@ -87,11 +91,26 @@ test("prepares loaded and zero-filled bindings from compiler metadata", async ()
     "clip",
     { name: "clip.wav", arrayBuffer: async () => wav.buffer },
   ]]);
+  await assert.rejects(
+    prepareBufferBindings(metadata, files),
+    new RegExp(UNBOUND_BUFFERS_MESSAGE),
+  );
+});
+
+test("prepares bindings from validated WAV files", async () => {
+  const wav = pcm16Wav({ channels: 1, sampleRate: 48_000, samples: [8_192, -8_192] });
+  const metadata = {
+    compile: { sample_rate: 48_000, block_size: 256 },
+    metadata: {
+      buffers: [{ name: "clip", scalar: "f32", static_channels: 1 }],
+    },
+  };
+  const files = new Map([[
+    "clip",
+    { name: "clip.wav", arrayBuffer: async () => wav.buffer },
+  ]]);
   const bindings = await prepareBufferBindings(metadata, files);
 
   assert.deepEqual([...bindings.clip.data], [0.25, -0.25]);
   assert.equal(bindings.clip.frames, 2);
-  assert.equal(bindings.scratch.frames, 256);
-  assert.equal(bindings.scratch.channels, 2);
-  assert.equal(bindings.scratch.data.length, 512);
 });

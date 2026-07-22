@@ -14,7 +14,7 @@ use onda_cpal::{
 };
 use onda_daemon::{
     DaemonConfig, DaemonSession, RunBufferInfo, RunEventInfo, RunEventValue, RunOptions,
-    RunParamInfo,
+    RunParamInfo, UNBOUND_BUFFERS_MESSAGE,
 };
 use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
@@ -282,6 +282,17 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             println!("{}", format_run_event_info(&startup.events));
         }
     }
+    if !launch.control_json
+        && startup
+            .buffers
+            .iter()
+            .any(|buffer| buffer.loaded_path.is_none())
+    {
+        stop_flag.store(true, Ordering::Release);
+        let _ = render_thread.join();
+        drop(control_server);
+        return Err(UNBOUND_BUFFERS_MESSAGE.to_owned());
+    }
     if startup.output_channels == 0 {
         stop_flag.store(true, Ordering::Release);
         let _ = render_thread.join();
@@ -504,11 +515,7 @@ fn spawn_run_render_thread(
             } else {
                 Vec::new()
             };
-            let buffers = if launch.control_json {
-                run.buffer_info()
-            } else {
-                Vec::new()
-            };
+            let buffers = run.buffer_info();
             let events = if launch.show_meta || launch.control_json {
                 run.event_info()
             } else {
@@ -561,7 +568,10 @@ fn spawn_run_render_thread(
         };
 
         let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
-        let mut playing = true;
+        let mut play_requested = true;
+        let mut playing = session
+            .run(&launch.input)
+            .is_some_and(|run| run.buffers_ready());
         let mut captured = vec![0.0_f32; launch.block_frames.saturating_mul(render_input_channels)];
         let mut interleaved =
             vec![0.0_f32; launch.block_frames.saturating_mul(render_output_channels)];
@@ -574,10 +584,12 @@ fn spawn_run_render_thread(
                     };
                     match command {
                         PlaybackControlCommand::Pause { reply } => {
+                            play_requested = false;
                             playing = false;
                             let _ = reply.send(Ok(()));
                         }
                         PlaybackControlCommand::Play { reply } => {
+                            play_requested = true;
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
                                 &mut session,
@@ -592,6 +604,9 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
+                                    if !run.buffers_ready() {
+                                        return Err(UNBOUND_BUFFERS_MESSAGE.to_owned());
+                                    }
                                     run.restart().map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play restart failed",
@@ -599,7 +614,7 @@ fn spawn_run_render_thread(
                                         )
                                     })
                                 });
-                            playing = result.is_ok();
+                            playing = play_requested && result.is_ok();
                             if playing {
                                 if let Ok(mut ring) = scope_ring.try_lock() {
                                     *ring = ScopeRing::new(
@@ -703,6 +718,12 @@ fn spawn_run_render_thread(
                                         )
                                     })
                                 });
+                            if result.is_ok() {
+                                playing = play_requested
+                                    && session
+                                        .run(&launch.input)
+                                        .is_some_and(|run| run.buffers_ready());
+                            }
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::ClearBuffer { name, reply } => {
@@ -722,6 +743,9 @@ fn spawn_run_render_thread(
                                         )
                                     })
                                 });
+                            if result.is_ok() {
+                                playing = false;
+                            }
                             let _ = reply.send(result);
                         }
                     }

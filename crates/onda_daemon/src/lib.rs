@@ -3,7 +3,7 @@ mod run_session;
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
     RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo, RunEventParamInfo,
-    RunEventValue, RunOptions, RunParamInfo, RunSession,
+    RunEventValue, RunOptions, RunParamInfo, RunSession, UNBOUND_BUFFERS_MESSAGE,
 };
 
 use std::collections::HashMap;
@@ -334,7 +334,7 @@ mod tests {
 
         write_file(
             &main,
-            "buffers:\n  src: buffer[f32]\nouts:\n  out1\ninit:\n  idx = 0\nsample:\n  out1 = src[idx]\n  idx = idx + 1\n",
+            "buffers:\n  src: buffer[f32]\n  spare: buffer[f32]\nouts:\n  out1\ninit:\n  idx = 0\nsample:\n  out1 = src[idx]\n  idx = idx + 1\n",
         );
         write_wav(&wav, 1, 48_000, &[0.1, 0.2, 0.3, 0.4]);
         write_wav(&wav_alt, 1, 48_000, &[0.9, 0.8, 0.7, 0.6]);
@@ -345,14 +345,29 @@ mod tests {
             .expect("run should compile and start");
 
         let buffer_info = session.run(&main).expect("active run").buffer_info();
-        assert_eq!(buffer_info.len(), 1);
+        assert_eq!(buffer_info.len(), 2);
         assert_eq!(buffer_info[0].name, "src");
+        assert!(buffer_info[0].loaded_path.is_none());
+
+        let unbound = session
+            .render_run_block(&main)
+            .expect_err("unbound buffers must prevent processing");
+        assert_eq!(unbound.message, UNBOUND_BUFFERS_MESSAGE);
 
         session
             .run_mut(&main)
             .expect("active run")
             .bind_buffer_wav_path("src", &wav)
             .expect("wav buffer bind should succeed");
+
+        session
+            .render_run_block(&main)
+            .expect_err("one remaining unbound buffer must prevent processing");
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .bind_buffer_wav_path("spare", &wav)
+            .expect("spare wav buffer bind should succeed");
 
         let rendered = session
             .render_run_block(&main)
@@ -372,6 +387,16 @@ mod tests {
             .expect("run render with rebound wav should succeed");
         assert!((rebound[0][0] - 0.9).abs() < 1e-6);
         assert!((rebound[0][1] - 0.8).abs() < 1e-6);
+
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .clear_buffer("src")
+            .expect("clearing a buffer should succeed");
+        let cleared = session
+            .render_run_block(&main)
+            .expect_err("cleared buffers must prevent processing");
+        assert_eq!(cleared.message, UNBOUND_BUFFERS_MESSAGE);
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -461,10 +486,9 @@ mod tests {
             .start_run(&main)
             .expect("run should compile and start");
 
-        let initial = session
+        session
             .render_run_block(&main)
-            .expect("initial run render should succeed");
-        assert!((initial[0][0] - 1.0).abs() < 1e-6);
+            .expect_err("initial render must wait for the declared buffer");
 
         session
             .run_mut(&main)

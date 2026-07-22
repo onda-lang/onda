@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mergeParams } from "./run-view-host.js";
+import { BrowserRunViewHost, mergeParams } from "./run-view-host.js";
+import { UNBOUND_BUFFERS_MESSAGE } from "./browser-buffers.js";
 
 function scalarParam(overrides = {}) {
   return {
@@ -84,4 +85,61 @@ test("decodes floating-point bit-pattern representations", () => {
   assert.equal(param.value, 1.5);
   assert.equal(param.rangeMin, 0);
   assert.equal(param.rangeMax, 2);
+});
+
+test("blocks browser playback and shows guidance until every buffer is bound", async () => {
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  const previousMutationObserver = globalThis.MutationObserver;
+  let starts = 0;
+  globalThis.window = {
+    location: { href: "https://onda.test/play/" },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.document = { documentElement: { dataset: {} } };
+  globalThis.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+  const iframe = {
+    src: "https://onda.test/play/run.html",
+    contentWindow: { postMessage() {} },
+    addEventListener() {},
+  };
+
+  try {
+    const host = new BrowserRunViewHost(iframe, {
+      start: async () => { starts += 1; },
+    });
+    host.setArtifact({
+      metadata: {
+        metadata: {
+          params: [],
+          events: [],
+          outputs: [],
+          buffers: [{
+            name: "clip",
+            type_repr: "buffer[f32]",
+            channels: "mono",
+            static_channels: null,
+          }],
+        },
+      },
+    }, new Map());
+
+    assert.equal(host.state.status, UNBOUND_BUFFERS_MESSAGE);
+    assert.equal(host.state.running, false);
+    await host.handleMessage({ type: "start" });
+    assert.equal(starts, 0);
+
+    host.updateBufferFile("clip", { name: "clip.wav" });
+    await host.handleMessage({ type: "start" });
+    assert.equal(starts, 1);
+    host.dispose();
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    globalThis.MutationObserver = previousMutationObserver;
+  }
 });

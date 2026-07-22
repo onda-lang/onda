@@ -7,7 +7,10 @@ import {
   flattenedAudioChannelCount,
 } from "@onda-lang/webaudio";
 
-import { prepareBufferBindings } from "./browser-buffers.js";
+import {
+  prepareBufferBinding,
+  prepareBufferBindings,
+} from "./browser-buffers.js";
 import { compilationKey } from "./compile-cache.js";
 import { normalizeStoredProject, OndaProjectEditor } from "./editor.js";
 import { loadExampleProject } from "./examples.js";
@@ -40,6 +43,7 @@ const projectStorageKey = "onda.browser-ide.project.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
 const supportedBlockSizes = new Set([128, 256, 512, 1024]);
+const UNBOUND_STATUS = "Unbound";
 
 let compiler = null;
 let languageServer = null;
@@ -50,6 +54,7 @@ let context = null;
 let audioProcessor = null;
 let projectEditor = null;
 let compiling = false;
+let processingRequested = false;
 let runGeneration = 0;
 let projectSaveTimer = 0;
 let needsBundledExample = false;
@@ -124,6 +129,7 @@ function handlePlaygroundShortcut(event) {
 
 async function runProject() {
   if (!compiler || compiling) return;
+  processingRequested = true;
   let options;
   const generation = ++runGeneration;
   try {
@@ -159,6 +165,12 @@ async function runProject() {
     }
     localStorage.setItem(projectStorageKey, JSON.stringify(projectEditor.project()));
     runView.setArtifact(artifact, bufferFiles);
+    if (!runView.buffersReady()) {
+      await closeAudioContext();
+      runView.setWaitingForBuffers();
+      setStatus(UNBOUND_STATUS, "ready");
+      return;
+    }
     await startAudio();
     setStatus("Playing", "ready");
     const runViewDocument = runViewFrame.contentDocument;
@@ -539,7 +551,10 @@ async function startAudio() {
 async function stopAudio() {
   if (!context) {
     runView.setStopped();
-    setStatus("Stopped", "ready");
+    setStatus(
+      runView.buffersReady() ? "Stopped" : UNBOUND_STATUS,
+      "ready",
+    );
     return;
   }
   scopeSource.stop();
@@ -549,10 +564,14 @@ async function stopAudio() {
   audioProcessor = null;
   await closeAudioContext();
   runView.setStopped();
-  setStatus("Stopped", "ready");
+  setStatus(
+    runView.buffersReady() ? "Stopped" : UNBOUND_STATUS,
+    "ready",
+  );
 }
 
 async function stopExecution() {
+  processingRequested = false;
   runGeneration += 1;
   await stopAudio();
 }
@@ -590,15 +609,28 @@ async function resetRun() {
 
 async function bindBufferFile(name, file) {
   if (!(file instanceof File)) throw new Error("the selected buffer is not a browser File");
+  const buffer = artifact?.metadata.metadata.buffers.find((item) => item.name === name);
+  if (!buffer) throw new Error(`unknown buffer '${name}'`);
+  try {
+    await prepareBufferBinding(buffer, file);
+  } catch (error) {
+    runView.showError(error);
+    setErrorStatus();
+    return;
+  }
   bufferFiles.set(name, file);
   runView.updateBufferFile(name, file);
-  if (context) await restartAudioForBuffers();
+  if (context) {
+    await restartAudioForBuffers();
+  } else if (processingRequested && runView.buffersReady()) {
+    await runProject();
+  }
 }
 
 async function clearBuffer(name) {
   bufferFiles.delete(name);
   runView.updateBufferFile(name, null);
-  if (context) await restartAudioForBuffers();
+  if (context) await stopAudio();
 }
 
 async function restartAudioForBuffers() {
@@ -626,6 +658,7 @@ async function loadToolchain() {
     );
     if (smokeMode) {
       projectEditor.add("smoke-buffer.onda", "buffers:\n  clip: buffer[f32]\n");
+      bufferFiles.set("clip", smokeBufferFile());
       projectEditor.select("main.onda");
     }
   }
@@ -647,6 +680,14 @@ async function loadToolchain() {
     setStatus("Ready", "ready");
   }
   if (smokeMode) await runProject();
+}
+
+function smokeBufferFile() {
+  const binary = atob(
+    "UklGRiYAAABXQVZFZm10IBAAAAABAAEAgLsAAAB3AQACABAAZGF0YQIAAAAAAA==",
+  );
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new File([bytes], "test-buffer.wav", { type: "audio/wav" });
 }
 
 function initializeEditor(initialSharedSession, initialExampleProject) {
@@ -674,7 +715,7 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
     onChange: (project) => {
       if (!smokeMode) scheduleProjectSave(project);
       updateFileActions();
-      runView.setPath(project.entry);
+      runView.markSourceDirty(project.entry);
       languageServer?.syncProject({ entry: project.entry, sources: project.sources });
     },
     onActiveFile: () => updateFileActions(),

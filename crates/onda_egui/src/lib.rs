@@ -217,7 +217,13 @@ impl eframe::App for RunApp {
                                             let button_size = [button_width, 30.0];
                                             if ui
                                                 .add_enabled(
-                                                    !state.running,
+                                                    !state.running
+                                                        && state.buffers.iter().all(|buffer| {
+                                                            buffer
+                                                                .get("loadedPath")
+                                                                .and_then(Value::as_str)
+                                                                .is_some()
+                                                        }),
                                                     egui::Button::new("Play")
                                                         .min_size(egui::vec2(button_width, 30.0)),
                                                 )
