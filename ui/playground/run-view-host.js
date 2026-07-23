@@ -70,16 +70,6 @@ export class BrowserRunViewHost {
     });
   }
 
-  setStarting(path) {
-    this.setState({
-      path,
-      running: false,
-      connected: false,
-      status: "Starting",
-      error: "",
-    });
-  }
-
   setArtifact(artifact, bufferFiles) {
     const metadata = artifact.metadata.metadata;
     this.state.params = mergeParams(metadata.params ?? [], this.state.params);

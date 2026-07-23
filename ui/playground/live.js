@@ -203,7 +203,6 @@ async function runProject() {
     runView.setCompiling(project.entry, options);
     setStatus("Compiling");
   } else {
-    runView.setStarting(project.entry);
     setStatus("Starting");
   }
   try {
