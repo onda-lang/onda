@@ -7,7 +7,7 @@ import {
   sharedSessionHash,
 } from "./share.js";
 
-test("round-trips a versioned multi-file playground session through a URL fragment", async () => {
+test("shares only a versioned multi-file project through a URL fragment", async () => {
   const session = {
     entry: "main.onda",
     active: "voices/lead.onda",
@@ -21,7 +21,14 @@ test("round-trips a versioned multi-file playground session through a URL fragme
   const encoded = await encodeSharedSession(session);
   const decoded = await decodeSharedSession(sharedSessionHash(encoded));
 
-  assert.deepEqual(decoded, { ...session, v: 1 });
+  assert.deepEqual(decoded, {
+    entry: session.entry,
+    active: session.active,
+    sources: session.sources,
+    v: 1,
+  });
+  assert.equal(decoded.sampleRate, undefined);
+  assert.equal(decoded.blockSize, undefined);
   assert.match(encoded, /^[zj][A-Za-z0-9_-]+$/);
   assert.doesNotMatch(sharedSessionHash(encoded), /gzip|json|share=/);
 });

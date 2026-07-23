@@ -93,7 +93,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 .unwrap_or_else(|_| "onda".to_owned());
             run_run_host(
                 host,
-                &input,
+                input.as_deref(),
                 RunHostOptions {
                     sample_rate_hz,
                     block_frames,
@@ -110,7 +110,11 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
     }
 }
 
-fn run_run_host(host: RunHostKind, input: &Path, options: RunHostOptions) -> Result<(), String> {
+fn run_run_host(
+    host: RunHostKind,
+    input: Option<&Path>,
+    options: RunHostOptions,
+) -> Result<(), String> {
     match resolve_run_host_kind(host) {
         RunHostKind::Egui => onda_egui::run_run_egui(input, options),
         RunHostKind::Webview => run_webview_run(input, options),
@@ -130,12 +134,12 @@ fn default_run_host_kind() -> RunHostKind {
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn run_webview_run(input: &Path, options: RunHostOptions) -> Result<(), String> {
+fn run_webview_run(input: Option<&Path>, options: RunHostOptions) -> Result<(), String> {
     onda_webview::run_run_window(input, options)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn run_webview_run(_input: &Path, _options: RunHostOptions) -> Result<(), String> {
+fn run_webview_run(_input: Option<&Path>, _options: RunHostOptions) -> Result<(), String> {
     Err("webview run host is unavailable on this platform/build".to_owned())
 }
 

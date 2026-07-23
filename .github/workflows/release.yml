@@ -143,6 +143,23 @@ jobs:
           . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.LLVM_VERSION }}"
           cargo build --release -p onda_cli -p onda_api
 
+          $resources = & llvm-readobj --coff-resources target\release\onda.exe
+          if ($LASTEXITCODE -ne 0 -or -not ($resources -match 'Type:\s+(?:GROUP_)?ICON\b')) {
+            throw "onda.exe does not contain the application icon resource"
+          }
+          $launcherResources = & llvm-readobj --coff-resources target\release\onda-run.exe
+          if ($LASTEXITCODE -ne 0 -or -not ($launcherResources -match 'Type:\s+(?:GROUP_)?ICON\b')) {
+            throw "onda-run.exe does not contain the application icon resource"
+          }
+          $cliHeaders = & llvm-readobj --file-headers target\release\onda.exe
+          if ($LASTEXITCODE -ne 0 -or -not ($cliHeaders -match 'IMAGE_SUBSYSTEM_WINDOWS_CUI')) {
+            throw "onda.exe is not a Windows console application"
+          }
+          $launcherHeaders = & llvm-readobj --file-headers target\release\onda-run.exe
+          if ($LASTEXITCODE -ne 0 -or -not ($launcherHeaders -match 'IMAGE_SUBSYSTEM_WINDOWS_GUI')) {
+            throw "onda-run.exe is not a console-free Windows GUI application"
+          }
+
       - name: Build onda and onda_api on Unix
         if: runner.os != 'Windows'
         shell: bash
@@ -165,6 +182,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
 
           Copy-Item target\release\onda.exe $binDir
+          Copy-Item target\release\onda-run.exe (Join-Path $packageRoot "Onda Run.exe")
           Copy-Item target\release\onda.dll $libDir
           if (Test-Path target\release\onda.lib) {
             Copy-Item target\release\onda.lib $libDir
@@ -205,9 +223,65 @@ jobs:
           if [[ "${{ runner.os }}" == "macOS" ]]; then
             cp target/release/libonda.dylib "$lib_dir/"
             cp target/release/libonda.a "$lib_dir/"
+
+            app_contents="$package_root/Onda.app/Contents"
+            app_macos="$app_contents/MacOS"
+            app_resources="$app_contents/Resources"
+            mkdir -p "$app_macos" "$app_resources"
+            ln "$bin_dir/onda" "$app_macos/onda-cli"
+            cp assets/macos/onda-launcher "$app_macos/onda"
+            chmod +x "$app_macos/onda"
+            cp assets/macos/Info.plist "$app_contents/"
+            /usr/libexec/PlistBuddy \
+              -c "Set :CFBundleShortVersionString $version" \
+              -c "Set :CFBundleVersion $version" \
+              "$app_contents/Info.plist"
+
+            icon_work_dir="$(mktemp -d "$RUNNER_TEMP/onda-icons.XXXXXX")"
+            iconset_dir="$icon_work_dir/Onda.iconset"
+            mkdir "$iconset_dir"
+            for size in 16 32 128 256 512; do
+              double_size=$((size * 2))
+              sips -z "$size" "$size" assets/png/onda-logo-light-dark.png \
+                --out "$iconset_dir/icon_${size}x${size}.png"
+              sips -z "$double_size" "$double_size" assets/png/onda-logo-light-dark.png \
+                --out "$iconset_dir/icon_${size}x${size}@2x.png"
+            done
+            iconutil -c icns "$iconset_dir" -o "$app_resources/Onda.icns"
+            plutil -lint "$app_contents/Info.plist"
+            test -x "$app_macos/onda"
+            test -x "$app_macos/onda-cli"
+            test -s "$app_resources/Onda.icns"
           else
             cp target/release/libonda.so "$lib_dir/"
             cp target/release/libonda.a "$lib_dir/"
+            mkdir -p \
+              "$package_root/share/applications" \
+              "$package_root/share/icons/hicolor/512x512/apps"
+            cp assets/linux/onda-run.desktop "$package_root/share/applications/"
+            cp assets/png/onda-logo-light-dark.png \
+              "$package_root/share/icons/hicolor/512x512/apps/onda-run.png"
+            cp assets/linux/install.sh assets/linux/uninstall.sh "$package_root/"
+            chmod +x "$package_root/install.sh" "$package_root/uninstall.sh"
+
+            install_test_root="$(mktemp -d "$RUNNER_TEMP/onda-install.XXXXXX")"
+            install_test_home="$install_test_root/home with spaces"
+            install_test_data="$install_test_root/data home"
+            mkdir -p "$install_test_home"
+            HOME="$install_test_home" XDG_DATA_HOME="$install_test_data" \
+              "$package_root/install.sh"
+            test -x "$install_test_home/.local/bin/onda"
+            grep -F \
+              "Exec=\"$install_test_home/.local/bin/onda\" run %f" \
+              "$install_test_data/applications/onda-run.desktop"
+            grep -F \
+              "TryExec=$install_test_home/.local/bin/onda" \
+              "$install_test_data/applications/onda-run.desktop"
+            HOME="$install_test_home" XDG_DATA_HOME="$install_test_data" \
+              "$package_root/uninstall.sh"
+            test ! -e "$install_test_home/.local/bin/onda"
+            test ! -e "$install_test_data/applications/onda-run.desktop"
+            test ! -e "$install_test_data/icons/hicolor/512x512/apps/onda-run.png"
           fi
           cp include/onda.h "$include_dir/"
           cp include/onda_processor_abi.h "$include_dir/"

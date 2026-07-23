@@ -1,6 +1,6 @@
 use super::{
     compile_cmd, parse_args, run_compile, Command, CompileEmit, DaemonCommand, RunCommand,
-    RunHostKind, DEFAULT_PLAY_BLOCK_FRAMES,
+    RunHostKind,
 };
 use onda_codegen_llvm::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
@@ -660,6 +660,75 @@ fn parse_run_command_alias_accepts_window_play_and_render() {
 }
 
 #[test]
+fn parse_run_window_accepts_no_input_file() {
+    let cmd = parse_args(["onda", "run"].into_iter().map(str::to_owned))
+        .expect("pathless run window args should parse");
+    match cmd {
+        Command::Run(RunCommand::Window {
+            input,
+            block_frames,
+            ..
+        }) => {
+            assert_eq!(input, None);
+            assert_eq!(block_frames, 256);
+        }
+        _ => panic!("expected run window command"),
+    }
+}
+
+#[test]
+fn parse_no_command_defaults_to_run_window() {
+    let cmd = parse_args(["onda"].into_iter().map(str::to_owned))
+        .expect("bare onda invocation should open the run window");
+    match cmd {
+        Command::Run(RunCommand::Window { input, .. }) => assert_eq!(input, None),
+        _ => panic!("expected run window command"),
+    }
+}
+
+#[test]
+fn parse_explicit_help_still_returns_usage() {
+    let error = match parse_args(["onda", "--help"].into_iter().map(str::to_owned)) {
+        Ok(_) => panic!("explicit help should not launch the run window"),
+        Err(error) => error,
+    };
+    assert!(error.contains("onda run [input.onda]"));
+}
+
+#[test]
+fn parse_run_window_accepts_options_before_input_file() {
+    let cmd = parse_args(
+        ["onda", "run", "--theme", "light", "x.onda", "--webview"]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .expect("run window args should parse");
+    match cmd {
+        Command::Run(RunCommand::Window {
+            input, theme, host, ..
+        }) => {
+            assert_eq!(input, Some(PathBuf::from("x.onda")));
+            assert_eq!(theme, RunThemeMode::Light);
+            assert_eq!(host, RunHostKind::Webview);
+        }
+        _ => panic!("expected run window command"),
+    }
+}
+
+#[test]
+fn parse_run_window_rejects_multiple_input_files() {
+    let err = match parse_args(
+        ["onda", "run", "first.onda", "second.onda"]
+            .into_iter()
+            .map(str::to_owned),
+    ) {
+        Ok(_) => panic!("multiple run window inputs should fail"),
+        Err(error) => error,
+    };
+    assert!(err.contains("unexpected input file 'second.onda'"));
+}
+
+#[test]
 fn parse_run_play_accepts_forever() {
     let cmd = parse_args(
         ["onda", "run", "play", "x.onda", "--forever"]
@@ -674,7 +743,7 @@ fn parse_run_play_accepts_forever() {
             ..
         }) => {
             assert_eq!(dur_seconds, None);
-            assert_eq!(block_frames, DEFAULT_PLAY_BLOCK_FRAMES);
+            assert_eq!(block_frames, 256);
         }
         _ => panic!("expected run play command"),
     }

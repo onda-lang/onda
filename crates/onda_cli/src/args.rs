@@ -31,7 +31,7 @@ enum TargetSpecValue {
 pub(crate) fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut args = args.skip(1);
     let Some(cmd) = args.next() else {
-        return Err(usage().to_owned());
+        return Ok(Command::Run(parse_run_window_args(std::iter::empty())?));
     };
     if cmd == "--help" || cmd == "-h" || cmd == "help" {
         return Err(usage().to_owned());
@@ -58,21 +58,11 @@ fn parse_lsp_args(args: impl Iterator<Item = String>) -> Result<Command, String>
 }
 
 fn parse_run_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
-    let Some(subcommand) = args.next() else {
-        return Err(format!(
-            "run requires a subcommand or input file\n\n{}",
-            usage()
-        ));
-    };
-    let run = match subcommand.as_str() {
-        "play" => parse_run_play_args(args)?,
-        "render" => parse_run_render_args(args)?,
-        _ => {
-            if subcommand.starts_with('-') {
-                return Err(format!("unknown run option '{subcommand}'\n\n{}", usage()));
-            }
-            parse_run_window_args(subcommand, args)?
-        }
+    let run = match args.next() {
+        Some(subcommand) if subcommand == "play" => parse_run_play_args(args)?,
+        Some(subcommand) if subcommand == "render" => parse_run_render_args(args)?,
+        Some(first) => parse_run_window_args(std::iter::once(first).chain(args))?,
+        None => parse_run_window_args(std::iter::empty())?,
     };
     Ok(Command::Run(run))
 }
@@ -507,10 +497,8 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     })
 }
 
-fn parse_run_window_args(
-    input: String,
-    mut args: impl Iterator<Item = String>,
-) -> Result<RunCommand, String> {
+fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCommand, String> {
+    let mut input = None;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
     let mut opt_level = TargetOptLevel::O3;
@@ -584,12 +572,16 @@ fn parse_run_window_args(
             _ if arg.starts_with("--theme=") => {
                 theme = parse_run_theme_mode(&arg["--theme=".len()..])?;
             }
-            _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
+            _ if arg.starts_with('-') => {
+                return Err(format!("unknown option '{arg}'\n\n{}", usage()));
+            }
+            _ if input.is_none() => input = Some(PathBuf::from(arg)),
+            _ => return Err(format!("unexpected input file '{arg}'\n\n{}", usage())),
         }
     }
 
     Ok(RunCommand::Window {
-        input: PathBuf::from(input),
+        input,
         sample_rate_hz,
         block_frames,
         opt_level,

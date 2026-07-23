@@ -30,6 +30,7 @@
         --scrollbar-thumb: #2d5278;
         --scrollbar-thumb-hover: #47739f;
         --shadow: 0 20px 60px rgba(3, 10, 18, 0.34);
+        --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
 
       :root[data-theme="light"] {
@@ -95,6 +96,53 @@
         margin: 0 auto;
       }
 
+      .file-picker {
+        display: grid;
+        place-items: center;
+        min-height: calc(100vh - 36px);
+        padding: 24px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        text-align: center;
+      }
+
+      .file-picker-content {
+        display: grid;
+        justify-items: center;
+        gap: 12px;
+        max-width: 380px;
+      }
+
+      .file-picker-logo {
+        width: 76px;
+        height: 76px;
+      }
+
+      .file-picker-title {
+        margin-top: 8px;
+        font-size: 20px;
+        font-weight: 700;
+      }
+
+      .file-picker-copy {
+        color: var(--muted);
+      }
+
+      .file-picker-settings {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        width: 100%;
+        margin-top: 4px;
+        text-align: left;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
       .header, .buffers, .events, .params, .scope-section {
         background: var(--panel);
         border: 1px solid var(--border);
@@ -134,7 +182,7 @@
       .meta {
         color: var(--muted);
         word-break: break-word;
-        font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font: 13px/1.45 var(--mono-font);
       }
 
       .status {
@@ -148,7 +196,7 @@
         border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
         background: color-mix(in srgb, var(--panel-strong) 84%, black 16%);
         color: var(--danger);
-        font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font: 12px/1.45 var(--mono-font);
         white-space: pre-wrap;
         word-break: break-word;
         display: none;
@@ -163,8 +211,25 @@
 
       .io-settings {
         display: none;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+        align-items: end;
         gap: 10px;
+      }
+
+      .refresh-devices {
+        white-space: nowrap;
+        padding-inline: 12px;
+      }
+
+      @media (max-width: 430px) {
+        .io-settings {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .refresh-devices {
+          grid-column: 1 / -1;
+          justify-self: center;
+        }
       }
 
       button {
@@ -216,6 +281,44 @@
         gap: 12px;
       }
 
+      .params-toolbar {
+        align-items: center;
+      }
+
+      .params-toolbar > .params-title {
+        margin-right: auto;
+      }
+
+      .params-toolbar .params-disclosure {
+        flex: 0 0 28px;
+        width: 28px;
+        justify-content: flex-end;
+      }
+
+      .param-layout-toggle {
+        display: inline-flex;
+        flex: 0 0 auto;
+        padding: 2px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--field-bg);
+      }
+
+      .param-layout-toggle button {
+        min-height: 28px;
+        padding: 4px 8px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .param-layout-toggle button[aria-pressed="true"] {
+        background: var(--accent-soft);
+        color: var(--text);
+      }
+
       .section-toggle {
         width: 100%;
         display: flex;
@@ -256,32 +359,267 @@
 
       .buffers-list {
         display: grid;
-        gap: 12px;
+        gap: 6px;
       }
 
       .buffer-card {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 3px 10px;
         background: var(--panel-soft);
         border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 12px;
+        border-radius: 10px;
+        padding: 7px 8px 7px 10px;
       }
 
-      .buffer-path {
-        margin-top: 8px;
-        color: var(--text);
-        word-break: break-word;
+      .buffer-identity {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        min-width: 0;
+        white-space: nowrap;
+      }
+
+      .buffer-identity .param-name {
+        flex: 0 1 auto;
+        max-width: 55%;
+      }
+
+      .buffer-identity .param-type {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        font-size: 11px;
+        text-overflow: ellipsis;
+      }
+
+      .buffer-detail {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .buffer-file {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--muted);
+        font: 12px/1.4 var(--mono-font);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .buffer-metadata {
+        flex: 0 0 auto;
+        margin-left: auto;
+        color: var(--muted);
+        font-family: var(--mono-font);
+        font-size: 11px;
+        white-space: nowrap;
       }
 
       .buffer-actions {
+        grid-column: 2;
+        grid-row: 1;
         display: flex;
-        gap: 10px;
-        margin-top: 10px;
+        gap: 5px;
       }
 
-      .event-actions {
+      #buffers {
+        gap: 3px;
+      }
+
+      .buffer-actions .compact-action {
+        min-height: 28px;
+        padding: 3px 8px;
+      }
+
+      .compact-action {
+        min-height: 30px;
+        padding: 4px 9px;
+        border-radius: 7px;
+        font-size: 12px;
+      }
+
+      .param.event-card {
         display: flex;
-        justify-content: flex-end;
-        margin-top: 12px;
+        flex-direction: column;
+        min-width: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+
+      #events {
+        gap: 3px;
+      }
+
+      .event-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+        padding: 10px 11px;
+      }
+
+      .event-identity {
+        display: flex;
+        flex: 1;
+        align-items: baseline;
+        gap: 9px;
+        min-width: 0;
+      }
+
+      .event-identity .param-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .event-summary {
+        flex: none;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .event-args {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        min-width: 0;
+        padding: 9px 11px 11px;
+        border-top: 1px solid var(--border);
+        background: color-mix(in srgb, var(--panel) 72%, var(--bg));
+      }
+
+      .event-arg {
+        display: grid;
+        grid-template-columns: minmax(7rem, 1fr) minmax(7rem, 10rem);
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .event-arg-heading {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .event-arg-name {
+        overflow: hidden;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .event-arg-type {
+        flex: none;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .event-arg > .param-number {
+        width: 100%;
+        min-height: 30px;
+        padding: 4px 7px;
+        border-radius: 7px;
+      }
+
+      .event-arg > .param-toggle {
+        justify-self: end;
+        min-height: 30px;
+        padding: 0 3px;
+      }
+
+      .event-array-arg {
+        display: block;
+        padding: 0;
+      }
+
+      .event-array-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .event-array-count {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .event-array-actions {
+        display: flex;
+        gap: 5px;
+        margin-left: auto;
+      }
+
+      .event-array-action {
+        width: 25px;
+        min-height: 25px;
+        padding: 2px;
+        border-radius: 6px;
+        font-size: 11px;
+      }
+
+      .event-array-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
+        gap: 7px;
+        margin-top: 6px;
+        padding: 7px;
+        border-radius: 7px;
+        background: var(--panel);
+        box-shadow: inset 0 0 0 1px var(--border);
+      }
+
+      .event-array-element {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+        padding: 6px 7px 7px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+      }
+
+      .event-array-index {
+        flex: 0 0 1.65rem;
+        color: var(--muted);
+        font: 10px/1.2 var(--mono-font);
+      }
+
+      .event-array-element .param-number {
+        width: 100%;
+        min-width: 0;
+        min-height: 28px;
+        padding: 3px 6px;
+        border-radius: 6px;
+      }
+
+      .event-array-element .param-toggle {
+        min-height: 28px;
+      }
+
+      .event-array-note {
+        margin-top: 6px;
+        padding: 8px 9px;
+        border-radius: 7px;
+        background: var(--panel);
+        box-shadow: inset 0 0 0 1px var(--border);
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .event-empty {
+        color: var(--muted);
+        font-size: 12px;
       }
 
       .params-title {
@@ -307,16 +645,32 @@
 
       .param-head {
         display: flex;
-        justify-content: space-between;
-        gap: 12px;
+        align-items: baseline;
+        justify-content: flex-start;
+        flex-wrap: nowrap;
+        gap: 6px;
+        min-width: 0;
       }
 
       .param-name {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
         font-weight: 700;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .param-type {
+        flex: 0 0 auto;
         color: var(--muted);
+      }
+
+      .param-name,
+      .param-type,
+      .event-arg-name,
+      .event-arg-type {
+        font-family: var(--mono-font);
       }
 
       .param-setting {
@@ -389,6 +743,90 @@
         transform: translate(-50%, -50%);
       }
 
+      .param-knob {
+        display: grid;
+        place-items: center;
+        width: 64px;
+        height: 64px;
+        margin: 0 auto;
+        cursor: ns-resize;
+        touch-action: none;
+      }
+
+      .param-knob:focus-visible {
+        border-radius: 50%;
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .param-knob-dial {
+        position: relative;
+        width: 58px;
+        height: 58px;
+        border: 1px solid var(--border);
+        border-radius: 50%;
+        background:
+          radial-gradient(circle at center, var(--panel-soft) 0 58%, transparent 59%),
+          conic-gradient(
+            from 225deg,
+            var(--accent) 0deg var(--knob-angle),
+            color-mix(in srgb, var(--text) 14%, transparent) var(--knob-angle) 270deg,
+            transparent 270deg
+          );
+        box-shadow: inset 0 0 0 3px var(--field-bg);
+      }
+
+      .param-knob-indicator {
+        position: absolute;
+        inset: 6px;
+        transform: rotate(var(--knob-rotation));
+      }
+
+      .param-knob-indicator::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 50%;
+        width: 3px;
+        height: 12px;
+        border-radius: 999px;
+        background: var(--text);
+        transform: translateX(-50%);
+      }
+
+      #params[data-layout="knobs"] {
+        grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
+        gap: 8px;
+      }
+
+      #params[data-layout="knobs"] .param {
+        min-width: 0;
+        padding: 9px;
+      }
+
+      #params[data-layout="knobs"] .param-head {
+        min-width: 0;
+        min-height: 1.45em;
+        flex-wrap: nowrap;
+        align-items: baseline;
+        justify-content: center;
+        gap: 2px 6px;
+        text-align: center;
+      }
+
+      #params[data-layout="knobs"] .param-name {
+        min-width: 0;
+      }
+
+      #params[data-layout="knobs"] .param-type {
+        flex: 0 0 auto;
+      }
+
+      #params[data-layout="knobs"] .param-controls {
+        gap: 6px;
+        margin-top: 7px;
+      }
+
       .param-number {
         width: 100%;
         border: 1px solid var(--border);
@@ -444,12 +882,93 @@
         .hero {
           min-height: 160px;
         }
+
+        .param-list {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .param {
+          min-width: 0;
+          padding: 9px;
+          border-radius: 10px;
+        }
+
+        .param-head {
+          min-width: 0;
+          flex-wrap: nowrap;
+          gap: 6px;
+        }
+
+        .param-type {
+          flex: 0 0 auto;
+        }
+
+        .param-controls {
+          gap: 7px;
+          margin-top: 7px;
+        }
+
+        .param-number {
+          min-width: 0;
+          padding: 7px 8px;
+        }
+
+        .buffer-card {
+          grid-template-columns: minmax(0, 1fr) auto;
+        }
+
+        .event-identity {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .event-arg {
+          grid-template-columns: minmax(0, 1fr) minmax(6.5rem, 8rem);
+        }
+
+        .event-array-grid {
+          grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+        }
       }
     </style>
   </head>
   <body>
     <div class="shell">
-      <section class="header">
+      <section class="file-picker" id="file-picker" hidden>
+        <div class="file-picker-content">
+          <img class="file-picker-logo" id="file-picker-logo" alt="Onda logo" />
+          <div class="file-picker-title">Open an Onda file</div>
+          <div class="file-picker-copy">Drag an .onda file here, or choose one from your computer.</div>
+          <div class="file-picker-settings">
+            <div class="param-setting">
+              <label class="param-setting-label" for="run-sample-rate">Sample Rate</label>
+              <select class="param-select" id="run-sample-rate">
+                <option value="44100">44.1 kHz</option>
+                <option value="48000">48 kHz</option>
+                <option value="88200">88.2 kHz</option>
+                <option value="96000">96 kHz</option>
+                <option value="192000">192 kHz</option>
+              </select>
+            </div>
+            <div class="param-setting">
+              <label class="param-setting-label" for="run-block-size">Block Size</label>
+              <select class="param-select" id="run-block-size">
+                <option value="64">64 frames</option>
+                <option value="128">128 frames</option>
+                <option value="256">256 frames</option>
+                <option value="512">512 frames</option>
+                <option value="1024">1024 frames</option>
+                <option value="2048">2048 frames</option>
+              </select>
+            </div>
+          </div>
+          <button class="primary" id="choose-onda-file" type="button">Choose .onda file</button>
+          <div class="error" id="file-picker-error"></div>
+        </div>
+      </section>
+      <section class="header" id="run-header">
         <div class="hero">
           <img class="hero-logo" id="hero-logo" alt="Onda logo" />
           <div class="hero-rule"></div>
@@ -460,7 +979,7 @@
             <button class="primary" id="start">Play</button>
             <button class="secondary" id="stop">Stop</button>
             <button class="secondary" id="reset">Reset</button>
-            <button class="secondary" id="refresh-devices">Refresh Devices</button>
+            <button class="secondary" id="unload">Unload</button>
           </div>
           <div class="error" id="error"></div>
           <div class="io-settings" id="io-settings">
@@ -472,6 +991,7 @@
               <div class="param-setting-label">Output Device</div>
               <select class="param-select" id="output-device"></select>
             </div>
+            <button class="secondary refresh-devices" id="refresh-devices">Refresh Devices</button>
           </div>
         </div>
       </section>
@@ -496,13 +1016,24 @@
           <div class="params-title">Events</div>
         </button>
         <div class="section-body" id="events-body">
-          <div class="param-list" id="events"></div>
+          <div class="buffers-list" id="events"></div>
         </div>
       </section>
       <section class="params" id="params-section">
-        <button class="params-header section-toggle" id="params-toggle" type="button" aria-expanded="true">
+        <div class="params-header params-toolbar">
           <div class="params-title">Params</div>
-        </button>
+          <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
+            <button type="button" data-param-layout="sliders" aria-pressed="true">Sliders</button>
+            <button type="button" data-param-layout="knobs" aria-pressed="false">Knobs</button>
+          </div>
+          <button
+            class="section-toggle params-disclosure"
+            id="params-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-label="Toggle Params"
+          ></button>
+        </div>
         <div class="section-body" id="params-body">
           <div class="param-list" id="params"></div>
         </div>
@@ -669,12 +1200,21 @@
         currentInputDevice: null,
         currentOutputDevice: null,
         supportsDeviceSelection: hostBridge.mode !== "browser",
+        sampleRateHz: 48_000,
+        blockFrames: 256,
       };
 
       const startButton = document.getElementById("start");
       const stopButton = document.getElementById("stop");
       const resetButton = document.getElementById("reset");
       const refreshDevicesButton = document.getElementById("refresh-devices");
+      const unloadButton = document.getElementById("unload");
+      const chooseOndaFileButton = document.getElementById("choose-onda-file");
+      const filePickerNode = document.getElementById("file-picker");
+      const filePickerErrorNode = document.getElementById("file-picker-error");
+      const runSampleRateNode = document.getElementById("run-sample-rate");
+      const runBlockSizeNode = document.getElementById("run-block-size");
+      const runHeaderNode = document.getElementById("run-header");
       const pathNode = document.getElementById("path");
       const statusNode = document.getElementById("status");
       const errorNode = document.getElementById("error");
@@ -700,7 +1240,10 @@
       const eventsBody = document.getElementById("events-body");
       const paramsToggle = document.getElementById("params-toggle");
       const paramsBody = document.getElementById("params-body");
+      const paramLayoutButtons = [...document.querySelectorAll("[data-param-layout]")];
       const logoNode = document.getElementById("hero-logo");
+      const filePickerLogoNode = document.getElementById("file-picker-logo");
+      const PARAM_LAYOUT_STORAGE_KEY = "onda.run-view.param-layout.v1";
       const pendingParamMessages = new Map();
       let pendingParamFrame = 0;
       let pendingScopeFrame = 0;
@@ -712,6 +1255,7 @@
         events: true,
         params: true,
       };
+      let paramLayout = restoreParamLayout();
 
       let bridgeThemePreference =
         typeof window.__ondaForcedTheme === "string" && window.__ondaForcedTheme
@@ -744,6 +1288,21 @@
       });
       refreshDevicesButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "refreshDevices" });
+      });
+      chooseOndaFileButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "chooseOndaFile" });
+      });
+      const updateRunSettings = () => {
+        hostBridge.postMessage({
+          type: "setRunSettings",
+          sampleRateHz: Number(runSampleRateNode.value),
+          blockFrames: Number(runBlockSizeNode.value),
+        });
+      };
+      runSampleRateNode.addEventListener("change", updateRunSettings);
+      runBlockSizeNode.addEventListener("change", updateRunSettings);
+      unloadButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "unload" });
       });
       inputDeviceNode.addEventListener("change", () => {
         hostBridge.postMessage({ type: "setInputDevice", name: inputDeviceNode.value || null });
@@ -861,6 +1420,9 @@
         if (logoNode) {
           logoNode.src = THEME_LOGOS[nextTheme];
         }
+        if (filePickerLogoNode) {
+          filePickerLogoNode.src = THEME_LOGOS[nextTheme];
+        }
         scheduleScopeDraw(latestScopeData.channels, latestScopeData.samples);
       }
 
@@ -903,6 +1465,50 @@
         });
       }
 
+      function restoreParamLayout() {
+        try {
+          return localStorage.getItem(PARAM_LAYOUT_STORAGE_KEY) === "knobs"
+            ? "knobs"
+            : "sliders";
+        } catch {
+          return "sliders";
+        }
+      }
+
+      function setParamLayout(layout, persist = true) {
+        paramLayout = layout === "knobs" ? "knobs" : "sliders";
+        applyParamLayout();
+        if (persist) {
+          try {
+            localStorage.setItem(PARAM_LAYOUT_STORAGE_KEY, paramLayout);
+          } catch {
+            // The layout still applies for this view when storage is disabled.
+          }
+        }
+        render();
+      }
+
+      function applyParamLayout() {
+        paramsNode.dataset.layout = paramLayout;
+        for (const button of paramLayoutButtons) {
+          button.setAttribute(
+            "aria-pressed",
+            button.dataset.paramLayout === paramLayout ? "true" : "false",
+          );
+        }
+      }
+
+      function setupParamLayoutToggle() {
+        for (const button of paramLayoutButtons) {
+          button.addEventListener("click", () => {
+            if (button.dataset.paramLayout !== paramLayout) {
+              setParamLayout(button.dataset.paramLayout);
+            }
+          });
+        }
+        applyParamLayout();
+      }
+
       function clamp(value, min, max) {
         return Math.min(max, Math.max(min, value));
       }
@@ -913,7 +1519,12 @@
         return dot === -1 ? 0 : text.length - dot - 1;
       }
 
+      const FLOAT_CONTROL_TARGET_STEPS = 2000;
+      const FLOAT_CONTROL_MIN_STEP = 0.0001;
+      const FLOAT_CONTROL_MAX_STEP = 0.1;
+
       function scalarStepForParam(param) {
+        // Keep this host policy aligned with onda_egui::scalar_step.
         if (param.type === "i32" || param.type === "i64") {
           return 1;
         }
@@ -922,9 +1533,12 @@
         if (Number.isFinite(min) && Number.isFinite(max)) {
           const span = Math.abs(max - min);
           if (Number.isFinite(span) && span > 0) {
-            const rawStep = Math.max(span / 2000, 0.0001);
+            const rawStep = Math.max(
+              span / FLOAT_CONTROL_TARGET_STEPS,
+              FLOAT_CONTROL_MIN_STEP,
+            );
             const exponent = Math.floor(Math.log10(rawStep));
-            return Math.pow(10, exponent);
+            return Math.min(Math.pow(10, exponent), FLOAT_CONTROL_MAX_STEP);
           }
         }
         return 0.001;
@@ -957,18 +1571,75 @@
         return Boolean(state.path);
       }
 
+      function createRangeValueController({
+        currentValue,
+        min,
+        max,
+        step,
+        renderValue,
+        onInputValue,
+        onCommitValue,
+      }) {
+        let value = clamp(currentValue, min, max);
+
+        const update = (nextValue, notify) => {
+          value = clamp(quantizeToStep(nextValue, min, step), min, max);
+          renderValue(value);
+          if (notify === "input") onInputValue(value);
+          if (notify === "commit") onCommitValue(value);
+        };
+
+        return {
+          get value() { return value; },
+          input(nextValue) { update(nextValue, "input"); },
+          commit(nextValue) { update(nextValue, "commit"); },
+          setValue(nextValue) { update(nextValue); },
+          render() { renderValue(value); },
+        };
+      }
+
+      function bindRangeControlKeys(control, controller, param, step) {
+        const min = Number(param.rangeMin);
+        const max = Number(param.rangeMax);
+        control.addEventListener("keydown", (event) => {
+          let nextValue;
+          if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+            nextValue = controller.value - step;
+          } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+            nextValue = controller.value + step;
+          } else if (event.key === "Home") {
+            nextValue = min;
+          } else if (event.key === "End") {
+            nextValue = max;
+          } else {
+            return;
+          }
+          event.preventDefault();
+          controller.commit(nextValue);
+        });
+        control.addEventListener("dblclick", (event) => {
+          event.preventDefault();
+          controller.commit(initialParamValue(param));
+        });
+      }
+
+      function initializeRangeControl(control, param) {
+        const canEdit = canEditRunControls();
+        control.tabIndex = canEdit ? 0 : -1;
+        control.setAttribute("role", "slider");
+        control.setAttribute("aria-label", param.name);
+        control.setAttribute("aria-valuemin", String(param.rangeMin));
+        control.setAttribute("aria-valuemax", String(param.rangeMax));
+        control.setAttribute("aria-disabled", canEdit ? "false" : "true");
+        return canEdit;
+      }
+
       function createSliderControl(param, currentValue, step, onInputValue, onCommitValue) {
         const min = Number(param.rangeMin);
         const max = Number(param.rangeMax);
-        const canEdit = canEditRunControls();
         const slider = document.createElement("div");
         slider.className = "param-slider";
-        slider.tabIndex = canEdit ? 0 : -1;
-        slider.setAttribute("role", "slider");
-        slider.setAttribute("aria-label", param.name);
-        slider.setAttribute("aria-valuemin", String(min));
-        slider.setAttribute("aria-valuemax", String(max));
-        slider.setAttribute("aria-disabled", canEdit ? "false" : "true");
+        const canEdit = initializeRangeControl(slider, param);
 
         const track = document.createElement("div");
         track.className = "param-slider-track";
@@ -979,16 +1650,22 @@
         track.append(fill, thumb);
         slider.appendChild(track);
 
-        let value = clamp(currentValue, min, max);
-
-        const renderValue = () => {
-          const ratio = max > min ? (value - min) / (max - min) : 0;
-          const pct = clamp(ratio, 0, 1) * 100;
-          fill.style.width = pct + "%";
-          thumb.style.left = pct + "%";
-          slider.setAttribute("aria-valuenow", String(value));
-          slider.dataset.value = String(value);
-        };
+        const controller = createRangeValueController({
+          currentValue,
+          min,
+          max,
+          step: Number(step),
+          renderValue: (value) => {
+            const ratio = max > min ? (value - min) / (max - min) : 0;
+            const pct = clamp(ratio, 0, 1) * 100;
+            fill.style.width = pct + "%";
+            thumb.style.left = pct + "%";
+            slider.setAttribute("aria-valuenow", String(value));
+            slider.dataset.value = String(value);
+          },
+          onInputValue,
+          onCommitValue,
+        });
 
         const setFromClientX = (clientX, commit) => {
           const rect = track.getBoundingClientRect();
@@ -997,14 +1674,8 @@
           }
           const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
           const rawValue = min + ratio * (max - min);
-          value = quantizeToStep(rawValue, min, Number(step));
-          value = clamp(value, min, max);
-          renderValue();
-          if (commit) {
-            onCommitValue(value);
-          } else {
-            onInputValue(value);
-          }
+          if (commit) controller.commit(rawValue);
+          else controller.input(rawValue);
         };
 
         if (canEdit) {
@@ -1037,40 +1708,77 @@
             slider.addEventListener("pointercancel", onEnd);
           });
 
-          slider.addEventListener("keydown", (event) => {
-            let delta = 0;
-            if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
-              delta = -Number(step);
-            } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
-              delta = Number(step);
-            } else if (event.key === "Home") {
-              value = min;
-            } else if (event.key === "End") {
-              value = max;
-            } else {
-              return;
-            }
-            event.preventDefault();
-            if (delta !== 0) {
-              value = clamp(quantizeToStep(value + delta, min, Number(step)), min, max);
-            }
-            renderValue();
-            onCommitValue(value);
-          });
-
-          slider.addEventListener("dblclick", (event) => {
-            event.preventDefault();
-            value = clamp(initialParamValue(param), min, max);
-            renderValue();
-            onCommitValue(value);
-          });
+          bindRangeControlKeys(slider, controller, param, Number(step));
         }
 
-        renderValue();
-        return { slider, setValue(nextValue) {
-          value = clamp(nextValue, min, max);
-          renderValue();
-        }};
+        controller.render();
+        return { control: slider, setValue: controller.setValue };
+      }
+
+      function createKnobControl(param, currentValue, step, onInputValue, onCommitValue) {
+        const min = Number(param.rangeMin);
+        const max = Number(param.rangeMax);
+        const knob = document.createElement("div");
+        knob.className = "param-knob";
+        knob.title = "Drag vertically to adjust; double-click to reset";
+        const canEdit = initializeRangeControl(knob, param);
+
+        const dial = document.createElement("div");
+        dial.className = "param-knob-dial";
+        const indicator = document.createElement("div");
+        indicator.className = "param-knob-indicator";
+        dial.appendChild(indicator);
+        knob.appendChild(dial);
+
+        const controller = createRangeValueController({
+          currentValue,
+          min,
+          max,
+          step: Number(step),
+          renderValue: (value) => {
+            const ratio = max > min ? clamp((value - min) / (max - min), 0, 1) : 0;
+            dial.style.setProperty("--knob-angle", `${ratio * 270}deg`);
+            dial.style.setProperty("--knob-rotation", `${-135 + ratio * 270}deg`);
+            knob.setAttribute("aria-valuenow", String(value));
+            knob.dataset.value = String(value);
+          },
+          onInputValue,
+          onCommitValue,
+        });
+
+        if (canEdit) {
+          knob.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            knob.setPointerCapture(event.pointerId);
+            const startY = event.clientY;
+            const startValue = controller.value;
+            const valuePerPixel = (max - min) / 160;
+
+            const onMove = (moveEvent) => {
+              if (moveEvent.pointerId !== event.pointerId) return;
+              controller.input(startValue + (startY - moveEvent.clientY) * valuePerPixel);
+            };
+
+            const onEnd = (endEvent) => {
+              if (endEvent.pointerId !== event.pointerId) return;
+              knob.removeEventListener("pointermove", onMove);
+              knob.removeEventListener("pointerup", onEnd);
+              knob.removeEventListener("pointercancel", onEnd);
+              controller.commit(controller.value);
+              if (knob.hasPointerCapture(event.pointerId)) {
+                knob.releasePointerCapture(event.pointerId);
+              }
+            };
+
+            knob.addEventListener("pointermove", onMove);
+            knob.addEventListener("pointerup", onEnd);
+            knob.addEventListener("pointercancel", onEnd);
+          });
+          bindRangeControlKeys(knob, controller, param, Number(step));
+        }
+
+        controller.render();
+        return { control: knob, setValue: controller.setValue };
       }
 
       function flushPendingParamMessages() {
@@ -1132,6 +1840,9 @@
       }
 
       function initialEventArgValue(arg) {
+        if (isArrayEventArg(arg)) {
+          return Array.isArray(arg.default) ? arg.default.slice() : [];
+        }
         if (arg.default !== null && arg.default !== undefined) {
           if (arg.type === "bool") {
             return Boolean(arg.default);
@@ -1174,11 +1885,76 @@
                 ? rawValue
                 : initialEventArgValue(arg);
               return Object.assign({}, arg, {
-                value: arg.type === "bool" ? Boolean(value) : (Number.isFinite(Number(value)) ? Number(value) : 0),
+                value: isArrayEventArg(arg)
+                  ? (Array.isArray(value) ? value : [])
+                  : arg.type === "bool"
+                    ? Boolean(value)
+                    : (Number.isFinite(Number(value)) ? Number(value) : 0),
               });
             }) : [],
           });
         });
+      }
+
+      function isArrayEventArg(arg) {
+        return Boolean(arg && (
+          arg.isSlice
+          || (typeof arg.arrayLength === "number" && arg.arrayLength !== 1)
+          || (typeof arg.type === "string" && /\[[0-9]*\]$/.test(arg.type))
+        ));
+      }
+
+      function eventArrayLength(arg) {
+        if (arg.isSlice) return null;
+        if (Number.isInteger(arg.arrayLength)) return arg.arrayLength;
+        const match = typeof arg.type === "string" && arg.type.match(/\[([0-9]*)\]$/);
+        return match && match[1] !== "" ? Number(match[1]) : null;
+      }
+
+      function eventArrayScalarType(arg) {
+        return arg.scalar || String(arg.type || "").split("[", 1)[0];
+      }
+
+      function createEventScalarControl(type, value, onChange) {
+        if (type === "bool") {
+          const toggle = document.createElement("label");
+          toggle.className = "param-toggle";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = Boolean(value);
+          input.disabled = !state.connected;
+          const text = document.createElement("span");
+          text.textContent = input.checked ? "On" : "Off";
+          input.addEventListener("change", () => {
+            onChange(input.checked);
+            text.textContent = input.checked ? "On" : "Off";
+          });
+          toggle.append(input, text);
+          return toggle;
+        }
+
+        const number = document.createElement("input");
+        number.className = "param-number";
+        number.type = "number";
+        const integer = type === "i32" || type === "i64";
+        number.step = integer ? "1" : "0.001";
+        number.value = String(typeof value === "number" ? value : 0);
+        number.disabled = !state.connected;
+        const parsedValue = () => {
+          const nextValue = Number(number.value);
+          if (!Number.isFinite(nextValue)) return null;
+          return integer ? Math.round(nextValue) : nextValue;
+        };
+        number.addEventListener("input", () => {
+          const nextValue = parsedValue();
+          if (nextValue !== null) onChange(nextValue);
+        });
+        number.addEventListener("change", () => {
+          const nextValue = parsedValue() ?? 0;
+          onChange(nextValue);
+          number.value = String(nextValue);
+        });
+        return number;
       }
 
       // ---------------------------------------------------------------------------
@@ -1217,24 +1993,46 @@
 
       function render() {
         applyTheme();
+        const supportsSourceSelection = hostBridge.mode === "wry";
+        const hasSource = Boolean(state.path);
+        filePickerNode.hidden = !supportsSourceSelection || hasSource;
+        runHeaderNode.hidden = supportsSourceSelection && !hasSource;
+        unloadButton.hidden = !supportsSourceSelection;
         pathNode.textContent = state.path ? state.path : "No file selected";
-        statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
+        const status = state.connected
+          ? state.status
+          : state.running
+          ? state.status + " (connecting controls...)"
+          : state.status;
+        statusNode.textContent = hasSource
+          ? formatRunStatus(status, state.sampleRateHz, state.blockFrames)
+          : status;
         errorNode.textContent = state.error || "";
         errorNode.style.display = state.error ? "block" : "none";
+        filePickerErrorNode.textContent = state.error || "";
+        filePickerErrorNode.style.display = state.error ? "block" : "none";
+        selectRunSetting(
+          runSampleRateNode,
+          state.sampleRateHz,
+          formatBufferSampleRate(state.sampleRateHz),
+        );
+        selectRunSetting(
+          runBlockSizeNode,
+          state.blockFrames,
+          state.blockFrames + " frames",
+        );
         scopeSection.style.display = state.running ? "block" : "none";
         const hasBuffers = state.buffers.length > 0;
         const hasEvents = state.events.length > 0;
         const hasParams = state.params.length > 0;
         const supportsDeviceSelection = state.supportsDeviceSelection !== false;
-        const hasIoSettings = supportsDeviceSelection
-          && (state.inputDevices.length > 0 || state.outputDevices.length > 0);
         const canEditRun = canEditRunControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
         eventsSection.style.display = hasEvents ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
         refreshDevicesButton.hidden = !supportsDeviceSelection;
         ioSettingsNode.hidden = !supportsDeviceSelection;
-        ioSettingsNode.style.display = hasIoSettings ? "grid" : "none";
+        ioSettingsNode.style.display = supportsDeviceSelection ? "grid" : "none";
         const buffersReady = state.buffers.every(buffer => Boolean(buffer.loadedPath));
         const canStart = buffersReady || Boolean(state.sourceDirty);
         startButton.disabled = !state.path || state.running || !canStart;
@@ -1250,23 +2048,36 @@
             card.className = "buffer-card";
 
             const head = document.createElement("div");
-            head.className = "param-head";
+            head.className = "buffer-identity";
             head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
             head.querySelector(".param-name").textContent = buffer.name;
-            head.querySelector(".param-type").textContent =
-              buffer.type + " \u00b7 " + describeRunBufferChannels(buffer);
+            head.querySelector(".param-type").textContent = buffer.type;
             card.appendChild(head);
 
+            const detail = document.createElement("div");
+            detail.className = "buffer-detail";
             const loaded = document.createElement("div");
-            loaded.className = "buffer-path";
-            loaded.textContent = buffer.loadedPath ? buffer.loadedPath : "No file loaded";
-            card.appendChild(loaded);
+            loaded.className = "buffer-file";
+            loaded.textContent = buffer.loadedPath
+              ? bufferFileName(buffer.loadedPath)
+              : "No file bound";
+            loaded.title = buffer.loadedPath || loaded.textContent;
+            detail.appendChild(loaded);
+            const metadata = loadedBufferSummary(buffer);
+            if (metadata) {
+              const summary = document.createElement("div");
+              summary.className = "buffer-metadata";
+              summary.textContent = metadata;
+              detail.appendChild(summary);
+            }
+            card.appendChild(detail);
 
             const actions = document.createElement("div");
             actions.className = "buffer-actions";
             const choose = document.createElement("button");
-            choose.className = "secondary";
-            choose.textContent = "Choose File";
+            choose.className = "secondary compact-action";
+            choose.textContent = buffer.loadedPath ? "Replace" : "Bind";
+            choose.title = "Bind a WAV file";
             choose.disabled = !canEditRun;
             choose.addEventListener("click", () => {
               if (typeof hostBridge.chooseBufferFile === "function") {
@@ -1276,8 +2087,9 @@
               }
             });
             const clear = document.createElement("button");
-            clear.className = "secondary";
+            clear.className = "secondary compact-action";
             clear.textContent = "Clear";
+            clear.hidden = !buffer.loadedPath;
             clear.disabled = !canEditRun || !buffer.loadedPath;
             clear.addEventListener("click", () => {
               hostBridge.postMessage({ type: "clearBuffer", name: buffer.name });
@@ -1293,84 +2105,160 @@
         if (hasEvents) {
           for (const event of state.events) {
             const card = document.createElement("div");
-            card.className = "param";
+            card.className = "param event-card";
 
+            const eventHead = document.createElement("div");
+            eventHead.className = "event-head";
             const head = document.createElement("div");
-            head.className = "param-head";
-            head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
+            head.className = "event-identity";
+            head.innerHTML = '<div class="param-name"></div><div class="event-summary"></div>';
             head.querySelector(".param-name").textContent = event.name;
-            head.querySelector(".param-type").textContent = Array.isArray(event.args) && event.args.length > 0
-              ? event.args.map((arg) => arg.name + ": " + arg.type).join(", ")
-              : "no args";
-            card.appendChild(head);
+            const argumentCount = Array.isArray(event.args) ? event.args.length : 0;
+            head.querySelector(".event-summary").textContent = argumentCount === 0
+              ? "No arguments"
+              : argumentCount === 1
+                ? "1 argument"
+                : argumentCount + " arguments";
+            head.title = event.name;
+
+            const trigger = document.createElement("button");
+            trigger.className = "event-trigger compact-action";
+            trigger.textContent = "Trigger";
+            const refreshTrigger = () => {
+              trigger.disabled = !state.connected;
+            };
+            eventHead.append(head, trigger);
+            card.appendChild(eventHead);
 
             const controls = document.createElement("div");
-            controls.className = "param-controls";
-            card.appendChild(controls);
+            controls.className = "event-args";
+            if (argumentCount > 0) card.appendChild(controls);
 
             for (const arg of event.args || []) {
               const setting = document.createElement("div");
-              setting.className = "param-setting";
+              setting.className = "event-arg";
 
               const label = document.createElement("div");
-              label.className = "param-setting-label";
-              label.textContent = arg.name;
+              label.className = "event-arg-heading";
+              const argName = document.createElement("span");
+              argName.className = "event-arg-name";
+              argName.textContent = arg.name;
+              const argType = document.createElement("span");
+              argType.className = "event-arg-type";
+              argType.textContent = arg.type;
+              label.append(argName, argType);
+              label.title = arg.name + ": " + arg.type;
               setting.appendChild(label);
 
-              if (arg.type === "bool") {
-                const toggle = document.createElement("label");
-                toggle.className = "param-toggle";
-                const input = document.createElement("input");
-                input.type = "checkbox";
-                input.checked = Boolean(arg.value);
-                input.disabled = !state.connected;
-                const text = document.createElement("span");
-                text.textContent = input.checked ? "On" : "Off";
-                input.addEventListener("change", () => {
-                  arg.value = input.checked;
-                  text.textContent = input.checked ? "On" : "Off";
-                });
-                toggle.append(input, text);
-                setting.appendChild(toggle);
-              } else {
-                const number = document.createElement("input");
-                number.className = "param-number";
-                number.type = "number";
-                number.step = arg.type === "i32" || arg.type === "i64" ? "1" : "0.001";
-                number.value = String(typeof arg.value === "number" ? arg.value : 0);
-                number.disabled = !state.connected;
-                number.addEventListener("input", () => {
-                  const nextValue = Number(number.value);
-                  if (Number.isFinite(nextValue)) {
-                    arg.value = nextValue;
+              if (isArrayEventArg(arg)) {
+                setting.classList.add("event-array-arg");
+                const arrayHead = document.createElement("div");
+                arrayHead.className = "event-array-head";
+                arrayHead.appendChild(label);
+
+                const expectedLength = eventArrayLength(arg);
+                if (!Array.isArray(arg.value)) arg.value = [];
+                if (expectedLength !== null) {
+                  arg.value = Array.from(
+                    { length: expectedLength },
+                    (_, index) => arg.value[index] ?? (eventArrayScalarType(arg) === "bool" ? false : 0),
+                  );
+                }
+
+                const count = document.createElement("span");
+                count.className = "event-array-count";
+                count.textContent = arg.value.length === 1
+                  ? "1 element"
+                  : arg.value.length + " elements";
+                arrayHead.appendChild(count);
+
+                if (expectedLength === null) {
+                  const actions = document.createElement("div");
+                  actions.className = "event-array-actions";
+                  const remove = document.createElement("button");
+                  remove.className = "secondary event-array-action";
+                  remove.textContent = "−";
+                  remove.title = "Remove last element";
+                  remove.setAttribute("aria-label", "Remove last element");
+                  remove.disabled = !state.connected || arg.value.length === 0;
+                  const add = document.createElement("button");
+                  add.className = "secondary event-array-action";
+                  add.textContent = "+";
+                  add.title = "Add element";
+                  add.setAttribute("aria-label", "Add element");
+                  add.disabled = !state.connected || arg.value.length >= 16;
+                  remove.addEventListener("click", () => {
+                    arg.value.pop();
+                    render();
+                  });
+                  add.addEventListener("click", () => {
+                    arg.value.push(eventArrayScalarType(arg) === "bool" ? false : 0);
+                    render();
+                  });
+                  actions.append(remove, add);
+                  arrayHead.appendChild(actions);
+                }
+                setting.appendChild(arrayHead);
+
+                if (arg.value.length === 0) {
+                  const note = document.createElement("div");
+                  note.className = "event-array-note";
+                  note.textContent = "No elements. Add one to build the event payload.";
+                  setting.appendChild(note);
+                } else {
+                  const grid = document.createElement("div");
+                  grid.className = "event-array-grid";
+                  const scalarType = eventArrayScalarType(arg);
+                  arg.value.slice(0, 16).forEach((value, index) => {
+                    const element = document.createElement("label");
+                    element.className = "event-array-element";
+                    const elementIndex = document.createElement("span");
+                    elementIndex.className = "event-array-index";
+                    elementIndex.textContent = "[" + index + "]";
+                    element.appendChild(elementIndex);
+
+                    element.appendChild(createEventScalarControl(
+                      scalarType,
+                      value,
+                      (nextValue) => { arg.value[index] = nextValue; },
+                    ));
+                    grid.appendChild(element);
+                  });
+                  setting.appendChild(grid);
+
+                  if (arg.value.length > 16) {
+                    const note = document.createElement("div");
+                    note.className = "event-array-note";
+                    note.textContent = (arg.value.length - 16)
+                      + " additional elements are retained but not shown";
+                    setting.appendChild(note);
                   }
-                });
-                number.addEventListener("change", () => {
-                  const nextValue = Number(number.value);
-                  arg.value = Number.isFinite(nextValue) ? nextValue : 0;
-                  number.value = String(arg.value);
-                });
-                setting.appendChild(number);
+                }
+              } else {
+                setting.appendChild(createEventScalarControl(
+                  arg.type,
+                  arg.value,
+                  (nextValue) => { arg.value = nextValue; },
+                ));
               }
 
               controls.appendChild(setting);
             }
 
-            const actions = document.createElement("div");
-            actions.className = "event-actions";
-            const trigger = document.createElement("button");
-            trigger.className = "event-trigger";
-            trigger.textContent = "Trigger";
-            trigger.disabled = !state.connected;
+            refreshTrigger();
             trigger.addEventListener("click", () => {
               hostBridge.postMessage({
                 type: "triggerEvent",
                 name: event.name,
-                values: (event.args || []).map((arg) => arg.type === "bool" ? Boolean(arg.value) : Number(arg.value)),
+                values: (event.args || []).map((arg) =>
+                  isArrayEventArg(arg)
+                    ? arg.value
+                    : arg.type === "bool"
+                      ? Boolean(arg.value)
+                      : Number(arg.value)
+                ),
               });
             });
-            actions.appendChild(trigger);
-            card.appendChild(actions);
 
             eventsNode.appendChild(card);
           }
@@ -1400,6 +2288,7 @@
             input.checked = Boolean(param.value);
             input.disabled = !canEditRun;
             input.addEventListener("change", () => {
+              param.value = input.checked;
               hostBridge.postMessage({ type: "setParam", name: param.name, value: input.checked });
             });
             const text = document.createElement("span");
@@ -1426,22 +2315,26 @@
               number.disabled = !canEditRun;
               controls.appendChild(number);
 
-              const sliderControl = createSliderControl(
+              const rangeControl = (
+                paramLayout === "knobs" ? createKnobControl : createSliderControl
+              )(
                 param,
                 currentValue,
                 step,
                 (nextValue) => {
+                  param.value = nextValue;
                   const nextText = formatNumberForInput(nextValue, stepValue);
                   number.value = nextText;
                   scheduleParamMessage(param.name, nextValue);
                 },
                 (nextValue) => {
+                  param.value = nextValue;
                   const nextText = formatNumberForInput(nextValue, stepValue);
                   number.value = nextText;
                   commitParamMessage(param.name, nextValue);
                 },
               );
-              controls.prepend(sliderControl.slider);
+              controls.prepend(rangeControl.control);
 
               const sync = (nextValue) => {
                 const parsed = Number(nextValue);
@@ -1453,7 +2346,8 @@
                   Number(param.rangeMin),
                   Number(param.rangeMax),
                 );
-                sliderControl.setValue(quantized);
+                param.value = quantized;
+                rangeControl.setValue(quantized);
                 number.value = formatNumberForInput(quantized, stepValue);
               };
 
@@ -1474,6 +2368,7 @@
                   return;
                 }
                 const quantized = quantizeToStep(parsed, 0, stepValue);
+                param.value = quantized;
                 number.value = formatNumberForInput(quantized, stepValue);
                 hostBridge.postMessage({ type: "setParam", name: param.name, value: quantized });
               });
@@ -1490,17 +2385,56 @@
       // Helpers
       // ---------------------------------------------------------------------------
 
-      function describeRunBufferChannels(buffer) {
-        switch (buffer.channelsKind) {
-          case "mono":
-            return "mono";
-          case "static":
-            return String(buffer.channelsStatic || 0) + "-channel";
-          case "dynamic":
-            return "dynamic channels";
-          default:
-            return "unknown";
+      function bufferFileName(path) {
+        const parts = String(path).split(/[\\/]/);
+        return parts[parts.length - 1] || String(path);
+      }
+
+      function loadedBufferSummary(buffer) {
+        const frames = Number(buffer.loadedFrames);
+        const channels = Number(buffer.loadedChannels);
+        const sampleRate = Number(buffer.loadedSampleRate);
+        if (
+          !Number.isSafeInteger(frames) || frames < 0
+          || !Number.isSafeInteger(channels) || channels <= 0
+          || !Number.isFinite(sampleRate) || sampleRate <= 0
+        ) {
+          return "";
         }
+        return frames.toLocaleString() + " frames \u00b7 "
+          + channels + " ch \u00b7 " + formatBufferSampleRate(sampleRate);
+      }
+
+      function formatBufferSampleRate(sampleRate) {
+        if (sampleRate < 1_000) return Math.round(sampleRate) + " Hz";
+        const khz = sampleRate / 1_000;
+        return (Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)) + " kHz";
+      }
+
+      function formatRunStatus(status, sampleRate, blockFrames) {
+        if (
+          !Number.isFinite(sampleRate)
+          || sampleRate <= 0
+          || !Number.isInteger(blockFrames)
+          || blockFrames <= 0
+        ) return status;
+        return status
+          + " \u2014 " + formatBufferSampleRate(sampleRate)
+          + " \u00b7 " + blockFrames + " frames";
+      }
+
+      function selectRunSetting(select, value, label) {
+        if (!Number.isFinite(value) || value <= 0) return;
+        const stringValue = String(value);
+        let option = [...select.options].find(candidate => candidate.value === stringValue);
+        if (!option) {
+          option = document.createElement("option");
+          option.value = stringValue;
+          option.textContent = label;
+          option.dataset.custom = "true";
+          select.appendChild(option);
+        }
+        select.value = stringValue;
       }
 
       function renderDeviceOptions(node, devices, selected, enabled) {
@@ -1537,6 +2471,7 @@
       }
 
       setupCollapsibleSections();
+      setupParamLayoutToggle();
       applyTheme();
       render();
     </script>

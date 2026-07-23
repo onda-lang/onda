@@ -42,6 +42,7 @@ const smokeMode = pageParams.has("smoke");
 const requestedExample = pageParams.get("example");
 const projectStorageKey = "onda.browser-ide.project.v1";
 const editorFontSizeStorageKey = "onda.browser-ide.editor-font-size.v1";
+const compileOptionsStorageKey = "onda.browser-ide.compile-options.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
 const supportedBlockSizes = new Set([128, 256, 512, 1024, 2048]);
@@ -136,6 +137,30 @@ function restoreEditorFontSize() {
   editorFontSizeEl.value = String(editorFontSize);
 }
 
+function restoreCompileOptions() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(compileOptionsStorageKey));
+    const sampleRate = Number(stored?.sampleRate);
+    const blockSize = Number(stored?.blockSize);
+    if (supportedSampleRates.has(sampleRate)) {
+      sampleRateEl.value = String(sampleRate);
+    }
+    if (supportedBlockSizes.has(blockSize)) {
+      blockSizeEl.value = String(blockSize);
+    }
+  } catch {
+    // The HTML defaults remain available when storage is disabled or malformed.
+  }
+}
+
+function saveCompileOptions(options) {
+  try {
+    localStorage.setItem(compileOptionsStorageKey, JSON.stringify(options));
+  } catch {
+    // Compile controls still work for this page when browser storage is disabled.
+  }
+}
+
 function applyEditorFontSize(fontSize) {
   editorFontSize = fontSize;
   projectEditor.setFontSize(fontSize);
@@ -175,7 +200,7 @@ async function runProject() {
   const key = compilationKey(project, options);
   const needsCompilation = !artifact || artifactCompilationKey !== key;
   if (needsCompilation) {
-    runView.setCompiling(project.entry);
+    runView.setCompiling(project.entry, options);
     setStatus("Compiling");
   } else {
     runView.setStarting(project.entry);
@@ -198,11 +223,11 @@ async function runProject() {
     if (!runView.buffersReady()) {
       await closeAudioContext();
       runView.setWaitingForBuffers();
-      setStatus(UNBOUND_STATUS, "ready");
+      setStatus(UNBOUND_STATUS);
       return;
     }
     await startAudio();
-    setStatus("Playing", "ready");
+    setStatus("Playing", "playing");
     const runViewDocument = runViewFrame.contentDocument;
     const editorBindings = smokeMode ? await smokeEditorBindings() : {};
     const themeFollowsPage = smokeMode
@@ -459,12 +484,10 @@ async function smokeEditorBindings() {
     && !runViewDocument.body.dispatchEvent(runViewStopEvent);
 
   const project = projectEditor.project();
-  const encodedSession = await encodeSharedSession({ ...project, ...compileOptions() });
+  const encodedSession = await encodeSharedSession(project);
   const decodedSession = await decodeSharedSession(sharedSessionHash(encodedSession));
   const shareRoundTripHandled = decodedSession.entry === project.entry
     && decodedSession.active === project.active
-    && decodedSession.sampleRate === Number(sampleRateEl.value)
-    && decodedSession.blockSize === Number(blockSizeEl.value)
     && JSON.stringify(decodedSession.sources) === JSON.stringify(project.sources);
 
   return {
@@ -581,10 +604,7 @@ async function startAudio() {
 async function stopAudio() {
   if (!context) {
     runView.setStopped();
-    setStatus(
-      runView.buffersReady() ? "Stopped" : UNBOUND_STATUS,
-      "ready",
-    );
+    setStatus(runView.buffersReady() ? "Stopped" : UNBOUND_STATUS);
     return;
   }
   scopeSource.stop();
@@ -594,10 +614,7 @@ async function stopAudio() {
   audioProcessor = null;
   await closeAudioContext();
   runView.setStopped();
-  setStatus(
-    runView.buffersReady() ? "Stopped" : UNBOUND_STATUS,
-    "ready",
-  );
+  setStatus(runView.buffersReady() ? "Stopped" : UNBOUND_STATUS);
 }
 
 async function stopExecution() {
@@ -641,15 +658,20 @@ async function bindBufferFile(name, file) {
   if (!(file instanceof File)) throw new Error("the selected buffer is not a browser File");
   const buffer = artifact?.metadata.metadata.buffers.find((item) => item.name === name);
   if (!buffer) throw new Error(`unknown buffer '${name}'`);
+  let binding;
   try {
-    await prepareBufferBinding(buffer, file);
+    binding = await prepareBufferBinding(buffer, file);
   } catch (error) {
     runView.showError(error);
     setErrorStatus();
     return;
   }
   bufferFiles.set(name, file);
-  runView.updateBufferFile(name, file);
+  runView.updateBufferFile(name, file, {
+    frames: binding.frames,
+    channels: binding.channels,
+    sampleRate: binding.sampleRate,
+  });
   if (context) {
     await restartAudioForBuffers();
   } else if (processingRequested && runView.buffersReady()) {
@@ -722,20 +744,13 @@ function smokeBufferFile() {
 
 function initializeEditor(initialSharedSession, initialExampleProject) {
   restoreEditorFontSize();
+  restoreCompileOptions();
   let storedProject = normalizeStoredProject(initialSharedSession ?? initialExampleProject);
   if (!storedProject && !smokeMode && !requestedExample) {
     try {
       storedProject = normalizeStoredProject(JSON.parse(localStorage.getItem(projectStorageKey)));
     } catch {
       // Restore the bundled project if local state is malformed.
-    }
-  }
-  if (storedProject && initialSharedSession) {
-    if (supportedSampleRates.has(Number(initialSharedSession.sampleRate))) {
-      sampleRateEl.value = String(initialSharedSession.sampleRate);
-    }
-    if (supportedBlockSizes.has(Number(initialSharedSession.blockSize))) {
-      blockSizeEl.value = String(initialSharedSession.blockSize);
     }
   }
   needsBundledExample = !storedProject;
@@ -798,7 +813,6 @@ async function shareProject() {
   try {
     const encoded = await encodeSharedSession({
       ...projectEditor.project(),
-      ...compileOptions(),
     });
     const url = new URL(window.location.href);
     url.search = "";
@@ -842,6 +856,7 @@ shareProjectButton.addEventListener("click", () => void shareProject());
 for (const select of [sampleRateEl, blockSizeEl]) {
   select.addEventListener("change", () => {
     const options = compileOptions();
+    saveCompileOptions(options);
     languageServer?.setAnalysisOptions(options);
     setStatus("Ready", "ready");
   });

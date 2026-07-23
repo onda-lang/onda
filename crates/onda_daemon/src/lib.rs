@@ -348,6 +348,9 @@ mod tests {
         assert_eq!(buffer_info.len(), 2);
         assert_eq!(buffer_info[0].name, "src");
         assert!(buffer_info[0].loaded_path.is_none());
+        assert_eq!(buffer_info[0].loaded_frames, None);
+        assert_eq!(buffer_info[0].loaded_channels, None);
+        assert_eq!(buffer_info[0].loaded_sample_rate_hz, None);
 
         let unbound = session
             .render_run_block(&main)
@@ -359,6 +362,10 @@ mod tests {
             .expect("active run")
             .bind_buffer_wav_path("src", &wav)
             .expect("wav buffer bind should succeed");
+        let loaded = &session.run(&main).expect("active run").buffer_info()[0];
+        assert_eq!(loaded.loaded_frames, Some(4));
+        assert_eq!(loaded.loaded_channels, Some(1));
+        assert_eq!(loaded.loaded_sample_rate_hz, Some(48_000.0));
 
         session
             .render_run_block(&main)
@@ -559,13 +566,13 @@ mod tests {
     }
 
     #[test]
-    fn run_exposes_and_triggers_scalar_events() {
+    fn run_exposes_all_events_and_triggers_scalar_events() {
         let dir = mk_temp_dir("run_events");
         let main = dir.join("main.onda");
 
         write_file(
             &main,
-            "outs:\n  out1\n  out2\ninit:\n  note_state: i32 = 0\n  vel_state = 0.0\nevents:\n  note_on(note: i32, vel: f32, accent: bool):\n    note_state = note\n    vel_state = vel\n    if (accent):\n      vel_state = vel_state + 1.0\n  unsupported(values: f32[2]):\n    note_state = 1\nsample:\n  out1 = f32(note_state)\n  out2 = vel_state\n",
+            "outs:\n  out1\n  out2\ninit:\n  note_state: i32 = 0\n  vel_state = 0.0\nevents:\n  note_on(note: i32, vel: f32, accent: bool):\n    note_state = note\n    vel_state = vel\n    if (accent):\n      vel_state = vel_state + 1.0\n  array_event(values: f32[2]):\n    vel_state = values[0] + values[1]\n  slice_event(values: f32[]):\n    vel_state = values[0] * values[1]\nsample:\n  out1 = f32(note_state)\n  out2 = vel_state\n",
         );
 
         let mut session = DaemonSession::default();
@@ -574,12 +581,53 @@ mod tests {
             .expect("run should compile and start");
 
         let events = session.run(&main).expect("active run").event_info();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0].name, "note_on");
         assert_eq!(events[0].params.len(), 3);
         assert_eq!(events[0].params[0].type_repr, "i32");
         assert_eq!(events[0].params[1].type_repr, "f32");
         assert_eq!(events[0].params[2].type_repr, "bool");
+        assert_eq!(events[1].name, "array_event");
+        assert_eq!(events[1].params[0].type_repr, "f32[2]");
+        assert_eq!(
+            events[1].params[0].value,
+            RunEventValue::Array(vec![RunEventValue::Number(0.0), RunEventValue::Number(0.0),])
+        );
+        assert_eq!(events[2].name, "slice_event");
+        assert_eq!(events[2].params[0].type_repr, "f32[]");
+        assert_eq!(events[2].params[0].value, RunEventValue::Array(Vec::new()));
+
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .trigger_event(
+                "array_event",
+                &[RunEventValue::Array(vec![
+                    RunEventValue::Number(0.25),
+                    RunEventValue::Number(0.5),
+                ])],
+            )
+            .expect("fixed-array event trigger should succeed");
+        let rendered = session
+            .render_run_block(&main)
+            .expect("run render after array event should succeed");
+        assert!((rendered[1][0] - 0.75).abs() < 1e-6);
+
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .trigger_event(
+                "slice_event",
+                &[RunEventValue::Array(vec![
+                    RunEventValue::Number(0.5),
+                    RunEventValue::Number(0.25),
+                ])],
+            )
+            .expect("slice event trigger should succeed");
+        let rendered = session
+            .render_run_block(&main)
+            .expect("run render after slice event should succeed");
+        assert!((rendered[1][0] - 0.125).abs() < 1e-6);
 
         session
             .run_mut(&main)

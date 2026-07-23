@@ -27,7 +27,19 @@ application.
 - macOS arm64 (`.tar.xz`)
 - Windows x64 (`.zip`)
 
-Each package contains the `onda` executable, static and shared C libraries, `onda.h`, the language guide, and the examples. Download the archive for your platform, extract it, and add its `bin` directory to your `PATH`. SHA-256 checksums are published with each release.
+Each package contains the `onda` executable, static and shared C libraries, `onda.h`, the language
+guide, and the examples. Download the archive for your platform and extract it. For portable use,
+add its `bin` directory to your `PATH`. SHA-256 checksums are published with each release.
+
+On Linux, run `./install.sh` from the extracted archive to copy `onda` to `~/.local/bin` and install
+the **Onda Run** desktop entry and icon for the current user. The generated desktop entry points to
+that stable executable location instead of the extracted archive. Run `./uninstall.sh` from the
+archive to remove those three installed files.
+
+Launching `onda` without command-line arguments opens the Onda Run file picker. The macOS package
+also includes `Onda.app`, and Windows packages include a console-free `Onda Run.exe` launcher. Keep
+the Windows launcher in the extracted package and create a shortcut when moving it to the desktop
+or Start menu, because it launches the bundled `bin\onda.exe`.
 
 Releases also contain portable npm tarballs for the WebAssembly compiler and Web Audio packages.
 

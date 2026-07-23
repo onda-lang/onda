@@ -48,8 +48,8 @@ test("both playground hosts expose new-patch and stable shortcut controls", asyn
     assert.match(host, /data-new-patch/);
     assert.match(host, /class="project-file-add"[^>]+data-new-file[^>]*>\+<\/button>/);
     assert.doesNotMatch(host, /data-new-file>New file<\/button>/);
-    assert.match(host, /Ctrl\/Cmd \+ Enter/);
-    assert.match(host, /Ctrl \+ Period/);
+    assert.match(host, /Ctrl\/⌘ ↵/);
+    assert.match(host, /Ctrl\/⌘ \./);
     assert.match(host, /data-status>Loading<\/span>/);
     assert.match(host, /data-editor-font-size/);
     assert.match(host, /<option value="2048">2048 frames<\/option>/);
@@ -58,8 +58,8 @@ test("both playground hosts expose new-patch and stable shortcut controls", asyn
   const styles = await readFile(resolve(repoRoot, "website/assets/site/styles.css"), "utf8");
   assert.match(styles, /\.play-workspace[^\n]+align-items: stretch/);
   assert.match(styles, /\.play-run-panel \{ display: flex/);
-  assert.match(styles, /\.play-intro-meta \.status[^\n]+inline-size:[^\n]+border-radius: 5px/);
-  assert.match(hosts[1], /\.status \{[^}]+inline-size:[^}]+border-radius: 6px/s);
+  assert.match(styles, /\.status::before[^\n]+border-radius: 50%/);
+  assert.match(hosts[1], /\.status::before \{[^}]+border-radius: 50%/s);
 
   const playground = await readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8");
   assert.doesNotMatch(playground, /setStatus\([^\n]*(?:Ctrl|Cmd|Period)/);
@@ -84,4 +84,64 @@ test("the shared run view only shows its scope during playback", async () => {
 
   assert.match(runView, /scopeSection\.style\.display = state\.running \? "block" : "none"/);
   assert.doesNotMatch(runView, /scopeSection\.style\.display = state\.connected/);
+});
+
+test("the empty native run view owns its compile settings", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /id="run-sample-rate"/);
+  assert.match(runView, /id="run-block-size"/);
+  assert.match(runView, /blockFrames: 256/);
+  assert.match(runView, /type: "setRunSettings"/);
+});
+
+test("the loaded run view includes active compile settings in its status", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /formatRunStatus\(status, state\.sampleRateHz, state\.blockFrames\)/);
+  assert.match(runView, /" \\u2014 " \+ formatBufferSampleRate\(sampleRate\)/);
+  assert.match(runView, /" \\u00b7 " \+ blockFrames \+ " frames"/);
+});
+
+test("the shared run view offers a device-cached knob layout", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /data-param-layout="sliders" aria-pressed="true">Sliders/);
+  assert.match(runView, /data-param-layout="knobs" aria-pressed="false">Knobs/);
+  assert.match(runView, /onda\.run-view\.param-layout\.v1/);
+  assert.match(runView, /localStorage\.setItem\(PARAM_LAYOUT_STORAGE_KEY, paramLayout\)/);
+  assert.match(runView, /function createKnobControl\(/);
+  assert.match(runView, /knob\.setAttribute\("role", "slider"\)|initializeRangeControl\(knob, param\)/);
+  assert.match(runView, /paramLayout === "knobs" \? createKnobControl : createSliderControl/);
+  assert.match(
+    runView,
+    /<div class="params-title">Params<\/div>\s*<div class="param-layout-toggle"[\s\S]*?<\/div>\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"/,
+  );
+});
+
+test("wide floating-point controls retain fractional precision", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /const FLOAT_CONTROL_TARGET_STEPS = 2000;/);
+  assert.match(runView, /const FLOAT_CONTROL_MIN_STEP = 0\.0001;/);
+  assert.match(runView, /const FLOAT_CONTROL_MAX_STEP = 0\.1;/);
+  assert.match(runView, /return Math\.min\(Math\.pow\(10, exponent\), FLOAT_CONTROL_MAX_STEP\)/);
+  assert.match(runView, /if \(param\.type === "i32" \|\| param\.type === "i64"\) \{\s+return 1;/);
+});
+
+test("the browser smoke check follows the project-only share contract", async () => {
+  const playground = await readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8");
+
+  assert.match(playground, /encodeSharedSession\(project\)/);
+  assert.doesNotMatch(playground, /decodedSession\.(?:sampleRate|blockSize)/);
+});
+
+test("both native hosts preserve runtime options across unload", async () => {
+  const [egui, webview] = await Promise.all([
+    readFile(resolve(repoRoot, "crates/onda_egui/src/lib.rs"), "utf8"),
+    readFile(resolve(repoRoot, "crates/onda_webview/src/lib.rs"), "utf8"),
+  ]);
+
+  assert.match(egui, /self\.options = controller\.options\(\)\.clone\(\)/);
+  assert.match(webview, /\*options = current\.options\(\)\.clone\(\)/);
 });

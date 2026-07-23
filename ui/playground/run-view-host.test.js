@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BrowserRunViewHost, mergeParams } from "./run-view-host.js";
+import { BrowserRunViewHost, mergeEvents, mergeParams } from "./run-view-host.js";
 import { UNBOUND_BUFFERS_MESSAGE } from "./browser-buffers.js";
 
 function scalarParam(overrides = {}) {
@@ -87,6 +87,98 @@ test("decodes floating-point bit-pattern representations", () => {
   assert.equal(param.rangeMax, 2);
 });
 
+test("preserves event array shapes instead of presenting them as scalars", () => {
+  const events = mergeEvents([{
+    name: "load",
+    params: [
+      {
+        name: "fixed",
+        type_repr: "f32[2]",
+        scalar: "f32",
+        array_len: 2,
+        is_slice: false,
+        default_reprs: ["0.5", "0.25"],
+      },
+      {
+        name: "samples",
+        type_repr: "f32[]",
+        scalar: "f32",
+        array_len: 0,
+        is_slice: true,
+        default_reprs: [],
+      },
+    ],
+  }], []);
+
+  assert.deepEqual(events[0].args, [
+    {
+      index: 0,
+      name: "fixed",
+      type: "f32[2]",
+      scalar: "f32",
+      arrayLength: 2,
+      isSlice: false,
+      default: [0.5, 0.25],
+      value: [0.5, 0.25],
+    },
+    {
+      index: 1,
+      name: "samples",
+      type: "f32[]",
+      scalar: "f32",
+      arrayLength: null,
+      isSlice: true,
+      default: [],
+      value: [],
+    },
+  ]);
+});
+
+test("preserves event values only while the argument shape matches", () => {
+  const scalarEvent = {
+    name: "load",
+    params: [{
+      name: "samples",
+      type_repr: "f32",
+      scalar: "f32",
+      array_len: 1,
+      is_slice: false,
+      default_reprs: ["1"],
+    }],
+  };
+  const [initial] = mergeEvents([scalarEvent], []);
+  const [preserved] = mergeEvents([scalarEvent], [{
+    ...initial,
+    args: [{ ...initial.args[0], value: 0.5 }],
+  }]);
+  const [resetForArray] = mergeEvents([{
+    ...scalarEvent,
+    params: [{
+      ...scalarEvent.params[0],
+      type_repr: "f32[2]",
+      array_len: 2,
+      default_reprs: ["1", "2"],
+    }],
+  }], [{
+    ...initial,
+    args: [{ ...initial.args[0], value: 0.5 }],
+  }]);
+  const [resetForDefault] = mergeEvents([{
+    ...scalarEvent,
+    params: [{
+      ...scalarEvent.params[0],
+      default_reprs: ["2"],
+    }],
+  }], [{
+    ...initial,
+    args: [{ ...initial.args[0], value: 0.5 }],
+  }]);
+
+  assert.equal(preserved.args[0].value, 0.5);
+  assert.deepEqual(resetForArray.args[0].value, [1, 2]);
+  assert.equal(resetForDefault.args[0].value, 2);
+});
+
 test("blocks browser playback and shows guidance until every buffer is bound", async () => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;
@@ -114,6 +206,10 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
     });
     host.setArtifact({
       metadata: {
+        compile: {
+          sample_rate: 44_100,
+          block_size: 256,
+        },
         metadata: {
           params: [],
           events: [],
@@ -130,10 +226,24 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
 
     assert.equal(host.state.status, UNBOUND_BUFFERS_MESSAGE);
     assert.equal(host.state.running, false);
+    assert.equal(host.state.sampleRateHz, 44_100);
+    assert.equal(host.state.blockFrames, 256);
     await host.handleMessage({ type: "start" });
     assert.equal(starts, 0);
 
-    host.updateBufferFile("clip", { name: "clip.wav" });
+    host.updateBufferFile("clip", { name: "clip.wav" }, {
+      frames: 96_000,
+      channels: 2,
+      sampleRate: 48_000,
+    });
+    assert.deepEqual(
+      {
+        loadedFrames: host.state.buffers[0].loadedFrames,
+        loadedChannels: host.state.buffers[0].loadedChannels,
+        loadedSampleRate: host.state.buffers[0].loadedSampleRate,
+      },
+      { loadedFrames: 96_000, loadedChannels: 2, loadedSampleRate: 48_000 },
+    );
     await host.handleMessage({ type: "start" });
     assert.equal(starts, 1);
     host.dispose();

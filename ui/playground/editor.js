@@ -4,6 +4,7 @@ import { indentWithTab } from "@codemirror/commands";
 import {
   HighlightStyle,
   StreamLanguage,
+  indentUnit,
   syntaxHighlighting,
 } from "@codemirror/language";
 import { lintGutter, setDiagnostics } from "@codemirror/lint";
@@ -138,11 +139,37 @@ function visibleEditorMargins(view) {
   const editor = view.scrollDOM.getBoundingClientRect();
   const viewportTop = viewport.offsetTop;
   const viewportBottom = viewportTop + viewport.height;
+  const viewportLeft = viewport.offsetLeft;
+  const viewportRight = viewportLeft + viewport.width;
+  const gutterWidth =
+    view.dom.querySelector(".cm-gutters")?.getBoundingClientRect().width ?? 0;
   const padding = 16;
   return {
     top: Math.max(0, viewportTop - editor.top + padding),
     bottom: Math.max(0, editor.bottom - viewportBottom + padding),
+    left: Math.max(0, viewportLeft - editor.left) + gutterWidth + padding,
+    right: Math.max(0, editor.right - viewportRight + padding),
   };
+}
+
+export function colonIndentText(lineBeforeCursor) {
+  const indentation = lineBeforeCursor.match(/^[ \t]*/)?.[0] ?? "";
+  const code = lineBeforeCursor.replace(/(?:^\s*|\s+)#.*$/, "").trimEnd();
+  return code.endsWith(":") ? `\n${indentation}  ` : null;
+}
+
+function insertIndentedNewline({ state, dispatch }) {
+  if (state.readOnly) return false;
+  const selection = state.selection.main;
+  if (!selection.empty) return false;
+  const line = state.doc.lineAt(selection.head);
+  const insertion = colonIndentText(state.sliceDoc(line.from, selection.head));
+  if (insertion === null) return false;
+  dispatch(state.update(
+    state.replaceSelection(insertion),
+    { scrollIntoView: true, userEvent: "input" },
+  ));
+  return true;
 }
 
 const ondaEditorTheme = EditorView.theme({
@@ -297,7 +324,11 @@ export class OndaProjectEditor {
         }),
         ondaEditorTheme,
         EditorState.tabSize.of(2),
-        Prec.high(keymap.of([indentWithTab])),
+        indentUnit.of("  "),
+        Prec.high(keymap.of([
+          { key: "Enter", run: insertIndentedNewline },
+          indentWithTab,
+        ])),
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
         EditorView.scrollMargins.of(visibleEditorMargins),

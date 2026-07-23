@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Onda Run
+Comment=Run an Onda audio patch
+Exec=onda run %f
+TryExec=onda
+Icon=onda-run
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupWMClass=onda-run

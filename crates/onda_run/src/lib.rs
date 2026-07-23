@@ -27,6 +27,7 @@ pub use playback::{
 
 const SCOPE_MAX_FRAMES: usize = 1024;
 const SCOPE_POLL_INTERVAL_MS: u64 = 50;
+pub const DEFAULT_REALTIME_BLOCK_FRAMES: usize = 256;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -58,7 +59,7 @@ impl Default for RunHostOptions {
     fn default() -> Self {
         Self {
             sample_rate_hz: 48_000,
-            block_frames: 128,
+            block_frames: DEFAULT_REALTIME_BLOCK_FRAMES,
             opt_level: "3".to_owned(),
             input_device: None,
             output_device: None,
@@ -232,6 +233,10 @@ impl RunController {
 
     pub fn state(&self) -> &RunState {
         &self.state
+    }
+
+    pub fn options(&self) -> &RunHostOptions {
+        &self.options
     }
 
     pub fn path(&self) -> &Path {
@@ -519,6 +524,11 @@ impl RunController {
         self.state.params = ready.params;
         apply_preserved_param_state(&mut self.state.params, &self.preserved_params);
         self.state.buffers = ready.buffers;
+        reconcile_preserved_events(
+            &mut self.preserved_events,
+            &self.state.events,
+            &ready.events,
+        );
         self.state.events = ready.events;
         apply_preserved_event_state(&mut self.state.events, &self.preserved_events);
         self.state.path = ready.path;
@@ -583,11 +593,13 @@ impl RunController {
                         PendingCommand::BindBuffer { name, path } => {
                             set_preserved_buffer(&mut self.preserved_buffers, &name, &path);
                             update_buffer_loaded_path(&mut self.state.buffers, &name, Some(&path));
+                            let _ = self.bridge.send_command("getBuffers", &json!({}));
                             self.refresh_processing_state();
                         }
                         PendingCommand::ClearBuffer { name } => {
                             self.preserved_buffers.retain(|(n, _)| n != &name);
                             update_buffer_loaded_path(&mut self.state.buffers, &name, None);
+                            let _ = self.bridge.send_command("getBuffers", &json!({}));
                             self.refresh_processing_state();
                         }
                         PendingCommand::Play => {
@@ -621,6 +633,11 @@ impl RunController {
                 }
             }
             if let Some(result) = resp.get("result") {
+                if let Some(buffers) = result.get("buffers").and_then(Value::as_array) {
+                    self.state.buffers = buffers.clone();
+                    self.refresh_processing_state();
+                    poll.state_changed = true;
+                }
                 let channels = result.get("channels").and_then(Value::as_u64);
                 let samples = result.get("samples").and_then(Value::as_array);
                 if let (Some(channels), Some(samples)) = (channels, samples) {
@@ -725,6 +742,9 @@ fn run_buffer_json(buffer: &onda_daemon::RunBufferInfo) -> Value {
         "channelsKind": channels_kind,
         "channelsStatic": channels_static,
         "loadedPath": buffer.loaded_path,
+        "loadedFrames": buffer.loaded_frames,
+        "loadedChannels": buffer.loaded_channels,
+        "loadedSampleRate": buffer.loaded_sample_rate_hz,
     })
 }
 
@@ -750,6 +770,9 @@ fn run_event_value_json(value: &RunEventValue) -> Value {
     match value {
         RunEventValue::Bool(value) => Value::Bool(*value),
         RunEventValue::Number(value) => json!(value),
+        RunEventValue::Array(values) => {
+            Value::Array(values.iter().map(run_event_value_json).collect())
+        }
     }
 }
 
@@ -1188,6 +1211,46 @@ fn params_are_compatible_for_preservation(old_param: &Value, new_param: &Value) 
         && old_param.get("scalar") == new_param.get("scalar")
 }
 
+fn reconcile_preserved_events(
+    preserved_events: &mut Vec<(String, Vec<Value>)>,
+    old_events: &[Value],
+    new_events: &[Value],
+) {
+    preserved_events.retain(|(name, _)| {
+        let Some(old_event) = old_events
+            .iter()
+            .find(|event| event_name(event) == Some(name))
+        else {
+            return false;
+        };
+        let Some(new_event) = new_events
+            .iter()
+            .find(|event| event_name(event) == Some(name))
+        else {
+            return false;
+        };
+        events_are_compatible_for_preservation(old_event, new_event)
+    });
+}
+
+fn events_are_compatible_for_preservation(old_event: &Value, new_event: &Value) -> bool {
+    if event_name(old_event) != event_name(new_event) {
+        return false;
+    }
+    let (Some(old_args), Some(new_args)) = (
+        old_event.get("args").and_then(Value::as_array),
+        new_event.get("args").and_then(Value::as_array),
+    ) else {
+        return false;
+    };
+    old_args.len() == new_args.len()
+        && old_args.iter().zip(new_args).all(|(old_arg, new_arg)| {
+            old_arg.get("name") == new_arg.get("name")
+                && old_arg.get("type") == new_arg.get("type")
+                && old_arg.get("default") == new_arg.get("default")
+        })
+}
+
 fn apply_preserved_event_state(events: &mut [Value], preserved_events: &[(String, Vec<Value>)]) {
     for event in events {
         let Some(name) = event_name(event).map(str::to_owned) else {
@@ -1311,14 +1374,20 @@ fn display_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        params_are_compatible_for_preservation, reconcile_preserved_params,
-        source_differs_from_cached, FileWatcher,
+        events_are_compatible_for_preservation, params_are_compatible_for_preservation,
+        reconcile_preserved_events, reconcile_preserved_params, source_differs_from_cached,
+        FileWatcher, RunHostOptions,
     };
     use serde_json::{json, Value};
     use std::fs;
     use std::path::Path;
     use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn realtime_host_defaults_to_256_frame_blocks() {
+        assert_eq!(RunHostOptions::default().block_frames, 256);
+    }
 
     #[test]
     fn file_watcher_survives_repeated_atomic_replaces() {
@@ -1432,6 +1501,74 @@ mod tests {
             &base,
             &run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), false)
         ));
+    }
+
+    #[test]
+    fn preserved_events_are_dropped_when_an_argument_signature_changes() {
+        let old_events = vec![run_event(
+            "load",
+            vec![run_event_arg("samples", "f32", json!(1.0))],
+        )];
+        let new_events = vec![run_event(
+            "load",
+            vec![run_event_arg("samples", "f32[2]", json!([1.0, 2.0]))],
+        )];
+        let mut preserved = vec![("load".to_owned(), vec![json!(0.5)])];
+
+        reconcile_preserved_events(&mut preserved, &old_events, &new_events);
+
+        assert!(
+            preserved.is_empty(),
+            "changed event argument shape should reset preserved values"
+        );
+    }
+
+    #[test]
+    fn event_preservation_requires_the_same_ordered_argument_signature() {
+        let base = run_event(
+            "load",
+            vec![
+                run_event_arg("gain", "f32", json!(1.0)),
+                run_event_arg("enabled", "bool", json!(true)),
+            ],
+        );
+        assert!(events_are_compatible_for_preservation(&base, &base));
+        assert!(!events_are_compatible_for_preservation(
+            &base,
+            &run_event(
+                "load",
+                vec![
+                    run_event_arg("enabled", "bool", json!(true)),
+                    run_event_arg("gain", "f32", json!(1.0)),
+                ],
+            )
+        ));
+        assert!(!events_are_compatible_for_preservation(
+            &base,
+            &run_event(
+                "load",
+                vec![
+                    run_event_arg("gain", "f32", json!(0.5)),
+                    run_event_arg("enabled", "bool", json!(true)),
+                ],
+            )
+        ));
+    }
+
+    fn run_event(name: &str, args: Vec<Value>) -> Value {
+        json!({
+            "name": name,
+            "args": args,
+        })
+    }
+
+    fn run_event_arg(name: &str, ty: &str, default: Value) -> Value {
+        json!({
+            "name": name,
+            "type": ty,
+            "default": default,
+            "value": default,
+        })
     }
 
     fn run_param(

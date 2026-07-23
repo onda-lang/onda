@@ -24,6 +24,8 @@ export class BrowserRunViewHost {
       currentInputDevice: null,
       currentOutputDevice: null,
       supportsDeviceSelection: false,
+      sampleRateHz: 48_000,
+      blockFrames: 512,
       themeMode: document.documentElement.dataset.theme || "auto",
     };
     this.onWindowMessage = (event) => {
@@ -56,13 +58,15 @@ export class BrowserRunViewHost {
     this.postState();
   }
 
-  setCompiling(path) {
+  setCompiling(path, options = null) {
     this.setState({
       path,
       running: false,
       connected: false,
       status: "Compiling",
       error: "",
+      sampleRateHz: options?.sampleRate ?? this.state.sampleRateHz,
+      blockFrames: options?.blockSize ?? this.state.blockFrames,
     });
   }
 
@@ -82,6 +86,14 @@ export class BrowserRunViewHost {
     this.state.events = mergeEvents(metadata.events ?? [], this.state.events);
     this.state.buffers = mergeBuffers(metadata.buffers ?? [], this.state.buffers, bufferFiles);
     this.state.outputChannels = flattenedAudioChannelCount(metadata.outputs);
+    const sampleRateHz = Number(artifact.metadata.compile?.sample_rate);
+    const blockFrames = Number(artifact.metadata.compile?.block_size);
+    if (Number.isFinite(sampleRateHz) && sampleRateHz > 0) {
+      this.state.sampleRateHz = sampleRateHz;
+    }
+    if (Number.isInteger(blockFrames) && blockFrames > 0) {
+      this.state.blockFrames = blockFrames;
+    }
     this.state.error = "";
     this.state.sourceDirty = false;
     if (!this.buffersReady()) {
@@ -130,7 +142,8 @@ export class BrowserRunViewHost {
     this.setState({
       running: true,
       connected: true,
-      status: status ?? `Running at ${sampleRate.toLocaleString()} Hz`,
+      status: status ?? "Running",
+      sampleRateHz: sampleRate,
       error: "",
     });
   }
@@ -169,9 +182,17 @@ export class BrowserRunViewHost {
     this.postState();
   }
 
-  updateBufferFile(name, file) {
+  updateBufferFile(name, file, metadata = null) {
     this.state.buffers = this.state.buffers.map((buffer) =>
-      buffer.name === name ? { ...buffer, loadedPath: file?.name ?? null } : buffer
+      buffer.name === name
+        ? {
+            ...buffer,
+            loadedPath: file?.name ?? null,
+            loadedFrames: file ? metadata?.frames ?? null : null,
+            loadedChannels: file ? metadata?.channels ?? null : null,
+            loadedSampleRate: file ? metadata?.sampleRate ?? null : null,
+          }
+        : buffer
     );
     this.state.error = "";
     if (!this.buffersReady()) {
@@ -332,19 +353,25 @@ export function mergeParams(params, existing) {
 }
 
 function mergeBuffers(buffers, existing, bufferFiles) {
-  return buffers.map((buffer, index) => ({
-    index,
-    name: buffer.name,
-    type: buffer.type_repr,
-    channelsKind: buffer.channels,
-    channelsStatic: buffer.static_channels ?? null,
-    loadedPath: bufferFiles.get(buffer.name)?.name
-      ?? existing.find((item) => item.name === buffer.name)?.loadedPath
-      ?? null,
-  }));
+  return buffers.map((buffer, index) => {
+    const previous = existing.find((item) => item.name === buffer.name);
+    const loadedPath = bufferFiles.get(buffer.name)?.name ?? previous?.loadedPath ?? null;
+    const preservesLoadedFile = loadedPath !== null && previous?.loadedPath === loadedPath;
+    return {
+      index,
+      name: buffer.name,
+      type: buffer.type_repr,
+      channelsKind: buffer.channels,
+      channelsStatic: buffer.static_channels ?? null,
+      loadedPath,
+      loadedFrames: preservesLoadedFile ? previous.loadedFrames ?? null : null,
+      loadedChannels: preservesLoadedFile ? previous.loadedChannels ?? null : null,
+      loadedSampleRate: preservesLoadedFile ? previous.loadedSampleRate ?? null : null,
+    };
+  });
 }
 
-function mergeEvents(events, existing) {
+export function mergeEvents(events, existing) {
   return events.map((event, index) => {
     const previous = existing.find((item) => item.name === event.name);
     return {
@@ -355,12 +382,27 @@ function mergeEvents(events, existing) {
         const next = {
           index: argIndex,
           name: param.name,
-          type: param.scalar,
-          default: param.array_len === 1
-            ? decodeScalarRepr(param.scalar, param.default_reprs?.[0])
-            : null,
+          type: param.type_repr,
+          scalar: param.scalar,
+          arrayLength: param.is_slice ? null : param.array_len,
+          isSlice: param.is_slice === true,
+          default: param.is_slice
+            ? []
+            : param.array_len === 1
+              ? decodeScalarRepr(param.scalar, param.default_reprs?.[0])
+              : Array.from(
+                { length: param.array_len },
+                (_, valueIndex) =>
+                  decodeScalarRepr(param.scalar, param.default_reprs?.[valueIndex])
+                  ?? (param.scalar === "bool" ? false : 0),
+              ),
         };
-        return { ...next, value: prior?.value ?? initialEventArgValue(next) };
+        return {
+          ...next,
+          value: prior && eventArgShapeMatches(next, prior)
+            ? prior.value
+            : initialEventArgValue(next),
+        };
       }),
     };
   });
@@ -373,6 +415,20 @@ function paramShapeMatches(left, right) {
     && left.rangeMax === right.rangeMax;
 }
 
+function eventArgShapeMatches(left, right) {
+  return left.type === right.type
+    && left.scalar === right.scalar
+    && left.arrayLength === right.arrayLength
+    && left.isSlice === right.isSlice
+    && eventDefaultsMatch(left.default, right.default);
+}
+
+function eventDefaultsMatch(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right)) return left === right;
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
 function initialParamValue(param) {
   if (param.type === "bool") return Boolean(param.default);
   if (param.default !== null && param.default !== undefined) return param.default;
@@ -381,6 +437,13 @@ function initialParamValue(param) {
 }
 
 function initialEventArgValue(arg) {
+  if (
+    arg.isSlice
+    || (typeof arg.arrayLength === "number" && arg.arrayLength !== 1)
+    || (typeof arg.type === "string" && /\[[0-9]*\]$/.test(arg.type))
+  ) {
+    return Array.isArray(arg.default) ? [...arg.default] : [];
+  }
   if (arg.type === "bool") return Boolean(arg.default);
   return Number.isFinite(Number(arg.default)) ? Number(arg.default) : 0;
 }

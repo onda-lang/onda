@@ -916,6 +916,22 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io
     writer.flush()
 }
 
+fn run_event_value_from_json(value: Value) -> Result<RunEventValue, String> {
+    match value {
+        Value::Bool(value) => Ok(RunEventValue::Bool(value)),
+        Value::Number(value) => value
+            .as_f64()
+            .map(RunEventValue::Number)
+            .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
+        Value::Array(values) => values
+            .into_iter()
+            .map(run_event_value_from_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(RunEventValue::Array),
+        _ => Err("triggerEvent values must be numbers, booleans, or arrays".to_owned()),
+    }
+}
+
 fn spawn_run_control_server(
     listener: TcpListener,
     control_tx: mpsc::Sender<PlaybackControlCommand>,
@@ -1196,14 +1212,7 @@ fn run_control_response(
             let raw_values = request.values.unwrap_or_default();
             let values = raw_values
                 .into_iter()
-                .map(|value| match value {
-                    Value::Bool(value) => Ok(RunEventValue::Bool(value)),
-                    Value::Number(value) => value
-                        .as_f64()
-                        .map(RunEventValue::Number)
-                        .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
-                    _ => Err("triggerEvent values must be numbers or booleans".to_owned()),
-                })
+                .map(run_event_value_from_json)
                 .collect::<Result<Vec<_>, _>>()?;
             if request_id.is_none() {
                 control_tx
@@ -1382,7 +1391,12 @@ mod tests {
                 name: Some("note_on".to_owned()),
                 path: None,
                 value: None,
-                values: Some(vec![Value::from(60), Value::from(0.75), Value::Bool(true)]),
+                values: Some(vec![
+                    Value::from(60),
+                    Value::from(0.75),
+                    Value::Bool(true),
+                    serde_json::json!([0.25, 0.5]),
+                ]),
                 max_frames: None,
             },
             &control_tx,
@@ -1406,6 +1420,10 @@ mod tests {
                         RunEventValue::Number(60.0),
                         RunEventValue::Number(0.75),
                         RunEventValue::Bool(true),
+                        RunEventValue::Array(vec![
+                            RunEventValue::Number(0.25),
+                            RunEventValue::Number(0.5),
+                        ]),
                     ]
                 );
                 assert!(reply.is_none());

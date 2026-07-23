@@ -47,11 +47,12 @@
       h1, p { margin-top: 0; }
       h1 { margin-bottom: 4px; font-size: clamp(22px, 4vw, 34px); }
       p { color: #9cb0c3; }
-      .header-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 12px; }
-      .shortcut-help { display: flex; align-items: center; flex-wrap: nowrap; gap: 5px 7px; margin: 0; color: var(--muted); font-size: 11px; }
-      .shortcut { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-      .shortcut > span { color: var(--text); font-weight: 650; }
-      .shortcut-help kbd { display: inline-flex; align-items: center; min-height: 23px; padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--soft); color: var(--ink); font: 600 10px/1 var(--mono); }
+      .header-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 14px; }
+      .header-divider { width: 1px; height: 16px; background: var(--line); }
+      .shortcut-help { display: flex; align-items: center; flex-wrap: nowrap; gap: 16px; margin: 0; color: var(--muted); }
+      .shortcut { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+      .shortcut > span { color: var(--text); font-size: 11px; font-weight: 650; }
+      .shortcut-help kbd { padding: 0; border: 0; background: none; color: var(--muted); font: 600 11px/1 var(--mono); }
       .workspace { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(390px, .8fr); gap: 16px; align-items: stretch; }
       .panel {
         min-width: 0;
@@ -83,19 +84,19 @@
         color: var(--ink);
       }
       .status {
+        --status-color: var(--muted);
         display: inline-flex;
         align-items: center;
-        justify-content: center;
-        inline-size: 116px;
-        min-height: 34px;
-        padding: 6px 10px;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        color: #dce7f2;
-        background: #18212b;
+        gap: 7px;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+        white-space: nowrap;
       }
-      .status.ready { border-color: #227a52; background: var(--soft); color: #9de2be; }
-      .status.fail { border-color: #8a3a45; background: #35181e; color: #f0a3ad; }
+      .status::before { width: 7px; height: 7px; border-radius: 50%; background: var(--status-color); content: ""; }
+      .status.ready { --status-color: var(--syntax-keyword); }
+      .status.playing { --status-color: var(--syntax-string); }
+      .status.fail { --status-color: #f0a3ad; color: #f0a3ad; }
       .project-files { flex-wrap: nowrap; align-items: end; min-width: 0; margin-top: 12px; border-bottom: 1px solid var(--line); }
       .project-file-tabs { flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
       .project-file-add { display: grid; place-items: center; align-self: flex-start; flex: 0 0 30px; width: 30px; min-height: 30px; margin-bottom: -1px; padding: 0; border-color: transparent transparent var(--line); border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font: 16px/1 system-ui, sans-serif; }
@@ -180,7 +181,6 @@
       code { color: #9de2be; }
       @media (max-width: 980px) {
         .header-meta { justify-content: flex-start; flex-wrap: wrap; }
-        .shortcut-help { flex-wrap: wrap; }
         .workspace { grid-template-columns: 1fr; }
         .source-editor { height: min(64vh, 620px); }
         .run-view { min-height: 680px; }
@@ -227,12 +227,12 @@
           <p>The real Onda LSP, compiler, AudioWorklet runtime, and shared run view—entirely in this page.</p>
         </div>
         <div class="header-meta">
-          <p class="shortcut-help" aria-label="Playground keyboard shortcuts">
-            <span class="shortcut"><kbd>Ctrl/Cmd + Enter</kbd><span>Play</span></span>
-            <span aria-hidden="true">·</span>
-            <span class="shortcut"><kbd>Ctrl + Period</kbd><span>Stop</span></span>
-          </p>
           <span class="status" aria-live="polite" data-status>Loading</span>
+          <span class="header-divider" aria-hidden="true"></span>
+          <p class="shortcut-help" aria-label="Playground keyboard shortcuts">
+            <span class="shortcut"><span>Play</span><kbd aria-label="Control or Command plus Enter">Ctrl/⌘ ↵</kbd></span>
+            <span class="shortcut"><span>Stop</span><kbd aria-label="Control or Command plus period">Ctrl/⌘ .</kbd></span>
+          </p>
         </div>
       </header>
 

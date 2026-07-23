@@ -12,18 +12,20 @@ mod run_cmd;
 use args::parse_args;
 use compile_cmd::run_compile;
 use onda_codegen_llvm::{TargetConfig, TargetOptLevel};
-use onda_run::RunThemeMode;
+use onda_run::{RunThemeMode, DEFAULT_REALTIME_BLOCK_FRAMES};
 use run_cmd::{run_daemon, run_run};
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_DUR_SECONDS: u32 = 5;
 const DEFAULT_BLOCK_FRAMES: usize = 512;
-const DEFAULT_PLAY_BLOCK_FRAMES: usize = 128;
+const DEFAULT_PLAY_BLOCK_FRAMES: usize = DEFAULT_REALTIME_BLOCK_FRAMES;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE_BODY: &str = r#"Commands:
   
+  onda                              Open the interactive run window
+
   onda compile <input.onda>          Check, inspect, or emit compile artifacts
     
     [--emit <check|mir|mir-json|mir-messagepack|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
@@ -35,7 +37,7 @@ const USAGE_BODY: &str = r#"Commands:
     [--reloc-model <default|static|pic|dynamic-no-pic>] 
     [--code-model <default|small|kernel|medium|large>] 
   
-  onda run <input.onda>              Open the interactive run window
+  onda run [input.onda]              Open the interactive run window
     
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math] 
@@ -68,7 +70,7 @@ const USAGE_BODY: &str = r#"Commands:
 Shared Options:
   
   --sample-rate, --sr    Sample rate in Hz (default: 48000)
-  --block-size, -b       Block size in frames (default: 512; run play: 128)
+  --block-size, -b       Block size in frames (default: 512; run/play: 256)
   --opt-level            LLVM optimization level (default: 3)
   --fast-math            Enable LLVM fast-math flags for floating-point operations
   --meta                 Print available metadata for the selected command
@@ -174,7 +176,7 @@ enum RunCommand {
         buffer_bindings: Vec<(String, PathBuf)>,
     },
     Window {
-        input: PathBuf,
+        input: Option<PathBuf>,
         sample_rate_hz: u32,
         block_frames: usize,
         opt_level: TargetOptLevel,

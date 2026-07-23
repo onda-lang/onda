@@ -7,6 +7,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.5.4]
+
+### Added
+
+- Added native file pickers and support for launching `onda run` without a
+  source path.
+- Added application icons and desktop launchers for Linux, macOS, and Windows.
+- Added settings controls for audio block size and persisted view preferences.
+- Added structured array values to runtime events and their native and web
+  visualizations.
+- Added playground editor tests covering indentation and selection behavior.
+
+### Changed
+
+- Reworked the egui and webview applications with improved file lifecycle,
+  playback controls, parameter editing, buffer views, scopes, and event
+  displays.
+- Unified browser and native run-view behavior, including settings and shared
+  event rendering.
+- Improved the web playground's editor, live-run lifecycle, sharing flow, and
+  responsive layout.
+- Updated release packaging with platform-specific launchers, installers,
+  metadata, and asset validation.
+- Refreshed the website, documentation, and sample-player example for the new
+  run workflow.
+
+### Fixed
+
+- Cleaned up playback restarts and buffer metadata refreshes when recompiling
+  or switching source files.
+- Improved application shutdown and unload handling across desktop and browser
+  views.
+
 ## [0.5.3]
 
 ### Added
@@ -166,7 +199,8 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
-[0.5.3]: https://github.com/onda-lang/onda/compare/0.5.2...HEAD
+[0.5.4]: https://github.com/onda-lang/onda/compare/0.5.3...HEAD
+[0.5.3]: https://github.com/onda-lang/onda/compare/0.5.2...0.5.3
 [0.5.2]: https://github.com/onda-lang/onda/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/onda-lang/onda/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/onda-lang/onda/compare/0.4.4...0.5.0

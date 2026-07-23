@@ -63,7 +63,7 @@ Take a look at the `examples/` folder for more usage examples.
 
 ## Precompiled releases
 
-[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, static and shared C libraries, public headers, language guide and examples.
+[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application entry, static and shared C libraries, public headers, language guide and examples. The Linux archive includes `install.sh` and `uninstall.sh` for a per-user CLI and desktop installation.
 
 Tagged releases attach portable tarballs and publish the four public npm packages with provenance:
 `@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and
@@ -74,9 +74,10 @@ Tagged releases attach portable tarballs and publish the four public npm package
 The CLI surface is:
 
 ```text
+onda
 onda compile <input.onda>
 onda lsp
-onda run <input.onda> [--theme <auto|dark|light>]
+onda run [input.onda] [--theme <auto|dark|light>]
 onda run play <input.onda>
 onda run render <input.onda>
 onda daemon diagnose <input.onda>
@@ -119,8 +120,12 @@ onda compile examples/foundations/sine.onda --target-spec ./targets/arm64.toml -
 
 Opens the standalone UI window.
 This can be used to interactively play with the live-running code.
+Running `onda` without a command opens the same window with its file picker.
+The empty view lets you choose the sample rate and compile block size before loading a file. Use
+**Unload** to return there and recompile with different settings.
 
 ```bash
+onda
 onda run examples/foundations/sine.onda
 ```
 

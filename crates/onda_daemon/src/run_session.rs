@@ -73,6 +73,9 @@ pub struct RunBufferInfo {
     pub type_repr: String,
     pub channels: RunBufferChannels,
     pub loaded_path: Option<String>,
+    pub loaded_frames: Option<usize>,
+    pub loaded_channels: Option<usize>,
+    pub loaded_sample_rate_hz: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +97,7 @@ pub struct RunEventParamInfo {
 pub enum RunEventValue {
     Bool(bool),
     Number(f64),
+    Array(Vec<RunEventValue>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -274,21 +278,26 @@ impl RunSession {
             .buffers()
             .iter()
             .enumerate()
-            .map(|(index, desc)| RunBufferInfo {
-                index,
-                name: desc.name().to_owned(),
-                type_repr: desc.type_repr(),
-                channels: match desc.channels() {
-                    DeclaredBufferChannels::Mono => RunBufferChannels::Mono,
-                    DeclaredBufferChannels::Static(channels) => RunBufferChannels::Static(channels),
-                    DeclaredBufferChannels::Dynamic => RunBufferChannels::Dynamic,
-                },
-                loaded_path: self
-                    .buffer_bindings
-                    .get(index)
-                    .and_then(Option::as_ref)
-                    .and_then(|binding| binding.loaded_path.as_ref())
-                    .map(|path| display_path(path)),
+            .map(|(index, desc)| {
+                let binding = self.buffer_bindings.get(index).and_then(Option::as_ref);
+                RunBufferInfo {
+                    index,
+                    name: desc.name().to_owned(),
+                    type_repr: desc.type_repr(),
+                    channels: match desc.channels() {
+                        DeclaredBufferChannels::Mono => RunBufferChannels::Mono,
+                        DeclaredBufferChannels::Static(channels) => {
+                            RunBufferChannels::Static(channels)
+                        }
+                        DeclaredBufferChannels::Dynamic => RunBufferChannels::Dynamic,
+                    },
+                    loaded_path: binding
+                        .and_then(|binding| binding.loaded_path.as_ref())
+                        .map(|path| display_path(path)),
+                    loaded_frames: binding.map(|binding| binding.frames),
+                    loaded_channels: binding.map(|binding| binding.channels),
+                    loaded_sample_rate_hz: binding.map(|binding| binding.sample_rate_hz),
+                }
             })
             .collect()
     }
@@ -309,9 +318,6 @@ impl RunSession {
         (0..self.jit.event_count())
             .filter_map(|index| {
                 let desc = self.jit.event_descriptor(index)?;
-                if !is_run_supported_event(desc) {
-                    return None;
-                }
                 Some(RunEventInfo {
                     index,
                     name: desc.name().to_owned(),
@@ -378,18 +384,7 @@ impl RunSession {
         let Some(desc) = self.jit.event_descriptor(index) else {
             return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
         };
-        if !is_run_supported_event(desc) {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "run only supports host events with primitive scalar parameters, but '{}' is {}",
-                    name,
-                    format_event_signature(desc)
-                ),
-                0,
-                0,
-            ));
-        }
-        let payload = scalar_event_payload_bytes(desc, values)?;
+        let payload = event_payload_bytes(desc, values)?;
         trigger_event_by_index(&mut self.instance, index, &payload)
     }
 
@@ -773,20 +768,49 @@ fn should_smooth_run_param(ty: PrimitiveType) -> bool {
     matches!(ty, PrimitiveType::F32 | PrimitiveType::F64)
 }
 
-fn is_run_supported_event(desc: &DeclaredEvent) -> bool {
-    desc.params()
-        .iter()
-        .all(|param| !param.is_slice() && param.array_len() == 1)
+fn default_run_event_value(param: &DeclaredEventParam) -> RunEventValue {
+    if param.is_slice() {
+        return RunEventValue::Array(Vec::new());
+    }
+    if param.is_array() {
+        let scalar_size = event_scalar_bytes(param.elem_ty());
+        let defaults = param.default_bytes().unwrap_or_default();
+        return RunEventValue::Array(
+            (0..param.array_len())
+                .map(|index| {
+                    let start = index.saturating_mul(scalar_size);
+                    let end = start.saturating_add(scalar_size);
+                    defaults
+                        .get(start..end)
+                        .map(|bytes| scalar_run_event_value(param.elem_ty(), bytes))
+                        .unwrap_or_else(|| zero_run_event_value(param.elem_ty()))
+                })
+                .collect(),
+        );
+    }
+    let Some(bytes) = param.default_bytes() else {
+        return zero_run_event_value(param.elem_ty());
+    };
+    scalar_run_event_value(param.elem_ty(), bytes)
 }
 
-fn default_run_event_value(param: &DeclaredEventParam) -> RunEventValue {
-    let Some(bytes) = param.default_bytes() else {
-        return match param.elem_ty() {
-            PrimitiveType::Bool => RunEventValue::Bool(false),
-            _ => RunEventValue::Number(0.0),
-        };
-    };
-    match param.elem_ty() {
+fn zero_run_event_value(ty: PrimitiveType) -> RunEventValue {
+    match ty {
+        PrimitiveType::Bool => RunEventValue::Bool(false),
+        _ => RunEventValue::Number(0.0),
+    }
+}
+
+fn event_scalar_bytes(ty: PrimitiveType) -> usize {
+    match ty {
+        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F64 | PrimitiveType::I64 => 8,
+        PrimitiveType::Bool => 1,
+    }
+}
+
+fn scalar_run_event_value(ty: PrimitiveType, bytes: &[u8]) -> RunEventValue {
+    match ty {
         PrimitiveType::F32 if bytes.len() == 4 => {
             RunEventValue::Number(
                 f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
@@ -809,27 +833,14 @@ fn default_run_event_value(param: &DeclaredEventParam) -> RunEventValue {
     }
 }
 
-fn format_event_signature(desc: &DeclaredEvent) -> String {
-    if desc.params().is_empty() {
-        return format!("{}()", desc.name());
-    }
-    let params = desc
-        .params()
-        .iter()
-        .map(|param| format!("{}: {}", param.name(), param.type_repr()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{}({params})", desc.name())
-}
-
-fn scalar_event_payload_bytes(
+fn event_payload_bytes(
     desc: &DeclaredEvent,
     values: &[RunEventValue],
 ) -> Result<Vec<u8>, Diagnostic> {
     if values.len() != desc.params().len() {
         return Err(Diagnostic::runtime(
             format!(
-                "event '{}' expects {} scalar values, got {}",
+                "event '{}' expects {} values, got {}",
                 desc.name(),
                 desc.params().len(),
                 values.len()
@@ -841,9 +852,52 @@ fn scalar_event_payload_bytes(
 
     let mut out = Vec::with_capacity(desc.payload_bytes().unwrap_or(0));
     for (param, value) in desc.params().iter().zip(values.iter()) {
-        append_scalar_event_value(&mut out, desc.name(), param, value)?;
+        if param.is_slice() || param.is_array() {
+            let RunEventValue::Array(values) = value else {
+                return Err(event_value_error(
+                    desc.name(),
+                    param,
+                    format!("requires an array value, got {value:?}"),
+                ));
+            };
+            if param.is_array() && values.len() != param.array_len() {
+                return Err(event_value_error(
+                    desc.name(),
+                    param,
+                    format!(
+                        "requires exactly {} values, got {}",
+                        param.array_len(),
+                        values.len()
+                    ),
+                ));
+            }
+            if param.is_slice() {
+                let length = i32::try_from(values.len()).map_err(|_| {
+                    event_value_error(desc.name(), param, "contains too many values".to_owned())
+                })?;
+                out.extend_from_slice(&length.to_ne_bytes());
+            }
+            for value in values {
+                append_scalar_event_value(&mut out, desc.name(), param, value)?;
+            }
+        } else {
+            append_scalar_event_value(&mut out, desc.name(), param, value)?;
+        }
     }
     Ok(out)
+}
+
+fn event_value_error(event_name: &str, param: &DeclaredEventParam, detail: String) -> Diagnostic {
+    Diagnostic::runtime(
+        format!(
+            "event '{}' parameter '{}' {}",
+            event_name,
+            param.name(),
+            detail
+        ),
+        0,
+        0,
+    )
 }
 
 fn append_scalar_event_value(
@@ -891,6 +945,13 @@ fn append_scalar_event_value(
                         ));
                     }
                 }
+                RunEventValue::Array(_) => {
+                    return Err(event_value_error(
+                        event_name,
+                        param,
+                        "requires a boolean scalar value".to_owned(),
+                    ));
+                }
             };
             out.extend_from_slice(&encoded.to_ne_bytes());
         }
@@ -915,6 +976,11 @@ fn event_number_value(
             ),
             0,
             0,
+        )),
+        RunEventValue::Array(_) => Err(event_value_error(
+            event_name,
+            param,
+            format!("requires numeric {} values", param.type_repr()),
         )),
     }
 }

@@ -20,7 +20,7 @@ backend, runs the real `onda lsp` implementation in the compiler worker, and off
 sample rates and 128/256/512/1024/2048-frame compile blocks (defaulting to 512). The editor keeps a
 multi-file virtual project in local storage and uses the same shared run webview as `onda-vscode`
 for audio, scope, parameters, events, and WAV buffers. Share links encode a compressed, versioned
-multi-file source snapshot and compile settings in the client-side URL fragment; selected WAV data
-remains local. Cookbook example links select projects from a versioned browser catalog generated
-from the checked-in `examples/` sources, including any local Onda dependencies. GitHub Actions runs
-the same versioned asset build and staging script before building the Pages artifact.
+multi-file source snapshot in the client-side URL fragment. Compile settings and selected WAV data
+remain local to the device. Cookbook example links select projects from a versioned browser catalog
+generated from the checked-in `examples/` sources, including any local Onda dependencies. GitHub
+Actions runs the same versioned asset build and staging script before building the Pages artifact.

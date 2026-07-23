@@ -237,7 +237,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .play-main { width: min(1360px, calc(100% - 2.5rem)); margin: 0 auto; padding: 1.75rem 0 5rem; }
 .play-intro { display: flex; justify-content: space-between; align-items: end; gap: 2rem; margin-bottom: 1.5rem; }
 .play-intro h1 { margin: 0; color: var(--ink); font-size: clamp(2rem, 5vw, 3.4rem); line-height: 1.08; letter-spacing: -.035em; }
-.play-intro p:not(.play-eyebrow) { max-width: 760px; margin: .75rem 0 0; color: var(--muted); }
+.play-intro p:not(.play-eyebrow):not(.play-shortcuts) { max-width: 760px; margin: .75rem 0 0; color: var(--muted); }
 .play-eyebrow { margin: 0 0 .35rem; color: var(--ink); font: 650 .72rem/1.4 var(--sans); letter-spacing: .09em; text-transform: uppercase; }
 .play-workspace { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(390px, .8fr); gap: 1rem; align-items: stretch; }
 .play-panel { min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
@@ -318,15 +318,26 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .project-file[data-kind="library"] .project-file-name { font-style: italic; }
 .play-run-panel { display: flex; padding: .45rem; background: var(--code-bg); }
 .play-run-view { display: block; flex: 1 1 auto; width: 100%; min-height: 620px; border: 0; border-radius: 5px; background: var(--code-bg); }
-.play-intro-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: .75rem; }
-.play-shortcuts { display: flex; align-items: center; flex-wrap: nowrap; gap: .3rem .45rem; margin: 0; color: var(--muted); font-size: .68rem; }
-.play-shortcut { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
-.play-shortcut > span { color: var(--text); font-weight: 650; }
-.play-shortcuts kbd { display: inline-flex; align-items: center; min-height: 1.45rem; padding: .12rem .34rem; border: 1px solid var(--line); border-radius: 3px; background: var(--soft); color: var(--ink); font: 600 .61rem/1 var(--mono); }
-.play-intro-meta .status { justify-content: center; inline-size: 7.25rem; border-radius: 5px; }
-.status { display: inline-flex; align-items: center; min-height: 34px; padding: .4rem .65rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--text); font-size: .78rem; white-space: nowrap; }
-.status.ready { border-color: #407568; color: #407568; }
-.status.fail { border-color: #a64856; color: #a64856; }
+.play-intro-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: .85rem; }
+.play-intro-divider { width: 1px; height: 1rem; background: var(--line); }
+.play-shortcuts { display: flex; align-items: center; flex-wrap: nowrap; gap: 1rem; margin: 0; color: var(--muted); }
+.play-shortcut { display: inline-flex; align-items: baseline; gap: .38rem; white-space: nowrap; }
+.play-shortcut > span { color: var(--text); font-size: .7rem; font-weight: 650; }
+.play-shortcuts kbd { padding: 0; border: 0; background: none; color: var(--muted); font: 600 .68rem/1 var(--mono); }
+.status {
+  --status-color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: .42rem;
+  color: var(--text);
+  font-size: .72rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.status::before { width: .42rem; height: .42rem; border-radius: 50%; background: var(--status-color); content: ""; }
+.status.ready { --status-color: var(--syntax-keyword); }
+.status.playing { --status-color: var(--syntax-string); }
+.status.fail { --status-color: #a64856; color: #a64856; }
 
 @media (max-width: 1050px) {
   .docs-shell { grid-template-columns: 170px minmax(0, 1fr); }
@@ -395,15 +406,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 }
 
 @media (max-width: 580px) {
-  .play-intro { display: grid; grid-template-columns: 1fr; gap: .75rem; }
-  .play-intro-meta { flex-wrap: nowrap; justify-content: flex-start; width: 100%; }
-  .play-intro-meta .status {
-    flex: 0 0 4.75rem;
-    inline-size: 4.75rem;
-    min-height: 1.8rem;
-    margin-left: auto;
-    padding: .3rem .35rem;
-    font-size: .68rem;
-  }
-  .play-shortcuts { min-width: 0; }
+  .play-intro { display: grid; grid-template-columns: 1fr; gap: .55rem; }
+  .play-intro-meta { min-width: 0; justify-content: flex-start; width: 100%; gap: .7rem; }
+  .play-shortcuts { min-width: 0; gap: .8rem; }
 }

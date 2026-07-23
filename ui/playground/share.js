@@ -4,7 +4,9 @@ const MAX_DECODED_BYTES = 1_000_000;
 
 export async function encodeSharedSession(session) {
   const source = new TextEncoder().encode(JSON.stringify({
-    ...session,
+    entry: session.entry,
+    active: session.active,
+    sources: session.sources,
     v: SHARE_SCHEMA_VERSION,
   }));
   if (source.byteLength > MAX_DECODED_BYTES) {
