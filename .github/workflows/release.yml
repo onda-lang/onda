@@ -141,7 +141,9 @@ jobs:
           }
 
           . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.LLVM_VERSION }}"
-          cargo build --release -p onda_cli -p onda_api
+          # Both targets produce onda.pdb on MSVC, so Cargo must build them separately.
+          cargo build --release -p onda_api
+          cargo build --release -p onda_cli
 
           $resources = & llvm-readobj --coff-resources target\release\onda.exe
           if ($LASTEXITCODE -ne 0 -or -not ($resources -match 'Type:\s+(?:GROUP_)?ICON\b')) {
