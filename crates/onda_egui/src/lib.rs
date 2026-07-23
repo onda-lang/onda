@@ -33,7 +33,7 @@ pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result
         .transpose()?;
     let title = run_window_title(onda_path);
 
-    let mut native_options = eframe::NativeOptions {
+    let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id(RUN_APP_ID)
             .with_inner_size([680.0, 820.0])
@@ -42,7 +42,11 @@ pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result
         ..Default::default()
     };
     #[cfg(target_os = "linux")]
-    prefer_x11_for_file_drop(&mut native_options);
+    let native_options = {
+        let mut native_options = native_options;
+        prefer_x11_for_file_drop(&mut native_options);
+        native_options
+    };
 
     eframe::run_native(
         &title,

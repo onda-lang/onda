@@ -1,7 +1,10 @@
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
+
+#[cfg(target_os = "linux")]
+use std::sync::{Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;

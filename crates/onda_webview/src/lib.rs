@@ -538,7 +538,7 @@ mod platform {
 
     #[cfg(target_os = "macos")]
     fn set_macos_app_icon(png_bytes: &[u8]) {
-        use objc2::ClassType;
+        use objc2::AnyThread;
         use objc2_app_kit::{NSApplication, NSImage};
         use objc2_foundation::NSData;
 
@@ -546,7 +546,7 @@ mod platform {
             static NSApp: Option<&'static NSApplication>;
         }
 
-        let data = NSData::from_vec(png_bytes.to_vec());
+        let data = NSData::with_bytes(png_bytes);
         let image = NSImage::initWithData(NSImage::alloc(), &data);
         unsafe {
             if let Some(app) = NSApp {
