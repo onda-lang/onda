@@ -157,7 +157,7 @@ function hasCompactEditingViewport() {
   return viewportWidth <= 720 || window.matchMedia?.("(pointer: coarse)").matches;
 }
 
-function hiddenCaretAxes(view) {
+function hiddenCaretAxes(view, leftComfort = 0) {
   const caret = view.coordsAtPos(view.state.selection.main.head);
   if (!caret) return { horizontal: true, vertical: true };
   const editor = view.scrollDOM.getBoundingClientRect();
@@ -173,8 +173,9 @@ function hiddenCaretAxes(view) {
   const right = Math.min(editor.right, viewportRight) - padding;
   const top = Math.max(editor.top, viewportTop) + padding;
   const bottom = Math.min(editor.bottom, viewportBottom) - padding;
+  const comfortableLeft = left + Math.max(0, right - left) * leftComfort;
   return {
-    horizontal: caret.right < left || caret.left > right,
+    horizontal: caret.right < comfortableLeft || caret.left > right,
     vertical: caret.bottom < top || caret.top > bottom,
   };
 }
@@ -320,14 +321,17 @@ export class OndaProjectEditor {
     this.renderFiles();
   }
 
-  keepCaretVisible(view, { centerVertically = false, refocus = false } = {}) {
+  keepCaretVisible(
+    view,
+    { centerVertically = false, refocus = false, leftComfort = 0 } = {},
+  ) {
     if (!view.hasFocus) return;
     cancelAnimationFrame(this.caretVisibilityFrame);
     this.caretVisibilityFrame = requestAnimationFrame(() => {
       if (!view.hasFocus) return;
       const compact = hasCompactEditingViewport();
       const hidden = refocus
-        ? hiddenCaretAxes(view)
+        ? hiddenCaretAxes(view, leftComfort)
         : { horizontal: false, vertical: false };
       view.dispatch({
         effects: EditorView.scrollIntoView(view.state.selection.main.head, {
@@ -398,7 +402,20 @@ export class OndaProjectEditor {
             this.onChange?.(this.project());
           }
           if ((update.docChanged || update.selectionSet) && update.view.hasFocus) {
-            this.keepCaretVisible(update.view, { refocus: update.docChanged });
+            const deletingBackward = update.docChanged && (
+              update.transactions.some((transaction) =>
+                transaction.isUserEvent("delete.backward")
+              )
+              || (
+                update.state.doc.length < update.startState.doc.length
+                && update.state.selection.main.head
+                  <= update.startState.selection.main.head
+              )
+            );
+            this.keepCaretVisible(update.view, {
+              refocus: update.docChanged,
+              leftComfort: deletingBackward ? 0.25 : 0,
+            });
           }
         }),
         EditorView.domEventHandlers({
