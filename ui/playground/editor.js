@@ -152,6 +152,33 @@ function visibleEditorMargins(view) {
   };
 }
 
+function hasCompactEditingViewport() {
+  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+  return viewportWidth <= 720 || window.matchMedia?.("(pointer: coarse)").matches;
+}
+
+function hiddenCaretAxes(view) {
+  const caret = view.coordsAtPos(view.state.selection.main.head);
+  if (!caret) return { horizontal: true, vertical: true };
+  const editor = view.scrollDOM.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const viewportLeft = viewport?.offsetLeft ?? 0;
+  const viewportTop = viewport?.offsetTop ?? 0;
+  const viewportRight = viewportLeft + (viewport?.width ?? window.innerWidth);
+  const viewportBottom = viewportTop + (viewport?.height ?? window.innerHeight);
+  const gutterWidth =
+    view.dom.querySelector(".cm-gutters")?.getBoundingClientRect().width ?? 0;
+  const padding = 16;
+  const left = Math.max(editor.left, viewportLeft) + gutterWidth + padding;
+  const right = Math.min(editor.right, viewportRight) - padding;
+  const top = Math.max(editor.top, viewportTop) + padding;
+  const bottom = Math.min(editor.bottom, viewportBottom) - padding;
+  return {
+    horizontal: caret.right < left || caret.left > right,
+    vertical: caret.bottom < top || caret.top > bottom,
+  };
+}
+
 export function colonIndentText(lineBeforeCursor) {
   const indentation = lineBeforeCursor.match(/^[ \t]*/)?.[0] ?? "";
   const code = lineBeforeCursor.replace(/(?:^\s*|\s+)#.*$/, "").trimEnd();
@@ -232,6 +259,11 @@ const ondaEditorTheme = EditorView.theme({
   ".cm-onda-semantic-state": { color: "var(--syntax-string)" },
   "&.cm-onda-definition-mode .cm-content": { cursor: "pointer" },
   "&.cm-focused": { outline: "none" },
+  "@media (pointer: coarse), (max-width: 720px)": {
+    // iOS zooms focused editable content below 16px, which can pan the caret
+    // underneath CodeMirror's sticky line-number gutter.
+    ".cm-content": { fontSize: "max(16px, 1em)" },
+  },
 });
 
 export function validProjectPath(value) {
@@ -282,23 +314,51 @@ export class OndaProjectEditor {
     this.tabs.addEventListener("dragover", (event) => this.dragTabOver(event));
     this.tabs.addEventListener("drop", (event) => this.dropTab(event));
     this.view = new EditorView({ state: this.states.get(this.active), parent });
-    this.visualViewportResize = () => this.keepCaretVisible(this.view);
+    this.visualViewportResize = () =>
+      this.keepCaretVisible(this.view, { centerVertically: true });
     window.visualViewport?.addEventListener("resize", this.visualViewportResize);
     this.renderFiles();
   }
 
-  keepCaretVisible(view) {
+  keepCaretVisible(view, { centerVertically = false, refocus = false } = {}) {
     if (!view.hasFocus) return;
     cancelAnimationFrame(this.caretVisibilityFrame);
     this.caretVisibilityFrame = requestAnimationFrame(() => {
       if (!view.hasFocus) return;
+      const compact = hasCompactEditingViewport();
+      const hidden = refocus
+        ? hiddenCaretAxes(view)
+        : { horizontal: false, vertical: false };
       view.dispatch({
         effects: EditorView.scrollIntoView(view.state.selection.main.head, {
-          y: "nearest",
+          x: hidden.horizontal ? "center" : "nearest",
+          y: hidden.vertical || (centerVertically && compact) ? "center" : "nearest",
+          xMargin: compact ? 32 : 16,
           yMargin: 16,
         }),
       });
     });
+  }
+
+  preserveFocusThroughPointer(view) {
+    if (!view.hasFocus) return;
+    const editorWindow = view.dom.ownerDocument.defaultView ?? window;
+    const finish = () => {
+      editorWindow.removeEventListener("pointerup", finish);
+      editorWindow.removeEventListener("pointercancel", finish);
+      requestAnimationFrame(() => {
+        const activeElement = view.root.activeElement;
+        if (
+          view.dom.isConnected
+          && !view.hasFocus
+          && (!activeElement || !view.dom.contains(activeElement))
+        ) {
+          view.focus();
+        }
+      });
+    };
+    editorWindow.addEventListener("pointerup", finish);
+    editorWindow.addEventListener("pointercancel", finish);
   }
 
   setFontSize(fontSize) {
@@ -338,10 +398,14 @@ export class OndaProjectEditor {
             this.onChange?.(this.project());
           }
           if ((update.docChanged || update.selectionSet) && update.view.hasFocus) {
-            this.keepCaretVisible(update.view);
+            this.keepCaretVisible(update.view, { refocus: update.docChanged });
           }
         }),
         EditorView.domEventHandlers({
+          pointerdown: (_event, view) => {
+            this.preserveFocusThroughPointer(view);
+            return false;
+          },
           keydown: (event, view) => {
             this.updateDefinitionCursor(path, view, event);
             return false;
