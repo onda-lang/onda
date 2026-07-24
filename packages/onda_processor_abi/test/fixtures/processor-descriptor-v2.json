@@ -1,10 +1,10 @@
 {
   "format": "onda-processor",
-  "format_version": 1,
+  "format_version": 2,
   "artifact_kind": "webassembly_module",
   "abi_version": 1,
   "backend": "conformance-fixture",
-  "mir_schema_version": 1,
+  "mir_schema_version": 2,
   "target": {
     "triple": "wasm32-unknown-unknown",
     "cpu": "generic",
@@ -62,11 +62,31 @@
       "byte_size": 4,
       "default_reprs": null,
       "range_min_repr": null,
-      "range_max_repr": null
+      "range_max_repr": null,
+      "param_control": null
     }],
     "outputs": [],
     "control_outputs": [],
-    "params": [],
+    "params": [{
+      "name": "cutoff",
+      "type_repr": "f32",
+      "scalar": "f32",
+      "array_len": 1,
+      "element_size_bytes": 4,
+      "slot_offset": 0,
+      "byte_offset": 0,
+      "state_byte_offset": null,
+      "byte_size": 4,
+      "default_reprs": ["440"],
+      "range_min_repr": "20",
+      "range_max_repr": "20000",
+      "param_control": {
+        "scale": "log",
+        "unit": "Hz",
+        "step_repr": null,
+        "step_count": null
+      }
+    }],
     "buffers": [{
       "name": "scratch",
       "type_repr": "buffer[f32]",

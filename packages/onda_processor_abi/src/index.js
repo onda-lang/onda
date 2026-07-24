@@ -1,8 +1,18 @@
+import "./param-control.js";
+
+const PARAM_CONTROL = globalThis.__ONDA_PARAM_CONTROL_V2__;
+
 export const PROCESSOR_ARTIFACT_FORMAT = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 1;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 2;
 export const PROCESSOR_ABI_VERSION = 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
+
+export const {
+  constrainParamPlain,
+  paramNormalizedToPlain,
+  paramPlainToNormalized,
+} = PARAM_CONTROL;
 
 export class OndaArtifactError extends Error {
   constructor(message) {
@@ -255,12 +265,43 @@ function validateIoMetadata(value, path) {
   requireNullableStringArray(value?.default_reprs, `${path}.default_reprs`);
   requireNullableString(value?.range_min_repr, `${path}.range_min_repr`);
   requireNullableString(value?.range_max_repr, `${path}.range_max_repr`);
+  validateParamControlMetadata(value?.param_control, `${path}.param_control`);
   requireScalarLayout(value, path);
   if (value.default_reprs !== null && value.default_reprs.length !== value.array_len) {
     throw new OndaArtifactError(`${path}.default_reprs must contain one value per element`);
   }
   if ((value.range_min_repr === null) !== (value.range_max_repr === null)) {
     throw new OndaArtifactError(`${path} range bounds must either both be present or both be null`);
+  }
+  if (value.param_control !== null && value.range_min_repr === null) {
+    throw new OndaArtifactError(`${path}.param_control requires range bounds`);
+  }
+  if (value.param_control !== null && value.array_len !== 1) {
+    throw new OndaArtifactError(`${path}.param_control requires a scalar parameter`);
+  }
+}
+
+function validateParamControlMetadata(value, path) {
+  if (value === undefined) {
+    throw new OndaArtifactError(`${path} must be present`);
+  }
+  if (value === null) return;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new OndaArtifactError(`${path} must be an object or null`);
+  }
+  if (!PARAM_CONTROL.scales.includes(value.scale)) {
+    throw new OndaArtifactError(`${path}.scale must be 'linear' or 'log'`);
+  }
+  requireNullableString(value.unit, `${path}.unit`);
+  requireNullableString(value.step_repr, `${path}.step_repr`);
+  requireNullableInteger(value.step_count, `${path}.step_count`, 1);
+  if ((value.step_repr === null) !== (value.step_count === null)) {
+    throw new OndaArtifactError(
+      `${path}.step_repr and step_count must either both be present or both be null`,
+    );
+  }
+  if (value.scale === "log" && value.step_repr !== null) {
+    throw new OndaArtifactError(`${path} cannot combine logarithmic scale with step`);
   }
 }
 

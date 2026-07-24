@@ -13,6 +13,7 @@ const processor = await createOndaAudioProcessor(audioContext, artifact, {
 });
 processor.node.connect(audioContext.destination);
 await processor.setParam("gain", 0.75);
+await processor.setParamNormalized("cutoff", 0.5);
 const snapshot = await processor.snapshot();
 ```
 
@@ -20,6 +21,41 @@ The adapter registers `onda-wasm-processor`, derives Web Audio channel options f
 metadata, marshals declared scalar widths, schedules arbitrary render quanta across Onda compile
 blocks, and provides request/response helpers for parameters, events, buffers, control outputs,
 reset, and portable snapshots.
+
+## Parameters
+
+`params` passed during construction and values passed to `setParam()` are plain Onda values. The
+worklet clamps ranged scalar values, snaps stepped domains, and writes the declared scalar
+representation.
+
+`setParamNormalized()` accepts a host value in `[0, 1]`. The adapter uses the artifact descriptor's
+linear or logarithmic scale and step metadata to convert it to a plain value before posting the
+write to the worklet. Boolean normalized values use the `0.5` threshold. For example:
+
+```js
+await processor.setParam("cutoff", 440);          // exactly 440 Hz
+await processor.setParamNormalized("cutoff", 0.5); // midpoint in its declared control scale
+```
+
+The same synchronous conversion helpers are re-exported for UI display and typed entry:
+
+```js
+import {
+  paramNormalizedToPlain,
+  paramPlainToNormalized,
+} from "@onda-lang/webaudio";
+
+const cutoff = processor.metadata.metadata.params.find(
+  (param) => param.name === "cutoff",
+);
+const displayValue = paramNormalizedToPlain(cutoff, sliderValue);
+const sliderValueFor440Hz = paramPlainToNormalized(cutoff, 440);
+```
+
+The helpers preserve exact endpoints, clamp and snap consistently with worklet writes, and reject
+arrays or numeric parameters without a host-control domain. `scale`, `unit`, `step_repr`, and
+`step_count` remain available on each parameter's descriptor metadata for control construction and
+formatting.
 
 The artifact must be compiled for exactly `audioContext.sampleRate`; the adapter rejects a mismatch
 before registering the node so sample-rate-derived language semantics cannot silently drift. A Web

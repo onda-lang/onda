@@ -933,6 +933,11 @@
         }
       }
     </style>
+    <script>
+      if (!globalThis.__ONDA_PARAM_CONTROL_V2__) {
+        document.write('<script src="./param-control.js"><\/script>');
+      }
+    </script>
   </head>
   <body>
     <div class="shell">
@@ -1525,6 +1530,10 @@
 
       function scalarStepForParam(param) {
         // Keep this host policy aligned with onda_egui::scalar_step.
+        const declaredStep = Number(param.step);
+        if (Number.isFinite(declaredStep) && declaredStep > 0) {
+          return declaredStep;
+        }
         if (param.type === "i32" || param.type === "i64") {
           return 1;
         }
@@ -1565,6 +1574,43 @@
         const places = decimalPlaces(step);
         const snapped = min + Math.round((value - min) / step) * step;
         return Number(snapped.toFixed(places));
+      }
+
+      const paramControlMetadataCache = new WeakMap();
+
+      function paramControlMetadata(param) {
+        let metadata = paramControlMetadataCache.get(param);
+        if (metadata) return metadata;
+        metadata = {
+          name: param.name,
+          type_repr: param.type,
+          scalar: param.type,
+          array_len: 1,
+          range_min_repr: param.rangeMin === null ? null : String(param.rangeMin),
+          range_max_repr: param.rangeMax === null ? null : String(param.rangeMax),
+          param_control: param.scale === null ? null : {
+            scale: param.scale,
+            unit: param.unit,
+            step_repr: param.step === null ? null : String(param.step),
+            step_count: param.stepCount,
+          },
+        };
+        paramControlMetadataCache.set(param, metadata);
+        return metadata;
+      }
+
+      function paramPlainToNormalized(param, value) {
+        return globalThis.__ONDA_PARAM_CONTROL_V2__.paramPlainToNormalized(
+          paramControlMetadata(param),
+          value,
+        );
+      }
+
+      function paramNormalizedToPlain(param, normalized) {
+        return globalThis.__ONDA_PARAM_CONTROL_V2__.paramNormalizedToPlain(
+          paramControlMetadata(param),
+          normalized,
+        );
       }
 
       function canEditRunControls() {
@@ -1656,7 +1702,7 @@
           max,
           step: Number(step),
           renderValue: (value) => {
-            const ratio = max > min ? (value - min) / (max - min) : 0;
+            const ratio = paramPlainToNormalized(param, value);
             const pct = clamp(ratio, 0, 1) * 100;
             fill.style.width = pct + "%";
             thumb.style.left = pct + "%";
@@ -1673,7 +1719,7 @@
             return;
           }
           const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
-          const rawValue = min + ratio * (max - min);
+          const rawValue = paramNormalizedToPlain(param, ratio);
           if (commit) controller.commit(rawValue);
           else controller.input(rawValue);
         };
@@ -1736,7 +1782,7 @@
           max,
           step: Number(step),
           renderValue: (value) => {
-            const ratio = max > min ? clamp((value - min) / (max - min), 0, 1) : 0;
+            const ratio = paramPlainToNormalized(param, value);
             dial.style.setProperty("--knob-angle", `${ratio * 270}deg`);
             dial.style.setProperty("--knob-rotation", `${-135 + ratio * 270}deg`);
             knob.setAttribute("aria-valuenow", String(value));
@@ -1751,12 +1797,14 @@
             event.preventDefault();
             knob.setPointerCapture(event.pointerId);
             const startY = event.clientY;
-            const startValue = controller.value;
-            const valuePerPixel = (max - min) / 160;
+            const startNormalized = paramPlainToNormalized(param, controller.value);
 
             const onMove = (moveEvent) => {
               if (moveEvent.pointerId !== event.pointerId) return;
-              controller.input(startValue + (startY - moveEvent.clientY) * valuePerPixel);
+              controller.input(paramNormalizedToPlain(
+                param,
+                startNormalized + (startY - moveEvent.clientY) / 160,
+              ));
             };
 
             const onEnd = (endEvent) => {
@@ -2273,7 +2321,9 @@
           head.className = "param-head";
           head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
           head.querySelector(".param-name").textContent = param.name;
-          head.querySelector(".param-type").textContent = param.type;
+          head.querySelector(".param-type").textContent = param.unit
+            ? `${param.type} · ${param.unit}`
+            : param.type;
           card.appendChild(head);
 
           const controls = document.createElement("div");

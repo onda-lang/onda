@@ -13,6 +13,12 @@ function scalarParam(overrides = {}) {
     default_reprs: ["440"],
     range_min_repr: "20",
     range_max_repr: "1000",
+    param_control: {
+      scale: "log",
+      unit: "Hz",
+      step_repr: null,
+      step_count: null,
+    },
     ...overrides,
   };
 }
@@ -27,6 +33,7 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       default_reprs: ["true"],
       range_min_repr: null,
       range_max_repr: null,
+      param_control: null,
     }),
     scalarParam({
       name: "partials",
@@ -44,6 +51,10 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       default: 440,
       rangeMin: 20,
       rangeMax: 1000,
+      scale: "log",
+      unit: "Hz",
+      step: null,
+      stepCount: null,
       scalar: true,
       value: 440,
     },
@@ -54,6 +65,10 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       default: true,
       rangeMin: null,
       rangeMax: null,
+      scale: null,
+      unit: null,
+      step: null,
+      stepCount: null,
       scalar: true,
       value: true,
     },

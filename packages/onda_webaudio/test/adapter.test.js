@@ -9,7 +9,7 @@ import {
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
-const FIXTURE_MIR_SCHEMA_VERSION = 1;
+const FIXTURE_MIR_SCHEMA_VERSION = 2;
 
 function artifact() {
   const port = (name, arrayLen) => ({
@@ -25,6 +25,7 @@ function artifact() {
     default_reprs: null,
     range_min_repr: null,
     range_max_repr: null,
+    param_control: null,
   });
   return {
     wasm: new Uint8Array([
@@ -42,7 +43,7 @@ function artifact() {
     ]),
     metadata: {
       format: "onda-processor",
-      format_version: 1,
+      format_version: 2,
       abi_version: 1,
       artifact_kind: "webassembly_module",
       backend: "test",
@@ -235,5 +236,39 @@ test("correlates control responses and preserves caller snapshot storage", async
   assert.deepEqual([...snapshot], [1, 2, 3]);
   node.port.reply({ type: "onda-ok", requestId: restoreRequest.requestId });
   await restore;
+  processor.close();
+});
+
+test("converts normalized parameters before posting a plain worklet write", async () => {
+  const source = artifact();
+  source.metadata.metadata.params = [{
+    name: "cutoff",
+    type_repr: "f32",
+    scalar: "f32",
+    array_len: 1,
+    element_size_bytes: 4,
+    slot_offset: 0,
+    byte_offset: 0,
+    state_byte_offset: null,
+    byte_size: 4,
+    default_reprs: ["440"],
+    range_min_repr: "20",
+    range_max_repr: "20000",
+    param_control: {
+      scale: "log",
+      unit: "Hz",
+      step_repr: null,
+      step_count: null,
+    },
+  }];
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+
+  const pending = processor.setParamNormalized("cutoff", 0.5);
+  const request = node.port.messages.at(-1);
+  assert.equal(request.type, "set-param");
+  assert.ok(Math.abs(request.value - Math.sqrt(20 * 20_000)) < 1e-12);
+  node.port.reply({ type: "onda-ok", requestId: request.requestId });
+  await pending;
   processor.close();
 });

@@ -1,7 +1,8 @@
 use crate::{
     AccessMode, BufferChannels, BufferId, ConstDataId, ConstantValue, ControlOutputId, EventId,
-    EventParamId, FieldId, FunctionId, InputId, LocalId, OutputId, ParamId, ParameterId,
-    ScalarType, ScalarValue, SourceFileId, StateId, Type, TypeId, ValueRange, MIR_SCHEMA_VERSION,
+    EventParamId, FieldId, FunctionId, InputId, LocalId, OutputId, ParamControl, ParamId,
+    ParameterId, ScalarType, ScalarValue, SourceFileId, StateId, Type, TypeId, ValueRange,
+    MIR_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -264,6 +265,7 @@ pub struct Param {
     pub ty: TypeId,
     pub default: ConstantValue,
     pub range: Option<ValueRange>,
+    pub control: ParamControl,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

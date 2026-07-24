@@ -16,8 +16,10 @@ use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
     prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
     process_unchecked_segment, read_control_output_bytes, reset_instance_state, set_param_by_index,
-    trigger_event_by_index, trigger_event_by_index_unchecked, validate_bindings, validate_buffers,
-    validate_inputs, validate_outputs, Instance, InstanceConfig,
+    set_param_normalized as runtime_set_param_normalized,
+    set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
+    trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
+    validate_outputs, Instance, InstanceConfig,
 };
 use onda_semantics::{
     analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedProgram,
@@ -1049,6 +1051,36 @@ pub unsafe extern "C" fn onda_set_param_by_index(
     };
     match set_param_by_index(&mut (*instance).inner, index as usize, bytes) {
         Ok(_) => 0,
+        Err(_) => -3,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_set_param_plain_f64(
+    instance: *mut onda_instance,
+    index: i32,
+    plain: f64,
+) -> i32 {
+    if instance.is_null() || index < 0 {
+        return -1;
+    }
+    match runtime_set_param_plain_f64(&mut (*instance).inner, index as usize, plain) {
+        Ok(()) => 0,
+        Err(_) => -3,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_set_param_normalized(
+    instance: *mut onda_instance,
+    index: i32,
+    normalized: f64,
+) -> i32 {
+    if instance.is_null() || index < 0 {
+        return -1;
+    }
+    match runtime_set_param_normalized(&mut (*instance).inner, index as usize, normalized) {
+        Ok(()) => 0,
         Err(_) => -3,
     }
 }
@@ -2496,4 +2528,128 @@ pub unsafe extern "C" fn onda_param_range_max_f64(program: *const onda_program, 
             .get(idx)
             .and_then(|d| d.range_max_as_f64())
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_scale(program: *const onda_program, index: i32) -> i32 {
+    if program.is_null() || index < 0 {
+        return -1;
+    }
+    match (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .and_then(|param| param.param_scale_name())
+    {
+        Some("linear") => 0,
+        Some("log") => 1,
+        None => -1,
+        Some(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_unit_copy(
+    program: *const onda_program,
+    index: i32,
+    out_bytes: *mut c_char,
+    out_capacity: i32,
+) -> i32 {
+    if program.is_null() || index < 0 || out_capacity < 0 {
+        return -1;
+    }
+    let Some(unit) = (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .and_then(|param| param.param_unit())
+    else {
+        return 0;
+    };
+    let Ok(required) = i32::try_from(unit.len().saturating_add(1)) else {
+        return -1;
+    };
+    if out_bytes.is_null() || out_capacity < required {
+        return required;
+    }
+    ptr::copy_nonoverlapping(unit.as_ptr().cast::<c_char>(), out_bytes, unit.len());
+    *out_bytes.add(unit.len()) = 0;
+    required
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_has_step(program: *const onda_program, index: i32) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    if index < 0 {
+        return -1;
+    }
+    (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .map(|param| i32::from(param.param_step_count().is_some()))
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_step_f64(program: *const onda_program, index: i32) -> f64 {
+    if program.is_null() {
+        return f64::NAN;
+    }
+    f64_from_index_or_nan(index, |idx| {
+        (*program)
+            .jit
+            .params()
+            .get(idx)
+            .and_then(|param| param.param_step_as_f64())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_step_count(program: *const onda_program, index: i32) -> u32 {
+    if program.is_null() || index < 0 {
+        return 0;
+    }
+    (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .and_then(|param| param.param_step_count())
+        .unwrap_or(0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_normalized_to_plain(
+    program: *const onda_program,
+    index: i32,
+    normalized: f64,
+) -> f64 {
+    if program.is_null() || index < 0 {
+        return f64::NAN;
+    }
+    (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .and_then(|param| param.param_normalized_to_plain(normalized))
+        .unwrap_or(f64::NAN)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_plain_to_normalized(
+    program: *const onda_program,
+    index: i32,
+    plain: f64,
+) -> f64 {
+    if program.is_null() || index < 0 {
+        return f64::NAN;
+    }
+    (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .and_then(|param| param.param_plain_to_normalized(plain))
+        .unwrap_or(f64::NAN)
 }

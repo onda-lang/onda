@@ -542,11 +542,14 @@ pub(crate) fn coerce_params(
                 let default = range
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
                     .unwrap_or(raw_default);
+                let control =
+                    coerce_top_level_param_control(param, ty, range, default, options, errors);
                 out.push(TypedParam {
                     name: param.name.clone(),
                     ty,
                     default,
                     range,
+                    control,
                 });
             }
             Some(DeclType::Generic(param_ty)) => {
@@ -587,11 +590,14 @@ pub(crate) fn coerce_params(
                 let default = range
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
                     .unwrap_or(raw_default);
+                let control =
+                    coerce_top_level_param_control(param, ty, range, default, options, errors);
                 out.push(TypedParam {
                     name: param.name.clone(),
                     ty,
                     default,
                     range,
+                    control,
                 });
             }
             Some(DeclType::ArrayGeneric { elem, size }) => {
@@ -688,6 +694,7 @@ pub(crate) fn coerce_params(
                         ty: PrimitiveType::F32,
                         default,
                         range: None,
+                        control: TypedParamControl::default(),
                     });
                 }
             }
@@ -787,12 +794,238 @@ pub(crate) fn coerce_params(
                         ty: *elem,
                         default,
                         range: None,
+                        control: TypedParamControl::default(),
                     });
                 }
             }
         }
     }
     (out, arrays)
+}
+
+fn coerce_top_level_param_control(
+    param: &ParamDecl,
+    ty: PrimitiveType,
+    range: Option<TypedValueRange>,
+    default: TypedConstValue,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> TypedParamControl {
+    let context = format!("param '{}.{}'", "<top-level>", param.name);
+    let mut control = TypedParamControl {
+        scale: param.control.scale,
+        unit: param.control.unit.clone(),
+        ..TypedParamControl::default()
+    };
+    let Some(range) = range else {
+        return control;
+    };
+    if range.min.to_f64() >= range.max.to_f64() {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context} control range requires min < max"),
+            param.loc,
+        ));
+        return control;
+    }
+
+    if control.scale == ParamScale::Log {
+        if !matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} logarithmic scale requires f32 or f64"),
+                param.loc.as_ref(),
+            ));
+        }
+        if range.min.to_f64() <= 0.0 {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} logarithmic scale requires a finite range with 0 < min < max"),
+                param.loc.as_ref(),
+            ));
+        }
+    }
+
+    let explicit_step = param.control.step.as_ref().and_then(|step| {
+        with_loc_diag_context(param.loc.as_ref(), |_diag| {
+            eval_typed_const_expr(
+                step,
+                ty,
+                options,
+                &format!("{context} step"),
+                false,
+                matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
+                errors,
+            )
+        })
+    });
+    let step = explicit_step.or(match ty {
+        PrimitiveType::I32 => Some(TypedConstValue::I32(1)),
+        PrimitiveType::I64 => Some(TypedConstValue::I64(1)),
+        PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::Bool => None,
+    });
+    let Some(step) = step else {
+        return control;
+    };
+
+    if control.scale == ParamScale::Log {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context} cannot combine logarithmic scale with step"),
+            param.loc.as_ref(),
+        ));
+        return control;
+    }
+
+    let Some(step_count) =
+        validate_param_step_grid(&context, range, default, step, param.loc, errors)
+    else {
+        return control;
+    };
+    control.step = Some(step);
+    control.step_count = Some(step_count);
+    control
+}
+
+fn validate_param_step_grid(
+    context: &str,
+    range: TypedValueRange,
+    default: TypedConstValue,
+    step: TypedConstValue,
+    loc: onda_frontend::Span,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<u32> {
+    let invalid = |message: String, errors: &mut Vec<Diagnostic>| {
+        errors.push(Diagnostic::semantic_span(message, loc));
+        None
+    };
+    match (range.min, range.max, default, step) {
+        (
+            TypedConstValue::I32(min),
+            TypedConstValue::I32(max),
+            TypedConstValue::I32(default),
+            TypedConstValue::I32(step),
+        ) => {
+            if step <= 0 {
+                return invalid(format!("{context} step must be greater than zero"), errors);
+            }
+            let width = i64::from(max) - i64::from(min);
+            let step = i64::from(step);
+            if width <= 0 || width % step != 0 {
+                return invalid(
+                    format!("{context} step must divide the range exactly"),
+                    errors,
+                );
+            }
+            if (i64::from(default) - i64::from(min)) % step != 0 {
+                return invalid(
+                    format!("{context} default must lie on the step grid"),
+                    errors,
+                );
+            }
+            u32::try_from(width / step).ok().or_else(|| {
+                invalid(
+                    format!("{context} step count does not fit the host descriptor"),
+                    errors,
+                )
+            })
+        }
+        (
+            TypedConstValue::I64(min),
+            TypedConstValue::I64(max),
+            TypedConstValue::I64(default),
+            TypedConstValue::I64(step),
+        ) => {
+            if step <= 0 {
+                return invalid(format!("{context} step must be greater than zero"), errors);
+            }
+            let width = i128::from(max) - i128::from(min);
+            let step = i128::from(step);
+            if width <= 0 || width % step != 0 {
+                return invalid(
+                    format!("{context} step must divide the range exactly"),
+                    errors,
+                );
+            }
+            if (i128::from(default) - i128::from(min)) % step != 0 {
+                return invalid(
+                    format!("{context} default must lie on the step grid"),
+                    errors,
+                );
+            }
+            u32::try_from(width / step).ok().or_else(|| {
+                invalid(
+                    format!("{context} step count does not fit the host descriptor"),
+                    errors,
+                )
+            })
+        }
+        (
+            TypedConstValue::F32(min),
+            TypedConstValue::F32(max),
+            TypedConstValue::F32(default),
+            TypedConstValue::F32(step),
+        ) => validate_float_param_step_grid(
+            context,
+            min as f64,
+            max as f64,
+            default as f64,
+            step as f64,
+            1.0e-5,
+            loc,
+            errors,
+        ),
+        (
+            TypedConstValue::F64(min),
+            TypedConstValue::F64(max),
+            TypedConstValue::F64(default),
+            TypedConstValue::F64(step),
+        ) => validate_float_param_step_grid(context, min, max, default, step, 1.0e-10, loc, errors),
+        _ => invalid(
+            format!("{context} step requires a numeric scalar parameter"),
+            errors,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_float_param_step_grid(
+    context: &str,
+    min: f64,
+    max: f64,
+    default: f64,
+    step: f64,
+    tolerance: f64,
+    loc: onda_frontend::Span,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<u32> {
+    if !step.is_finite() || step <= 0.0 {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context} step must be finite and greater than zero"),
+            loc,
+        ));
+        return None;
+    }
+    let ratio = (max - min) / step;
+    let rounded = ratio.round();
+    if !ratio.is_finite()
+        || rounded < 1.0
+        || rounded > u32::MAX as f64
+        || (ratio - rounded).abs() > tolerance * ratio.abs().max(1.0)
+    {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context} step must divide the range exactly"),
+            loc,
+        ));
+        return None;
+    }
+    let default_index = (default - min) / step;
+    if !default_index.is_finite()
+        || (default_index - default_index.round()).abs() > tolerance * default_index.abs().max(1.0)
+    {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context} default must lie on the step grid"),
+            loc,
+        ));
+        return None;
+    }
+    Some(rounded as u32)
 }
 
 pub(crate) fn coerce_buffers(

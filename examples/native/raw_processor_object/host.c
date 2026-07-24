@@ -146,6 +146,28 @@ int main(void) {
     memcpy(params, PROCESSOR_PARAM_DEFAULT_BYTES, PROCESSOR_PARAM_SIZE);
   }
 
+  for (int index = 0; index < PROCESSOR_PARAM_COUNT; ++index) {
+    const double plain = processor_param_read_plain(params, index);
+    const double normalized = processor_param_plain_to_normalized(index, plain);
+    if (isnan(normalized)) {
+      printf("parameter[%d] '%s': not a scalar host control\n", index, PROCESSOR_PARAM_NAMES[index]);
+      continue;
+    }
+    if (processor_param_set_normalized(params, index, normalized) != 0) {
+      fprintf(stderr, "could not restore normalized parameter[%d]\n", index);
+      goto cleanup;
+    }
+    printf(
+      "parameter[%d] '%s': plain %.6f%s%s, normalized %.6f\n",
+      index,
+      PROCESSOR_PARAM_NAMES[index],
+      processor_param_read_plain(params, index),
+      PROCESSOR_PARAM_UNITS[index] == NULL ? "" : " ",
+      PROCESSOR_PARAM_UNITS[index] == NULL ? "" : PROCESSOR_PARAM_UNITS[index],
+      normalized
+    );
+  }
+
   for (int slot = 0; slot < PROCESSOR_INPUT_COUNT; ++slot) {
     const unsigned char kind = PROCESSOR_INPUT_KINDS[slot];
     const size_t bytes = scalar_size(kind) * (size_t)PROCESSOR_BLOCK_SIZE;

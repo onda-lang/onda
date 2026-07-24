@@ -87,6 +87,16 @@ impl ScalarValue {
             Self::Bool(_) => ScalarType::Bool,
         }
     }
+
+    pub fn as_f64(self) -> f64 {
+        match self {
+            Self::F32(value) => value as f64,
+            Self::F64(value) => value,
+            Self::I32(value) => value as f64,
+            Self::I64(value) => value as f64,
+            Self::Bool(value) => u8::from(value) as f64,
+        }
+    }
 }
 
 /// JSON has no lossless representation for all MIR scalar values. In
@@ -217,4 +227,123 @@ pub enum ConstantValue {
 pub struct ValueRange {
     pub min: ScalarValue,
     pub max: ScalarValue,
+}
+
+#[derive(Debug, Copy, Clone, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamScale {
+    #[default]
+    Linear,
+    Log,
+}
+
+/// Host-facing behavior for a top-level parameter.
+///
+/// The range remains on [`crate::Param`] because it is also used by runtime
+/// clamping. This structure describes how normalized host values map to that
+/// plain range and, when present, its legal discrete grid.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ParamControl {
+    pub scale: ParamScale,
+    pub unit: Option<String>,
+    pub step: Option<ScalarValue>,
+    /// Number of equal intervals between the inclusive range endpoints.
+    pub step_count: Option<u32>,
+}
+
+impl ParamControl {
+    pub fn constrain_plain(&self, range: ValueRange, plain: f64) -> f64 {
+        let min = range.min.as_f64();
+        let max = range.max.as_f64();
+        let clamped = if plain.is_nan() {
+            min
+        } else {
+            plain.clamp(min, max)
+        };
+        let Some(step) = self.step else {
+            return clamped;
+        };
+        let step = step.as_f64();
+        let snapped = min + ((clamped - min) / step).round() * step;
+        snapped.clamp(min, max)
+    }
+
+    pub fn normalized_to_plain(&self, range: ValueRange, normalized: f64) -> f64 {
+        let normalized = if normalized.is_nan() {
+            0.0
+        } else {
+            normalized.clamp(0.0, 1.0)
+        };
+        let min = range.min.as_f64();
+        let max = range.max.as_f64();
+        if normalized == 0.0 {
+            return min;
+        }
+        if normalized == 1.0 {
+            return max;
+        }
+        let plain = match self.scale {
+            ParamScale::Linear => min + normalized * (max - min),
+            ParamScale::Log => min * (max / min).powf(normalized),
+        };
+        self.constrain_plain(range, plain)
+    }
+
+    pub fn plain_to_normalized(&self, range: ValueRange, plain: f64) -> f64 {
+        let plain = self.constrain_plain(range, plain);
+        let min = range.min.as_f64();
+        let max = range.max.as_f64();
+        if plain == min {
+            return 0.0;
+        }
+        if plain == max {
+            return 1.0;
+        }
+        match self.scale {
+            ParamScale::Linear => (plain - min) / (max - min),
+            ParamScale::Log => (plain / min).ln() / (max / min).ln(),
+        }
+        .clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod param_control_tests {
+    use super::*;
+
+    #[test]
+    fn maps_linear_and_logarithmic_domains() {
+        let linear = ParamControl::default();
+        let linear_range = ValueRange {
+            min: ScalarValue::F64(20.0),
+            max: ScalarValue::F64(20_000.0),
+        };
+        assert_eq!(linear.normalized_to_plain(linear_range, 0.5), 10_010.0);
+        assert_eq!(linear.plain_to_normalized(linear_range, 10_010.0), 0.5);
+
+        let log = ParamControl {
+            scale: ParamScale::Log,
+            ..ParamControl::default()
+        };
+        let midpoint = log.normalized_to_plain(linear_range, 0.5);
+        assert!((midpoint - (20.0_f64 * 20_000.0).sqrt()).abs() < 1.0e-10);
+        assert!((log.plain_to_normalized(linear_range, midpoint) - 0.5).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn clamps_and_snaps_stepped_domains() {
+        let control = ParamControl {
+            step: Some(ScalarValue::I32(2)),
+            step_count: Some(5),
+            ..ParamControl::default()
+        };
+        let range = ValueRange {
+            min: ScalarValue::I32(0),
+            max: ScalarValue::I32(10),
+        };
+        assert_eq!(control.constrain_plain(range, -1.0), 0.0);
+        assert_eq!(control.constrain_plain(range, 3.2), 4.0);
+        assert_eq!(control.normalized_to_plain(range, 0.3), 4.0);
+        assert_eq!(control.plain_to_normalized(range, 3.2), 0.4);
+    }
 }

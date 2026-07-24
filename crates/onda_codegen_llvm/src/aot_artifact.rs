@@ -16,8 +16,8 @@ use onda_processor_abi::{
     BufferMetadata as AotBufferMetadata, CompileInfo as AotCompileInfo,
     EventMetadata as AotEventMetadata, EventParamMetadata as AotEventParamMetadata,
     Exports as AotExports, IntegrationInfo as AotIntegrationInfo, IoMetadata as AotIoMetadata,
-    ProgramMetadata as AotProgramMetadata, RuntimeInfo as AotRuntimeInfo,
-    TargetInfo as AotTargetInfo,
+    ParamControlMetadata as AotParamControlMetadata, ProgramMetadata as AotProgramMetadata,
+    RuntimeInfo as AotRuntimeInfo, TargetInfo as AotTargetInfo,
 };
 
 #[cfg(feature = "llvm-orc")]
@@ -214,6 +214,16 @@ fn map_io_metadata(io: &crate::DeclaredIo) -> AotIoMetadata {
             .map(|values| values.iter().copied().map(format_const_value).collect()),
         range_min_repr: io.range().map(|range| format_const_value(range.min)),
         range_max_repr: io.range().map(|range| format_const_value(range.max)),
+        param_control: io.param_control().map(|control| AotParamControlMetadata {
+            scale: match control.scale {
+                onda_mir::ParamScale::Linear => "linear",
+                onda_mir::ParamScale::Log => "log",
+            }
+            .to_owned(),
+            unit: control.unit.clone(),
+            step_repr: control.step.map(format_const_value),
+            step_count: control.step_count,
+        }),
     }
 }
 

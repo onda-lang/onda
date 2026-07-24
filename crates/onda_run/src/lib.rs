@@ -725,6 +725,10 @@ fn run_param_json(param: &RunParamInfo) -> Value {
         "default": param.default,
         "rangeMin": param.range_min,
         "rangeMax": param.range_max,
+        "scale": param.scale,
+        "unit": param.unit,
+        "step": param.step,
+        "stepCount": param.step_count,
         "scalar": param.scalar,
     })
 }
@@ -1208,6 +1212,10 @@ fn params_are_compatible_for_preservation(old_param: &Value, new_param: &Value) 
         && old_param.get("default") == new_param.get("default")
         && old_param.get("rangeMin") == new_param.get("rangeMin")
         && old_param.get("rangeMax") == new_param.get("rangeMax")
+        && old_param.get("scale") == new_param.get("scale")
+        && old_param.get("unit") == new_param.get("unit")
+        && old_param.get("step") == new_param.get("step")
+        && old_param.get("stepCount") == new_param.get("stepCount")
         && old_param.get("scalar") == new_param.get("scalar")
 }
 
@@ -1586,6 +1594,10 @@ mod tests {
             "default": default,
             "rangeMin": range_min,
             "rangeMax": range_max,
+            "scale": null,
+            "unit": null,
+            "step": null,
+            "stepCount": null,
             "scalar": scalar,
         })
     }

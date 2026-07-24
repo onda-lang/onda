@@ -7,6 +7,7 @@ struct ParsedNamedDecl {
     ty_loc: Span,
     default: Option<Expr>,
     range: Option<DeclRange>,
+    control: ParamControl,
     bind: Option<String>,
 }
 
@@ -99,6 +100,11 @@ fn parse_named_decl(
             }
             Rule::expr => parsed.default = Some(parse_expr_inner(item)),
             Rule::decl_range => parsed.range = Some(parse_decl_range_pair(item)?),
+            Rule::param_domain => {
+                let (range, control) = parse_param_domain_pair(item)?;
+                parsed.range = Some(range);
+                parsed.control = control;
+            }
             Rule::param_bind => {
                 if let Some(bind_pair) = item.into_inner().next() {
                     parsed.bind = Some(bind_pair.as_str().to_owned());
@@ -275,6 +281,7 @@ pub(super) fn parse_params_block(
                         ty_loc: parsed.ty_loc,
                         default: parsed.default,
                         range: parsed.range,
+                        control: parsed.control,
                         bind: parsed.bind,
                     });
                 }

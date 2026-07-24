@@ -556,6 +556,7 @@ pub(crate) fn specialize_generic_proc_template(
             ty_loc: decl.ty_loc,
             default: decl.default.clone(),
             range: decl.range.clone(),
+            control: decl.control.clone(),
             bind: decl.bind.clone(),
         })
         .collect::<Vec<_>>();
@@ -633,6 +634,15 @@ pub(crate) fn specialize_generic_proc_template(
                 &mut range.max,
                 &type_bindings,
                 &format!("processor '{}' parameter range maximum", template.name),
+                errors,
+            );
+        }
+        if let Some(step) = &mut param.control.step {
+            rewrite_generic_array_ctor_expr_types(step, &type_bindings, errors);
+            substitute_call_type_args_with_bindings_expr(
+                step,
+                &type_bindings,
+                &format!("processor '{}' parameter step", template.name),
                 errors,
             );
         }

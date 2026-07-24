@@ -2943,6 +2943,9 @@ fn fold_param_decl_const_arrays(
         errors,
     );
     fold_decl_range_const_arrays(&mut decl.range, const_values, options, errors);
+    if let Some(step) = &mut decl.control.step {
+        fold_const_array_expr(step, const_values, options, errors, false);
+    }
 }
 
 fn fold_buffer_type_const_arrays(
@@ -3292,6 +3295,9 @@ fn reject_forward_const_refs_param_decl(
         reject_forward_const_refs_expr(default, visible_consts, future_consts, errors);
     }
     reject_forward_const_refs_decl_range(&decl.range, visible_consts, future_consts, errors);
+    if let Some(step) = &decl.control.step {
+        reject_forward_const_refs_expr(step, visible_consts, future_consts, errors);
+    }
 }
 
 fn reject_forward_const_refs_buffer_type(
@@ -4542,6 +4548,9 @@ fn fold_direct_const_def_param_decl(
         fold_direct_const_def_call_expr(default, artifacts, options, context, errors);
     }
     fold_direct_const_def_decl_range(&mut decl.range, artifacts, options, context, errors);
+    if let Some(step) = &mut decl.control.step {
+        fold_direct_const_def_call_expr(step, artifacts, options, context, errors);
+    }
 }
 
 fn fold_direct_const_def_stmt(
@@ -5214,6 +5223,9 @@ fn fold_local_scalar_const_param_decl(
         fold_local_scalar_const_expr(default, local_consts);
     }
     fold_local_scalar_const_decl_range(&mut decl.range, local_consts);
+    if let Some(step) = &mut decl.control.step {
+        fold_local_scalar_const_expr(step, local_consts);
+    }
 }
 
 fn eval_local_scalar_const_decl(
@@ -6045,6 +6057,7 @@ fn expand_param_count_shorthand(
                 ty_loc: Span::ZERO,
                 default: None,
                 range: None,
+                control: Default::default(),
                 bind: None,
             });
         }

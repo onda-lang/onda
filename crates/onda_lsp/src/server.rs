@@ -17,6 +17,7 @@ mod completion;
 mod diagnostics;
 mod namespace_resolution;
 mod navigation;
+mod param_domain;
 mod path_utils;
 mod position;
 mod semantic_tokens;
@@ -3442,6 +3443,73 @@ namespace sc:
 
         assert!(triggers.contains(&"("), "triggers: {triggers:?}");
         assert!(triggers.contains(&","), "triggers: {triggers:?}");
+        assert!(triggers.contains(&"{"), "triggers: {triggers:?}");
+    }
+
+    #[test]
+    fn completion_offers_unused_parameter_domain_fields() {
+        let dir = mk_temp_dir("completion_param_domain_fields");
+        let main = dir.join("main.onda");
+        let source = "params:\n  cutoff = 440.0 {min = 20, ";
+        write_file(&main, source);
+
+        let mut server = LspServer {
+            completion_snippets: true,
+            ..LspServer::default()
+        };
+        let items = completion_items_for(&mut server, &main, source, source);
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!labels.contains(&"min"), "items: {items:?}");
+        for expected in ["max", "scale", "unit", "step"] {
+            assert!(labels.contains(&expected), "missing {expected}: {items:?}");
+        }
+        let scale = items
+            .iter()
+            .find(|item| item["label"] == json!("scale"))
+            .expect("scale field completion");
+        assert_eq!(scale["kind"], json!(10));
+        assert_eq!(scale["detail"], json!("parameter domain field"));
+        assert_eq!(scale["insertText"], json!("scale = ${1|linear,log|}"));
+        assert_eq!(scale["insertTextFormat"], json!(2));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_treats_log_as_a_contextual_parameter_scale() {
+        let dir = mk_temp_dir("completion_param_domain_log");
+        let main = dir.join("main.onda");
+        let named_source = "params:\n  cutoff = 440.0 {min = 20, max = 20000, scale = lo";
+        write_file(&main, named_source);
+
+        let mut server = LspServer::default();
+        let named_items = completion_items_for(&mut server, &main, named_source, "scale = lo");
+        assert_eq!(named_items.len(), 1, "items: {named_items:?}");
+        assert_eq!(named_items[0]["label"], json!("log"));
+        assert_eq!(named_items[0]["kind"], json!(20));
+        assert_eq!(named_items[0]["detail"], json!("parameter scale"));
+
+        let positional_source = "params:\n  cutoff = 440.0 {20, 20000, lo";
+        let positional_items =
+            completion_items_for(&mut server, &main, positional_source, positional_source);
+        assert_eq!(positional_items.len(), 1, "items: {positional_items:?}");
+        assert_eq!(positional_items[0]["label"], json!("log"));
+        assert_eq!(positional_items[0]["kind"], json!(20));
+
+        let expression_source = "params:\n  cutoff = 440.0 {lo";
+        let expression_items =
+            completion_items_for(&mut server, &main, expression_source, expression_source);
+        let expression_log = expression_items
+            .iter()
+            .find(|item| item["label"] == json!("log"))
+            .expect("stdlib log expression completion");
+        assert_eq!(expression_log["kind"], json!(3));
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

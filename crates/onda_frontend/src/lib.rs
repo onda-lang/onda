@@ -9,9 +9,10 @@ pub use ast::{
     EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl, FnParamType, FnReturnScalarType,
     FnReturnType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock,
     LogicalOp, NamespaceAliasDecl, NamespaceCallArg, NamespaceDecl, NamespaceItem,
-    NamespaceRefSegment, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl, PortBlock,
-    PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef,
-    StructField, UseDecl, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
+    NamespaceRefSegment, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamControl, ParamDecl,
+    ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc,
+    Span, Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_WRITE2_FN, PARAM_SCALES,
 };
 pub use diagnostics::{DiagCode, DiagCtx, Diagnostic};
 pub use parser::{

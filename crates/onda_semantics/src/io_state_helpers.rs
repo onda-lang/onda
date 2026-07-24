@@ -445,6 +445,7 @@ pub(crate) fn normalize_numbered_param_decls(
                 ty_loc: Default::default(),
                 default: None,
                 range: None,
+                control: Default::default(),
                 bind: None,
             })
         })

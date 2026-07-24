@@ -2,6 +2,7 @@
 #define ONDA_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,6 +18,11 @@ enum {
   ONDA_PRIMITIVE_I32 = 2,
   ONDA_PRIMITIVE_I64 = 3,
   ONDA_PRIMITIVE_BOOL = 4
+};
+
+enum {
+  ONDA_PARAM_SCALE_LINEAR = 0,
+  ONDA_PARAM_SCALE_LOG = 1
 };
 
 /* Buffer channel declaration kinds used by buffer metadata queries. */
@@ -103,6 +109,10 @@ int onda_set_param_by_index(
   const void* value_ptr,
   int value_bytes
 );
+/* Sets a scalar parameter in its plain domain, clamping and snapping as declared. */
+int onda_set_param_plain_f64(onda_instance_t* instance, int index, double plain);
+/* Sets a scalar parameter from a normalized host value in [0, 1]. */
+int onda_set_param_normalized(onda_instance_t* instance, int index, double normalized);
 
 /* Triggers one event by index with packed payload bytes; returns 0 on success, negative on error.
    Unknown event indices are ignored and return success. */
@@ -430,6 +440,31 @@ double onda_output_range_max_f64(const onda_program_t* program, int index);
 double onda_param_range_min_f64(const onda_program_t* program, int index);
 /* Returns parameter range maximum as f64, or NaN if missing/invalid. */
 double onda_param_range_max_f64(const onda_program_t* program, int index);
+/* Returns ONDA_PARAM_SCALE_*, or -1 if the index is invalid/non-scalar. */
+int onda_param_scale(const onda_program_t* program, int index);
+/* Copies the UTF-8 unit including its trailing NUL. Returns 0 when absent, the
+   required byte count when present, or -1 on invalid arguments. */
+int onda_param_unit_copy(
+  const onda_program_t* program,
+  int index,
+  char* out_bytes,
+  int out_capacity
+);
+/* Returns 1 when the parameter has a discrete step, 0 when continuous, -1 if invalid. */
+int onda_param_has_step(const onda_program_t* program, int index);
+double onda_param_step_f64(const onda_program_t* program, int index);
+/* Number of intervals between min and max; returns 0 when absent/invalid. */
+uint32_t onda_param_step_count(const onda_program_t* program, int index);
+double onda_param_normalized_to_plain(
+  const onda_program_t* program,
+  int index,
+  double normalized
+);
+double onda_param_plain_to_normalized(
+  const onda_program_t* program,
+  int index,
+  double plain
+);
 
 #ifdef __cplusplus
 }

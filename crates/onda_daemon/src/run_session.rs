@@ -63,6 +63,10 @@ pub struct RunParamInfo {
     pub default: Option<f64>,
     pub range_min: Option<f64>,
     pub range_max: Option<f64>,
+    pub scale: Option<String>,
+    pub unit: Option<String>,
+    pub step: Option<f64>,
+    pub step_count: Option<u32>,
     pub scalar: bool,
 }
 
@@ -267,6 +271,10 @@ impl RunSession {
                     default: desc.default_as_f64(),
                     range_min: desc.range_min_as_f64(),
                     range_max: desc.range_max_as_f64(),
+                    scale: desc.param_scale_name().map(ToOwned::to_owned),
+                    unit: desc.param_unit().map(ToOwned::to_owned),
+                    step: desc.param_step_as_f64(),
+                    step_count: desc.param_step_count(),
                     scalar: desc.array_len() == 1,
                 })
             })
@@ -359,8 +367,17 @@ impl RunSession {
                 0,
             ));
         }
+        let value = if desc.elem_ty() == PrimitiveType::Bool {
+            if value >= 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            desc.constrain_param_plain(value).unwrap_or(value)
+        };
         self.param_values.insert(name.to_owned(), value);
-        if should_smooth_run_param(desc.elem_ty()) {
+        if should_smooth_run_param(desc.elem_ty()) && desc.param_step_count().is_none() {
             self.param_runtime_values
                 .entry(name.to_owned())
                 .or_insert_with(|| default_run_param_value(desc));
@@ -702,7 +719,7 @@ impl RunSession {
                 let Some(desc) = self.jit.param_descriptor(index) else {
                     continue;
                 };
-                if !should_smooth_run_param(desc.elem_ty()) {
+                if !should_smooth_run_param(desc.elem_ty()) || desc.param_step_count().is_some() {
                     continue;
                 }
                 let bytes = scalar_param_bytes(desc.elem_ty(), target_value)?;
@@ -724,7 +741,7 @@ impl RunSession {
             let Some(desc) = self.jit.param_descriptor(index) else {
                 continue;
             };
-            if !should_smooth_run_param(desc.elem_ty()) {
+            if !should_smooth_run_param(desc.elem_ty()) || desc.param_step_count().is_some() {
                 continue;
             }
             let current_value = self

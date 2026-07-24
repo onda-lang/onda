@@ -13,8 +13,9 @@ use onda_frontend::{
     EventDef, EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType, FnReturnType,
     FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl,
     NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock,
-    ParamDecl, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc,
-    Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
+    ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
+    SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_WRITE2_FN,
 };
 
 pub mod aggregate_layout;
@@ -327,6 +328,27 @@ pub struct TypedParam {
     pub ty: PrimitiveType,
     pub default: TypedConstValue,
     pub range: Option<TypedValueRange>,
+    pub control: TypedParamControl,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedParamControl {
+    pub scale: ParamScale,
+    pub unit: Option<String>,
+    pub step: Option<TypedConstValue>,
+    /// Number of equal intervals between the inclusive range endpoints.
+    pub step_count: Option<u32>,
+}
+
+impl Default for TypedParamControl {
+    fn default() -> Self {
+        Self {
+            scale: ParamScale::Linear,
+            unit: None,
+            step: None,
+            step_count: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -564,6 +586,70 @@ mod tests {
         assert!(
             errors.iter().any(|diag| diag.message.contains(expected)),
             "expected diagnostic containing '{expected}', got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validates_top_level_parameter_control_domains() {
+        let program = parse_program(
+            r#"
+params {
+  cutoff = 440.0 {20, 20000, log, "Hz"}
+  mode: i32 = 4 {0, 10, step = 2}
+}
+outs { out1 }
+sample { out1 = cutoff + mode }
+"#,
+        )
+        .expect("parse should succeed");
+        let typed = analyze(program).expect("valid parameter domains should analyze");
+
+        assert_eq!(typed.params[0].control.scale, ParamScale::Log);
+        assert_eq!(typed.params[0].control.unit.as_deref(), Some("Hz"));
+        assert_eq!(typed.params[0].control.step, None);
+        assert_eq!(typed.params[1].control.step, Some(TypedConstValue::I32(2)));
+        assert_eq!(typed.params[1].control.step_count, Some(5));
+
+        let mir =
+            lower_program_to_optimized_mir(&typed).expect("parameter domains should lower to MIR");
+        let params = &mir.as_program().interface.params;
+        assert_eq!(params[0].control.scale, onda_mir::ParamScale::Log);
+        assert_eq!(params[0].control.unit.as_deref(), Some("Hz"));
+        assert_eq!(params[1].control.step, Some(onda_mir::ScalarValue::I32(2)));
+        assert_eq!(params[1].control.step_count, Some(5));
+    }
+
+    #[test]
+    fn integer_parameter_ranges_have_an_implicit_unit_step() {
+        let program = parse_program(
+            r#"
+params { mode: i32 = 4 {0, 10} }
+outs { out1 }
+sample { out1 = mode }
+"#,
+        )
+        .expect("parse should succeed");
+        let typed = analyze(program).expect("integer domain should analyze");
+        assert_eq!(typed.params[0].control.step, Some(TypedConstValue::I32(1)));
+        assert_eq!(typed.params[0].control.step_count, Some(10));
+    }
+
+    #[test]
+    fn rejects_invalid_top_level_parameter_control_domains() {
+        for (domain, expected) in [
+            ("{-20, 20000, log}", "0 < min < max"),
+            ("{20, 20000, log, step = 10}", "cannot combine"),
+            ("{0, 10, step = 3}", "divide the range exactly"),
+            ("{0, 10, step = 2}", "default must lie on the step grid"),
+        ] {
+            assert_analyze_error_contains(
+                &format!("params {{ p = 3.0 {domain} }}\nouts {{ out1 }}\nsample {{ out1 = p }}\n"),
+                expected,
+            );
+        }
+        assert_analyze_error_contains(
+            "params { p: i32 = 1 {0, 10, log} }\nouts { out1 }\nsample { out1 = p }\n",
+            "logarithmic scale requires f32 or f64",
         );
     }
 

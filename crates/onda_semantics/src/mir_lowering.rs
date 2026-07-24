@@ -15,7 +15,8 @@ use std::fmt;
 
 use onda_frontend::{
     ArrayElemType, AssignTarget, BinaryOp as AstBinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr,
-    LogicalOp, PrimitiveType, SourceLoc, Stmt, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
+    LogicalOp, ParamScale, PrimitiveType, SourceLoc, Stmt, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_WRITE2_FN,
 };
 use onda_mir::{
     BinaryOp as MirBinaryOp, Block as MirBlock, BoundsMode, CallArgument, CompareOp,
@@ -40,8 +41,8 @@ use crate::{
     AggregatePathComponent, AnalysisOptions, ProcSincStageStateFields, ProcStepOversampleMeta,
     ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType, TypedArrayInfo, TypedBufferChannels,
     TypedConstValue, TypedEvent, TypedEventParamDefault, TypedEventParamType, TypedFieldType,
-    TypedFnParam, TypedFunction, TypedNestedProcArray, TypedProgram, TypedStructField,
-    TypedValueRange,
+    TypedFnParam, TypedFunction, TypedNestedProcArray, TypedParamControl, TypedProgram,
+    TypedStructField, TypedValueRange,
 };
 
 const SINC_A1_COEFF: f64 = 0.039_151_597_734_460_045;
@@ -1086,6 +1087,7 @@ fn populate_interface(
                 ty: type_id,
                 default: onda_mir::ConstantValue::Aggregate(defaults),
                 range: None,
+                control: onda_mir::ParamControl::default(),
             });
             globals
                 .param_arrays
@@ -1101,6 +1103,7 @@ fn populate_interface(
             ty: type_id,
             default: mir_constant(param.default),
             range: param.range.map(mir_range),
+            control: mir_param_control(&param.control),
         });
         globals.params.insert(param.name.clone(), (id, param.ty));
         index += 1;
@@ -1950,6 +1953,18 @@ fn mir_range(range: TypedValueRange) -> onda_mir::ValueRange {
     onda_mir::ValueRange {
         min: mir_scalar(range.min),
         max: mir_scalar(range.max),
+    }
+}
+
+fn mir_param_control(control: &TypedParamControl) -> onda_mir::ParamControl {
+    onda_mir::ParamControl {
+        scale: match control.scale {
+            ParamScale::Linear => onda_mir::ParamScale::Linear,
+            ParamScale::Log => onda_mir::ParamScale::Log,
+        },
+        unit: control.unit.clone(),
+        step: control.step.map(mir_scalar),
+        step_count: control.step_count,
     }
 }
 

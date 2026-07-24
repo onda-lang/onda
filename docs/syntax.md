@@ -185,7 +185,8 @@ params:
   gain = 1.0
   mode: i32 = 0
   spread: f32[2] = [0.25, 0.75]
-  freq = 440.0 {20.0, 20000.0}
+  cutoff = 440.0 {20.0, 20000.0, log, "Hz"}
+  mode: i32 = 4 {0, 10, step = 2}
 ```
 
 At the top level only, `kins` is an alias for `params`.
@@ -201,11 +202,46 @@ Rules:
 - Omitted param types without defaults become `f32`.
 - Omitted param types with defaults infer from the default.
 - `gain = 0.5` becomes `f32`; `mode = 0` becomes `i32`.
-- Scalar params can have ranges. Array params cannot have ranges.
+- Scalar params can have host-control domains. Array params cannot.
 - `params N` expands to `param1..paramN`; top-level `kins N` expands to `kin1..kinN`.
 - Top-level code may declare either `params` or `kins`, not both.
 - Top-level `paramN` or `kinN` usage can implicitly create params up to that ordinal.
 - Top-level params are readable in executable code but are not writable from top-level event handlers.
+
+A parameter domain extends the existing range braces with `scale`, `unit`, and
+`step`. Positional fields are ordered as `min, max, scale, unit, step`; the
+fields may instead be named and named fields may appear in any order:
+
+```onda
+params:
+  cutoff = 440.0 {20, 20000, log, "Hz"}
+  resonance = 0.5 {0, 1, unit = "%"}
+  voices: i32 = 4 {min = 0, max = 16, step = 1}
+  gain = 1.0 {max = 2, scale = linear}
+```
+
+Positional fields must precede named fields, fields cannot be repeated, and
+`{max}` retains the existing maximum-only shorthand. `scale` defaults to
+`linear`; the other optional fields default to absent.
+
+These extra fields describe external control of explicit top-level `params`
+(and their top-level `kins` alias). They are not available on inputs or
+processor-local params, and they do not add operations to the Onda DSP
+program:
+
+- `linear` maps normalized `n` to `min + n * (max - min)`.
+- `log` maps it to `min * (max / min) ** n` and requires a floating parameter
+  with `0 < min < max`.
+- `unit` is presentation metadata.
+- `step` must be positive, must divide the range exactly, and requires the
+  default to lie on the resulting grid. External plain and normalized writes
+  are clamped and snapped to that grid.
+- Ranged `i32` and `i64` params have an implicit step of `1`.
+- Logarithmic stepped domains are not supported.
+
+The step count is the number of intervals from `min` to `max` and must fit the
+host descriptor. Normalization, snapping, and units are host-boundary
+semantics; Onda code reads the resulting plain parameter value.
 
 Explicitly declared homogeneous params can be indexed directly:
 

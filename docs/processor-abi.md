@@ -199,6 +199,35 @@ descriptor. A dynamic event slice contains its scalar data after the fixed paylo
 the generated offset and length in that header. Event handlers receive the same parameter, state,
 and buffer bindings as processing.
 
+Descriptor format version 2 gives every parameter `range_min_repr`, `range_max_repr`, and
+`param_control`. `param_control` is null for a parameter without a numeric host-control domain;
+otherwise it contains:
+
+- `scale`: `linear` or `log`;
+- `unit`: optional display text;
+- `step_repr`: the optional plain-domain step encoded in the declared scalar representation;
+- `step_count`: the number of equal intervals between the inclusive endpoints.
+
+The raw processor object does not export parameter conversion functions. A native-object host
+generates or supplies its own host-support layer from the sidecar. The reference generator in
+`examples/native/raw_processor_object` emits plain/normalized conversion, typed reads, and typed
+writes without linking the Onda runtime.
+
+For a scalar numeric parameter, normalized-to-plain conversion is:
+
+1. Map NaN to zero and clamp the normalized input to `[0, 1]`.
+2. Return the exact range endpoint for normalized zero or one.
+3. Apply `min + n * (max - min)` for `linear`, or
+   `min * (max / min) ** n` for `log`.
+4. Clamp the plain value to the inclusive range.
+5. For a stepped domain, snap to `min + round((plain - min) / step) * step` and clamp again.
+6. Convert to the declared scalar width when writing parameter storage.
+
+Plain-to-normalized first performs the same plain clamping and step snapping, preserves exact
+endpoints, then applies the inverse linear or logarithmic mapping. Boolean host controls use the
+threshold `normalized >= 0.5` and store one byte containing zero or one. Parameter arrays and
+un-ranged numeric parameters do not have normalized host-control domains.
+
 External buffers use four parallel tables in declaration order:
 
 - `buffers`: data pointers.

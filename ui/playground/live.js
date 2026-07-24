@@ -454,6 +454,42 @@ async function smokeEditorBindings() {
   const projectTabCloseHandled = !projectEditor.states.has(smokePath)
     && projectEditor.paths().length === projectFileCount;
 
+  const originalFontSize = editorFontSize;
+  editorFontSizeEl.value = "23";
+  editorFontSizeEl.dispatchEvent(new Event("input", { bubbles: true }));
+  const lineNumber = editorEl.querySelector(".cm-lineNumbers .cm-gutterElement");
+  const editorFontSizeImmediately = getComputedStyle(content).fontSize;
+  const lineNumberFontSizeImmediately = lineNumber
+    ? getComputedStyle(lineNumber).fontSize
+    : null;
+  await nextAnimationFrame();
+  const editorFontSizeAfterMeasure = getComputedStyle(content).fontSize;
+  const lineNumberFontSizeAfterMeasure = lineNumber
+    ? getComputedStyle(lineNumber).fontSize
+    : null;
+  editorFontSizeEl.value = String(originalFontSize);
+  editorFontSizeEl.dispatchEvent(new Event("input", { bubbles: true }));
+  const editorFontSizeHandled =
+    editorFontSizeImmediately === "23px"
+    && editorFontSizeAfterMeasure === "23px";
+  const lineNumberFontSizeHandled =
+    lineNumberFontSizeImmediately === "23px"
+    && lineNumberFontSizeAfterMeasure === "23px";
+
+  view.focus();
+  const selectionBeforeScroll = view.state.selection;
+  const scrollTabIndex = view.scrollDOM.getAttribute("tabindex");
+  view.scrollDOM.tabIndex = -1;
+  view.scrollDOM.focus({ preventScroll: true });
+  view.scrollDOM.dispatchEvent(new Event("scroll"));
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+  const scrollPreservedTextFocus =
+    view.hasFocus
+    && view.state.selection.eq(selectionBeforeScroll);
+  if (scrollTabIndex === null) view.scrollDOM.removeAttribute("tabindex");
+  else view.scrollDOM.setAttribute("tabindex", scrollTabIndex);
+
   const stopEvent = new KeyboardEvent("keydown", {
     key: ".",
     code: "Period",
@@ -500,6 +536,9 @@ async function smokeEditorBindings() {
     stdlibChainedDefinitionHandled,
     stdlibTabCloseHandled,
     projectTabCloseHandled,
+    editorFontSizeHandled,
+    lineNumberFontSizeHandled,
+    scrollPreservedTextFocus,
     ctrlPeriodHandled,
     runViewShortcutsHandled,
     shareRoundTripHandled,

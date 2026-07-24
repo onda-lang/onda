@@ -1135,6 +1135,41 @@ fn semantic_tokens_mark_named_argument_labels_as_state_in_calls() {
 }
 
 #[test]
+fn semantic_tokens_distinguish_parameter_domain_fields_and_scale_values() {
+    let source = concat!(
+        "params:\n",
+        "  cutoff = 440.0 {min = 20, max = 20000, scale = log, unit = \"Hz\"}\n",
+        "  gain = 1.0 {0, 2, linear}\n",
+        "outs:\n",
+        "  out1\n",
+        "sample:\n",
+        "  out1 = log(gain)\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    for field in ["min", "max", "scale", "unit"] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 1, field),
+            Some(SEMANTIC_TOKEN_TYPE_STATE),
+            "parameter domain field '{field}' should match named-argument highlighting"
+        );
+    }
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 1, "log"),
+        Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 2, "linear"),
+        Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 6, "log"),
+        Some(SEMANTIC_TOKEN_TYPE_FUNCTION),
+        "log should remain a function in expression context"
+    );
+}
+
+#[test]
 fn semantic_tokens_mark_block_pre_state_in_nested_sample() {
     let source = concat!(
         "outs:\n",

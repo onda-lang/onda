@@ -1,6 +1,13 @@
 import {
+  paramNormalizedToPlain,
   validateProcessorArtifact,
   validateProcessorModule,
+} from "@onda-lang/processor-abi";
+
+export {
+  constrainParamPlain,
+  paramNormalizedToPlain,
+  paramPlainToNormalized,
 } from "@onda-lang/processor-abi";
 
 export const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
@@ -123,7 +130,7 @@ export async function createOndaAudioProcessor(context, artifact, options = {}) 
       false,
     ),
   );
-  return new OndaAudioProcessor(node);
+  return new OndaAudioProcessor(node, validated.metadata);
 }
 
 export async function compileOndaProcessorModule(artifact) {
@@ -139,8 +146,10 @@ async function compileValidatedProcessorModule({ wasm, metadata }) {
 }
 
 export class OndaAudioProcessor {
-  constructor(node) {
+  constructor(node, metadata = null) {
     this.node = node;
+    this.metadata = metadata;
+    this.paramInfo = metadata?.metadata?.params ?? null;
     this.nextRequestId = 1;
     this.pending = new Map();
     this.handleMessage = (event) => {
@@ -174,6 +183,25 @@ export class OndaAudioProcessor {
 
   setParam(param, value) {
     return this.request("set-param", { param, value });
+  }
+
+  setParamNormalized(param, value) {
+    try {
+      if (!Array.isArray(this.paramInfo)) {
+        throw new Error(
+          "setParamNormalized requires processor metadata; construct the adapter with createOndaAudioProcessor()",
+        );
+      }
+      const info = Number.isInteger(param)
+        ? this.paramInfo[param]
+        : this.paramInfo.find((candidate) => candidate.name === param);
+      if (!info) {
+        throw new Error(`unknown Onda parameter '${String(param)}'`);
+      }
+      return this.setParam(param, paramNormalizedToPlain(info, value));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   trigger(event, values = {}) {

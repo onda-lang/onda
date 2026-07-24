@@ -15,9 +15,9 @@ use crate::ast::{
     CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, EventBlock, EventDef,
     EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl, FnParamType, FunctionDef,
     GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, LogicalOp, OutputTiming,
-    ParamBlock, ParamDecl, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    SourceLoc, Span, Stmt, StructDef, StructField, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_WRITE2_FN,
+    ParamBlock, ParamControl, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType,
+    ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef, StructField,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN, PARAM_SCALES,
 };
 use crate::diagnostics::Diagnostic;
 

@@ -136,6 +136,18 @@ impl<'a> Formatter<'a> {
                 )
                 .expect("writing a string");
             }
+            if param.control.scale != crate::ParamScale::Linear {
+                write!(suffix, " scale={:?}", param.control.scale).expect("writing a string");
+            }
+            if let Some(unit) = &param.control.unit {
+                write!(suffix, " unit={unit:?}").expect("writing a string");
+            }
+            if let Some(step) = param.control.step {
+                write!(suffix, " step={}", format_scalar(step)).expect("writing a string");
+            }
+            if let Some(step_count) = param.control.step_count {
+                write!(suffix, " step_count={step_count}").expect("writing a string");
+            }
             self.line(format_args!(
                 "param @param{index} {:?}: {}{suffix}",
                 param.name,

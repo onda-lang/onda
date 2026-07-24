@@ -415,6 +415,85 @@ pub fn set_param_by_index(
     Ok(())
 }
 
+pub fn set_param_plain_f64(
+    instance: &mut Instance,
+    index: usize,
+    plain: f64,
+) -> Result<(), Diagnostic> {
+    let Some(desc) = instance.program.param_descriptor(index) else {
+        return Err(Diagnostic::runtime(
+            format!("unknown parameter index {index}"),
+            0,
+            0,
+        ));
+    };
+    if desc.is_array() {
+        return Err(Diagnostic::runtime(
+            format!("parameter '{}' is not a scalar", desc.name()),
+            0,
+            0,
+        ));
+    }
+    let value = match desc.elem_ty() {
+        PrimitiveType::Bool => {
+            return set_param_by_index(instance, index, &[u8::from(plain >= 0.5)]);
+        }
+        _ => desc.constrain_param_plain(plain).ok_or_else(|| {
+            Diagnostic::runtime(
+                format!("parameter '{}' has no numeric control domain", desc.name()),
+                0,
+                0,
+            )
+        })?,
+    };
+    let mut bytes = [0_u8; 8];
+    let len = match desc.elem_ty() {
+        PrimitiveType::F32 => {
+            bytes[..4].copy_from_slice(&(value as f32).to_ne_bytes());
+            4
+        }
+        PrimitiveType::F64 => {
+            bytes.copy_from_slice(&value.to_ne_bytes());
+            8
+        }
+        PrimitiveType::I32 => {
+            bytes[..4].copy_from_slice(&(value.round() as i32).to_ne_bytes());
+            4
+        }
+        PrimitiveType::I64 => {
+            bytes.copy_from_slice(&(value.round() as i64).to_ne_bytes());
+            8
+        }
+        PrimitiveType::Bool => unreachable!(),
+    };
+    set_param_by_index(instance, index, &bytes[..len])
+}
+
+pub fn set_param_normalized(
+    instance: &mut Instance,
+    index: usize,
+    normalized: f64,
+) -> Result<(), Diagnostic> {
+    let Some(desc) = instance.program.param_descriptor(index) else {
+        return Err(Diagnostic::runtime(
+            format!("unknown parameter index {index}"),
+            0,
+            0,
+        ));
+    };
+    if desc.elem_ty() == PrimitiveType::Bool && !desc.is_array() {
+        return set_param_by_index(instance, index, &[u8::from(normalized >= 0.5)]);
+    }
+    let plain = desc.param_normalized_to_plain(normalized).ok_or_else(|| {
+        Diagnostic::runtime(
+            format!("parameter '{}' has no numeric control domain", desc.name()),
+            0,
+            0,
+        )
+    })?;
+    set_param_plain_f64(instance, index, plain)
+}
+
 pub fn read_control_output_bytes(
     instance: &Instance,
     index: usize,

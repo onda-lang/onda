@@ -141,6 +141,12 @@ function executableMir() {
             data: { type: "f32", value: 0.25 },
           },
           range: null,
+          control: {
+            scale: "linear",
+            unit: null,
+            step: null,
+            step_count: null,
+          },
         },
       ],
       buffers: [],
@@ -348,14 +354,14 @@ test("preserves signed zero in processor metadata", () => {
   mir.interface.params[0].default.data.value = -0;
   mir.interface.params[0].range = {
     min: { type: "f32", value: -0 },
-    max: { type: "f32", value: 0 },
+    max: { type: "f32", value: 1 },
   };
 
   const artifact = compileMir(mir);
   const [param] = artifact.metadata.metadata.params;
   assert.deepEqual(param.default_reprs, ["-0"]);
   assert.equal(param.range_min_repr, "-0");
-  assert.equal(param.range_max_repr, "0");
+  assert.equal(param.range_max_repr, "1");
 });
 
 test("serializes a reusable Wasm artifact with integrity metadata", async () => {

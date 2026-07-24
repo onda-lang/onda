@@ -2,15 +2,17 @@
 
 import argparse
 import json
+import math
 import pathlib
 import struct
 import sys
+from dataclasses import dataclass
 from typing import Optional
 
 
 PROCESSOR_ARTIFACT_FORMAT = "onda-processor"
 # Synchronized from format-versions.json; do not edit these copies directly.
-PROCESSOR_ARTIFACT_FORMAT_VERSION = 1
+PROCESSOR_ARTIFACT_FORMAT_VERSION = 2
 PROCESSOR_ABI_VERSION = 1
 
 SCALAR_FORMATS = {
@@ -28,6 +30,20 @@ SCALAR_KINDS = {
     "i32": "PROCESSOR_SCALAR_I32",
     "i64": "PROCESSOR_SCALAR_I64",
 }
+
+
+@dataclass
+class GeneratedParamTables:
+    names: list[str]
+    kinds: list[str]
+    array_lengths: list[str]
+    byte_offsets: list[str]
+    control_scales: list[str]
+    range_mins: list[str]
+    range_maxes: list[str]
+    steps: list[str]
+    step_counts: list[str]
+    units: list[str]
 
 
 def fail(message: str) -> None:
@@ -148,6 +164,128 @@ def c_bytes(value: bytes) -> str:
     return ", ".join(f"0x{byte:02x}" for byte in value) or "0x00"
 
 
+def c_string(value: str, context: str) -> str:
+    if "\0" in value:
+        fail(f"{context} must not contain a NUL byte")
+    escaped = []
+    for byte in value.encode("utf-8"):
+        if byte == ord('"'):
+            escaped.append('\\"')
+        elif byte == ord("\\"):
+            escaped.append("\\\\")
+        elif 0x20 <= byte <= 0x7E:
+            escaped.append(chr(byte))
+        else:
+            # Three-digit octal escapes avoid the look-ahead ambiguity of \xHH.
+            escaped.append(f"\\{byte:03o}")
+    return '"' + "".join(escaped) + '"'
+
+
+def c_f64(text: str, context: str) -> str:
+    value = parse_scalar(text)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        fail(f"{context} is not numeric")
+    value = float(value)
+    if not math.isfinite(value):
+        fail(f"{context} must be finite")
+    rendered = format(value, ".17g")
+    if "." not in rendered and "e" not in rendered:
+        rendered += ".0"
+    return rendered
+
+
+def generated_params(descriptor: dict) -> GeneratedParamTables:
+    names: list[str] = []
+    kinds: list[str] = []
+    array_lengths: list[str] = []
+    byte_offsets: list[str] = []
+    control_scales: list[str] = []
+    range_mins: list[str] = []
+    range_maxes: list[str] = []
+    steps: list[str] = []
+    step_counts: list[str] = []
+    units: list[str] = []
+
+    for param in descriptor["metadata"]["params"]:
+        name = param["name"]
+        scalar = scalar_name(param["type_repr"])
+        array_len = param.get("array_len", 1)
+        byte_offset = param.get("byte_offset")
+        if not isinstance(array_len, int) or array_len <= 0:
+            fail(f"parameter {name!r} has an invalid array length")
+        if not isinstance(byte_offset, int) or byte_offset < 0:
+            fail(f"parameter {name!r} has an invalid byte offset")
+
+        control = param.get("param_control")
+        if control is None:
+            control_scale = "PROCESSOR_PARAM_SCALE_NONE"
+            range_min = "0.0"
+            range_max = "0.0"
+            step = "0.0"
+            step_count = "0"
+            unit = "NULL"
+        else:
+            scale = control.get("scale")
+            if scale == "linear":
+                control_scale = "PROCESSOR_PARAM_SCALE_LINEAR"
+            elif scale == "log":
+                control_scale = "PROCESSOR_PARAM_SCALE_LOG"
+            else:
+                fail(f"parameter {name!r} has an invalid control scale")
+            range_min_repr = param.get("range_min_repr")
+            range_max_repr = param.get("range_max_repr")
+            if not isinstance(range_min_repr, str) or not isinstance(range_max_repr, str):
+                fail(f"parameter {name!r} control metadata is missing its range")
+            range_min = c_f64(range_min_repr, f"parameter {name!r} range minimum")
+            range_max = c_f64(range_max_repr, f"parameter {name!r} range maximum")
+            step_repr = control.get("step_repr")
+            step_count_value = control.get("step_count")
+            if step_repr is None:
+                if step_count_value is not None:
+                    fail(f"parameter {name!r} has a step count without a step")
+                step = "0.0"
+                step_count = "0"
+            else:
+                if not isinstance(step_repr, str):
+                    fail(f"parameter {name!r} has an invalid step")
+                if not isinstance(step_count_value, int) or step_count_value <= 0:
+                    fail(f"parameter {name!r} has an invalid step count")
+                step = c_f64(step_repr, f"parameter {name!r} step")
+                step_count = str(step_count_value)
+            unit_value = control.get("unit")
+            if unit_value is not None and not isinstance(unit_value, str):
+                fail(f"parameter {name!r} has an invalid unit")
+            unit = (
+                "NULL"
+                if unit_value is None
+                else c_string(unit_value, f"parameter {name!r} unit")
+            )
+
+        names.append(c_string(name, "parameter name"))
+        kinds.append(SCALAR_KINDS[scalar])
+        array_lengths.append(str(array_len))
+        byte_offsets.append(str(byte_offset))
+        control_scales.append(control_scale)
+        range_mins.append(range_min)
+        range_maxes.append(range_max)
+        steps.append(step)
+        step_counts.append(step_count)
+        units.append(unit)
+
+    return GeneratedParamTables(
+        names=names,
+        kinds=kinds,
+        array_lengths=array_lengths,
+        byte_offsets=byte_offsets,
+        control_scales=control_scales,
+        range_mins=range_mins,
+        range_maxes=range_maxes,
+        steps=steps,
+        step_counts=step_counts,
+        units=units,
+    )
+
+
 def generated_events(descriptor: dict) -> tuple[str, list[str], list[str], list[str], list[str]]:
     events = descriptor["metadata"]["events"]
     symbols = descriptor["exports"]["events"]
@@ -168,7 +306,7 @@ def generated_events(descriptor: dict) -> tuple[str, list[str], list[str], list[
             "const int32_t*, const int32_t*, const float*);"
         )
         functions.append(symbol)
-        names.append(json.dumps(event["name"]))
+        names.append(c_string(event["name"], "event name"))
         payload = encode_event_payload(descriptor, event)
         if payload is None:
             fixed.append("0")
@@ -233,12 +371,24 @@ def generate(descriptor: dict) -> str:
         descriptor
     )
     defaults = encode_parameter_defaults(descriptor)
-    triple = json.dumps(descriptor["target"]["triple"])
-    buffer_names = [json.dumps(buffer["name"]) for buffer in buffers]
+    params = generated_params(descriptor)
+    triple = c_string(descriptor["target"]["triple"], "target triple")
+    buffer_names = [c_string(buffer["name"], "buffer name") for buffer in buffers]
 
     return f"""/* Generated from the exact Onda JSON sidecar. Do not edit. */
 #ifndef ONDA_PROCESSOR_CONFIG_H
 #define ONDA_PROCESSOR_CONFIG_H
+
+#include <math.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#if defined(_MSC_VER)
+#define PROCESSOR_STATIC_INLINE static __inline
+#else
+#define PROCESSOR_STATIC_INLINE static inline
+#endif
 
 enum {{
   PROCESSOR_SCALAR_BOOL = 1,
@@ -246,6 +396,12 @@ enum {{
   PROCESSOR_SCALAR_F64 = 3,
   PROCESSOR_SCALAR_I32 = 4,
   PROCESSOR_SCALAR_I64 = 5
+}};
+
+enum {{
+  PROCESSOR_PARAM_SCALE_NONE = 0,
+  PROCESSOR_PARAM_SCALE_LINEAR = 1,
+  PROCESSOR_PARAM_SCALE_LOG = 2
 }};
 
 #define PROCESSOR_DESCRIPTOR_FORMAT_VERSION {descriptor['format_version']}u
@@ -257,6 +413,7 @@ enum {{
 #define PROCESSOR_STATE_ALIGN {runtime['state_align_bytes']}
 #define PROCESSOR_PARAM_SIZE {runtime['param_size_bytes']}
 #define PROCESSOR_PARAM_ALIGN {runtime['param_align_bytes']}
+#define PROCESSOR_PARAM_COUNT {len(params.names)}
 #define PROCESSOR_INPUT_COUNT {len(inputs)}
 #define PROCESSOR_OUTPUT_COUNT {len(outputs)}
 #define PROCESSOR_BUFFER_COUNT {len(buffers)}
@@ -266,6 +423,216 @@ static const unsigned char
 PROCESSOR_PARAM_DEFAULT_BYTES[(PROCESSOR_PARAM_SIZE > 0) ? PROCESSOR_PARAM_SIZE : 1] = {{
   {c_bytes(defaults)}
 }};
+
+static const char* const
+PROCESSOR_PARAM_NAMES[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.names, 'NULL')}
+}};
+
+static const unsigned char
+PROCESSOR_PARAM_KINDS[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.kinds, '0')}
+}};
+
+static const size_t
+PROCESSOR_PARAM_ARRAY_LENGTHS[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.array_lengths, '0')}
+}};
+
+static const size_t
+PROCESSOR_PARAM_BYTE_OFFSETS[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.byte_offsets, '0')}
+}};
+
+static const unsigned char
+PROCESSOR_PARAM_CONTROL_SCALES[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.control_scales, '0')}
+}};
+
+static const double
+PROCESSOR_PARAM_RANGE_MINS[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.range_mins, '0.0')}
+}};
+
+static const double
+PROCESSOR_PARAM_RANGE_MAXES[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.range_maxes, '0.0')}
+}};
+
+static const double
+PROCESSOR_PARAM_STEPS[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.steps, '0.0')}
+}};
+
+static const uint32_t
+PROCESSOR_PARAM_STEP_COUNTS[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.step_counts, '0')}
+}};
+
+static const char* const
+PROCESSOR_PARAM_UNITS[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.units, 'NULL')}
+}};
+
+PROCESSOR_STATIC_INLINE int processor_param_is_scalar(int index) {{
+  return index >= 0 && index < PROCESSOR_PARAM_COUNT &&
+    PROCESSOR_PARAM_ARRAY_LENGTHS[index] == 1;
+}}
+
+PROCESSOR_STATIC_INLINE double processor_param_constrain_plain(int index, double plain) {{
+  if (!processor_param_is_scalar(index)) {{
+    return NAN;
+  }}
+  if (PROCESSOR_PARAM_KINDS[index] == PROCESSOR_SCALAR_BOOL) {{
+    return plain >= 0.5 ? 1.0 : 0.0;
+  }}
+  if (PROCESSOR_PARAM_CONTROL_SCALES[index] == PROCESSOR_PARAM_SCALE_NONE) {{
+    return NAN;
+  }}
+  const double minimum = PROCESSOR_PARAM_RANGE_MINS[index];
+  const double maximum = PROCESSOR_PARAM_RANGE_MAXES[index];
+  double constrained = isnan(plain) ? minimum : fmin(maximum, fmax(minimum, plain));
+  const double step = PROCESSOR_PARAM_STEPS[index];
+  if (step > 0.0) {{
+    constrained = minimum + floor((constrained - minimum) / step + 0.5) * step;
+    constrained = fmin(maximum, fmax(minimum, constrained));
+  }}
+  return constrained;
+}}
+
+PROCESSOR_STATIC_INLINE double processor_param_normalized_to_plain(int index, double normalized) {{
+  if (!processor_param_is_scalar(index)) {{
+    return NAN;
+  }}
+  if (PROCESSOR_PARAM_KINDS[index] == PROCESSOR_SCALAR_BOOL) {{
+    return normalized >= 0.5 ? 1.0 : 0.0;
+  }}
+  const unsigned char scale = PROCESSOR_PARAM_CONTROL_SCALES[index];
+  if (scale == PROCESSOR_PARAM_SCALE_NONE) {{
+    return NAN;
+  }}
+  const double minimum = PROCESSOR_PARAM_RANGE_MINS[index];
+  const double maximum = PROCESSOR_PARAM_RANGE_MAXES[index];
+  const double unit = isnan(normalized) ? 0.0 : fmin(1.0, fmax(0.0, normalized));
+  if (unit == 0.0) {{
+    return minimum;
+  }}
+  if (unit == 1.0) {{
+    return maximum;
+  }}
+  const double plain = scale == PROCESSOR_PARAM_SCALE_LOG
+    ? minimum * pow(maximum / minimum, unit)
+    : minimum + unit * (maximum - minimum);
+  return processor_param_constrain_plain(index, plain);
+}}
+
+PROCESSOR_STATIC_INLINE double processor_param_plain_to_normalized(int index, double plain) {{
+  const double constrained = processor_param_constrain_plain(index, plain);
+  if (isnan(constrained)) {{
+    return NAN;
+  }}
+  if (PROCESSOR_PARAM_KINDS[index] == PROCESSOR_SCALAR_BOOL) {{
+    return constrained;
+  }}
+  const double minimum = PROCESSOR_PARAM_RANGE_MINS[index];
+  const double maximum = PROCESSOR_PARAM_RANGE_MAXES[index];
+  if (constrained == minimum) {{
+    return 0.0;
+  }}
+  if (constrained == maximum) {{
+    return 1.0;
+  }}
+  const double normalized =
+    PROCESSOR_PARAM_CONTROL_SCALES[index] == PROCESSOR_PARAM_SCALE_LOG
+      ? log(constrained / minimum) / log(maximum / minimum)
+      : (constrained - minimum) / (maximum - minimum);
+  return fmin(1.0, fmax(0.0, normalized));
+}}
+
+PROCESSOR_STATIC_INLINE double processor_param_read_plain(const void* params, int index) {{
+  if (params == NULL || !processor_param_is_scalar(index)) {{
+    return NAN;
+  }}
+  const unsigned char* source =
+    (const unsigned char*)params + PROCESSOR_PARAM_BYTE_OFFSETS[index];
+  switch (PROCESSOR_PARAM_KINDS[index]) {{
+    case PROCESSOR_SCALAR_BOOL: {{
+      uint8_t value;
+      memcpy(&value, source, sizeof(value));
+      return value == 0 ? 0.0 : 1.0;
+    }}
+    case PROCESSOR_SCALAR_F32: {{
+      float value;
+      memcpy(&value, source, sizeof(value));
+      return (double)value;
+    }}
+    case PROCESSOR_SCALAR_F64: {{
+      double value;
+      memcpy(&value, source, sizeof(value));
+      return value;
+    }}
+    case PROCESSOR_SCALAR_I32: {{
+      int32_t value;
+      memcpy(&value, source, sizeof(value));
+      return (double)value;
+    }}
+    case PROCESSOR_SCALAR_I64: {{
+      int64_t value;
+      memcpy(&value, source, sizeof(value));
+      return (double)value;
+    }}
+    default:
+      return NAN;
+  }}
+}}
+
+PROCESSOR_STATIC_INLINE int processor_param_set_plain(void* params, int index, double plain) {{
+  if (params == NULL || !processor_param_is_scalar(index)) {{
+    return -1;
+  }}
+  const double constrained = processor_param_constrain_plain(index, plain);
+  if (isnan(constrained)) {{
+    return -1;
+  }}
+  unsigned char* destination =
+    (unsigned char*)params + PROCESSOR_PARAM_BYTE_OFFSETS[index];
+  switch (PROCESSOR_PARAM_KINDS[index]) {{
+    case PROCESSOR_SCALAR_BOOL: {{
+      const uint8_t value = constrained != 0.0;
+      memcpy(destination, &value, sizeof(value));
+      return 0;
+    }}
+    case PROCESSOR_SCALAR_F32: {{
+      const float value = (float)constrained;
+      memcpy(destination, &value, sizeof(value));
+      return 0;
+    }}
+    case PROCESSOR_SCALAR_F64:
+      memcpy(destination, &constrained, sizeof(constrained));
+      return 0;
+    case PROCESSOR_SCALAR_I32: {{
+      const int32_t value = (int32_t)round(constrained);
+      memcpy(destination, &value, sizeof(value));
+      return 0;
+    }}
+    case PROCESSOR_SCALAR_I64: {{
+      const int64_t value = (int64_t)round(constrained);
+      memcpy(destination, &value, sizeof(value));
+      return 0;
+    }}
+    default:
+      return -1;
+  }}
+}}
+
+PROCESSOR_STATIC_INLINE int processor_param_set_normalized(
+  void* params,
+  int index,
+  double normalized
+) {{
+  const double plain = processor_param_normalized_to_plain(index, normalized);
+  return isnan(plain) ? -1 : processor_param_set_plain(params, index, plain);
+}}
 
 static const unsigned char
 PROCESSOR_INPUT_KINDS[(PROCESSOR_INPUT_COUNT > 0) ? PROCESSOR_INPUT_COUNT : 1] = {{
@@ -313,6 +680,8 @@ static const void* const
 PROCESSOR_EVENT_DEFAULT_PAYLOADS[(PROCESSOR_EVENT_COUNT > 0) ? PROCESSOR_EVENT_COUNT : 1] = {{
   {c_array(event_payloads, 'NULL')}
 }};
+
+#undef PROCESSOR_STATIC_INLINE
 
 #endif
 """

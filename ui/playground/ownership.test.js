@@ -129,6 +129,20 @@ test("wide floating-point controls retain fractional precision", async () => {
   assert.match(runView, /if \(param\.type === "i32" \|\| param\.type === "i64"\) \{\s+return 1;/);
 });
 
+test("the shared run view uses the processor ABI parameter conversions", async () => {
+  const [runView, webview, websiteBuild] = await Promise.all([
+    readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
+    readFile(resolve(repoRoot, "crates/onda_webview/src/lib.rs"), "utf8"),
+    readFile(resolve(repoRoot, "scripts/build-website-playground.mjs"), "utf8"),
+  ]);
+
+  assert.match(runView, /globalThis\.__ONDA_PARAM_CONTROL_V2__\.paramPlainToNormalized/);
+  assert.match(runView, /globalThis\.__ONDA_PARAM_CONTROL_V2__\.paramNormalizedToPlain/);
+  assert.doesNotMatch(runView, /Math\.log\(plain \/ min\)/);
+  assert.match(webview, /packages\/onda_processor_abi\/src\/param-control\.js/);
+  assert.match(websiteBuild, /src\/param-control\.js/);
+});
+
 test("the browser smoke check follows the project-only share contract", async () => {
   const playground = await readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8");
 

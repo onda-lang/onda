@@ -1,6 +1,6 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 1;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 2;
 export const PROCESSOR_ABI_VERSION: 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
 
@@ -50,7 +50,33 @@ export interface OndaIoMetadata {
   default_reprs: string[] | null;
   range_min_repr: string | null;
   range_max_repr: string | null;
+  param_control: OndaParamControlMetadata | null;
 }
+
+export interface OndaParamControlMetadata {
+  scale: "linear" | "log";
+  unit: string | null;
+  step_repr: string | null;
+  step_count: number | null;
+}
+
+/** Clamp and snap a plain scalar value according to descriptor metadata. */
+export function constrainParamPlain(
+  param: OndaIoMetadata,
+  plain: number | boolean,
+): number | boolean;
+
+/** Convert a normalized host value to its canonical plain scalar value. */
+export function paramNormalizedToPlain(
+  param: OndaIoMetadata,
+  normalized: number,
+): number | boolean;
+
+/** Convert a plain scalar value to its canonical normalized host value. */
+export function paramPlainToNormalized(
+  param: OndaIoMetadata,
+  plain: number | boolean,
+): number;
 
 export interface OndaBufferMetadata {
   name: string;
@@ -98,7 +124,7 @@ export interface OndaStateMetadata {
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
-  format_version: 1;
+  format_version: 2;
   artifact_kind: OndaArtifactKind;
   abi_version: 1;
   backend: string;

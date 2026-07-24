@@ -165,6 +165,7 @@ fn build_inputs(program: &Program, bases: &[usize]) -> Result<Vec<DeclaredIo>, M
             input.ty,
             input.default.as_ref(),
             input.range,
+            None,
             bases[index],
             byte_offset,
             None,
@@ -193,6 +194,7 @@ fn build_outputs(program: &Program, bases: &[usize]) -> Result<Vec<DeclaredIo>, 
             output.ty,
             None,
             None,
+            None,
             bases[index],
             byte_offset,
             None,
@@ -216,6 +218,7 @@ fn build_control_outputs(
             program,
             &output.name,
             output.ty,
+            None,
             None,
             None,
             slot_offset,
@@ -247,6 +250,7 @@ fn build_params(program: &Program, offsets: &[usize]) -> Result<Vec<DeclaredIo>,
             param.ty,
             Some(&param.default),
             param.range,
+            Some(param.control.clone()),
             slot_offset,
             offsets[index],
             None,
@@ -264,6 +268,7 @@ fn build_io_descriptor(
     ty: onda_mir::TypeId,
     default: Option<&ConstantValue>,
     range: Option<ValueRange>,
+    control: Option<onda_mir::ParamControl>,
     slot_offset: usize,
     byte_offset: usize,
     state_byte_offset: Option<usize>,
@@ -274,6 +279,18 @@ fn build_io_descriptor(
             "MIR array descriptor '{name}' unexpectedly has a scalar range"
         )));
     }
+    if shape.is_array
+        && control
+            .as_ref()
+            .is_some_and(|control| *control != onda_mir::ParamControl::default())
+    {
+        return Err(MirMetadataError::new(format!(
+            "MIR array descriptor '{name}' unexpectedly has parameter control metadata"
+        )));
+    }
+    let control = (!shape.is_array && range.is_some())
+        .then_some(control)
+        .flatten();
     let default_bytes = default
         .map(|value| constant_bytes(program, value, ty))
         .transpose()?;
@@ -295,6 +312,7 @@ fn build_io_descriptor(
         default_values,
         default_bytes,
         range,
+        control,
     })
 }
 
@@ -763,6 +781,11 @@ mod tests {
                             min: ScalarValue::I32(0),
                             max: ScalarValue::I32(4),
                         }),
+                        control: onda_mir::ParamControl {
+                            step: Some(ScalarValue::I32(1)),
+                            step_count: Some(4),
+                            ..onda_mir::ParamControl::default()
+                        },
                     },
                     Param {
                         name: "mix".to_owned(),
@@ -772,6 +795,7 @@ mod tests {
                             ConstantValue::Scalar(ScalarValue::F32(0.8)),
                         ]),
                         range: None,
+                        control: onda_mir::ParamControl::default(),
                     },
                 ],
                 buffers: vec![
@@ -918,6 +942,11 @@ mod tests {
         assert_eq!(metadata.params[1].byte_offset(), 4);
         assert_eq!(metadata.params[1].slot_offset(), 1);
         assert_eq!(metadata.params[1].default_bytes().unwrap().len(), 8);
+        assert_eq!(metadata.params[0].param_scale_name(), Some("linear"));
+        assert_eq!(metadata.params[0].param_step_as_f64(), Some(1.0));
+        assert_eq!(metadata.params[0].param_step_count(), Some(4));
+        assert_eq!(metadata.params[0].param_normalized_to_plain(0.6), Some(2.0));
+        assert_eq!(metadata.params[1].param_scale_name(), None);
 
         let state = metadata
             .state_entries

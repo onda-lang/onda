@@ -9,6 +9,7 @@ use onda_frontend::{
     EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef, InitBlock, NamespaceAliasDecl,
     NamespaceDecl, NamespaceItem, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl,
     PortBlock, PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, UseDecl, LANGUAGE_KEYWORDS,
+    PARAM_SCALES,
 };
 use onda_semantics::builtins::{
     builtin_constant_names, public_builtin_function_names, ARRAY_LEN_METHOD,
@@ -27,6 +28,10 @@ use super::namespace_resolution::{
     visible_uses_in_namespace, AliasTargetPolicy, NamespaceAliasInfo, NamespaceResolutionContext,
     UseInfo,
 };
+use super::param_domain::{
+    completion_context_at as param_domain_completion_context_at, ParamDomainCompletionContext,
+    ParamDomainValueKind, PARAM_DOMAIN_FIELDS,
+};
 use super::position::{
     byte_index_for_lsp_character, byte_offset_for_lsp_position, span_end_position,
     span_start_position, LspPosition,
@@ -41,6 +46,7 @@ const COMPLETION_ITEM_KIND_MODULE: u32 = 9;
 const COMPLETION_ITEM_KIND_PROPERTY: u32 = 10;
 const COMPLETION_ITEM_KIND_KEYWORD: u32 = 14;
 const COMPLETION_ITEM_KIND_FILE: u32 = 17;
+const COMPLETION_ITEM_KIND_ENUM_MEMBER: u32 = 20;
 const COMPLETION_ITEM_KIND_CONSTANT: u32 = 21;
 const COMPLETION_ITEM_KIND_STRUCT: u32 = 22;
 const COMPLETION_ITEM_KIND_EVENT: u32 = 23;
@@ -102,7 +108,7 @@ pub(super) struct CompletionPosition {
 }
 
 pub(super) fn completion_trigger_characters() -> &'static [&'static str] {
-    &[".", ":", "/", " ", "(", ","]
+    &[".", ":", "/", " ", "(", ",", "{"]
 }
 
 pub(super) struct CompletionResult {
@@ -154,6 +160,9 @@ pub(super) fn completion_items_for_document_with_index(
             index.namespace_items(namespace, &context.prefix)
         }
         CompletionContextKind::CallArgs { callee } => index.call_arg_items(callee),
+        CompletionContextKind::ParamDomain(domain) => {
+            index.param_domain_items(domain, &context.prefix)
+        }
         CompletionContextKind::General => index.general_items(&context.prefix),
         CompletionContextKind::ImportPath { .. } => Vec::new(),
     };
@@ -241,6 +250,7 @@ enum CompletionContextKind {
     Member { receiver: String },
     Namespace { namespace: String },
     CallArgs { callee: String },
+    ParamDomain(ParamDomainCompletionContext),
     ImportPath { typed: String },
 }
 
@@ -305,6 +315,14 @@ impl CompletionContext {
                         callee: active_call.callee,
                     }
                 },
+                in_comment,
+            };
+        }
+
+        if let Some(domain) = param_domain_completion_context_at(source, prefix_start) {
+            return Self {
+                prefix,
+                kind: CompletionContextKind::ParamDomain(domain),
                 in_comment,
             };
         }
@@ -1790,6 +1808,38 @@ impl CompletionIndex {
         }
     }
 
+    fn param_domain_items(
+        &self,
+        context: &ParamDomainCompletionContext,
+        prefix: &str,
+    ) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        if context.allow_fields {
+            items.extend(
+                PARAM_DOMAIN_FIELDS
+                    .iter()
+                    .copied()
+                    .filter(|field| !context.used_fields.contains(field))
+                    .map(param_domain_field_item),
+            );
+        }
+        match context.value_kind {
+            ParamDomainValueKind::Expression => items.extend(self.general_items(prefix)),
+            ParamDomainValueKind::Scale => {
+                items.extend(PARAM_SCALES.iter().copied().map(|(_, scale)| {
+                    CompletionItem::new(scale, COMPLETION_ITEM_KIND_ENUM_MEMBER)
+                        .detail("parameter scale")
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::LocalVariable,
+                            scale,
+                        ))
+                }));
+            }
+            ParamDomainValueKind::Unit | ParamDomainValueKind::None => {}
+        }
+        items
+    }
+
     fn namespace_items(&self, namespace: &str, prefix: &str) -> Vec<CompletionItem> {
         let namespace = self.resolve_namespace_key_at_current_position(namespace);
         let mut out = self.raw_namespace_items(&namespace);
@@ -2581,6 +2631,32 @@ fn param_item(name: &str, detail: &str) -> CompletionItem {
 fn argument_item(name: &str, detail: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_PROPERTY)
         .detail(detail)
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::LocalVariable,
+            name,
+        ))
+}
+
+fn param_domain_field_item(name: &str) -> CompletionItem {
+    let snippet = match name {
+        "scale" => format!(
+            "scale = ${{1|{}|}}",
+            PARAM_SCALES
+                .iter()
+                .map(|(_, name)| *name)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        "unit" => "unit = \"$1\"".to_owned(),
+        "min" => "min = $1".to_owned(),
+        "max" => "max = $1".to_owned(),
+        "step" => "step = $1".to_owned(),
+        _ => unreachable!("unknown parameter domain field"),
+    };
+    CompletionItem::new(name, COMPLETION_ITEM_KIND_PROPERTY)
+        .detail("parameter domain field")
+        .insert_text(format!("{name} = "))
+        .snippet(snippet)
         .sort_text(completion_sort_text(
             CompletionSortGroup::LocalVariable,
             name,

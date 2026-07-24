@@ -414,7 +414,40 @@ pub struct ParamDecl {
     pub ty_loc: Span,
     pub default: Option<Expr>,
     pub range: Option<DeclRange>,
+    pub control: ParamControl,
     pub bind: Option<String>,
+}
+
+#[derive(Debug, Copy, Clone, Default, Eq, PartialEq, Hash)]
+pub enum ParamScale {
+    #[default]
+    Linear,
+    Log,
+}
+
+pub const PARAM_SCALES: &[(ParamScale, &str)] =
+    &[(ParamScale::Linear, "linear"), (ParamScale::Log, "log")];
+
+impl ParamScale {
+    pub fn from_name(name: &str) -> Option<Self> {
+        PARAM_SCALES
+            .iter()
+            .find_map(|(scale, scale_name)| (*scale_name == name).then_some(*scale))
+    }
+
+    pub fn name(self) -> &'static str {
+        PARAM_SCALES
+            .iter()
+            .find_map(|(scale, name)| (*scale == self).then_some(*name))
+            .expect("PARAM_SCALES must contain every ParamScale variant")
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParamControl {
+    pub scale: ParamScale,
+    pub unit: Option<String>,
+    pub step: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

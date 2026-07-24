@@ -165,3 +165,41 @@ test("worklet interprets the wasm32 heap base as an unsigned address", () => {
     Processor.prototype.alloc = originalAlloc;
   }
 });
+
+test("worklet clamps and snaps plain parameter writes", () => {
+  const descriptor = metadata();
+  descriptor.runtime.param_size_bytes = 4;
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.params = [{
+    name: "mode",
+    type_repr: "i32",
+    scalar: "i32",
+    array_len: 1,
+    element_size_bytes: 4,
+    slot_offset: 0,
+    byte_offset: 0,
+    state_byte_offset: null,
+    byte_size: 4,
+    default_reprs: ["0"],
+    range_min_repr: "0",
+    range_max_repr: "10",
+    param_control: {
+      scale: "linear",
+      unit: null,
+      step_repr: "2",
+      step_count: 5,
+    },
+  }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+    },
+  });
+  const view = new DataView(processor.memory.buffer);
+
+  processor.setParam("mode", 3.2);
+  assert.equal(view.getInt32(processor.paramsPtr, true), 4);
+  processor.setParam("mode", 100);
+  assert.equal(view.getInt32(processor.paramsPtr, true), 10);
+});

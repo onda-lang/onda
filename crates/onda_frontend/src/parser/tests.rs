@@ -6,7 +6,7 @@ use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg,
     ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, NamespaceItem, OutputTiming,
-    PrimitiveType, Stmt,
+    ParamScale, PrimitiveType, Stmt,
 };
 
 use super::{
@@ -1632,6 +1632,79 @@ sample:
         mix_range.max,
         Expr::Number { .. } | Expr::Int { value: 1, .. }
     ));
+}
+
+#[test]
+fn parses_top_level_parameter_domains() {
+    let src = r#"
+params {
+  cutoff = 440.0 {20, 20000, log, "Hz"}
+  voices: i32 = 4 {0, 10, step = 2, unit = "voices"}
+  mix = 0.5 {unit = "%", scale = linear, max = 1, min = 0}
+  ceiling = 1.0 {max = 2}
+}
+sample {
+  out1 = cutoff + voices + mix + ceiling
+}
+"#;
+    let program = parse_program(src).expect("parameter domains should parse");
+    let params = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Params(params) => Some(params),
+            _ => None,
+        })
+        .expect("params block");
+
+    assert_eq!(params[0].control.scale, ParamScale::Log);
+    assert_eq!(params[0].control.unit.as_deref(), Some("Hz"));
+    assert!(params[0].control.step.is_none());
+    assert!(params[0].range.as_ref().unwrap().min.is_some());
+
+    assert_eq!(params[1].control.scale, ParamScale::Linear);
+    assert_eq!(params[1].control.unit.as_deref(), Some("voices"));
+    assert!(matches!(
+        params[1].control.step,
+        Some(Expr::Int { value: 2, .. })
+    ));
+
+    assert_eq!(params[2].control.scale, ParamScale::Linear);
+    assert_eq!(params[2].control.unit.as_deref(), Some("%"));
+    assert!(params[3].range.as_ref().unwrap().min.is_none());
+}
+
+#[test]
+fn rejects_invalid_parameter_domain_shapes() {
+    for src in [
+        "params { p = 1 {0, max = 2, 3} }\n",
+        "params { p = 1 {0, 2, scale = log, scale = linear} }\n",
+        "params { p = 1 {min = 0} }\n",
+        "params { p = 1 {0, 2, unit = Hz} }\n",
+        "params { p = 1 {0, 2, mystery = 1} }\n",
+    ] {
+        assert!(parse_program(src).is_err(), "source should fail: {src}");
+    }
+}
+
+#[test]
+fn parameter_scale_words_remain_valid_range_expressions() {
+    let program =
+        parse_program("const log = 20\nparams { cutoff = 440 {log, 20000, scale = log} }\n")
+            .expect("scale words in range positions should remain expressions");
+    let params = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Params(params) => Some(params),
+            _ => None,
+        })
+        .expect("params block");
+    assert!(matches!(
+        params[0].range.as_ref().unwrap().min,
+        Some(Expr::Var { ref name, .. }) if name == "log"
+    ));
+    assert_eq!(params[0].control.scale, ParamScale::Log);
 }
 
 #[test]

@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use onda_frontend::{Diagnostic, PrimitiveType};
-use onda_mir::{ScalarValue, ValueRange};
+use onda_mir::{ParamControl, ScalarValue, ValueRange};
 
 mod aot_artifact;
 #[cfg(any(feature = "llvm-orc", test))]
@@ -322,6 +322,7 @@ pub struct DeclaredIo {
     default_values: Option<Vec<ScalarValue>>,
     default_bytes: Option<Vec<u8>>,
     range: Option<ValueRange>,
+    control: Option<ParamControl>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

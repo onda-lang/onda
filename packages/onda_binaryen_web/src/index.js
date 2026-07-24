@@ -3418,6 +3418,7 @@ class MirCompiler {
           default_reprs: null,
           range_min_repr: null,
           range_max_repr: null,
+          param_control: null,
         })),
         params: this.mir.interface.params.map((param, id) => ({
           name: param.name,
@@ -3432,6 +3433,14 @@ class MirCompiler {
           default_reprs: this.constantReprs(param.default),
           range_min_repr: this.scalarRepr(param.range?.min),
           range_max_repr: this.scalarRepr(param.range?.max),
+          param_control: this.storageShape(param.ty).length === 1 && param.range
+            ? {
+                scale: param.control.scale,
+                unit: param.control.unit,
+                step_repr: this.scalarRepr(param.control.step),
+                step_count: param.control.step_count,
+              }
+            : null,
         })),
         buffers: this.mir.interface.buffers.map((buffer) => {
           const channels = this.bufferChannelMetadata(buffer.channels);
@@ -3509,6 +3518,7 @@ class MirCompiler {
       default_reprs: null,
       range_min_repr: null,
       range_max_repr: null,
+      param_control: null,
     }));
   }
 

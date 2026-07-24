@@ -3657,6 +3657,17 @@ fn rewrite_param_decls(
             errors,
             decl.ty_loc.as_ref().or(decl.loc.as_ref()),
         );
+        if let Some(step) = &mut decl.control.step {
+            rewrite_expr(
+                step,
+                current_ns,
+                template_consts,
+                options,
+                state,
+                generated,
+                errors,
+            );
+        }
     }
 }
 

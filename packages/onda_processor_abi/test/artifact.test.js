@@ -7,8 +7,11 @@ import {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
   PROCESSOR_SNAPSHOT_FORMAT_VERSION,
+  constrainParamPlain,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
+  paramNormalizedToPlain,
+  paramPlainToNormalized,
   validateProcessorArtifact,
   validateProcessorModule,
   validateProcessorMetadata,
@@ -18,7 +21,7 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 test("validates the descriptor fixture shared with the Rust schema", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v1.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
     "utf8",
   ));
   assert.equal(
@@ -38,6 +41,100 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
   assert.throws(
     () => validateProcessorMetadata(inconsistentLayout),
     /byte_size does not match/,
+  );
+});
+
+function controlledParam({
+  name = "cutoff",
+  scalar = "f64",
+  minimum = "20",
+  maximum = "20000",
+  scale = "log",
+  step = null,
+  stepCount = null,
+  arrayLen = 1,
+} = {}) {
+  return {
+    name,
+    type_repr: arrayLen === 1 ? scalar : `${scalar}[${arrayLen}]`,
+    scalar,
+    array_len: arrayLen,
+    element_size_bytes: scalar === "f64" || scalar === "i64" ? 8 : 4,
+    slot_offset: 0,
+    byte_offset: 0,
+    state_byte_offset: null,
+    byte_size: (scalar === "f64" || scalar === "i64" ? 8 : 4) * arrayLen,
+    default_reprs: null,
+    range_min_repr: minimum,
+    range_max_repr: maximum,
+    param_control: {
+      scale,
+      unit: null,
+      step_repr: step,
+      step_count: stepCount,
+    },
+  };
+}
+
+test("converts linear and logarithmic parameter domains in both directions", () => {
+  const linear = controlledParam({ scale: "linear" });
+  assert.equal(paramNormalizedToPlain(linear, 0.5), 10_010);
+  assert.equal(paramNormalizedToPlain(linear, Number.NaN), 20);
+  assert.equal(paramNormalizedToPlain(linear, Number.POSITIVE_INFINITY), 20_000);
+  assert.equal(paramPlainToNormalized(linear, 10_010), 0.5);
+
+  const logarithmic = controlledParam();
+  const midpoint = Math.sqrt(20 * 20_000);
+  assert.ok(Math.abs(paramNormalizedToPlain(logarithmic, 0.5) - midpoint) < 1e-12);
+  assert.ok(Math.abs(paramPlainToNormalized(logarithmic, midpoint) - 0.5) < 1e-12);
+
+  const normalized440 = paramPlainToNormalized(logarithmic, 440);
+  assert.ok(Math.abs(paramNormalizedToPlain(logarithmic, normalized440) - 440) < 1e-12);
+  assert.equal(paramNormalizedToPlain(logarithmic, 0), 20);
+  assert.equal(paramNormalizedToPlain(logarithmic, 1), 20_000);
+});
+
+test("constrains stepped and boolean host-control values", () => {
+  const stepped = controlledParam({
+    name: "mode",
+    scalar: "i32",
+    minimum: "0",
+    maximum: "10",
+    scale: "linear",
+    step: "2",
+    stepCount: 5,
+  });
+  assert.equal(constrainParamPlain(stepped, 3.2), 4);
+  assert.equal(paramNormalizedToPlain(stepped, 0.3), 4);
+  assert.equal(paramPlainToNormalized(stepped, 3.2), 0.4);
+  assert.equal(constrainParamPlain(stepped, 100), 10);
+
+  const boolean = controlledParam({
+    name: "enabled",
+    scalar: "bool",
+    minimum: null,
+    maximum: null,
+    scale: null,
+  });
+  boolean.param_control = null;
+  assert.equal(paramNormalizedToPlain(boolean, 0.49), false);
+  assert.equal(paramNormalizedToPlain(boolean, 0.5), true);
+  assert.equal(paramPlainToNormalized(boolean, false), 0);
+  assert.equal(paramPlainToNormalized(boolean, true), 1);
+});
+
+test("rejects parameters without a scalar host-control domain", () => {
+  const unranged = controlledParam();
+  unranged.param_control = null;
+  unranged.range_min_repr = null;
+  unranged.range_max_repr = null;
+  assert.throws(
+    () => paramNormalizedToPlain(unranged, 0.5),
+    /no numeric host-control domain/,
+  );
+  assert.throws(
+    () => paramPlainToNormalized(controlledParam({ arrayLen: 2 }), 440),
+    /scalar host-control domain/,
   );
 });
 
@@ -74,7 +171,7 @@ test("rejects runtime semantics not implemented by processor ABI v1", () => {
 
 test("rejects metadata layouts outside or overlapping their runtime regions", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v1.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
     "utf8",
   ));
 
