@@ -163,17 +163,6 @@ Non-crate directories of note:
 - `lib.rs` — run controller wiring real-time audio to a daemon run session.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
 
-### Dynamic plugin integration (planned external repository)
-
-- [`onda-plugin.md`](onda-plugin.md) — accepted implementation specification for separate
-  JUCE-based dynamic instrument and effect VST3 products. Onda owns thread-safe `Arc`-backed JIT
-  program sharing, in-memory project compilation, owned diagnostics, interface identity, prepared
-  processing, and plugin-safe failure contracts. The external plugin repository owns JUCE
-  integration, specialization/reload coordination, realtime engine handoff, editor/state,
-  packaging, and DAW verification.
-- [`todo/generated-plugins.md`](todo/generated-plugins.md) — deferred source-embedded generated
-  products using thin direct CLAP/VST3 wrappers.
-
 ### `onda_lsp` (`crates/onda_lsp/src`)
 - `lib.rs` — public LSP entry point used by `onda lsp`.
 - `server.rs` — JSON-RPC transport, document state, request dispatch, and server integration tests.
