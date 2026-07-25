@@ -1,7 +1,7 @@
 import std/osc
 
 params:
-  freq = 440.0 { 20.0, 10000.0 }
+  freq = 440.0 { 20.0, 10000.0, log }
 
 init:
   osc = std::osc::Sine()
