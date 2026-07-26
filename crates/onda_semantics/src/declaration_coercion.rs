@@ -817,9 +817,42 @@ fn coerce_top_level_param_control(
         unit: param.control.unit.clone(),
         ..TypedParamControl::default()
     };
+    control.curve = param.control.curve.as_ref().and_then(|curve| {
+        with_loc_diag_context(param.loc.as_ref(), |_diag| {
+            match eval_typed_const_expr(
+                curve,
+                PrimitiveType::F64,
+                options,
+                &format!("{context} curve"),
+                false,
+                false,
+                errors,
+            ) {
+                Some(TypedConstValue::F64(value)) => Some(value),
+                Some(_) => unreachable!("f64 constant evaluation must produce f64"),
+                None => None,
+            }
+        })
+    });
     let Some(range) = range else {
         return control;
     };
+    if let (TypedConstValue::I64(min), TypedConstValue::I64(max)) = (range.min, range.max) {
+        let limit = i128::from(onda_mir::MAX_EXACT_HOST_CONTROL_INTEGER);
+        let width = i128::from(max) - i128::from(min);
+        if i128::from(min).abs() > limit || i128::from(max).abs() > limit || width > limit {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "{context} i64 control range and width must fit the exact host integer range \
+                     [-{}, {}]",
+                    onda_mir::MAX_EXACT_HOST_CONTROL_INTEGER,
+                    onda_mir::MAX_EXACT_HOST_CONTROL_INTEGER,
+                ),
+                param.loc,
+            ));
+            return control;
+        }
+    }
     if range.min.to_f64() >= range.max.to_f64() {
         errors.push(Diagnostic::semantic_span(
             format!("{context} control range requires min < max"),
@@ -829,6 +862,12 @@ fn coerce_top_level_param_control(
     }
 
     if control.scale == ParamScale::Log {
+        if control.curve.is_some() {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} cannot combine logarithmic scale with curve"),
+                param.loc.as_ref(),
+            ));
+        }
         if !matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
             errors.push(Diagnostic::semantic_span(
                 format!("{context} logarithmic scale requires f32 or f64"),
@@ -837,7 +876,7 @@ fn coerce_top_level_param_control(
         }
         if range.min.to_f64() <= 0.0 {
             errors.push(Diagnostic::semantic_span(
-                format!("{context} logarithmic scale requires a finite range with 0 < min < max"),
+                format!("{context} logarithmic scale requires 0 < min < max"),
                 param.loc.as_ref(),
             ));
         }

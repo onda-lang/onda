@@ -333,6 +333,7 @@ export function mergeParams(params, existing) {
         rangeMin: decodeScalarRepr(param.scalar, param.range_min_repr),
         rangeMax: decodeScalarRepr(param.scalar, param.range_max_repr),
         scale: control?.scale ?? null,
+        curve: control?.curve ?? null,
         unit: control?.unit ?? null,
         step: decodeScalarRepr(param.scalar, control?.step_repr),
         stepCount: control?.step_count ?? null,
@@ -409,6 +410,7 @@ function paramShapeMatches(left, right) {
     && left.rangeMin === right.rangeMin
     && left.rangeMax === right.rangeMax
     && left.scale === right.scale
+    && left.curve === right.curve
     && left.unit === right.unit
     && left.step === right.step
     && left.stepCount === right.stepCount;

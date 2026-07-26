@@ -3360,12 +3360,30 @@ impl Validator<'_> {
         let Some(Type::Scalar(ty)) = self.program.types.get(param.ty.index()) else {
             return Some("requires a scalar parameter".to_owned());
         };
+        if let (ScalarValue::I64(min), ScalarValue::I64(max)) = (range.min, range.max) {
+            let exact_limit = i128::from(crate::MAX_EXACT_HOST_CONTROL_INTEGER);
+            let width = i128::from(max) - i128::from(min);
+            if i128::from(min).abs() > exact_limit
+                || i128::from(max).abs() > exact_limit
+                || width > exact_limit
+            {
+                return Some(
+                    "i64 range and width must fit the exact host integer range".to_owned(),
+                );
+            }
+        }
         let min = range.min.as_f64();
         let max = range.max.as_f64();
         if min >= max {
             return Some("range requires min < max".to_owned());
         }
+        if param.control.curve.is_some_and(|curve| !curve.is_finite()) {
+            return Some("curve must be finite".to_owned());
+        }
         if param.control.scale == ParamScale::Log {
+            if param.control.curve.is_some() {
+                return Some("cannot combine logarithmic scale with curve".to_owned());
+            }
             if !matches!(ty, ScalarType::F32 | ScalarType::F64) {
                 return Some("logarithmic scale requires f32 or f64".to_owned());
             }
@@ -3426,10 +3444,10 @@ impl Validator<'_> {
                 ScalarValue::I64(default),
                 ScalarValue::I64(step),
             ) => {
+                let width = i128::from(max) - i128::from(min);
                 if step <= 0 {
                     return Some("step must be greater than zero".to_owned());
                 }
-                let width = i128::from(max) - i128::from(min);
                 let step = i128::from(step);
                 if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
                     return Some("step_count does not match the range and step".to_owned());
@@ -4445,12 +4463,30 @@ mod tests {
             }),
             control: crate::ParamControl {
                 scale: crate::ParamScale::Log,
+                curve: None,
                 unit: Some("Hz".to_owned()),
                 step: None,
                 step_count: None,
             },
         });
         super::validate(&valid).expect("valid logarithmic control metadata should pass");
+
+        let mut non_finite_curve = valid.clone();
+        non_finite_curve.interface.params[0].control.scale = crate::ParamScale::Linear;
+        non_finite_curve.interface.params[0].control.curve = Some(f64::NAN);
+        let errors =
+            super::validate(&non_finite_curve).expect_err("non-finite curve metadata must fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("curve must be finite")));
+
+        let mut mixed_log_curve = valid.clone();
+        mixed_log_curve.interface.params[0].control.curve = Some(-4.0);
+        let errors =
+            super::validate(&mixed_log_curve).expect_err("logarithmic curve metadata must fail");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("cannot combine logarithmic scale with curve")));
 
         let mut invalid = empty_program();
         invalid.types.push(Type::Scalar(ScalarType::I32));
@@ -4472,6 +4508,28 @@ mod tests {
         assert!(errors.iter().any(|error| error
             .message
             .contains("step_count does not match the range and step")));
+
+        let mut inexact_i64 = empty_program();
+        inexact_i64.types.push(Type::Scalar(ScalarType::I64));
+        inexact_i64.interface.params.push(Param {
+            name: "wide".to_owned(),
+            ty: test_type(0),
+            default: ConstantValue::Scalar(ScalarValue::I64(9_007_199_254_740_992)),
+            range: Some(crate::ValueRange {
+                min: ScalarValue::I64(9_007_199_254_740_992),
+                max: ScalarValue::I64(9_007_199_254_741_002),
+            }),
+            control: crate::ParamControl {
+                step: Some(ScalarValue::I64(1)),
+                step_count: Some(10),
+                ..crate::ParamControl::default()
+            },
+        });
+        let errors =
+            super::validate(&inexact_i64).expect_err("inexact i64 control range must fail");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("must fit the exact host integer range")));
     }
 
     #[test]

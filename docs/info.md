@@ -146,7 +146,9 @@ Non-crate directories of note:
   outside every compiler/backend crate.
 
 ### `onda_runtime` (`crates/onda_runtime/src`)
-- `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants, reset, param hoisting/clamping, event dispatch.
+- `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants,
+  reset, event dispatch, and public validated parameter-domain discovery/conversion through
+  `Instance::param_domain`.
 
 ### `onda_api` (`crates/onda_api/src`)
 - `lib.rs` — C ABI surface (compile/create/process/destroy, bind/set, metadata queries, event trigger, state snapshot/restore).

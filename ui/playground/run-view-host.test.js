@@ -15,6 +15,7 @@ function scalarParam(overrides = {}) {
     range_max_repr: "1000",
     param_control: {
       scale: "log",
+      curve: null,
       unit: "Hz",
       step_repr: null,
       step_count: null,
@@ -52,6 +53,7 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       rangeMin: 20,
       rangeMax: 1000,
       scale: "log",
+      curve: null,
       unit: "Hz",
       step: null,
       stepCount: null,
@@ -66,6 +68,7 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       rangeMin: null,
       rangeMax: null,
       scale: null,
+      curve: null,
       unit: null,
       step: null,
       stepCount: null,
@@ -84,6 +87,33 @@ test("preserves an edited value only while the artifact param shape matches", ()
 
   assert.equal(preserved.value, 880);
   assert.equal(reset.value, 220);
+});
+
+test("resets an edited value when parameter curvature changes", () => {
+  const [initial] = mergeParams([
+    scalarParam({
+      param_control: {
+        scale: "linear",
+        curve: -4,
+        unit: "Hz",
+        step_repr: null,
+        step_count: null,
+      },
+    }),
+  ], []);
+  const [reset] = mergeParams([
+    scalarParam({
+      param_control: {
+        scale: "linear",
+        curve: 4,
+        unit: "Hz",
+        step_repr: null,
+        step_count: null,
+      },
+    }),
+  ], [{ ...initial, value: 880 }]);
+
+  assert.equal(reset.value, 440);
 });
 
 test("decodes floating-point bit-pattern representations", () => {

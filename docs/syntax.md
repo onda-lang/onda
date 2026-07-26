@@ -208,14 +208,16 @@ Rules:
 - Top-level `paramN` or `kinN` usage can implicitly create params up to that ordinal.
 - Top-level params are readable in executable code but are not writable from top-level event handlers.
 
-A parameter domain extends the existing range braces with `scale`, `unit`, and
-`step`. Positional fields are ordered as `min, max, scale, unit, step`; the
-fields may instead be named and named fields may appear in any order:
+A parameter domain extends the existing range braces with `scale`, `curve`,
+`unit`, and `step`. Positional fields remain ordered as
+`min, max, scale, unit, step`; all fields may be named and named fields may
+appear in any order. `curve` is named-only:
 
 ```onda
 params:
   cutoff = 440.0 {20, 20000, log, "Hz"}
   resonance = 0.5 {0, 1, unit = "%"}
+  envelope = 0.5 {0, 1, curve = -4}
   voices: i32 = 4 {min = 0, max = 16, step = 1}
   gain = 1.0 {max = 2, scale = linear}
 ```
@@ -230,14 +232,26 @@ processor-local params, and they do not add operations to the Onda DSP
 program:
 
 - `linear` maps normalized `n` to `min + n * (max - min)`.
-- `log` maps it to `min * (max / min) ** n` and requires a floating parameter
+- `log` maps it in logarithmic space to
+  `exp(log(min) + n * (log(max) - log(min)))` and requires a floating parameter
   with `0 < min < max`.
+- `curve = c` applies SuperCollider-style `lincurve` curvature to the normalized
+  value before linear range mapping. For negative `c`, this is
+  `expm1(c * n) / expm1(c)`; positive curves use its mirrored form. Negative
+  values bend toward `max`, positive values bend toward `min`, and values with
+  `abs(c) < 0.001` are linear. Unlike `log`, curves support zero, negative, and
+  zero-crossing ranges.
 - `unit` is presentation metadata.
 - `step` must be positive, must divide the range exactly, and requires the
   default to lie on the resulting grid. External plain and normalized writes
   are clamped and snapped to that grid.
 - Ranged `i32` and `i64` params have an implicit step of `1`.
+- An `i64` control domain and its range width must fit within
+  `[-9007199254740991, 9007199254740991]`, the integer range represented
+  exactly by the shared host-control APIs. Unranged `i64` params retain their
+  full width through typed/raw parameter storage.
 - Logarithmic stepped domains are not supported.
+- `curve` may be combined with `step`, but not with `scale = log`.
 
 The step count is the number of intervals from `min` to `max` and must fit the
 host descriptor. Normalization, snapping, and units are host-boundary

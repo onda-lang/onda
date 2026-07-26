@@ -2539,13 +2539,48 @@ pub unsafe extern "C" fn onda_param_scale(program: *const onda_program, index: i
         .jit
         .params()
         .get(index as usize)
-        .and_then(|param| param.param_scale_name())
+        .and_then(|param| param.param_domain())
+        .map(|domain| domain.scale_name())
     {
         Some("linear") => 0,
         Some("log") => 1,
         None => -1,
         Some(_) => -1,
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_has_curve(program: *const onda_program, index: i32) -> i32 {
+    if program.is_null() || index < 0 {
+        return -1;
+    }
+    (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .map(|param| {
+            i32::from(
+                param
+                    .param_domain()
+                    .is_some_and(|domain| domain.curve().is_some()),
+            )
+        })
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_curve(program: *const onda_program, index: i32) -> f64 {
+    if program.is_null() {
+        return f64::NAN;
+    }
+    f64_from_index_or_nan(index, |idx| {
+        (*program)
+            .jit
+            .params()
+            .get(idx)
+            .and_then(|param| param.param_domain())
+            .and_then(|domain| domain.curve())
+    })
 }
 
 #[no_mangle]
@@ -2558,12 +2593,10 @@ pub unsafe extern "C" fn onda_param_unit_copy(
     if program.is_null() || index < 0 || out_capacity < 0 {
         return -1;
     }
-    let Some(unit) = (*program)
-        .jit
-        .params()
-        .get(index as usize)
-        .and_then(|param| param.param_unit())
-    else {
+    let Some(param) = (*program).jit.params().get(index as usize) else {
+        return -1;
+    };
+    let Some(unit) = param.param_domain().and_then(|domain| domain.unit()) else {
         return 0;
     };
     let Ok(required) = i32::try_from(unit.len().saturating_add(1)) else {
@@ -2589,7 +2622,13 @@ pub unsafe extern "C" fn onda_param_has_step(program: *const onda_program, index
         .jit
         .params()
         .get(index as usize)
-        .map(|param| i32::from(param.param_step_count().is_some()))
+        .map(|param| {
+            i32::from(
+                param
+                    .param_domain()
+                    .is_some_and(|domain| domain.step_count().is_some()),
+            )
+        })
         .unwrap_or(-1)
 }
 
@@ -2603,7 +2642,8 @@ pub unsafe extern "C" fn onda_param_step_f64(program: *const onda_program, index
             .jit
             .params()
             .get(idx)
-            .and_then(|param| param.param_step_as_f64())
+            .and_then(|param| param.param_domain())
+            .and_then(|domain| domain.step())
     })
 }
 
@@ -2616,7 +2656,8 @@ pub unsafe extern "C" fn onda_param_step_count(program: *const onda_program, ind
         .jit
         .params()
         .get(index as usize)
-        .and_then(|param| param.param_step_count())
+        .and_then(|param| param.param_domain())
+        .and_then(|domain| domain.step_count())
         .unwrap_or(0)
 }
 
@@ -2633,7 +2674,8 @@ pub unsafe extern "C" fn onda_param_normalized_to_plain(
         .jit
         .params()
         .get(index as usize)
-        .and_then(|param| param.param_normalized_to_plain(normalized))
+        .and_then(|param| param.param_domain())
+        .map(|domain| domain.normalized_to_plain(normalized))
         .unwrap_or(f64::NAN)
 }
 
@@ -2650,6 +2692,7 @@ pub unsafe extern "C" fn onda_param_plain_to_normalized(
         .jit
         .params()
         .get(index as usize)
-        .and_then(|param| param.param_plain_to_normalized(plain))
+        .and_then(|param| param.param_domain())
+        .map(|domain| domain.plain_to_normalized(plain))
         .unwrap_or(f64::NAN)
 }

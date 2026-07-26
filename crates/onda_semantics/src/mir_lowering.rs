@@ -1962,6 +1962,7 @@ fn mir_param_control(control: &TypedParamControl) -> onda_mir::ParamControl {
             ParamScale::Linear => onda_mir::ParamScale::Linear,
             ParamScale::Log => onda_mir::ParamScale::Log,
         },
+        curve: control.curve,
         unit: control.unit.clone(),
         step: control.step.map(mir_scalar),
         step_count: control.step_count,

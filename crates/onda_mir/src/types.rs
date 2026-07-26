@@ -1,6 +1,10 @@
 use crate::{StructId, TypeId};
 use serde::{Deserialize, Serialize};
 
+/// Largest integer magnitude that host-facing `f64` parameter controls can
+/// represent exactly.
+pub const MAX_EXACT_HOST_CONTROL_INTEGER: i64 = (1_i64 << 53) - 1;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScalarType {
@@ -245,6 +249,10 @@ pub enum ParamScale {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ParamControl {
     pub scale: ParamScale,
+    /// SuperCollider-style `lincurve` curvature. Values near zero are linear;
+    /// negative values bend toward the maximum and positive values toward the
+    /// minimum.
+    pub curve: Option<f64>,
     pub unit: Option<String>,
     pub step: Option<ScalarValue>,
     /// Number of equal intervals between the inclusive range endpoints.
@@ -282,9 +290,18 @@ impl ParamControl {
         if normalized == 1.0 {
             return max;
         }
-        let plain = match self.scale {
-            ParamScale::Linear => min + normalized * (max - min),
-            ParamScale::Log => min * (max / min).powf(normalized),
+        let plain = match (self.curve, self.scale) {
+            (Some(curve), ParamScale::Linear) => {
+                min + curve_normalized_to_unit(curve, normalized) * (max - min)
+            }
+            (None, ParamScale::Linear) => min + normalized * (max - min),
+            (None, ParamScale::Log) => {
+                let log_min = min.ln();
+                (log_min + normalized * (max.ln() - log_min)).exp()
+            }
+            (Some(_), ParamScale::Log) => {
+                unreachable!("validated control cannot mix log and curve")
+            }
         };
         self.constrain_plain(range, plain)
     }
@@ -299,11 +316,42 @@ impl ParamControl {
         if plain == max {
             return 1.0;
         }
-        match self.scale {
-            ParamScale::Linear => (plain - min) / (max - min),
-            ParamScale::Log => (plain / min).ln() / (max / min).ln(),
+        match (self.curve, self.scale) {
+            (Some(curve), ParamScale::Linear) => {
+                curve_unit_to_normalized(curve, (plain - min) / (max - min))
+            }
+            (None, ParamScale::Linear) => (plain - min) / (max - min),
+            (None, ParamScale::Log) => {
+                let log_min = min.ln();
+                (plain.ln() - log_min) / (max.ln() - log_min)
+            }
+            (Some(_), ParamScale::Log) => {
+                unreachable!("validated control cannot mix log and curve")
+            }
         }
         .clamp(0.0, 1.0)
+    }
+}
+
+const CURVE_LINEAR_EPSILON: f64 = 0.001;
+
+fn curve_normalized_to_unit(curve: f64, normalized: f64) -> f64 {
+    if curve.abs() < CURVE_LINEAR_EPSILON {
+        normalized
+    } else if curve > 0.0 {
+        1.0 - curve_normalized_to_unit(-curve, 1.0 - normalized)
+    } else {
+        (curve * normalized).exp_m1() / curve.exp_m1()
+    }
+}
+
+fn curve_unit_to_normalized(curve: f64, unit: f64) -> f64 {
+    if curve.abs() < CURVE_LINEAR_EPSILON {
+        unit
+    } else if curve > 0.0 {
+        1.0 - curve_unit_to_normalized(-curve, 1.0 - unit)
+    } else {
+        (unit * curve.exp_m1()).ln_1p() / curve
     }
 }
 
@@ -328,6 +376,46 @@ mod param_control_tests {
         let midpoint = log.normalized_to_plain(linear_range, 0.5);
         assert!((midpoint - (20.0_f64 * 20_000.0).sqrt()).abs() < 1.0e-10);
         assert!((log.plain_to_normalized(linear_range, midpoint) - 0.5).abs() < 1.0e-12);
+
+        let wide_range = ValueRange {
+            min: ScalarValue::F64(1.0e-300),
+            max: ScalarValue::F64(1.0e300),
+        };
+        let wide_midpoint = log.normalized_to_plain(wide_range, 0.5);
+        assert!((wide_midpoint - 1.0).abs() < 1.0e-12);
+        assert!((log.plain_to_normalized(wide_range, 1.0) - 0.5).abs() < 1.0e-12);
+
+        let inverse_curve = ParamControl {
+            curve: Some(-4.0),
+            ..ParamControl::default()
+        };
+        let unit_range = ValueRange {
+            min: ScalarValue::F64(0.0),
+            max: ScalarValue::F64(1.0),
+        };
+        let curved_midpoint = inverse_curve.normalized_to_plain(unit_range, 0.5);
+        let expected = (-2.0_f64).exp_m1() / (-4.0_f64).exp_m1();
+        assert!((curved_midpoint - expected).abs() < 1.0e-12);
+        assert!(
+            (inverse_curve.plain_to_normalized(unit_range, curved_midpoint) - 0.5).abs() < 1.0e-12
+        );
+
+        let forward_curve = ParamControl {
+            curve: Some(4.0),
+            ..ParamControl::default()
+        };
+        assert!(
+            (forward_curve.normalized_to_plain(unit_range, 0.5) + curved_midpoint - 1.0).abs()
+                < 1.0e-12
+        );
+
+        let curved_step = ParamControl {
+            curve: Some(-4.0),
+            step: Some(ScalarValue::F64(0.25)),
+            step_count: Some(4),
+            ..ParamControl::default()
+        };
+        assert_eq!(curved_step.normalized_to_plain(unit_range, 0.5), 1.0);
     }
 
     #[test]

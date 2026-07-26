@@ -4,6 +4,8 @@ use onda_codegen_llvm::{
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_realtime::configure_current_thread_audio_fp_mode;
 
+pub use onda_codegen_llvm::{ParamDomain, ParamScale};
+
 pub const PROCESS_BEGIN_BLOCK: u32 = 1 << 0;
 pub const PROCESS_END_BLOCK: u32 = 1 << 1;
 pub const PROCESS_FULL_BLOCK: u32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
@@ -108,6 +110,10 @@ impl Instance {
 
     pub fn param_name(&self, index: usize) -> Option<&str> {
         self.program.param_name(index)
+    }
+
+    pub fn param_domain(&self, index: usize) -> Option<ParamDomain<'_>> {
+        self.program.param_domain(index)
     }
 
     pub fn buffer_name(&self, index: usize) -> Option<&str> {
@@ -438,13 +444,16 @@ pub fn set_param_plain_f64(
         PrimitiveType::Bool => {
             return set_param_by_index(instance, index, &[u8::from(plain >= 0.5)]);
         }
-        _ => desc.constrain_param_plain(plain).ok_or_else(|| {
-            Diagnostic::runtime(
-                format!("parameter '{}' has no numeric control domain", desc.name()),
-                0,
-                0,
-            )
-        })?,
+        _ => desc
+            .param_domain()
+            .map(|domain| domain.constrain_plain(plain))
+            .ok_or_else(|| {
+                Diagnostic::runtime(
+                    format!("parameter '{}' has no numeric control domain", desc.name()),
+                    0,
+                    0,
+                )
+            })?,
     };
     let mut bytes = [0_u8; 8];
     let len = match desc.elem_ty() {
@@ -484,13 +493,16 @@ pub fn set_param_normalized(
     if desc.elem_ty() == PrimitiveType::Bool && !desc.is_array() {
         return set_param_by_index(instance, index, &[u8::from(normalized >= 0.5)]);
     }
-    let plain = desc.param_normalized_to_plain(normalized).ok_or_else(|| {
-        Diagnostic::runtime(
-            format!("parameter '{}' has no numeric control domain", desc.name()),
-            0,
-            0,
-        )
-    })?;
+    let plain = desc
+        .param_domain()
+        .map(|domain| domain.normalized_to_plain(normalized))
+        .ok_or_else(|| {
+            Diagnostic::runtime(
+                format!("parameter '{}' has no numeric control domain", desc.name()),
+                0,
+                0,
+            )
+        })?;
     set_param_plain_f64(instance, index, plain)
 }
 

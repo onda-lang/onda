@@ -139,6 +139,9 @@ impl<'a> Formatter<'a> {
             if param.control.scale != crate::ParamScale::Linear {
                 write!(suffix, " scale={:?}", param.control.scale).expect("writing a string");
             }
+            if let Some(curve) = param.control.curve {
+                write!(suffix, " curve={curve}").expect("writing a string");
+            }
             if let Some(unit) = &param.control.unit {
                 write!(suffix, " unit={unit:?}").expect("writing a string");
             }

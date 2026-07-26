@@ -2,12 +2,12 @@
 use std::collections::HashMap;
 
 use onda_frontend::PrimitiveType;
-use onda_mir::{ParamControl, ParamScale, ScalarValue, ValueRange};
+use onda_mir::{ParamControl, ParamScale as MirParamScale, ScalarValue, ValueRange};
 
 use crate::primitives::{primitive_type_bytes, primitive_type_name, scalar_value_to_f64};
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
-    DeclaredState,
+    DeclaredState, ParamDomain, ParamScale,
 };
 
 #[cfg(any(feature = "llvm-orc", test))]
@@ -25,6 +25,58 @@ pub(crate) struct ProgramMetadata {
     pub(crate) param_index: HashMap<String, usize>,
     pub(crate) event_index: HashMap<String, usize>,
     pub(crate) buffer_index: HashMap<String, usize>,
+}
+
+impl<'a> ParamDomain<'a> {
+    pub fn minimum(self) -> f64 {
+        scalar_value_to_f64(self.range.min)
+    }
+
+    pub fn maximum(self) -> f64 {
+        scalar_value_to_f64(self.range.max)
+    }
+
+    pub fn scale(self) -> ParamScale {
+        match self.control.scale {
+            MirParamScale::Linear => ParamScale::Linear,
+            MirParamScale::Log => ParamScale::Log,
+        }
+    }
+
+    pub fn scale_name(self) -> &'static str {
+        match self.scale() {
+            ParamScale::Linear => "linear",
+            ParamScale::Log => "log",
+        }
+    }
+
+    pub fn curve(self) -> Option<f64> {
+        self.control.curve
+    }
+
+    pub fn unit(self) -> Option<&'a str> {
+        self.control.unit.as_deref()
+    }
+
+    pub fn step(self) -> Option<f64> {
+        self.control.step.map(ScalarValue::as_f64)
+    }
+
+    pub fn step_count(self) -> Option<u32> {
+        self.control.step_count
+    }
+
+    pub fn constrain_plain(self, plain: f64) -> f64 {
+        self.control.constrain_plain(self.range, plain)
+    }
+
+    pub fn normalized_to_plain(self, normalized: f64) -> f64 {
+        self.control.normalized_to_plain(self.range, normalized)
+    }
+
+    pub fn plain_to_normalized(self, plain: f64) -> f64 {
+        self.control.plain_to_normalized(self.range, plain)
+    }
 }
 
 impl DeclaredIo {
@@ -96,51 +148,15 @@ impl DeclaredIo {
         self.range.map(|r| scalar_value_to_f64(r.max))
     }
 
-    pub fn param_control(&self) -> Option<&ParamControl> {
+    pub(crate) fn param_control(&self) -> Option<&ParamControl> {
         self.control.as_ref()
     }
 
-    pub fn param_scale(&self) -> Option<ParamScale> {
-        self.control.as_ref().map(|control| control.scale)
-    }
-
-    pub fn param_scale_name(&self) -> Option<&'static str> {
-        Some(match self.param_scale()? {
-            ParamScale::Linear => "linear",
-            ParamScale::Log => "log",
+    pub fn param_domain(&self) -> Option<ParamDomain<'_>> {
+        Some(ParamDomain {
+            control: self.control.as_ref()?,
+            range: self.range?,
         })
-    }
-
-    pub fn param_unit(&self) -> Option<&str> {
-        self.control.as_ref()?.unit.as_deref()
-    }
-
-    pub fn param_step_as_f64(&self) -> Option<f64> {
-        self.control.as_ref()?.step.map(ScalarValue::as_f64)
-    }
-
-    pub fn param_step_count(&self) -> Option<u32> {
-        self.control.as_ref()?.step_count
-    }
-
-    pub fn constrain_param_plain(&self, plain: f64) -> Option<f64> {
-        Some(self.control.as_ref()?.constrain_plain(self.range?, plain))
-    }
-
-    pub fn param_normalized_to_plain(&self, normalized: f64) -> Option<f64> {
-        Some(
-            self.control
-                .as_ref()?
-                .normalized_to_plain(self.range?, normalized),
-        )
-    }
-
-    pub fn param_plain_to_normalized(&self, plain: f64) -> Option<f64> {
-        Some(
-            self.control
-                .as_ref()?
-                .plain_to_normalized(self.range?, plain),
-        )
     }
 
     pub fn type_repr(&self) -> String {

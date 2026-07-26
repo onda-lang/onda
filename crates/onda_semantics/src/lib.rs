@@ -334,6 +334,7 @@ pub struct TypedParam {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedParamControl {
     pub scale: ParamScale,
+    pub curve: Option<f64>,
     pub unit: Option<String>,
     pub step: Option<TypedConstValue>,
     /// Number of equal intervals between the inclusive range endpoints.
@@ -344,6 +345,7 @@ impl Default for TypedParamControl {
     fn default() -> Self {
         Self {
             scale: ParamScale::Linear,
+            curve: None,
             unit: None,
             step: None,
             step_count: None,
@@ -596,9 +598,10 @@ mod tests {
 params {
   cutoff = 440.0 {20, 20000, log, "Hz"}
   mode: i32 = 4 {0, 10, step = 2}
+  mix = 0.5 {0, 1, curve = -4}
 }
 outs { out1 }
-sample { out1 = cutoff + mode }
+sample { out1 = cutoff + mode + mix }
 "#,
         )
         .expect("parse should succeed");
@@ -609,6 +612,7 @@ sample { out1 = cutoff + mode }
         assert_eq!(typed.params[0].control.step, None);
         assert_eq!(typed.params[1].control.step, Some(TypedConstValue::I32(2)));
         assert_eq!(typed.params[1].control.step_count, Some(5));
+        assert_eq!(typed.params[2].control.curve, Some(-4.0));
 
         let mir =
             lower_program_to_optimized_mir(&typed).expect("parameter domains should lower to MIR");
@@ -617,6 +621,7 @@ sample { out1 = cutoff + mode }
         assert_eq!(params[0].control.unit.as_deref(), Some("Hz"));
         assert_eq!(params[1].control.step, Some(onda_mir::ScalarValue::I32(2)));
         assert_eq!(params[1].control.step_count, Some(5));
+        assert_eq!(params[2].control.curve, Some(-4.0));
     }
 
     #[test]
@@ -635,9 +640,33 @@ sample { out1 = mode }
     }
 
     #[test]
+    fn accepts_the_exact_host_i64_control_boundary() {
+        let program = parse_program(
+            r#"
+params { p: i64 = 0 {0, 9007199254740991, step = 9007199254740991} }
+outs<i64> { out1 }
+sample { out1 = p }
+"#,
+        )
+        .expect("parse should succeed");
+        let typed = analyze(program).expect("exact host boundary should analyze");
+
+        assert_eq!(
+            typed.params[0].control.step,
+            Some(TypedConstValue::I64(9_007_199_254_740_991))
+        );
+        assert_eq!(typed.params[0].control.step_count, Some(1));
+    }
+
+    #[test]
     fn rejects_invalid_top_level_parameter_control_domains() {
         for (domain, expected) in [
             ("{-20, 20000, log}", "0 < min < max"),
+            (
+                "{20, 20000, log, curve = -4}",
+                "cannot combine logarithmic scale with curve",
+            ),
+            ("{0, 1, curve = 1.0 / 0.0}", "must be finite"),
             ("{20, 20000, log, step = 10}", "cannot combine"),
             ("{0, 10, step = 3}", "divide the range exactly"),
             ("{0, 10, step = 2}", "default must lie on the step grid"),
@@ -650,6 +679,16 @@ sample { out1 = mode }
         assert_analyze_error_contains(
             "params { p: i32 = 1 {0, 10, log} }\nouts { out1 }\nsample { out1 = p }\n",
             "logarithmic scale requires f32 or f64",
+        );
+        assert_analyze_error_contains(
+            "params { p: i64 = 9007199254740992 {9007199254740992, 9007199254741002} }\n\
+             outs<i64> { out1 }\nsample { out1 = p }\n",
+            "must fit the exact host integer range",
+        );
+        assert_analyze_error_contains(
+            "params { p: i64 = -9007199254740991 {-9007199254740991, 9007199254740991, step = 2} }\n\
+             outs<i64> { out1 }\nsample { out1 = p }\n",
+            "must fit the exact host integer range",
         );
     }
 

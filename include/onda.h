@@ -25,6 +25,9 @@ enum {
   ONDA_PARAM_SCALE_LOG = 1
 };
 
+/* Largest integer magnitude represented exactly by the f64 host-control API. */
+#define ONDA_MAX_EXACT_HOST_CONTROL_INTEGER INT64_C(9007199254740991)
+
 /* Buffer channel declaration kinds used by buffer metadata queries. */
 enum {
   ONDA_BUFFER_CHANNELS_MONO = 0,
@@ -442,6 +445,10 @@ double onda_param_range_min_f64(const onda_program_t* program, int index);
 double onda_param_range_max_f64(const onda_program_t* program, int index);
 /* Returns ONDA_PARAM_SCALE_*, or -1 if the index is invalid/non-scalar. */
 int onda_param_scale(const onda_program_t* program, int index);
+/* Returns 1 when the parameter has lincurve shaping, 0 when absent, -1 if invalid. */
+int onda_param_has_curve(const onda_program_t* program, int index);
+/* Returns the finite lincurve value, or NaN when absent/invalid. */
+double onda_param_curve(const onda_program_t* program, int index);
 /* Copies the UTF-8 unit including its trailing NUL. Returns 0 when absent, the
    required byte count when present, or -1 on invalid arguments. */
 int onda_param_unit_copy(

@@ -1640,7 +1640,7 @@ fn parses_top_level_parameter_domains() {
 params {
   cutoff = 440.0 {20, 20000, log, "Hz"}
   voices: i32 = 4 {0, 10, step = 2, unit = "voices"}
-  mix = 0.5 {unit = "%", scale = linear, max = 1, min = 0}
+  mix = 0.5 {unit = "%", curve = -4, scale = linear, max = 1, min = 0}
   ceiling = 1.0 {max = 2}
 }
 sample {
@@ -1670,6 +1670,13 @@ sample {
     ));
 
     assert_eq!(params[2].control.scale, ParamScale::Linear);
+    assert!(matches!(
+        params[2].control.curve,
+        Some(Expr::Binary {
+            op: BinaryOp::Sub,
+            ..
+        })
+    ));
     assert_eq!(params[2].control.unit.as_deref(), Some("%"));
     assert!(params[3].range.as_ref().unwrap().min.is_none());
 }
@@ -1679,6 +1686,7 @@ fn rejects_invalid_parameter_domain_shapes() {
     for src in [
         "params { p = 1 {0, max = 2, 3} }\n",
         "params { p = 1 {0, 2, scale = log, scale = linear} }\n",
+        "params { p = 1 {0, 2, curve = 1, curve = -1} }\n",
         "params { p = 1 {min = 0} }\n",
         "params { p = 1 {0, 2, unit = Hz} }\n",
         "params { p = 1 {0, 2, mystery = 1} }\n",

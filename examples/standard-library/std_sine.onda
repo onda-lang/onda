@@ -2,9 +2,11 @@ import std/osc
 
 params:
   freq = 440.0 { 20.0, 10000.0, log }
+  level = 0.5 { 0.0, 1.0, curve = -4 }
+  harmonic: i32 = 1 { 1, 4, step = 1 }
 
 init:
   osc = std::osc::Sine()
 
 sample:
-  out1 = osc(freq = freq)
+  out1 = level * osc(freq = freq * f32(harmonic))

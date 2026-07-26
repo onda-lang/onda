@@ -220,6 +220,7 @@ fn map_io_metadata(io: &crate::DeclaredIo) -> AotIoMetadata {
                 onda_mir::ParamScale::Log => "log",
             }
             .to_owned(),
+            curve: control.curve,
             unit: control.unit.clone(),
             step_repr: control.step.map(format_const_value),
             step_count: control.step_count,

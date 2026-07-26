@@ -363,6 +363,10 @@ impl JitProgram {
         self.params.get(index)
     }
 
+    pub fn param_domain(&self, index: usize) -> Option<crate::ParamDomain<'_>> {
+        self.param_descriptor(index)?.param_domain()
+    }
+
     pub fn param_slot_count(&self) -> usize {
         self.params.iter().map(|param| param.array_len()).sum()
     }

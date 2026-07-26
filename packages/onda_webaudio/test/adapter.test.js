@@ -256,6 +256,7 @@ test("converts normalized parameters before posting a plain worklet write", asyn
     range_max_repr: "20000",
     param_control: {
       scale: "log",
+      curve: null,
       unit: "Hz",
       step_repr: null,
       step_count: null,

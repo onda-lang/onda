@@ -9,6 +9,7 @@ export const PROCESSOR_ABI_VERSION = 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
 
 export const {
+  createParamControl,
   constrainParamPlain,
   paramNormalizedToPlain,
   paramPlainToNormalized,
@@ -209,7 +210,11 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
   }
   for (const field of ["inputs", "outputs", "control_outputs", "params"]) {
     metadata.metadata[field].forEach((entry, index) =>
-      validateIoMetadata(entry, `metadata.${field}[${index}]`)
+      validateIoMetadata(
+        entry,
+        `metadata.${field}[${index}]`,
+        field === "params",
+      )
     );
   }
   metadata.metadata.buffers.forEach((entry, index) =>
@@ -252,7 +257,7 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
   return metadata;
 }
 
-function validateIoMetadata(value, path) {
+function validateIoMetadata(value, path, isParameter) {
   requireString(value?.name, `${path}.name`);
   requireString(value?.type_repr, `${path}.type_repr`);
   requireScalar(value?.scalar, `${path}.scalar`);
@@ -276,8 +281,30 @@ function validateIoMetadata(value, path) {
   if (value.param_control !== null && value.range_min_repr === null) {
     throw new OndaArtifactError(`${path}.param_control requires range bounds`);
   }
-  if (value.param_control !== null && value.array_len !== 1) {
+  if (
+    value.param_control !== null
+    && (value.array_len !== 1 || value.type_repr !== value.scalar)
+  ) {
     throw new OndaArtifactError(`${path}.param_control requires a scalar parameter`);
+  }
+  if (value.param_control !== null && !isParameter) {
+    throw new OndaArtifactError(`${path}.param_control is only valid for parameters`);
+  }
+  if (
+    isParameter
+    && value.range_min_repr !== null
+    && value.type_repr === value.scalar
+    && value.scalar !== "bool"
+    && value.param_control === null
+  ) {
+    throw new OndaArtifactError(`${path}.param_control is required for a scalar numeric range`);
+  }
+  if (value.param_control !== null) {
+    try {
+      PARAM_CONTROL.validateParamControlDomain(value, true);
+    } catch (error) {
+      throw new OndaArtifactError(`${path}.param_control is invalid: ${error.message}`);
+    }
   }
 }
 
@@ -292,9 +319,13 @@ function validateParamControlMetadata(value, path) {
   if (!PARAM_CONTROL.scales.includes(value.scale)) {
     throw new OndaArtifactError(`${path}.scale must be 'linear' or 'log'`);
   }
+  requireNullableFinite(value.curve, `${path}.curve`);
   requireNullableString(value.unit, `${path}.unit`);
   requireNullableString(value.step_repr, `${path}.step_repr`);
   requireNullableInteger(value.step_count, `${path}.step_count`, 1);
+  if (value.step_count !== null && value.step_count > 0xffff_ffff) {
+    throw new OndaArtifactError(`${path}.step_count must fit u32`);
+  }
   if ((value.step_repr === null) !== (value.step_count === null)) {
     throw new OndaArtifactError(
       `${path}.step_repr and step_count must either both be present or both be null`,
@@ -302,6 +333,9 @@ function validateParamControlMetadata(value, path) {
   }
   if (value.scale === "log" && value.step_repr !== null) {
     throw new OndaArtifactError(`${path} cannot combine logarithmic scale with step`);
+  }
+  if (value.scale === "log" && value.curve !== null) {
+    throw new OndaArtifactError(`${path} cannot combine logarithmic scale with curve`);
   }
 }
 
@@ -725,6 +759,15 @@ function requireNullableInteger(value, path, minimum) {
     throw new OndaArtifactError(`${path} must be present`);
   }
   if (value !== null) requireInteger(value, path, minimum);
+}
+
+function requireNullableFinite(value, path) {
+  if (value === undefined) {
+    throw new OndaArtifactError(`${path} must be present`);
+  }
+  if (value !== null && !Number.isFinite(value)) {
+    throw new OndaArtifactError(`${path} must be a finite number or null`);
+  }
 }
 
 function requireNullableString(value, path) {

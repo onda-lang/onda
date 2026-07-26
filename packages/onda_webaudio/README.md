@@ -53,9 +53,13 @@ const sliderValueFor440Hz = paramPlainToNormalized(cutoff, 440);
 ```
 
 The helpers preserve exact endpoints, clamp and snap consistently with worklet writes, and reject
-arrays or numeric parameters without a host-control domain. `scale`, `unit`, `step_repr`, and
-`step_count` remain available on each parameter's descriptor metadata for control construction and
-formatting.
+arrays or numeric parameters without a host-control domain. `scale`, `curve`, `unit`, `step_repr`,
+and `step_count` remain available on each parameter's descriptor metadata for control construction
+and formatting. For repeated UI conversion, `createParamControl(param)` prepares and validates the
+descriptor once and returns bound conversion methods.
+
+Controlled `i64` domains use the descriptor's exact binary64 integer range. Full-width unranged
+`i64` values continue to use `bigint` when written directly.
 
 The artifact must be compiled for exactly `audioContext.sampleRate`; the adapter rejects a mismatch
 before registering the node so sample-rate-derived language semantics cannot silently drift. A Web

@@ -99,6 +99,7 @@ struct ParsedParamDomain {
     min: Option<Expr>,
     max: Option<Expr>,
     scale: Option<ParamScale>,
+    curve: Option<Expr>,
     unit: Option<String>,
     step: Option<Expr>,
 }
@@ -114,6 +115,7 @@ impl ParsedParamDomain {
             "min" => &mut self.min,
             "max" => &mut self.max,
             "step" => &mut self.step,
+            "curve" => &mut self.curve,
             _ => {
                 return Err(vec![syntax_at_pair(
                     pair,
@@ -220,7 +222,7 @@ fn parse_named_param_domain_item(
         )]);
     };
     match name {
-        "min" | "max" | "step" if value_pair.as_rule() == Rule::expr => {
+        "min" | "max" | "step" | "curve" if value_pair.as_rule() == Rule::expr => {
             parsed.set_expr(name, parse_expr_inner(value_pair), &pair)
         }
         "scale" if value_pair.as_rule() == Rule::expr => {
@@ -229,7 +231,7 @@ fn parse_named_param_domain_item(
         "unit" if value_pair.as_rule() == Rule::param_unit => {
             parsed.set_unit(parse_param_unit(&value_pair)?, &pair)
         }
-        "min" | "max" | "step" => Err(vec![syntax_at_pair(
+        "min" | "max" | "step" | "curve" => Err(vec![syntax_at_pair(
             &pair,
             format!("parameter domain field '{name}' requires a constant expression"),
         )]),
@@ -285,10 +287,13 @@ pub(super) fn parse_param_domain_pair(
             positional.push(value);
         }
     }
-    if positional.len() > 5 {
+    if positional.len() > PARAM_DOMAIN_POSITIONAL_FIELDS.len() {
         return Err(vec![syntax_at_loc(
             loc.as_ref(),
-            "parameter domain accepts at most five positional fields",
+            format!(
+                "parameter domain accepts at most {} positional fields",
+                PARAM_DOMAIN_POSITIONAL_FIELDS.len()
+            ),
         )]);
     }
 
@@ -303,14 +308,7 @@ pub(super) fn parse_param_domain_pair(
         let field = if index == 0 && single_is_max {
             "max"
         } else {
-            match index {
-                0 => "min",
-                1 => "max",
-                2 => "scale",
-                3 => "unit",
-                4 => "step",
-                _ => unreachable!(),
-            }
+            PARAM_DOMAIN_POSITIONAL_FIELDS[index]
         };
         match (field, item.as_rule()) {
             ("min" | "max" | "step", Rule::expr) => {
@@ -344,6 +342,7 @@ pub(super) fn parse_param_domain_pair(
         },
         ParamControl {
             scale: parsed.scale.unwrap_or_default(),
+            curve: parsed.curve,
             unit: parsed.unit,
             step: parsed.step,
         },

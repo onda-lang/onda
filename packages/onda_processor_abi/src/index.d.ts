@@ -55,10 +55,30 @@ export interface OndaIoMetadata {
 
 export interface OndaParamControlMetadata {
   scale: "linear" | "log";
+  /** SuperCollider-style lincurve value; null selects linear/log scale directly. */
+  curve: number | null;
   unit: string | null;
   step_repr: string | null;
   step_count: number | null;
 }
+
+export interface OndaPreparedParamControl {
+  readonly name: string | null;
+  readonly scalar: OndaScalarType;
+  readonly minimum: number | null;
+  readonly maximum: number | null;
+  readonly scale: "linear" | "log" | null;
+  readonly curve: number | null;
+  readonly unit: string | null;
+  readonly step: number | null;
+  readonly stepCount: number | null;
+  constrainPlain(plain: number | boolean): number | boolean;
+  normalizedToPlain(normalized: number): number | boolean;
+  plainToNormalized(plain: number | boolean): number;
+}
+
+/** Validate and decode descriptor metadata once for repeated host-control use. */
+export function createParamControl(param: OndaIoMetadata): OndaPreparedParamControl;
 
 /** Clamp and snap a plain scalar value according to descriptor metadata. */
 export function constrainParamPlain(

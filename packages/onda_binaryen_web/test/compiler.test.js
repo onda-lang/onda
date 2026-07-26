@@ -143,6 +143,7 @@ function executableMir() {
           range: null,
           control: {
             scale: "linear",
+            curve: null,
             unit: null,
             step: null,
             step_count: null,

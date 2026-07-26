@@ -14,6 +14,7 @@ PROCESSOR_ARTIFACT_FORMAT = "onda-processor"
 # Synchronized from format-versions.json; do not edit these copies directly.
 PROCESSOR_ARTIFACT_FORMAT_VERSION = 2
 PROCESSOR_ABI_VERSION = 1
+MAX_EXACT_HOST_INTEGER = (1 << 53) - 1
 
 SCALAR_FORMATS = {
     "bool": "?",
@@ -39,6 +40,8 @@ class GeneratedParamTables:
     array_lengths: list[str]
     byte_offsets: list[str]
     control_scales: list[str]
+    has_curves: list[str]
+    curves: list[str]
     range_mins: list[str]
     range_maxes: list[str]
     steps: list[str]
@@ -181,8 +184,7 @@ def c_string(value: str, context: str) -> str:
     return '"' + "".join(escaped) + '"'
 
 
-def c_f64(text: str, context: str) -> str:
-    value = parse_scalar(text)
+def c_f64_value(value: object, context: str) -> str:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         fail(f"{context} is not numeric")
     value = float(value)
@@ -194,12 +196,18 @@ def c_f64(text: str, context: str) -> str:
     return rendered
 
 
+def c_f64(text: str, context: str) -> str:
+    return c_f64_value(parse_scalar(text), context)
+
+
 def generated_params(descriptor: dict) -> GeneratedParamTables:
     names: list[str] = []
     kinds: list[str] = []
     array_lengths: list[str] = []
     byte_offsets: list[str] = []
     control_scales: list[str] = []
+    has_curves: list[str] = []
+    curves: list[str] = []
     range_mins: list[str] = []
     range_maxes: list[str] = []
     steps: list[str] = []
@@ -218,7 +226,9 @@ def generated_params(descriptor: dict) -> GeneratedParamTables:
 
         control = param.get("param_control")
         if control is None:
-            control_scale = "PROCESSOR_PARAM_SCALE_NONE"
+            control_scale = "ONDA_PROCESSOR_PARAM_SCALE_NONE"
+            has_curve = "0"
+            curve = "0.0"
             range_min = "0.0"
             range_max = "0.0"
             step = "0.0"
@@ -227,15 +237,45 @@ def generated_params(descriptor: dict) -> GeneratedParamTables:
         else:
             scale = control.get("scale")
             if scale == "linear":
-                control_scale = "PROCESSOR_PARAM_SCALE_LINEAR"
+                control_scale = "ONDA_PROCESSOR_PARAM_SCALE_LINEAR"
             elif scale == "log":
-                control_scale = "PROCESSOR_PARAM_SCALE_LOG"
+                control_scale = "ONDA_PROCESSOR_PARAM_SCALE_LOG"
             else:
                 fail(f"parameter {name!r} has an invalid control scale")
+            if "curve" not in control:
+                fail(f"parameter {name!r} control metadata is missing its curve")
+            curve_value = control["curve"]
+            if curve_value is None:
+                has_curve = "0"
+                curve = "0.0"
+            else:
+                if scale == "log":
+                    fail(
+                        f"parameter {name!r} cannot combine logarithmic scale "
+                        "with curve"
+                    )
+                has_curve = "1"
+                curve = c_f64_value(curve_value, f"parameter {name!r} curve")
             range_min_repr = param.get("range_min_repr")
             range_max_repr = param.get("range_max_repr")
             if not isinstance(range_min_repr, str) or not isinstance(range_max_repr, str):
                 fail(f"parameter {name!r} control metadata is missing its range")
+            if scalar == "i64":
+                range_min_value = parse_scalar(range_min_repr)
+                range_max_value = parse_scalar(range_max_repr)
+                if (
+                    isinstance(range_min_value, bool)
+                    or isinstance(range_max_value, bool)
+                    or not isinstance(range_min_value, int)
+                    or not isinstance(range_max_value, int)
+                    or abs(range_min_value) > MAX_EXACT_HOST_INTEGER
+                    or abs(range_max_value) > MAX_EXACT_HOST_INTEGER
+                    or range_max_value - range_min_value > MAX_EXACT_HOST_INTEGER
+                ):
+                    fail(
+                        f"parameter {name!r} i64 control range is not exactly "
+                        "representable by the host API"
+                    )
             range_min = c_f64(range_min_repr, f"parameter {name!r} range minimum")
             range_max = c_f64(range_max_repr, f"parameter {name!r} range maximum")
             step_repr = control.get("step_repr")
@@ -266,6 +306,8 @@ def generated_params(descriptor: dict) -> GeneratedParamTables:
         array_lengths.append(str(array_len))
         byte_offsets.append(str(byte_offset))
         control_scales.append(control_scale)
+        has_curves.append(has_curve)
+        curves.append(curve)
         range_mins.append(range_min)
         range_maxes.append(range_max)
         steps.append(step)
@@ -278,6 +320,8 @@ def generated_params(descriptor: dict) -> GeneratedParamTables:
         array_lengths=array_lengths,
         byte_offsets=byte_offsets,
         control_scales=control_scales,
+        has_curves=has_curves,
+        curves=curves,
         range_mins=range_mins,
         range_maxes=range_maxes,
         steps=steps,
@@ -384,6 +428,8 @@ def generate(descriptor: dict) -> str:
 #include <stdint.h>
 #include <string.h>
 
+#include "onda_processor_abi.h"
+
 #if defined(_MSC_VER)
 #define PROCESSOR_STATIC_INLINE static __inline
 #else
@@ -396,12 +442,6 @@ enum {{
   PROCESSOR_SCALAR_F64 = 3,
   PROCESSOR_SCALAR_I32 = 4,
   PROCESSOR_SCALAR_I64 = 5
-}};
-
-enum {{
-  PROCESSOR_PARAM_SCALE_NONE = 0,
-  PROCESSOR_PARAM_SCALE_LINEAR = 1,
-  PROCESSOR_PARAM_SCALE_LOG = 2
 }};
 
 #define PROCESSOR_DESCRIPTOR_FORMAT_VERSION {descriptor['format_version']}u
@@ -449,6 +489,16 @@ PROCESSOR_PARAM_CONTROL_SCALES[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COU
   {c_array(params.control_scales, '0')}
 }};
 
+static const unsigned char
+PROCESSOR_PARAM_HAS_CURVES[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.has_curves, '0')}
+}};
+
+static const double
+PROCESSOR_PARAM_CURVES[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
+  {c_array(params.curves, '0.0')}
+}};
+
 static const double
 PROCESSOR_PARAM_RANGE_MINS[(PROCESSOR_PARAM_COUNT > 0) ? PROCESSOR_PARAM_COUNT : 1] = {{
   {c_array(params.range_mins, '0.0')}
@@ -479,6 +529,19 @@ PROCESSOR_STATIC_INLINE int processor_param_is_scalar(int index) {{
     PROCESSOR_PARAM_ARRAY_LENGTHS[index] == 1;
 }}
 
+PROCESSOR_STATIC_INLINE onda_processor_param_domain processor_param_domain(int index) {{
+  onda_processor_param_domain domain;
+  domain.minimum = PROCESSOR_PARAM_RANGE_MINS[index];
+  domain.maximum = PROCESSOR_PARAM_RANGE_MAXES[index];
+  domain.step = PROCESSOR_PARAM_STEPS[index];
+  domain.curve = PROCESSOR_PARAM_CURVES[index];
+  domain.step_count = PROCESSOR_PARAM_STEP_COUNTS[index];
+  domain.scale = (onda_processor_param_scale)PROCESSOR_PARAM_CONTROL_SCALES[index];
+  domain.has_curve = PROCESSOR_PARAM_HAS_CURVES[index];
+  domain.unit = PROCESSOR_PARAM_UNITS[index];
+  return domain;
+}}
+
 PROCESSOR_STATIC_INLINE double processor_param_constrain_plain(int index, double plain) {{
   if (!processor_param_is_scalar(index)) {{
     return NAN;
@@ -486,18 +549,8 @@ PROCESSOR_STATIC_INLINE double processor_param_constrain_plain(int index, double
   if (PROCESSOR_PARAM_KINDS[index] == PROCESSOR_SCALAR_BOOL) {{
     return plain >= 0.5 ? 1.0 : 0.0;
   }}
-  if (PROCESSOR_PARAM_CONTROL_SCALES[index] == PROCESSOR_PARAM_SCALE_NONE) {{
-    return NAN;
-  }}
-  const double minimum = PROCESSOR_PARAM_RANGE_MINS[index];
-  const double maximum = PROCESSOR_PARAM_RANGE_MAXES[index];
-  double constrained = isnan(plain) ? minimum : fmin(maximum, fmax(minimum, plain));
-  const double step = PROCESSOR_PARAM_STEPS[index];
-  if (step > 0.0) {{
-    constrained = minimum + floor((constrained - minimum) / step + 0.5) * step;
-    constrained = fmin(maximum, fmax(minimum, constrained));
-  }}
-  return constrained;
+  const onda_processor_param_domain domain = processor_param_domain(index);
+  return onda_processor_param_constrain_plain(&domain, plain);
 }}
 
 PROCESSOR_STATIC_INLINE double processor_param_normalized_to_plain(int index, double normalized) {{
@@ -507,46 +560,19 @@ PROCESSOR_STATIC_INLINE double processor_param_normalized_to_plain(int index, do
   if (PROCESSOR_PARAM_KINDS[index] == PROCESSOR_SCALAR_BOOL) {{
     return normalized >= 0.5 ? 1.0 : 0.0;
   }}
-  const unsigned char scale = PROCESSOR_PARAM_CONTROL_SCALES[index];
-  if (scale == PROCESSOR_PARAM_SCALE_NONE) {{
-    return NAN;
-  }}
-  const double minimum = PROCESSOR_PARAM_RANGE_MINS[index];
-  const double maximum = PROCESSOR_PARAM_RANGE_MAXES[index];
-  const double unit = isnan(normalized) ? 0.0 : fmin(1.0, fmax(0.0, normalized));
-  if (unit == 0.0) {{
-    return minimum;
-  }}
-  if (unit == 1.0) {{
-    return maximum;
-  }}
-  const double plain = scale == PROCESSOR_PARAM_SCALE_LOG
-    ? minimum * pow(maximum / minimum, unit)
-    : minimum + unit * (maximum - minimum);
-  return processor_param_constrain_plain(index, plain);
+  const onda_processor_param_domain domain = processor_param_domain(index);
+  return onda_processor_param_normalized_to_plain(&domain, normalized);
 }}
 
 PROCESSOR_STATIC_INLINE double processor_param_plain_to_normalized(int index, double plain) {{
-  const double constrained = processor_param_constrain_plain(index, plain);
-  if (isnan(constrained)) {{
+  if (!processor_param_is_scalar(index)) {{
     return NAN;
   }}
   if (PROCESSOR_PARAM_KINDS[index] == PROCESSOR_SCALAR_BOOL) {{
-    return constrained;
+    return plain >= 0.5 ? 1.0 : 0.0;
   }}
-  const double minimum = PROCESSOR_PARAM_RANGE_MINS[index];
-  const double maximum = PROCESSOR_PARAM_RANGE_MAXES[index];
-  if (constrained == minimum) {{
-    return 0.0;
-  }}
-  if (constrained == maximum) {{
-    return 1.0;
-  }}
-  const double normalized =
-    PROCESSOR_PARAM_CONTROL_SCALES[index] == PROCESSOR_PARAM_SCALE_LOG
-      ? log(constrained / minimum) / log(maximum / minimum)
-      : (constrained - minimum) / (maximum - minimum);
-  return fmin(1.0, fmax(0.0, normalized));
+  const onda_processor_param_domain domain = processor_param_domain(index);
+  return onda_processor_param_plain_to_normalized(&domain, plain);
 }}
 
 PROCESSOR_STATIC_INLINE double processor_param_read_plain(const void* params, int index) {{

@@ -3464,7 +3464,7 @@ namespace sc:
             .collect::<Vec<_>>();
 
         assert!(!labels.contains(&"min"), "items: {items:?}");
-        for expected in ["max", "scale", "unit", "step"] {
+        for expected in ["max", "scale", "curve", "unit", "step"] {
             assert!(labels.contains(&expected), "missing {expected}: {items:?}");
         }
         let scale = items
@@ -3475,6 +3475,11 @@ namespace sc:
         assert_eq!(scale["detail"], json!("parameter domain field"));
         assert_eq!(scale["insertText"], json!("scale = ${1|linear,log|}"));
         assert_eq!(scale["insertTextFormat"], json!(2));
+        let curve = items
+            .iter()
+            .find(|item| item["label"] == json!("curve"))
+            .expect("curve field completion");
+        assert_eq!(curve["insertText"], json!("curve = $1"));
 
         fs::remove_dir_all(&dir).ok();
     }

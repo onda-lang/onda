@@ -1,10 +1,11 @@
 import {
-  paramNormalizedToPlain,
+  createParamControl,
   validateProcessorArtifact,
   validateProcessorModule,
 } from "@onda-lang/processor-abi";
 
 export {
+  createParamControl,
   constrainParamPlain,
   paramNormalizedToPlain,
   paramPlainToNormalized,
@@ -150,6 +151,7 @@ export class OndaAudioProcessor {
     this.node = node;
     this.metadata = metadata;
     this.paramInfo = metadata?.metadata?.params ?? null;
+    this.paramControls = new WeakMap();
     this.nextRequestId = 1;
     this.pending = new Map();
     this.handleMessage = (event) => {
@@ -198,7 +200,12 @@ export class OndaAudioProcessor {
       if (!info) {
         throw new Error(`unknown Onda parameter '${String(param)}'`);
       }
-      return this.setParam(param, paramNormalizedToPlain(info, value));
+      let control = this.paramControls.get(info);
+      if (!control) {
+        control = createParamControl(info);
+        this.paramControls.set(info, control);
+      }
+      return this.setParam(param, control.normalizedToPlain(value));
     } catch (error) {
       return Promise.reject(error);
     }

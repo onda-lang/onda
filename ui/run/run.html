@@ -1519,9 +1519,10 @@
       }
 
       function decimalPlaces(step) {
-        const text = String(step);
-        const dot = text.indexOf(".");
-        return dot === -1 ? 0 : text.length - dot - 1;
+        const [coefficient, exponentText] = String(step).toLowerCase().split("e");
+        const fractionDigits = coefficient.split(".")[1]?.length ?? 0;
+        const exponent = exponentText === undefined ? 0 : Number(exponentText);
+        return Math.max(0, fractionDigits - exponent);
       }
 
       const FLOAT_CONTROL_TARGET_STEPS = 2000;
@@ -1558,7 +1559,10 @@
         if (!Number.isFinite(numericValue)) {
           return "0";
         }
-        const places = Math.min(decimalPlaces(step), 8);
+        const places = decimalPlaces(step);
+        if (places > 8) {
+          return String(numericValue);
+        }
         if (places === 0) {
           return String(Math.round(numericValue));
         }
@@ -1571,17 +1575,15 @@
         if (!Number.isFinite(step) || step <= 0) {
           return value;
         }
-        const places = decimalPlaces(step);
-        const snapped = min + Math.round((value - min) / step) * step;
-        return Number(snapped.toFixed(places));
+        return min + Math.round((value - min) / step) * step;
       }
 
-      const paramControlMetadataCache = new WeakMap();
+      const paramControlCache = new WeakMap();
 
-      function paramControlMetadata(param) {
-        let metadata = paramControlMetadataCache.get(param);
-        if (metadata) return metadata;
-        metadata = {
+      function paramControl(param) {
+        let control = paramControlCache.get(param);
+        if (control) return control;
+        const metadata = {
           name: param.name,
           type_repr: param.type,
           scalar: param.type,
@@ -1590,27 +1592,27 @@
           range_max_repr: param.rangeMax === null ? null : String(param.rangeMax),
           param_control: param.scale === null ? null : {
             scale: param.scale,
+            curve: param.curve,
             unit: param.unit,
             step_repr: param.step === null ? null : String(param.step),
             step_count: param.stepCount,
           },
         };
-        paramControlMetadataCache.set(param, metadata);
-        return metadata;
+        control = globalThis.__ONDA_PARAM_CONTROL_V2__.createParamControl(metadata);
+        paramControlCache.set(param, control);
+        return control;
       }
 
       function paramPlainToNormalized(param, value) {
-        return globalThis.__ONDA_PARAM_CONTROL_V2__.paramPlainToNormalized(
-          paramControlMetadata(param),
-          value,
-        );
+        return paramControl(param).plainToNormalized(value);
+      }
+
+      function constrainParamPlain(param, value) {
+        return paramControl(param).constrainPlain(value);
       }
 
       function paramNormalizedToPlain(param, normalized) {
-        return globalThis.__ONDA_PARAM_CONTROL_V2__.paramNormalizedToPlain(
-          paramControlMetadata(param),
-          normalized,
-        );
+        return paramControl(param).normalizedToPlain(normalized);
       }
 
       function canEditRunControls() {
@@ -1619,17 +1621,15 @@
 
       function createRangeValueController({
         currentValue,
-        min,
-        max,
-        step,
+        constrainValue,
         renderValue,
         onInputValue,
         onCommitValue,
       }) {
-        let value = clamp(currentValue, min, max);
+        let value = constrainValue(currentValue);
 
         const update = (nextValue, notify) => {
-          value = clamp(quantizeToStep(nextValue, min, step), min, max);
+          value = constrainValue(nextValue);
           renderValue(value);
           if (notify === "input") onInputValue(value);
           if (notify === "commit") onCommitValue(value);
@@ -1681,8 +1681,6 @@
       }
 
       function createSliderControl(param, currentValue, step, onInputValue, onCommitValue) {
-        const min = Number(param.rangeMin);
-        const max = Number(param.rangeMax);
         const slider = document.createElement("div");
         slider.className = "param-slider";
         const canEdit = initializeRangeControl(slider, param);
@@ -1698,9 +1696,7 @@
 
         const controller = createRangeValueController({
           currentValue,
-          min,
-          max,
-          step: Number(step),
+          constrainValue: (value) => constrainParamPlain(param, value),
           renderValue: (value) => {
             const ratio = paramPlainToNormalized(param, value);
             const pct = clamp(ratio, 0, 1) * 100;
@@ -1762,8 +1758,6 @@
       }
 
       function createKnobControl(param, currentValue, step, onInputValue, onCommitValue) {
-        const min = Number(param.rangeMin);
-        const max = Number(param.rangeMax);
         const knob = document.createElement("div");
         knob.className = "param-knob";
         knob.title = "Drag vertically to adjust; double-click to reset";
@@ -1778,9 +1772,7 @@
 
         const controller = createRangeValueController({
           currentValue,
-          min,
-          max,
-          step: Number(step),
+          constrainValue: (value) => constrainParamPlain(param, value),
           renderValue: (value) => {
             const ratio = paramPlainToNormalized(param, value);
             dial.style.setProperty("--knob-angle", `${ratio * 270}deg`);
@@ -2391,11 +2383,7 @@
                 if (!Number.isFinite(parsed)) {
                   return;
                 }
-                const quantized = clamp(
-                  quantizeToStep(parsed, Number(param.rangeMin), stepValue),
-                  Number(param.rangeMin),
-                  Number(param.rangeMax),
-                );
+                const quantized = constrainParamPlain(param, parsed);
                 param.value = quantized;
                 rangeControl.setValue(quantized);
                 number.value = formatNumberForInput(quantized, stepValue);

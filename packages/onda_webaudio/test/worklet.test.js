@@ -185,6 +185,7 @@ test("worklet clamps and snaps plain parameter writes", () => {
     range_max_repr: "10",
     param_control: {
       scale: "linear",
+      curve: null,
       unit: null,
       step_repr: "2",
       step_count: 5,

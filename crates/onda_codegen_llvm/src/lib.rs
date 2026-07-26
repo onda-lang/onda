@@ -326,6 +326,23 @@ pub struct DeclaredIo {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ParamScale {
+    Linear,
+    Log,
+}
+
+/// A validated scalar parameter domain prepared for host-control use.
+///
+/// This view combines the parameter's plain range with its presentation and
+/// normalization metadata so embedders do not need to reconstruct the domain
+/// from separate descriptor fields.
+#[derive(Debug, Clone, Copy)]
+pub struct ParamDomain<'a> {
+    control: &'a ParamControl,
+    range: ValueRange,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum DeclaredBufferChannels {
     Mono,
     Static(usize),

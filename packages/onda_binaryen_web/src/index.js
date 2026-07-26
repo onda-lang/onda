@@ -3436,6 +3436,7 @@ class MirCompiler {
           param_control: this.storageShape(param.ty).length === 1 && param.range
             ? {
                 scale: param.control.scale,
+                curve: param.control.curve,
                 unit: param.control.unit,
                 step_repr: this.scalarRepr(param.control.step),
                 step_count: param.control.step_count,

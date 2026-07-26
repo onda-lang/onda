@@ -1,5 +1,5 @@
 use std::alloc::{alloc, dealloc, Layout};
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 
 use onda::*;
 
@@ -774,6 +774,47 @@ sample {
         assert_eq!(onda_process_checked(instance.0, frames), 0);
         assert_eq!(out[0], 513.0);
         assert_eq!(out[frames as usize - 1], 1024.0);
+    }
+}
+
+#[test]
+fn c_api_parameter_unit_query_distinguishes_absence_from_invalid_index() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params {
+  cutoff = 440.0 {20, 20000, log, "Hz"}
+  gain = 1.0 {0, 2, curve = -4}
+}
+outs { out1 }
+sample { out1 = cutoff * gain }
+"#,
+        );
+
+        assert_eq!(
+            onda_param_unit_copy(program.0, 0, std::ptr::null_mut(), 0),
+            3
+        );
+        let mut unit = [0 as c_char; 3];
+        assert_eq!(
+            onda_param_unit_copy(program.0, 0, unit.as_mut_ptr(), unit.len() as i32),
+            3
+        );
+        assert_eq!(CStr::from_ptr(unit.as_ptr()).to_bytes(), b"Hz");
+        assert_eq!(
+            onda_param_unit_copy(program.0, 1, std::ptr::null_mut(), 0),
+            0
+        );
+        assert_eq!(
+            onda_param_unit_copy(program.0, 2, std::ptr::null_mut(), 0),
+            -1
+        );
+        assert_eq!(onda_param_has_curve(program.0, 0), 0);
+        assert!(onda_param_curve(program.0, 0).is_nan());
+        assert_eq!(onda_param_has_curve(program.0, 1), 1);
+        assert_eq!(onda_param_curve(program.0, 1), -4.0);
+        assert_eq!(onda_param_has_curve(program.0, 2), -1);
+        assert!(onda_param_curve(program.0, 2).is_nan());
     }
 }
 

@@ -942,11 +942,14 @@ mod tests {
         assert_eq!(metadata.params[1].byte_offset(), 4);
         assert_eq!(metadata.params[1].slot_offset(), 1);
         assert_eq!(metadata.params[1].default_bytes().unwrap().len(), 8);
-        assert_eq!(metadata.params[0].param_scale_name(), Some("linear"));
-        assert_eq!(metadata.params[0].param_step_as_f64(), Some(1.0));
-        assert_eq!(metadata.params[0].param_step_count(), Some(4));
-        assert_eq!(metadata.params[0].param_normalized_to_plain(0.6), Some(2.0));
-        assert_eq!(metadata.params[1].param_scale_name(), None);
+        let domain = metadata.params[0].param_domain().expect("parameter domain");
+        assert_eq!(domain.minimum(), 0.0);
+        assert_eq!(domain.maximum(), 4.0);
+        assert_eq!(domain.scale(), crate::ParamScale::Linear);
+        assert_eq!(domain.step(), Some(1.0));
+        assert_eq!(domain.step_count(), Some(4));
+        assert_eq!(domain.normalized_to_plain(0.6), 2.0);
+        assert!(metadata.params[1].param_domain().is_none());
 
         let state = metadata
             .state_entries

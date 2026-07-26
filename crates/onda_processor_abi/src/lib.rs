@@ -153,6 +153,7 @@ pub struct IoMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamControlMetadata {
     pub scale: String,
+    pub curve: Option<f64>,
     pub unit: Option<String>,
     pub step_repr: Option<String>,
     pub step_count: Option<u32>,

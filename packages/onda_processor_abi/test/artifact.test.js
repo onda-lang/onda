@@ -7,6 +7,7 @@ import {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
   PROCESSOR_SNAPSHOT_FORMAT_VERSION,
+  createParamControl,
   constrainParamPlain,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
@@ -50,6 +51,7 @@ function controlledParam({
   minimum = "20",
   maximum = "20000",
   scale = "log",
+  curve = null,
   step = null,
   stepCount = null,
   arrayLen = 1,
@@ -69,6 +71,7 @@ function controlledParam({
     range_max_repr: maximum,
     param_control: {
       scale,
+      curve,
       unit: null,
       step_repr: step,
       step_count: stepCount,
@@ -94,6 +97,25 @@ test("converts linear and logarithmic parameter domains in both directions", () 
   assert.equal(paramNormalizedToPlain(logarithmic, 1), 20_000);
 });
 
+test("prepares a reusable decoded parameter control", () => {
+  const param = controlledParam({
+    minimum: "0",
+    maximum: "1",
+    scale: "linear",
+    curve: -4,
+  });
+  const control = createParamControl(param);
+  const midpoint = control.normalizedToPlain(0.5);
+
+  assert.equal(control.minimum, 0);
+  assert.equal(control.maximum, 1);
+  assert.equal(control.curve, -4);
+  assert.equal(control.step, null);
+  assert.ok(Math.abs(control.plainToNormalized(midpoint) - 0.5) < 1e-12);
+  assert.equal(control.constrainPlain(2), 1);
+  assert.equal(Object.isFrozen(control), true);
+});
+
 test("constrains stepped and boolean host-control values", () => {
   const stepped = controlledParam({
     name: "mode",
@@ -108,6 +130,50 @@ test("constrains stepped and boolean host-control values", () => {
   assert.equal(paramNormalizedToPlain(stepped, 0.3), 4);
   assert.equal(paramPlainToNormalized(stepped, 3.2), 0.4);
   assert.equal(constrainParamPlain(stepped, 100), 10);
+
+  const fine = controlledParam({
+    name: "fine",
+    scalar: "f64",
+    minimum: "0",
+    maximum: "0.000001",
+    scale: "linear",
+    step: "0.0000001",
+    stepCount: 10,
+  });
+  assert.equal(constrainParamPlain(fine, 0.0000003), 0.0000003);
+
+  const wideLog = controlledParam({
+    name: "wide-log",
+    scalar: "f64",
+    minimum: "1e-300",
+    maximum: "1e300",
+    scale: "log",
+  });
+  assert.ok(Math.abs(paramNormalizedToPlain(wideLog, 0.5) - 1) < 1e-12);
+  assert.ok(Math.abs(paramPlainToNormalized(wideLog, 1) - 0.5) < 1e-12);
+
+  const inverseCurve = controlledParam({
+    name: "inverse-curve",
+    minimum: "0",
+    maximum: "1",
+    scale: "linear",
+    curve: -4,
+  });
+  const curvedMidpoint = paramNormalizedToPlain(inverseCurve, 0.5);
+  const expectedCurveMidpoint = Math.expm1(-2) / Math.expm1(-4);
+  assert.ok(Math.abs(curvedMidpoint - expectedCurveMidpoint) < 1e-12);
+  assert.ok(Math.abs(paramPlainToNormalized(inverseCurve, curvedMidpoint) - 0.5) < 1e-12);
+
+  const forwardCurve = controlledParam({
+    name: "forward-curve",
+    minimum: "0",
+    maximum: "1",
+    scale: "linear",
+    curve: 4,
+  });
+  assert.ok(
+    Math.abs(paramNormalizedToPlain(forwardCurve, 0.5) + curvedMidpoint - 1) < 1e-12,
+  );
 
   const boolean = controlledParam({
     name: "enabled",
@@ -135,6 +201,98 @@ test("rejects parameters without a scalar host-control domain", () => {
   assert.throws(
     () => paramPlainToNormalized(controlledParam({ arrayLen: 2 }), 440),
     /scalar host-control domain/,
+  );
+  const booleanArray = controlledParam({
+    name: "flags",
+    scalar: "bool",
+    arrayLen: 1,
+  });
+  booleanArray.type_repr = "bool[1]";
+  booleanArray.param_control = null;
+  assert.throws(
+    () => paramNormalizedToPlain(booleanArray, 1),
+    /scalar host-control domain/,
+  );
+});
+
+test("rejects i64 control domains that are not exact through host numbers", () => {
+  const unsafe = controlledParam({
+    name: "wide",
+    scalar: "i64",
+    minimum: "9223372036854771711",
+    maximum: "9223372036854775807",
+    scale: "linear",
+    step: "1024",
+    stepCount: 4,
+  });
+  assert.throws(
+    () => paramNormalizedToPlain(unsafe, 1),
+    /outside the exact host-control integer range/,
+  );
+});
+
+test("validates parameter-control semantics before accepting a descriptor", () => {
+  const fixture = JSON.parse(readFileSync(
+    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
+    "utf8",
+  ));
+
+  const integerLog = structuredClone(fixture);
+  Object.assign(integerLog.metadata.params[0], {
+    type_repr: "i32",
+    scalar: "i32",
+    range_min_repr: "-20",
+    range_max_repr: "20000",
+    default_reprs: ["440"],
+  });
+  assert.throws(
+    () => validateProcessorMetadata(integerLog),
+    /logarithmic scale with a non-floating scalar/,
+  );
+
+  const wrongStepCount = structuredClone(fixture);
+  Object.assign(wrongStepCount.metadata.params[0].param_control, {
+    scale: "linear",
+    step_repr: "10",
+    step_count: 1997,
+  });
+  assert.throws(
+    () => validateProcessorMetadata(wrongStepCount),
+    /step_count inconsistent/,
+  );
+
+  const offGridDefault = structuredClone(fixture);
+  offGridDefault.metadata.params[0].default_reprs = ["445"];
+  Object.assign(offGridDefault.metadata.params[0].param_control, {
+    scale: "linear",
+    step_repr: "10",
+    step_count: 1998,
+  });
+  assert.throws(
+    () => validateProcessorMetadata(offGridDefault),
+    /default outside its host-control step grid/,
+  );
+
+  const mixedLogCurve = structuredClone(fixture);
+  mixedLogCurve.metadata.params[0].param_control.curve = -4;
+  assert.throws(
+    () => validateProcessorMetadata(mixedLogCurve),
+    /cannot combine logarithmic scale with curve/,
+  );
+
+  const controlOnInput = structuredClone(fixture);
+  controlOnInput.metadata.inputs[0].range_min_repr = "0";
+  controlOnInput.metadata.inputs[0].range_max_repr = "1";
+  controlOnInput.metadata.inputs[0].param_control = {
+    scale: "linear",
+    curve: null,
+    unit: null,
+    step_repr: null,
+    step_count: null,
+  };
+  assert.throws(
+    () => validateProcessorMetadata(controlOnInput),
+    /only valid for parameters/,
   );
 });
 

@@ -1,8 +1,7 @@
 use std::collections::BTreeSet;
 
-use onda_frontend::ParamScale;
-
-pub(super) const PARAM_DOMAIN_FIELDS: &[&str] = &["min", "max", "scale", "unit", "step"];
+pub(super) use onda_frontend::PARAM_DOMAIN_FIELDS;
+use onda_frontend::{ParamScale, PARAM_DOMAIN_POSITIONAL_FIELDS};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) enum ParamDomainValueKind {
@@ -45,7 +44,7 @@ pub(super) fn completion_context_at(
             saw_named = true;
             used_fields.insert(field);
         } else if !saw_named {
-            if let Some(field) = PARAM_DOMAIN_FIELDS.get(index) {
+            if let Some(field) = PARAM_DOMAIN_POSITIONAL_FIELDS.get(index) {
                 used_fields.insert(*field);
             }
         }
@@ -117,7 +116,7 @@ pub(super) fn identifier_role_at(
 
 fn value_kind_for_field(field: &str) -> ParamDomainValueKind {
     match field {
-        "min" | "max" | "step" => ParamDomainValueKind::Expression,
+        "min" | "max" | "curve" | "step" => ParamDomainValueKind::Expression,
         "scale" => ParamDomainValueKind::Scale,
         "unit" => ParamDomainValueKind::Unit,
         _ => ParamDomainValueKind::None,

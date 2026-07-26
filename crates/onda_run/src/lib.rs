@@ -726,6 +726,7 @@ fn run_param_json(param: &RunParamInfo) -> Value {
         "rangeMin": param.range_min,
         "rangeMax": param.range_max,
         "scale": param.scale,
+        "curve": param.curve,
         "unit": param.unit,
         "step": param.step,
         "stepCount": param.step_count,
