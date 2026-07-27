@@ -55,6 +55,7 @@ const COMPLETION_ITEM_KIND_TYPE_PARAMETER: u32 = 25;
 const INSERT_TEXT_FORMAT_SNIPPET: u32 = 2;
 
 const MAX_DEFERRED_COUNT_COMPLETIONS: usize = 128;
+const COMPLETION_PLACEHOLDER: &str = "__lsp_completion_placeholder";
 
 #[derive(Debug, Clone, Copy)]
 struct BufferBuiltinMethod {
@@ -3431,7 +3432,7 @@ fn prefix_match_case_rank(label: &str, prefix: &str) -> Option<u8> {
 }
 
 fn is_generated_completion_label(label: &str) -> bool {
-    label.starts_with("__onda")
+    label.starts_with("__onda") || label == COMPLETION_PLACEHOLDER
 }
 
 fn completion_order_key(
@@ -3803,10 +3804,13 @@ fn source_with_current_line_placeholder(source: &str, offset: usize) -> String {
     let mut sanitized = String::with_capacity(source.len());
     sanitized.push_str(&source[..line_start]);
     if indent.is_empty() {
-        sanitized.push_str("const __lsp_completion_placeholder = 0\n");
+        sanitized.push_str("const ");
+        sanitized.push_str(COMPLETION_PLACEHOLDER);
+        sanitized.push_str(" = 0\n");
     } else {
         sanitized.push_str(&indent);
-        sanitized.push_str("__lsp_completion_placeholder = 0.0\n");
+        sanitized.push_str(COMPLETION_PLACEHOLDER);
+        sanitized.push_str(" = 0.0\n");
     }
     if line_end < source.len() {
         sanitized.push_str(&source[line_end + 1..]);
@@ -4065,6 +4069,13 @@ fn normalize_file_key(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_completion_labels_include_lsp_placeholder() {
+        assert!(is_generated_completion_label("__onda_internal"));
+        assert!(is_generated_completion_label(COMPLETION_PLACEHOLDER));
+        assert!(!is_generated_completion_label("visible"));
+    }
 
     fn position_at(source: &str, needle: &str, token_offset: usize) -> CompletionPosition {
         let byte = source
