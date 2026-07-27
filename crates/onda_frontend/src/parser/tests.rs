@@ -173,6 +173,43 @@ fn source_manifest_is_available_when_a_dependency_fails_to_parse() {
 }
 
 #[test]
+fn source_manifest_tracks_unresolved_user_source_candidates_separately() {
+    let dir = mk_temp_dir("source_manifest_unresolved");
+    let main = dir.join("main.onda");
+    write_file(&main, "import missing/module\n");
+
+    let error = load_program_file(&main).expect_err("missing import should fail");
+    assert_eq!(
+        error.sources.files,
+        vec![fs::canonicalize(&main).expect("canonical entry")]
+    );
+    assert_eq!(
+        error.sources.unresolved_files,
+        vec![
+            dir.join("missing/module.onda"),
+            dir.join("missing/module.on"),
+        ]
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn source_manifest_reports_the_exact_unresolved_include_candidate() {
+    let dir = mk_temp_dir("source_manifest_unresolved_include");
+    let main = dir.join("main.onda");
+    write_file(&main, "include \"missing/shared.onda\"\n");
+
+    let error = load_program_file(&main).expect_err("missing include should fail");
+    assert_eq!(
+        error.sources.unresolved_files,
+        vec![dir.join("missing/shared.onda")]
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn virtual_source_manifest_uses_normalized_project_paths() {
     let root = PathBuf::from("project");
     let sources = std::collections::HashMap::from([

@@ -54,6 +54,7 @@ globalThis.addEventListener("message", async (event) => {
         stack: error?.stack,
         diagnostics: error?.diagnostics,
         sourceFiles: error?.sourceFiles,
+        unresolvedSourceFiles: error?.unresolvedSourceFiles,
       },
     });
   }

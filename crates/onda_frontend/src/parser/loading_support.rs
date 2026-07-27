@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::diagnostics::Diagnostic;
@@ -7,7 +6,7 @@ use crate::diagnostics::Diagnostic;
 use super::preprocess::split_comment;
 use super::STDLIB_MODULE_PREFIX;
 
-const ONDA_SOURCE_EXTENSIONS: &[&str] = &["onda", "on"];
+pub(super) const ONDA_SOURCE_EXTENSIONS: &[&str] = &["onda", "on"];
 
 const BUILTIN_STD_MODULES: &[(&str, &str)] = &[
     ("std/math", include_str!("../../../../stdlib/std/math.onda")),
@@ -187,50 +186,6 @@ pub(super) fn split_top_level_items(
         });
     }
     Ok(items)
-}
-
-pub(super) fn resolve_include_path(
-    current_file: &Path,
-    include_path: &str,
-) -> Result<PathBuf, String> {
-    let include = PathBuf::from(include_path);
-    let resolved = if include.is_absolute() {
-        include
-    } else {
-        current_file
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(include)
-    };
-    fs::canonicalize(&resolved)
-        .map_err(|err| format!("failed to resolve include '{}': {err}", resolved.display()))
-}
-
-pub(super) fn resolve_import_path(
-    current_file: &Path,
-    module_path: &str,
-) -> Result<PathBuf, String> {
-    let base = if Path::new(module_path).is_absolute() {
-        PathBuf::from(module_path)
-    } else {
-        current_file
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(module_path)
-    };
-
-    for ext in ONDA_SOURCE_EXTENSIONS {
-        let candidate = base.with_extension(ext);
-        if let Ok(canonical) = fs::canonicalize(&candidate) {
-            return Ok(canonical);
-        }
-    }
-
-    Err(format!(
-        "failed to resolve import '{}.{{{}}}'",
-        base.display(),
-        ONDA_SOURCE_EXTENSIONS.join(",")
-    ))
 }
 
 pub(super) fn validate_file_mode_transition(

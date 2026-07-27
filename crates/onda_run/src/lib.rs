@@ -119,9 +119,21 @@ pub fn available_audio_devices() -> (Vec<String>, Vec<String>) {
 
 #[derive(Debug)]
 enum ControllerEvent {
-    ChildReady(ReadyEvent),
-    TcpResponse(String),
-    FilesChanged(Vec<PathBuf>),
+    ChildReady { generation: u64, ready: ReadyEvent },
+    TcpResponse { generation: u64, line: String },
+    SourcesMayHaveChanged,
+}
+
+impl ControllerEvent {
+    fn is_current_for(&self, child_generation: u64) -> bool {
+        let event_generation = match self {
+            Self::ChildReady { generation, .. } | Self::TcpResponse { generation, .. } => {
+                Some(*generation)
+            }
+            Self::SourcesMayHaveChanged => None,
+        };
+        event_generation.is_none_or(|generation| generation == child_generation)
+    }
 }
 
 #[derive(Debug)]
@@ -173,6 +185,7 @@ pub struct RunController {
     events_tx: Sender<ControllerEvent>,
     bridge: IpcBridge,
     child: ChildSession,
+    child_generation: u64,
     _watcher: Option<FileWatcher>,
     watched_sources: Vec<PathBuf>,
     preserved_params: Vec<(String, Value)>,
@@ -183,8 +196,7 @@ pub struct RunController {
     scope_polling_active: bool,
     scope_polling_in_flight: bool,
     last_scope_poll: Instant,
-    compiled_source: Option<Vec<u8>>,
-    pending_source: Option<Vec<u8>>,
+    source_compilation: SourceCompilationState,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -200,11 +212,12 @@ impl RunController {
         let (events_tx, events_rx) = mpsc::channel();
         let bridge = IpcBridge::new();
         let state = RunState::new(&onda_path, &options);
-        let pending_source = fs::read(&onda_path).ok();
-        let child = ChildSession::spawn(&onda_path, &options, events_tx.clone())
-            .map_err(|e| format!("failed to start run subprocess: {e}"))?;
-        let watched_sources = source_watch_paths(&onda_path, &[]);
+        let pending_sources = source_snapshot(&onda_path, &[]);
+        let watched_sources = pending_sources.paths();
         let watcher = start_source_watcher(&watched_sources, events_tx.clone());
+        let child_generation = 1;
+        let child = ChildSession::spawn(&onda_path, &options, child_generation, events_tx.clone())
+            .map_err(|e| format!("failed to start run subprocess: {e}"))?;
 
         let mut controller = Self {
             onda_path,
@@ -214,6 +227,7 @@ impl RunController {
             events_tx,
             bridge,
             child,
+            child_generation,
             _watcher: watcher,
             watched_sources,
             preserved_params: Vec::new(),
@@ -224,8 +238,7 @@ impl RunController {
             scope_polling_active: false,
             scope_polling_in_flight: false,
             last_scope_poll: Instant::now(),
-            compiled_source: None,
-            pending_source,
+            source_compilation: SourceCompilationState::Compiling(pending_sources),
         };
         controller.state.running = true;
         controller.state.status = "Starting...".to_owned();
@@ -259,24 +272,33 @@ impl RunController {
         }
 
         while let Ok(event) = self.events_rx.try_recv() {
+            if !event.is_current_for(self.child_generation) {
+                continue;
+            }
             match event {
-                ControllerEvent::ChildReady(ready) => {
+                ControllerEvent::ChildReady { ready, .. } => {
                     self.handle_child_ready(ready);
                     result.state_changed = true;
                 }
-                ControllerEvent::TcpResponse(line) => {
+                ControllerEvent::TcpResponse { line, .. } => {
                     let response = self.handle_tcp_response(&line);
                     result.state_changed |= response.state_changed;
                     result.scope_changed |= response.scope_changed;
                 }
-                ControllerEvent::FilesChanged(paths) => {
-                    if self.sources_require_recompile(&paths) {
-                        if self.processing_requested {
-                            let _ = self.restart_with_status("Restarting...");
-                        } else {
-                            self.invalidate_compiled_child();
-                        }
+                ControllerEvent::SourcesMayHaveChanged => {
+                    if self.sources_require_recompile() {
+                        self.recompile_after_source_change();
                         result.state_changed = true;
+                    } else if self.watched_sources.iter().any(|path| !path.exists()) {
+                        // A parent of an unresolved nested candidate may have
+                        // just appeared. Retarget the watch as the path becomes
+                        // reachable without recompiling for directory-only
+                        // changes.
+                        let refreshed = self.refresh_source_watcher();
+                        if !self.source_compilation.matches(&refreshed) {
+                            self.recompile_after_source_change();
+                            result.state_changed = true;
+                        }
                     }
                 }
             }
@@ -324,9 +346,10 @@ impl RunController {
         if self.state.connected && self.child.is_active() {
             let _ = self.bridge.send_command("pause", &json!({}));
         } else {
+            self.advance_child_generation();
             self.child.kill();
             self.bridge.disconnect();
-            self.pending_source = None;
+            self.source_compilation = SourceCompilationState::None;
         }
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
@@ -449,9 +472,11 @@ impl RunController {
     }
 
     fn restart_with_status(&mut self, status: &str) -> Result<(), String> {
-        self.refresh_source_watcher();
+        let pending_sources = self.refresh_source_watcher();
+        self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
+        self.source_compilation = SourceCompilationState::None;
         self.pending_commands.clear();
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
@@ -463,15 +488,20 @@ impl RunController {
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
 
-        self.pending_source = fs::read(&self.onda_path).ok();
-        match ChildSession::spawn(&self.onda_path, &self.options, self.events_tx.clone()) {
+        match ChildSession::spawn(
+            &self.onda_path,
+            &self.options,
+            self.child_generation,
+            self.events_tx.clone(),
+        ) {
             Ok(child) => {
                 self.child = child;
+                self.source_compilation = SourceCompilationState::Compiling(pending_sources);
                 self.state.running = true;
                 Ok(())
             }
             Err(e) => {
-                self.pending_source = None;
+                self.source_compilation = SourceCompilationState::Failed(pending_sources);
                 self.state.status = "Failed to start".to_owned();
                 self.state.error = Some(e.clone());
                 Err(e)
@@ -482,28 +512,30 @@ impl RunController {
     fn can_reuse_compiled_child(&self) -> bool {
         self.bridge.is_connected()
             && self.child.is_active()
-            && self.compiled_source.is_some()
-            && self.compiled_source == fs::read(&self.onda_path).ok()
+            && self.source_compilation.ready().is_some_and(|compiled| {
+                *compiled == source_snapshot(&self.onda_path, &self.watched_sources)
+            })
     }
 
-    fn sources_require_recompile(&self, changed_paths: &[PathBuf]) -> bool {
-        if changed_paths.iter().any(|path| path != &self.onda_path) {
-            return true;
+    fn sources_require_recompile(&self) -> bool {
+        let current = source_snapshot(&self.onda_path, &self.watched_sources);
+        !self.source_compilation.matches(&current)
+    }
+
+    fn recompile_after_source_change(&mut self) {
+        if self.processing_requested {
+            let _ = self.restart_with_status("Restarting...");
+        } else {
+            self.invalidate_compiled_child();
         }
-        let current = fs::read(&self.onda_path).ok();
-        source_differs_from_cached(
-            current.as_deref(),
-            self.compiled_source.as_deref(),
-            self.pending_source.as_deref(),
-        )
     }
 
     fn invalidate_compiled_child(&mut self) {
+        self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
         self.pending_commands.clear();
-        self.compiled_source = None;
-        self.pending_source = None;
+        self.source_compilation = SourceCompilationState::None;
         self.state.connected = false;
         self.state.status = "Stopped".to_owned();
         self.state.error = None;
@@ -512,14 +544,23 @@ impl RunController {
     }
 
     fn handle_child_ready(&mut self, ready: ReadyEvent) {
-        self.refresh_source_watcher();
-        self.compiled_source = self
-            .pending_source
-            .take()
-            .or_else(|| fs::read(&self.onda_path).ok());
+        let current_sources = source_snapshot(&self.onda_path, &self.watched_sources);
+        if !matches!(
+            &self.source_compilation,
+            SourceCompilationState::Compiling(pending) if pending == &current_sources
+        ) {
+            let _ = self.restart_with_status("Restarting...");
+            return;
+        }
+        let SourceCompilationState::Compiling(compiled_sources) =
+            std::mem::take(&mut self.source_compilation)
+        else {
+            unreachable!("matching source compilation must be pending");
+        };
+        self.source_compilation = SourceCompilationState::Ready(compiled_sources);
         let bridge_error = self
             .bridge
-            .connect(ready.port, self.events_tx.clone())
+            .connect(ready.port, self.child_generation, self.events_tx.clone())
             .err();
 
         reconcile_preserved_params(
@@ -574,9 +615,18 @@ impl RunController {
         self.last_scope_poll = Instant::now();
     }
 
-    fn refresh_source_watcher(&mut self) {
-        self.watched_sources = source_watch_paths(&self.onda_path, &self.watched_sources);
+    fn refresh_source_watcher(&mut self) -> SourceSnapshot {
+        let snapshot = source_snapshot(&self.onda_path, &self.watched_sources);
+        self.watched_sources = snapshot.paths();
         self._watcher = start_source_watcher(&self.watched_sources, self.events_tx.clone());
+        snapshot
+    }
+
+    fn advance_child_generation(&mut self) {
+        self.child_generation = self
+            .child_generation
+            .checked_add(1)
+            .expect("run child generation exhausted");
     }
 
     fn handle_child_exited(&mut self, code: Option<i32>, error: Option<String>) {
@@ -584,6 +634,7 @@ impl RunController {
         self.scope_polling_in_flight = false;
         self.bridge.disconnect();
         self.pending_commands.clear();
+        self.source_compilation.mark_failed();
         self.state.running = false;
         self.state.connected = false;
         self.state.status = "Runtime error".to_owned();
@@ -681,14 +732,6 @@ impl RunController {
             self.scope_polling_in_flight = false;
         }
     }
-}
-
-fn source_differs_from_cached(
-    current: Option<&[u8]>,
-    compiled: Option<&[u8]>,
-    pending: Option<&[u8]>,
-) -> bool {
-    current != compiled && pending.is_none_or(|pending| current != Some(pending))
 }
 
 impl Drop for RunController {
@@ -800,6 +843,7 @@ impl ChildSession {
     fn spawn(
         onda_path: &Path,
         options: &RunHostOptions,
+        generation: u64,
         event_tx: Sender<ControllerEvent>,
     ) -> Result<Self, String> {
         let mut cmd = Command::new(&options.onda_bin);
@@ -894,7 +938,7 @@ impl ChildSession {
                             current_input_device: raw.current_input_device,
                             current_output_device: raw.current_output_device,
                         };
-                        let _ = event_tx.send(ControllerEvent::ChildReady(ready));
+                        let _ = event_tx.send(ControllerEvent::ChildReady { generation, ready });
                         continue;
                     }
                 }
@@ -978,7 +1022,12 @@ impl IpcBridge {
         }
     }
 
-    fn connect(&self, port: u16, event_tx: Sender<ControllerEvent>) -> Result<(), String> {
+    fn connect(
+        &self,
+        port: u16,
+        generation: u64,
+        event_tx: Sender<ControllerEvent>,
+    ) -> Result<(), String> {
         self.disconnect();
 
         let stream = TcpStream::connect(("127.0.0.1", port))
@@ -998,7 +1047,10 @@ impl IpcBridge {
                     Ok(line) => {
                         let trimmed = line.trim().to_owned();
                         if !trimmed.is_empty() {
-                            let _ = event_tx.send(ControllerEvent::TcpResponse(trimmed));
+                            let _ = event_tx.send(ControllerEvent::TcpResponse {
+                                generation,
+                                line: trimmed,
+                            });
                         }
                     }
                     Err(_) => break,
@@ -1073,43 +1125,49 @@ impl FileWatcher {
         if paths.is_empty() {
             return None;
         }
+        let mut watch_roots = HashMap::<PathBuf, notify::RecursiveMode>::new();
+        for path in paths {
+            let (root, mode) = source_watch_root(path);
+            watch_roots
+                .entry(root)
+                .and_modify(|existing| {
+                    if mode == notify::RecursiveMode::Recursive {
+                        *existing = mode;
+                    }
+                })
+                .or_insert(mode);
+        }
+        Self::watch_roots(watch_roots, on_change)
+    }
+
+    fn watch_roots(
+        watch_roots: HashMap<PathBuf, notify::RecursiveMode>,
+        on_change: impl Fn(Vec<PathBuf>) + Send + 'static,
+    ) -> Option<Self> {
         let (tx, rx) = mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_millis(200), tx).ok()?;
-        let mut watch_roots = std::collections::HashSet::new();
-        for path in paths {
-            let watch_root = path.parent().unwrap_or_else(|| Path::new("."));
-            if watch_roots.insert(watch_root.to_path_buf()) {
-                debouncer
-                    .watcher()
-                    .watch(watch_root, notify::RecursiveMode::NonRecursive)
-                    .ok()?;
-            }
+        let mut registered_root = false;
+        for (root, mode) in watch_roots {
+            registered_root |= debouncer.watcher().watch(&root, mode).is_ok();
         }
-        let mut watched = paths
-            .iter()
-            .cloned()
-            .map(|path| {
-                let stamp = file_stamp(&path);
-                (path, stamp)
-            })
-            .collect::<Vec<_>>();
+        if !registered_root {
+            return None;
+        }
 
         thread::spawn(move || {
             while let Ok(Ok(events)) = rx.recv() {
-                if !events
-                    .iter()
-                    .any(|event| event.kind == DebouncedEventKind::Any)
-                {
-                    continue;
-                }
-                let mut changed = Vec::new();
-                for (path, last_stamp) in &mut watched {
-                    let next_stamp = file_stamp(path);
-                    if next_stamp != *last_stamp {
-                        *last_stamp = next_stamp;
-                        changed.push(path.clone());
-                    }
-                }
+                let mut changed = events
+                    .into_iter()
+                    .filter(|event| {
+                        matches!(
+                            event.kind,
+                            DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous
+                        )
+                    })
+                    .map(|event| event.path)
+                    .collect::<Vec<_>>();
+                changed.sort();
+                changed.dedup();
                 if !changed.is_empty() {
                     on_change(changed);
                 }
@@ -1122,54 +1180,132 @@ impl FileWatcher {
     }
 }
 
-fn source_watch_paths(entry: &Path, previous: &[PathBuf]) -> Vec<PathBuf> {
-    let loaded = load_program_file(entry);
-    let (mut paths, succeeded) = match loaded {
-        Ok(loaded) => (loaded.sources.files, true),
-        Err(error) => (error.sources.files, false),
+fn source_watch_root(path: &Path) -> (PathBuf, notify::RecursiveMode) {
+    let desired = path.parent().unwrap_or_else(|| Path::new("."));
+    if desired.is_dir() {
+        return (desired.to_path_buf(), notify::RecursiveMode::NonRecursive);
+    }
+
+    let mut existing = desired;
+    while !existing.is_dir() {
+        let Some(parent) = existing.parent() else {
+            return (PathBuf::from("."), notify::RecursiveMode::Recursive);
+        };
+        existing = parent;
+    }
+    let mode = if existing.parent().is_some() {
+        notify::RecursiveMode::Recursive
+    } else {
+        // Never recursively subscribe to an entire filesystem while waiting
+        // for the first component of an absolute include path.
+        notify::RecursiveMode::NonRecursive
     };
+    (existing.to_path_buf(), mode)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceSnapshot {
+    load_succeeded: bool,
+    sources: Vec<SourceFileSnapshot>,
+}
+
+impl SourceSnapshot {
+    fn paths(&self) -> Vec<PathBuf> {
+        self.sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceFileSnapshot {
+    path: PathBuf,
+    contents: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum SourceCompilationState {
+    #[default]
+    None,
+    Compiling(SourceSnapshot),
+    Ready(SourceSnapshot),
+    Failed(SourceSnapshot),
+}
+
+impl SourceCompilationState {
+    fn snapshot(&self) -> Option<&SourceSnapshot> {
+        match self {
+            Self::None => None,
+            Self::Compiling(snapshot) | Self::Ready(snapshot) | Self::Failed(snapshot) => {
+                Some(snapshot)
+            }
+        }
+    }
+
+    fn ready(&self) -> Option<&SourceSnapshot> {
+        match self {
+            Self::Ready(snapshot) => Some(snapshot),
+            Self::None | Self::Compiling(_) | Self::Failed(_) => None,
+        }
+    }
+
+    fn matches(&self, snapshot: &SourceSnapshot) -> bool {
+        self.snapshot() == Some(snapshot)
+    }
+
+    fn mark_failed(&mut self) {
+        let previous = std::mem::take(self);
+        *self = match previous {
+            Self::None => Self::None,
+            Self::Compiling(snapshot) | Self::Ready(snapshot) | Self::Failed(snapshot) => {
+                Self::Failed(snapshot)
+            }
+        };
+    }
+}
+
+fn source_snapshot(entry: &Path, previous: &[PathBuf]) -> SourceSnapshot {
+    let loaded = load_program_file(entry);
+    let (manifest, load_succeeded) = match loaded {
+        Ok(loaded) => (loaded.sources, true),
+        Err(error) => (error.sources, false),
+    };
+    let mut paths = manifest.files;
     if !paths.iter().any(|path| path == entry) {
         paths.insert(0, entry.to_path_buf());
     }
-    if !succeeded {
+    for path in manifest.unresolved_files {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    if !load_succeeded {
         for path in previous {
             if !paths.contains(path) {
                 paths.push(path.clone());
             }
         }
     }
-    paths
+    SourceSnapshot {
+        load_succeeded,
+        sources: paths
+            .into_iter()
+            .map(|path| SourceFileSnapshot {
+                contents: fs::read(&path).ok(),
+                path,
+            })
+            .collect(),
+    }
 }
 
 fn start_source_watcher(
     paths: &[PathBuf],
     events_tx: Sender<ControllerEvent>,
 ) -> Option<FileWatcher> {
-    FileWatcher::watch(paths, move |paths| {
-        let _ = events_tx.send(ControllerEvent::FilesChanged(paths));
+    FileWatcher::watch(paths, move |_| {
+        let _ = events_tx.send(ControllerEvent::SourcesMayHaveChanged);
     })
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FileStamp {
-    exists: bool,
-    len: u64,
-    modified: Option<std::time::SystemTime>,
-}
-
-fn file_stamp(path: &Path) -> FileStamp {
-    match fs::metadata(path) {
-        Ok(metadata) => FileStamp {
-            exists: true,
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-        },
-        Err(_) => FileStamp {
-            exists: false,
-            len: 0,
-            modified: None,
-        },
-    }
 }
 
 fn list_input_devices() -> Vec<String> {
@@ -1444,10 +1580,11 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::{
         events_are_compatible_for_preservation, params_are_compatible_for_preservation,
-        reconcile_preserved_events, reconcile_preserved_params, source_differs_from_cached,
-        source_watch_paths, FileWatcher, RunHostOptions,
+        reconcile_preserved_events, reconcile_preserved_params, source_snapshot, ControllerEvent,
+        FileWatcher, RunHostOptions, SourceCompilationState,
     };
     use serde_json::{json, Value};
+    use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
     use std::sync::mpsc;
@@ -1456,6 +1593,17 @@ mod tests {
     #[test]
     fn realtime_host_defaults_to_256_frame_blocks() {
         assert_eq!(RunHostOptions::default().block_frames, 256);
+    }
+
+    #[test]
+    fn child_event_generation_filter_rejects_stale_events() {
+        let event = ControllerEvent::TcpResponse {
+            generation: 41,
+            line: String::new(),
+        };
+        assert!(event.is_current_for(41));
+        assert!(!event.is_current_for(42));
+        assert!(ControllerEvent::SourcesMayHaveChanged.is_current_for(42));
     }
 
     #[test]
@@ -1511,17 +1659,41 @@ mod tests {
         .expect("watcher should start");
 
         replace_file(&dependency, "const value = 22.0\n");
-        assert_eq!(
+        assert!(
             rx.recv_timeout(Duration::from_secs(5))
-                .expect("dependency replace should trigger"),
-            vec![dependency]
+                .expect("dependency replace should trigger")
+                .contains(&dependency),
+            "dependency event should include the replaced path"
         );
 
         let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
-    fn source_watch_paths_replace_on_success_and_union_on_failure() {
+    fn file_watcher_keeps_valid_roots_when_another_root_cannot_be_watched() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_partial_watch_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let missing_root = temp_root.join("missing");
+        let roots = HashMap::from([
+            (temp_root.clone(), notify::RecursiveMode::NonRecursive),
+            (missing_root, notify::RecursiveMode::NonRecursive),
+        ]);
+
+        let watcher = FileWatcher::watch_roots(roots, |_| {})
+            .expect("one invalid root must not disable a valid watch root");
+
+        drop(watcher);
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn source_snapshot_replaces_on_success_and_unions_on_failure() {
         let temp_root = std::env::temp_dir().join(format!(
             "onda_run_source_manifest_test_{}",
             SystemTime::now()
@@ -1537,23 +1709,94 @@ mod tests {
         let entry = fs::canonicalize(entry).expect("canonical entry");
         let dependency = fs::canonicalize(dependency).expect("canonical dependency");
 
-        let initial = source_watch_paths(&entry, &[]);
-        assert_eq!(initial, vec![entry.clone(), dependency.clone()]);
+        let initial = source_snapshot(&entry, &[]);
+        assert_eq!(initial.paths(), vec![entry.clone(), dependency.clone()]);
 
         fs::write(&entry, "this is not valid onda\nimport dependency\n").expect("break entry");
-        let failed = source_watch_paths(&entry, &initial);
+        let failed = source_snapshot(&entry, &initial.paths());
         assert_eq!(
-            failed, initial,
+            failed.paths(),
+            initial.paths(),
             "failed loads should retain previous sources"
         );
 
         fs::write(&entry, "outs 1\nsample:\n  out1 = 0.0\n").expect("remove dependency");
-        let recovered = source_watch_paths(&entry, &failed);
+        let recovered = source_snapshot(&entry, &failed.paths());
         assert_eq!(
-            recovered,
+            recovered.paths(),
             vec![entry.clone()],
             "successful loads should replace the watch set"
         );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn source_snapshot_detects_dependency_changes_during_compilation() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_compile_generation_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let dependency = temp_root.join("dependency.onda");
+        fs::write(&entry, "import dependency\n").expect("write entry");
+        fs::write(&dependency, "const value = 1.0\n").expect("write dependency");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+
+        let launched = source_snapshot(&entry, &[]);
+        fs::write(&dependency, "const value = 2.0\n").expect("change dependency");
+        let ready = source_snapshot(&entry, &launched.paths());
+
+        assert_ne!(
+            ready, launched,
+            "a child compiled from the launched snapshot must not be accepted"
+        );
+        assert!(!SourceCompilationState::Compiling(launched).matches(&ready));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn missing_nested_dependency_creation_invalidates_the_snapshot() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_missing_dependency_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let dependency = temp_root.join("dsp/filter.onda");
+        fs::write(&entry, "import dsp/filter\n").expect("write entry");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+
+        let failed = source_snapshot(&entry, &[]);
+        assert!(!failed.load_succeeded);
+        assert!(
+            failed.paths().contains(&dependency),
+            "the unresolved .onda candidate should be watched"
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let _watcher = FileWatcher::watch(&failed.paths(), move |paths| {
+            let _ = tx.send(paths);
+        })
+        .expect("watcher should start");
+
+        fs::create_dir_all(dependency.parent().expect("dependency parent"))
+            .expect("create dependency directory");
+        fs::write(&dependency, "const value = 1.0\n").expect("create dependency");
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("nested dependency creation should trigger a rescan");
+
+        let recovered = source_snapshot(&entry, &failed.paths());
+        assert!(recovered.load_succeeded);
+        assert!(!SourceCompilationState::Compiling(failed).matches(&recovered));
 
         let _ = fs::remove_dir_all(temp_root);
     }
@@ -1583,23 +1826,50 @@ mod tests {
     }
 
     #[test]
-    fn source_cache_only_invalidates_for_different_contents() {
-        assert!(!source_differs_from_cached(
-            Some(b"same"),
-            Some(b"same"),
-            None,
+    fn source_compilation_state_tracks_only_the_current_child() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_source_cache_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
         ));
-        assert!(!source_differs_from_cached(
-            Some(b"pending"),
-            Some(b"old"),
-            Some(b"pending"),
-        ));
-        assert!(source_differs_from_cached(
-            Some(b"changed"),
-            Some(b"old"),
-            None,
-        ));
-        assert!(source_differs_from_cached(None, Some(b"old"), None));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        fs::write(&entry, "sample:\n  out1 = 0.0\n").expect("write entry");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+
+        let compiled = source_snapshot(&entry, &[]);
+        let mut state = SourceCompilationState::Ready(compiled.clone());
+        assert!(state.matches(&compiled));
+
+        fs::write(&entry, "sample:\n  out1 = 1.0\n").expect("change entry");
+        let pending = source_snapshot(&entry, &compiled.paths());
+        state = SourceCompilationState::Compiling(pending.clone());
+        assert!(state.matches(&pending));
+        assert!(
+            !state.matches(&compiled),
+            "starting a new child must forget the source state of the killed child"
+        );
+        state.mark_failed();
+        assert!(
+            state.matches(&pending),
+            "a failed child must retain its source baseline"
+        );
+        assert!(
+            state.ready().is_none(),
+            "a failed child must never be reused"
+        );
+
+        fs::write(&entry, "sample:\n  out1 = 0.0\n").expect("revert entry");
+        let reverted = source_snapshot(&entry, &pending.paths());
+        assert_eq!(reverted, compiled);
+        assert!(
+            !state.matches(&reverted),
+            "reverting must replace the in-flight child after the old child was killed"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]

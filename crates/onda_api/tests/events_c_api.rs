@@ -123,6 +123,18 @@ unsafe fn manifest_paths(manifest: *const onda_source_manifest) -> Vec<PathBuf> 
         .collect()
 }
 
+unsafe fn manifest_unresolved_paths(manifest: *const onda_source_manifest) -> Vec<PathBuf> {
+    (0..onda_source_manifest_unresolved_count(manifest))
+        .map(|index| {
+            PathBuf::from(
+                CStr::from_ptr(onda_source_manifest_unresolved_path(manifest, index))
+                    .to_str()
+                    .expect("unresolved source path should be UTF-8"),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn c_file_compile_returns_source_manifest_on_success_and_failure() {
     unsafe {
@@ -163,6 +175,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
                 fs::canonicalize(&dependency).expect("canonical dependency"),
             ]
         );
+        assert!(manifest_unresolved_paths(manifest.0).is_empty());
 
         fs::write(&dependency, "this is not valid onda\n").expect("break dependency");
         let mut failed_manifest = std::ptr::null_mut();
@@ -174,6 +187,24 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
             vec![
                 fs::canonicalize(&main).expect("canonical entry"),
                 fs::canonicalize(&dependency).expect("canonical dependency"),
+            ]
+        );
+        assert!(manifest_unresolved_paths(failed_manifest.0).is_empty());
+
+        fs::write(&main, "import missing/module\n").expect("write missing import");
+        let mut unresolved_manifest = std::ptr::null_mut();
+        let unresolved =
+            onda_compile_file(path.as_ptr(), &options, &mut unresolved_manifest, &mut diag);
+        assert!(
+            unresolved.is_null(),
+            "missing dependency unexpectedly compiled"
+        );
+        let unresolved_manifest = SourceManifestHandle(unresolved_manifest);
+        assert_eq!(
+            manifest_unresolved_paths(unresolved_manifest.0),
+            vec![
+                dir.join("missing/module.onda"),
+                dir.join("missing/module.on"),
             ]
         );
 

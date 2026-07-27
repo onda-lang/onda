@@ -78,7 +78,8 @@ onda_program_t* onda_compile(
    Relative include/import resolution uses file_path_utf8 as the entry path.
    When out_sources is non-NULL, it receives an owned manifest on success or
    failure containing every non-stdlib source resolved before compilation
-   stopped. Destroy it with onda_source_manifest_destroy. */
+   stopped, plus unresolved candidates which a host may watch for creation.
+   Destroy it with onda_source_manifest_destroy. */
 onda_program_t* onda_compile_file(
   const char* file_path_utf8,
   const onda_compile_options_t* options,
@@ -90,6 +91,15 @@ int onda_source_manifest_count(const onda_source_manifest_t* manifest);
 /* Returns one absolute canonical UTF-8 source path, or NULL for an invalid index/handle.
    The pointer remains valid until onda_source_manifest_destroy. */
 const char* onda_source_manifest_path(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+/* Returns the number of referenced non-stdlib paths which did not resolve,
+   or -1 for an invalid handle. */
+int onda_source_manifest_unresolved_count(const onda_source_manifest_t* manifest);
+/* Returns one absolute normalized UTF-8 unresolved candidate path, or NULL for
+   an invalid index/handle. The pointer remains valid until manifest destruction. */
+const char* onda_source_manifest_unresolved_path(
   const onda_source_manifest_t* manifest,
   int index
 );

@@ -11,7 +11,9 @@ use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredEventParam,
     DeclaredState, JitProgram, MirCompileOptions, RuntimeAllocator, TargetOptLevel,
 };
-use onda_frontend::{load_program_file, parse_program, DiagCode, Diagnostic, PrimitiveType};
+use onda_frontend::{
+    load_program_file, parse_program, DiagCode, Diagnostic, PrimitiveType, SourceManifest,
+};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
     prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
@@ -100,6 +102,7 @@ pub struct onda_program {
 #[allow(non_camel_case_types)]
 pub struct onda_source_manifest {
     paths: Vec<CString>,
+    unresolved_paths: Vec<CString>,
 }
 
 #[allow(non_camel_case_types)]
@@ -144,24 +147,33 @@ fn build_nested_cstring_cache(
 
 unsafe fn write_source_manifest(
     out_manifest: *mut *mut onda_source_manifest,
-    paths: &[std::path::PathBuf],
+    manifest: &SourceManifest,
 ) -> Result<(), Diagnostic> {
     if out_manifest.is_null() {
         return Ok(());
     }
-    let paths = paths
-        .iter()
-        .map(|path| {
-            path.to_str().map(ToOwned::to_owned).ok_or_else(|| {
-                Diagnostic::internal(format!(
-                    "resolved source path '{}' is not valid UTF-8",
-                    path.display()
-                ))
+    fn path_strings(paths: &[std::path::PathBuf]) -> Result<Vec<String>, Diagnostic> {
+        paths
+            .iter()
+            .map(|path| {
+                path.to_str().map(ToOwned::to_owned).ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "source path '{}' is not valid UTF-8",
+                        path.display()
+                    ))
+                })
             })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let paths = build_cstring_cache(paths, "source path")?;
-    *out_manifest = Box::into_raw(Box::new(onda_source_manifest { paths }));
+            .collect()
+    }
+    let paths = build_cstring_cache(path_strings(&manifest.files)?, "source path")?;
+    let unresolved_paths = build_cstring_cache(
+        path_strings(&manifest.unresolved_files)?,
+        "unresolved source path",
+    )?;
+    *out_manifest = Box::into_raw(Box::new(onda_source_manifest {
+        paths,
+        unresolved_paths,
+    }));
     Ok(())
 }
 
@@ -721,7 +733,7 @@ unsafe fn onda_compile_file_impl(
     let loaded = match load_program_file(std::path::Path::new(path_str)) {
         Ok(loaded) => loaded,
         Err(error) => {
-            if let Err(diag) = write_source_manifest(out_sources, &error.sources.files) {
+            if let Err(diag) = write_source_manifest(out_sources, &error.sources) {
                 write_diag(out_diag, diag_to_c(&diag));
                 return ptr::null_mut();
             }
@@ -734,7 +746,7 @@ unsafe fn onda_compile_file_impl(
             return ptr::null_mut();
         }
     };
-    if let Err(diag) = write_source_manifest(out_sources, &loaded.sources.files) {
+    if let Err(diag) = write_source_manifest(out_sources, &loaded.sources) {
         write_diag(out_diag, diag_to_c(&diag));
         return ptr::null_mut();
     }
@@ -995,6 +1007,31 @@ pub unsafe extern "C" fn onda_source_manifest_path(
     let manifest = &*manifest;
     manifest
         .paths
+        .get(index as usize)
+        .map_or(ptr::null(), |path| path.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_unresolved_count(
+    manifest: *const onda_source_manifest,
+) -> i32 {
+    if manifest.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*manifest).unresolved_paths.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_unresolved_path(
+    manifest: *const onda_source_manifest,
+    index: i32,
+) -> *const c_char {
+    if manifest.is_null() || index < 0 {
+        return ptr::null();
+    }
+    let manifest = &*manifest;
+    manifest
+        .unresolved_paths
         .get(index as usize)
         .map_or(ptr::null(), |path| path.as_ptr())
 }

@@ -1014,8 +1014,13 @@ impl LspServer {
         };
         if !succeeded {
             for path in previous_sources.files {
-                if !sources.files.contains(&path) {
+                if !sources.files.contains(&path) && !sources.unresolved_files.contains(&path) {
                     sources.files.push(path);
+                }
+            }
+            for path in previous_sources.unresolved_files {
+                if !sources.files.contains(&path) && !sources.unresolved_files.contains(&path) {
+                    sources.unresolved_files.push(path);
                 }
             }
         }
@@ -1625,25 +1630,31 @@ impl DependencyFingerprintCache {
     ) -> DocumentFingerprint {
         let mut dependency_hasher = DefaultHasher::new();
         let entry = normalize_path(path);
-        for dependency in &manifest.files {
-            let dependency = normalize_path(dependency);
-            if dependency == entry {
-                continue;
-            }
-            dependency.hash(&mut dependency_hasher);
-            if let Some(overlay_source) = overlay_source_for_path(&dependency, overlays) {
-                "overlay".hash(&mut dependency_hasher);
-                overlay_source.hash(&mut dependency_hasher);
-                continue;
-            }
-            match self.disk_file_summary(&dependency) {
-                Ok(summary) => {
-                    "disk".hash(&mut dependency_hasher);
-                    summary.source_hash.hash(&mut dependency_hasher);
+        for (kind, dependencies) in [
+            ("resolved", manifest.files.as_slice()),
+            ("unresolved", manifest.unresolved_files.as_slice()),
+        ] {
+            kind.hash(&mut dependency_hasher);
+            for dependency in dependencies {
+                let dependency = normalize_path(dependency);
+                if dependency == entry {
+                    continue;
                 }
-                Err(kind) => {
-                    "missing".hash(&mut dependency_hasher);
-                    kind.hash(&mut dependency_hasher);
+                dependency.hash(&mut dependency_hasher);
+                if let Some(overlay_source) = overlay_source_for_path(&dependency, overlays) {
+                    "overlay".hash(&mut dependency_hasher);
+                    overlay_source.hash(&mut dependency_hasher);
+                    continue;
+                }
+                match self.disk_file_summary(&dependency) {
+                    Ok(summary) => {
+                        "disk".hash(&mut dependency_hasher);
+                        summary.source_hash.hash(&mut dependency_hasher);
+                    }
+                    Err(kind) => {
+                        "missing".hash(&mut dependency_hasher);
+                        kind.hash(&mut dependency_hasher);
+                    }
                 }
             }
         }
@@ -1672,21 +1683,23 @@ impl DependencyFingerprintCache {
         let target = normalize_path(target);
         let loaded = load_program_file_with_overlays(path, overlays);
         let (mut sources, succeeded) = match loaded {
-            Ok(loaded) => (loaded.sources.files, true),
-            Err(error) => (error.sources.files, false),
+            Ok(loaded) => (loaded.sources, true),
+            Err(error) => (error.sources, false),
         };
         if !succeeded {
             for source in previous_sources
                 .into_iter()
-                .flat_map(|sources| &sources.files)
+                .flat_map(|sources| sources.files.iter().chain(&sources.unresolved_files))
             {
-                if !sources.contains(source) {
-                    sources.push(source.clone());
+                if !sources.files.contains(source) && !sources.unresolved_files.contains(source) {
+                    sources.unresolved_files.push(source.clone());
                 }
             }
         }
         sources
+            .files
             .into_iter()
+            .chain(sources.unresolved_files)
             .map(|source| normalize_path(&source))
             .any(|source| source == target)
     }
@@ -2338,6 +2351,49 @@ sample:
         assert!(
             !new_labels.contains(&"Old".to_owned()),
             "completion should not use stale parse when changed text parses: {new_labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unresolved_dependency_creation_invalidates_the_parse_cache() {
+        let dir = mk_temp_dir("parse_cache_unresolved_dependency");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let source = "import lib\nsample:\n  out1 = target()\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let overlays = server.session.overlay_map();
+        let missing_fingerprint = server.document_fingerprint_for_path(&main, source, &overlays);
+        assert!(
+            server
+                .parse_cache
+                .get(&super::normalize_path(&main))
+                .is_some_and(|cached| cached.parsed.is_none()),
+            "the unresolved import should initially fail to parse"
+        );
+        assert!(
+            server
+                .dependency_fingerprint_cache
+                .source_depends_on_path(&main, source, &lib, &overlays, None,),
+            "an unresolved candidate must still count as a dependency"
+        );
+
+        write_file(&lib, "def target():\n  return 0.0\n");
+        let resolved_fingerprint = server.document_fingerprint_for_path(&main, source, &overlays);
+
+        assert_ne!(
+            resolved_fingerprint, missing_fingerprint,
+            "creating an unresolved dependency must invalidate the cached fingerprint"
+        );
+        assert!(
+            server
+                .parse_cache
+                .get(&super::normalize_path(&main))
+                .is_some_and(|cached| cached.parsed.is_some()),
+            "the importer should be reparsed after its dependency appears"
         );
 
         fs::remove_dir_all(&dir).ok();

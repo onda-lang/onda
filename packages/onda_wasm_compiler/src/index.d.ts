@@ -115,6 +115,8 @@ export class OndaCompilerError extends Error {
 export class OndaCompileError extends OndaCompilerError {
   readonly diagnostics: OndaCompilerDiagnostic[];
   readonly sourceFiles: string[];
+  /** Referenced non-stdlib source candidates which were not present. */
+  readonly unresolvedSourceFiles: string[];
 }
 
 export class OndaBinaryenError extends Error {}

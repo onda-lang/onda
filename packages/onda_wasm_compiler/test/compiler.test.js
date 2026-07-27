@@ -99,6 +99,7 @@ test("confines in-memory projects inside the browser virtual namespace", async (
         assert.equal(error instanceof OndaCompileError, true);
         assert.match(error.diagnostics[0].message, /escapes project root/);
         assert.deepEqual(error.sourceFiles, ["main.onda"]);
+        assert.deepEqual(error.unresolvedSourceFiles, []);
         return true;
       },
     );
@@ -135,6 +136,28 @@ test("returns contributing project sources with semantic failures", async () => 
       assert.equal(error instanceof OndaCompileError, true);
       assert.equal(error.diagnostics[0].stage, "semantic");
       assert.deepEqual(error.sourceFiles, ["main.onda", "dsp.onda"]);
+      assert.deepEqual(error.unresolvedSourceFiles, []);
+      return true;
+    },
+  );
+});
+
+test("returns unresolved project source candidates with parse failures", async () => {
+  const compiler = await createCompiler();
+  await assert.rejects(
+    compiler.compileProject({
+      entry: "main.onda",
+      sources: {
+        "main.onda": "import dsp/filter\n",
+      },
+    }),
+    (error) => {
+      assert.equal(error instanceof OndaCompileError, true);
+      assert.deepEqual(error.sourceFiles, ["main.onda"]);
+      assert.deepEqual(
+        error.unresolvedSourceFiles,
+        ["dsp/filter.onda", "dsp/filter.on"],
+      );
       return true;
     },
   );

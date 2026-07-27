@@ -46,7 +46,10 @@ export class OndaCompilerError extends Error {
 }
 
 export class OndaCompileError extends OndaCompilerError {
-  constructor(diagnostics, { cause, sourceFiles = [] } = {}) {
+  constructor(
+    diagnostics,
+    { cause, sourceFiles = [], unresolvedSourceFiles = [] } = {},
+  ) {
     const normalized = normalizeDiagnostics(diagnostics);
     const first = normalized[0];
     const message = first
@@ -56,6 +59,7 @@ export class OndaCompileError extends OndaCompilerError {
     this.name = "OndaCompileError";
     this.diagnostics = normalized;
     this.sourceFiles = normalizeSourceFiles(sourceFiles);
+    this.unresolvedSourceFiles = normalizeSourceFiles(unresolvedSourceFiles);
   }
 }
 
@@ -229,6 +233,7 @@ class WorkerOndaCompiler {
     const error = message.error?.diagnostics
       ? new OndaCompileError(message.error.diagnostics, {
         sourceFiles: message.error.sourceFiles,
+        unresolvedSourceFiles: message.error.unresolvedSourceFiles,
       })
       : new OndaCompilerError(message.error?.message ?? "compiler worker failed");
     if (message.error?.name) error.name = message.error.name;
@@ -368,6 +373,7 @@ function diagnosticsFromFrontend(error) {
         return new OndaCompileError(failure.diagnostics, {
           cause: error,
           sourceFiles: failure.source_files,
+          unresolvedSourceFiles: failure.unresolved_source_files,
         });
       }
     } catch {}

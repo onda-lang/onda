@@ -49,7 +49,9 @@ console.log(sourceFiles);
 Compilation failures throw `OndaCompileError`. Its `diagnostics` property contains structured
 parse, semantic, MIR, configuration, or code-generation diagnostics. Its `sourceFiles` property
 contains every project source resolved before compilation stopped, allowing hosts to retain useful
-watch registrations while the project is temporarily invalid.
+watch registrations while the project is temporarily invalid. `unresolvedSourceFiles` contains
+referenced non-standard-library candidates which were not present, allowing hosts to watch for their
+creation without treating them as contributing compilation inputs.
 
 ## Browser workers
 
