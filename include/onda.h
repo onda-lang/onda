@@ -10,6 +10,7 @@ extern "C" {
 
 typedef struct onda_program onda_program_t;
 typedef struct onda_instance onda_instance_t;
+typedef struct onda_source_manifest onda_source_manifest_t;
 
 /* Primitive element type identifiers used by metadata and buffer binding APIs. */
 enum {
@@ -74,13 +75,27 @@ onda_program_t* onda_compile(
   onda_diag_t* out_diag
 );
 /* Compiles an Onda file and returns a program handle, or NULL on failure.
-   Relative include/import resolution uses file_path_utf8 as the entry path. */
+   Relative include/import resolution uses file_path_utf8 as the entry path.
+   When out_sources is non-NULL, it receives an owned manifest on success or
+   failure containing every non-stdlib source resolved before compilation
+   stopped. Destroy it with onda_source_manifest_destroy. */
 onda_program_t* onda_compile_file(
   const char* file_path_utf8,
   const onda_compile_options_t* options,
+  onda_source_manifest_t** out_sources,
   onda_diag_t* out_diag
 );
-/* Destroys a program handle created by onda_compile. */
+/* Returns the number of contributing source files, or -1 for an invalid handle. */
+int onda_source_manifest_count(const onda_source_manifest_t* manifest);
+/* Returns one absolute canonical UTF-8 source path, or NULL for an invalid index/handle.
+   The pointer remains valid until onda_source_manifest_destroy. */
+const char* onda_source_manifest_path(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+/* Destroys a source manifest returned by onda_compile_file. NULL is accepted. */
+void onda_source_manifest_destroy(onda_source_manifest_t* manifest);
+/* Destroys a program handle created by onda_compile or onda_compile_file. */
 void onda_program_destroy(onda_program_t* program);
 
 /* Creates a runtime instance for a compiled program, or NULL on failure.

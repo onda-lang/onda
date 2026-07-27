@@ -54,7 +54,8 @@ APIs for Node.js and browsers, including a worker-backed browser mode. The lower
 
 ## Real-time playback
 
-The standalone UI watches the source program and provides controls for its exposed surface:
+The standalone UI watches the entry plus every transitive non-standard-library import/include and
+provides controls for the program's exposed surface:
 
 ```bash
 onda run examples/foundations/sine.onda

@@ -53,15 +53,21 @@ export interface OndaProject {
   sources: Record<string, string>;
 }
 
+export interface OndaCompilationResult {
+  artifact: OndaProcessorArtifact;
+  /** Entry first, then transitive non-stdlib imports/includes in discovery order. */
+  sourceFiles: string[];
+}
+
 export interface OndaCompilerInstance {
   compileSource(
     source: string,
     options?: OndaCompileOptions,
-  ): Promise<OndaProcessorArtifact>;
+  ): Promise<OndaCompilationResult>;
   compileProject(
     project: OndaProject,
     options?: OndaCompileOptions,
-  ): Promise<OndaProcessorArtifact>;
+  ): Promise<OndaCompilationResult>;
   sendLspMessage(message: OndaLspMessage): Promise<OndaLspMessage[]>;
   setLspAnalysisOptions(options?: OndaCompileOptions): Promise<void>;
   dispose(): Promise<void>;
@@ -108,6 +114,7 @@ export class OndaCompilerError extends Error {
 
 export class OndaCompileError extends OndaCompilerError {
   readonly diagnostics: OndaCompilerDiagnostic[];
+  readonly sourceFiles: string[];
 }
 
 export class OndaBinaryenError extends Error {}

@@ -10,7 +10,8 @@ use crate::ast::{
 };
 
 use super::{
-    parse_program, parse_program_file, parse_program_file_with_overlays, parse_program_with_path,
+    load_program_file, load_program_file_from_virtual_sources, parse_program, parse_program_file,
+    parse_program_file_with_overlays, parse_program_with_path,
     GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL, GRAPH_PROC_FIELD_INDEX_EXPR_ARG,
     PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG,
     PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
@@ -114,6 +115,89 @@ const lib_value = 2.0
         Expr::Var { name, .. } if name == "lib_value"
     ));
     fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn source_manifest_tracks_entry_and_transitive_user_sources() {
+    let dir = mk_temp_dir("source_manifest");
+    let main = dir.join("main.onda");
+    let included = dir.join("shared.onda");
+    let imported = dir.join("dsp.onda");
+    let nested = dir.join("nested.onda");
+
+    write_file(
+        &main,
+        "include \"./shared.onda\"\nimport dsp\nimport std/math\nouts 1\nsample:\n  out1 = value\n",
+    );
+    write_file(&included, "import nested\nconst shared = 1.0\n");
+    write_file(&nested, "const nested = 2.0\n");
+    write_file(&imported, "const value = 3.0\n");
+
+    let loaded = load_program_file(&main).expect("program should load");
+    assert_eq!(
+        loaded.sources.files,
+        vec![
+            fs::canonicalize(&main).expect("canonical entry"),
+            fs::canonicalize(&included).expect("canonical include"),
+            fs::canonicalize(&nested).expect("canonical nested import"),
+            fs::canonicalize(&imported).expect("canonical import"),
+        ]
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn source_manifest_is_available_when_a_dependency_fails_to_parse() {
+    let dir = mk_temp_dir("source_manifest_failure");
+    let main = dir.join("main.onda");
+    let imported = dir.join("dsp.onda");
+    let nested = dir.join("nested.onda");
+
+    write_file(&main, "import dsp\nouts 1\nsample:\n  out1 = 0.0\n");
+    write_file(&imported, "import nested\nconst value = 1.0\n");
+    write_file(&nested, "this is not valid onda\n");
+
+    let error = load_program_file(&main).expect_err("nested source should fail");
+    assert!(!error.diagnostics.is_empty());
+    assert_eq!(
+        error.sources.files,
+        vec![
+            fs::canonicalize(&main).expect("canonical entry"),
+            fs::canonicalize(&imported).expect("canonical import"),
+            fs::canonicalize(&nested).expect("canonical nested import"),
+        ]
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn virtual_source_manifest_uses_normalized_project_paths() {
+    let root = PathBuf::from("project");
+    let sources = std::collections::HashMap::from([
+        (
+            root.join("main.onda"),
+            "include \"./shared.onda\"\nimport dsp/filter\nouts 1\nsample:\n  out1 = value\n"
+                .to_owned(),
+        ),
+        (root.join("shared.onda"), "const shared = 1.0\n".to_owned()),
+        (
+            root.join("dsp/filter.onda"),
+            "const value = 2.0\n".to_owned(),
+        ),
+    ]);
+
+    let loaded = load_program_file_from_virtual_sources(&root, &root.join("./main.onda"), &sources)
+        .expect("virtual project should load");
+    assert_eq!(
+        loaded.sources.files,
+        vec![
+            root.join("main.onda"),
+            root.join("shared.onda"),
+            root.join("dsp/filter.onda"),
+        ]
+    );
 }
 
 #[test]

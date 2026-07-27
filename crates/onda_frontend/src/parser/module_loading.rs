@@ -16,10 +16,50 @@ struct LoadState {
     import_once: HashSet<PathBuf>,
     import_once_builtin: HashSet<String>,
     file_modes: HashMap<PathBuf, FileLoadMode>,
+    source_files: Vec<PathBuf>,
+    source_file_set: HashSet<PathBuf>,
     stack: Vec<PathBuf>,
     builtin_stack: Vec<String>,
     top_level_const_names: HashSet<String>,
 }
+
+impl LoadState {
+    fn record_source_file(&mut self, path: &Path) {
+        let path = path.to_path_buf();
+        if self.source_file_set.insert(path.clone()) {
+            self.source_files.push(path);
+        }
+    }
+
+    fn source_manifest(&self) -> SourceManifest {
+        SourceManifest {
+            files: self.source_files.clone(),
+        }
+    }
+}
+
+/// The non-standard-library source files reached while loading one program.
+///
+/// Files are unique and ordered deterministically: the entry is first, followed
+/// by transitive includes/imports in source discovery order.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct SourceManifest {
+    pub files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedProgram {
+    pub program: Program,
+    pub sources: SourceManifest,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadError {
+    pub diagnostics: Vec<Diagnostic>,
+    pub sources: SourceManifest,
+}
+
+pub type LoadResult = Result<LoadedProgram, LoadError>;
 
 #[derive(Debug, Clone)]
 struct ParseLocContext {
@@ -188,15 +228,30 @@ pub fn parse_program_with_path(source: &str, path: &Path) -> Result<Program, Vec
 }
 
 pub fn parse_program_file(path: &Path) -> Result<Program, Vec<Diagnostic>> {
-    parse_program_file_with_overlays(path, &HashMap::new())
+    load_program_file(path)
+        .map(|loaded| loaded.program)
+        .map_err(|error| error.diagnostics)
 }
 
 pub fn parse_program_file_with_overlays(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<Program, Vec<Diagnostic>> {
+    load_program_file_with_overlays(path, overlays)
+        .map(|loaded| loaded.program)
+        .map_err(|error| error.diagnostics)
+}
+
+pub fn load_program_file(path: &Path) -> LoadResult {
+    load_program_file_with_overlays(path, &HashMap::new())
+}
+
+pub fn load_program_file_with_overlays(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> LoadResult {
     let loader = SourceLoader::filesystem(overlays);
-    parse_program_file_with_loader(path, &loader)
+    load_program_file_with_loader(path, &loader)
 }
 
 /// Parses an in-memory source tree without consulting the host filesystem.
@@ -210,28 +265,46 @@ pub fn parse_program_file_from_virtual_sources(
     path: &Path,
     sources: &HashMap<PathBuf, String>,
 ) -> Result<Program, Vec<Diagnostic>> {
-    let loader = SourceLoader::virtual_tree(root, sources)
-        .map_err(|message| vec![Diagnostic::syntax(message, 0, 0)])?;
-    parse_program_file_with_loader(path, &loader)
+    load_program_file_from_virtual_sources(root, path, sources)
+        .map(|loaded| loaded.program)
+        .map_err(|error| error.diagnostics)
 }
 
-fn parse_program_file_with_loader(
+pub fn load_program_file_from_virtual_sources(
+    root: &Path,
     path: &Path,
-    loader: &SourceLoader,
-) -> Result<Program, Vec<Diagnostic>> {
-    let canonical = loader.resolve(path).map_err(|err| {
-        vec![Diagnostic::syntax(
+    sources: &HashMap<PathBuf, String>,
+) -> LoadResult {
+    let loader = SourceLoader::virtual_tree(root, sources).map_err(|message| LoadError {
+        diagnostics: vec![Diagnostic::syntax(message, 0, 0)],
+        sources: SourceManifest::default(),
+    })?;
+    load_program_file_with_loader(path, &loader)
+}
+
+fn load_program_file_with_loader(path: &Path, loader: &SourceLoader) -> LoadResult {
+    let canonical = loader.resolve(path).map_err(|err| LoadError {
+        diagnostics: vec![Diagnostic::syntax(
             format!("failed to resolve '{}': {err}", path.display()),
             0,
             0,
-        )]
+        )],
+        sources: SourceManifest::default(),
     })?;
     let mut state = LoadState::default();
     state
         .file_modes
         .insert(canonical.clone(), FileLoadMode::Entry);
-    let blocks = load_program_blocks_from_file(&canonical, false, &mut state, &[], loader)?;
-    Ok(Program { blocks })
+    match load_program_blocks_from_file(&canonical, false, &mut state, &[], loader) {
+        Ok(blocks) => Ok(LoadedProgram {
+            program: Program { blocks },
+            sources: state.source_manifest(),
+        }),
+        Err(diagnostics) => Err(LoadError {
+            diagnostics,
+            sources: state.source_manifest(),
+        }),
+    }
 }
 
 pub fn parse_stdlib_module(module: &str) -> Result<Program, Vec<Diagnostic>> {
@@ -342,6 +415,7 @@ fn load_program_blocks_from_file(
             0,
         )
     })?;
+    state.record_source_file(&canonical);
     if let Some(pos) = state.stack.iter().position(|p| p == &canonical) {
         let mut chain = state.stack[pos..]
             .iter()

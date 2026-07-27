@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use onda_frontend::{parse_program_file_with_overlays, Diagnostic, Program};
+use onda_frontend::{load_program_file_with_overlays, Diagnostic, Program, SourceManifest};
 
 use crate::{analyze_with_options, AnalysisOptions, TypedProgram};
 
@@ -20,6 +20,7 @@ pub struct AnalysisSnapshot {
     pub path: PathBuf,
     pub version: Option<DocumentVersion>,
     pub diagnostics: Vec<Diagnostic>,
+    pub sources: SourceManifest,
     pub parsed: Option<Program>,
     pub typed: Option<TypedProgram>,
 }
@@ -92,24 +93,28 @@ impl AnalysisSession {
             .get(&path)
             .map(|document| document.version);
         let overlays = self.overlay_map();
-        let parsed = match parse_program_file_with_overlays(&path, &overlays) {
-            Ok(program) => program,
-            Err(diagnostics) => {
+        let loaded = match load_program_file_with_overlays(&path, &overlays) {
+            Ok(loaded) => loaded,
+            Err(error) => {
                 return AnalysisSnapshot {
                     path,
                     version,
-                    diagnostics,
+                    diagnostics: error.diagnostics,
+                    sources: error.sources,
                     parsed: None,
                     typed: None,
                 };
             }
         };
+        let sources = loaded.sources;
+        let parsed = loaded.program;
 
         match analyze_with_options(parsed.clone(), options) {
             Ok(typed) => AnalysisSnapshot {
                 path,
                 version,
                 diagnostics: Vec::new(),
+                sources,
                 parsed: Some(parsed),
                 typed: Some(typed),
             },
@@ -117,6 +122,7 @@ impl AnalysisSession {
                 path,
                 version,
                 diagnostics,
+                sources,
                 parsed: Some(parsed),
                 typed: None,
             },

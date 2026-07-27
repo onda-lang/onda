@@ -15,12 +15,14 @@ The package build runs `wasm-pack --release` and then the workspace-pinned Binar
 optimizer so every local, CI, website, and npm build uses the same Binaryen release.
 
 The production exports `compile_to_mir_messagepack(source, sampleRate, blockSize)` and
-`compile_project_to_mir_messagepack(entryPath, sourcesJson, sampleRate, blockSize)` return compact
-schema-versioned bytes. JSON variants with the same names ending in `_json` remain available for
-inspection and tooling. Project compilation accepts a JSON object of project-relative paths to
-source strings, resolving imports and includes entirely in memory. Paths cannot escape the virtual
-project root. `mir_schema_version()` exposes the producer version for integration checks.
-Compilation failures reject with a JSON-encoded array of structured diagnostics.
+`compile_project_to_mir_messagepack(entryPath, sourcesJson, sampleRate, blockSize)` return a
+`FrontendCompilation` containing compact schema-versioned bytes plus the ordered contributing
+project paths. JSON variants with the same names ending in `_json` remain available for inspection
+and tooling. Project compilation accepts a JSON object of project-relative paths to source strings,
+resolving imports and includes entirely in memory. Paths cannot escape the virtual project root.
+Embedded standard-library modules are omitted from the source manifest. `mir_schema_version()`
+exposes the producer version for integration checks. MessagePack compilation failures reject with
+a JSON-encoded object containing structured diagnostics and the partially resolved source list.
 
 The current producer and `packages/onda_binaryen_web` both use the current MIR schema. The browser playground
 under `examples/web/onda_wasm_playground` passes the generated MessagePack directly to the explicitly

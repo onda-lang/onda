@@ -46,7 +46,7 @@ export class OndaCompilerError extends Error {
 }
 
 export class OndaCompileError extends OndaCompilerError {
-  constructor(diagnostics, { cause } = {}) {
+  constructor(diagnostics, { cause, sourceFiles = [] } = {}) {
     const normalized = normalizeDiagnostics(diagnostics);
     const first = normalized[0];
     const message = first
@@ -55,6 +55,7 @@ export class OndaCompileError extends OndaCompilerError {
     super(message, { cause });
     this.name = "OndaCompileError";
     this.diagnostics = normalized;
+    this.sourceFiles = normalizeSourceFiles(sourceFiles);
   }
 }
 
@@ -72,9 +73,9 @@ class OndaCompiler {
       throw configurationError("source must be a string");
     }
     const compile = normalizeCompileOptions(options);
-    let mir;
+    let frontendCompilation;
     try {
-      mir = this.frontend.compile_to_mir_messagepack(
+      frontendCompilation = this.frontend.compile_to_mir_messagepack(
         source,
         compile.sampleRate,
         compile.blockSize,
@@ -82,7 +83,14 @@ class OndaCompiler {
     } catch (error) {
       throw diagnosticsFromFrontend(error);
     }
-    return compileMirTransport(mir, compile.codegen, this.compileTrustedMir);
+    const { mir, sourceFiles } = consumeFrontendCompilation(frontendCompilation);
+    const artifact = compileMirTransport(
+      mir,
+      compile.codegen,
+      this.compileTrustedMir,
+      sourceFiles,
+    );
+    return { artifact, sourceFiles };
   }
 
   async compileProject(project, options = {}) {
@@ -102,9 +110,9 @@ class OndaCompiler {
     }
 
     const compile = normalizeCompileOptions(options);
-    let mir;
+    let frontendCompilation;
     try {
-      mir = this.frontend.compile_project_to_mir_messagepack(
+      frontendCompilation = this.frontend.compile_project_to_mir_messagepack(
         project.entry,
         JSON.stringify(project.sources),
         compile.sampleRate,
@@ -113,7 +121,14 @@ class OndaCompiler {
     } catch (error) {
       throw diagnosticsFromFrontend(error);
     }
-    return compileMirTransport(mir, compile.codegen, this.compileTrustedMir);
+    const { mir, sourceFiles } = consumeFrontendCompilation(frontendCompilation);
+    const artifact = compileMirTransport(
+      mir,
+      compile.codegen,
+      this.compileTrustedMir,
+      sourceFiles,
+    );
+    return { artifact, sourceFiles };
   }
 
   async sendLspMessage(message) {
@@ -212,7 +227,9 @@ class WorkerOndaCompiler {
       return;
     }
     const error = message.error?.diagnostics
-      ? new OndaCompileError(message.error.diagnostics)
+      ? new OndaCompileError(message.error.diagnostics, {
+        sourceFiles: message.error.sourceFiles,
+      })
       : new OndaCompilerError(message.error?.message ?? "compiler worker failed");
     if (message.error?.name) error.name = message.error.name;
     if (message.error?.stack) error.stack = message.error.stack;
@@ -310,7 +327,17 @@ function normalizeCompileOptions(options) {
   return { sampleRate, blockSize, codegen: options.codegen ?? {} };
 }
 
-function compileMirTransport(mir, codegen, compileTrustedMir) {
+function consumeFrontendCompilation(compilation) {
+  try {
+    const mir = compilation.take_mir();
+    const sourceFiles = normalizeSourceFiles(JSON.parse(compilation.source_files_json()));
+    return { mir, sourceFiles };
+  } finally {
+    compilation.free();
+  }
+}
+
+function compileMirTransport(mir, codegen, compileTrustedMir, sourceFiles) {
   try {
     return compileTrustedMir(mir, codegen);
   } catch (cause) {
@@ -325,7 +352,7 @@ function compileMirTransport(mir, codegen, compileTrustedMir) {
       end_line: 0,
       end_column: 0,
       trace: [],
-    }], { cause });
+    }], { cause, sourceFiles });
   }
 }
 
@@ -333,9 +360,15 @@ function diagnosticsFromFrontend(error) {
   const encoded = typeof error === "string" ? error : error?.message;
   if (typeof encoded === "string") {
     try {
-      const diagnostics = JSON.parse(encoded);
-      if (Array.isArray(diagnostics)) {
-        return new OndaCompileError(diagnostics, { cause: error });
+      const failure = JSON.parse(encoded);
+      if (Array.isArray(failure)) {
+        return new OndaCompileError(failure, { cause: error });
+      }
+      if (failure && Array.isArray(failure.diagnostics)) {
+        return new OndaCompileError(failure.diagnostics, {
+          cause: error,
+          sourceFiles: failure.source_files,
+        });
       }
     } catch {}
   }
@@ -381,4 +414,9 @@ function normalizeDiagnostics(diagnostics) {
       ? diagnostic.trace.map((entry) => String(entry))
       : [],
   }));
+}
+
+function normalizeSourceFiles(sourceFiles) {
+  if (!Array.isArray(sourceFiles)) return [];
+  return sourceFiles.map((path) => String(path));
 }

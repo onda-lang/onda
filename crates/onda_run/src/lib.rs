@@ -16,7 +16,7 @@ use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
     RunEventValue, RunParamInfo, UNBOUND_BUFFERS_MESSAGE,
 };
-use onda_frontend::Diagnostic;
+use onda_frontend::{load_program_file, Diagnostic};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -121,7 +121,7 @@ pub fn available_audio_devices() -> (Vec<String>, Vec<String>) {
 enum ControllerEvent {
     ChildReady(ReadyEvent),
     TcpResponse(String),
-    FileChanged,
+    FilesChanged(Vec<PathBuf>),
 }
 
 #[derive(Debug)]
@@ -174,6 +174,7 @@ pub struct RunController {
     bridge: IpcBridge,
     child: ChildSession,
     _watcher: Option<FileWatcher>,
+    watched_sources: Vec<PathBuf>,
     preserved_params: Vec<(String, Value)>,
     preserved_buffers: Vec<(String, String)>,
     preserved_events: Vec<(String, Vec<Value>)>,
@@ -202,10 +203,8 @@ impl RunController {
         let pending_source = fs::read(&onda_path).ok();
         let child = ChildSession::spawn(&onda_path, &options, events_tx.clone())
             .map_err(|e| format!("failed to start run subprocess: {e}"))?;
-        let watcher_tx = events_tx.clone();
-        let watcher = FileWatcher::watch(&onda_path, move || {
-            let _ = watcher_tx.send(ControllerEvent::FileChanged);
-        });
+        let watched_sources = source_watch_paths(&onda_path, &[]);
+        let watcher = start_source_watcher(&watched_sources, events_tx.clone());
 
         let mut controller = Self {
             onda_path,
@@ -216,6 +215,7 @@ impl RunController {
             bridge,
             child,
             _watcher: watcher,
+            watched_sources,
             preserved_params: Vec::new(),
             preserved_buffers: Vec::new(),
             preserved_events: Vec::new(),
@@ -269,8 +269,8 @@ impl RunController {
                     result.state_changed |= response.state_changed;
                     result.scope_changed |= response.scope_changed;
                 }
-                ControllerEvent::FileChanged => {
-                    if self.source_requires_recompile() {
+                ControllerEvent::FilesChanged(paths) => {
+                    if self.sources_require_recompile(&paths) {
                         if self.processing_requested {
                             let _ = self.restart_with_status("Restarting...");
                         } else {
@@ -449,6 +449,7 @@ impl RunController {
     }
 
     fn restart_with_status(&mut self, status: &str) -> Result<(), String> {
+        self.refresh_source_watcher();
         self.child.kill();
         self.bridge.disconnect();
         self.pending_commands.clear();
@@ -485,7 +486,10 @@ impl RunController {
             && self.compiled_source == fs::read(&self.onda_path).ok()
     }
 
-    fn source_requires_recompile(&self) -> bool {
+    fn sources_require_recompile(&self, changed_paths: &[PathBuf]) -> bool {
+        if changed_paths.iter().any(|path| path != &self.onda_path) {
+            return true;
+        }
         let current = fs::read(&self.onda_path).ok();
         source_differs_from_cached(
             current.as_deref(),
@@ -508,6 +512,7 @@ impl RunController {
     }
 
     fn handle_child_ready(&mut self, ready: ReadyEvent) {
+        self.refresh_source_watcher();
         self.compiled_source = self
             .pending_source
             .take()
@@ -567,6 +572,11 @@ impl RunController {
         self.scope_polling_active = self.state.running;
         self.scope_polling_in_flight = false;
         self.last_scope_poll = Instant::now();
+    }
+
+    fn refresh_source_watcher(&mut self) {
+        self.watched_sources = source_watch_paths(&self.onda_path, &self.watched_sources);
+        self._watcher = start_source_watcher(&self.watched_sources, self.events_tx.clone());
     }
 
     fn handle_child_exited(&mut self, code: Option<i32>, error: Option<String>) {
@@ -1059,16 +1069,30 @@ struct FileWatcher {
 }
 
 impl FileWatcher {
-    fn watch(path: &Path, on_change: impl Fn() + Send + 'static) -> Option<Self> {
+    fn watch(paths: &[PathBuf], on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> Option<Self> {
+        if paths.is_empty() {
+            return None;
+        }
         let (tx, rx) = mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_millis(200), tx).ok()?;
-        let watch_root = path.parent().unwrap_or_else(|| Path::new("."));
-        debouncer
-            .watcher()
-            .watch(watch_root, notify::RecursiveMode::NonRecursive)
-            .ok()?;
-        let watched_path = path.to_path_buf();
-        let mut last_stamp = file_stamp(&watched_path);
+        let mut watch_roots = std::collections::HashSet::new();
+        for path in paths {
+            let watch_root = path.parent().unwrap_or_else(|| Path::new("."));
+            if watch_roots.insert(watch_root.to_path_buf()) {
+                debouncer
+                    .watcher()
+                    .watch(watch_root, notify::RecursiveMode::NonRecursive)
+                    .ok()?;
+            }
+        }
+        let mut watched = paths
+            .iter()
+            .cloned()
+            .map(|path| {
+                let stamp = file_stamp(&path);
+                (path, stamp)
+            })
+            .collect::<Vec<_>>();
 
         thread::spawn(move || {
             while let Ok(Ok(events)) = rx.recv() {
@@ -1078,10 +1102,16 @@ impl FileWatcher {
                 {
                     continue;
                 }
-                let next_stamp = file_stamp(&watched_path);
-                if next_stamp != last_stamp {
-                    last_stamp = next_stamp;
-                    on_change();
+                let mut changed = Vec::new();
+                for (path, last_stamp) in &mut watched {
+                    let next_stamp = file_stamp(path);
+                    if next_stamp != *last_stamp {
+                        *last_stamp = next_stamp;
+                        changed.push(path.clone());
+                    }
+                }
+                if !changed.is_empty() {
+                    on_change(changed);
                 }
             }
         });
@@ -1090,6 +1120,34 @@ impl FileWatcher {
             _debouncer: debouncer,
         })
     }
+}
+
+fn source_watch_paths(entry: &Path, previous: &[PathBuf]) -> Vec<PathBuf> {
+    let loaded = load_program_file(entry);
+    let (mut paths, succeeded) = match loaded {
+        Ok(loaded) => (loaded.sources.files, true),
+        Err(error) => (error.sources.files, false),
+    };
+    if !paths.iter().any(|path| path == entry) {
+        paths.insert(0, entry.to_path_buf());
+    }
+    if !succeeded {
+        for path in previous {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+    }
+    paths
+}
+
+fn start_source_watcher(
+    paths: &[PathBuf],
+    events_tx: Sender<ControllerEvent>,
+) -> Option<FileWatcher> {
+    FileWatcher::watch(paths, move |paths| {
+        let _ = events_tx.send(ControllerEvent::FilesChanged(paths));
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1387,7 +1445,7 @@ mod tests {
     use super::{
         events_are_compatible_for_preservation, params_are_compatible_for_preservation,
         reconcile_preserved_events, reconcile_preserved_params, source_differs_from_cached,
-        FileWatcher, RunHostOptions,
+        source_watch_paths, FileWatcher, RunHostOptions,
     };
     use serde_json::{json, Value};
     use std::fs;
@@ -1414,7 +1472,7 @@ mod tests {
         fs::write(&watched, "outs:\n  out1\nsample:\n  out1 = 0.0\n").expect("write initial file");
 
         let (tx, rx) = mpsc::channel();
-        let _watcher = FileWatcher::watch(&watched, move || {
+        let _watcher = FileWatcher::watch(std::slice::from_ref(&watched), move |_| {
             let _ = tx.send(());
         })
         .expect("watcher should start");
@@ -1426,6 +1484,76 @@ mod tests {
         replace_file(&watched, "outs:\n  out1\nsample:\n  out1 = 2.0\n");
         rx.recv_timeout(Duration::from_secs(5))
             .expect("second replace should trigger");
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn file_watcher_reports_changes_to_transitive_sources() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_dependency_watch_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let dependency = temp_root.join("dependency.onda");
+        fs::write(&entry, "import dependency\n").expect("write entry");
+        fs::write(&dependency, "const value = 1.0\n").expect("write dependency");
+
+        let paths = vec![entry, dependency.clone()];
+        let (tx, rx) = mpsc::channel();
+        let _watcher = FileWatcher::watch(&paths, move |paths| {
+            let _ = tx.send(paths);
+        })
+        .expect("watcher should start");
+
+        replace_file(&dependency, "const value = 22.0\n");
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("dependency replace should trigger"),
+            vec![dependency]
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn source_watch_paths_replace_on_success_and_union_on_failure() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_source_manifest_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let dependency = temp_root.join("dependency.onda");
+        fs::write(&entry, "import dependency\n").expect("write entry");
+        fs::write(&dependency, "const value = 1.0\n").expect("write dependency");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+        let dependency = fs::canonicalize(dependency).expect("canonical dependency");
+
+        let initial = source_watch_paths(&entry, &[]);
+        assert_eq!(initial, vec![entry.clone(), dependency.clone()]);
+
+        fs::write(&entry, "this is not valid onda\nimport dependency\n").expect("break entry");
+        let failed = source_watch_paths(&entry, &initial);
+        assert_eq!(
+            failed, initial,
+            "failed loads should retain previous sources"
+        );
+
+        fs::write(&entry, "outs 1\nsample:\n  out1 = 0.0\n").expect("remove dependency");
+        let recovered = source_watch_paths(&entry, &failed);
+        assert_eq!(
+            recovered,
+            vec![entry.clone()],
+            "successful loads should replace the watch set"
+        );
 
         let _ = fs::remove_dir_all(temp_root);
     }

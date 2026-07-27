@@ -1,5 +1,8 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use onda::*;
 
@@ -29,6 +32,16 @@ impl Drop for ProgramHandle {
     fn drop(&mut self) {
         unsafe {
             onda_program_destroy(self.0);
+        }
+    }
+}
+
+struct SourceManifestHandle(*mut onda_source_manifest);
+
+impl Drop for SourceManifestHandle {
+    fn drop(&mut self) {
+        unsafe {
+            onda_source_manifest_destroy(self.0);
         }
     }
 }
@@ -86,6 +99,86 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
         diag_message(&diag)
     );
     ProgramHandle(program)
+}
+
+fn temp_source_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("onda_api_{prefix}_{nanos}"));
+    fs::create_dir_all(&path).expect("create temp source directory");
+    path
+}
+
+unsafe fn manifest_paths(manifest: *const onda_source_manifest) -> Vec<PathBuf> {
+    (0..onda_source_manifest_count(manifest))
+        .map(|index| {
+            PathBuf::from(
+                CStr::from_ptr(onda_source_manifest_path(manifest, index))
+                    .to_str()
+                    .expect("source path should be UTF-8"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn c_file_compile_returns_source_manifest_on_success_and_failure() {
+    unsafe {
+        let dir = temp_source_dir("source_manifest");
+        let main = dir.join("main.onda");
+        let dependency = dir.join("dependency.onda");
+        fs::write(
+            &main,
+            "import dependency\nouts 1\nsample:\n  out1 = dependency_value()\n",
+        )
+        .expect("write entry");
+        fs::write(
+            &dependency,
+            "def dependency_value() -> f32:\n  return 0.5\n",
+        )
+        .expect("write dependency");
+
+        let path = CString::new(main.to_str().expect("UTF-8 entry path")).expect("C entry path");
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+        };
+        let mut diag = empty_diag();
+        let mut manifest = std::ptr::null_mut();
+        let program = onda_compile_file(path.as_ptr(), &options, &mut manifest, &mut diag);
+        assert!(
+            !program.is_null(),
+            "compile failed: {}",
+            diag_message(&diag)
+        );
+        let _program = ProgramHandle(program);
+        let manifest = SourceManifestHandle(manifest);
+        assert_eq!(
+            manifest_paths(manifest.0),
+            vec![
+                fs::canonicalize(&main).expect("canonical entry"),
+                fs::canonicalize(&dependency).expect("canonical dependency"),
+            ]
+        );
+
+        fs::write(&dependency, "this is not valid onda\n").expect("break dependency");
+        let mut failed_manifest = std::ptr::null_mut();
+        let failed = onda_compile_file(path.as_ptr(), &options, &mut failed_manifest, &mut diag);
+        assert!(failed.is_null(), "broken dependency unexpectedly compiled");
+        let failed_manifest = SourceManifestHandle(failed_manifest);
+        assert_eq!(
+            manifest_paths(failed_manifest.0),
+            vec![
+                fs::canonicalize(&main).expect("canonical entry"),
+                fs::canonicalize(&dependency).expect("canonical dependency"),
+            ]
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[test]

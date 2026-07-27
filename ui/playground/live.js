@@ -209,7 +209,7 @@ async function runProject() {
     if (needsCompilation) {
       await languageServer.syncProject(project);
       if (generation !== runGeneration) return;
-      const compiledArtifact = await compiler.compileProject(project, options);
+      const { artifact: compiledArtifact } = await compiler.compileProject(project, options);
       if (generation !== runGeneration) return;
       const nextCompiledModule = await compileOndaProcessorModule(compiledArtifact);
       if (generation !== runGeneration) return;
@@ -595,7 +595,7 @@ async function startAudio() {
       };
       await languageServer.setAnalysisOptions(options);
       const project = projectEditor.compilerProject();
-      const compiledArtifact = await compiler.compileProject(project, options);
+      const { artifact: compiledArtifact } = await compiler.compileProject(project, options);
       const nextCompiledModule = await compileOndaProcessorModule(compiledArtifact);
       artifact = compiledArtifact;
       compiledModule = nextCompiledModule;

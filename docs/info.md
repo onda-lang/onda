@@ -63,7 +63,7 @@ Non-crate directories of note:
 - `parser.rs`, `parser/` — parser entry plus submodules:
   - `parser/block_parsing.rs`, `parser/expr_stmt.rs` — block and expression/statement parsing.
   - `parser/preprocess.rs` — source preprocessing.
-  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution.
+  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution and authoritative non-stdlib source manifests.
   - `parser/type_helpers.rs` — type-syntax helpers.
   - `parser/tests.rs` — parser tests.
 - `grammar.pest` — the PEG grammar.
@@ -162,7 +162,8 @@ Non-crate directories of note:
 - `run_session.rs` — live JIT instance lifecycle, param/buffer binding, `render_block`.
 
 ### `onda_run` (`crates/onda_run/src`)
-- `lib.rs` — run controller wiring real-time audio to a daemon run session.
+- `lib.rs` — run controller wiring real-time audio to a daemon run session, including dynamic
+  watching of the entry and every transitive non-stdlib source reported by the frontend loader.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
 
 ### `onda_lsp` (`crates/onda_lsp/src`)
@@ -188,7 +189,6 @@ Non-crate directories of note:
 - `lib.rs` — webview run host.
 - `ipc.rs` — JSON IPC with the run control socket.
 - `process.rs` — `onda run play` child process management.
-- `watcher.rs` — auto-restart on `.onda` save.
 
 ## Practical navigation entrypoints
 

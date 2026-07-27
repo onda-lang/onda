@@ -12,19 +12,19 @@ globalThis.addEventListener("message", async (event) => {
       return;
     }
     if (message.type === "compileSource") {
-      const artifact = await (await compiler()).compileSource(
+      const result = await (await compiler()).compileSource(
         message.source,
         message.options,
       );
-      respond(requestId, artifact, [artifact.wasm.buffer]);
+      respond(requestId, result, [result.artifact.wasm.buffer]);
       return;
     }
     if (message.type === "compileProject") {
-      const artifact = await (await compiler()).compileProject(
+      const result = await (await compiler()).compileProject(
         message.project,
         message.options,
       );
-      respond(requestId, artifact, [artifact.wasm.buffer]);
+      respond(requestId, result, [result.artifact.wasm.buffer]);
       return;
     }
     if (message.type === "lspMessage") {
@@ -53,6 +53,7 @@ globalThis.addEventListener("message", async (event) => {
         message: error?.message ?? String(error),
         stack: error?.stack,
         diagnostics: error?.diagnostics,
+        sourceFiles: error?.sourceFiles,
       },
     });
   }

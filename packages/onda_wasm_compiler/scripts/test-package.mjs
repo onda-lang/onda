@@ -103,7 +103,7 @@ import { flattenedAudioChannelCount } from "@onda-lang/webaudio";
 if (typeof compileTrustedMir !== "function") throw new Error("missing packaged Binaryen backend");
 if (flattenedAudioChannelCount([{ array_len: 2 }]) !== 2) throw new Error("invalid packaged Web Audio adapter");
 const compiler = await createCompiler();
-const artifact = await compiler.compileSource("sample:\\n  out1 = 0.125\\n");
+const { artifact } = await compiler.compileSource("sample:\\n  out1 = 0.125\\n");
 validateProcessorArtifact(artifact);
 if (artifact.metadata.mir_schema_version !== MIR_SCHEMA_VERSION) throw new Error("schema mismatch");
 process.stdout.write(String(artifact.wasm.byteLength));
