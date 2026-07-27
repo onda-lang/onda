@@ -3,8 +3,8 @@ use onda_frontend::{
     BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
     ConstType, DeclType, EventDef, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp,
-    ParamBlock, ParamDecl, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    Stmt, StructDef,
+    ParamBlock, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program,
+    SampleBlock, Stmt, StructDef,
 };
 
 pub fn primitive_type_name(ty: PrimitiveType) -> &'static str {
@@ -1022,7 +1022,7 @@ fn format_port_decl(port: &PortDecl) -> String {
     text
 }
 
-fn format_param_decl(param: &ParamDecl) -> String {
+pub(crate) fn format_param_decl(param: &ParamDecl) -> String {
     let mut text = String::new();
     if param.pinned {
         text.push_str("pin ");
@@ -1044,12 +1044,45 @@ fn format_param_decl(param: &ParamDecl) -> String {
             text.push_str(", ");
         }
         text.push_str(&format_expr(&range.max));
+        if param.control.scale != ParamScale::Linear {
+            text.push_str(", scale = ");
+            text.push_str(param.control.scale.name());
+        }
+        if let Some(curve) = &param.control.curve {
+            text.push_str(", curve = ");
+            text.push_str(&format_expr(curve));
+        }
+        if let Some(unit) = &param.control.unit {
+            text.push_str(", unit = ");
+            text.push_str(&format_param_unit(unit));
+        }
+        if let Some(step) = &param.control.step {
+            text.push_str(", step = ");
+            text.push_str(&format_expr(step));
+        }
         text.push('}');
     }
     if let Some(bind) = &param.bind {
         text.push_str(" => ");
         text.push_str(bind);
     }
+    text
+}
+
+fn format_param_unit(unit: &str) -> String {
+    let mut text = String::with_capacity(unit.len() + 2);
+    text.push('"');
+    for ch in unit.chars() {
+        match ch {
+            '"' => text.push_str("\\\""),
+            '\\' => text.push_str("\\\\"),
+            '\n' => text.push_str("\\n"),
+            '\r' => text.push_str("\\r"),
+            '\t' => text.push_str("\\t"),
+            _ => text.push(ch),
+        }
+    }
+    text.push('"');
     text
 }
 
@@ -1102,4 +1135,40 @@ fn push_line(out: &mut String, indent: usize, line: &str) {
     out.push_str(&"  ".repeat(indent));
     out.push_str(line);
     out.push('\n');
+}
+
+#[cfg(test)]
+mod tests {
+    use onda_frontend::parse_program;
+
+    use super::format_program;
+
+    #[test]
+    fn formatting_preserves_parameter_control_domains() {
+        let source = r#"
+params:
+  cutoff = 440.0 {20, 20000, log, "Hz"}
+  mix = 0.5 {0, 1, curve = -4, unit = "gain \"curve\"\\\n", step = 0.25}
+
+outs:
+  out1
+
+sample:
+  out1 = cutoff * mix
+"#;
+        let program = parse_program(source).expect("parameter domains should parse");
+        let formatted = format_program(&program);
+
+        assert!(
+            formatted.contains(r#"cutoff = 440.0 {20, 20000, scale = log, unit = "Hz"}"#),
+            "formatted logarithmic domain was {formatted:?}"
+        );
+        assert!(
+            formatted.contains(
+                r#"mix = 0.5 {0, 1, curve = 0.0 - 4, unit = "gain \"curve\"\\\n", step = 0.25}"#
+            ),
+            "formatted curved stepped domain was {formatted:?}"
+        );
+        parse_program(&formatted).expect("formatted parameter domains should remain parseable");
+    }
 }

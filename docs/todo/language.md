@@ -127,4 +127,3 @@
 
 - Range declarations follow-ups
   - Evaluate whether range syntax should be extended to array `ins`/`params` declarations.
-  - Decide whether generated `min/max` clamp lowering should gain explicit NaN/Inf sanitization semantics.

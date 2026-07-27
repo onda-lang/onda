@@ -341,34 +341,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.writeStorage(
       this.paramsPtr + offset,
       param,
-      this.constrainedParamValue(param, value),
+      value,
     );
-  }
-
-  constrainedParamValue(param, value) {
-    if (Number(param.array_len) !== 1) return value;
-    if (param.scalar === "bool") return Boolean(value);
-    const control = param.param_control;
-    if (!control) return value;
-    const min = Number(this.decodeConstantScalar({
-      type: param.scalar,
-      value: param.range_min_repr,
-    }));
-    const max = Number(this.decodeConstantScalar({
-      type: param.scalar,
-      value: param.range_max_repr,
-    }));
-    let plain = Number(value);
-    plain = Number.isNaN(plain) ? min : Math.min(max, Math.max(min, plain));
-    if (control.step_repr !== null) {
-      const step = Number(this.decodeConstantScalar({
-        type: param.scalar,
-        value: control.step_repr,
-      }));
-      plain = min + Math.round((plain - min) / step) * step;
-      plain = Math.min(max, Math.max(min, plain));
-    }
-    return plain;
   }
 
   reset() {

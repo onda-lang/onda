@@ -141,7 +141,6 @@ class FakeNode {
 
 test("derives explicit Web Audio channel options from processor metadata", () => {
   const options = ondaAudioWorkletNodeOptions(artifact(), {
-    params: { gain: 1 },
     nodeOptions: {
       numberOfInputs: 0,
       outputChannelCount: [8],
@@ -152,7 +151,18 @@ test("derives explicit Web Audio channel options from processor metadata", () =>
   assert.equal(options.channelCount, 2);
   assert.equal(options.channelInterpretation, "discrete");
   assert.deepEqual(options.outputChannelCount, [1]);
-  assert.deepEqual(options.processorOptions.params, { gain: 1 });
+  assert.deepEqual(options.processorOptions.params, {});
+});
+
+test("rejects unknown initial parameters before worklet construction", () => {
+  assert.throws(
+    () => ondaAudioWorkletNodeOptions(artifact(), { params: { gain: 1 } }),
+    /unknown Onda parameter 'gain'/,
+  );
+  assert.throws(
+    () => ondaAudioWorkletNodeOptions(artifact(), { params: [1] }),
+    /unknown Onda parameter '0'/,
+  );
 });
 
 test("rejects invalid processor channel metadata", () => {
@@ -269,6 +279,48 @@ test("converts normalized parameters before posting a plain worklet write", asyn
   const request = node.port.messages.at(-1);
   assert.equal(request.type, "set-param");
   assert.ok(Math.abs(request.value - Math.sqrt(20 * 20_000)) < 1e-12);
+  node.port.reply({ type: "onda-ok", requestId: request.requestId });
+  await pending;
+  processor.close();
+});
+
+test("constrains plain parameters before posting to the worklet", async () => {
+  const source = artifact();
+  source.metadata.runtime.param_size_bytes = 4;
+  source.metadata.runtime.param_align_bytes = 4;
+  source.metadata.metadata.params = [{
+    name: "mode",
+    type_repr: "i32",
+    scalar: "i32",
+    array_len: 1,
+    element_size_bytes: 4,
+    slot_offset: 0,
+    byte_offset: 0,
+    state_byte_offset: null,
+    byte_size: 4,
+    default_reprs: ["0"],
+    range_min_repr: "0",
+    range_max_repr: "10",
+    param_control: {
+      scale: "linear",
+      curve: null,
+      unit: null,
+      step_repr: "2",
+      step_count: 5,
+    },
+  }];
+  const options = ondaAudioWorkletNodeOptions(source, {
+    params: { mode: 100 },
+  });
+  assert.deepEqual(options.processorOptions.params, { mode: 10 });
+
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+
+  const pending = processor.setParam("mode", 3.2);
+  const request = node.port.messages.at(-1);
+  assert.equal(request.type, "set-param");
+  assert.equal(request.value, 4);
   node.port.reply({ type: "onda-ok", requestId: request.requestId });
   await pending;
   processor.close();

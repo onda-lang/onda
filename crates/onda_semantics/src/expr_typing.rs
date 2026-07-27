@@ -448,6 +448,18 @@ fn infer_scalar_expr_type_with_proc_arrays(
                         errors,
                     )
                 }
+                BuiltinFn::RangeClamp => {
+                    let mut merged = arg_types.first().copied().unwrap_or(PrimitiveType::F32);
+                    for rhs in arg_types.iter().copied().skip(1) {
+                        merged = merge_numeric_types(
+                            merged,
+                            rhs,
+                            "compiler-generated range clamp",
+                            errors,
+                        )?;
+                    }
+                    Some(merged)
+                }
                 BuiltinFn::Pow => {
                     for ty in &arg_types {
                         if *ty == PrimitiveType::Bool {

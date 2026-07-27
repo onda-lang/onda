@@ -213,7 +213,9 @@ otherwise it contains:
 The raw processor object does not export parameter conversion functions. Native hosts decode each
 numeric control into the `onda_processor_param_domain` structure from
 `include/onda_processor_abi.h`, whose header-only functions implement clamping, snapping, and
-plain/normalized conversion without linking the Onda runtime. The reference generator in
+plain/normalized conversion without linking the Onda runtime. The structure carries the declared
+scalar type so stepped floating-point grids are validated at their actual storage precision. The
+reference generator in
 `examples/native/raw_processor_object` emits decoded tables, indexed wrappers, typed reads, and
 typed writes around that shared header implementation.
 
@@ -225,14 +227,15 @@ For a scalar numeric parameter, normalized-to-plain conversion is:
    mapping, then apply `min + n * (max - min)`. Otherwise apply that linear
    mapping directly for `linear`, or the overflow-safe equivalent
    `exp(log(min) + n * (log(max) - log(min)))` for `log`.
-4. Clamp the plain value to the inclusive range.
+4. Map a plain NaN to `min`, then clamp the plain value to the inclusive range.
 5. For a stepped domain, snap to `min + round((plain - min) / step) * step` and clamp again.
 6. Convert to the declared scalar width when writing parameter storage.
 
 Plain-to-normalized first performs the same plain clamping and step snapping, preserves exact
-endpoints, then applies the inverse curved, linear, or logarithmic mapping. Boolean host controls
-use the threshold `normalized >= 0.5` and store one byte containing zero or one. Parameter arrays
-and un-ranged numeric parameters do not have normalized host-control domains.
+endpoints, then applies the inverse curved, linear, or logarithmic mapping. Boolean plain and
+normalized host-control values use the threshold `value >= 0.5` and store one byte containing zero
+or one. Parameter arrays and un-ranged numeric parameters do not have normalized host-control
+domains.
 
 Because the shared host-control surface uses binary64 values, an `i64` control domain and its
 range width are restricted to the exactly representable integer interval

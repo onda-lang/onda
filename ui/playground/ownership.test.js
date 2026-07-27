@@ -136,7 +136,7 @@ test("the shared run view uses the processor ABI parameter conversions", async (
     readFile(resolve(repoRoot, "scripts/build-website-playground.mjs"), "utf8"),
   ]);
 
-  assert.match(runView, /globalThis\.__ONDA_PARAM_CONTROL_V2__\.createParamControl/);
+  assert.match(runView, /globalThis\.__ONDA_PARAM_CONTROL_V2__\.createParamDomain/);
   assert.match(runView, /\.plainToNormalized\(value\)/);
   assert.match(runView, /\.normalizedToPlain\(normalized\)/);
   assert.match(runView, /\.constrainPlain\(value\)/);

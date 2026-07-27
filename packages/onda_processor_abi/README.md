@@ -32,6 +32,12 @@ mapping, and snaps stepped domains. The package also exports one-shot functions 
 behavior. Numeric parameters without a control domain and parameter arrays are rejected. These
 APIs are synchronous and do not require a compiler, WebAssembly instance, or `AudioWorklet`, so
 editors can prepare controls once and use them responsively.
+Boolean plain and normalized numeric inputs use the same `value >= 0.5` threshold as the native
+runtime and generated processor-object helpers.
+
+`createParamDomain()` prepares the same reusable control from an already-decoded domain. It is
+intended for products such as the native run view whose transport already provides numeric
+`minimum`, `maximum`, `step`, and `stepCount` values.
 
 Controlled `i64` domains are limited by the descriptor contract to the exact binary64 integer range;
 unranged `i64` parameters retain their full width through typed storage.

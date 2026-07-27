@@ -259,77 +259,357 @@ pub struct ParamControl {
     pub step_count: Option<u32>,
 }
 
-impl ParamControl {
-    pub fn constrain_plain(&self, range: ValueRange, plain: f64) -> f64 {
-        let min = range.min.as_f64();
-        let max = range.max.as_f64();
+/// A validated, prepared scalar parameter domain for host-control use.
+///
+/// This combines the numeric range with its normalization, presentation, and
+/// discrete-grid metadata. Hosts should prepare one domain per parameter and
+/// reuse it for plain/normalized conversions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamDomain<'a> {
+    scalar: ScalarType,
+    minimum: f64,
+    maximum: f64,
+    scale: ParamScale,
+    curve: Option<f64>,
+    unit: Option<&'a str>,
+    step: Option<f64>,
+    step_count: Option<u32>,
+}
+
+impl<'a> ParamDomain<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        scalar: ScalarType,
+        minimum: f64,
+        maximum: f64,
+        scale: ParamScale,
+        curve: Option<f64>,
+        unit: Option<&'a str>,
+        step: Option<f64>,
+        step_count: Option<u32>,
+    ) -> Option<Self> {
+        if !matches!(
+            scalar,
+            ScalarType::F32 | ScalarType::F64 | ScalarType::I32 | ScalarType::I64
+        ) || !minimum.is_finite()
+            || !maximum.is_finite()
+            || minimum >= maximum
+            || curve.is_some_and(|curve| !curve.is_finite())
+            || unit.is_some_and(|unit| unit.contains('\0'))
+            || step.is_some_and(|step| !step.is_finite() || step <= 0.0)
+            || step.is_some() != step_count.is_some()
+            || step_count == Some(0)
+        {
+            return None;
+        }
+        if !host_control_value_fits_scalar(scalar, minimum)
+            || !host_control_value_fits_scalar(scalar, maximum)
+            || step.is_some_and(|step| !host_control_value_fits_scalar(scalar, step))
+            || (scalar == ScalarType::I64
+                && maximum - minimum > MAX_EXACT_HOST_CONTROL_INTEGER as f64)
+        {
+            return None;
+        }
+        if scale == ParamScale::Log
+            && (!matches!(scalar, ScalarType::F32 | ScalarType::F64)
+                || minimum <= 0.0
+                || curve.is_some()
+                || step.is_some())
+        {
+            return None;
+        }
+        if matches!(scalar, ScalarType::I32 | ScalarType::I64) && step.is_none() {
+            return None;
+        }
+        if let (Some(step), Some(step_count)) = (step, step_count) {
+            if validated_step_count(scalar, minimum, maximum, step) != Some(step_count) {
+                return None;
+            }
+        }
+        Some(Self {
+            scalar,
+            minimum,
+            maximum,
+            scale,
+            curve,
+            unit,
+            step,
+            step_count,
+        })
+    }
+
+    fn from_control(range: ValueRange, control: &'a ParamControl) -> Option<Self> {
+        let scalar = range.min.ty();
+        if range.max.ty() != scalar || control.step.is_some_and(|step| step.ty() != scalar) {
+            return None;
+        }
+        Self::new(
+            scalar,
+            range.min.as_f64(),
+            range.max.as_f64(),
+            control.scale,
+            control.curve,
+            control.unit.as_deref(),
+            control.step.map(ScalarValue::as_f64),
+            control.step_count,
+        )
+    }
+
+    pub const fn scalar(self) -> ScalarType {
+        self.scalar
+    }
+
+    pub const fn minimum(self) -> f64 {
+        self.minimum
+    }
+
+    pub const fn maximum(self) -> f64 {
+        self.maximum
+    }
+
+    pub const fn scale(self) -> ParamScale {
+        self.scale
+    }
+
+    pub const fn scale_name(self) -> &'static str {
+        match self.scale {
+            ParamScale::Linear => "linear",
+            ParamScale::Log => "log",
+        }
+    }
+
+    pub const fn curve(self) -> Option<f64> {
+        self.curve
+    }
+
+    pub const fn unit(self) -> Option<&'a str> {
+        self.unit
+    }
+
+    pub const fn step(self) -> Option<f64> {
+        self.step
+    }
+
+    pub const fn step_count(self) -> Option<u32> {
+        self.step_count
+    }
+
+    pub fn constrain_plain(self, plain: f64) -> f64 {
         let clamped = if plain.is_nan() {
-            min
+            self.minimum
         } else {
-            plain.clamp(min, max)
+            plain.clamp(self.minimum, self.maximum)
         };
         let Some(step) = self.step else {
             return clamped;
         };
-        let step = step.as_f64();
-        let snapped = min + ((clamped - min) / step).round() * step;
-        snapped.clamp(min, max)
+        let snapped = self.minimum + ((clamped - self.minimum) / step).round() * step;
+        snapped.clamp(self.minimum, self.maximum)
     }
 
-    pub fn normalized_to_plain(&self, range: ValueRange, normalized: f64) -> f64 {
+    pub fn normalized_to_plain(self, normalized: f64) -> f64 {
         let normalized = if normalized.is_nan() {
             0.0
         } else {
             normalized.clamp(0.0, 1.0)
         };
-        let min = range.min.as_f64();
-        let max = range.max.as_f64();
         if normalized == 0.0 {
-            return min;
+            return self.minimum;
         }
         if normalized == 1.0 {
-            return max;
+            return self.maximum;
         }
         let plain = match (self.curve, self.scale) {
-            (Some(curve), ParamScale::Linear) => {
-                min + curve_normalized_to_unit(curve, normalized) * (max - min)
+            (Some(curve), ParamScale::Linear) => linear_unit_to_plain(
+                self.minimum,
+                self.maximum,
+                curve_normalized_to_unit(curve, normalized),
+            ),
+            (None, ParamScale::Linear) => {
+                linear_unit_to_plain(self.minimum, self.maximum, normalized)
             }
-            (None, ParamScale::Linear) => min + normalized * (max - min),
             (None, ParamScale::Log) => {
-                let log_min = min.ln();
-                (log_min + normalized * (max.ln() - log_min)).exp()
+                let log_min = self.minimum.ln();
+                (log_min + normalized * (self.maximum.ln() - log_min)).exp()
             }
             (Some(_), ParamScale::Log) => {
                 unreachable!("validated control cannot mix log and curve")
             }
         };
-        self.constrain_plain(range, plain)
+        self.constrain_plain(plain)
     }
 
-    pub fn plain_to_normalized(&self, range: ValueRange, plain: f64) -> f64 {
-        let plain = self.constrain_plain(range, plain);
-        let min = range.min.as_f64();
-        let max = range.max.as_f64();
-        if plain == min {
+    pub fn plain_to_normalized(self, plain: f64) -> f64 {
+        let plain = self.constrain_plain(plain);
+        if plain == self.minimum {
             return 0.0;
         }
-        if plain == max {
+        if plain == self.maximum {
             return 1.0;
         }
         match (self.curve, self.scale) {
-            (Some(curve), ParamScale::Linear) => {
-                curve_unit_to_normalized(curve, (plain - min) / (max - min))
-            }
-            (None, ParamScale::Linear) => (plain - min) / (max - min),
+            (Some(curve), ParamScale::Linear) => curve_unit_to_normalized(
+                curve,
+                linear_plain_to_unit(self.minimum, self.maximum, plain),
+            ),
+            (None, ParamScale::Linear) => linear_plain_to_unit(self.minimum, self.maximum, plain),
             (None, ParamScale::Log) => {
-                let log_min = min.ln();
-                (plain.ln() - log_min) / (max.ln() - log_min)
+                let log_min = self.minimum.ln();
+                (plain.ln() - log_min) / (self.maximum.ln() - log_min)
             }
             (Some(_), ParamScale::Log) => {
                 unreachable!("validated control cannot mix log and curve")
             }
         }
         .clamp(0.0, 1.0)
+    }
+}
+
+fn host_control_value_fits_scalar(scalar: ScalarType, value: f64) -> bool {
+    match scalar {
+        ScalarType::F32 => (value as f32) as f64 == value,
+        ScalarType::F64 => true,
+        ScalarType::I32 => {
+            value.fract() == 0.0 && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX)
+        }
+        ScalarType::I64 => {
+            value.fract() == 0.0 && value.abs() <= MAX_EXACT_HOST_CONTROL_INTEGER as f64
+        }
+        ScalarType::Bool => false,
+    }
+}
+
+#[doc(hidden)]
+pub fn validated_step_count(
+    scalar: ScalarType,
+    minimum: f64,
+    maximum: f64,
+    step: f64,
+) -> Option<u32> {
+    if !minimum.is_finite()
+        || !maximum.is_finite()
+        || !step.is_finite()
+        || minimum >= maximum
+        || step <= 0.0
+    {
+        return None;
+    }
+    match scalar {
+        ScalarType::F32 | ScalarType::F64 => {
+            let intervals = (maximum - minimum) / step;
+            if !intervals.is_finite() {
+                return None;
+            }
+            let rounded = intervals.round();
+            if rounded < 1.0 || rounded > f64::from(u32::MAX) {
+                return None;
+            }
+            let count = rounded as u32;
+            float_grid_value_matches(scalar, minimum, maximum, step, count).then_some(count)
+        }
+        ScalarType::I32 | ScalarType::I64 => {
+            if minimum.fract() != 0.0 || maximum.fract() != 0.0 || step.fract() != 0.0 {
+                return None;
+            }
+            let width = maximum - minimum;
+            let intervals = width / step;
+            if !width.is_finite()
+                || !intervals.is_finite()
+                || intervals.fract() != 0.0
+                || intervals < 1.0
+                || intervals > f64::from(u32::MAX)
+            {
+                return None;
+            }
+            Some(intervals as u32)
+        }
+        ScalarType::Bool => None,
+    }
+}
+
+#[doc(hidden)]
+pub fn value_is_on_step_grid(
+    scalar: ScalarType,
+    minimum: f64,
+    value: f64,
+    step: f64,
+    step_count: u32,
+) -> bool {
+    if !value.is_finite() || !step.is_finite() || step <= 0.0 {
+        return false;
+    }
+    match scalar {
+        ScalarType::F32 | ScalarType::F64 => {
+            let index = (value - minimum) / step;
+            if !index.is_finite() {
+                return false;
+            }
+            let rounded = index.round();
+            if rounded < 0.0 || rounded > f64::from(step_count) {
+                return false;
+            }
+            float_grid_value_matches(scalar, minimum, value, step, rounded as u32)
+        }
+        ScalarType::I32 | ScalarType::I64 => {
+            value.fract() == 0.0
+                && minimum.fract() == 0.0
+                && step.fract() == 0.0
+                && (value - minimum) % step == 0.0
+        }
+        ScalarType::Bool => false,
+    }
+}
+
+fn float_grid_value_matches(
+    scalar: ScalarType,
+    minimum: f64,
+    expected: f64,
+    step: f64,
+    index: u32,
+) -> bool {
+    let scaled_step = step * f64::from(index);
+    let reconstructed = minimum + scaled_step;
+    if !reconstructed.is_finite() {
+        return false;
+    }
+    if scalar == ScalarType::F32 {
+        return (reconstructed as f32).to_bits() == (expected as f32).to_bits();
+    }
+
+    const ROUNDING_ULPS: f64 = 8.0;
+    const MAX_ERROR_IN_STEPS: f64 = 0.125;
+    let scale = minimum
+        .abs()
+        .max(expected.abs())
+        .max(scaled_step.abs())
+        .max(f64::MIN_POSITIVE);
+    let rounding_tolerance = ROUNDING_ULPS * f64::EPSILON * scale;
+    let grid_tolerance = MAX_ERROR_IN_STEPS * step;
+    (reconstructed - expected).abs() <= rounding_tolerance.min(grid_tolerance)
+}
+
+fn linear_unit_to_plain(minimum: f64, maximum: f64, unit: f64) -> f64 {
+    let width = maximum - minimum;
+    if width.is_finite() {
+        minimum + unit * width
+    } else {
+        (1.0 - unit) * minimum + unit * maximum
+    }
+}
+
+fn linear_plain_to_unit(minimum: f64, maximum: f64, plain: f64) -> f64 {
+    let width = maximum - minimum;
+    if width.is_finite() {
+        (plain - minimum) / width
+    } else {
+        let scale = minimum.abs().max(maximum.abs());
+        ((plain / scale) - (minimum / scale)) / ((maximum / scale) - (minimum / scale))
+    }
+}
+
+impl ParamControl {
+    pub fn domain(&self, range: ValueRange) -> Option<ParamDomain<'_>> {
+        ParamDomain::from_control(range, self)
     }
 }
 
@@ -360,62 +640,154 @@ mod param_control_tests {
     use super::*;
 
     #[test]
+    fn prepares_an_already_decoded_domain() {
+        let domain = ParamDomain::new(
+            ScalarType::F64,
+            0.0,
+            1.0,
+            ParamScale::Linear,
+            None,
+            Some("dB"),
+            Some(0.25),
+            Some(4),
+        )
+        .expect("valid decoded domain");
+
+        assert_eq!(domain.unit(), Some("dB"));
+        assert_eq!(domain.normalized_to_plain(0.5), 0.5);
+        assert_eq!(domain.plain_to_normalized(0.5), 0.5);
+        assert_eq!(domain.constrain_plain(0.7), 0.75);
+    }
+
+    #[test]
     fn maps_linear_and_logarithmic_domains() {
         let linear = ParamControl::default();
         let linear_range = ValueRange {
             min: ScalarValue::F64(20.0),
             max: ScalarValue::F64(20_000.0),
         };
-        assert_eq!(linear.normalized_to_plain(linear_range, 0.5), 10_010.0);
-        assert_eq!(linear.plain_to_normalized(linear_range, 10_010.0), 0.5);
+        let linear = linear
+            .domain(linear_range)
+            .expect("valid linear control domain");
+        assert_eq!(linear.normalized_to_plain(0.5), 10_010.0);
+        assert_eq!(linear.plain_to_normalized(10_010.0), 0.5);
 
-        let log = ParamControl {
+        let log_control = ParamControl {
             scale: ParamScale::Log,
             ..ParamControl::default()
         };
-        let midpoint = log.normalized_to_plain(linear_range, 0.5);
+        let log = log_control
+            .domain(linear_range)
+            .expect("valid logarithmic control domain");
+        let midpoint = log.normalized_to_plain(0.5);
         assert!((midpoint - (20.0_f64 * 20_000.0).sqrt()).abs() < 1.0e-10);
-        assert!((log.plain_to_normalized(linear_range, midpoint) - 0.5).abs() < 1.0e-12);
+        assert!((log.plain_to_normalized(midpoint) - 0.5).abs() < 1.0e-12);
 
         let wide_range = ValueRange {
             min: ScalarValue::F64(1.0e-300),
             max: ScalarValue::F64(1.0e300),
         };
-        let wide_midpoint = log.normalized_to_plain(wide_range, 0.5);
-        assert!((wide_midpoint - 1.0).abs() < 1.0e-12);
-        assert!((log.plain_to_normalized(wide_range, 1.0) - 0.5).abs() < 1.0e-12);
-
-        let inverse_curve = ParamControl {
-            curve: Some(-4.0),
+        let wide_log_control = ParamControl {
+            scale: ParamScale::Log,
             ..ParamControl::default()
         };
+        let wide_log = wide_log_control
+            .domain(wide_range)
+            .expect("valid wide logarithmic control domain");
+        let wide_midpoint = wide_log.normalized_to_plain(0.5);
+        assert!((wide_midpoint - 1.0).abs() < 1.0e-12);
+        assert!((wide_log.plain_to_normalized(1.0) - 0.5).abs() < 1.0e-12);
+
         let unit_range = ValueRange {
             min: ScalarValue::F64(0.0),
             max: ScalarValue::F64(1.0),
         };
-        let curved_midpoint = inverse_curve.normalized_to_plain(unit_range, 0.5);
+        let inverse_curve_control = ParamControl {
+            curve: Some(-4.0),
+            ..ParamControl::default()
+        };
+        let inverse_curve = inverse_curve_control
+            .domain(unit_range)
+            .expect("valid inverse curve domain");
+        let curved_midpoint = inverse_curve.normalized_to_plain(0.5);
         let expected = (-2.0_f64).exp_m1() / (-4.0_f64).exp_m1();
         assert!((curved_midpoint - expected).abs() < 1.0e-12);
-        assert!(
-            (inverse_curve.plain_to_normalized(unit_range, curved_midpoint) - 0.5).abs() < 1.0e-12
-        );
+        assert!((inverse_curve.plain_to_normalized(curved_midpoint) - 0.5).abs() < 1.0e-12);
 
-        let forward_curve = ParamControl {
+        let forward_curve_control = ParamControl {
             curve: Some(4.0),
             ..ParamControl::default()
         };
-        assert!(
-            (forward_curve.normalized_to_plain(unit_range, 0.5) + curved_midpoint - 1.0).abs()
-                < 1.0e-12
-        );
+        let forward_curve = forward_curve_control
+            .domain(unit_range)
+            .expect("valid forward curve domain");
+        assert!((forward_curve.normalized_to_plain(0.5) + curved_midpoint - 1.0).abs() < 1.0e-12);
 
-        let curved_step = ParamControl {
+        let curved_step_control = ParamControl {
             curve: Some(-4.0),
             step: Some(ScalarValue::F64(0.25)),
             step_count: Some(4),
             ..ParamControl::default()
         };
-        assert_eq!(curved_step.normalized_to_plain(unit_range, 0.5), 1.0);
+        let curved_step = curved_step_control
+            .domain(unit_range)
+            .expect("valid stepped curve domain");
+        assert_eq!(curved_step.normalized_to_plain(0.5), 1.0);
+    }
+
+    #[test]
+    fn maps_wide_linear_domains_without_overflow() {
+        let domain = ParamDomain::new(
+            ScalarType::F64,
+            -1.0e308,
+            1.0e308,
+            ParamScale::Linear,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid wide linear domain");
+        assert_eq!(domain.normalized_to_plain(0.5), 0.0);
+        assert_eq!(domain.plain_to_normalized(0.0), 0.5);
+
+        let curved = ParamDomain::new(
+            ScalarType::F64,
+            -1.0e308,
+            1.0e308,
+            ParamScale::Linear,
+            Some(-4.0),
+            None,
+            None,
+            None,
+        )
+        .expect("valid wide curved domain");
+        let midpoint = curved.normalized_to_plain(0.5);
+        assert!(midpoint.is_finite());
+        assert!((curved.plain_to_normalized(midpoint) - 0.5).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn validates_float_grids_at_storage_precision() {
+        assert_eq!(
+            validated_step_count(ScalarType::F32, 0.0, 100_000.0, 0.1_f32 as f64),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            validated_step_count(ScalarType::F64, 0.0, 0.3, 0.1),
+            Some(3)
+        );
+        assert_eq!(
+            validated_step_count(ScalarType::F32, 0.0, 100_000.5, 1.0),
+            None
+        );
+        assert!(!value_is_on_step_grid(
+            ScalarType::F32,
+            0.0,
+            50_000.5,
+            1.0,
+            100_000,
+        ));
     }
 
     #[test]
@@ -429,9 +801,10 @@ mod param_control_tests {
             min: ScalarValue::I32(0),
             max: ScalarValue::I32(10),
         };
-        assert_eq!(control.constrain_plain(range, -1.0), 0.0);
-        assert_eq!(control.constrain_plain(range, 3.2), 4.0);
-        assert_eq!(control.normalized_to_plain(range, 0.3), 4.0);
-        assert_eq!(control.plain_to_normalized(range, 3.2), 0.4);
+        let domain = control.domain(range).expect("valid stepped domain");
+        assert_eq!(domain.constrain_plain(-1.0), 0.0);
+        assert_eq!(domain.constrain_plain(3.2), 4.0);
+        assert_eq!(domain.normalized_to_plain(0.3), 4.0);
+        assert_eq!(domain.plain_to_normalized(3.2), 0.4);
     }
 }

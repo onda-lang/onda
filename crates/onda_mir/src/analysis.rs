@@ -534,6 +534,21 @@ fn range_of_rvalue(
                 _ => unreachable!(),
             }
         }
+        Rvalue::Intrinsic {
+            intrinsic: crate::Intrinsic::RangeClamp,
+            args,
+        } if args.len() == 3 => {
+            let lower = range_of_value(args[1], environment)?;
+            let upper = range_of_value(args[2], environment)?;
+            if lower.scalar != upper.scalar
+                || lower.min != lower.max
+                || upper.min != upper.max
+                || lower.min > upper.max
+            {
+                return None;
+            }
+            IntegerRange::new(lower.scalar, lower.min, upper.max)
+        }
         Rvalue::ProcessFrame { .. } => IntegerRange::new(
             ScalarType::I32,
             0,

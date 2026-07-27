@@ -2935,6 +2935,7 @@ fn map_intrinsic(function: BuiltinFn) -> Intrinsic {
         BuiltinFn::Min => Intrinsic::Min,
         BuiltinFn::Max => Intrinsic::Max,
         BuiltinFn::Fma => Intrinsic::Fma,
+        BuiltinFn::RangeClamp => Intrinsic::RangeClamp,
     }
 }
 

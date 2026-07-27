@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
-use onda_run::{RunController, RunHostOptions, RunThemeMode};
+use onda_run::{
+    ParamDomain, ParamScalarType, ParamScale, RunController, RunHostOptions, RunThemeMode,
+};
 use serde_json::{Number, Value};
 
 const LOGO_DARK_URI: &str = "bytes://onda-logo-dark-rect.svg";
@@ -653,12 +655,33 @@ impl RunApp {
         let min = param.get("rangeMin").and_then(Value::as_f64);
         let max = param.get("rangeMax").and_then(Value::as_f64);
         let default = param.get("default").and_then(Value::as_f64);
-        let declared_step = param.get("step").and_then(Value::as_f64);
-        let scale = ParamControlScale::from_metadata(param.get("scale").and_then(Value::as_str));
+        let step = param.get("step").and_then(Value::as_f64);
+        let step_count = param
+            .get("stepCount")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok());
+        let scale = match param.get("scale").and_then(Value::as_str) {
+            Some("log") => ParamScale::Log,
+            _ => ParamScale::Linear,
+        };
+        let scalar = match param.get("scalar").and_then(Value::as_str) {
+            Some("f32") => Some(ParamScalarType::F32),
+            Some("f64") => Some(ParamScalarType::F64),
+            Some("i32") => Some(ParamScalarType::I32),
+            Some("i64") => Some(ParamScalarType::I64),
+            _ => None,
+        };
         let curve = param.get("curve").and_then(Value::as_f64);
-        let display_name = param
-            .get("unit")
-            .and_then(Value::as_str)
+        let unit = param.get("unit").and_then(Value::as_str);
+        let domain = min
+            .zip(max)
+            .zip(scalar)
+            .and_then(|((minimum, maximum), scalar)| {
+                ParamDomain::new(
+                    scalar, minimum, maximum, scale, curve, unit, step, step_count,
+                )
+            });
+        let display_name = unit
             .filter(|unit| !unit.is_empty())
             .map(|unit| format!("{name} ({unit})"))
             .unwrap_or_else(|| name.clone());
@@ -670,12 +693,8 @@ impl RunApp {
         let spec = ParamControlSpec {
             label: &display_name,
             ty,
-            min,
-            max,
             default,
-            step: declared_step,
-            scale,
-            curve,
+            domain,
         };
         let outcome = if compact {
             render_compact_param_value_editor(ui, spec, &value, number_draft)
@@ -688,12 +707,10 @@ impl RunApp {
                 self.number_drafts.insert(name, next_value);
             }
             ParamEditOutcome::Commit(next_value) => {
-                let next_value = match (next_value.as_f64(), min, max, declared_step) {
-                    (Some(value), Some(min), Some(max), Some(step)) => {
-                        json_number(quantize_control_value(value, min, max, step))
-                    }
-                    _ => next_value,
-                };
+                let next_value = next_value
+                    .as_f64()
+                    .map(|value| json_number(spec.constrain_plain(value)))
+                    .unwrap_or(next_value);
                 self.number_drafts.remove(&name);
                 set_param_value(&mut param, next_value.clone());
                 self.controller
@@ -1398,81 +1415,30 @@ enum ParamEditOutcome {
     Commit(Value),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ParamControlScale {
-    #[default]
-    Linear,
-    Log,
-}
-
-impl ParamControlScale {
-    fn from_metadata(scale: Option<&str>) -> Self {
-        match scale {
-            Some("log") => Self::Log,
-            _ => Self::Linear,
-        }
-    }
-
-    const fn is_logarithmic(self) -> bool {
-        matches!(self, Self::Log)
-    }
-
-    fn plain_to_normalized(self, curve: Option<f64>, value: f64, min: f64, max: f64) -> f64 {
-        let value = value.clamp(min, max);
-        if value == min {
-            return 0.0;
-        }
-        if value == max {
-            return 1.0;
-        }
-        if let Some(curve) = curve {
-            curve_unit_to_normalized(curve, (value - min) / (max - min))
-        } else if self.is_logarithmic() && min > 0.0 && max > min {
-            let log_min = min.ln();
-            (value.ln() - log_min) / (max.ln() - log_min)
-        } else if max > min {
-            (value - min) / (max - min)
-        } else {
-            0.0
-        }
-        .clamp(0.0, 1.0)
-    }
-
-    fn normalized_to_plain(self, curve: Option<f64>, normalized: f64, min: f64, max: f64) -> f64 {
-        let normalized = normalized.clamp(0.0, 1.0);
-        if normalized == 0.0 {
-            return min;
-        }
-        if normalized == 1.0 {
-            return max;
-        }
-        if let Some(curve) = curve {
-            min + curve_normalized_to_unit(curve, normalized) * (max - min)
-        } else if self.is_logarithmic() && min > 0.0 && max > min {
-            let log_min = min.ln();
-            (log_min + normalized * (max.ln() - log_min)).exp()
-        } else {
-            min + normalized * (max - min)
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct ParamControlSpec<'a> {
     label: &'a str,
     ty: &'a str,
-    min: Option<f64>,
-    max: Option<f64>,
     default: Option<f64>,
-    step: Option<f64>,
-    scale: ParamControlScale,
-    curve: Option<f64>,
+    domain: Option<ParamDomain<'a>>,
 }
 
 impl ParamControlSpec<'_> {
+    fn bounds(self) -> Option<(f64, f64)> {
+        self.domain
+            .map(|domain| (domain.minimum(), domain.maximum()))
+    }
+
     fn effective_step(self) -> f64 {
-        self.step
-            .unwrap_or_else(|| scalar_step(self.ty, self.min, self.max))
+        let (min, max) = self.bounds().unzip();
+        self.domain
+            .and_then(ParamDomain::step)
+            .unwrap_or_else(|| scalar_step(self.ty, min, max))
+    }
+
+    fn constrain_plain(self, value: f64) -> f64 {
+        self.domain
+            .map_or(value, |domain| domain.constrain_plain(value))
     }
 }
 
@@ -1482,15 +1448,8 @@ fn render_param_value_editor(
     value: &Value,
     number_draft: Option<f64>,
 ) -> ParamEditOutcome {
-    let ParamControlSpec {
-        label,
-        ty,
-        min,
-        max,
-        scale,
-        curve,
-        ..
-    } = spec;
+    let ParamControlSpec { label, ty, .. } = spec;
+    let (min, max) = spec.bounds().unzip();
     if ty == "bool" {
         let mut checked = value.as_bool().unwrap_or(false);
         if ui
@@ -1581,29 +1540,28 @@ fn render_param_value_editor(
                 .scope(|ui| {
                     ui.spacing_mut().interact_size.y = 24.0;
                     ui.spacing_mut().slider_width = ui.available_width();
-                    let slider = if curve.is_some() {
-                        let mut normalized =
-                            scale.plain_to_normalized(curve, slider_value, min, max);
+                    let domain = spec
+                        .domain
+                        .expect("ranged parameter controls must have a prepared domain");
+                    let slider = if domain.curve().is_some() || domain.scale() == ParamScale::Log {
+                        let mut normalized = domain.plain_to_normalized(slider_value);
                         let response = ui.add_sized(
                             [ui.available_width(), 24.0],
                             egui::Slider::new(&mut normalized, 0.0..=1.0)
                                 .show_value(false)
                                 .trailing_fill(true),
                         );
-                        slider_value = scale.normalized_to_plain(curve, normalized, min, max);
-                        slider_value = quantize_control_value(slider_value, min, max, step);
+                        slider_value = domain.normalized_to_plain(normalized);
                         return response;
                     } else if is_integer {
                         egui::Slider::new(&mut slider_value, min..=max)
                             .integer()
-                            .step_by(1.0)
-                            .logarithmic(scale.is_logarithmic())
+                            .step_by(step)
                             .show_value(false)
                             .trailing_fill(true)
                     } else {
                         egui::Slider::new(&mut slider_value, min..=max)
                             .step_by(step)
-                            .logarithmic(scale.is_logarithmic())
                             .show_value(false)
                             .trailing_fill(true)
                     };
@@ -1647,7 +1605,7 @@ fn render_compact_param_value_editor(
     let committed_number = value.as_f64().unwrap_or(0.0);
     let mut displayed_number = number_draft.unwrap_or(committed_number);
 
-    if let (Some(min), Some(max)) = (spec.min, spec.max) {
+    if let Some((min, max)) = spec.bounds() {
         let mut knob_value = committed_number;
         if render_param_knob(ui, &mut knob_value, min, max, spec).changed() {
             displayed_number = knob_value;
@@ -1661,8 +1619,8 @@ fn render_compact_param_value_editor(
     let next = render_compact_number_input(
         ui,
         spec.ty,
-        spec.min,
-        spec.max,
+        spec.bounds().map(|(min, _)| min),
+        spec.bounds().map(|(_, max)| max),
         spec.effective_step(),
         displayed_number,
         number_draft.is_some(),
@@ -1774,6 +1732,9 @@ fn render_param_knob(
     spec: ParamControlSpec<'_>,
 ) -> egui::Response {
     let step = spec.effective_step();
+    let domain = spec
+        .domain
+        .expect("knob controls must have a prepared parameter domain");
     let size = egui::vec2(64.0, 64.0);
     let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), *value, spec.label));
@@ -1782,14 +1743,20 @@ fn render_param_knob(
     }
 
     let mut next_value = *value;
+    if response.drag_started() {
+        ui.data_mut(|data| {
+            data.insert_temp(response.id, KnobDragState::new(domain, next_value));
+        });
+    }
     if response.dragged() {
-        let delta_y = ui.input(|input| input.pointer.delta().y) as f64;
-        let normalized = spec
-            .scale
-            .plain_to_normalized(spec.curve, next_value, min, max);
-        next_value =
-            spec.scale
-                .normalized_to_plain(spec.curve, normalized - delta_y / 160.0, min, max);
+        let delta_y = response.drag_delta().y as f64;
+        next_value = ui.data_mut(|data| {
+            data.get_temp_mut_or_insert_with(response.id, || KnobDragState::new(domain, next_value))
+                .drag(domain, delta_y)
+        });
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|data| data.remove::<KnobDragState>(response.id));
     }
     if response.has_focus() {
         ui.input(|input| {
@@ -1811,7 +1778,7 @@ fn render_param_knob(
         next_value = spec.default.unwrap_or(min);
     }
 
-    next_value = quantize_control_value(next_value, min, max, step);
+    next_value = spec.constrain_plain(next_value);
     if next_value != *value {
         *value = next_value;
         response.mark_changed();
@@ -1825,7 +1792,7 @@ fn render_param_knob(
     ui.painter()
         .circle_stroke(center, radius, visuals.bg_stroke);
 
-    let ratio = spec.scale.plain_to_normalized(spec.curve, *value, min, max) as f32;
+    let ratio = domain.plain_to_normalized(*value) as f32;
     let start = 135.0_f32.to_radians();
     let sweep = 270.0_f32.to_radians();
     paint_knob_arc(
@@ -1857,6 +1824,31 @@ fn render_param_knob(
     response.on_hover_text("Drag vertically to adjust; double-click to reset")
 }
 
+const KNOB_DRAG_POINTS_PER_RANGE: f64 = 160.0;
+
+#[derive(Clone, Copy)]
+struct KnobDragState {
+    start_normalized: f64,
+    delta_y: f64,
+}
+
+impl KnobDragState {
+    fn new(domain: ParamDomain<'_>, plain: f64) -> Self {
+        Self {
+            start_normalized: domain.plain_to_normalized(plain),
+            delta_y: 0.0,
+        }
+    }
+
+    fn drag(&mut self, domain: ParamDomain<'_>, delta_y: f64) -> f64 {
+        let minimum_delta = (self.start_normalized - 1.0) * KNOB_DRAG_POINTS_PER_RANGE;
+        let maximum_delta = self.start_normalized * KNOB_DRAG_POINTS_PER_RANGE;
+        self.delta_y = (self.delta_y + delta_y).clamp(minimum_delta, maximum_delta);
+        domain
+            .normalized_to_plain(self.start_normalized - self.delta_y / KNOB_DRAG_POINTS_PER_RANGE)
+    }
+}
+
 fn paint_knob_arc(
     painter: &egui::Painter,
     center: egui::Pos2,
@@ -1873,36 +1865,6 @@ fn paint_knob_arc(
         })
         .collect();
     painter.add(egui::Shape::line(points, stroke));
-}
-
-const CURVE_LINEAR_EPSILON: f64 = 0.001;
-
-fn curve_normalized_to_unit(curve: f64, normalized: f64) -> f64 {
-    if curve.abs() < CURVE_LINEAR_EPSILON {
-        normalized
-    } else if curve > 0.0 {
-        1.0 - curve_normalized_to_unit(-curve, 1.0 - normalized)
-    } else {
-        (curve * normalized).exp_m1() / curve.exp_m1()
-    }
-}
-
-fn curve_unit_to_normalized(curve: f64, unit: f64) -> f64 {
-    if curve.abs() < CURVE_LINEAR_EPSILON {
-        unit
-    } else if curve > 0.0 {
-        1.0 - curve_unit_to_normalized(-curve, 1.0 - unit)
-    } else {
-        (unit * curve.exp_m1()).ln_1p() / curve
-    }
-}
-
-fn quantize_control_value(value: f64, min: f64, max: f64, step: f64) -> f64 {
-    let value = value.clamp(min, max);
-    if !step.is_finite() || step <= 0.0 {
-        return value;
-    }
-    (min + ((value - min) / step).round() * step).clamp(min, max)
 }
 
 fn param_grid_columns(available_width: f32, layout: ParamLayout) -> usize {
@@ -2270,8 +2232,9 @@ mod tests {
     use super::{
         buffer_loaded_summary, control_decimals, event_arg_signature, event_array_grid_columns,
         event_array_len, event_array_scalar_type, format_run_status, param_grid_columns,
-        quantize_control_value, render_compact_param_value_editor, scalar_drag_speed, scalar_step,
-        ParamControlScale, ParamControlSpec, ParamLayout, PARAM_LAYOUT_STORAGE_KEY,
+        render_compact_param_value_editor, scalar_drag_speed, scalar_step, KnobDragState,
+        ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale,
+        PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
     struct TestStorage(HashMap<String, String>);
@@ -2309,43 +2272,122 @@ mod tests {
 
     #[test]
     fn knob_values_follow_the_shared_scalar_step() {
-        assert_eq!(quantize_control_value(705.06, 40.0, 12_000.0, 0.1), 705.1);
-        assert_eq!(quantize_control_value(705.6, 40.0, 12_000.0, 1.0), 706.0);
+        let fine = ParamDomain::new(
+            ParamScalarType::F64,
+            40.0,
+            12_000.0,
+            ParamScale::Linear,
+            None,
+            None,
+            Some(0.1),
+            Some(119_600),
+        )
+        .expect("valid fine domain");
+        let coarse = ParamDomain::new(
+            ParamScalarType::F64,
+            40.0,
+            12_000.0,
+            ParamScale::Linear,
+            None,
+            None,
+            Some(1.0),
+            Some(11_960),
+        )
+        .expect("valid coarse domain");
+        assert_eq!(fine.constrain_plain(705.06), 705.1);
+        assert_eq!(coarse.constrain_plain(705.6), 706.0);
+    }
+
+    #[test]
+    fn stepped_knob_drag_accumulates_sub_step_motion() {
+        let domain = ParamDomain::new(
+            ParamScalarType::F64,
+            0.0,
+            800.0,
+            ParamScale::Linear,
+            None,
+            None,
+            Some(100.0),
+            Some(8),
+        )
+        .expect("valid stepped domain");
+        let mut drag = KnobDragState::new(domain, 0.0);
+
+        for _ in 0..9 {
+            assert_eq!(drag.drag(domain, -1.0), 0.0);
+        }
+        assert_eq!(drag.drag(domain, -1.0), 100.0);
     }
 
     #[test]
     fn logarithmic_controls_map_the_geometric_midpoint_to_the_center() {
-        let scale = ParamControlScale::from_metadata(Some("log"));
         let min = 20.0;
         let max = 20_000.0;
-        let midpoint = scale.normalized_to_plain(None, 0.5, min, max);
+        let domain = ParamDomain::new(
+            ParamScalarType::F64,
+            min,
+            max,
+            ParamScale::Log,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid logarithmic domain");
+        let midpoint = domain.normalized_to_plain(0.5);
 
         assert!((midpoint - (min * max).sqrt()).abs() < 1e-10);
-        assert!((scale.plain_to_normalized(None, midpoint, min, max) - 0.5).abs() < 1e-12);
-        assert_eq!(scale.normalized_to_plain(None, 0.0, min, max), min);
-        assert_eq!(scale.normalized_to_plain(None, 1.0, min, max), max);
-        assert_eq!(scale.plain_to_normalized(None, min, min, max), 0.0);
-        assert_eq!(scale.plain_to_normalized(None, max, min, max), 1.0);
+        assert!((domain.plain_to_normalized(midpoint) - 0.5).abs() < 1e-12);
+        assert_eq!(domain.normalized_to_plain(0.0), min);
+        assert_eq!(domain.normalized_to_plain(1.0), max);
+        assert_eq!(domain.plain_to_normalized(min), 0.0);
+        assert_eq!(domain.plain_to_normalized(max), 1.0);
 
-        let wide_midpoint = scale.normalized_to_plain(None, 0.5, 1.0e-300, 1.0e300);
+        let wide = ParamDomain::new(
+            ParamScalarType::F64,
+            1.0e-300,
+            1.0e300,
+            ParamScale::Log,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid wide logarithmic domain");
+        let wide_midpoint = wide.normalized_to_plain(0.5);
         assert!((wide_midpoint - 1.0).abs() < 1.0e-12);
-        assert!((scale.plain_to_normalized(None, 1.0, 1.0e-300, 1.0e300) - 0.5).abs() < 1.0e-12);
+        assert!((wide.plain_to_normalized(1.0) - 0.5).abs() < 1.0e-12);
     }
 
     #[test]
     fn curved_controls_follow_supercollider_lincurve_shape() {
-        let scale = ParamControlScale::Linear;
-        let inverse_midpoint = scale.normalized_to_plain(Some(-4.0), 0.5, 0.0, 1.0);
+        let inverse = ParamDomain::new(
+            ParamScalarType::F64,
+            0.0,
+            1.0,
+            ParamScale::Linear,
+            Some(-4.0),
+            None,
+            None,
+            None,
+        )
+        .expect("valid inverse curve");
+        let inverse_midpoint = inverse.normalized_to_plain(0.5);
         let expected = (-2.0_f64).exp_m1() / (-4.0_f64).exp_m1();
         assert!((inverse_midpoint - expected).abs() < 1.0e-12);
-        assert!(
-            (scale.plain_to_normalized(Some(-4.0), inverse_midpoint, 0.0, 1.0) - 0.5).abs()
-                < 1.0e-12
-        );
-        assert!(
-            (scale.normalized_to_plain(Some(4.0), 0.5, 0.0, 1.0) + inverse_midpoint - 1.0).abs()
-                < 1.0e-12
-        );
+        assert!((inverse.plain_to_normalized(inverse_midpoint) - 0.5).abs() < 1.0e-12);
+        let forward = ParamDomain::new(
+            ParamScalarType::F64,
+            0.0,
+            1.0,
+            ParamScale::Linear,
+            Some(4.0),
+            None,
+            None,
+            None,
+        )
+        .expect("valid forward curve");
+        assert!((forward.normalized_to_plain(0.5) + inverse_midpoint - 1.0).abs() < 1.0e-12);
     }
 
     #[test]
@@ -2373,12 +2415,17 @@ mod tests {
         let spec = ParamControlSpec {
             label: "fine",
             ty: "f64",
-            min: Some(0.0),
-            max: Some(0.000_001),
             default: Some(0.0),
-            step: Some(0.000_000_1),
-            scale: ParamControlScale::Linear,
-            curve: None,
+            domain: ParamDomain::new(
+                ParamScalarType::F64,
+                0.0,
+                0.000_001,
+                ParamScale::Linear,
+                None,
+                None,
+                Some(0.000_000_1),
+                Some(10),
+            ),
         };
         assert_eq!(control_decimals(spec.effective_step()), 7);
     }
@@ -2461,12 +2508,17 @@ mod tests {
                 ParamControlSpec {
                     label: "a_very_long_parameter_name",
                     ty: "f32",
-                    min: Some(20.0),
-                    max: Some(20_000.0),
                     default: Some(880.0),
-                    step: None,
-                    scale: ParamControlScale::Log,
-                    curve: None,
+                    domain: ParamDomain::new(
+                        ParamScalarType::F64,
+                        20.0,
+                        20_000.0,
+                        ParamScale::Log,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
                 },
                 &serde_json::json!(880.0),
                 None,

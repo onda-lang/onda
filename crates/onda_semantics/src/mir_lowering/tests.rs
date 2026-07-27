@@ -16,6 +16,20 @@ fn validate(program: &Program) -> Result<(), Vec<onda_mir::ValidationError>> {
     unsafe { onda_mir::validate_with_producer_proofs(program) }
 }
 
+fn formatted_function<'a>(dump: &'a str, name: &str) -> &'a str {
+    let marker = format!("\"{name}\"");
+    let name_offset = dump
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing MIR function '{name}'"));
+    let start = dump[..name_offset]
+        .rfind("\nfn @")
+        .map_or(0, |offset| offset + 1);
+    let end = dump[name_offset..]
+        .find("\nfn @")
+        .map_or(dump.len(), |offset| name_offset + offset);
+    &dump[start..end]
+}
+
 fn empty_function(name: &str, kind: FunctionKind) -> Function {
     Function {
         name: name.to_owned(),
@@ -27,6 +41,123 @@ fn empty_function(name: &str, kind: FunctionKind) -> Function {
         body: MirBlock::default(),
         source: SourceSpan::UNKNOWN,
     }
+}
+
+#[test]
+fn ranged_top_level_params_are_clamped_once_per_export_entry() {
+    let source = r#"
+params:
+  value = 0.5 {0.0, 1.0}
+  unused = 0.25 {0.0, 1.0}
+outs:
+  out1
+init:
+  cached = value + value
+event bang():
+  cached = value + value
+sample:
+  out1 = value + value + cached
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("ranged parameters should lower");
+    let dump = format_program(&mir);
+
+    for entry in ["onda_init", "onda_process", "onda_event::bang"] {
+        let function = formatted_function(&dump, entry);
+        assert_eq!(
+            function.matches("load @param0").count(),
+            1,
+            "{entry} should load the used ranged parameter once:\n{function}"
+        );
+        assert_eq!(
+            function.matches("intrinsic range_clamp(").count(),
+            1,
+            "{entry} should clamp the used ranged parameter once:\n{function}"
+        );
+        assert!(
+            !function.contains("load @param1"),
+            "{entry} should not clamp an unused parameter:\n{function}"
+        );
+    }
+}
+
+#[test]
+fn ranged_top_level_param_clamps_preserve_scalar_types() {
+    let source = r#"
+params:
+  f32_value: f32 = 0.5 {0.0, 1.0}
+  f64_value: f64 = 0.5 {0.0, 1.0}
+  i32_value: i32 = 5 {0, 10}
+  i64_value: i64 = 5 {0, 10}
+outs:
+  out1
+sample:
+  out1 = f32_value + f32(f64_value) + f32(i32_value) + f32(i64_value)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("ranged scalar parameters should lower");
+    validate(&mir).expect("typed range clamps should produce valid MIR");
+
+    for (name, expected) in [
+        ("f32_value", onda_mir::ScalarType::F32),
+        ("f64_value", onda_mir::ScalarType::F64),
+        ("i32_value", onda_mir::ScalarType::I32),
+        ("i64_value", onda_mir::ScalarType::I64),
+    ] {
+        let alias = format!("__onda_clamped_param__{name}");
+        let slot = mir
+            .state
+            .iter()
+            .find(|slot| slot.name == alias)
+            .unwrap_or_else(|| panic!("missing clamp alias state '{alias}'"));
+        assert_eq!(
+            mir.types[slot.ty.index()],
+            onda_mir::Type::Scalar(expected),
+            "clamp alias for '{name}' must preserve its declared scalar type"
+        );
+    }
+}
+
+#[test]
+fn ranged_proc_params_are_clamped_once_when_assigned() {
+    let source = r#"
+proc Gain:
+  params:
+    amount = 0.5 {0.0, 1.0}
+  outs:
+    out1
+  sample:
+    out1 = amount + amount
+
+params:
+  drive = 0.5
+outs:
+  out1
+init:
+  gain = Gain()
+sample:
+  gain.amount = drive
+  out1 = gain()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("ranged proc parameters should lower");
+    let dump = format_program(&mir);
+
+    let process = formatted_function(&dump, "onda_process");
+    assert_eq!(
+        process.matches("intrinsic range_clamp(").count(),
+        1,
+        "the proc-param assignment should clamp once:\n{process}"
+    );
+
+    let step = formatted_function(&dump, "Gain.__proc_step");
+    assert!(
+        !step.contains("intrinsic range_clamp("),
+        "reads of the already-constrained proc parameter should not reclamp:\n{step}"
+    );
 }
 
 fn empty_mir() -> Program {

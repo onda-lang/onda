@@ -637,12 +637,18 @@ pub(crate) fn specialize_generic_proc_template(
                 errors,
             );
         }
-        if let Some(step) = &mut param.control.step {
-            rewrite_generic_array_ctor_expr_types(step, &type_bindings, errors);
+        for (field, expr) in [
+            ("curve", &mut param.control.curve),
+            ("step", &mut param.control.step),
+        ]
+        .into_iter()
+        .filter_map(|(field, expr)| expr.as_mut().map(|expr| (field, expr)))
+        {
+            rewrite_generic_array_ctor_expr_types(expr, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
-                step,
+                expr,
                 &type_bindings,
-                &format!("processor '{}' parameter step", template.name),
+                &format!("processor '{}' parameter {field}", template.name),
                 errors,
             );
         }

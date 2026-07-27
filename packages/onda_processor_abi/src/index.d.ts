@@ -77,6 +77,21 @@ export interface OndaPreparedParamControl {
   plainToNormalized(plain: number | boolean): number;
 }
 
+export interface OndaParamDomain {
+  name?: string | null;
+  scalar: OndaScalarType;
+  minimum: number | null;
+  maximum: number | null;
+  scale: "linear" | "log" | null;
+  curve?: number | null;
+  unit?: string | null;
+  step?: number | null;
+  stepCount?: number | null;
+}
+
+/** Validate an already-decoded domain once for repeated host-control use. */
+export function createParamDomain(domain: OndaParamDomain): OndaPreparedParamControl;
+
 /** Validate and decode descriptor metadata once for repeated host-control use. */
 export function createParamControl(param: OndaIoMetadata): OndaPreparedParamControl;
 

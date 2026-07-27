@@ -25,8 +25,9 @@ reset, and portable snapshots.
 ## Parameters
 
 `params` passed during construction and values passed to `setParam()` are plain Onda values. The
-worklet clamps ranged scalar values, snaps stepped domains, and writes the declared scalar
-representation.
+adapter clamps ranged scalar values and snaps stepped domains before posting them; the real-time
+worklet only writes the resulting canonical value in the declared scalar representation. Unknown
+initial parameter names or indices are rejected before the worklet node is constructed.
 
 `setParamNormalized()` accepts a host value in `[0, 1]`. The adapter uses the artifact descriptor's
 linear or logarithmic scale and step metadata to convert it to a plain value before posting the
@@ -52,7 +53,7 @@ const displayValue = paramNormalizedToPlain(cutoff, sliderValue);
 const sliderValueFor440Hz = paramPlainToNormalized(cutoff, 440);
 ```
 
-The helpers preserve exact endpoints, clamp and snap consistently with worklet writes, and reject
+The helpers preserve exact endpoints, clamp and snap consistently with adapter writes, and reject
 arrays or numeric parameters without a host-control domain. `scale`, `curve`, `unit`, `step_repr`,
 and `step_count` remain available on each parameter's descriptor metadata for control construction
 and formatting. For repeated UI conversion, `createParamControl(param)` prepares and validates the

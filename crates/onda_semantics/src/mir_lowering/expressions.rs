@@ -1112,6 +1112,19 @@ impl<'a> FunctionLowerer<'a> {
                     .ok_or_else(|| self.error("missing second intrinsic argument", location))?;
                 self.merge_numeric(left, right, "numeric intrinsic", location)?
             }
+            BuiltinFn::RangeClamp => {
+                let value = adapted_types
+                    .first()
+                    .copied()
+                    .ok_or_else(|| self.error("missing range-clamp value", location))?;
+                adapted_types
+                    .iter()
+                    .copied()
+                    .skip(1)
+                    .try_fold(value, |merged, bound| {
+                        self.merge_numeric(merged, bound, "range clamp", location)
+                    })?
+            }
             BuiltinFn::Pow => {
                 if adapted_types.contains(&PrimitiveType::F64) {
                     PrimitiveType::F64

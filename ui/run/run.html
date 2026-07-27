@@ -1583,22 +1583,17 @@
       function paramControl(param) {
         let control = paramControlCache.get(param);
         if (control) return control;
-        const metadata = {
+        control = globalThis.__ONDA_PARAM_CONTROL_V2__.createParamDomain({
           name: param.name,
-          type_repr: param.type,
           scalar: param.type,
-          array_len: 1,
-          range_min_repr: param.rangeMin === null ? null : String(param.rangeMin),
-          range_max_repr: param.rangeMax === null ? null : String(param.rangeMax),
-          param_control: param.scale === null ? null : {
-            scale: param.scale,
-            curve: param.curve,
-            unit: param.unit,
-            step_repr: param.step === null ? null : String(param.step),
-            step_count: param.stepCount,
-          },
-        };
-        control = globalThis.__ONDA_PARAM_CONTROL_V2__.createParamControl(metadata);
+          minimum: param.rangeMin,
+          maximum: param.rangeMax,
+          scale: param.scale,
+          curve: param.curve,
+          unit: param.unit,
+          step: param.step,
+          stepCount: param.stepCount,
+        });
         paramControlCache.set(param, control);
         return control;
       }

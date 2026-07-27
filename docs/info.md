@@ -253,7 +253,13 @@ Non-crate directories of note:
   and the flag mask; zero-frame segments are legal. The Binaryen wrapper and reference
   AudioWorklet implement the same scheduling contract. The worklet maintains the host-side
   compile-block cursor needed when Web Audio callback sizes differ from the compiled block size.
-- Per-block behavior: declared buffers must be bound before processing; top-level ranged params are hoisted/clamped once per block; top-level ranged inputs once per sample; host-triggered events run synchronously via index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous element bytes).
+- Entry-point behavior: declared buffers must be bound before processing; each top-level ranged
+  parameter used by an entry point is hoisted and clamped once at the start of init, each event, or
+  each logical process block; top-level ranged inputs are clamped once per sample; ranged proc
+  parameters are clamped once when stored and are not reclamped when read. Floating NaN maps to the
+  range minimum at these generated clamp boundaries. Host-triggered events run synchronously via
+  index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous
+  element bytes).
 
 ## Browser build and verification
 

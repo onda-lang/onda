@@ -1002,11 +1002,11 @@ fn validate_param_step_grid(
             TypedConstValue::F32(step),
         ) => validate_float_param_step_grid(
             context,
+            onda_mir::ScalarType::F32,
             min as f64,
             max as f64,
             default as f64,
             step as f64,
-            1.0e-5,
             loc,
             errors,
         ),
@@ -1015,7 +1015,16 @@ fn validate_param_step_grid(
             TypedConstValue::F64(max),
             TypedConstValue::F64(default),
             TypedConstValue::F64(step),
-        ) => validate_float_param_step_grid(context, min, max, default, step, 1.0e-10, loc, errors),
+        ) => validate_float_param_step_grid(
+            context,
+            onda_mir::ScalarType::F64,
+            min,
+            max,
+            default,
+            step,
+            loc,
+            errors,
+        ),
         _ => invalid(
             format!("{context} step requires a numeric scalar parameter"),
             errors,
@@ -1026,11 +1035,11 @@ fn validate_param_step_grid(
 #[allow(clippy::too_many_arguments)]
 fn validate_float_param_step_grid(
     context: &str,
+    scalar: onda_mir::ScalarType,
     min: f64,
     max: f64,
     default: f64,
     step: f64,
-    tolerance: f64,
     loc: onda_frontend::Span,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<u32> {
@@ -1041,30 +1050,21 @@ fn validate_float_param_step_grid(
         ));
         return None;
     }
-    let ratio = (max - min) / step;
-    let rounded = ratio.round();
-    if !ratio.is_finite()
-        || rounded < 1.0
-        || rounded > u32::MAX as f64
-        || (ratio - rounded).abs() > tolerance * ratio.abs().max(1.0)
-    {
+    let Some(step_count) = onda_mir::validated_step_count(scalar, min, max, step) else {
         errors.push(Diagnostic::semantic_span(
             format!("{context} step must divide the range exactly"),
             loc,
         ));
         return None;
-    }
-    let default_index = (default - min) / step;
-    if !default_index.is_finite()
-        || (default_index - default_index.round()).abs() > tolerance * default_index.abs().max(1.0)
-    {
+    };
+    if !onda_mir::value_is_on_step_grid(scalar, min, default, step, step_count) {
         errors.push(Diagnostic::semantic_span(
             format!("{context} default must lie on the step grid"),
             loc,
         ));
         return None;
     }
-    Some(rounded as u32)
+    Some(step_count)
 }
 
 pub(crate) fn coerce_buffers(

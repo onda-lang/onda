@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
     RunEventValue, RunParamInfo, UNBOUND_BUFFERS_MESSAGE,
@@ -1214,6 +1215,7 @@ fn params_are_compatible_for_preservation(old_param: &Value, new_param: &Value) 
         && old_param.get("rangeMin") == new_param.get("rangeMin")
         && old_param.get("rangeMax") == new_param.get("rangeMax")
         && old_param.get("scale") == new_param.get("scale")
+        && old_param.get("curve") == new_param.get("curve")
         && old_param.get("unit") == new_param.get("unit")
         && old_param.get("step") == new_param.get("step")
         && old_param.get("stepCount") == new_param.get("stepCount")
@@ -1510,6 +1512,12 @@ mod tests {
             &base,
             &run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), false)
         ));
+        let mut curved = base.clone();
+        curved["curve"] = json!(-4.0);
+        assert!(
+            !params_are_compatible_for_preservation(&base, &curved),
+            "changed curve should reset preserved param"
+        );
     }
 
     #[test]
@@ -1596,6 +1604,7 @@ mod tests {
             "rangeMin": range_min,
             "rangeMax": range_max,
             "scale": null,
+            "curve": null,
             "unit": null,
             "step": null,
             "stepCount": null,

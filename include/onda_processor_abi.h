@@ -1,6 +1,7 @@
 #ifndef ONDA_PROCESSOR_ABI_H
 #define ONDA_PROCESSOR_ABI_H
 
+#include <float.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -50,13 +51,21 @@ typedef enum onda_processor_param_scale {
   ONDA_PROCESSOR_PARAM_SCALE_LOG = 2
 } onda_processor_param_scale;
 
+typedef enum onda_processor_param_scalar {
+  ONDA_PROCESSOR_PARAM_SCALAR_F32 = 0,
+  ONDA_PROCESSOR_PARAM_SCALAR_F64 = 1,
+  ONDA_PROCESSOR_PARAM_SCALAR_I32 = 2,
+  ONDA_PROCESSOR_PARAM_SCALAR_I64 = 3
+} onda_processor_param_scalar;
+
 /*
  * Decoded host-control metadata for one scalar numeric parameter.
  *
  * A descriptor without a numeric host-control domain uses scale NONE.
  * step_count == 0 means continuous. has_curve distinguishes an absent curve
- * from curve == 0. The descriptor contract guarantees finite values and the
- * additional scale/step invariants checked by onda_processor_param_domain_is_valid().
+ * from curve == 0. scalar is the parameter's declared storage scalar. The
+ * descriptor contract guarantees finite values and the additional scale/step
+ * invariants checked by onda_processor_param_domain_is_valid().
  * unit is optional display text; the caller retains ownership of the pointed-to
  * NUL-terminated string for as long as the domain is used.
  */
@@ -67,6 +76,7 @@ typedef struct onda_processor_param_domain {
   double curve;
   uint32_t step_count;
   onda_processor_param_scale scale;
+  onda_processor_param_scalar scalar;
   uint8_t has_curve;
   const char* unit;
 } onda_processor_param_domain;
@@ -76,6 +86,34 @@ typedef struct onda_processor_param_domain {
 #else
 #define ONDA_PROCESSOR_STATIC_INLINE static inline
 #endif
+
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_float_grid_value_matches(
+  onda_processor_param_scalar scalar,
+  double minimum,
+  double expected,
+  double step,
+  uint32_t index
+) {
+  const double scaled_step = step * (double)index;
+  const double reconstructed = minimum + scaled_step;
+  if (!isfinite(reconstructed)) {
+    return 0;
+  }
+  if (scalar == ONDA_PROCESSOR_PARAM_SCALAR_F32) {
+    return (float)reconstructed == (float)expected;
+  }
+  if (scalar != ONDA_PROCESSOR_PARAM_SCALAR_F64) {
+    return 0;
+  }
+  const double scale = fmax(
+    fmax(fabs(minimum), fabs(expected)),
+    fmax(fabs(scaled_step), DBL_MIN)
+  );
+  const double rounding_tolerance = 8.0 * DBL_EPSILON * scale;
+  const double grid_tolerance = 0.125 * step;
+  return fabs(reconstructed - expected) <=
+    fmin(rounding_tolerance, grid_tolerance);
+}
 
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
   const onda_processor_param_domain* domain
@@ -95,6 +133,27 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
   ) {
     return 0;
   }
+  if (
+    domain->scalar != ONDA_PROCESSOR_PARAM_SCALAR_F32 &&
+    domain->scalar != ONDA_PROCESSOR_PARAM_SCALAR_F64 &&
+    domain->scalar != ONDA_PROCESSOR_PARAM_SCALAR_I32 &&
+    domain->scalar != ONDA_PROCESSOR_PARAM_SCALAR_I64
+  ) {
+    return 0;
+  }
+  if (
+    domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F32 &&
+    (
+      (double)(float)domain->minimum != domain->minimum ||
+      (double)(float)domain->maximum != domain->maximum ||
+      (
+        domain->step_count != 0 &&
+        (double)(float)domain->step != domain->step
+      )
+    )
+  ) {
+    return 0;
+  }
   if (domain->has_curve) {
     if (
       domain->scale != ONDA_PROCESSOR_PARAM_SCALE_LINEAR ||
@@ -105,12 +164,48 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
   }
   if (
     domain->scale == ONDA_PROCESSOR_PARAM_SCALE_LOG &&
-    (domain->minimum <= 0.0 || domain->step_count != 0)
+    (
+      domain->minimum <= 0.0 ||
+      domain->step_count != 0 ||
+      (
+        domain->scalar != ONDA_PROCESSOR_PARAM_SCALAR_F32 &&
+        domain->scalar != ONDA_PROCESSOR_PARAM_SCALAR_F64
+      )
+    )
   ) {
     return 0;
   }
-  return domain->step_count == 0 ||
-    (isfinite(domain->step) && domain->step > 0.0);
+  if (domain->step_count == 0) {
+    return domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F32 ||
+      domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F64;
+  }
+  if (!isfinite(domain->step) || domain->step <= 0.0) {
+    return 0;
+  }
+  const double intervals =
+    (domain->maximum - domain->minimum) / domain->step;
+  if (!isfinite(intervals)) {
+    return 0;
+  }
+  if (
+    domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F32 ||
+    domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F64
+  ) {
+    return onda_processor_float_grid_value_matches(
+      domain->scalar,
+      domain->minimum,
+      domain->maximum,
+      domain->step,
+      domain->step_count
+    );
+  }
+  if (
+    domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I32 ||
+    domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I64
+  ) {
+    return intervals == (double)domain->step_count;
+  }
+  return 0;
 }
 
 ONDA_PROCESSOR_STATIC_INLINE double onda_processor_lincurve_normalized_to_unit(
@@ -139,6 +234,34 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_lincurve_unit_to_normalized(
     return 1.0 - log1p(reflected * expm1(-curve)) / -curve;
   }
   return log1p(unit * expm1(curve)) / curve;
+}
+
+ONDA_PROCESSOR_STATIC_INLINE double onda_processor_linear_unit_to_plain(
+  double minimum,
+  double maximum,
+  double unit
+) {
+  const double width = maximum - minimum;
+  return isfinite(width)
+    ? minimum + unit * width
+    : (1.0 - unit) * minimum + unit * maximum;
+}
+
+ONDA_PROCESSOR_STATIC_INLINE double onda_processor_linear_plain_to_unit(
+  double minimum,
+  double maximum,
+  double plain
+) {
+  const double width = maximum - minimum;
+  if (isfinite(width)) {
+    return (plain - minimum) / width;
+  }
+  const double scale = fmax(fabs(minimum), fabs(maximum));
+  return (
+    (plain / scale) - (minimum / scale)
+  ) / (
+    (maximum / scale) - (minimum / scale)
+  );
 }
 
 ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_constrain_plain(
@@ -179,16 +302,24 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_normalized_to_plain(
 
   double plain;
   if (domain->has_curve) {
-    plain = domain->minimum
-      + onda_processor_lincurve_normalized_to_unit(domain->curve, unit)
-        * (domain->maximum - domain->minimum);
+    const double curved =
+      onda_processor_lincurve_normalized_to_unit(domain->curve, unit);
+    plain = onda_processor_linear_unit_to_plain(
+      domain->minimum,
+      domain->maximum,
+      curved
+    );
   } else if (domain->scale == ONDA_PROCESSOR_PARAM_SCALE_LOG) {
     const double log_minimum = log(domain->minimum);
     plain = exp(
       log_minimum + unit * (log(domain->maximum) - log_minimum)
     );
   } else {
-    plain = domain->minimum + unit * (domain->maximum - domain->minimum);
+    plain = onda_processor_linear_unit_to_plain(
+      domain->minimum,
+      domain->maximum,
+      unit
+    );
   }
   return onda_processor_param_constrain_plain(domain, plain);
 }
@@ -209,18 +340,22 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_plain_to_normalized(
   }
 
   double normalized;
+  const double linear_unit = onda_processor_linear_plain_to_unit(
+    domain->minimum,
+    domain->maximum,
+    constrained
+  );
   if (domain->has_curve) {
     normalized = onda_processor_lincurve_unit_to_normalized(
       domain->curve,
-      (constrained - domain->minimum) / (domain->maximum - domain->minimum)
+      linear_unit
     );
   } else if (domain->scale == ONDA_PROCESSOR_PARAM_SCALE_LOG) {
     const double log_minimum = log(domain->minimum);
     normalized = (log(constrained) - log_minimum)
       / (log(domain->maximum) - log_minimum);
   } else {
-    normalized = (constrained - domain->minimum)
-      / (domain->maximum - domain->minimum);
+    normalized = linear_unit;
   }
   return fmin(1.0, fmax(0.0, normalized));
 }

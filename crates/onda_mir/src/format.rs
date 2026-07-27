@@ -793,6 +793,7 @@ fn format_intrinsic(intrinsic: Intrinsic) -> &'static str {
         Intrinsic::Min => "min",
         Intrinsic::Max => "max",
         Intrinsic::Fma => "fma",
+        Intrinsic::RangeClamp => "range_clamp",
     }
 }
 

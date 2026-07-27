@@ -226,10 +226,10 @@ Positional fields must precede named fields, fields cannot be repeated, and
 `{max}` retains the existing maximum-only shorthand. `scale` defaults to
 `linear`; the other optional fields default to absent.
 
-These extra fields describe external control of explicit top-level `params`
-(and their top-level `kins` alias). They are not available on inputs or
-processor-local params, and they do not add operations to the Onda DSP
-program:
+`scale`, `curve`, `unit`, and `step` describe external control of explicit
+top-level `params` (and their top-level `kins` alias). They are not available
+on inputs or processor-local params, and do not change the Onda DSP
+calculation:
 
 - `linear` maps normalized `n` to `min + n * (max - min)`.
 - `log` maps it in logarithmic space to
@@ -256,6 +256,14 @@ program:
 The step count is the number of intervals from `min` to `max` and must fit the
 host descriptor. Normalization, snapping, and units are host-boundary
 semantics; Onda code reads the resulting plain parameter value.
+
+The range itself is also a DSP boundary invariant. Generated code clamps each
+used ranged top-level parameter once at the start of `init`, once at the start
+of each event invocation, and once at the start of each logical process block.
+Every read in that entry point uses the resulting typed value. A floating NaN
+maps to the range minimum; infinities clamp to the corresponding endpoint.
+This protects raw parameter storage writes independently of any host-control
+conversion.
 
 Explicitly declared homogeneous params can be indexed directly:
 
@@ -1140,6 +1148,10 @@ Rules:
 - Positional proc call args bind inputs only.
 - Named call args can bind inputs or params.
 - Named param args store the clamped param value before the call runs.
+- Every ranged proc-param write, including construction, builtin `init(...)`,
+  named call arguments, and direct assignment, is clamped once before storage.
+  Floating NaN maps to the range minimum; later reads use the stored typed
+  value without reclamping.
 - Generic procs specialize on construction.
 - Multiple proc calls in one expression are evaluated in source order.
 - Named param args are not supported inside logical `&&` / `||` expressions or `while` conditions.

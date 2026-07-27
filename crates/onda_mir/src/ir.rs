@@ -752,4 +752,7 @@ pub enum Intrinsic {
     Min,
     Max,
     Fma,
+    /// Clamps the first operand to the inclusive bounds in the second and
+    /// third operands. Floating-point NaN maps to the lower bound.
+    RangeClamp,
 }

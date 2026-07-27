@@ -1,11 +1,13 @@
 export const ONDA_AUDIO_WORKLET_PROCESSOR_NAME: "onda-wasm-processor";
 
 export type {
+  OndaParamDomain,
   OndaPreparedParamControl,
   OndaProcessorArtifact,
   OndaProcessorMetadata,
 } from "@onda-lang/processor-abi";
 export {
+  createParamDomain,
   createParamControl,
   constrainParamPlain,
   paramNormalizedToPlain,

@@ -166,7 +166,7 @@ test("worklet interprets the wasm32 heap base as an unsigned address", () => {
   }
 });
 
-test("worklet clamps and snaps plain parameter writes", () => {
+test("worklet writes adapter-canonical parameter values without reconversion", () => {
   const descriptor = metadata();
   descriptor.runtime.param_size_bytes = 4;
   descriptor.metadata.buffers = [];
@@ -199,8 +199,8 @@ test("worklet clamps and snaps plain parameter writes", () => {
   });
   const view = new DataView(processor.memory.buffer);
 
-  processor.setParam("mode", 3.2);
+  processor.setParam("mode", 4);
   assert.equal(view.getInt32(processor.paramsPtr, true), 4);
-  processor.setParam("mode", 100);
+  processor.setParam("mode", 10);
   assert.equal(view.getInt32(processor.paramsPtr, true), 10);
 });

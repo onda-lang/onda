@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_mir::{ParamControl, ScalarValue, ValueRange};
+pub use onda_mir::{ParamDomain, ParamScale, ScalarType as ParamScalarType};
 
 mod aot_artifact;
 #[cfg(any(feature = "llvm-orc", test))]
@@ -323,23 +324,6 @@ pub struct DeclaredIo {
     default_bytes: Option<Vec<u8>>,
     range: Option<ValueRange>,
     control: Option<ParamControl>,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum ParamScale {
-    Linear,
-    Log,
-}
-
-/// A validated scalar parameter domain prepared for host-control use.
-///
-/// This view combines the parameter's plain range with its presentation and
-/// normalization metadata so embedders do not need to reconstruct the domain
-/// from separate descriptor fields.
-#[derive(Debug, Clone, Copy)]
-pub struct ParamDomain<'a> {
-    control: &'a ParamControl,
-    range: ValueRange,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

@@ -167,6 +167,8 @@ trap deterministically; MIR does not imply an unrepresented realtime scratch all
 
 Math intrinsics express Onda semantics, not a target implementation. LLVM may map an intrinsic to
 LLVM IR or libm; WebAssembly may map it to a native instruction or an Onda-supplied math function.
+The compiler-generated `range_clamp(value, min, max)` intrinsic evaluates its three operands once,
+preserves their scalar type, clamps to the inclusive bounds, and maps a floating NaN to `min`.
 In particular, `fma` requires one correctly rounded product-plus-add operation: a backend must not
 replace it with separately rounded multiply and add instructions. Because core WebAssembly has no
 scalar FMA or transcendental instructions, the Binaryen backend links the required pure-Wasm

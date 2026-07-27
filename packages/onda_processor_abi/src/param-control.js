@@ -9,6 +9,9 @@
   const I64_MAX = (1n << 63n) - 1n;
   const MAX_EXACT_HOST_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
   const CURVE_LINEAR_EPSILON = 0.001;
+  const F64_MIN_NORMAL = 2.2250738585072014e-308;
+  const GRID_ROUNDING_ULPS = 8;
+  const MAX_GRID_ERROR_IN_STEPS = 0.125;
 
   function fail(param, message) {
     const name = typeof param?.name === "string" ? ` '${param.name}'` : "";
@@ -62,7 +65,7 @@
     if (!Number.isFinite(decoded)) {
       fail(param, `has invalid ${field} metadata`);
     }
-    return decoded;
+    return param.scalar === "f32" ? Math.fround(decoded) : decoded;
   }
 
   function numericDomain(param) {
@@ -158,12 +161,9 @@
           fail(param, "has step_count inconsistent with its range and step");
         }
       } else {
-        const tolerance = scalar === "f32" ? 1.0e-5 : 1.0e-10;
-        const ratio = (maximum - minimum) / step;
         if (
-          !Number.isFinite(ratio)
-          || Math.abs(ratio - control.step_count)
-            > tolerance * Math.max(Math.abs(ratio), 1)
+          validatedFloatStepCount(scalar, minimum, maximum, step)
+            !== control.step_count
         ) {
           fail(param, "has step_count inconsistent with its range and step");
         }
@@ -213,16 +213,60 @@
       fail(param, "has a default outside its host-control range");
     }
     if (domain.step !== null) {
-      const tolerance = param.scalar === "f32" ? 1.0e-5 : 1.0e-10;
-      const index = (defaultValue - domain.minimum) / domain.step;
-      if (
-        !Number.isFinite(index)
-        || Math.abs(index - Math.round(index))
-          > tolerance * Math.max(Math.abs(index), 1)
-      ) {
+      if (!floatValueIsOnGrid(
+        param.scalar,
+        domain.minimum,
+        defaultValue,
+        domain.step,
+        param.param_control.step_count,
+      )) {
         fail(param, "has a default outside its host-control step grid");
       }
     }
+  }
+
+  function validatedFloatStepCount(scalar, minimum, maximum, step) {
+    const intervals = (maximum - minimum) / step;
+    if (!Number.isFinite(intervals)) return null;
+    const count = Math.round(intervals);
+    if (count < 1 || count > 0xffff_ffff) return null;
+    return floatGridValueMatches(scalar, minimum, maximum, step, count)
+      ? count
+      : null;
+  }
+
+  function floatValueIsOnGrid(
+    scalar,
+    minimum,
+    value,
+    step,
+    stepCount,
+  ) {
+    const index = (value - minimum) / step;
+    if (!Number.isFinite(index)) return false;
+    const rounded = Math.round(index);
+    return rounded >= 0
+      && rounded <= stepCount
+      && floatGridValueMatches(scalar, minimum, value, step, rounded);
+  }
+
+  function floatGridValueMatches(scalar, minimum, expected, step, index) {
+    const scaledStep = step * index;
+    const reconstructed = minimum + scaledStep;
+    if (!Number.isFinite(reconstructed)) return false;
+    if (scalar === "f32") {
+      return Math.fround(reconstructed) === Math.fround(expected);
+    }
+    const scale = Math.max(
+      Math.abs(minimum),
+      Math.abs(expected),
+      Math.abs(scaledStep),
+      F64_MIN_NORMAL,
+    );
+    const roundingTolerance = GRID_ROUNDING_ULPS * Number.EPSILON * scale;
+    const gridTolerance = MAX_GRID_ERROR_IN_STEPS * step;
+    return Math.abs(reconstructed - expected)
+      <= Math.min(roundingTolerance, gridTolerance);
   }
 
   function constrainDomainPlain({ minimum, maximum, step }, plain) {
@@ -249,6 +293,21 @@
     return Math.log1p(unit * Math.expm1(curve)) / curve;
   }
 
+  function linearUnitToPlain(minimum, maximum, unit) {
+    const width = maximum - minimum;
+    return Number.isFinite(width)
+      ? minimum + unit * width
+      : (1 - unit) * minimum + unit * maximum;
+  }
+
+  function linearPlainToUnit(minimum, maximum, plain) {
+    const width = maximum - minimum;
+    if (Number.isFinite(width)) return (plain - minimum) / width;
+    const scale = Math.max(Math.abs(minimum), Math.abs(maximum));
+    return ((plain / scale) - (minimum / scale))
+      / ((maximum / scale) - (minimum / scale));
+  }
+
   function domainNormalizedToPlain(domain, normalized) {
     const {
       minimum,
@@ -264,12 +323,16 @@
     if (unit === 1) return maximum;
     let plain;
     if (curve !== null) {
-      plain = minimum + curveNormalizedToUnit(curve, unit) * (maximum - minimum);
+      plain = linearUnitToPlain(
+        minimum,
+        maximum,
+        curveNormalizedToUnit(curve, unit),
+      );
     } else if (scale === SCALES[1]) {
       const logMinimum = Math.log(minimum);
       plain = Math.exp(logMinimum + unit * (Math.log(maximum) - logMinimum));
     } else {
-      plain = minimum + unit * (maximum - minimum);
+      plain = linearUnitToPlain(minimum, maximum, unit);
     }
     return constrainDomainPlain(domain, plain);
   }
@@ -288,14 +351,14 @@
     if (curve !== null) {
       normalized = curveUnitToNormalized(
         curve,
-        (constrained - minimum) / (maximum - minimum),
+        linearPlainToUnit(minimum, maximum, constrained),
       );
     } else if (scale === SCALES[1]) {
       const logMinimum = Math.log(minimum);
       normalized = (Math.log(constrained) - logMinimum)
         / (Math.log(maximum) - logMinimum);
     } else {
-      normalized = (constrained - minimum) / (maximum - minimum);
+      normalized = linearPlainToUnit(minimum, maximum, constrained);
     }
     return Math.min(1, Math.max(0, normalized));
   }
@@ -313,9 +376,9 @@
         unit: null,
         step: null,
         stepCount: null,
-        constrainPlain: (plain) => Boolean(plain),
+        constrainPlain: (plain) => Number(plain) >= 0.5,
         normalizedToPlain: (normalized) => Number(normalized) >= 0.5,
-        plainToNormalized: (plain) => (Boolean(plain) ? 1 : 0),
+        plainToNormalized: (plain) => (Number(plain) >= 0.5 ? 1 : 0),
       });
     }
 
@@ -333,6 +396,36 @@
       constrainPlain: (plain) => constrainDomainPlain(domain, plain),
       normalizedToPlain: (normalized) => domainNormalizedToPlain(domain, normalized),
       plainToNormalized: (plain) => domainPlainToNormalized(domain, plain),
+    });
+  }
+
+  function createParamDomain({
+    name = null,
+    scalar,
+    minimum,
+    maximum,
+    scale,
+    curve = null,
+    unit = null,
+    step = null,
+    stepCount = null,
+  }) {
+    return createParamControl({
+      name,
+      type_repr: scalar,
+      scalar,
+      array_len: 1,
+      range_min_repr: minimum === null ? null : String(minimum),
+      range_max_repr: maximum === null ? null : String(maximum),
+      param_control: scale === null
+        ? null
+        : {
+            scale,
+            curve,
+            unit,
+            step_repr: step === null ? null : String(step),
+            step_count: stepCount,
+          },
     });
   }
 
@@ -355,6 +448,7 @@
     value: Object.freeze({
       scales: SCALES,
       validateParamControlDomain,
+      createParamDomain,
       createParamControl,
       constrainParamPlain,
       paramNormalizedToPlain,

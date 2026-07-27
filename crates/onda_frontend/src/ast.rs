@@ -1650,6 +1650,10 @@ pub enum BuiltinFn {
     Min,
     Max,
     Fma,
+    /// Compiler-generated range clamp. This is intentionally absent from
+    /// `ALL` and `from_name`, so it is not part of the source-language
+    /// builtin surface.
+    RangeClamp,
 }
 
 impl BuiltinFn {
@@ -1718,6 +1722,7 @@ impl BuiltinFn {
             Self::Min => "min",
             Self::Max => "max",
             Self::Fma => "fma",
+            Self::RangeClamp => "<range-clamp>",
         }
     }
 
@@ -1738,6 +1743,7 @@ impl BuiltinFn {
             | Self::Trunc => 1,
             Self::Pow | Self::Atan2 | Self::Min | Self::Max => 2,
             Self::Fma => 3,
+            Self::RangeClamp => 3,
         }
     }
 }

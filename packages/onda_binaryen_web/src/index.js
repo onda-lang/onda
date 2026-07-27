@@ -3083,6 +3083,16 @@ class MirCompiler {
           return this.module.select(wasm.lt_s(arg(0), arg(1)), arg(0), arg(1));
         case "max":
           return this.module.select(wasm.gt_s(arg(0), arg(1)), arg(0), arg(1));
+        case "range_clamp":
+          return this.module.select(
+            wasm.lt_s(arg(0), arg(1)),
+            arg(1),
+            this.module.select(
+              wasm.gt_s(arg(0), arg(2)),
+              arg(2),
+              arg(0),
+            ),
+          );
         default:
           this.fail(`intrinsic '${data.intrinsic}' requires f32 or f64 operands`);
       }
@@ -3096,6 +3106,22 @@ class MirCompiler {
       case "trunc": return wasm.trunc(args[0]);
       case "min": return wasm.min(args[0], args[1]);
       case "max": return wasm.max(args[0], args[1]);
+      case "range_clamp": {
+        const arg = (index) => this.compileValue(data.args[index], context);
+        return this.module.select(
+          wasm.ne(arg(0), arg(0)),
+          arg(1),
+          this.module.select(
+            wasm.lt(arg(0), arg(1)),
+            arg(1),
+            this.module.select(
+              wasm.gt(arg(0), arg(2)),
+              arg(2),
+              arg(0),
+            ),
+          ),
+        );
+      }
       case "fma": return this.compileMathKernelCall(data.intrinsic, scalar, args);
       case "sin":
       case "cos":

@@ -2279,6 +2279,43 @@ impl FunctionEmitter<'_, '_> {
             .iter()
             .map(|value| self.lower_value(*value))
             .collect::<Result<Vec<_>, _>>()?;
+        if intrinsic == onda_mir::Intrinsic::RangeClamp {
+            if matches!(
+                scalar,
+                onda_mir::ScalarType::I32 | onda_mir::ScalarType::I64
+            ) {
+                let lower = self.lower_integer_intrinsic(
+                    onda_mir::Intrinsic::Max,
+                    scalar,
+                    &mut vec![lowered[0], lowered[1]],
+                )?;
+                return self.lower_integer_intrinsic(
+                    onda_mir::Intrinsic::Min,
+                    scalar,
+                    &mut vec![lower, lowered[2]],
+                );
+            }
+            let suffix = if scalar == onda_mir::ScalarType::F64 {
+                "f64"
+            } else {
+                "f32"
+            };
+            let scalar_ty = llvm_scalar_type(self.module.context, scalar);
+            let lower = self.lower_binary_float_intrinsic(
+                &format!("llvm.maxnum.{suffix}"),
+                scalar_ty,
+                lowered[0],
+                lowered[1],
+                "range_clamp_lower",
+            )?;
+            return self.lower_binary_float_intrinsic(
+                &format!("llvm.minnum.{suffix}"),
+                scalar_ty,
+                lower,
+                lowered[2],
+                "range_clamp_upper",
+            );
+        }
         if matches!(
             scalar,
             onda_mir::ScalarType::I32 | onda_mir::ScalarType::I64
@@ -2333,6 +2370,9 @@ impl FunctionEmitter<'_, '_> {
             onda_mir::Intrinsic::Min => "llvm.minimum",
             onda_mir::Intrinsic::Max => "llvm.maximum",
             onda_mir::Intrinsic::Fma => "llvm.fma",
+            onda_mir::Intrinsic::RangeClamp => {
+                unreachable!("range clamp lowers before ordinary float intrinsics")
+            }
         };
         let name = if base.starts_with("llvm.") {
             format!("{base}.{suffix}")
@@ -6815,6 +6855,57 @@ sample:
             1,
         );
         assert_eq!(nan[0], [1.0]);
+    }
+
+    #[test]
+    fn ranged_params_map_nan_to_minimum_with_and_without_fast_math() {
+        let (_, mir) = source_program(
+            r#"
+params:
+  value = 0.5 {-1.0, 1.0}
+
+sample:
+  out1 = value
+"#,
+            1,
+        );
+        let inputs: [*const u8; 0] = [];
+        let buffers: [*mut u8; 0] = [];
+        let metadata_i32: [i32; 0] = [];
+        let metadata_f32: [f32; 0] = [];
+        for fast_math in [false, true] {
+            let native = lower_mir_and_jit_with_options(
+                mir.clone(),
+                MirCompileOptions {
+                    fast_math,
+                    opt_level: TargetOptLevel::O3,
+                },
+            )
+            .expect("ranged-param source should compile");
+            let mut params = native.default_param_bytes();
+            params[..4].copy_from_slice(&f32::NAN.to_ne_bytes());
+            let mut state = native
+                .initialize_state(&params)
+                .expect("ranged-param state should initialize");
+            let mut output = [0.0_f32];
+            let outputs = [output.as_mut_ptr().cast::<u8>()];
+            native
+                .test_process_checked(
+                    &mut state,
+                    &params,
+                    0,
+                    1,
+                    onda_mir::PROCESS_FULL_BLOCK as u32,
+                    &inputs,
+                    &outputs,
+                    &buffers,
+                    &metadata_i32,
+                    &metadata_i32,
+                    &metadata_f32,
+                )
+                .expect("ranged-param process should run");
+            assert_eq!(output, [-1.0]);
+        }
     }
 
     #[test]

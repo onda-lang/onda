@@ -7,6 +7,7 @@ import {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
   PROCESSOR_SNAPSHOT_FORMAT_VERSION,
+  createParamDomain,
   createParamControl,
   constrainParamPlain,
   createProcessorArtifactFiles,
@@ -95,6 +96,26 @@ test("converts linear and logarithmic parameter domains in both directions", () 
   assert.ok(Math.abs(paramNormalizedToPlain(logarithmic, normalized440) - 440) < 1e-12);
   assert.equal(paramNormalizedToPlain(logarithmic, 0), 20);
   assert.equal(paramNormalizedToPlain(logarithmic, 1), 20_000);
+
+  const wideLinear = controlledParam({
+    name: "wide-linear",
+    minimum: "-1e308",
+    maximum: "1e308",
+    scale: "linear",
+  });
+  assert.equal(paramNormalizedToPlain(wideLinear, 0.5), 0);
+  assert.equal(paramPlainToNormalized(wideLinear, 0), 0.5);
+
+  const wideCurve = controlledParam({
+    name: "wide-curve",
+    minimum: "-1e308",
+    maximum: "1e308",
+    scale: "linear",
+    curve: -4,
+  });
+  const wideCurveMidpoint = paramNormalizedToPlain(wideCurve, 0.5);
+  assert.equal(Number.isFinite(wideCurveMidpoint), true);
+  assert.ok(Math.abs(paramPlainToNormalized(wideCurve, wideCurveMidpoint) - 0.5) < 1e-12);
 });
 
 test("prepares a reusable decoded parameter control", () => {
@@ -114,6 +135,38 @@ test("prepares a reusable decoded parameter control", () => {
   assert.ok(Math.abs(control.plainToNormalized(midpoint) - 0.5) < 1e-12);
   assert.equal(control.constrainPlain(2), 1);
   assert.equal(Object.isFrozen(control), true);
+});
+
+test("prepares an already-decoded parameter domain", () => {
+  const control = createParamDomain({
+    name: "gain",
+    scalar: "f64",
+    minimum: 0,
+    maximum: 1,
+    scale: "linear",
+    curve: null,
+    unit: "dB",
+    step: 0.25,
+    stepCount: 4,
+  });
+
+  assert.equal(control.name, "gain");
+  assert.equal(control.unit, "dB");
+  assert.equal(control.normalizedToPlain(0.5), 0.5);
+  assert.equal(control.plainToNormalized(0.5), 0.5);
+  assert.equal(control.constrainPlain(0.7), 0.75);
+
+  const f32Control = createParamDomain({
+    name: "frequency",
+    scalar: "f32",
+    minimum: 0,
+    maximum: 100_000,
+    scale: "linear",
+    step: 0.1,
+    stepCount: 1_000_000,
+  });
+  assert.equal(f32Control.stepCount, 1_000_000);
+  assert.equal(f32Control.step, Math.fround(0.1));
 });
 
 test("constrains stepped and boolean host-control values", () => {
@@ -183,8 +236,13 @@ test("constrains stepped and boolean host-control values", () => {
     scale: null,
   });
   boolean.param_control = null;
+  assert.equal(constrainParamPlain(boolean, -1), false);
+  assert.equal(constrainParamPlain(boolean, 0.49), false);
+  assert.equal(constrainParamPlain(boolean, 0.5), true);
   assert.equal(paramNormalizedToPlain(boolean, 0.49), false);
   assert.equal(paramNormalizedToPlain(boolean, 0.5), true);
+  assert.equal(paramPlainToNormalized(boolean, 0.49), 0);
+  assert.equal(paramPlainToNormalized(boolean, 0.5), 1);
   assert.equal(paramPlainToNormalized(boolean, false), 0);
   assert.equal(paramPlainToNormalized(boolean, true), 1);
 });
@@ -271,6 +329,39 @@ test("validates parameter-control semantics before accepting a descriptor", () =
   assert.throws(
     () => validateProcessorMetadata(offGridDefault),
     /default outside its host-control step grid/,
+  );
+
+  const largeOffGridDefault = structuredClone(fixture);
+  Object.assign(largeOffGridDefault.metadata.params[0], {
+    type_repr: "f32",
+    scalar: "f32",
+    element_size_bytes: 4,
+    byte_size: 4,
+    range_min_repr: "0",
+    range_max_repr: "100000",
+    default_reprs: ["50000.5"],
+  });
+  Object.assign(largeOffGridDefault.metadata.params[0].param_control, {
+    scale: "linear",
+    step_repr: "1",
+    step_count: 100000,
+  });
+  assert.throws(
+    () => validateProcessorMetadata(largeOffGridDefault),
+    /default outside its host-control step grid/,
+  );
+
+  const nonDividingLargeRange = structuredClone(largeOffGridDefault);
+  Object.assign(nonDividingLargeRange.metadata.params[0], {
+    range_max_repr: "100000.5",
+    default_reprs: ["0"],
+  });
+  Object.assign(nonDividingLargeRange.metadata.params[0].param_control, {
+    step_count: 100001,
+  });
+  assert.throws(
+    () => validateProcessorMetadata(nonDividingLargeRange),
+    /step_count inconsistent/,
   );
 
   const mixedLogCurve = structuredClone(fixture);

@@ -625,6 +625,58 @@ sample { out1 = cutoff + mode + mix }
     }
 
     #[test]
+    fn parameter_curves_accept_the_full_constant_expression_pipeline() {
+        let program = parse_program(
+            r#"
+const def curve_value() -> f64:
+  return -2.0
+
+const Curve = -3.0
+const Curves: f64[1] = [-4.0]
+
+params:
+  scalar = 0.5 {0, 1, curve = Curve}
+  array = 0.5 {0, 1, curve = Curves[0]}
+  function = 0.5 {0, 1, curve = curve_value()}
+
+outs:
+  out1
+
+sample:
+  out1 = scalar + array + function
+"#,
+        )
+        .expect("constant curve expressions should parse");
+        let typed = analyze(program).expect("constant curve expressions should analyze");
+        let curves = typed
+            .params
+            .iter()
+            .map(|param| param.control.curve)
+            .collect::<Vec<_>>();
+
+        assert_eq!(curves, vec![Some(-3.0), Some(-4.0), Some(-2.0)]);
+    }
+
+    #[test]
+    fn parameter_curves_reject_forward_constant_references() {
+        assert_analyze_error_contains(
+            r#"
+params:
+  mix = 0.5 {0, 1, curve = Curve}
+
+const Curve = -4.0
+
+outs:
+  out1
+
+sample:
+  out1 = mix
+"#,
+            "constant 'Curve' is not visible before its declaration",
+        );
+    }
+
+    #[test]
     fn integer_parameter_ranges_have_an_implicit_unit_step() {
         let program = parse_program(
             r#"
@@ -637,6 +689,34 @@ sample { out1 = mode }
         let typed = analyze(program).expect("integer domain should analyze");
         assert_eq!(typed.params[0].control.step, Some(TypedConstValue::I32(1)));
         assert_eq!(typed.params[0].control.step_count, Some(10));
+    }
+
+    #[test]
+    fn float_parameter_grids_validate_at_the_declared_storage_precision() {
+        let program = parse_program(
+            r#"
+params:
+  value: f32 = 50000.0 {0, 100000, step = 0.1}
+outs:
+  out1
+sample:
+  out1 = value
+"#,
+        )
+        .expect("parse should succeed");
+        let typed = analyze(program).expect("representable f32 grid should analyze");
+        assert_eq!(typed.params[0].control.step_count, Some(1_000_000));
+
+        assert_analyze_error_contains(
+            "params { p: f32 = 50000.5 {0, 100000, step = 1} }\n\
+             outs { out1 }\nsample { out1 = p }\n",
+            "default must lie on the step grid",
+        );
+        assert_analyze_error_contains(
+            "params { p: f32 = 0 {0, 100000.5, step = 1} }\n\
+             outs { out1 }\nsample { out1 = p }\n",
+            "step must divide the range exactly",
+        );
     }
 
     #[test]

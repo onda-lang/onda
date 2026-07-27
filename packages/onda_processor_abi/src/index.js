@@ -9,6 +9,7 @@ export const PROCESSOR_ABI_VERSION = 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
 
 export const {
+  createParamDomain,
   createParamControl,
   constrainParamPlain,
   paramNormalizedToPlain,

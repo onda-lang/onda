@@ -2,12 +2,12 @@
 use std::collections::HashMap;
 
 use onda_frontend::PrimitiveType;
-use onda_mir::{ParamControl, ParamScale as MirParamScale, ScalarValue, ValueRange};
+use onda_mir::{ParamControl, ScalarValue, ValueRange};
 
 use crate::primitives::{primitive_type_bytes, primitive_type_name, scalar_value_to_f64};
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
-    DeclaredState, ParamDomain, ParamScale,
+    DeclaredState, ParamDomain,
 };
 
 #[cfg(any(feature = "llvm-orc", test))]
@@ -25,58 +25,6 @@ pub(crate) struct ProgramMetadata {
     pub(crate) param_index: HashMap<String, usize>,
     pub(crate) event_index: HashMap<String, usize>,
     pub(crate) buffer_index: HashMap<String, usize>,
-}
-
-impl<'a> ParamDomain<'a> {
-    pub fn minimum(self) -> f64 {
-        scalar_value_to_f64(self.range.min)
-    }
-
-    pub fn maximum(self) -> f64 {
-        scalar_value_to_f64(self.range.max)
-    }
-
-    pub fn scale(self) -> ParamScale {
-        match self.control.scale {
-            MirParamScale::Linear => ParamScale::Linear,
-            MirParamScale::Log => ParamScale::Log,
-        }
-    }
-
-    pub fn scale_name(self) -> &'static str {
-        match self.scale() {
-            ParamScale::Linear => "linear",
-            ParamScale::Log => "log",
-        }
-    }
-
-    pub fn curve(self) -> Option<f64> {
-        self.control.curve
-    }
-
-    pub fn unit(self) -> Option<&'a str> {
-        self.control.unit.as_deref()
-    }
-
-    pub fn step(self) -> Option<f64> {
-        self.control.step.map(ScalarValue::as_f64)
-    }
-
-    pub fn step_count(self) -> Option<u32> {
-        self.control.step_count
-    }
-
-    pub fn constrain_plain(self, plain: f64) -> f64 {
-        self.control.constrain_plain(self.range, plain)
-    }
-
-    pub fn normalized_to_plain(self, normalized: f64) -> f64 {
-        self.control.normalized_to_plain(self.range, normalized)
-    }
-
-    pub fn plain_to_normalized(self, plain: f64) -> f64 {
-        self.control.plain_to_normalized(self.range, plain)
-    }
 }
 
 impl DeclaredIo {
@@ -153,10 +101,7 @@ impl DeclaredIo {
     }
 
     pub fn param_domain(&self) -> Option<ParamDomain<'_>> {
-        Some(ParamDomain {
-            control: self.control.as_ref()?,
-            range: self.range?,
-        })
+        self.control.as_ref()?.domain(self.range?)
     }
 
     pub fn type_repr(&self) -> String {

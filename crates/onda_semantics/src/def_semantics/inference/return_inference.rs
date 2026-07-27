@@ -220,6 +220,14 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
                     let rhs = arg_tys.get(1).copied().unwrap_or(PrimitiveType::F32);
                     merge_inferred_return_types(lhs, rhs)
                 }
+                BuiltinFn::RangeClamp => {
+                    let value = *arg_tys.first()?;
+                    arg_tys
+                        .iter()
+                        .copied()
+                        .skip(1)
+                        .try_fold(value, merge_inferred_return_types)
+                }
                 BuiltinFn::Pow => Some(if arg_tys.contains(&PrimitiveType::F64) {
                     PrimitiveType::F64
                 } else {

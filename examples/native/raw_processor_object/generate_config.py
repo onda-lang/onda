@@ -196,8 +196,11 @@ def c_f64_value(value: object, context: str) -> str:
     return rendered
 
 
-def c_f64(text: str, context: str) -> str:
-    return c_f64_value(parse_scalar(text), context)
+def c_host_control_f64(text: str, scalar: str, context: str) -> str:
+    value = parse_scalar(text)
+    if scalar == "f32":
+        value = struct.unpack(">f", struct.pack(">f", float(value)))[0]
+    return c_f64_value(value, context)
 
 
 def generated_params(descriptor: dict) -> GeneratedParamTables:
@@ -276,8 +279,12 @@ def generated_params(descriptor: dict) -> GeneratedParamTables:
                         f"parameter {name!r} i64 control range is not exactly "
                         "representable by the host API"
                     )
-            range_min = c_f64(range_min_repr, f"parameter {name!r} range minimum")
-            range_max = c_f64(range_max_repr, f"parameter {name!r} range maximum")
+            range_min = c_host_control_f64(
+                range_min_repr, scalar, f"parameter {name!r} range minimum"
+            )
+            range_max = c_host_control_f64(
+                range_max_repr, scalar, f"parameter {name!r} range maximum"
+            )
             step_repr = control.get("step_repr")
             step_count_value = control.get("step_count")
             if step_repr is None:
@@ -290,7 +297,9 @@ def generated_params(descriptor: dict) -> GeneratedParamTables:
                     fail(f"parameter {name!r} has an invalid step")
                 if not isinstance(step_count_value, int) or step_count_value <= 0:
                     fail(f"parameter {name!r} has an invalid step count")
-                step = c_f64(step_repr, f"parameter {name!r} step")
+                step = c_host_control_f64(
+                    step_repr, scalar, f"parameter {name!r} step"
+                )
                 step_count = str(step_count_value)
             unit_value = control.get("unit")
             if unit_value is not None and not isinstance(unit_value, str):
@@ -537,6 +546,23 @@ PROCESSOR_STATIC_INLINE onda_processor_param_domain processor_param_domain(int i
   domain.curve = PROCESSOR_PARAM_CURVES[index];
   domain.step_count = PROCESSOR_PARAM_STEP_COUNTS[index];
   domain.scale = (onda_processor_param_scale)PROCESSOR_PARAM_CONTROL_SCALES[index];
+  switch (PROCESSOR_PARAM_KINDS[index]) {{
+    case PROCESSOR_SCALAR_F32:
+      domain.scalar = ONDA_PROCESSOR_PARAM_SCALAR_F32;
+      break;
+    case PROCESSOR_SCALAR_F64:
+      domain.scalar = ONDA_PROCESSOR_PARAM_SCALAR_F64;
+      break;
+    case PROCESSOR_SCALAR_I32:
+      domain.scalar = ONDA_PROCESSOR_PARAM_SCALAR_I32;
+      break;
+    case PROCESSOR_SCALAR_I64:
+      domain.scalar = ONDA_PROCESSOR_PARAM_SCALAR_I64;
+      break;
+    default:
+      domain.scalar = (onda_processor_param_scalar)-1;
+      break;
+  }}
   domain.has_curve = PROCESSOR_PARAM_HAS_CURVES[index];
   domain.unit = PROCESSOR_PARAM_UNITS[index];
   return domain;
@@ -612,37 +638,40 @@ PROCESSOR_STATIC_INLINE double processor_param_read_plain(const void* params, in
   }}
 }}
 
-PROCESSOR_STATIC_INLINE int processor_param_set_plain(void* params, int index, double plain) {{
+PROCESSOR_STATIC_INLINE int processor_param_store_plain(
+  void* params,
+  int index,
+  double plain
+) {{
   if (params == NULL || !processor_param_is_scalar(index)) {{
     return -1;
   }}
-  const double constrained = processor_param_constrain_plain(index, plain);
-  if (isnan(constrained)) {{
+  if (isnan(plain)) {{
     return -1;
   }}
   unsigned char* destination =
     (unsigned char*)params + PROCESSOR_PARAM_BYTE_OFFSETS[index];
   switch (PROCESSOR_PARAM_KINDS[index]) {{
     case PROCESSOR_SCALAR_BOOL: {{
-      const uint8_t value = constrained != 0.0;
+      const uint8_t value = plain != 0.0;
       memcpy(destination, &value, sizeof(value));
       return 0;
     }}
     case PROCESSOR_SCALAR_F32: {{
-      const float value = (float)constrained;
+      const float value = (float)plain;
       memcpy(destination, &value, sizeof(value));
       return 0;
     }}
     case PROCESSOR_SCALAR_F64:
-      memcpy(destination, &constrained, sizeof(constrained));
+      memcpy(destination, &plain, sizeof(plain));
       return 0;
     case PROCESSOR_SCALAR_I32: {{
-      const int32_t value = (int32_t)round(constrained);
+      const int32_t value = (int32_t)round(plain);
       memcpy(destination, &value, sizeof(value));
       return 0;
     }}
     case PROCESSOR_SCALAR_I64: {{
-      const int64_t value = (int64_t)round(constrained);
+      const int64_t value = (int64_t)round(plain);
       memcpy(destination, &value, sizeof(value));
       return 0;
     }}
@@ -651,13 +680,20 @@ PROCESSOR_STATIC_INLINE int processor_param_set_plain(void* params, int index, d
   }}
 }}
 
+PROCESSOR_STATIC_INLINE int processor_param_set_plain(void* params, int index, double plain) {{
+  const double constrained = processor_param_constrain_plain(index, plain);
+  return isnan(constrained)
+    ? -1
+    : processor_param_store_plain(params, index, constrained);
+}}
+
 PROCESSOR_STATIC_INLINE int processor_param_set_normalized(
   void* params,
   int index,
   double normalized
 ) {{
   const double plain = processor_param_normalized_to_plain(index, normalized);
-  return isnan(plain) ? -1 : processor_param_set_plain(params, index, plain);
+  return isnan(plain) ? -1 : processor_param_store_plain(params, index, plain);
 }}
 
 static const unsigned char

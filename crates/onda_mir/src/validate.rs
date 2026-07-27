@@ -2223,7 +2223,10 @@ impl Validator<'_> {
 
                 let numeric = matches!(
                     intrinsic,
-                    crate::Intrinsic::Abs | crate::Intrinsic::Min | crate::Intrinsic::Max
+                    crate::Intrinsic::Abs
+                        | crate::Intrinsic::Min
+                        | crate::Intrinsic::Max
+                        | crate::Intrinsic::RangeClamp
                 );
                 let mut argument_type = None;
                 for (index, arg) in args.iter().enumerate() {
@@ -3463,12 +3466,12 @@ impl Validator<'_> {
                 ScalarValue::F32(step),
             ) => {
                 return validate_float_param_control_grid(
+                    ScalarType::F32,
                     min as f64,
                     max as f64,
                     default as f64,
                     step as f64,
                     step_count,
-                    1.0e-5,
                 );
             }
             (
@@ -3478,7 +3481,12 @@ impl Validator<'_> {
                 ScalarValue::F64(step),
             ) => {
                 return validate_float_param_control_grid(
-                    min, max, default, step, step_count, 1.0e-10,
+                    ScalarType::F64,
+                    min,
+                    max,
+                    default,
+                    step,
+                    step_count,
                 );
             }
             _ => return Some("step requires a numeric scalar parameter".to_owned()),
@@ -4195,24 +4203,20 @@ fn access_permits(source: crate::AccessMode, requested: crate::AccessMode) -> bo
 }
 
 fn validate_float_param_control_grid(
+    scalar: crate::ScalarType,
     min: f64,
     max: f64,
     default: f64,
     step: f64,
     step_count: u32,
-    tolerance: f64,
 ) -> Option<String> {
     if !step.is_finite() || step <= 0.0 {
         return Some("step must be finite and greater than zero".to_owned());
     }
-    let ratio = (max - min) / step;
-    if !ratio.is_finite() || (ratio - step_count as f64).abs() > tolerance * ratio.abs().max(1.0) {
+    if crate::validated_step_count(scalar, min, max, step) != Some(step_count) {
         return Some("step_count does not match the range and step".to_owned());
     }
-    let default_index = (default - min) / step;
-    if !default_index.is_finite()
-        || (default_index - default_index.round()).abs() > tolerance * default_index.abs().max(1.0)
-    {
+    if !crate::value_is_on_step_grid(scalar, min, default, step, step_count) {
         return Some("default is not on the step grid".to_owned());
     }
     None
@@ -4238,6 +4242,7 @@ fn intrinsic_arity(intrinsic: crate::Intrinsic) -> usize {
         | crate::Intrinsic::Min
         | crate::Intrinsic::Max => 2,
         crate::Intrinsic::Fma => 3,
+        crate::Intrinsic::RangeClamp => 3,
     }
 }
 
@@ -4261,6 +4266,7 @@ fn intrinsic_name(intrinsic: crate::Intrinsic) -> &'static str {
         crate::Intrinsic::Min => "min",
         crate::Intrinsic::Max => "max",
         crate::Intrinsic::Fma => "fma",
+        crate::Intrinsic::RangeClamp => "range_clamp",
     }
 }
 

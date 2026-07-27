@@ -4,7 +4,7 @@ use onda_codegen_llvm::{
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_realtime::configure_current_thread_audio_fp_mode;
 
-pub use onda_codegen_llvm::{ParamDomain, ParamScale};
+pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 
 pub const PROCESS_BEGIN_BLOCK: u32 = 1 << 0;
 pub const PROCESS_END_BLOCK: u32 = 1 << 1;
@@ -455,8 +455,17 @@ pub fn set_param_plain_f64(
                 )
             })?,
     };
+    set_scalar_param_f64(instance, index, desc.elem_ty(), value)
+}
+
+fn set_scalar_param_f64(
+    instance: &mut Instance,
+    index: usize,
+    ty: PrimitiveType,
+    value: f64,
+) -> Result<(), Diagnostic> {
     let mut bytes = [0_u8; 8];
-    let len = match desc.elem_ty() {
+    let len = match ty {
         PrimitiveType::F32 => {
             bytes[..4].copy_from_slice(&(value as f32).to_ne_bytes());
             4
@@ -503,7 +512,7 @@ pub fn set_param_normalized(
                 0,
             )
         })?;
-    set_param_plain_f64(instance, index, plain)
+    set_scalar_param_f64(instance, index, desc.elem_ty(), plain)
 }
 
 pub fn read_control_output_bytes(

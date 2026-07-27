@@ -1372,6 +1372,37 @@ test("implements MIR saturating float-to-integer casts with NaN mapping to zero"
   assert.equal(view.getInt32(state + 16, true), 0x7fff_ffff);
 });
 
+test("maps NaN to the lower bound for MIR range clamps", async () => {
+  const mir = executableMir();
+  const thenStatements =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block.statements;
+  thenStatements[1] = assign(place("local", 3), {
+    kind: "intrinsic",
+    data: {
+      intrinsic: "range_clamp",
+      args: [
+        constant("f32", "0x7fc00000"),
+        constant("f32", -1),
+        constant("f32", 1),
+      ],
+    },
+  });
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+  const params = Number(__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  const outputTable = state + artifact.metadata.runtime.state_size_bytes;
+  const output = outputTable + 4;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, output, true);
+  onda_init(params, state);
+  callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
+  assert.deepEqual([...new Float32Array(memory.buffer, output, 1)], [-1]);
+});
+
 test("makes repeated source local names unique for Binaryen", () => {
   const mir = executableMir();
   mir.functions[1].locals[0].name = "reused";
