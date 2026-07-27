@@ -2661,22 +2661,48 @@ pub unsafe extern "C" fn onda_param_step_count(program: *const onda_program, ind
         .unwrap_or(0)
 }
 
+#[derive(Clone, Copy)]
+enum ParamValueConversion {
+    NormalizedToPlain,
+    PlainToNormalized,
+}
+
+unsafe fn convert_param_value(
+    program: *const onda_program,
+    index: i32,
+    value: f64,
+    conversion: ParamValueConversion,
+) -> f64 {
+    if program.is_null() || index < 0 {
+        return f64::NAN;
+    }
+    let Some(param) = (*program).jit.params().get(index as usize) else {
+        return f64::NAN;
+    };
+    if !param.is_array() && param.elem_ty() == PrimitiveType::Bool {
+        return if value >= 0.5 { 1.0 } else { 0.0 };
+    }
+    let Some(domain) = param.param_domain() else {
+        return f64::NAN;
+    };
+    match conversion {
+        ParamValueConversion::NormalizedToPlain => domain.normalized_to_plain(value),
+        ParamValueConversion::PlainToNormalized => domain.plain_to_normalized(value),
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn onda_param_normalized_to_plain(
     program: *const onda_program,
     index: i32,
     normalized: f64,
 ) -> f64 {
-    if program.is_null() || index < 0 {
-        return f64::NAN;
-    }
-    (*program)
-        .jit
-        .params()
-        .get(index as usize)
-        .and_then(|param| param.param_domain())
-        .map(|domain| domain.normalized_to_plain(normalized))
-        .unwrap_or(f64::NAN)
+    convert_param_value(
+        program,
+        index,
+        normalized,
+        ParamValueConversion::NormalizedToPlain,
+    )
 }
 
 #[no_mangle]
@@ -2685,14 +2711,10 @@ pub unsafe extern "C" fn onda_param_plain_to_normalized(
     index: i32,
     plain: f64,
 ) -> f64 {
-    if program.is_null() || index < 0 {
-        return f64::NAN;
-    }
-    (*program)
-        .jit
-        .params()
-        .get(index as usize)
-        .and_then(|param| param.param_domain())
-        .map(|domain| domain.plain_to_normalized(plain))
-        .unwrap_or(f64::NAN)
+    convert_param_value(
+        program,
+        index,
+        plain,
+        ParamValueConversion::PlainToNormalized,
+    )
 }

@@ -543,7 +543,7 @@ pub(crate) fn coerce_params(
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
                     .unwrap_or(raw_default);
                 let control =
-                    coerce_top_level_param_control(param, ty, range, default, options, errors);
+                    coerce_top_level_param_control(param, ty, range, raw_default, options, errors);
                 out.push(TypedParam {
                     name: param.name.clone(),
                     ty,
@@ -591,7 +591,7 @@ pub(crate) fn coerce_params(
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
                     .unwrap_or(raw_default);
                 let control =
-                    coerce_top_level_param_control(param, ty, range, default, options, errors);
+                    coerce_top_level_param_control(param, ty, range, raw_default, options, errors);
                 out.push(TypedParam {
                     name: param.name.clone(),
                     ty,
@@ -952,7 +952,7 @@ fn validate_param_step_grid(
                     errors,
                 );
             }
-            if (i64::from(default) - i64::from(min)) % step != 0 {
+            if default < min || default > max || (i64::from(default) - i64::from(min)) % step != 0 {
                 return invalid(
                     format!("{context} default must lie on the step grid"),
                     errors,
@@ -982,7 +982,8 @@ fn validate_param_step_grid(
                     errors,
                 );
             }
-            if (i128::from(default) - i128::from(min)) % step != 0 {
+            if default < min || default > max || (i128::from(default) - i128::from(min)) % step != 0
+            {
                 return invalid(
                     format!("{context} default must lie on the step grid"),
                     errors,

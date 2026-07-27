@@ -819,6 +819,31 @@ sample { out1 = cutoff * gain }
 }
 
 #[test]
+fn c_api_parameter_conversions_support_boolean_thresholds() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params {
+  gate: bool = false
+  flags: bool[1] = [false]
+}
+outs { out1 }
+sample { out1 = 0.0 }
+"#,
+        );
+
+        assert_eq!(onda_param_normalized_to_plain(program.0, 0, 0.49), 0.0);
+        assert_eq!(onda_param_normalized_to_plain(program.0, 0, 0.5), 1.0);
+        assert_eq!(onda_param_plain_to_normalized(program.0, 0, -1.0), 0.0);
+        assert_eq!(onda_param_plain_to_normalized(program.0, 0, 0.5), 1.0);
+        assert_eq!(onda_param_normalized_to_plain(program.0, 0, f64::NAN), 0.0);
+
+        assert!(onda_param_normalized_to_plain(program.0, 1, 1.0).is_nan());
+        assert!(onda_param_plain_to_normalized(program.0, 2, 1.0).is_nan());
+    }
+}
+
+#[test]
 fn c_api_compile_options_block_size_controls_runtime_block_size() {
     unsafe {
         let src = CString::new(

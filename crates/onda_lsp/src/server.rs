@@ -3481,6 +3481,16 @@ namespace sc:
             .expect("curve field completion");
         assert_eq!(curve["insertText"], json!("curve = $1"));
 
+        let shorthand_source = "params:\n  cutoff = 440.0 {20000, scale = linear, ";
+        write_file(&main, shorthand_source);
+        let items = completion_items_for(&mut server, &main, shorthand_source, shorthand_source);
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"min"), "items: {items:?}");
+        assert!(labels.contains(&"max"), "items: {items:?}");
+
         fs::remove_dir_all(&dir).ok();
     }
 

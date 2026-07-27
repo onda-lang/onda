@@ -39,12 +39,30 @@ pub(super) fn completion_context_at(
 
     let mut used_fields = BTreeSet::new();
     let mut saw_named = false;
-    for (index, item) in previous.iter().enumerate() {
+    let mut positional_count = 0;
+    for item in previous {
         if let Some(field) = named_field(source, item.clone()) {
             saw_named = true;
             used_fields.insert(field);
         } else if !saw_named {
-            if let Some(field) = PARAM_DOMAIN_POSITIONAL_FIELDS.get(index) {
+            positional_count += 1;
+        }
+    }
+    match positional_count {
+        0 => {}
+        1 if used_fields.contains("max") => {
+            used_fields.insert("min");
+        }
+        1 if used_fields.contains("min") => {
+            used_fields.insert("max");
+        }
+        1 => {
+            // A lone positional bound is `max`, but adding a named `max`
+            // reinterprets it as `min`. Until either bound is named, both are
+            // valid completion choices.
+        }
+        count => {
+            for field in PARAM_DOMAIN_POSITIONAL_FIELDS.iter().take(count) {
                 used_fields.insert(*field);
             }
         }
@@ -370,5 +388,23 @@ mod tests {
         let context = completion_context_at(source, source.len()).expect("parameter domain");
         assert!(context.used_fields.contains("min"));
         assert!(context.allow_fields);
+    }
+
+    #[test]
+    fn keeps_single_positional_bound_completions_unambiguous() {
+        let shorthand = "params:\n  cutoff = 440.0 {20000, scale = linear, ";
+        let context = completion_context_at(shorthand, shorthand.len()).expect("parameter domain");
+        assert!(!context.used_fields.contains("min"));
+        assert!(!context.used_fields.contains("max"));
+
+        let named_min = "params:\n  cutoff = 440.0 {20000, min = 20, ";
+        let context = completion_context_at(named_min, named_min.len()).expect("parameter domain");
+        assert!(context.used_fields.contains("min"));
+        assert!(context.used_fields.contains("max"));
+
+        let named_max = "params:\n  cutoff = 440.0 {20, max = 20000, ";
+        let context = completion_context_at(named_max, named_max.len()).expect("parameter domain");
+        assert!(context.used_fields.contains("min"));
+        assert!(context.used_fields.contains("max"));
     }
 }

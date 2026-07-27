@@ -772,6 +772,16 @@ sample { out1 = p }
              outs<i64> { out1 }\nsample { out1 = p }\n",
             "must fit the exact host integer range",
         );
+        assert_analyze_error_contains(
+            "params { p = 11.0 {0, 10, step = 2} }\n\
+             outs { out1 }\nsample { out1 = p }\n",
+            "default must lie on the step grid",
+        );
+        assert_analyze_error_contains(
+            "params { p: i32 = 12 {0, 10, step = 2} }\n\
+             outs<i32> { out1 }\nsample { out1 = p }\n",
+            "default must lie on the step grid",
+        );
     }
 
     #[test]
