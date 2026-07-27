@@ -850,7 +850,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         let mut block = MirBlock::default();
         if end - start == 1 {
-            let endpoint = slots[start];
+            let endpoint = slots[start].clone();
             let value = self.dynamic_interface_read_rvalue(endpoint, location)?;
             self.push_statement(
                 &mut block,
@@ -905,7 +905,33 @@ impl<'a> FunctionLowerer<'a> {
             element.map(|element| Value::Constant(ScalarValue::I32(element as i32)))
         };
         match endpoint {
-            RuntimeInterfaceEndpoint::Input { input, element } => {
+            RuntimeInterfaceEndpoint::Input {
+                input,
+                element,
+                clamped,
+            } => {
+                if let Some(alias) = clamped {
+                    debug_assert!(element.is_none());
+                    let base = match self.bindings.get(&alias) {
+                        Some(Binding::Local(local, _)) => PlaceBase::Local(*local),
+                        _ => self
+                            .runtime_globals
+                            .and_then(|globals| globals.states.get(&alias))
+                            .map(|(state, _)| PlaceBase::State(*state))
+                            .ok_or_else(|| {
+                                self.error(
+                                    format!(
+                                        "range-clamped dynamic input alias '{alias}' is unavailable"
+                                    ),
+                                    location,
+                                )
+                            })?,
+                    };
+                    return Ok(Rvalue::Load(Place {
+                        base,
+                        projections: Vec::new(),
+                    }));
+                }
                 if let Some(element) = element {
                     if let Some((local, _, len)) =
                         self.oversampled_input_arrays.get(&input).copied()
@@ -941,16 +967,29 @@ impl<'a> FunctionLowerer<'a> {
             RuntimeInterfaceEndpoint::AudioOutput { .. } => {
                 Err(self.error("audio output endpoints are write-only", location))
             }
-            RuntimeInterfaceEndpoint::Param { param, element } => Ok(Rvalue::Load(Place {
-                base: PlaceBase::Param(param),
-                projections: element
-                    .map(|element| Projection::Index {
-                        index: Value::Constant(ScalarValue::I32(element as i32)),
-                        bounds: BoundsMode::Unchecked,
-                    })
-                    .into_iter()
-                    .collect(),
-            })),
+            RuntimeInterfaceEndpoint::Param {
+                param,
+                element,
+                clamped,
+            } => {
+                if let Some(state) = clamped {
+                    debug_assert!(element.is_none());
+                    return Ok(Rvalue::Load(Place {
+                        base: PlaceBase::State(state),
+                        projections: Vec::new(),
+                    }));
+                }
+                Ok(Rvalue::Load(Place {
+                    base: PlaceBase::Param(param),
+                    projections: element
+                        .map(|element| Projection::Index {
+                            index: Value::Constant(ScalarValue::I32(element as i32)),
+                            bounds: BoundsMode::Unchecked,
+                        })
+                        .into_iter()
+                        .collect(),
+                }))
+            }
             RuntimeInterfaceEndpoint::ControlOutput { .. } => {
                 Err(self.error("control output endpoints are write-only", location))
             }

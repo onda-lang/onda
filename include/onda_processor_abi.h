@@ -115,6 +115,22 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_float_grid_value_matches(
     fmin(rounding_tolerance, grid_tolerance);
 }
 
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_integer_domain_value_is_valid(
+  onda_processor_param_scalar scalar,
+  double value
+) {
+  if (!isfinite(value) || trunc(value) != value) {
+    return 0;
+  }
+  if (scalar == ONDA_PROCESSOR_PARAM_SCALAR_I32) {
+    return value >= (double)INT32_MIN && value <= (double)INT32_MAX;
+  }
+  if (scalar == ONDA_PROCESSOR_PARAM_SCALAR_I64) {
+    return fabs(value) <= 9007199254740991.0;
+  }
+  return 0;
+}
+
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
   const onda_processor_param_domain* domain
 ) {
@@ -154,6 +170,24 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
   ) {
     return 0;
   }
+  if (
+    (
+      domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I32 ||
+      domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I64
+    ) &&
+    (
+      !onda_processor_integer_domain_value_is_valid(
+        domain->scalar,
+        domain->minimum
+      ) ||
+      !onda_processor_integer_domain_value_is_valid(
+        domain->scalar,
+        domain->maximum
+      )
+    )
+  ) {
+    return 0;
+  }
   if (domain->has_curve) {
     if (
       domain->scale != ONDA_PROCESSOR_PARAM_SCALE_LINEAR ||
@@ -182,11 +216,6 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
   if (!isfinite(domain->step) || domain->step <= 0.0) {
     return 0;
   }
-  const double intervals =
-    (domain->maximum - domain->minimum) / domain->step;
-  if (!isfinite(intervals)) {
-    return 0;
-  }
   if (
     domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F32 ||
     domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F64
@@ -203,7 +232,20 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
     domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I32 ||
     domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I64
   ) {
-    return intervals == (double)domain->step_count;
+    if (
+      !onda_processor_integer_domain_value_is_valid(
+        domain->scalar,
+        domain->step
+      )
+    ) {
+      return 0;
+    }
+    const int64_t minimum = (int64_t)domain->minimum;
+    const int64_t maximum = (int64_t)domain->maximum;
+    const int64_t step = (int64_t)domain->step;
+    const int64_t width = maximum - minimum;
+    return width % step == 0 &&
+      width / step == (int64_t)domain->step_count;
   }
   return 0;
 }

@@ -923,7 +923,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         let mut block = MirBlock::default();
         if end - start == 1 {
-            let endpoint = slots[start];
+            let endpoint = slots[start].clone();
             self.push_dynamic_interface_store(&mut block, endpoint, value, location)?;
             return Ok(block);
         }

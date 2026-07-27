@@ -83,6 +83,65 @@ sample:
 }
 
 #[test]
+fn dynamic_input_and_param_reads_use_entry_point_range_clamps() {
+    let source = r#"
+ins:
+  low: f32 = 0.0 {-1.0, 1.0}
+  high: f32 = 0.0 {-2.0, 2.0}
+kins:
+  gain: f32 = 0.5 {0.0, 1.0}
+  mix: f32 = 0.5 {0.0, 1.0}
+outs:
+  out1
+init:
+  selected: i32 = 1
+sample:
+  out1 = ins[0] + ins[selected] + params[0] + kins[selected]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("ranged dynamic reads should lower");
+    validate(&mir).expect("ranged dynamic-read MIR should validate");
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    assert_eq!(
+        process.matches("intrinsic range_clamp(").count(),
+        4,
+        "each ranged dynamic endpoint should be clamped once:\n{process}"
+    );
+    for raw_endpoint in [
+        "load_input @in0",
+        "load_input @in1",
+        "load @param0",
+        "load @param1",
+    ] {
+        assert_eq!(
+            process.matches(raw_endpoint).count(),
+            1,
+            "the range hoist should be the only raw read of {raw_endpoint}:\n{process}"
+        );
+    }
+    for alias in ["__onda_clamped_in__low", "__onda_clamped_in__high"] {
+        assert!(
+            process.contains(alias),
+            "dynamic dispatch should read clamp alias '{alias}':\n{process}"
+        );
+    }
+    for alias in ["__onda_clamped_param__gain", "__onda_clamped_param__mix"] {
+        let state = mir
+            .state
+            .iter()
+            .position(|slot| slot.name == alias)
+            .unwrap_or_else(|| panic!("missing clamp alias state '{alias}'"));
+        assert!(
+            process.contains(&format!("load @state{state}")),
+            "dynamic dispatch should read clamp alias '{alias}':\n{process}"
+        );
+    }
+}
+
+#[test]
 fn ranged_top_level_param_clamps_preserve_scalar_types() {
     let source = r#"
 params:

@@ -1167,7 +1167,7 @@ fn populate_runtime_interface_views(
         let Some(view) = view else {
             continue;
         };
-        match resolve_runtime_interface_view(globals, kind, view) {
+        match resolve_runtime_interface_view(program, globals, kind, view) {
             Ok(view) => {
                 globals.interface_views.insert(kind, view);
             }
@@ -1182,6 +1182,7 @@ fn populate_runtime_interface_views(
 }
 
 fn resolve_runtime_interface_view(
+    program: &TypedProgram,
     globals: &RuntimeGlobals,
     kind: DynamicInterfaceKind,
     view: &ResolvedInterfaceView,
@@ -1210,7 +1211,8 @@ fn resolve_runtime_interface_view(
                 SourceLoc::ZERO,
             ));
         }
-        let (endpoint, actual_type) = resolve_runtime_interface_endpoint(globals, kind, slot)?;
+        let (endpoint, actual_type) =
+            resolve_runtime_interface_endpoint(program, globals, kind, slot)?;
         if actual_type != view.element_type {
             return Err(MirLoweringError::new(
                 format!(
@@ -1231,6 +1233,7 @@ fn resolve_runtime_interface_view(
 }
 
 fn resolve_runtime_interface_endpoint(
+    program: &TypedProgram,
     globals: &RuntimeGlobals,
     kind: DynamicInterfaceKind,
     slot: &ResolvedInterfaceSlot,
@@ -1256,10 +1259,12 @@ fn resolve_runtime_interface_endpoint(
                 .get(&slot.root)
                 .copied()
                 .ok_or_else(missing)?;
+            let clamped = program.dynamic_input_range_aliases.get(&slot.root).cloned();
             Ok((
                 RuntimeInterfaceEndpoint::Input {
                     input,
                     element: None,
+                    clamped,
                 },
                 ty,
             ))
@@ -1274,6 +1279,7 @@ fn resolve_runtime_interface_endpoint(
                 RuntimeInterfaceEndpoint::Input {
                     input,
                     element: Some(checked_element(element, len)?),
+                    clamped: None,
                 },
                 ty,
             ))
@@ -1341,10 +1347,22 @@ fn resolve_runtime_interface_endpoint(
                 .get(&slot.root)
                 .copied()
                 .ok_or_else(missing)?;
+            let clamped = program
+                .dynamic_param_range_aliases
+                .get(&slot.root)
+                .map(|alias| {
+                    globals
+                        .states
+                        .get(alias)
+                        .map(|(state, _)| *state)
+                        .ok_or_else(missing)
+                })
+                .transpose()?;
             Ok((
                 RuntimeInterfaceEndpoint::Param {
                     param,
                     element: None,
+                    clamped,
                 },
                 ty,
             ))
@@ -1359,6 +1377,7 @@ fn resolve_runtime_interface_endpoint(
                 RuntimeInterfaceEndpoint::Param {
                     param,
                     element: Some(checked_element(element, len)?),
+                    clamped: None,
                 },
                 ty,
             ))
@@ -1999,11 +2018,12 @@ enum DynamicInterfaceKind {
     Params,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum RuntimeInterfaceEndpoint {
     Input {
         input: onda_mir::InputId,
         element: Option<u32>,
+        clamped: Option<String>,
     },
     AudioOutput {
         output: onda_mir::OutputId,
@@ -2016,6 +2036,7 @@ enum RuntimeInterfaceEndpoint {
     Param {
         param: onda_mir::ParamId,
         element: Option<u32>,
+        clamped: Option<onda_mir::StateId>,
     },
 }
 

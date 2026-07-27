@@ -528,38 +528,56 @@ pub(super) fn expr_is_clamped_to_range(
     expr_matches_typed_const(minimum, range.min) && expr_matches_typed_const(maximum, range.max)
 }
 
+#[derive(Default)]
+pub(super) struct TopLevelRangeClampUsage {
+    pub(super) aliases: HashSet<String>,
+    pub(super) dynamic_input_aliases: HashSet<String>,
+    pub(super) dynamic_param_aliases: HashSet<String>,
+}
+
 pub(super) fn rewrite_top_level_range_clamps_in_expr(
     expr: &mut Expr,
     input_aliases: &HashMap<String, String>,
     param_aliases: &HashMap<String, String>,
     clamp_inputs: bool,
     clamp_params: bool,
-    used_aliases: &mut HashSet<String>,
+    usage: &mut TopLevelRangeClampUsage,
 ) {
     match expr {
         Expr::Var { name, .. } => {
             if clamp_inputs {
                 if let Some(alias) = input_aliases.get(name) {
-                    used_aliases.insert(alias.clone());
+                    usage.aliases.insert(alias.clone());
                     *expr = Expr::var(alias.clone());
                     return;
                 }
             }
             if clamp_params {
                 if let Some(alias) = param_aliases.get(name) {
-                    used_aliases.insert(alias.clone());
+                    usage.aliases.insert(alias.clone());
                     *expr = Expr::var(alias.clone());
                 }
             }
         }
-        Expr::Index { index, .. } => {
+        Expr::Index { base, index, .. } => {
+            if base == "ins" && clamp_inputs {
+                usage.aliases.extend(input_aliases.values().cloned());
+                usage
+                    .dynamic_input_aliases
+                    .extend(input_aliases.values().cloned());
+            } else if matches!(base.as_str(), "params" | "kins") && clamp_params {
+                usage.aliases.extend(param_aliases.values().cloned());
+                usage
+                    .dynamic_param_aliases
+                    .extend(param_aliases.values().cloned());
+            }
             rewrite_top_level_range_clamps_in_expr(
                 index,
                 input_aliases,
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
         }
         Expr::Slice { start, end, .. } => {
@@ -570,7 +588,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
             if let Some(end) = end {
@@ -580,7 +598,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
         }
@@ -591,7 +609,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
             if let Some(values) = init {
                 for value in values {
@@ -601,7 +619,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                         param_aliases,
                         clamp_inputs,
                         clamp_params,
-                        used_aliases,
+                        usage,
                     );
                 }
             }
@@ -615,7 +633,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
             rewrite_top_level_range_clamps_in_expr(
                 rhs,
@@ -623,7 +641,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
         }
         Expr::Call { args, .. } => {
@@ -634,7 +652,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
         }
@@ -647,7 +665,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
         }
         Expr::ArrayLiteral { values, .. } => {
@@ -658,7 +676,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
         }
@@ -670,7 +688,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
         }
@@ -682,7 +700,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
         }
@@ -696,7 +714,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
     param_aliases: &HashMap<String, String>,
     clamp_inputs: bool,
     clamp_params: bool,
-    used_aliases: &mut HashSet<String>,
+    usage: &mut TopLevelRangeClampUsage,
 ) {
     match stmt {
         Stmt::Const { .. } => {}
@@ -708,7 +726,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
             rewrite_top_level_range_clamps_in_expr(
@@ -717,7 +735,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -727,7 +745,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
         }
         Stmt::If {
@@ -742,7 +760,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
             for nested in then_branch {
                 rewrite_top_level_range_clamps_in_stmt(
@@ -751,7 +769,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
             for nested in else_branch {
@@ -761,7 +779,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
         }
@@ -778,7 +796,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
             rewrite_top_level_range_clamps_in_expr(
                 end,
@@ -786,7 +804,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
             if let Some(step_expr) = step {
                 rewrite_top_level_range_clamps_in_expr(
@@ -795,7 +813,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
             for nested in body {
@@ -805,7 +823,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
         }
@@ -816,7 +834,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 param_aliases,
                 clamp_inputs,
                 clamp_params,
-                used_aliases,
+                usage,
             );
             for nested in body {
                 rewrite_top_level_range_clamps_in_stmt(
@@ -825,7 +843,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     param_aliases,
                     clamp_inputs,
                     clamp_params,
-                    used_aliases,
+                    usage,
                 );
             }
         }

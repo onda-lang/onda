@@ -7425,7 +7425,7 @@ pub fn analyze_with_options(
         });
     let init_param_hoists = param_hoists.clone();
 
-    let mut process_used_aliases = HashSet::new();
+    let mut process_clamp_usage = TopLevelRangeClampUsage::default();
     for stmt in &mut block_pre {
         rewrite_top_level_range_clamps_in_stmt(
             stmt,
@@ -7433,7 +7433,7 @@ pub fn analyze_with_options(
             &param_aliases,
             false,
             true,
-            &mut process_used_aliases,
+            &mut process_clamp_usage,
         );
     }
     for stmt in &mut sample {
@@ -7443,7 +7443,7 @@ pub fn analyze_with_options(
             &param_aliases,
             true,
             true,
-            &mut process_used_aliases,
+            &mut process_clamp_usage,
         );
     }
     for stmt in &mut block_post {
@@ -7453,26 +7453,26 @@ pub fn analyze_with_options(
             &param_aliases,
             false,
             true,
-            &mut process_used_aliases,
+            &mut process_clamp_usage,
         );
     }
 
     let process_param_hoists =
-        used_top_level_range_clamp_hoists(param_hoists, &process_used_aliases);
+        used_top_level_range_clamp_hoists(param_hoists, &process_clamp_usage.aliases);
     if !process_param_hoists.is_empty() {
         let mut rewritten = process_param_hoists;
         rewritten.append(&mut block_pre);
         block_pre = rewritten;
     }
     let process_input_hoists =
-        used_top_level_range_clamp_hoists(input_hoists, &process_used_aliases);
+        used_top_level_range_clamp_hoists(input_hoists, &process_clamp_usage.aliases);
     if !process_input_hoists.is_empty() {
         let mut rewritten = process_input_hoists;
         rewritten.append(&mut sample);
         sample = rewritten;
     }
 
-    let mut init_used_aliases = HashSet::new();
+    let mut init_clamp_usage = TopLevelRangeClampUsage::default();
     for stmt in &mut init {
         rewrite_top_level_range_clamps_in_stmt(
             stmt,
@@ -7480,11 +7480,11 @@ pub fn analyze_with_options(
             &param_aliases,
             false,
             true,
-            &mut init_used_aliases,
+            &mut init_clamp_usage,
         );
     }
     let mut used_init_hoists =
-        used_top_level_range_clamp_hoists(init_param_hoists, &init_used_aliases);
+        used_top_level_range_clamp_hoists(init_param_hoists, &init_clamp_usage.aliases);
     if !used_init_hoists.is_empty() {
         used_init_hoists.append(&mut init);
         init = used_init_hoists;
@@ -7499,7 +7499,7 @@ pub fn analyze_with_options(
                     sanitize_symbol_component(name)
                 ))
             });
-        let mut event_used_aliases = HashSet::new();
+        let mut event_clamp_usage = TopLevelRangeClampUsage::default();
         for stmt in &mut event.body {
             rewrite_top_level_range_clamps_in_stmt(
                 stmt,
@@ -7507,11 +7507,11 @@ pub fn analyze_with_options(
                 &event_param_aliases,
                 false,
                 true,
-                &mut event_used_aliases,
+                &mut event_clamp_usage,
             );
         }
         let mut used_event_hoists =
-            used_top_level_range_clamp_hoists(event_param_hoists, &event_used_aliases);
+            used_top_level_range_clamp_hoists(event_param_hoists, &event_clamp_usage.aliases);
         if !used_event_hoists.is_empty() {
             used_event_hoists.append(&mut event.body);
             event.body = used_event_hoists;
@@ -8603,6 +8603,15 @@ pub fn analyze_with_options(
         state_tuples,
         ..
     } = init_st;
+    for (param_name, alias) in &param_aliases {
+        if process_clamp_usage.dynamic_param_aliases.contains(alias) {
+            let ty = param_types
+                .get(param_name)
+                .copied()
+                .expect("range-clamped parameter must have a declared scalar type");
+            state_scalars.insert(alias.clone(), ty);
+        }
+    }
     let control_out_array_slots = control_out_arrays
         .iter()
         .flat_map(|(name, info)| (0..info.len).map(move |idx| format!("{name}[{idx}]")))
@@ -9398,6 +9407,14 @@ pub fn analyze_with_options(
                 return Err(errors);
             }
         };
+        let dynamic_input_range_aliases = input_aliases
+            .into_iter()
+            .filter(|(_, alias)| process_clamp_usage.dynamic_input_aliases.contains(alias))
+            .collect();
+        let dynamic_param_range_aliases = param_aliases
+            .into_iter()
+            .filter(|(_, alias)| process_clamp_usage.dynamic_param_aliases.contains(alias))
+            .collect();
 
         Ok(TypedProgram {
             analysis_options: options,
@@ -9410,6 +9427,8 @@ pub fn analyze_with_options(
             param_types,
             in_defaults,
             in_ranges,
+            dynamic_input_range_aliases,
+            dynamic_param_range_aliases,
             in_arrays,
             out_arrays,
             control_out_arrays,

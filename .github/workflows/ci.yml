@@ -42,6 +42,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Test C processor ABI header
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            tests/onda_processor_abi_header_test.c -lm \
+            -o /tmp/onda_processor_abi_header_test
+          /tmp/onda_processor_abi_header_test
+
       - name: Install native system dependencies
         run: |
           sudo apt-get update

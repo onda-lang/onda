@@ -92,6 +92,8 @@ pub struct TypedProgram {
     pub param_types: HashMap<String, PrimitiveType>,
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
+    pub(crate) dynamic_input_range_aliases: HashMap<String, String>,
+    pub(crate) dynamic_param_range_aliases: HashMap<String, String>,
     pub in_arrays: HashMap<String, TypedArrayInfo>,
     pub out_arrays: HashMap<String, TypedArrayInfo>,
     pub control_out_arrays: HashMap<String, TypedArrayInfo>,
