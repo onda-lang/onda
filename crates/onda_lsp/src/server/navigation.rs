@@ -3152,10 +3152,10 @@ fn source_with_current_line_placeholder(source: &str, offset: usize) -> String {
     let mut sanitized = String::with_capacity(source.len());
     sanitized.push_str(&source[..line_start]);
     if indent.is_empty() {
-        sanitized.push_str("const __onda_navigation_placeholder = 0\n");
+        sanitized.push_str("const __lsp_navigation_placeholder = 0\n");
     } else {
         sanitized.push_str(&indent);
-        sanitized.push_str("__onda_navigation_placeholder = 0.0\n");
+        sanitized.push_str("__lsp_navigation_placeholder = 0.0\n");
     }
     if line_end < source.len() {
         sanitized.push_str(&source[line_end + 1..]);

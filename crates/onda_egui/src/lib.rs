@@ -652,35 +652,9 @@ impl RunApp {
             return;
         };
         let ty = param_type(&param);
-        let min = param.get("rangeMin").and_then(Value::as_f64);
-        let max = param.get("rangeMax").and_then(Value::as_f64);
         let default = param.get("default").and_then(Value::as_f64);
-        let step = param.get("step").and_then(Value::as_f64);
-        let step_count = param
-            .get("stepCount")
-            .and_then(Value::as_u64)
-            .and_then(|count| u32::try_from(count).ok());
-        let scale = match param.get("scale").and_then(Value::as_str) {
-            Some("log") => ParamScale::Log,
-            _ => ParamScale::Linear,
-        };
-        let scalar = match param.get("scalar").and_then(Value::as_str) {
-            Some("f32") => Some(ParamScalarType::F32),
-            Some("f64") => Some(ParamScalarType::F64),
-            Some("i32") => Some(ParamScalarType::I32),
-            Some("i64") => Some(ParamScalarType::I64),
-            _ => None,
-        };
-        let curve = param.get("curve").and_then(Value::as_f64);
-        let unit = param.get("unit").and_then(Value::as_str);
-        let domain = min
-            .zip(max)
-            .zip(scalar)
-            .and_then(|((minimum, maximum), scalar)| {
-                ParamDomain::new(
-                    scalar, minimum, maximum, scale, curve, unit, step, step_count,
-                )
-            });
+        let domain = prepared_param_domain(&param);
+        let unit = domain.and_then(ParamDomain::unit);
         let display_name = unit
             .filter(|unit| !unit.is_empty())
             .map(|unit| format!("{name} ({unit})"))
@@ -2109,6 +2083,36 @@ fn param_type(param: &Value) -> &str {
     param.get("type").and_then(Value::as_str).unwrap_or("f32")
 }
 
+fn prepared_param_domain(param: &Value) -> Option<ParamDomain<'_>> {
+    if param.get("scalar").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let scalar = match param_type(param) {
+        "f32" => ParamScalarType::F32,
+        "f64" => ParamScalarType::F64,
+        "i32" => ParamScalarType::I32,
+        "i64" => ParamScalarType::I64,
+        _ => return None,
+    };
+    let scale = match param.get("scale").and_then(Value::as_str) {
+        Some("log") => ParamScale::Log,
+        _ => ParamScale::Linear,
+    };
+    ParamDomain::new(
+        scalar,
+        param.get("rangeMin").and_then(Value::as_f64)?,
+        param.get("rangeMax").and_then(Value::as_f64)?,
+        scale,
+        param.get("curve").and_then(Value::as_f64),
+        param.get("unit").and_then(Value::as_str),
+        param.get("step").and_then(Value::as_f64),
+        param
+            .get("stepCount")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok()),
+    )
+}
+
 fn buffer_name(buffer: &Value) -> Option<&str> {
     buffer.get("name").and_then(Value::as_str)
 }
@@ -2232,8 +2236,8 @@ mod tests {
     use super::{
         buffer_loaded_summary, control_decimals, event_arg_signature, event_array_grid_columns,
         event_array_len, event_array_scalar_type, format_run_status, param_grid_columns,
-        render_compact_param_value_editor, scalar_drag_speed, scalar_step, KnobDragState,
-        ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale,
+        prepared_param_domain, render_compact_param_value_editor, scalar_drag_speed, scalar_step,
+        KnobDragState, ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale,
         PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
@@ -2388,6 +2392,39 @@ mod tests {
         )
         .expect("valid forward curve");
         assert!((forward.normalized_to_plain(0.5) + inverse_midpoint - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn run_param_json_prepares_the_declared_scalar_domain() {
+        let param = serde_json::json!({
+            "name": "cutoff",
+            "type": "f32",
+            "scalar": true,
+            "rangeMin": 20.0,
+            "rangeMax": 20_000.0,
+            "scale": "log",
+            "curve": null,
+            "unit": "Hz",
+            "step": null,
+            "stepCount": null,
+        });
+        let domain = prepared_param_domain(&param).expect("scalar parameter domain");
+
+        assert_eq!(domain.scalar(), ParamScalarType::F32);
+        assert_eq!(domain.scale(), ParamScale::Log);
+        assert_eq!(domain.unit(), Some("Hz"));
+        assert!(
+            (domain.normalized_to_plain(0.5) - 20_000.0_f64.sqrt() * 20.0_f64.sqrt()).abs() < 0.001
+        );
+
+        let array = serde_json::json!({
+            "type": "f32[2]",
+            "scalar": false,
+            "rangeMin": 0.0,
+            "rangeMax": 1.0,
+            "scale": "linear",
+        });
+        assert!(prepared_param_domain(&array).is_none());
     }
 
     #[test]

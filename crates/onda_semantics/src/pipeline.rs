@@ -7424,6 +7424,7 @@ pub fn analyze_with_options(
             ))
         });
     let init_param_hoists = param_hoists.clone();
+    let no_shadowed_names = HashSet::new();
 
     let mut process_clamp_usage = TopLevelRangeClampUsage::default();
     for stmt in &mut block_pre {
@@ -7431,6 +7432,7 @@ pub fn analyze_with_options(
             stmt,
             &input_aliases,
             &param_aliases,
+            &no_shadowed_names,
             false,
             true,
             &mut process_clamp_usage,
@@ -7441,6 +7443,7 @@ pub fn analyze_with_options(
             stmt,
             &input_aliases,
             &param_aliases,
+            &no_shadowed_names,
             true,
             true,
             &mut process_clamp_usage,
@@ -7451,6 +7454,7 @@ pub fn analyze_with_options(
             stmt,
             &input_aliases,
             &param_aliases,
+            &no_shadowed_names,
             false,
             true,
             &mut process_clamp_usage,
@@ -7478,6 +7482,7 @@ pub fn analyze_with_options(
             stmt,
             &HashMap::new(),
             &param_aliases,
+            &no_shadowed_names,
             false,
             true,
             &mut init_clamp_usage,
@@ -7500,11 +7505,17 @@ pub fn analyze_with_options(
                 ))
             });
         let mut event_clamp_usage = TopLevelRangeClampUsage::default();
+        let shadowed_names = event
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<HashSet<_>>();
         for stmt in &mut event.body {
             rewrite_top_level_range_clamps_in_stmt(
                 stmt,
                 &HashMap::new(),
                 &event_param_aliases,
+                &shadowed_names,
                 false,
                 true,
                 &mut event_clamp_usage,

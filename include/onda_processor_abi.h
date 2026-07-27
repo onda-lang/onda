@@ -188,6 +188,12 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
   ) {
     return 0;
   }
+  if (
+    domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I64 &&
+    domain->maximum - domain->minimum > 9007199254740991.0
+  ) {
+    return 0;
+  }
   if (domain->has_curve) {
     if (
       domain->scale != ONDA_PROCESSOR_PARAM_SCALE_LINEAR ||

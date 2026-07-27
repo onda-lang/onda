@@ -1720,6 +1720,7 @@ or stored from `init`, `event`, or top-level `def` bodies.
 - `in` separates the loop variable from its range in `for i in A..B`; use names such as `input` for ports and variables.
 - `import`, `include`, `use`, `as`, `pub`, and `pin` are reserved for their declaration and modifier syntax.
 - `true` and `false` are reserved boolean literals.
+- Identifiers beginning with `__onda_` are reserved for compiler-generated symbols.
 - Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.
 
 ### Common Current Limits

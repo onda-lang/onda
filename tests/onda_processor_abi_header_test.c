@@ -45,12 +45,22 @@ int main(void) {
 
   domain = integer_domain(
     ONDA_PROCESSOR_PARAM_SCALAR_I64,
+    0.0,
+    9007199254740991.0,
+    9007199254740991.0,
+    1
+  );
+  assert(onda_processor_param_domain_is_valid(&domain));
+
+  domain = integer_domain(
+    ONDA_PROCESSOR_PARAM_SCALAR_I64,
     -9007199254740991.0,
     9007199254740991.0,
     9007199254740991.0,
     2
   );
-  assert(onda_processor_param_domain_is_valid(&domain));
+  assert(!onda_processor_param_domain_is_valid(&domain));
+
   domain.maximum = 9007199254740992.0;
   assert(!onda_processor_param_domain_is_valid(&domain));
 

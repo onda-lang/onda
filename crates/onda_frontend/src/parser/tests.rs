@@ -936,6 +936,30 @@ fn rejects_reserved_keywords_as_identifiers() {
 }
 
 #[test]
+fn rejects_compiler_reserved_identifier_prefix() {
+    let cases = [
+        "const __onda_value = 1.0\n",
+        "struct __onda_Struct:\n  value: f32\n",
+        "proc __onda_Proc:\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
+        "namespace __onda_namespace:\n  const value = 1.0\n",
+        "params:\n  __onda_param = 1.0\n",
+        "events:\n  __onda_event():\n    value = 1.0\n",
+        "event set(__onda_value: f32):\n  value = __onda_value\n",
+        "def identity(__onda_value: f32):\n  return __onda_value\n",
+        "struct Box:\n  __onda_field: f32\n",
+        "sample:\n  __onda_local = 1.0\n",
+        "sample:\n  for __onda_index in 0..1:\n    value = 1.0\n",
+    ];
+
+    for src in cases {
+        assert!(
+            parse_program(src).is_err(),
+            "the '__onda_' prefix should be reserved, source parsed: {src}"
+        );
+    }
+}
+
+#[test]
 fn rejects_pin_keyword_as_identifier() {
     let cases = [
         "params:\n  pin = 1.0\n",

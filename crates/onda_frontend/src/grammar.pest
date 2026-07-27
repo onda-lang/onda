@@ -232,6 +232,6 @@ keyword = _{
     | "true" | "false"
   ) ~ !ident_char
 }
-ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
+ident = @{ !"__onda_" ~ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
 number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }

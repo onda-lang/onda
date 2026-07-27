@@ -83,6 +83,48 @@ sample:
 }
 
 #[test]
+fn range_clamps_respect_event_and_loop_variable_shadowing() {
+    let source = r#"
+params:
+  i: i32 = 7 {0, 10}
+  value: f32 = 0.75 {0.0, 1.0}
+outs:
+  out1
+init:
+  cached = 0.0
+event set(value: f32):
+  cached = value
+sample:
+  for i in 0..1:
+    out1 = cached + f32(i)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("shadowed parameter names should analyze");
+    let mir = lower_test_program(&typed).expect("shadowed parameter names should lower");
+    let dump = format_program(&mir);
+
+    let process = formatted_function(&dump, "onda_process");
+    assert!(
+        !process.contains("intrinsic range_clamp("),
+        "a loop variable must not be rewritten as the same-named parameter:\n{process}"
+    );
+    assert!(
+        !process.contains("load @param0"),
+        "the shadowed top-level parameter must remain unused:\n{process}"
+    );
+
+    let event = formatted_function(&dump, "onda_event::set");
+    assert!(
+        event.contains("load @event_param0"),
+        "the event body should read its event parameter:\n{event}"
+    );
+    assert!(
+        !event.contains("intrinsic range_clamp(") && !event.contains("load @param1"),
+        "an event parameter must not inherit the same-named top-level parameter range:\n{event}"
+    );
+}
+
+#[test]
 fn dynamic_input_and_param_reads_use_entry_point_range_clamps() {
     let source = r#"
 ins:
