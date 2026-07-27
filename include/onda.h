@@ -61,7 +61,14 @@ typedef struct {
 typedef void* (*onda_alloc_fn)(void* context, size_t size, size_t align);
 typedef void (*onda_free_fn)(void* context, void* ptr, size_t size, size_t align);
 
-/* Host allocator used by custom instance creation. */
+/* Host allocator used by custom instance creation.
+   Onda calls alloc only synchronously during onda_instance_create_with_allocator; no operation on
+   a successfully created instance calls alloc. free may be called during failed creation or later
+   instance destruction. The context and callbacks must remain valid until every instance created
+   with this allocator has been destroyed. alloc must be callable on each thread where the host
+   creates an instance. free must be callable on every thread where creation can fail or an instance
+   can be destroyed. When multiple instances share an allocator and are created or destroyed
+   concurrently, the corresponding callbacks must support those concurrent calls. */
 typedef struct {
   void* context;
   onda_alloc_fn alloc;
@@ -105,7 +112,9 @@ const char* onda_source_manifest_unresolved_path(
 );
 /* Destroys a source manifest returned by onda_compile_file. NULL is accepted. */
 void onda_source_manifest_destroy(onda_source_manifest_t* manifest);
-/* Destroys a program handle created by onda_compile or onda_compile_file. */
+/* Destroys a program handle created by onda_compile or onda_compile_file.
+   Programs are immutable and may be queried or used to create instances concurrently.
+   Destruction is not realtime-safe. */
 void onda_program_destroy(onda_program_t* program);
 
 /* Creates a runtime instance for a compiled program, or NULL on failure.
@@ -127,7 +136,10 @@ onda_instance_t* onda_instance_create_with_allocator(
   const onda_allocator_t* allocator,
   onda_diag_t* out_diag
 );
-/* Destroys an instance handle created by onda_instance_create or onda_instance_create_with_allocator. */
+/* Destroys an instance handle created by onda_instance_create or onda_instance_create_with_allocator.
+   An instance has one exclusive owner at a time. It may be transferred between threads, but no
+   instance operation may overlap another operation on the same handle. Destruction is not
+   realtime-safe. */
 void onda_instance_destroy(onda_instance_t* instance);
 
 /* Sets a parameter by index from raw bytes; returns 0 on success, negative on error. */

@@ -267,11 +267,7 @@ unsafe fn runtime_allocator_from_c(
     let Some(free) = allocator.free else {
         return Err(static_runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
     };
-    Ok(RuntimeAllocator {
-        context: allocator.context,
-        alloc,
-        free,
-    })
+    Ok(RuntimeAllocator::new(allocator.context, alloc, free))
 }
 
 fn allocate_instance_handle(
@@ -285,7 +281,7 @@ fn allocate_instance_handle(
     };
 
     let layout = Layout::new::<onda_instance>();
-    let raw = unsafe { (allocator.alloc)(allocator.context, layout.size(), layout.align()) };
+    let raw = unsafe { allocator.allocate(layout.size(), layout.align()) };
     if raw.is_null() {
         write_diag(
             out_diag,
@@ -296,7 +292,7 @@ fn allocate_instance_handle(
     }
     if !(raw as usize).is_multiple_of(layout.align()) {
         unsafe {
-            (allocator.free)(allocator.context, raw, layout.size(), layout.align());
+            allocator.deallocate(raw, layout.size(), layout.align());
         }
         write_diag(
             out_diag,
@@ -1131,12 +1127,7 @@ pub unsafe extern "C" fn onda_instance_destroy(instance: *mut onda_instance) {
     if let Some(allocator) = allocator {
         ptr::drop_in_place(instance);
         let layout = Layout::new::<onda_instance>();
-        (allocator.free)(
-            allocator.context,
-            instance.cast::<c_void>(),
-            layout.size(),
-            layout.align(),
-        );
+        allocator.deallocate(instance.cast::<c_void>(), layout.size(), layout.align());
     } else {
         drop(Box::from_raw(instance));
     }

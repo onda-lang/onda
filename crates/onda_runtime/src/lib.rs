@@ -39,6 +39,13 @@ pub struct Instance {
     pub(crate) buffers_validated: bool,
 }
 
+// SAFETY: Instance is an exclusive mutable runtime owner. Its raw pointers are non-owning host
+// bindings and are never dereferenced without `&mut Instance`; their validity remains governed by
+// the bind/prepare/process contract. Moving an instance does not move the bound host allocations.
+// Custom allocator construction guarantees that its free callback remains valid on whichever
+// thread eventually destroys the instance. Onda performs no instance allocation after creation.
+unsafe impl Send for Instance {}
+
 #[derive(Debug, Clone, Copy)]
 pub struct BoundInput {
     ptr: *const u8,
@@ -1250,6 +1257,79 @@ fn prepare_output_ptrs_for_process(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use onda_codegen_llvm::jit_program_from_optimized_mir;
+    use onda_frontend::parse_program;
+    use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
+
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn instance_is_send() {
+        assert_send::<Instance>();
+    }
+
+    #[test]
+    fn cloned_programs_process_concurrently_after_the_original_owner_is_dropped() {
+        const INSTANCE_COUNT: usize = 8;
+        const BLOCK_SIZE: usize = 64;
+
+        let parsed = parse_program("sample:\n  out1 = 0.25\n").expect("source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: BLOCK_SIZE,
+            },
+        )
+        .expect("source should analyze");
+        let mir =
+            lower_program_to_optimized_mir(&typed).expect("typed program should lower to MIR");
+        let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
+        let config = InstanceConfig {
+            sample_rate: 48_000.0,
+            frames_per_block: BLOCK_SIZE,
+            in_channels: 0,
+            out_channels: 1,
+        };
+        let instances = (0..INSTANCE_COUNT)
+            .map(|_| create_instance(program.clone(), config).expect("instance should initialize"))
+            .collect::<Vec<_>>();
+
+        drop(program);
+
+        let threads = instances
+            .into_iter()
+            .map(|mut instance| {
+                std::thread::spawn(move || {
+                    let mut output = vec![0.0_f32; BLOCK_SIZE];
+                    unsafe {
+                        bind_output(
+                            &mut instance,
+                            0,
+                            output.as_mut_ptr().cast(),
+                            std::mem::size_of_val(output.as_slice()),
+                        )
+                        .expect("output should bind");
+                    }
+                    prepare_unchecked_process(&mut instance)
+                        .expect("unchecked processing should prepare");
+                    for _ in 0..32 {
+                        unsafe {
+                            process_unchecked(&mut instance)
+                                .expect("concurrent JIT processing should succeed");
+                        }
+                        assert!(output.iter().all(|sample| *sample == 0.25));
+                        output.fill(0.0);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for thread in threads {
+            thread.join().expect("processing thread should not panic");
+        }
+    }
 
     #[test]
     fn checked_bindings_reject_misaligned_primitive_addresses() {

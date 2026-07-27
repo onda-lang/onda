@@ -1204,7 +1204,11 @@
         outputDevices: [],
         currentInputDevice: null,
         currentOutputDevice: null,
-        supportsDeviceSelection: hostBridge.mode !== "browser",
+        supportsSourceSelection: false,
+        supportsTransport: false,
+        supportsDeviceSelection: false,
+        supportsReset: false,
+        supportsScope: false,
         sampleRateHz: 48_000,
         blockFrames: 256,
       };
@@ -1317,7 +1321,7 @@
       });
       document.addEventListener("keydown", (event) => {
         if (
-          hostBridge.mode !== "browser"
+          !state.supportsTransport
           || event.isComposing
           || event.altKey
           || (!event.ctrlKey && !event.metaKey)
@@ -2028,7 +2032,11 @@
 
       function render() {
         applyTheme();
-        const supportsSourceSelection = hostBridge.mode === "wry";
+        const supportsSourceSelection = state.supportsSourceSelection === true;
+        const supportsTransport = state.supportsTransport === true;
+        const supportsDeviceSelection = state.supportsDeviceSelection === true;
+        const supportsReset = state.supportsReset === true;
+        const supportsScope = state.supportsScope === true;
         const hasSource = Boolean(state.path);
         filePickerNode.hidden = !supportsSourceSelection || hasSource;
         runHeaderNode.hidden = supportsSourceSelection && !hasSource;
@@ -2056,11 +2064,10 @@
           state.blockFrames,
           state.blockFrames + " frames",
         );
-        scopeSection.style.display = state.running ? "block" : "none";
+        scopeSection.style.display = supportsScope && state.running ? "block" : "none";
         const hasBuffers = state.buffers.length > 0;
         const hasEvents = state.events.length > 0;
         const hasParams = state.params.length > 0;
-        const supportsDeviceSelection = state.supportsDeviceSelection !== false;
         const canEditRun = canEditRunControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
         eventsSection.style.display = hasEvents ? "" : "none";
@@ -2070,6 +2077,9 @@
         ioSettingsNode.style.display = supportsDeviceSelection ? "grid" : "none";
         const buffersReady = state.buffers.every(buffer => Boolean(buffer.loadedPath));
         const canStart = buffersReady || Boolean(state.sourceDirty);
+        startButton.hidden = !supportsTransport;
+        stopButton.hidden = !supportsTransport;
+        resetButton.hidden = !supportsReset;
         startButton.disabled = !state.path || state.running || !canStart;
         stopButton.disabled = !state.running;
         resetButton.disabled = !hasParams && !hasEvents;

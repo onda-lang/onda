@@ -159,6 +159,16 @@ struct NativeOrcProcess {
     events: Vec<NativeEventFn>,
 }
 
+// SAFETY: construction finishes all LLJIT mutation before this owner is published. The stored
+// entrypoints are immutable code addresses whose mutable data is supplied entirely by each
+// runtime instance. LLVM permits concurrent execution of compiled code, and the Arc-backed
+// MirJitProgram owner prevents LLJIT disposal until no caller can retain an entrypoint.
+unsafe impl Send for NativeOrcProcess {}
+// SAFETY: shared access performs no LLJIT mutation. Process/init/event calls receive disjoint
+// host-owned runtime storage, so synchronization belongs to the exclusive Instance owner rather
+// than this immutable executable owner.
+unsafe impl Sync for NativeOrcProcess {}
+
 impl Drop for NativeOrcProcess {
     fn drop(&mut self) {
         unsafe {

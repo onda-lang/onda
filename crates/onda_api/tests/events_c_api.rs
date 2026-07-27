@@ -2,6 +2,8 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread::ThreadId;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use onda::*;
@@ -82,6 +84,75 @@ unsafe extern "C" fn test_free(context: *mut c_void, ptr: *mut c_void, size: usi
     dealloc(ptr.cast::<u8>(), layout);
     stats.frees += 1;
     stats.live -= 1;
+}
+
+struct ThreadBoundAllocStats {
+    owner: ThreadId,
+    allocs: AtomicUsize,
+    frees: AtomicUsize,
+    rejected_foreign_allocs: AtomicUsize,
+    foreign_frees: AtomicUsize,
+}
+
+impl ThreadBoundAllocStats {
+    fn new() -> Self {
+        Self {
+            owner: std::thread::current().id(),
+            allocs: AtomicUsize::new(0),
+            frees: AtomicUsize::new(0),
+            rejected_foreign_allocs: AtomicUsize::new(0),
+            foreign_frees: AtomicUsize::new(0),
+        }
+    }
+}
+
+unsafe extern "C" fn thread_bound_alloc(
+    context: *mut c_void,
+    size: usize,
+    align: usize,
+) -> *mut c_void {
+    let stats = &*(context.cast::<ThreadBoundAllocStats>());
+    if std::thread::current().id() != stats.owner {
+        stats
+            .rejected_foreign_allocs
+            .fetch_add(1, Ordering::Relaxed);
+        return std::ptr::null_mut();
+    }
+    let Ok(layout) = Layout::from_size_align(size, align) else {
+        return std::ptr::null_mut();
+    };
+    let ptr = alloc(layout).cast::<c_void>();
+    if !ptr.is_null() {
+        stats.allocs.fetch_add(1, Ordering::Relaxed);
+    }
+    ptr
+}
+
+unsafe extern "C" fn thread_bound_free(
+    context: *mut c_void,
+    ptr: *mut c_void,
+    size: usize,
+    align: usize,
+) {
+    let stats = &*(context.cast::<ThreadBoundAllocStats>());
+    if std::thread::current().id() != stats.owner {
+        stats.foreign_frees.fetch_add(1, Ordering::Relaxed);
+    }
+    let layout = Layout::from_size_align(size, align).expect("valid free layout");
+    dealloc(ptr.cast::<u8>(), layout);
+    stats.frees.fetch_add(1, Ordering::Relaxed);
+}
+
+struct TransferredInstance(*mut onda_instance);
+
+// SAFETY: the test gives the handle one exclusive owner and its allocator
+// explicitly supports destruction from the receiving thread.
+unsafe impl Send for TransferredInstance {}
+
+impl TransferredInstance {
+    fn into_raw(self) -> *mut onda_instance {
+        self.0
+    }
 }
 
 unsafe fn compile_program(src: &str) -> ProgramHandle {
@@ -814,6 +885,58 @@ sample {
         onda_instance_destroy(instance);
         assert_eq!(stats.live, 0);
         assert_eq!(stats.allocs, stats.frees);
+    }
+}
+
+#[test]
+fn c_api_custom_allocator_allocates_on_creation_thread_and_frees_on_instance_owner_thread() {
+    unsafe {
+        let frames = 512_usize;
+        let program = compile_program("sample:\n  out1 = 0.25\n");
+        let stats = Box::new(ThreadBoundAllocStats::new());
+        let allocator = onda_allocator_t {
+            context: (stats.as_ref() as *const ThreadBoundAllocStats)
+                .cast_mut()
+                .cast::<c_void>(),
+            alloc: Some(thread_bound_alloc),
+            free: Some(thread_bound_free),
+        };
+        let mut diag = empty_diag();
+        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        assert!(stats.allocs.load(Ordering::Relaxed) > 0);
+
+        let transferred = TransferredInstance(instance);
+        let output = std::thread::spawn(move || {
+            let instance = transferred.into_raw();
+            let mut output = vec![0.0_f32; frames];
+            assert_eq!(
+                onda_bind_output(
+                    instance,
+                    0,
+                    output.as_mut_ptr().cast::<c_void>(),
+                    std::mem::size_of_val(output.as_slice()) as i32,
+                ),
+                0
+            );
+            assert_eq!(onda_process_checked(instance, frames as i32), 0);
+            onda_instance_destroy(instance);
+            output
+        })
+        .join()
+        .expect("instance owner thread should complete");
+
+        assert!(output.iter().all(|sample| *sample == 0.25));
+        assert_eq!(stats.rejected_foreign_allocs.load(Ordering::Relaxed), 0);
+        assert!(stats.foreign_frees.load(Ordering::Relaxed) > 0);
+        assert_eq!(
+            stats.allocs.load(Ordering::Relaxed),
+            stats.frees.load(Ordering::Relaxed)
+        );
     }
 }
 

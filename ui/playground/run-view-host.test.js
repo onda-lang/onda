@@ -249,6 +249,22 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
     const host = new BrowserRunViewHost(iframe, {
       start: async () => { starts += 1; },
     });
+    assert.deepEqual(
+      {
+        sourceSelection: host.state.supportsSourceSelection,
+        transport: host.state.supportsTransport,
+        deviceSelection: host.state.supportsDeviceSelection,
+        reset: host.state.supportsReset,
+        scope: host.state.supportsScope,
+      },
+      {
+        sourceSelection: false,
+        transport: true,
+        deviceSelection: false,
+        reset: true,
+        scope: true,
+      },
+    );
     host.setArtifact({
       metadata: {
         compile: {
