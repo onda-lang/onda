@@ -266,6 +266,16 @@ impl RunApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(run_window_title(None)));
     }
 
+    fn choose_onda_file(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Onda source", &["onda"])
+            .set_title("Open an Onda file")
+            .pick_file()
+        {
+            self.load_path(ctx, &path);
+        }
+    }
+
     fn render_file_picker(&mut self, ui: &mut egui::Ui, theme: &RunTheme, file_hovered: bool) {
         let available = ui.available_size();
         let panel_size = egui::vec2(available.x.min(520.0), available.y.min(440.0));
@@ -288,9 +298,9 @@ impl RunApp {
         );
 
         let content_height = if self.load_error.is_some() {
-            248.0
+            276.0
         } else {
-            220.0
+            238.0
         };
         let content_rect = egui::Rect::from_center_size(
             panel_rect.center(),
@@ -311,26 +321,36 @@ impl RunApp {
                 .maintain_aspect_ratio(true)
                 .texture_options(egui::TextureOptions::LINEAR),
         );
-        content_ui.add_space(14.0);
-        content_ui.label(
-            egui::RichText::new(if file_hovered {
-                "Drop to open"
-            } else {
-                "Open an Onda file"
-            })
-            .strong()
-            .size(20.0),
-        );
-        content_ui.add_space(6.0);
-        content_ui.label(
-            egui::RichText::new(if file_hovered {
-                "Release the .onda file anywhere in this window"
-            } else {
-                "Drag an .onda file here, or click to choose one"
-            })
-            .weak()
-            .size(13.0),
-        );
+        content_ui.add_space(18.0);
+        let choose_clicked = if file_hovered {
+            content_ui.add_sized(
+                [168.0, 32.0],
+                egui::Label::new(egui::RichText::new("Drop to open").strong().size(20.0)),
+            );
+            content_ui.add_space(6.0);
+            content_ui.add_sized(
+                [380.0, 19.0],
+                egui::Label::new(
+                    egui::RichText::new("Release anywhere in this window")
+                        .weak()
+                        .size(13.0),
+                ),
+            );
+            false
+        } else {
+            let clicked = content_ui
+                .add_sized(
+                    [168.0, 32.0],
+                    egui::Button::new(egui::RichText::new("Choose Onda file").strong()),
+                )
+                .clicked();
+            content_ui.add_space(6.0);
+            content_ui.add_sized(
+                [380.0, 19.0],
+                egui::Label::new(egui::RichText::new("or drop one here").weak().size(13.0)),
+            );
+            clicked
+        };
         content_ui.add_space(14.0);
         let settings_response = content_ui
             .allocate_ui(egui::vec2(380.0, 62.0), |ui| {
@@ -393,14 +413,8 @@ impl RunApp {
             .ctx()
             .pointer_hover_pos()
             .is_some_and(|position| settings_response.rect.contains(position));
-        if response.clicked() && !pointer_over_settings {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Onda source", &["onda"])
-                .set_title("Open an Onda file")
-                .pick_file()
-            {
-                self.load_path(ui.ctx(), &path);
-            }
+        if choose_clicked || (response.clicked() && !pointer_over_settings) {
+            self.choose_onda_file(ui.ctx());
         }
     }
 

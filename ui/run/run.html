@@ -120,12 +120,6 @@
         height: 76px;
       }
 
-      .file-picker-title {
-        margin-top: 8px;
-        font-size: 20px;
-        font-weight: 700;
-      }
-
       .file-picker-copy {
         color: var(--muted);
       }
@@ -998,8 +992,8 @@
       <section class="file-picker" id="file-picker" hidden>
         <div class="file-picker-content">
           <img class="file-picker-logo" id="file-picker-logo" alt="Onda logo" />
-          <div class="file-picker-title">Open an Onda file</div>
-          <div class="file-picker-copy">Drag an .onda file here, or choose one from your computer.</div>
+          <button class="primary" id="choose-onda-file" type="button">Choose Onda file</button>
+          <div class="file-picker-copy">or drop one here</div>
           <div class="file-picker-settings" id="file-picker-settings">
             <div class="param-setting">
               <label class="param-setting-label" for="run-sample-rate">Sample Rate</label>
@@ -1023,7 +1017,6 @@
               </select>
             </div>
           </div>
-          <button class="primary" id="choose-onda-file" type="button">Choose .onda file</button>
           <div class="error" id="file-picker-error"></div>
         </div>
       </section>
