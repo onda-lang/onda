@@ -7,6 +7,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.6.0]
+
+### Added
+
+- Extended top-level parameter ranges into host-control domains with linear and logarithmic scales,
+  SuperCollider-style curves, display units, and discrete steps. Positional and named domain fields
+  are supported, and the LSP provides validation, completion, hover, and semantic-token coverage for
+  the new syntax.
+- Added shared plain/normalized parameter conversion, clamping, and snapping across the Rust
+  runtime, C API and processor ABI header, processor descriptors, JavaScript packages, Web Audio
+  adapter, and native and browser run views.
+- Added source manifests to filesystem and in-memory compilation. Successful and failed compilations
+  report their resolved non-stdlib sources and unresolved candidates, allowing hosts to maintain
+  complete project-wide watches while source trees are temporarily invalid.
+- Added `Onda::Static` and `Onda::Shared` CMake package targets for source checkouts and extracted
+  release SDKs, including their platform-specific link requirements and static-library symbol
+  hiding.
+- Added support for safely sharing compiled JIT programs between threads and moving exclusively
+  owned runtime instances between threads, with explicit custom-allocator lifetime and concurrency
+  contracts.
+- Added an LSP snippet that declares the complete VST3 MIDI event surface.
+
+### Changed
+
+- The standalone run hosts now watch the entry file and every transitive user import and include,
+  including unresolved paths that may subsequently be created. Reloads use complete source
+  snapshots and ignore stale subprocess messages.
+- Ranged top-level parameters are clamped once at each `init`, event, and logical process-block
+  boundary. Ranged processor parameters are clamped on every write. Floating NaNs map to the range
+  minimum and infinities clamp to an endpoint.
+- Native processor `init`, event, and process entry points now return an execution status. Generated
+  bounds, division, and conversion failures return `RUNTIME_SAFETY_FAILURE` instead of invoking
+  `llvm.trap`; native and web hosts stop processing a failed instance until it is reset.
+- Reset now restores parameter defaults as well as reinitializing processor state and clearing
+  transient run-view state.
+- `@onda-lang/wasm-compiler` source and project compilation now return the artifact together with
+  the ordered contributing source paths. Compilation errors also expose resolved and unresolved
+  source paths.
+- Advanced the MIR schema from version 1 to 3 and the processor artifact and ABI formats from
+  version 1 to 2 for parameter-control metadata and fallible execution entry points.
+- Renamed the packaged Windows application launcher from `Onda Run.exe` to `Onda.exe`.
+- Reserved identifiers beginning with `__onda_` for compiler-generated symbols.
+
+### Fixed
+
+- Fixed dynamically indexed ranged input and parameter reads bypassing their entry-point clamps.
+- Fixed range lowering when user declarations shadowed compiler-generated clamp names.
+- Fixed host-control validation for named bounds in arbitrary order, exact integer and floating-point
+  step grids, wide logarithmic ranges, and curved controls.
+- Fixed LSP completion parsing around incomplete parameter domains and internal completion sentinels.
+- Fixed project reloads after dependency errors, unresolved dependency creation, rapid edits during
+  compilation, and stale child-process responses.
+
+### Migration notes
+
+- Update `@onda-lang/wasm-compiler` callers to read `artifact` and `sourceFiles` from the compilation
+  result instead of treating the result itself as the artifact.
+- Pass an `onda_source_manifest_t**` before the diagnostic argument to `onda_compile_file`, or pass
+  null when the source manifest is not needed. Destroy returned manifests with
+  `onda_source_manifest_destroy`.
+- Rebuild serialized MIR and processor artifacts. Consumers must accept MIR schema version 3 and
+  processor artifact/ABI version 2; version-1 artifacts are not compatible with this release.
+- Update raw native processor hosts for `onda_init`, `onda_process`, and `onda_event_N` returning
+  `i32`. Zero is success; after a nonzero execution result, discard the instance or reset its state
+  and call `onda_init` again.
+- Rename user identifiers beginning with `__onda_`.
+- Hosts that implement reset themselves should restore parameter defaults in addition to
+  reinitializing processor state.
+
 ## [0.5.4]
 
 ### Added
@@ -199,7 +268,8 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
-[0.5.4]: https://github.com/onda-lang/onda/compare/0.5.3...HEAD
+[0.6.0]: https://github.com/onda-lang/onda/compare/0.5.4...HEAD
+[0.5.4]: https://github.com/onda-lang/onda/compare/0.5.3...0.5.4
 [0.5.3]: https://github.com/onda-lang/onda/compare/0.5.2...0.5.3
 [0.5.2]: https://github.com/onda-lang/onda/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/onda-lang/onda/compare/0.5.0...0.5.1
