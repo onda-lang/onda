@@ -549,12 +549,26 @@ impl RunSession {
         }
     }
 
-    pub fn reset(&mut self) {
+    /// Restores parameter defaults and the initial processor state while
+    /// retaining host-owned input/output and buffer bindings.
+    pub fn reset(&mut self) -> Result<(), Diagnostic> {
+        for index in 0..self.jit.param_count() {
+            let desc = self
+                .jit
+                .param_descriptor(index)
+                .expect("parameter index is within the compiled descriptor count");
+            let default = desc
+                .default_bytes()
+                .expect("validated parameter metadata has default bytes");
+            set_param_by_index(&mut self.instance, index, default)?;
+        }
+        self.param_values.clear();
+        self.param_runtime_values.clear();
         reset_instance_state(&mut self.instance);
         if self.buffers_ready() {
-            prepare_unchecked_process(&mut self.instance)
-                .expect("run session bindings remain valid across state reset");
+            prepare_unchecked_process(&mut self.instance)?;
         }
+        Ok(())
     }
 
     /// Creates a new runtime instance from the already-compiled JIT program.

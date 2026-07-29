@@ -141,6 +141,7 @@ enum PendingCommand {
     BindBuffer { name: String, path: String },
     ClearBuffer { name: String },
     Play,
+    Reset,
 }
 
 #[derive(Debug, Clone)]
@@ -391,20 +392,18 @@ impl RunController {
         self.preserved_params.clear();
         self.preserved_events.clear();
         for param in &mut self.state.params {
-            let Some(name) = param_name(param).map(str::to_owned) else {
-                continue;
-            };
             let Some(default_value) = param_default_value(param) else {
                 continue;
             };
-            set_param_value(param, default_value.clone());
-            self.bridge.send_command_notification(
-                "setParam",
-                &json!({ "name": name, "value": default_value }),
-            );
+            set_param_value(param, default_value);
         }
         reset_event_values(&mut self.state.events);
+        if let Some(id) = self.bridge.send_command("reset", &json!({})) {
+            self.pending_commands.insert(id, PendingCommand::Reset);
+        }
         self.state.error = None;
+        self.state.scope_channels = 0;
+        self.state.scope_samples.clear();
     }
 
     pub fn set_param(&mut self, name: &str, value: Value) {
@@ -688,6 +687,11 @@ impl RunController {
                             self.state.status = "Running".to_owned();
                             self.scope_polling_active = true;
                         }
+                        PendingCommand::Reset => {
+                            self.scope_polling_in_flight = false;
+                            self.state.scope_channels = 0;
+                            self.state.scope_samples.clear();
+                        }
                     }
                 } else {
                     match command {
@@ -703,6 +707,7 @@ impl RunController {
                                 UNBOUND_BUFFERS_MESSAGE.to_owned()
                             };
                         }
+                        PendingCommand::Reset => {}
                     }
                 }
                 poll.state_changed = true;

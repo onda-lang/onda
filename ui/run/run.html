@@ -2210,7 +2210,7 @@
         resetButton.hidden = !supportsReset;
         startButton.disabled = !state.path || state.running || !canStart;
         stopButton.disabled = !state.running;
-        resetButton.disabled = !hasParams && !hasEvents;
+        resetButton.disabled = !hasSource;
         renderDeviceOptions(inputDeviceNode, state.inputDevices, state.currentInputDevice, true);
         renderDeviceOptions(outputDeviceNode, state.outputDevices, state.currentOutputDevice, true);
 

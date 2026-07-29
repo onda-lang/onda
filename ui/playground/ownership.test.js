@@ -106,6 +106,13 @@ test("the shared run view renders host features from explicit capabilities", asy
   assert.doesNotMatch(runView, /hostBridge\.mode !== "browser"/);
 });
 
+test("the shared run view allows reset for every loaded source", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /resetButton\.disabled = !hasSource/);
+  assert.doesNotMatch(runView, /resetButton\.disabled = !hasParams && !hasEvents/);
+});
+
 test("the empty native run view owns its compile settings", async () => {
   const [runView, webview] = await Promise.all([
     readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
