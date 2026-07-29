@@ -141,6 +141,8 @@ jobs:
           }
 
           . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.LLVM_VERSION }}"
+          $llvmBinDir = Split-Path -Parent (Get-Command llvm-readobj).Source
+          $llvmBinDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           # Both targets produce onda.pdb on MSVC, so Cargo must build them separately.
           cargo build --release -p onda_api
           cargo build --release -p onda_cli
@@ -225,7 +227,7 @@ jobs:
             -B $packagedCmakeBuildDir `
             -A x64 `
             "-DCMAKE_PREFIX_PATH=$packageRoot"
-          cmake --build $packagedCmakeBuildDir --config Release
+          cmake --build $packagedCmakeBuildDir --config Release --verbose
 
           $archive = Join-Path $PWD ("dist/onda-" + $version + "-windows-x64.zip")
           if (Test-Path $archive) {
@@ -324,13 +326,47 @@ jobs:
             -B target/cmake-sdk-packaged \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$package_root"
-          cmake --build target/cmake-sdk-packaged --parallel
-
-          module=target/cmake-sdk-packaged/libonda_cmake_static_smoke.so
-          bash tests/cmake_sdk/check-exports.sh "$module"
+          cmake --build target/cmake-sdk-packaged --parallel --verbose
 
           archive="$PWD/dist/onda-$version-${{ matrix.platform }}-${{ matrix.arch }}.tar.xz"
           tar -C "$PWD/dist" -cJf "$archive" "$(basename "$package_root")"
+
+      - name: Verify CMake SDK exports
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          module=target/cmake-sdk-packaged/libonda_cmake_static_smoke.so
+          bash tests/cmake_sdk/check-exports.sh "$module"
+
+      - name: Verify macOS shared SDK identity
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash tests/cmake_sdk/check-macos-shared-library.sh \
+            target/release/libonda.dylib \
+            target/cmake-sdk-packaged/libonda_cmake_shared_smoke.so
+
+      - name: Verify Linux shared SDK identity
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bash tests/cmake_sdk/check-linux-shared-library.sh \
+            target/release/libonda.so \
+            target/cmake-sdk-packaged/libonda_cmake_shared_smoke.so
+
+      - name: Verify CMake SDK exports
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $module = Join-Path $PWD "target\cmake-sdk-packaged\Release\onda_cmake_static_smoke.dll"
+          .\tests\cmake_sdk\check-exports.ps1 -Module $module
+
+      - name: Verify Windows shared SDK identity
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $module = Join-Path $PWD "target\cmake-sdk-packaged\Release\onda_cmake_shared_smoke.dll"
+          .\tests\cmake_sdk\check-windows-shared-library.ps1 -Consumer $module
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6

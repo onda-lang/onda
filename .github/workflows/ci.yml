@@ -95,6 +95,9 @@ jobs:
           cmake --build /tmp/onda-cmake-sdk --parallel
           module=/tmp/onda-cmake-sdk/libonda_cmake_static_smoke.so
           bash tests/cmake_sdk/check-exports.sh "$module"
+          bash tests/cmake_sdk/check-linux-shared-library.sh \
+            target/release/libonda.so \
+            /tmp/onda-cmake-sdk/libonda_cmake_shared_smoke.so
 
       - uses: actions/setup-node@v4
         with:

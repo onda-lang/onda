@@ -128,6 +128,14 @@ target_link_libraries(my_host PRIVATE Onda::Shared)
 
 Use `CMAKE_PREFIX_PATH` for an extracted release SDK, or set `Onda_DIR` to the
 source checkout's `cmake` directory. `Onda::Static` carries the required system
-libraries and, on Linux, hides the embedded Rust and LLVM implementation
+libraries and, on Linux and macOS, hides the embedded Rust and LLVM implementation
 symbols from the consumer's dynamic ABI. `Onda::Shared` links against the
-shared-library import target and does not inherit those static-only options.
+shared-library import target and does not inherit those static-only options. On
+Linux its SONAME is `libonda.so`, and on macOS its install name is
+`@rpath/libonda.dylib`. The consuming application controls the runtime search
+path and final shared-library placement.
+
+When using `Onda::Shared`, deploy `onda.dll` where the Windows loader can find
+it, deploy `libonda.so` in the application's configured ELF search path, or
+place `libonda.dylib` at a location covered by the application's macOS
+`LC_RPATH`. `Onda::Static` avoids this runtime deployment step.

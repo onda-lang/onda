@@ -1,5 +1,3 @@
-include_guard(GLOBAL)
-
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 
@@ -54,14 +52,26 @@ endif()
 
 if(NOT _onda_static)
     set(Onda_FOUND FALSE)
-    set(Onda_NOT_FOUND_MESSAGE
-        "OndaConfig.cmake could not locate the static Onda library")
+    string(CONCAT Onda_NOT_FOUND_MESSAGE
+        "OndaConfig.cmake could not locate ${_onda_static_name} under "
+        "${_onda_root}/lib or ${_onda_root}/target/release. Run "
+        "'cargo build --release -p onda_api' or use a complete release SDK.")
     return()
 endif()
-if(NOT _onda_shared OR (WIN32 AND NOT _onda_import))
+if(NOT _onda_shared)
     set(Onda_FOUND FALSE)
-    set(Onda_NOT_FOUND_MESSAGE
-        "OndaConfig.cmake could not locate the shared Onda library")
+    string(CONCAT Onda_NOT_FOUND_MESSAGE
+        "OndaConfig.cmake could not locate ${_onda_shared_name} under "
+        "${_onda_root}/lib or ${_onda_root}/target/release. Run "
+        "'cargo build --release -p onda_api' or use a complete release SDK.")
+    return()
+endif()
+if(WIN32 AND NOT _onda_import)
+    set(Onda_FOUND FALSE)
+    string(CONCAT Onda_NOT_FOUND_MESSAGE
+        "OndaConfig.cmake could not locate ${_onda_import_name} under "
+        "${_onda_root}/lib or ${_onda_root}/target/release. Use a complete "
+        "release SDK.")
     return()
 endif()
 
@@ -87,11 +97,15 @@ if(NOT TARGET Onda::Static)
         INTERFACE_LINK_LIBRARIES "${_onda_system_libraries}")
 
     # A static Onda SDK contains Rust and LLVM implementation symbols. Keep
-    # them out of a Linux consumer's dynamic ABI and prevent ELF preemption.
+    # them out of a dynamic consumer's ABI.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set_target_properties(Onda::Static PROPERTIES
             INTERFACE_LINK_OPTIONS
                 "LINKER:--exclude-libs,${_onda_static_name}")
+    elseif(APPLE)
+        set_target_properties(Onda::Static PROPERTIES
+            INTERFACE_LINK_OPTIONS
+                "LINKER:-load_hidden,${_onda_static}")
     endif()
 endif()
 
@@ -103,11 +117,12 @@ if(NOT TARGET Onda::Shared)
     if(WIN32)
         set_target_properties(Onda::Shared PROPERTIES
             IMPORTED_IMPLIB "${_onda_import}")
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # Rust cdylibs do not carry an ELF SONAME by default. Ask CMake to
-        # link by name so consumers do not record the SDK's absolute path.
+    elseif(APPLE)
         set_target_properties(Onda::Shared PROPERTIES
-            IMPORTED_NO_SONAME TRUE)
+            IMPORTED_SONAME "@rpath/${_onda_shared_name}")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_target_properties(Onda::Shared PROPERTIES
+            IMPORTED_SONAME "${_onda_shared_name}")
     endif()
 endif()
 
