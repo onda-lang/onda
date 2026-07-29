@@ -144,6 +144,13 @@ jobs:
           # Both targets produce onda.pdb on MSVC, so Cargo must build them separately.
           cargo build --release -p onda_api
           cargo build --release -p onda_cli
+          $ondaCmakeDir = Join-Path $PWD "cmake"
+          cmake `
+            -S tests\cmake_sdk `
+            -B target\cmake-sdk `
+            -A x64 `
+            "-DOnda_DIR=$ondaCmakeDir"
+          cmake --build target\cmake-sdk --config Release
 
           $resources = & llvm-readobj --coff-resources target\release\onda.exe
           if ($LASTEXITCODE -ne 0 -or -not ($resources -match 'Type:\s+(?:GROUP_)?ICON\b')) {
@@ -168,6 +175,12 @@ jobs:
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.LLVM_VERSION }}"
           cargo build --release -p onda_cli -p onda_api
+          cmake \
+            -S tests/cmake_sdk \
+            -B target/cmake-sdk \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOnda_DIR="$PWD/cmake"
+          cmake --build target/cmake-sdk --parallel
 
       - name: Package release on Windows
         if: runner.os == 'Windows'
@@ -178,10 +191,12 @@ jobs:
           $binDir = Join-Path $packageRoot "bin"
           $libDir = Join-Path $packageRoot "lib"
           $includeDir = Join-Path $packageRoot "include"
+          $cmakeDir = Join-Path $libDir "cmake\Onda"
 
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
           New-Item -ItemType Directory -Force -Path $libDir | Out-Null
           New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $cmakeDir | Out-Null
 
           Copy-Item target\release\onda.exe $binDir
           Copy-Item target\release\onda-run.exe (Join-Path $packageRoot "Onda.exe")
@@ -197,11 +212,20 @@ jobs:
           }
           Copy-Item include\onda.h $includeDir
           Copy-Item include\onda_processor_abi.h $includeDir
+          Copy-Item cmake\OndaConfig.cmake $cmakeDir
           Copy-Item LICENSE $packageRoot
           Copy-Item README.md $packageRoot
           Copy-Item CHANGELOG.md $packageRoot
           Copy-Item docs\syntax.md $packageRoot
           Copy-Item examples $packageRoot -Recurse
+
+          $packagedCmakeBuildDir = Join-Path $PWD "target\cmake-sdk-packaged"
+          cmake `
+            -S tests\cmake_sdk `
+            -B $packagedCmakeBuildDir `
+            -A x64 `
+            "-DCMAKE_PREFIX_PATH=$packageRoot"
+          cmake --build $packagedCmakeBuildDir --config Release
 
           $archive = Join-Path $PWD ("dist/onda-" + $version + "-windows-x64.zip")
           if (Test-Path $archive) {
@@ -218,8 +242,9 @@ jobs:
           bin_dir="$package_root/bin"
           lib_dir="$package_root/lib"
           include_dir="$package_root/include"
+          cmake_dir="$lib_dir/cmake/Onda"
 
-          mkdir -p "$bin_dir" "$lib_dir" "$include_dir"
+          mkdir -p "$bin_dir" "$lib_dir" "$include_dir" "$cmake_dir"
 
           cp target/release/onda "$bin_dir/"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
@@ -287,11 +312,22 @@ jobs:
           fi
           cp include/onda.h "$include_dir/"
           cp include/onda_processor_abi.h "$include_dir/"
+          cp cmake/OndaConfig.cmake "$cmake_dir/"
           cp LICENSE "$package_root/"
           cp README.md "$package_root/"
           cp CHANGELOG.md "$package_root/"
           cp docs/syntax.md "$package_root/"
           cp -R examples "$package_root/"
+
+          cmake \
+            -S tests/cmake_sdk \
+            -B target/cmake-sdk-packaged \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$package_root"
+          cmake --build target/cmake-sdk-packaged --parallel
+
+          module=target/cmake-sdk-packaged/libonda_cmake_static_smoke.so
+          bash tests/cmake_sdk/check-exports.sh "$module"
 
           archive="$PWD/dist/onda-$version-${{ matrix.platform }}-${{ matrix.arch }}.tar.xz"
           tar -C "$PWD/dist" -cJf "$archive" "$(basename "$package_root")"

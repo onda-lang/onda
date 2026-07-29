@@ -82,6 +82,19 @@ jobs:
             --exclude onda_webview
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
+          cargo build --release -p onda_api
+
+      - name: Test CMake SDK
+        shell: bash
+        run: |
+          cmake \
+            -S tests/cmake_sdk \
+            -B /tmp/onda-cmake-sdk \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOnda_DIR="$PWD/cmake"
+          cmake --build /tmp/onda-cmake-sdk --parallel
+          module=/tmp/onda-cmake-sdk/libonda_cmake_static_smoke.so
+          bash tests/cmake_sdk/check-exports.sh "$module"
 
       - uses: actions/setup-node@v4
         with:

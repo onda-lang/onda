@@ -115,3 +115,19 @@ Use the pre-built shared and static libraries or build them from source with:
 ```bash
 cargo build -p onda_api --release
 ```
+
+CMake hosts can consume either library without reproducing platform-specific
+link requirements:
+
+```cmake
+find_package(Onda CONFIG REQUIRED)
+target_link_libraries(my_host PRIVATE Onda::Static)
+# Or:
+target_link_libraries(my_host PRIVATE Onda::Shared)
+```
+
+Use `CMAKE_PREFIX_PATH` for an extracted release SDK, or set `Onda_DIR` to the
+source checkout's `cmake` directory. `Onda::Static` carries the required system
+libraries and, on Linux, hides the embedded Rust and LLVM implementation
+symbols from the consumer's dynamic ABI. `Onda::Shared` links against the
+shared-library import target and does not inherit those static-only options.
