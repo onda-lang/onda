@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 pub const PROCESSOR_ARTIFACT_FORMAT: &str = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
 pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 2;
-pub const PROCESSOR_ABI_VERSION: u32 = 1;
+pub const PROCESSOR_ABI_VERSION: u32 = 2;
+pub const PROCESSOR_EXECUTION_OK: u32 = 0;
+pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
 pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

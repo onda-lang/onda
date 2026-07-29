@@ -25,6 +25,7 @@ mod target_config;
 pub use aot_artifact::{
     AotMetadata, AotObjectArtifact, AotStateMetadata, AOT_METADATA_FORMAT_VERSION,
     AOT_SNAPSHOT_FORMAT_VERSION, PROCESSOR_ABI_VERSION, PROCESSOR_ARTIFACT_FORMAT,
+    PROCESSOR_EXECUTION_OK, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
 };
 #[cfg(feature = "llvm-orc")]
 pub use orc_backend::{
@@ -39,6 +40,18 @@ pub use orc_backend::{
 pub use target_config::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
 };
+
+pub fn check_execution_status(status: u32) -> Result<(), Diagnostic> {
+    if status == PROCESSOR_EXECUTION_OK {
+        Ok(())
+    } else {
+        Err(Diagnostic::runtime(
+            format!("generated Onda code failed a runtime safety check ({status})"),
+            0,
+            0,
+        ))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct JitProgram {

@@ -910,7 +910,7 @@ pub fn prepare_unchecked_process(instance: &mut Instance) -> Result<(), Diagnost
 /// [`prepare_unchecked_process`] (or the equivalent validation functions) after their most recent
 /// mutation. Every bound region must remain valid, correctly sized, and appropriately aligned for
 /// the duration of this call, without aliases that violate Rust's memory rules.
-pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<(), Diagnostic> {
+pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<u32, Diagnostic> {
     unsafe {
         process_unchecked_segment(
             instance,
@@ -934,7 +934,7 @@ pub unsafe fn process_unchecked_segment(
     start_frame: usize,
     frames: usize,
     flags: u32,
-) -> Result<(), Diagnostic> {
+) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     validate_process_request(instance, start_frame, frames, flags)?;
     debug_assert!(
@@ -968,9 +968,8 @@ pub unsafe fn process_unchecked_segment(
             &instance.buffer_frames,
             &instance.buffer_channels,
             &instance.buffer_sample_rates,
-        )?;
+        )
     }
-    Ok(())
 }
 
 fn validate_process_request(
@@ -1063,7 +1062,7 @@ pub unsafe fn trigger_event_by_index_unchecked(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
-) -> Result<(), Diagnostic> {
+) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     debug_assert!(
         instance.buffers_validated,

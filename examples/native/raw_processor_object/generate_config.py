@@ -13,7 +13,7 @@ from typing import Optional
 PROCESSOR_ARTIFACT_FORMAT = "onda-processor"
 # Synchronized from format-versions.json; do not edit these copies directly.
 PROCESSOR_ARTIFACT_FORMAT_VERSION = 2
-PROCESSOR_ABI_VERSION = 1
+PROCESSOR_ABI_VERSION = 2
 MAX_EXACT_HOST_INTEGER = (1 << 53) - 1
 
 SCALAR_FORMATS = {
@@ -355,7 +355,7 @@ def generated_events(descriptor: dict) -> tuple[str, list[str], list[str], list[
         if not symbol.isidentifier():
             fail(f"event export {symbol!r} is not a C identifier")
         declarations.append(
-            f"extern void {symbol}(const void*, const void*, void*, void* const*, "
+            f"extern uint32_t {symbol}(const void*, const void*, void*, void* const*, "
             "const int32_t*, const int32_t*, const float*);"
         )
         functions.append(symbol)

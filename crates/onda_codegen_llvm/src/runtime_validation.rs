@@ -630,10 +630,10 @@ impl JitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-    ) -> Result<(), Diagnostic> {
+    ) -> Result<u32, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            unsafe {
+            Ok(unsafe {
                 self.compiled.process_unchecked(
                     state,
                     params,
@@ -646,9 +646,8 @@ impl JitProgram {
                     buffer_frames,
                     buffer_channels,
                     buffer_sample_rates,
-                );
-            }
-            Ok(())
+                )
+            })
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -745,13 +744,13 @@ impl JitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-    ) -> Result<(), Diagnostic> {
+    ) -> Result<u32, Diagnostic> {
         if self.event_descriptor(event_index).is_none() {
-            return Ok(());
+            return Ok(0);
         }
         #[cfg(feature = "llvm-orc")]
         {
-            unsafe {
+            Ok(unsafe {
                 self.compiled.trigger_event_by_index_unchecked(
                     state,
                     params,
@@ -761,9 +760,8 @@ impl JitProgram {
                     buffer_frames,
                     buffer_channels,
                     buffer_sample_rates,
-                );
-            }
-            Ok(())
+                )
+            })
         }
         #[cfg(not(feature = "llvm-orc"))]
         {

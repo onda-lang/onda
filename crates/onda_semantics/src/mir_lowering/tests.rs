@@ -2907,10 +2907,10 @@ sample:
     assert!(dump.contains("buffer_len @buffer0"));
     assert!(dump.contains("buffer_channels @buffer0"));
     assert!(dump.contains("buffer_sample_rate @buffer0"));
-    assert!(dump.contains("load_buffer @buffer0[i32(2)] trap"));
-    assert!(dump.contains("store_buffer @buffer0[i32(3)] trap"));
-    assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(6)] trap"));
-    assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(7)] trap"));
+    assert!(dump.contains("load_buffer @buffer0[i32(2)] checked"));
+    assert!(dump.contains("store_buffer @buffer0[i32(3)] checked"));
+    assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(6)] checked"));
+    assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(7)] checked"));
     assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(2)] clamp"));
     assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(3)] clamp"));
     assert!(dump.contains("] clamp"));

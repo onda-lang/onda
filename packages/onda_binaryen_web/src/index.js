@@ -8,6 +8,8 @@ import {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_EXECUTION_OK,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   PROCESSOR_SNAPSHOT_FORMAT_VERSION,
   validateProcessorMetadata,
 } from "./artifact.js";
@@ -17,6 +19,8 @@ export {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_EXECUTION_OK,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   PROCESSOR_SNAPSHOT_FORMAT_VERSION,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
@@ -38,6 +42,7 @@ const MAX_MEMORY_PAGES = 65_536;
 const WASM32_ADDRESS_SPACE_BYTES = MAX_MEMORY_PAGES * PAGE_BYTES;
 const DEFAULT_OPTIMIZE_LEVEL = 4;
 const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
+const RUNTIME_FAILURE_GLOBAL = "$onda.runtime_failure";
 const MATH_KERNEL_INTRINSICS = new Set([
   "sin",
   "cos",
@@ -179,6 +184,7 @@ class MirCompiler {
       ? MATH_KERNEL_RESERVED_END
       : STATIC_BASE;
     this.internalHelpers = new Set();
+    this.functionMayFail = [];
     this.nextLabel = 0;
   }
 
@@ -297,6 +303,7 @@ class MirCompiler {
     this.validateCurrentSchemaEnvelope();
     this.validateProcessEntrySignature();
     this.validateAcyclicCallGraph();
+    this.analyzeRecoverableFailures();
   }
 
   validateCurrentSchemaEnvelope() {
@@ -440,6 +447,86 @@ class MirCompiler {
           .map((id) => this.mir.functions[id]?.name ?? `@fn${id}`)
           .join(" -> ");
         this.fail(`recursive call cycle is not realtime-safe: ${display}`);
+      }
+    }
+  }
+
+  analyzeRecoverableFailures() {
+    const callees = this.mir.functions.map(() => new Set());
+    const direct = this.mir.functions.map(() => false);
+    const binaryMayFail = (functionId, value) => {
+      if (
+        value.kind !== "binary"
+        || !["divide", "remainder"].includes(value.data?.op)
+      ) {
+        return false;
+      }
+      const lhs = value.data.lhs;
+      const scalar = lhs.kind === "constant"
+        ? lhs.data.type
+        : this.requireScalarType(
+            this.mir.functions[functionId].locals[lhs.data].ty,
+            `binary operand in '${this.mir.functions[functionId].name}'`,
+          );
+      return scalar === "i32" || scalar === "i64";
+    };
+    const checkedBoundsKinds = new Set([
+      "array_window",
+      "buffer_load",
+      "buffer_param_load",
+      "buffer_param_store",
+      "buffer_store",
+      "const_data_load",
+      "index",
+      "input_load",
+      "make_slice",
+      "output_load",
+      "output_store",
+      "control_output_store",
+    ]);
+    const dynamicBoundsKinds = new Set([
+      "slice_element",
+      "slice_load",
+      "slice_store",
+      "slice_window",
+    ]);
+    const scan = (functionId, value) => {
+      if (value === null || value === undefined) return;
+      if (Array.isArray(value)) {
+        for (const entry of value) scan(functionId, entry);
+        return;
+      }
+      if (typeof value !== "object") return;
+      if (value.kind === "call" && Number.isInteger(value.data?.function)) {
+        callees[functionId].add(value.data.function);
+      }
+      const bounds = value.data?.bounds;
+      if (
+        value.kind === "process_frame"
+        || value.kind === "slice_copy"
+        || binaryMayFail(functionId, value)
+        || (checkedBoundsKinds.has(value.kind) && bounds === "checked")
+        || (dynamicBoundsKinds.has(value.kind) && bounds !== "unchecked")
+      ) {
+        direct[functionId] = true;
+      }
+      for (const child of Object.values(value)) scan(functionId, child);
+    };
+    for (const [functionId, func] of this.mir.functions.entries()) {
+      scan(functionId, func.body);
+    }
+    this.functionMayFail = [...direct];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [functionId, targets] of callees.entries()) {
+        if (
+          !this.functionMayFail[functionId]
+          && [...targets].some((target) => this.functionMayFail[target])
+        ) {
+          this.functionMayFail[functionId] = true;
+          changed = true;
+        }
       }
     }
   }
@@ -663,6 +750,12 @@ class MirCompiler {
     for (const name of Object.values(POINTER_GLOBALS)) {
       this.module.addGlobal(name, binaryen.i32, true, this.module.i32.const(0));
     }
+    this.module.addGlobal(
+      RUNTIME_FAILURE_GLOBAL,
+      binaryen.i32,
+      true,
+      this.module.i32.const(0),
+    );
   }
 
   addMathKernel() {
@@ -1049,6 +1142,62 @@ class MirCompiler {
     );
   }
 
+  defaultFunctionResult(context) {
+    const scalars = context.function.results.map((typeId, resultId) =>
+      this.requireScalarType(
+        typeId,
+        `result ${resultId} of '${context.function.name}'`,
+      ),
+    );
+    const values = scalars.map((scalar) => this.zero(scalar));
+    if (values.length === 0) return undefined;
+    if (values.length === 1) return values[0];
+    return this.module.tuple.make(values);
+  }
+
+  returnFromCurrentFunction(context) {
+    return this.module.return(this.defaultFunctionResult(context));
+  }
+
+  raiseRuntimeFailure(context) {
+    return this.module.block(null, [
+      this.module.global.set(
+        RUNTIME_FAILURE_GLOBAL,
+        this.module.i32.const(PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE),
+      ),
+      this.returnFromCurrentFunction(context),
+    ]);
+  }
+
+  propagateRuntimeFailure(calleeId, context) {
+    if (!this.functionMayFail[calleeId]) return [];
+    return [
+      this.module.if(
+        this.module.i32.ne(
+          this.module.global.get(RUNTIME_FAILURE_GLOBAL, binaryen.i32),
+          this.module.i32.const(PROCESSOR_EXECUTION_OK),
+        ),
+        this.returnFromCurrentFunction(context),
+      ),
+    ];
+  }
+
+  resetRuntimeFailure(functionId) {
+    if (!this.functionMayFail[functionId]) return [];
+    return [
+      this.module.global.set(
+        RUNTIME_FAILURE_GLOBAL,
+        this.module.i32.const(PROCESSOR_EXECUTION_OK),
+      ),
+    ];
+  }
+
+  executionStatus(functionId) {
+    return this.functionMayFail[functionId]
+      ? this.module.global.get(RUNTIME_FAILURE_GLOBAL, binaryen.i32)
+      : this.module.i32.const(PROCESSOR_EXECUTION_OK);
+  }
+
   addAbiWrappers() {
     const initId = this.mir.entry_points.init;
     const processId = this.mir.entry_points.process;
@@ -1062,6 +1211,7 @@ class MirCompiler {
         (this.options.simd ? binaryen.Features.SIMD128 : 0),
     );
     const initBody = this.module.block(null, [
+      ...this.resetRuntimeFailure(initId),
       this.module.global.set(
         POINTER_GLOBALS.params,
         this.module.local.get(0, binaryen.i32),
@@ -1076,11 +1226,12 @@ class MirCompiler {
         this.module.i32.const(this.stateLayout.byteLength ?? 0),
       ),
       this.module.call(this.functionNames[initId], [], binaryen.none),
-    ]);
+      this.executionStatus(initId),
+    ], binaryen.i32);
     this.module.addFunction(
       "$onda.abi.init",
       binaryen.createType([binaryen.i32, binaryen.i32]),
-      binaryen.none,
+      binaryen.i32,
       [],
       initBody,
     );
@@ -1121,7 +1272,13 @@ class MirCompiler {
       ),
     );
     const processBody = this.module.block(null, [
-      this.module.if(invalidRange, this.module.unreachable()),
+      this.module.if(
+        invalidRange,
+        this.module.return(
+          this.module.i32.const(PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE),
+        ),
+      ),
+      ...this.resetRuntimeFailure(processId),
       this.module.global.set(
         POINTER_GLOBALS.state,
         this.module.local.get(0, binaryen.i32),
@@ -1159,11 +1316,12 @@ class MirCompiler {
         [startFrame(), frames(), flags()],
         binaryen.none,
       ),
-    ]);
+      this.executionStatus(processId),
+    ], binaryen.i32);
     this.module.addFunction(
       "$onda.abi.process",
       processParams,
-      binaryen.none,
+      binaryen.i32,
       [],
       processBody,
     );
@@ -1182,6 +1340,7 @@ class MirCompiler {
       }
       const wrapperName = `$onda.abi.event.${eventId}`;
       const body = this.module.block(null, [
+        ...this.resetRuntimeFailure(event.handler),
         this.module.global.set(
           POINTER_GLOBALS.eventPayload,
           this.module.local.get(0, binaryen.i32),
@@ -1211,11 +1370,12 @@ class MirCompiler {
           this.module.local.get(6, binaryen.i32),
         ),
         this.module.call(this.functionNames[event.handler], [], binaryen.none),
-      ]);
+        this.executionStatus(event.handler),
+      ], binaryen.i32);
       this.module.addFunction(
         wrapperName,
         binaryen.createType(Array.from({ length: 7 }, () => binaryen.i32)),
-        binaryen.none,
+        binaryen.i32,
         [],
         body,
       );
@@ -1465,6 +1625,7 @@ class MirCompiler {
         this.module.local.set(resultSpill.index, call),
         ...afterCall,
         ...assignResults,
+        ...this.propagateRuntimeFailure(data.function, context),
       ]);
     }
     let compiledCall;
@@ -1492,8 +1653,18 @@ class MirCompiler {
         ),
       ]);
     }
-    if (localReferenceSync.length === 0) return compiledCall;
-    return this.module.block(null, [...beforeCall, compiledCall, ...afterCall]);
+    if (localReferenceSync.length === 0) {
+      const propagation = this.propagateRuntimeFailure(data.function, context);
+      return propagation.length === 0
+        ? compiledCall
+        : this.module.block(null, [compiledCall, ...propagation]);
+    }
+    return this.module.block(null, [
+      ...beforeCall,
+      compiledCall,
+      ...afterCall,
+      ...this.propagateRuntimeFailure(data.function, context),
+    ]);
   }
 
   compileOutputStore(data, context) {
@@ -1608,6 +1779,7 @@ class MirCompiler {
           scalar,
           () => this.compileValue(data.lhs, context),
           () => this.compileValue(data.rhs, context),
+          context,
         );
       }
       case "compare": {
@@ -1718,7 +1890,7 @@ class MirCompiler {
     const invalid = this.module.i32.ge_u(offset(), frames());
     return this.module.if(
       invalid,
-      this.module.unreachable(),
+      this.raiseRuntimeFailure(context),
       this.module.i32.add(startFrame(), offset()),
     );
   }
@@ -1816,6 +1988,7 @@ class MirCompiler {
       rawIndex,
       () => this.compileBufferParamTotalScalarLen(data.parameter, context),
       data.bounds,
+      context,
       true,
     );
     return this.module.i32.add(
@@ -1849,6 +2022,7 @@ class MirCompiler {
       rawIndex,
       () => this.compileBufferTotalScalarLen(data.buffer),
       data.bounds,
+      context,
       true,
     );
     const pointer = this.loadBufferTableValue(
@@ -2061,6 +2235,7 @@ class MirCompiler {
       () => this.compileValue(data.len, context),
       () => source()[1],
       data.bounds,
+      context,
     );
     return [
       this.module.i32.add(
@@ -2075,7 +2250,7 @@ class MirCompiler {
     ];
   }
 
-  compileSliceRange(start, len, sourceLen, bounds) {
+  compileSliceRange(start, len, sourceLen, bounds, context) {
     const zero = () => this.module.i32.const(0);
     if (bounds === "unchecked") {
       return { start, len };
@@ -2111,7 +2286,7 @@ class MirCompiler {
       };
       return { start: normalizedStart, len: normalizedLen };
     }
-    if (bounds === "trap") {
+    if (bounds === "checked") {
       const invalid = () => {
         const remaining = () => this.module.i32.sub(sourceLen(), start());
         return this.module.i32.or(
@@ -2127,7 +2302,7 @@ class MirCompiler {
       };
       return {
         start: () =>
-          this.module.if(invalid(), this.module.unreachable(), start()),
+          this.module.if(invalid(), this.raiseRuntimeFailure(context), start()),
         len,
       };
     }
@@ -2188,6 +2363,7 @@ class MirCompiler {
         () => this.compileValue(source.data.channel, context),
         channels,
         "clamp",
+        context,
         true,
       );
       return [
@@ -2221,6 +2397,7 @@ class MirCompiler {
         () => this.compileValue(source.data.channel, context),
         channels,
         "clamp",
+        context,
         true,
       );
       return [
@@ -2260,14 +2437,16 @@ class MirCompiler {
       () => this.compileSliceValue(slice, context),
       () => this.compileValue(index, context),
       bounds,
+      context,
     );
   }
 
-  compileSliceAddressWithFactories(slice, index, bounds) {
+  compileSliceAddressWithFactories(slice, index, bounds, context) {
     const bounded = this.compileDynamicBoundedIndex(
       index,
       () => slice()[1],
       bounds,
+      context,
     );
     return this.module.i32.add(
       slice()[0],
@@ -2295,6 +2474,7 @@ class MirCompiler {
           sourceType.data.len - parameterType.data.len,
         ),
       data.bounds,
+      context,
     );
     return this.module.i32.add(
       this.placeAddress(data.array, context),
@@ -2318,6 +2498,7 @@ class MirCompiler {
           this.module.i32.const(requiredLen),
         ),
       data.bounds,
+      context,
     );
     const address = () =>
       this.module.i32.add(
@@ -2340,12 +2521,12 @@ class MirCompiler {
       );
     return this.module.if(
       invalidShape(),
-      this.module.unreachable(),
+      this.raiseRuntimeFailure(context),
       address(),
     );
   }
 
-  compileWindowStart(start, maximum, bounds) {
+  compileWindowStart(start, maximum, bounds, context) {
     const zero = () => this.module.i32.const(0);
     if (bounds === "unchecked") {
       return start;
@@ -2365,14 +2546,14 @@ class MirCompiler {
         );
       };
     }
-    if (bounds === "trap") {
+    if (bounds === "checked") {
       return () =>
         this.module.if(
           this.module.i32.or(
             this.module.i32.lt_s(start(), zero()),
             this.module.i32.gt_s(start(), maximum()),
           ),
-          this.module.unreachable(),
+          this.raiseRuntimeFailure(context),
           start(),
         );
     }
@@ -2629,7 +2810,7 @@ class MirCompiler {
           source()[1],
         ),
       ),
-      this.module.if(invalidOverlap(), this.module.unreachable()),
+      this.module.if(invalidOverlap(), this.raiseRuntimeFailure(context)),
       this.module.local.set(counter, this.module.i32.const(0)),
       copy,
     ]);
@@ -2892,7 +3073,7 @@ class MirCompiler {
         ),
       );
     }
-    if (bounds === "trap") {
+    if (bounds === "checked") {
       const outOfBounds = this.module.i32.or(
         this.module.i32.lt_s(
           this.compileValue(value, context),
@@ -2905,14 +3086,20 @@ class MirCompiler {
       );
       return this.module.if(
         outOfBounds,
-        this.module.unreachable(),
+        this.raiseRuntimeFailure(context),
         this.compileValue(value, context),
       );
     }
     this.fail(`unknown bounds mode '${String(bounds)}'`);
   }
 
-  compileDynamicBoundedIndex(index, length, bounds, clampLengthKnownPositive = false) {
+  compileDynamicBoundedIndex(
+    index,
+    length,
+    bounds,
+    context,
+    clampLengthKnownPositive = false,
+  ) {
     if (bounds === "unchecked") {
       return index();
     }
@@ -2932,17 +3119,17 @@ class MirCompiler {
       if (clampLengthKnownPositive) return clamped();
       return this.module.if(
         this.module.i32.le_s(length(), this.module.i32.const(0)),
-        this.module.unreachable(),
+        this.raiseRuntimeFailure(context),
         clamped(),
       );
     }
-    if (bounds === "trap") {
+    if (bounds === "checked") {
       return this.module.if(
         this.module.i32.or(
           this.module.i32.lt_s(index(), this.module.i32.const(0)),
           this.module.i32.ge_s(index(), length()),
         ),
-        this.module.unreachable(),
+        this.raiseRuntimeFailure(context),
         index(),
       );
     }
@@ -2966,7 +3153,7 @@ class MirCompiler {
     }
   }
 
-  compileBinary(op, scalar, lhs, rhs) {
+  compileBinary(op, scalar, lhs, rhs, context) {
     if (!supportsMirOperation("binary", op, scalar)) {
       this.fail(`binary operation '${String(op)}' does not support scalar '${scalar}'`);
     }
@@ -2990,13 +3177,26 @@ class MirCompiler {
           wasm.eq(lhs(), minimum()),
           wasm.eq(rhs(), negativeOne()),
         );
-        return this.module.if(overflow, minimum(), wasm.div_s(lhs(), rhs()));
+        const division = this.module.if(
+          overflow,
+          minimum(),
+          wasm.div_s(lhs(), rhs()),
+        );
+        return this.module.if(
+          wasm.eq(rhs(), this.zero(scalar)),
+          this.raiseRuntimeFailure(context),
+          division,
+        );
       }
       case "remainder":
         if (!integer) {
           return this.compileMathKernelCall("remainder", scalar, [lhs(), rhs()]);
         }
-        return wasm.rem_s(lhs(), rhs());
+        return this.module.if(
+          wasm.eq(rhs(), this.zero(scalar)),
+          this.raiseRuntimeFailure(context),
+          wasm.rem_s(lhs(), rhs()),
+        );
       case "bit_and": return wasm.and(lhs(), rhs());
       case "bit_or": return wasm.or(lhs(), rhs());
       case "bit_xor": return wasm.xor(lhs(), rhs());

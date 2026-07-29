@@ -16,6 +16,14 @@ static int pointer_meets_alignment(const void* storage, size_t alignment) {
   return storage == NULL || (alignment != 0 && (uintptr_t)storage % alignment == 0);
 }
 
+static int execution_succeeded(uint32_t execution_status, const char* operation) {
+  if (execution_status == ONDA_PROCESSOR_EXECUTION_OK) {
+    return 1;
+  }
+  fprintf(stderr, "%s failed with Onda execution status %u\n", operation, execution_status);
+  return 0;
+}
+
 static size_t scalar_size(unsigned char kind) {
   switch (kind) {
     case PROCESSOR_SCALAR_BOOL:
@@ -213,38 +221,50 @@ int main(void) {
     );
   }
 
-  onda_init(params, state);
+  if (!execution_succeeded(onda_init(params, state), "processor init")) {
+    goto cleanup;
+  }
 
   for (int index = 0; index < PROCESSOR_EVENT_COUNT; ++index) {
     if (!PROCESSOR_EVENT_HAS_FIXED_PAYLOAD[index]) {
       printf("skipped event[%d] '%s': dynamic payload required\n", index, PROCESSOR_EVENT_NAMES[index]);
       continue;
     }
-    PROCESSOR_EVENT_FUNCTIONS[index](
-      PROCESSOR_EVENT_DEFAULT_PAYLOADS[index],
-      params,
+    if (!execution_succeeded(
+      PROCESSOR_EVENT_FUNCTIONS[index](
+        PROCESSOR_EVENT_DEFAULT_PAYLOADS[index],
+        params,
+        state,
+        buffers,
+        buffer_frames,
+        buffer_channels,
+        buffer_sample_rates
+      ),
+      "processor event"
+    )) {
+      goto cleanup;
+    }
+    printf("triggered event[%d] '%s' with its default payload\n", index, PROCESSOR_EVENT_NAMES[index]);
+  }
+
+  if (!execution_succeeded(
+    onda_process(
       state,
+      params,
+      inputs,
+      outputs,
+      0,
+      PROCESSOR_BLOCK_SIZE,
+      ONDA_PROCESSOR_FULL_BLOCK,
       buffers,
       buffer_frames,
       buffer_channels,
       buffer_sample_rates
-    );
-    printf("triggered event[%d] '%s' with its default payload\n", index, PROCESSOR_EVENT_NAMES[index]);
+    ),
+    "processor process"
+  )) {
+    goto cleanup;
   }
-
-  onda_process(
-    state,
-    params,
-    inputs,
-    outputs,
-    0,
-    PROCESSOR_BLOCK_SIZE,
-    ONDA_PROCESSOR_FULL_BLOCK,
-    buffers,
-    buffer_frames,
-    buffer_channels,
-    buffer_sample_rates
-  );
 
   printf("descriptor target: %s\n", PROCESSOR_TARGET_TRIPLE);
   for (int slot = 0; slot < PROCESSOR_OUTPUT_COUNT; ++slot) {

@@ -162,7 +162,9 @@ int onda_trigger_event_by_index(
   const void* payload_ptr,
   int payload_bytes
 );
-/* Triggers one event without payload/binding validation; unsafe if payload/buffer metadata is invalid. */
+/* Triggers one event without payload/binding validation; unsafe if payload/buffer metadata is
+   invalid. Returns 0 on success, a positive generated-runtime failure code, or a negative API
+   error. */
 int onda_trigger_event_by_index_unchecked(
   onda_instance_t* instance,
   int index,
@@ -223,6 +225,11 @@ enum {
   ONDA_PROCESS_FULL_BLOCK = ONDA_PROCESS_BEGIN_BLOCK | ONDA_PROCESS_END_BLOCK
 };
 
+enum {
+  ONDA_EXECUTION_OK = 0,
+  ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE = 1
+};
+
 /* Processes up to one logical block with current bindings and parameters; returns 0 on success.
    frames must be in [0, compile_time_block_size]. The runtime only reads/writes the first
    `frames` samples of each bound input/output entry for the current call. This convenience
@@ -279,10 +286,11 @@ int onda_validate_buffers(onda_instance_t* instance);
 /* Validates all bindings and refreshes proc-slot buffer refs before unchecked processing. */
 int onda_prepare_unchecked_process(onda_instance_t* instance);
 /* Processes a full logical block without revalidation (unsafe if bindings are stale);
-   returns 0 on success. */
+   returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
 int onda_process_unchecked(onda_instance_t* instance);
 /* Processes one logical-block segment without revalidation. Use the same full-block
-   binding, start_frame, frames, and flags contract as onda_process_checked_segment. */
+   binding, start_frame, frames, and flags contract as onda_process_checked_segment.
+   Returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
 int onda_process_unchecked_segment(
   onda_instance_t* instance,
   int start_frame,

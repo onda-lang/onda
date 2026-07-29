@@ -7,6 +7,7 @@ import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
 
 import {
   OndaBinaryenError,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   compileTrustedMir as compileMir,
   createProcessorArtifactFiles,
   createDefaultImports,
@@ -330,9 +331,12 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
   const view = new DataView(memory.buffer);
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
-  onda_init(params, state);
+  assert.equal(onda_init(params, state), 0);
   assert.equal(onda_process.length, 11);
-  callProcess(onda_process, 0, outputTable, 0, 2, 1, params, state, 0, 0, 0, 0);
+  assert.equal(
+    callProcess(onda_process, 0, outputTable, 0, 2, 1, params, state, 0, 0, 0, 0),
+    0,
+  );
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
     [0.25, 0.5, 0, 0],
@@ -545,7 +549,7 @@ test("vectorizes contiguous slice fills with a scalar tail", async () => {
   );
 });
 
-test("enforces checked make_slice ranges and traps indexed access to empty slices", async () => {
+test("returns failures for invalid checked make_slice and empty-slice access", async () => {
   const makeMir = ({ start, len, bounds, load }) => {
     const mir = executableMir();
     mir.types.push(
@@ -626,8 +630,8 @@ test("enforces checked make_slice ranges and traps indexed access to empty slice
   assert.equal(clampedView.getInt32(clampedState + 20, true), 4);
 
   for (const mir of [
-    makeMir({ start: 5, len: 0, bounds: "trap", load: false }),
-    makeMir({ start: 4, len: 0, bounds: "trap", load: true }),
+    makeMir({ start: 5, len: 0, bounds: "checked", load: false }),
+    makeMir({ start: 4, len: 0, bounds: "checked", load: true }),
   ]) {
     const artifact = compileMir(mir);
     const { instance } = await WebAssembly.instantiate(artifact.wasm);
@@ -640,9 +644,8 @@ test("enforces checked make_slice ranges and traps indexed access to empty slice
       true,
     );
     instance.exports.onda_init(params, state);
-    assert.throws(
-      () =>
-        callProcess(instance.exports.onda_process,
+    assert.equal(
+      callProcess(instance.exports.onda_process,
           0,
           outputTable,
           0,
@@ -655,9 +658,216 @@ test("enforces checked make_slice ranges and traps indexed access to empty slice
           0,
           0,
         ),
-      WebAssembly.RuntimeError,
+      PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
     );
   }
+});
+
+test("returns generated failures through nested MIR calls", async () => {
+  const mir = executableMir();
+  const process = mir.functions[mir.entry_points.process];
+  const resultLocal = process.locals.length;
+  process.locals.push({ name: "quotient", ty: 1 });
+  process.body.statements.unshift(
+    statement("call", {
+      results: [resultLocal],
+      function: mir.functions.length,
+      args: [],
+    }),
+  );
+  mir.functions.push({
+    name: "failing_quotient",
+    kind: { kind: "user" },
+    attributes: { origin: "source", inline: "never" },
+    params: [],
+    results: [1],
+    locals: [{ name: "result", ty: 1 }],
+    body: {
+      statements: [
+        assign(place("local", 0), {
+          kind: "binary",
+          data: {
+            op: "divide",
+            lhs: constant("i32", 1),
+            rhs: constant("i32", 0),
+          },
+        }),
+        statement("return", { values: [local(0)] }),
+      ],
+    },
+    source: unknownSource,
+  });
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const params = Number(instance.exports.__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  assert.equal(instance.exports.onda_init(params, state), 0);
+  assert.equal(
+    callProcess(
+      instance.exports.onda_process,
+      0,
+      0,
+      0,
+      0,
+      0,
+      params,
+      state,
+      0,
+      0,
+      0,
+      0,
+    ),
+    PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+  );
+});
+
+test("omits failure propagation after non-failing helper calls", () => {
+  const mir = executableMir();
+  const init = mir.functions[mir.entry_points.init];
+  const arrayType = mir.types.length;
+  mir.types.push(type("array", { element: 0, len: 4 }));
+  const floatResult = init.locals.length;
+  const clampResult = floatResult + 1;
+  init.locals.push(
+    { name: "quotient", ty: 0 },
+    { name: "clamped", ty: 0 },
+  );
+  const floatFunction = mir.functions.length;
+  const clampFunction = floatFunction + 1;
+  init.body.statements.unshift(
+    statement("call", {
+      results: [floatResult],
+      function: floatFunction,
+      args: [],
+    }),
+    statement("call", {
+      results: [clampResult],
+      function: clampFunction,
+      args: [],
+    }),
+  );
+  const clampedElement = place("local", 1);
+  clampedElement.projections.push({
+    kind: "index",
+    data: { index: constant("i32", 9), bounds: "clamp" },
+  });
+  mir.functions.push(
+    {
+      name: "floating_quotient",
+      kind: { kind: "user" },
+      attributes: { origin: "source", inline: "never" },
+      params: [],
+      results: [0],
+      locals: [{ name: "result", ty: 0 }],
+      body: {
+        statements: [
+          assign(place("local", 0), {
+            kind: "binary",
+            data: {
+              op: "divide",
+              lhs: constant("f32", 1),
+              rhs: constant("f32", 2),
+            },
+          }),
+          statement("return", { values: [local(0)] }),
+        ],
+      },
+      source: unknownSource,
+    },
+    {
+      name: "clamped_array_element",
+      kind: { kind: "user" },
+      attributes: { origin: "source", inline: "never" },
+      params: [],
+      results: [0],
+      locals: [
+        { name: "result", ty: 0 },
+        { name: "values", ty: arrayType },
+      ],
+      body: {
+        statements: [
+          assign(place("local", 0), {
+            kind: "load",
+            data: clampedElement,
+          }),
+          statement("return", { values: [local(0)] }),
+        ],
+      },
+      source: unknownSource,
+    },
+  );
+
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  const failureReads = artifact.wat.match(
+    /\(global\.get \$+onda\.runtime_failure\)/g,
+  ) ?? [];
+  assert.equal(failureReads.length, 1);
+});
+
+test("propagates checked fixed-array failures through helper calls", async () => {
+  const mir = executableMir();
+  const arrayType = mir.types.length;
+  mir.types.push(type("array", { element: 0, len: 4 }));
+  const process = mir.functions[mir.entry_points.process];
+  const resultLocal = process.locals.length;
+  process.locals.push({ name: "checked", ty: 0 });
+  process.body.statements.unshift(
+    statement("call", {
+      results: [resultLocal],
+      function: mir.functions.length,
+      args: [],
+    }),
+  );
+  const checkedElement = place("local", 1);
+  checkedElement.projections.push({
+    kind: "index",
+    data: { index: constant("i32", 9), bounds: "checked" },
+  });
+  mir.functions.push({
+    name: "checked_array_element",
+    kind: { kind: "user" },
+    attributes: { origin: "source", inline: "never" },
+    params: [],
+    results: [0],
+    locals: [
+      { name: "result", ty: 0 },
+      { name: "values", ty: arrayType },
+    ],
+    body: {
+      statements: [
+        assign(place("local", 0), {
+          kind: "load",
+          data: checkedElement,
+        }),
+        statement("return", { values: [local(0)] }),
+      ],
+    },
+    source: unknownSource,
+  });
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const params = Number(instance.exports.__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  assert.equal(instance.exports.onda_init(params, state), 0);
+  assert.equal(
+    callProcess(
+      instance.exports.onda_process,
+      0,
+      0,
+      0,
+      0,
+      0,
+      params,
+      state,
+      0,
+      0,
+      0,
+      0,
+    ),
+    PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+  );
 });
 
 test("lowers current-schema fixed-array and slice reference windows", async () => {
@@ -689,7 +899,7 @@ test("lowers current-schema fixed-array and slice reference windows", async () =
           data: {
             array: place("state", 1),
             start: constant("i32", 0),
-            bounds: "trap",
+            bounds: "checked",
           },
         },
       ],
@@ -703,7 +913,7 @@ test("lowers current-schema fixed-array and slice reference windows", async () =
           data: {
             slice: local(6),
             start: constant("i32", 2),
-            bounds: "trap",
+            bounds: "checked",
           },
         },
       ],
@@ -1418,34 +1628,23 @@ test("accepts legal zero-frame boundaries and rejects invalid process segments",
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const process = (...args) => callProcess(instance.exports.onda_process, ...args);
 
-  process(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-  process(0, 0, 2, 0, 1, 0, 0, 0, 0, 0, 0);
-  process(0, 0, 4, 0, 3, 0, 0, 0, 0, 0, 0);
+  assert.equal(process(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), 0);
+  assert.equal(process(0, 0, 2, 0, 1, 0, 0, 0, 0, 0, 0), 0);
+  assert.equal(process(0, 0, 4, 0, 3, 0, 0, 0, 0, 0, 0), 0);
 
-  assert.throws(
-    () => process(0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0),
-    WebAssembly.RuntimeError,
-  );
-  assert.throws(
-    () => process(0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0),
-    WebAssembly.RuntimeError,
-  );
-  assert.throws(
-    () => process(0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0),
-    WebAssembly.RuntimeError,
-  );
-  assert.throws(
-    () => process(0, 0, 2, 3, 0, 0, 0, 0, 0, 0, 0),
-    WebAssembly.RuntimeError,
-  );
-  assert.throws(
-    () => process(0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0),
-    WebAssembly.RuntimeError,
-  );
-  assert.throws(
-    () => process(0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0),
-    WebAssembly.RuntimeError,
-  );
+  for (const args of [
+    [0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 2, 3, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0],
+  ]) {
+    assert.equal(
+      process(...args),
+      PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+    );
+  }
 });
 
 test("forwards position-independent process flags on zero-frame calls", async () => {
@@ -1896,7 +2095,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
   );
 });
 
-test("traps overlapping slice copies with unequal strides", async () => {
+test("returns a failure for overlapping slice copies with unequal strides", async () => {
   const mir = executableMir();
   mir.types.push(
     type("slice", { element: "f32", access: "read_write" }),
@@ -1981,9 +2180,8 @@ test("traps overlapping slice copies with unequal strides", async () => {
   view.setFloat32(bufferSampleRates, 48_000, true);
   view.setUint32(outputTable, output, true);
   onda_init(params, state);
-  assert.throws(
-    () =>
-      callProcess(onda_process,
+  assert.equal(
+    callProcess(onda_process,
         0,
         outputTable,
         0,
@@ -1996,6 +2194,6 @@ test("traps overlapping slice copies with unequal strides", async () => {
         bufferChannels,
         bufferSampleRates,
       ),
-    WebAssembly.RuntimeError,
+    PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   );
 });

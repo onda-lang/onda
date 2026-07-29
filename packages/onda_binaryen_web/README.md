@@ -31,7 +31,8 @@ a JSON string, a MessagePack `ArrayBuffer`/typed-array view, or a decoded object
 for inspection; the browser compiler and test corpus use MessagePack as the production transport.
 
 The generated module exports `memory`, `__heap_base`, `onda_init(params_ptr, state_ptr)`, the
-11-argument processor `onda_process`, and one `onda_event_N` function per declared event. These are
+11-argument processor `onda_process`, and one `onda_event_N` function per declared event. Each
+function returns zero on success or a positive generated execution-failure code. These are
 the complete wasm32-module profile of the generic
 [`Onda processor ABI`](../../docs/processor-abi.md), not a Web Audio-specific interface. The host
 owns allocation in linear memory. Metadata contains resolved target/integration facts,

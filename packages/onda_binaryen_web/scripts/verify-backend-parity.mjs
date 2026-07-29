@@ -377,8 +377,9 @@ async function renderWasmBlocks(artifact, scenario) {
     view.setFloat32(bufferSampleRates + index * 4, sampleRate, true);
   });
 
-  onda_init(params, state);
-  const processSegment = (startFrame, frames, flags) => onda_process(
+  requireExecutionSuccess(onda_init(params, state), "processor init");
+  const processSegment = (startFrame, frames, flags) => requireExecutionSuccess(
+    onda_process(
       state,
       params,
       inputTable,
@@ -390,7 +391,9 @@ async function renderWasmBlocks(artifact, scenario) {
       bufferFrames,
       bufferChannels,
       bufferSampleRates,
-    );
+    ),
+    "processor process",
+  );
   const renderedBlocks = [];
   const renderedBitBlocks = [];
   const snapshots = [];
@@ -421,7 +424,7 @@ async function renderWasmBlocks(artifact, scenario) {
       if (savedSnapshot === null) {
         throw new Error("Wasm parity restore has no preceding snapshot");
       }
-      onda_init(params, state);
+      requireExecutionSuccess(onda_init(params, state), "processor restore init");
       restoreWasmState(memory, state, metadata, savedSnapshot);
       continue;
     }
@@ -496,15 +499,24 @@ function triggerWasmEvent(context) {
       action.values[index],
     );
   }
-  instance.exports[event.export](
-    payload,
-    context.params,
-    context.state,
-    context.bufferPointers,
-    context.bufferFrames,
-    context.bufferChannels,
-    context.bufferSampleRates,
+  requireExecutionSuccess(
+    instance.exports[event.export](
+      payload,
+      context.params,
+      context.state,
+      context.bufferPointers,
+      context.bufferFrames,
+      context.bufferChannels,
+      context.bufferSampleRates,
+    ),
+    `processor event '${action.name}'`,
   );
+}
+
+function requireExecutionSuccess(status, operation) {
+  if (status !== 0) {
+    throw new Error(`${operation} failed with execution status ${status}`);
+  }
 }
 
 function flattenPorts(ports) {

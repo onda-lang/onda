@@ -30,6 +30,16 @@ use onda_semantics::{
 pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESS_BEGIN_BLOCK as i32;
 pub const ONDA_PROCESS_END_BLOCK: i32 = onda_runtime::PROCESS_END_BLOCK as i32;
 pub const ONDA_PROCESS_FULL_BLOCK: i32 = onda_runtime::PROCESS_FULL_BLOCK as i32;
+pub const ONDA_EXECUTION_OK: i32 = onda_codegen_llvm::PROCESSOR_EXECUTION_OK as i32;
+pub const ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE: i32 =
+    onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE as i32;
+
+fn execution_status_to_c(status: Result<u32, Diagnostic>) -> i32 {
+    match status {
+        Ok(value) => i32::try_from(value).unwrap_or(-2),
+        Err(_) => -2,
+    }
+}
 
 #[repr(C)]
 pub struct onda_diag_t {
@@ -1256,10 +1266,11 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
     } else {
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
-    match trigger_event_by_index_unchecked(&mut (*instance).inner, index as usize, payload) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    execution_status_to_c(trigger_event_by_index_unchecked(
+        &mut (*instance).inner,
+        index as usize,
+        payload,
+    ))
 }
 
 #[no_mangle]
@@ -1486,10 +1497,7 @@ pub unsafe extern "C" fn onda_process_unchecked(instance: *mut onda_instance) ->
     if instance.is_null() {
         return -1;
     }
-    match process_unchecked(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    execution_status_to_c(process_unchecked(&mut (*instance).inner))
 }
 
 #[no_mangle]
@@ -1513,15 +1521,12 @@ pub unsafe extern "C" fn onda_process_unchecked_segment(
     if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
         return -1;
     }
-    match process_unchecked_segment(
+    execution_status_to_c(process_unchecked_segment(
         &mut (*instance).inner,
         start_frame as usize,
         frames as usize,
         flags as u32,
-    ) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    ))
 }
 
 #[no_mangle]

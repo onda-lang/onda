@@ -9,7 +9,7 @@ import {
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
-const FIXTURE_MIR_SCHEMA_VERSION = 2;
+const FIXTURE_MIR_SCHEMA_VERSION = 3;
 
 function artifact() {
   const port = (name, arrayLen) => ({
@@ -44,7 +44,7 @@ function artifact() {
     metadata: {
       format: "onda-processor",
       format_version: 2,
-      abi_version: 1,
+      abi_version: 2,
       artifact_kind: "webassembly_module",
       backend: "test",
       mir_schema_version: FIXTURE_MIR_SCHEMA_VERSION,

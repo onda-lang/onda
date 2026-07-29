@@ -73,9 +73,15 @@ try {
   view.setFloat32(payload + 8, 4, true);
   view.setUint32(outputTable, output, true);
 
-  onda_init(params, state);
-  onda_event_0(payload, params, state, 0, 0, 0, 0);
-  onda_process(state, params, 0, outputTable, 0, 4, 3, 0, 0, 0, 0);
+  if (onda_init(params, state) !== 0) {
+    throw new Error("real-Onda init returned a generated execution failure");
+  }
+  if (onda_event_0(payload, params, state, 0, 0, 0, 0) !== 0) {
+    throw new Error("real-Onda event returned a generated execution failure");
+  }
+  if (onda_process(state, params, 0, outputTable, 0, 4, 3, 0, 0, 0, 0) !== 0) {
+    throw new Error("real-Onda process returned a generated execution failure");
+  }
 
   const samples = [...new Float32Array(memory.buffer, output, 4)];
   const expected = [10, 13, 16, 19];

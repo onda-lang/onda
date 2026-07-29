@@ -2,9 +2,9 @@
   "format": "onda-processor",
   "format_version": 2,
   "artifact_kind": "webassembly_module",
-  "abi_version": 1,
+  "abi_version": 2,
   "backend": "conformance-fixture",
-  "mir_schema_version": 2,
+  "mir_schema_version": 3,
   "target": {
     "triple": "wasm32-unknown-unknown",
     "cpu": "generic",

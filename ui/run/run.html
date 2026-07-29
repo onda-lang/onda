@@ -633,7 +633,11 @@
 
       .param-list {
         display: grid;
-        gap: 12px;
+        grid-template-columns: repeat(
+          auto-fit,
+          minmax(min(100%, 200px), 1fr)
+        );
+        gap: 8px;
       }
 
       .param {
@@ -689,6 +693,50 @@
         display: grid;
         gap: 10px;
         margin-top: 10px;
+      }
+
+      /* Keep these card dimensions aligned with onda_egui::param_grid_columns. */
+      #params[data-layout="sliders"] .param {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(88px, 104px);
+        grid-template-rows: 26px 24px;
+        grid-template-areas:
+          "heading value"
+          "control control";
+        align-content: center;
+        gap: 4px 8px;
+        min-width: 0;
+        height: 80px;
+        padding: 8px 9px;
+      }
+
+      #params[data-layout="sliders"] .param-head {
+        grid-area: heading;
+        min-width: 0;
+        align-self: center;
+      }
+
+      #params[data-layout="sliders"] .param-controls {
+        display: contents;
+      }
+
+      #params[data-layout="sliders"] .param-slider {
+        grid-area: control;
+        align-self: center;
+      }
+
+      #params[data-layout="sliders"] .param-number {
+        grid-area: value;
+        align-self: center;
+        height: 26px;
+        padding: 3px 8px;
+      }
+
+      #params[data-layout="sliders"] .param-bool .param-controls {
+        display: grid;
+        grid-area: control;
+        align-self: center;
+        margin: 0;
       }
 
       .param-range {
@@ -795,13 +843,17 @@
       }
 
       #params[data-layout="knobs"] {
-        grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
+        grid-template-columns: repeat(
+          auto-fit,
+          minmax(min(100%, 140px), 1fr)
+        );
         gap: 8px;
       }
 
       #params[data-layout="knobs"] .param {
         min-width: 0;
-        padding: 9px;
+        height: 140px;
+        padding: 8px 9px;
       }
 
       #params[data-layout="knobs"] .param-head {
@@ -823,8 +875,15 @@
       }
 
       #params[data-layout="knobs"] .param-controls {
-        gap: 6px;
-        margin-top: 7px;
+        gap: 4px;
+        margin-top: 4px;
+      }
+
+      #params[data-layout="knobs"] .param-number {
+        justify-self: center;
+        width: 104px;
+        height: 26px;
+        padding: 3px 8px;
       }
 
       .param-number {
@@ -881,11 +940,6 @@
 
         .hero {
           min-height: 160px;
-        }
-
-        .param-list {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 8px;
         }
 
         .param {
@@ -946,7 +1000,7 @@
           <img class="file-picker-logo" id="file-picker-logo" alt="Onda logo" />
           <div class="file-picker-title">Open an Onda file</div>
           <div class="file-picker-copy">Drag an .onda file here, or choose one from your computer.</div>
-          <div class="file-picker-settings">
+          <div class="file-picker-settings" id="file-picker-settings">
             <div class="param-setting">
               <label class="param-setting-label" for="run-sample-rate">Sample Rate</label>
               <select class="param-select" id="run-sample-rate">
@@ -1207,6 +1261,7 @@
         supportsSourceSelection: false,
         supportsTransport: false,
         supportsDeviceSelection: false,
+        supportsRunSettings: false,
         supportsReset: false,
         supportsScope: false,
         sampleRateHz: 48_000,
@@ -1220,6 +1275,7 @@
       const unloadButton = document.getElementById("unload");
       const chooseOndaFileButton = document.getElementById("choose-onda-file");
       const filePickerNode = document.getElementById("file-picker");
+      const filePickerSettingsNode = document.getElementById("file-picker-settings");
       const filePickerErrorNode = document.getElementById("file-picker-error");
       const runSampleRateNode = document.getElementById("run-sample-rate");
       const runBlockSizeNode = document.getElementById("run-block-size");
@@ -1254,7 +1310,10 @@
       const filePickerLogoNode = document.getElementById("file-picker-logo");
       const PARAM_LAYOUT_STORAGE_KEY = "onda.run-view.param-layout.v1";
       const pendingParamMessages = new Map();
+      const activeParamGestures = new Set();
+      const paramBindings = new Map();
       let pendingParamFrame = 0;
+      let renderedParamSignature = "";
       let pendingScopeFrame = 0;
       let latestScopeData = { channels: 0, samples: [] };
       let currentTheme = "";
@@ -1672,7 +1731,7 @@
         const canEdit = canEditRunControls();
         control.tabIndex = canEdit ? 0 : -1;
         control.setAttribute("role", "slider");
-        control.setAttribute("aria-label", param.name);
+        control.setAttribute("aria-label", paramDisplayName(param));
         control.setAttribute("aria-valuemin", String(param.rangeMin));
         control.setAttribute("aria-valuemax", String(param.rangeMax));
         control.setAttribute("aria-disabled", canEdit ? "false" : "true");
@@ -1878,6 +1937,73 @@
           });
       }
 
+      function paramRenderSignature(params) {
+        return JSON.stringify([
+          paramLayout,
+          canEditRunControls(),
+          params.map((param) => [
+            param.name,
+            param.label,
+            param.type,
+            param.default,
+            param.rangeMin,
+            param.rangeMax,
+            param.scale,
+            param.curve,
+            param.unit,
+            param.step,
+            param.stepCount,
+          ]),
+        ]);
+      }
+
+      function paramDisplayName(param) {
+        const label = typeof param.label === "string" && param.label
+          ? param.label
+          : param.name;
+        return param.unit ? `${label} (${param.unit})` : label;
+      }
+
+      function updateRenderedParams(params) {
+        const signature = paramRenderSignature(params);
+        if (signature !== renderedParamSignature) {
+          return false;
+        }
+
+        for (const incoming of params) {
+          if (!paramBindings.has(incoming.name)) {
+            return false;
+          }
+        }
+
+        for (let index = 0; index < params.length; index += 1) {
+          const incoming = params[index];
+          const binding = paramBindings.get(incoming.name);
+          const localValue = binding.param.value;
+          Object.assign(binding.param, incoming);
+          if (activeParamGestures.has(incoming.name)) {
+            binding.param.value = localValue;
+          } else {
+            binding.setValue(incoming.value);
+          }
+          params[index] = binding.param;
+        }
+        return true;
+      }
+
+      function resetRenderedParams(signature) {
+        for (const name of activeParamGestures) {
+          const binding = paramBindings.get(name);
+          if (binding) {
+            commitParamMessage(name, binding.param.value);
+          }
+        }
+        activeParamGestures.clear();
+        paramBindings.clear();
+        paramsNode.replaceChildren();
+        renderedParamSignature = signature;
+      }
+
       function initialEventArgValue(arg) {
         if (isArrayEventArg(arg)) {
           return Array.isArray(arg.default) ? arg.default.slice() : [];
@@ -2035,10 +2161,12 @@
         const supportsSourceSelection = state.supportsSourceSelection === true;
         const supportsTransport = state.supportsTransport === true;
         const supportsDeviceSelection = state.supportsDeviceSelection === true;
+        const supportsRunSettings = state.supportsRunSettings === true;
         const supportsReset = state.supportsReset === true;
         const supportsScope = state.supportsScope === true;
         const hasSource = Boolean(state.path);
         filePickerNode.hidden = !supportsSourceSelection || hasSource;
+        filePickerSettingsNode.hidden = !supportsRunSettings;
         runHeaderNode.hidden = supportsSourceSelection && !hasSource;
         unloadButton.hidden = !supportsSourceSelection;
         pathNode.textContent = state.path ? state.path : "No file selected";
@@ -2309,7 +2437,11 @@
           }
         }
 
-        paramsNode.replaceChildren();
+        const paramSignature = paramRenderSignature(state.params);
+        if (updateRenderedParams(state.params)) {
+          return;
+        }
+        resetRenderedParams(paramSignature);
         for (const param of state.params) {
           const card = document.createElement("div");
           card.className = "param";
@@ -2317,10 +2449,11 @@
           const head = document.createElement("div");
           head.className = "param-head";
           head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
-          head.querySelector(".param-name").textContent = param.name;
-          head.querySelector(".param-type").textContent = param.unit
-            ? `${param.type} · ${param.unit}`
-            : param.type;
+          const displayName = paramDisplayName(param);
+          const name = head.querySelector(".param-name");
+          name.textContent = displayName;
+          name.title = displayName;
+          head.querySelector(".param-type").textContent = param.type;
           card.appendChild(head);
 
           const controls = document.createElement("div");
@@ -2328,25 +2461,37 @@
           card.appendChild(controls);
 
           if (param.type === "bool") {
+            card.classList.add("param-bool");
             const label = document.createElement("label");
             label.className = "param-toggle";
             const input = document.createElement("input");
             input.type = "checkbox";
             input.checked = Boolean(param.value);
             input.disabled = !canEditRun;
-            input.addEventListener("change", () => {
-              param.value = input.checked;
-              hostBridge.postMessage({ type: "setParam", name: param.name, value: input.checked });
-            });
             const text = document.createElement("span");
             text.textContent = input.checked ? "On" : "Off";
             input.addEventListener("change", () => {
+              param.value = input.checked;
               text.textContent = input.checked ? "On" : "Off";
+              hostBridge.postMessage({
+                type: "setParam",
+                name: param.name,
+                value: input.checked,
+                commit: true,
+              });
             });
             label.append(input, text);
             controls.appendChild(label);
+            paramBindings.set(param.name, {
+              param,
+              setValue(nextValue) {
+                input.checked = Boolean(nextValue);
+                text.textContent = input.checked ? "On" : "Off";
+              },
+            });
           } else {
             const hasRange = Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax);
+            card.classList.add(hasRange ? "param-ranged" : "param-unbounded");
             const stepValue = scalarStepForParam(param);
             const step = String(stepValue);
             const currentValue = typeof param.value === "number" ? param.value : 0;
@@ -2369,12 +2514,14 @@
                 currentValue,
                 step,
                 (nextValue) => {
+                  activeParamGestures.add(param.name);
                   param.value = nextValue;
                   const nextText = formatNumberForInput(nextValue, stepValue);
                   number.value = nextText;
                   scheduleParamMessage(param.name, nextValue);
                 },
                 (nextValue) => {
+                  activeParamGestures.delete(param.name);
                   param.value = nextValue;
                   const nextText = formatNumberForInput(nextValue, stepValue);
                   number.value = nextText;
@@ -2398,6 +2545,7 @@
                 sync(number.value);
                 commitParamMessage(param.name, Number(number.value));
               });
+              paramBindings.set(param.name, { param, setValue: sync });
             } else {
               const number = document.createElement("input");
               number.className = "param-number";
@@ -2413,9 +2561,26 @@
                 const quantized = quantizeToStep(parsed, 0, stepValue);
                 param.value = quantized;
                 number.value = formatNumberForInput(quantized, stepValue);
-                hostBridge.postMessage({ type: "setParam", name: param.name, value: quantized });
+                hostBridge.postMessage({
+                  type: "setParam",
+                  name: param.name,
+                  value: quantized,
+                  commit: true,
+                });
               });
               controls.appendChild(number);
+              paramBindings.set(param.name, {
+                param,
+                setValue(nextValue) {
+                  const parsed = Number(nextValue);
+                  if (!Number.isFinite(parsed)) {
+                    return;
+                  }
+                  const quantized = quantizeToStep(parsed, 0, stepValue);
+                  param.value = quantized;
+                  number.value = formatNumberForInput(quantized, stepValue);
+                },
+              });
             }
 
           }

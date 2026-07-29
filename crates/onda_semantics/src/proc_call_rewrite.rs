@@ -327,7 +327,7 @@ pub(super) fn build_proc_write_helper(
         // Keep the unsafe OOB sentinel exclusively on the unmatched path.
         // A trailing dead `1 / 0` used to be harmless in the direct LLVM
         // backend because poison was unused, but MIR gives integer division
-        // by zero observable trap semantics.
+        // by-zero observable failure semantics.
         let mut unmatched = vec![Stmt::Expr {
             loc: Default::default(),
             expr: Expr::Binary {

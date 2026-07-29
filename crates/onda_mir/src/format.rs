@@ -702,7 +702,7 @@ fn format_channels(channels: BufferChannels) -> String {
 fn format_bounds(bounds: BoundsMode) -> &'static str {
     match bounds {
         BoundsMode::Clamp => "clamp",
-        BoundsMode::Trap => "trap",
+        BoundsMode::Checked => "checked",
         BoundsMode::Unchecked => "unchecked",
     }
 }

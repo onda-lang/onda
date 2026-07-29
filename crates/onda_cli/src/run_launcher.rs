@@ -112,7 +112,7 @@ mod tests {
             .as_nanos();
         let root =
             std::env::temp_dir().join(format!("onda-run-launcher-{}-{unique}", std::process::id()));
-        let launcher = root.join("Onda Run.exe");
+        let launcher = root.join("Onda.exe");
         let bundled_cli = root.join("bin").join(ONDA_CLI_FILE_NAME);
         let sibling_cli = root.join(ONDA_CLI_FILE_NAME);
 

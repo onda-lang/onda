@@ -26,6 +26,7 @@ export class BrowserRunViewHost {
       supportsSourceSelection: false,
       supportsTransport: true,
       supportsDeviceSelection: false,
+      supportsRunSettings: false,
       supportsReset: true,
       supportsScope: true,
       sampleRateHz: 48_000,
@@ -457,7 +458,10 @@ function decodeScalarRepr(type, value) {
   if (value === null || value === undefined) return null;
   if (type === "bool") return value === "true";
   if (type !== "f32" && type !== "f64") return Number(value);
-  if (!value.startsWith("0x")) return Number(value);
+  if (!value.startsWith("0x")) {
+    const decoded = Number(value);
+    return type === "f32" ? Math.fround(decoded) : decoded;
+  }
   const width = type === "f32" ? 32 : 64;
   const digits = value.startsWith("0x") ? value.slice(2) : "";
   if (digits.length !== width / 4) return Number.NaN;

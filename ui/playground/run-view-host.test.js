@@ -132,6 +132,41 @@ test("decodes floating-point bit-pattern representations", () => {
   assert.equal(param.rangeMax, 2);
 });
 
+test("decodes finite f32 representations at their declared precision", () => {
+  const [param, stepped] = mergeParams([
+    scalarParam({
+      default_reprs: ["0.72"],
+      range_min_repr: "0",
+      range_max_repr: "0.98",
+      param_control: {
+        scale: "linear",
+        curve: null,
+        unit: null,
+        step_repr: null,
+        step_count: null,
+      },
+    }),
+    scalarParam({
+      name: "stepped",
+      default_reprs: ["0.2"],
+      range_min_repr: "0",
+      range_max_repr: "0.3",
+      param_control: {
+        scale: "linear",
+        curve: null,
+        unit: null,
+        step_repr: "0.1",
+        step_count: 3,
+      },
+    }),
+  ], []);
+
+  assert.equal(param.default, Math.fround(0.72));
+  assert.equal(param.value, Math.fround(0.72));
+  assert.equal(param.rangeMax, Math.fround(0.98));
+  assert.equal(stepped.step, Math.fround(0.1));
+});
+
 test("preserves event array shapes instead of presenting them as scalars", () => {
   const events = mergeEvents([{
     name: "load",

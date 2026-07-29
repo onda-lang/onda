@@ -33,7 +33,7 @@ signed 32-bit values. Public LLVM entry points use the target's C calling conven
 WebAssembly modules use ordinary core-Wasm function calls.
 
 ```text
-onda_init(params: Ptr, state: Ptr) -> void
+onda_init(params: Ptr, state: Ptr) -> i32
 
 onda_process(
   state: Ptr,
@@ -47,7 +47,7 @@ onda_process(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
-) -> void
+) -> i32
 
 onda_event_N(
   payload: Ptr,
@@ -57,12 +57,17 @@ onda_event_N(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
-) -> void
+) -> i32
 ```
 
 There is one `onda_event_N` for each declared event, in metadata order. The current ABI uses
 unprefixed symbol names and therefore permits one public processor namespace per artifact. A future
 ABI may add namespacing for multi-processor libraries without changing MIR.
+
+Every entry point returns zero on success or a positive execution-failure code. Code `1` is
+`RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
+cannot continue safely. The host must stop using the current processor state after any nonzero
+result; it may discard the instance or reset its state and call `onda_init` again.
 
 The process order intentionally places state, parameters, and audio tables before segment controls
 and optional buffer tables. This keeps the hottest pointers in argument registers on common native
@@ -262,9 +267,11 @@ one-rounding FMA semantics. Fast math is an explicit compilation policy recorded
 Native floating-point control registers belong to the calling thread. Onda's realtime hosts enable
 x86 FTZ/DAZ before entering init, process, or event code to prevent subnormal feedback-state stalls;
 a raw-object host that wants the same audio policy must configure its calling threads likewise.
-Bounds checks, integer division, invalid conversions, or an invalid host contract may trap. A host
-must treat a trap as a failed processor instance instead of continuing with possibly corrupted
-state.
+Bounds checks, integer division, and other generated safety checks return
+`RUNTIME_SAFETY_FAILURE` instead of trapping. Invalid host pointers, storage extents, or other
+violations of the raw ABI remain outside generated-code recovery and can still trap or cause
+undefined behavior. A host must treat every nonzero execution result as a failed processor state
+instead of continuing with potentially partial state or output writes.
 
 ## Web Audio reference adapter
 

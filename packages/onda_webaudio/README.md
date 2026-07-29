@@ -96,6 +96,9 @@ rendering node.
 
 Artifact descriptors and module exports are validated by the shared, compiler-free
 `@onda-lang/processor-abi` package before anything reaches the rendering thread.
+If generated init, event, or process code returns a nonzero execution status, the adapter reports
+an `onda-error`, latches the failed state, and emits silence without re-entering processing. A
+successful reset clears the latch after reinitializing state.
 
 Dynamic event storage is also allocated before rendering. Its default capacity is 64 KiB per
 processor with dynamic events and can be changed explicitly:

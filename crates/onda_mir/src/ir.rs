@@ -470,7 +470,7 @@ pub enum StatementKind {
     /// Copies `min(destination.len, source.len)` elements.
     ///
     /// Equal-stride/contiguous overlap is memmove-safe. If unequal-stride views
-    /// overlap, execution deterministically traps; MIR does not imply hidden
+    /// overlap, execution deterministically fails; MIR does not imply hidden
     /// realtime scratch allocation.
     SliceCopy {
         destination: Value,
@@ -521,7 +521,7 @@ pub enum Rvalue {
         args: Vec<Value>,
     },
     /// Produces the full-block audio frame for a process-segment-relative
-    /// offset, trapping unless `0 <= offset < frames`.
+    /// offset, failing unless `0 <= offset < frames`.
     ///
     /// Audio I/O operations only accept values produced directly by this
     /// operation. This keeps host buffer addressing safe and gives every
@@ -567,13 +567,13 @@ pub enum Rvalue {
     /// Constructs a checked subview of the logical source range.
     ///
     /// `Clamp` normalizes `start` to `0..=source_len`, clamps negative `len` to
-    /// zero, then clamps `len` to the remaining source range. `Trap` rejects
+    /// zero, then clamps `len` to the remaining source range. `Checked` rejects
     /// any negative or out-of-range component. `Unchecked` requires the
     /// producer to prove `0 <= start <= source_len` and
     /// `0 <= len <= source_len - start`.
     ///
     /// Empty slices are valid, including the one-past-end `start == source_len`
-    /// case. Any indexed operation on an empty slice traps even in `Clamp`
+    /// case. Any indexed operation on an empty slice fails even in `Clamp`
     /// mode because no valid element exists.
     MakeSlice {
         source: SliceSource,
@@ -627,7 +627,7 @@ pub enum CallArgument {
     /// A contiguous fixed-array reference beginning at `start` in `slice`.
     ///
     /// Checked modes require both a complete in-bounds window and a unit-stride
-    /// slice descriptor. A non-contiguous descriptor traps rather than being
+    /// slice descriptor. A non-contiguous descriptor fails rather than being
     /// reinterpreted as a native fixed array.
     SliceWindow {
         slice: Value,
@@ -680,10 +680,10 @@ pub enum Projection {
 #[serde(rename_all = "snake_case")]
 pub enum BoundsMode {
     /// Clamp to the nearest valid index/range. If the collection is empty and
-    /// therefore has no valid element, an indexed operation traps.
+    /// therefore has no valid element, an indexed operation fails.
     Clamp,
-    /// Trap when an index or complete range is out of bounds.
-    Trap,
+    /// Fail when an index or complete range is out of bounds.
+    Checked,
     /// The producer guarantees the complete index/range is valid.
     Unchecked,
 }
@@ -705,9 +705,9 @@ pub enum BinaryOp {
     Subtract,
     /// Wrapping multiplication for integers; IEEE multiplication at the operand width for floats.
     Multiply,
-    /// Signed integer division traps on zero and wraps `MIN / -1` to `MIN`.
+    /// Signed integer division fails on zero and wraps `MIN / -1` to `MIN`.
     Divide,
-    /// Signed integer remainder traps on zero and yields zero for `MIN % -1`.
+    /// Signed integer remainder fails on zero and yields zero for `MIN % -1`.
     Remainder,
     BitAnd,
     BitOr,

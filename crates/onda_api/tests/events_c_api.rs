@@ -1466,6 +1466,48 @@ sample { out1 = SAMPLE_RATE }
 }
 
 #[test]
+fn c_api_unchecked_process_returns_generated_runtime_failure_code() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params:
+  divisor: i32 = 0
+
+def quotient(value: i32, by: i32):
+  return value / by
+
+sample:
+  out1 = f32(quotient(i32(1), divisor))
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+        let mut output = vec![0.0_f32; 512];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast::<c_void>(),
+                (output.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_prepare_unchecked_process(instance.0), 0);
+        assert_eq!(
+            onda_process_unchecked_segment(instance.0, 0, 1, ONDA_PROCESS_BEGIN_BLOCK),
+            ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE,
+            "generated runtime failures must cross the C ABI with their named status code"
+        );
+    }
+}
+
+#[test]
 fn c_api_buffer_may_write_reports_declared_write_capability() {
     unsafe {
         let program = compile_program(

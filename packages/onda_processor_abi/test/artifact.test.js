@@ -396,7 +396,7 @@ test("rejects an unsupported snapshot format", () => {
   );
 });
 
-test("rejects runtime semantics not implemented by processor ABI v1", () => {
+test("rejects runtime semantics not implemented by the current processor ABI", () => {
   for (const [field, value, expected] of [
     ["state_initialization", "host_initialized", "zeroed"],
     ["snapshot_byte_order", "big_endian", "little_endian"],

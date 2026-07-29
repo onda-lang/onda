@@ -184,7 +184,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
 
           Copy-Item target\release\onda.exe $binDir
-          Copy-Item target\release\onda-run.exe (Join-Path $packageRoot "Onda Run.exe")
+          Copy-Item target\release\onda-run.exe (Join-Path $packageRoot "Onda.exe")
           Copy-Item target\release\onda.dll $libDir
           if (Test-Path target\release\onda.lib) {
             Copy-Item target\release\onda.lib $libDir

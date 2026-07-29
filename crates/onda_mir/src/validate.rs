@@ -5694,7 +5694,7 @@ mod tests {
                     base: PlaceBase::Local(LocalId::new(0)),
                     projections: vec![Projection::Index {
                         index: Value::Constant(ScalarValue::I32(0)),
-                        bounds: crate::BoundsMode::Trap,
+                        bounds: crate::BoundsMode::Checked,
                     }],
                 },
                 value: Rvalue::Use(Value::Constant(ScalarValue::F32(1.0))),
@@ -5795,7 +5795,7 @@ mod tests {
                 channel: None,
                 index: Value::Constant(ScalarValue::I32(0)),
                 value: Value::Constant(ScalarValue::F32(1.0)),
-                bounds: crate::BoundsMode::Trap,
+                bounds: crate::BoundsMode::Checked,
             },
             source: SourceSpan::UNKNOWN,
         });
@@ -6264,7 +6264,7 @@ mod tests {
                         base: PlaceBase::Local(LocalId::new(0)),
                         projections: vec![Projection::Index {
                             index: Value::Local(LocalId::new(1)),
-                            bounds: crate::BoundsMode::Trap,
+                            bounds: crate::BoundsMode::Checked,
                         }],
                     }),
                 },
@@ -6315,7 +6315,7 @@ mod tests {
                     }),
                     start: Value::Constant(ScalarValue::I32(4)),
                     len: Value::Constant(ScalarValue::I32(0)),
-                    bounds: crate::BoundsMode::Trap,
+                    bounds: crate::BoundsMode::Checked,
                     access: AccessMode::ReadOnly,
                 },
             },
@@ -6528,7 +6528,7 @@ mod tests {
                     args: vec![CallArgument::SliceWindow {
                         slice: Value::Local(LocalId::new(0)),
                         start: Value::Constant(ScalarValue::I32(0)),
-                        bounds: crate::BoundsMode::Trap,
+                        bounds: crate::BoundsMode::Checked,
                     }],
                 },
                 source: SourceSpan::UNKNOWN,
@@ -6543,7 +6543,7 @@ mod tests {
         args[0] = CallArgument::SliceElement {
             slice: Value::Local(LocalId::new(0)),
             index: Value::Constant(ScalarValue::I32(0)),
-            bounds: crate::BoundsMode::Trap,
+            bounds: crate::BoundsMode::Checked,
         };
         let errors =
             super::validate(&program).expect_err("slice element cannot impersonate an array");

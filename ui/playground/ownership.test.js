@@ -96,6 +96,7 @@ test("the shared run view renders host features from explicit capabilities", asy
     "supportsSourceSelection",
     "supportsTransport",
     "supportsDeviceSelection",
+    "supportsRunSettings",
     "supportsReset",
     "supportsScope",
   ]) {
@@ -106,10 +107,15 @@ test("the shared run view renders host features from explicit capabilities", asy
 });
 
 test("the empty native run view owns its compile settings", async () => {
-  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+  const [runView, webview] = await Promise.all([
+    readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
+    readFile(resolve(repoRoot, "crates/onda_webview/src/lib.rs"), "utf8"),
+  ]);
 
   assert.match(runView, /id="run-sample-rate"/);
   assert.match(runView, /id="run-block-size"/);
+  assert.match(runView, /filePickerSettingsNode\.hidden = !supportsRunSettings/);
+  assert.match(webview, /"supportsRunSettings": true/);
   assert.match(runView, /blockFrames: 256/);
   assert.match(runView, /type: "setRunSettings"/);
 });
@@ -134,7 +140,40 @@ test("the shared run view offers a device-cached knob layout", async () => {
   assert.match(runView, /paramLayout === "knobs" \? createKnobControl : createSliderControl/);
   assert.match(
     runView,
+    /#params\[data-layout="sliders"\] \.param \{[\s\S]*?height: 80px;/,
+  );
+  assert.match(
+    runView,
+    /#params\[data-layout="knobs"\] \{[\s\S]*?minmax\(min\(100%, 140px\), 1fr\)/,
+  );
+  assert.match(
+    runView,
+    /grid-template-areas:\s+"heading value"\s+"control control";/,
+  );
+  assert.match(runView, /function paramDisplayName\(param\)/);
+  assert.match(
+    runView,
     /<div class="params-title">Params<\/div>\s*<div class="param-layout-toggle"[\s\S]*?<\/div>\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"/,
+  );
+});
+
+test("the shared run view preserves controls across independent parameter updates", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /const activeParamGestures = new Set\(\)/);
+  assert.match(runView, /const paramBindings = new Map\(\)/);
+  assert.match(
+    runView,
+    /if \(activeParamGestures\.has\(incoming\.name\)\) \{\s+binding\.param\.value = localValue;\s+\} else \{\s+binding\.setValue\(incoming\.value\);/,
+  );
+  assert.match(
+    runView,
+    /if \(updateRenderedParams\(state\.params\)\) \{\s+return;\s+\}\s+resetRenderedParams\(paramSignature\);/,
+  );
+  assert.equal(
+    runView.match(/paramsNode\.replaceChildren\(\)/g)?.length,
+    1,
+    "parameter DOM replacement must be limited to schema/layout changes",
   );
 });
 

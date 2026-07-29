@@ -11,11 +11,16 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 1u
+#define ONDA_PROCESSOR_ABI_VERSION 2u
 
-typedef void (*onda_processor_init_fn)(const void* params, void* state);
+enum {
+  ONDA_PROCESSOR_EXECUTION_OK = 0u,
+  ONDA_PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1u
+};
 
-typedef void (*onda_processor_process_fn)(
+typedef uint32_t (*onda_processor_init_fn)(const void* params, void* state);
+
+typedef uint32_t (*onda_processor_process_fn)(
   void* state,
   const void* params,
   const void* const* inputs,
@@ -29,7 +34,7 @@ typedef void (*onda_processor_process_fn)(
   const float* buffer_sample_rates
 );
 
-typedef void (*onda_processor_event_fn)(
+typedef uint32_t (*onda_processor_event_fn)(
   const void* payload,
   const void* params,
   void* state,
@@ -415,9 +420,9 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_plain_to_normalized(
  * storage pointers are NULL exactly when the paired descriptor reports that
  * surface count or storage size as zero.
  */
-void onda_init(const void* params, void* state);
+uint32_t onda_init(const void* params, void* state);
 
-void onda_process(
+uint32_t onda_process(
   void* state,
   const void* params,
   const void* const* inputs,

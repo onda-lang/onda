@@ -17,7 +17,7 @@ use onda_daemon::{
     RunEventValue, RunParamInfo, UNBOUND_BUFFERS_MESSAGE,
 };
 use onda_frontend::{load_program_file, Diagnostic};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod playback;
@@ -162,7 +162,7 @@ struct RawReadyEvent {
     event: String,
     path: Option<String>,
     port: Option<u16>,
-    params: Option<Vec<Value>>,
+    params: Option<Vec<RunParamWire>>,
     buffers: Option<Vec<Value>>,
     events: Option<Vec<Value>>,
     #[serde(rename = "outputChannels")]
@@ -175,6 +175,25 @@ struct RawReadyEvent {
     current_input_device: Option<String>,
     #[serde(rename = "currentOutputDevice")]
     current_output_device: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunParamWire {
+    index: usize,
+    name: String,
+    #[serde(rename = "type")]
+    type_repr: String,
+    value_repr: Option<String>,
+    default_repr: Option<String>,
+    range_min_repr: Option<String>,
+    range_max_repr: Option<String>,
+    scale: Option<String>,
+    curve_repr: Option<String>,
+    unit: Option<String>,
+    step_repr: Option<String>,
+    step_count: Option<u32>,
+    scalar: bool,
 }
 
 pub struct RunController {
@@ -770,22 +789,96 @@ fn format_single_diagnostic(prefix: &str, diag: &Diagnostic) -> String {
     format!("{prefix}: {} ({location})", diag.message)
 }
 
-fn run_param_json(param: &RunParamInfo) -> Value {
-    json!({
-        "index": param.index,
-        "name": param.name,
-        "type": param.type_repr,
-        "value": param.value,
-        "default": param.default,
-        "rangeMin": param.range_min,
-        "rangeMax": param.range_max,
-        "scale": param.scale,
-        "curve": param.curve,
-        "unit": param.unit,
-        "step": param.step,
-        "stepCount": param.step_count,
-        "scalar": param.scalar,
-    })
+fn run_param_json(param: &RunParamInfo) -> RunParamWire {
+    RunParamWire::from(param)
+}
+
+impl From<&RunParamInfo> for RunParamWire {
+    fn from(param: &RunParamInfo) -> Self {
+        let scalar_repr = |value| run_param_scalar_repr(&param.type_repr, value);
+        Self {
+            index: param.index,
+            name: param.name.clone(),
+            type_repr: param.type_repr.clone(),
+            value_repr: param.value.map(scalar_repr),
+            default_repr: param.default.map(scalar_repr),
+            range_min_repr: param.range_min.map(scalar_repr),
+            range_max_repr: param.range_max.map(scalar_repr),
+            scale: param.scale.clone(),
+            curve_repr: param.curve.map(|curve| curve.to_string()),
+            unit: param.unit.clone(),
+            step_repr: param.step.map(scalar_repr),
+            step_count: param.step_count,
+            scalar: param.scalar,
+        }
+    }
+}
+
+impl RunParamWire {
+    fn into_host_value(self) -> Result<Value, String> {
+        let value = decode_run_param_scalar_repr(&self.type_repr, self.value_repr, "valueRepr")?;
+        let default =
+            decode_run_param_scalar_repr(&self.type_repr, self.default_repr, "defaultRepr")?;
+        let range_min =
+            decode_run_param_scalar_repr(&self.type_repr, self.range_min_repr, "rangeMinRepr")?;
+        let range_max =
+            decode_run_param_scalar_repr(&self.type_repr, self.range_max_repr, "rangeMaxRepr")?;
+        let curve = decode_run_param_scalar_repr("f64", self.curve_repr, "curveRepr")?;
+        let step = decode_run_param_scalar_repr(&self.type_repr, self.step_repr, "stepRepr")?;
+        Ok(json!({
+            "index": self.index,
+            "name": self.name,
+            "type": self.type_repr,
+            "value": value,
+            "default": default,
+            "rangeMin": range_min,
+            "rangeMax": range_max,
+            "scale": self.scale,
+            "curve": curve,
+            "unit": self.unit,
+            "step": step,
+            "stepCount": self.step_count,
+            "scalar": self.scalar,
+        }))
+    }
+}
+
+fn run_param_scalar_repr(ty: &str, value: f64) -> String {
+    match ty {
+        "f32" => (value as f32).to_string(),
+        "i32" => (value as i32).to_string(),
+        "i64" => (value as i64).to_string(),
+        "bool" => (value != 0.0).to_string(),
+        _ => value.to_string(),
+    }
+}
+
+fn decode_run_param_scalar_repr(
+    ty: &str,
+    repr: Option<String>,
+    field: &str,
+) -> Result<Value, String> {
+    let Some(repr) = repr else {
+        return Ok(Value::Null);
+    };
+    let value = match ty {
+        "f32" => repr
+            .parse::<f32>()
+            .ok()
+            .map(f64::from)
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        "f64" => repr
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        "i32" => repr.parse::<i32>().ok().map(Value::from),
+        "i64" => repr.parse::<i64>().ok().map(Value::from),
+        "bool" => repr.parse::<bool>().ok().map(Value::Bool),
+        _ => None,
+    };
+    value.ok_or_else(|| format!("run parameter has invalid {ty} '{field}' value '{repr}'"))
 }
 
 fn run_buffer_json(buffer: &onda_daemon::RunBufferInfo) -> Value {
@@ -926,10 +1019,23 @@ impl ChildSession {
                 }
                 if let Ok(raw) = serde_json::from_str::<RawReadyEvent>(trimmed) {
                     if raw.event == "ready" {
+                        let params = match raw
+                            .params
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(RunParamWire::into_host_value)
+                            .collect::<Result<Vec<_>, _>>()
+                        {
+                            Ok(params) => params,
+                            Err(error) => {
+                                eprintln!("[onda run stdout] invalid ready event: {error}");
+                                continue;
+                            }
+                        };
                         let ready = ReadyEvent {
                             path: raw.path.unwrap_or_default(),
                             port: raw.port.unwrap_or(0),
-                            params: raw.params.unwrap_or_default(),
+                            params,
                             buffers: raw.buffers.unwrap_or_default(),
                             events: raw.events.unwrap_or_default(),
                             output_channels: raw.output_channels.unwrap_or(0),
@@ -1580,8 +1686,9 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::{
         events_are_compatible_for_preservation, params_are_compatible_for_preservation,
-        reconcile_preserved_events, reconcile_preserved_params, source_snapshot, ControllerEvent,
-        FileWatcher, RunHostOptions, SourceCompilationState,
+        reconcile_preserved_events, reconcile_preserved_params, run_param_json, source_snapshot,
+        ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, RunHostOptions,
+        RunParamInfo, RunParamWire, SourceCompilationState,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -1593,6 +1700,107 @@ mod tests {
     #[test]
     fn realtime_host_defaults_to_256_frame_blocks() {
         assert_eq!(RunHostOptions::default().block_frames, 256);
+    }
+
+    #[test]
+    fn control_json_dispatches_typed_parameter_values() {
+        let coupling = RunParamInfo {
+            index: 0,
+            name: "coupling".to_owned(),
+            type_repr: "f32".to_owned(),
+            value: Some(f64::from(0.72_f32)),
+            default: Some(f64::from(0.72_f32)),
+            range_min: Some(0.0),
+            range_max: Some(f64::from(0.98_f32)),
+            scale: Some("linear".to_owned()),
+            curve: Some(-4.000000000000001),
+            unit: None,
+            step: None,
+            step_count: None,
+            scalar: true,
+        };
+        let stepped = RunParamInfo {
+            index: 1,
+            name: "stepped".to_owned(),
+            type_repr: "f32".to_owned(),
+            value: Some(f64::from(0.2_f32)),
+            default: Some(f64::from(0.1_f32)),
+            range_min: Some(0.0),
+            range_max: Some(f64::from(0.3_f32)),
+            scale: Some("linear".to_owned()),
+            curve: None,
+            unit: None,
+            step: Some(f64::from(0.1_f32)),
+            step_count: Some(3),
+            scalar: true,
+        };
+        let gate = RunParamInfo {
+            index: 2,
+            name: "gate".to_owned(),
+            type_repr: "bool".to_owned(),
+            value: Some(1.0),
+            default: Some(1.0),
+            range_min: None,
+            range_max: None,
+            scale: None,
+            curve: None,
+            unit: None,
+            step: None,
+            step_count: None,
+            scalar: true,
+        };
+        let wire_params = vec![
+            run_param_json(&coupling),
+            run_param_json(&stepped),
+            run_param_json(&gate),
+        ];
+        assert_eq!(wire_params[0].range_max_repr.as_deref(), Some("0.98"));
+        assert_eq!(wire_params[1].step_repr.as_deref(), Some("0.1"));
+        assert_eq!(wire_params[2].value_repr.as_deref(), Some("true"));
+
+        let encoded = serde_json::to_string(&wire_params).expect("serialize run parameters");
+        let parsed: Vec<RunParamWire> =
+            serde_json::from_str(&encoded).expect("deserialize run parameters");
+        let decoded = parsed
+            .into_iter()
+            .map(RunParamWire::into_host_value)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode typed run parameters");
+
+        assert_eq!(
+            decoded[0]["rangeMax"]
+                .as_f64()
+                .expect("numeric range maximum")
+                .to_bits(),
+            f64::from(0.98_f32).to_bits()
+        );
+        assert_eq!(
+            decoded[1]["step"]
+                .as_f64()
+                .expect("numeric parameter step")
+                .to_bits(),
+            f64::from(0.1_f32).to_bits()
+        );
+        assert_eq!(
+            decoded[0]["curve"]
+                .as_f64()
+                .expect("numeric parameter curve")
+                .to_bits(),
+            (-4.000000000000001_f64).to_bits()
+        );
+        assert_eq!(decoded[2]["value"], true);
+        assert_eq!(decoded[2]["default"], true);
+        ParamDomain::new(
+            ParamScalarType::F32,
+            decoded[0]["rangeMin"].as_f64().expect("range minimum"),
+            decoded[0]["rangeMax"].as_f64().expect("range maximum"),
+            ParamScale::Linear,
+            decoded[0]["curve"].as_f64(),
+            None,
+            None,
+            None,
+        )
+        .expect("transported parameter domain");
     }
 
     #[test]

@@ -5,7 +5,9 @@ const PARAM_CONTROL = globalThis.__ONDA_PARAM_CONTROL_V2__;
 export const PROCESSOR_ARTIFACT_FORMAT = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
 export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 2;
-export const PROCESSOR_ABI_VERSION = 1;
+export const PROCESSOR_ABI_VERSION = 2;
+export const PROCESSOR_EXECUTION_OK = 0;
+export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
 
 export const {

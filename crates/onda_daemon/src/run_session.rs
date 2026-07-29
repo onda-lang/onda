@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::{collections::HashMap, mem};
 
 use onda_codegen_llvm::{
-    jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredEvent,
-    DeclaredEventParam, JitProgram, MirCompileOptions, TargetOptLevel,
+    check_execution_status, jit_program_from_optimized_mir_with_options, DeclaredBufferChannels,
+    DeclaredEvent, DeclaredEventParam, JitProgram, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_runtime::{
@@ -491,7 +491,9 @@ impl RunSession {
         // stable for the lifetime of this instance.
         for &(start_frame, frames, flags) in segments {
             unsafe {
-                process_unchecked_segment(&mut self.instance, start_frame, frames, flags)?;
+                let status =
+                    process_unchecked_segment(&mut self.instance, start_frame, frames, flags)?;
+                check_execution_status(status)?;
             }
         }
 

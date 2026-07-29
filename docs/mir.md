@@ -43,7 +43,7 @@ intermediates. An explicit cast changes the width, and explicit `fma` retains it
 single-rounding semantics.
 
 Integer `add`, `subtract`, and `multiply` wrap at their declared width. Shift counts are masked to
-that width. Signed division and remainder trap on zero; `MIN / -1` wraps to `MIN`, and `MIN % -1`
+that width. Signed division and remainder fail on zero; `MIN / -1` wraps to `MIN`, and `MIN % -1`
 is zero. Floating-point equality is ordered, `!=` is true for NaN, and relational comparisons are
 false for NaN. Float-to-integer casts saturate to the destination range and convert NaN to zero.
 These rules are MIR semantics, not backend optimization choices.
@@ -145,25 +145,25 @@ host interaction use explicit operations:
 - direct calls with already-bound arguments
 - structured `if`, `loop`, `break`, `continue`, and return
 
-Indexed operations carry `Clamp`, `Trap`, or `Unchecked` bounds behavior. A backend never infers
+Indexed operations carry `Clamp`, `Checked`, or `Unchecked` bounds behavior. A backend never infers
 safety semantics from a function name. Runtime and raw-processor ABI validation guarantee that
 every bound external buffer has positive dimensions, so backends implement external-buffer Clamp
 without a redundant empty-range branch. Empty slices remain valid values, but indexed access to one
-traps because there is no element to clamp to.
+fails because there is no element to clamp to.
 
 `make_slice` applies its bounds mode to the complete `(start, len)` range. Clamp normalizes the start
-to `0..=source_len`, negative lengths to zero, and the length to the remaining range. Trap rejects an
-invalid component. Unchecked requires the producer to prove the complete range. Empty slices are
-valid, including a one-past-end empty view, but every indexed operation on an empty slice traps
-because there is no element to clamp to.
+to `0..=source_len`, negative lengths to zero, and the length to the remaining range. `Checked`
+rejects an invalid component. Unchecked requires the producer to prove the complete range. Empty
+slices are valid, including a one-past-end empty view, but every indexed operation on an empty
+slice fails because there is no element to clamp to.
 
 `SliceElement` is only a scalar-reference argument. Fixed-array subreferences use `ArrayWindow` for
 a fixed-array place or `SliceWindow` for a slice descriptor. The required window length comes from
-the callee parameter. `SliceWindow` additionally requires unit stride; checked modes trap rather
+the callee parameter. `SliceWindow` additionally requires unit stride; checked modes fail rather
 than reinterpret a non-contiguous descriptor.
 
 Slice copy is memmove-safe for contiguous or equal-stride overlap. Overlapping unequal-stride views
-trap deterministically; MIR does not imply an unrepresented realtime scratch allocation.
+fail deterministically; MIR does not imply an unrepresented realtime scratch allocation.
 
 Math intrinsics express Onda semantics, not a target implementation. LLVM may map an intrinsic to
 LLVM IR or libm; WebAssembly may map it to a native instruction or an Onda-supplied math function.
@@ -191,7 +191,7 @@ The process MIR therefore describes the canonical process loop. Backends transla
 do not independently recreate it from `TypedProgram` regions. The current schema's process entry has
 exactly three ordered `i32` value parameters: `(start_frame, frames, flags)`. BEGIN gates block-pre,
 END gates block-post, and the sample loop runs local frames `[0, frames)`. `process_frame(offset)`
-is the only operation that can produce an audio-I/O frame. It traps unless `0 <= offset < frames`,
+is the only operation that can produce an audio-I/O frame. It fails unless `0 <= offset < frames`,
 then yields `start_frame + offset` against full-block base pointers. Structured dataflow validation
 requires a reaching `process_frame` definition to dominate every audio load/store frame use and
 rejects any path on which that local is unassigned or overwritten.
@@ -236,7 +236,7 @@ codegen.
 Unchecked bounds are a separate producer proof, not an assertion source code or a serialized
 program may make about itself. The safe `validate`, `validate_owned`, `from_json`, and
 `from_messagepack` entry points reject every reachable `BoundsMode::Unchecked` operation. Public
-source-level `unsafe_read`/`unsafe_write` operations use `BoundsMode::Trap`: they skip clamping but
+source-level `unsafe_read`/`unsafe_write` operations use `BoundsMode::Checked`: they skip clamping but
 remain memory-safe when their index is invalid. Onda's semantic lowerer may use the explicit unsafe
 trusted-producer constructors only for accesses whose bounds it established while constructing
 MIR. That provenance is retained by `ValidatedProgram` and revalidated without being downgraded
@@ -254,7 +254,7 @@ backend. The pipeline propagates constants and immutable local copies through st
 flow, merges identical branch facts, folds target-independent scalar operations and exact simple
 intrinsics, applies integer-safe algebraic identities, performs local value numbering for pure
 scalar expressions, simplifies constant branches, removes unreachable block tails, deletes unused
-nontrapping pure temporaries, removes proven redundant all-bits-zero writes from the straight-line
+non-failing pure temporaries, removes proven redundant all-bits-zero writes from the straight-line
 prefix of pre-zeroed `init` state, and compacts local IDs. Floating-point identities are not applied
 under the strict profile: NaNs, signed zero, and signaling behavior make transformations such as
 `x - x -> 0` invalid.
@@ -278,10 +278,15 @@ with an opaque `OptimizedProgram`.
 Effects distinguish state, interface parameters, audio I/O, external buffers, constant data, event
 payloads, indirect descriptors, and per-reference reads/writes without encoding a target ABI. Range
 facts include the segmented-process contract, interface declarations, constants, and operations
-that cannot overflow. These analyses are backend inputs: they let LLVM attach memory and range
-attributes today and give future Wasm/native passes one shared place for alias, trap, and
-vectorization legality. Aggregate read-write references remain conservative when converted to
-descriptors, so LLVM never receives a `readonly` promise that descriptor provenance has not proved.
+that cannot overflow. Failure effects distinguish checked fixed-range access from clamped access,
+which is non-failing for nonempty fixed arrays, ports, constant data, and validated external
+buffers. Clamped dynamic-slice element access may still fail on an empty slice, and slice windows
+may fail their dynamic shape requirement. Only integer division and remainder can fail; floating
+division and remainder follow IEEE semantics. These analyses are backend inputs: they let LLVM
+attach memory and range attributes today and give future Wasm/native passes one shared place for
+alias, failure, and vectorization legality. Aggregate read-write references remain conservative
+when converted to descriptors, so LLVM never receives a `readonly` promise that descriptor
+provenance has not proved.
 
 These passes do not replace LLVM or Binaryen optimization. They keep portable MIR deterministic,
 remove producer artifacts before backend legalization, and prevent basic code quality from depending
