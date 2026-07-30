@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use onda_frontend::{
-    parse_program, parse_program_file_from_virtual_sources, DiagCode, Diagnostic, Program,
+    load_program_file_from_virtual_sources, parse_program, DiagCode, Diagnostic, Program,
+    SourceManifest,
 };
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 use serde::Serialize;
@@ -22,6 +23,49 @@ pub struct CompilerDiagnostic {
     pub end_line: usize,
     pub end_column: usize,
     pub trace: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct CompilerFailure {
+    pub diagnostics: Vec<CompilerDiagnostic>,
+    pub source_files: Vec<String>,
+    pub unresolved_source_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CompilationOutput<T> {
+    pub output: T,
+    pub source_files: Vec<String>,
+}
+
+impl CompilerFailure {
+    fn without_sources(diagnostics: Vec<CompilerDiagnostic>) -> Self {
+        Self {
+            diagnostics,
+            source_files: Vec::new(),
+            unresolved_source_files: Vec::new(),
+        }
+    }
+
+    fn with_sources(diagnostics: Vec<CompilerDiagnostic>, source_files: Vec<String>) -> Self {
+        Self {
+            diagnostics,
+            source_files,
+            unresolved_source_files: Vec::new(),
+        }
+    }
+
+    fn with_source_manifest(
+        diagnostics: Vec<CompilerDiagnostic>,
+        source_files: Vec<String>,
+        unresolved_source_files: Vec<String>,
+    ) -> Self {
+        Self {
+            diagnostics,
+            source_files,
+            unresolved_source_files,
+        }
+    }
 }
 
 impl CompilerDiagnostic {
@@ -63,8 +107,9 @@ pub fn compile_source_to_mir_json(
     sample_rate: f32,
     block_size: u32,
 ) -> Result<String, Vec<CompilerDiagnostic>> {
-    let mir = lower_source_to_mir(source, sample_rate, block_size)?;
-    onda_mir::to_json_optimized(&mir).map_err(|error| mir_encoding_error("mir-json", error))
+    compile_source_to_mir_json_with_manifest(source, sample_rate, block_size)
+        .map(|compiled| compiled.output)
+        .map_err(|failure| failure.diagnostics)
 }
 
 /// Compiles source to the compact MessagePack MIR transport used by browser
@@ -74,9 +119,9 @@ pub fn compile_source_to_mir_messagepack(
     sample_rate: f32,
     block_size: u32,
 ) -> Result<Vec<u8>, Vec<CompilerDiagnostic>> {
-    let mir = lower_source_to_mir(source, sample_rate, block_size)?;
-    onda_mir::to_messagepack_optimized(&mir)
-        .map_err(|error| mir_encoding_error("mir-messagepack", error))
+    compile_source_to_mir_messagepack_with_manifest(source, sample_rate, block_size)
+        .map(|compiled| compiled.output)
+        .map_err(|failure| failure.diagnostics)
 }
 
 /// Compiles an in-memory multi-file project without consulting the host
@@ -88,8 +133,9 @@ pub fn compile_project_sources_to_mir_json(
     sample_rate: f32,
     block_size: u32,
 ) -> Result<String, Vec<CompilerDiagnostic>> {
-    let mir = lower_project_sources_to_mir(entry_path, sources, sample_rate, block_size)?;
-    onda_mir::to_json_optimized(&mir).map_err(|error| mir_encoding_error("mir-json", error))
+    compile_project_sources_to_mir_json_with_manifest(entry_path, sources, sample_rate, block_size)
+        .map(|compiled| compiled.output)
+        .map_err(|failure| failure.diagnostics)
 }
 
 pub fn compile_project_sources_to_mir_messagepack(
@@ -98,33 +144,114 @@ pub fn compile_project_sources_to_mir_messagepack(
     sample_rate: f32,
     block_size: u32,
 ) -> Result<Vec<u8>, Vec<CompilerDiagnostic>> {
-    let mir = lower_project_sources_to_mir(entry_path, sources, sample_rate, block_size)?;
-    onda_mir::to_messagepack_optimized(&mir)
-        .map_err(|error| mir_encoding_error("mir-messagepack", error))
+    compile_project_sources_to_mir_messagepack_with_manifest(
+        entry_path,
+        sources,
+        sample_rate,
+        block_size,
+    )
+    .map(|compiled| compiled.output)
+    .map_err(|failure| failure.diagnostics)
 }
 
-fn lower_source_to_mir(
+pub fn compile_source_to_mir_json_with_manifest(
     source: &str,
     sample_rate: f32,
     block_size: u32,
-) -> Result<onda_mir::OptimizedProgram, Vec<CompilerDiagnostic>> {
-    let config = compile_config(sample_rate, block_size)?;
-    let parsed = parse_program(source).map_err(|diagnostics| {
-        diagnostics
-            .into_iter()
-            .map(|diagnostic| CompilerDiagnostic::source("parse", diagnostic))
-            .collect::<Vec<_>>()
-    })?;
-    lower_parsed_program(parsed, config)
+) -> Result<CompilationOutput<String>, CompilerFailure> {
+    let compiled = lower_source_to_mir_with_manifest(source, sample_rate, block_size)?;
+    encode_mir_compilation(compiled, "mir-json", onda_mir::to_json_optimized)
 }
 
-fn lower_project_sources_to_mir(
+pub fn compile_source_to_mir_messagepack_with_manifest(
+    source: &str,
+    sample_rate: f32,
+    block_size: u32,
+) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
+    let compiled = lower_source_to_mir_with_manifest(source, sample_rate, block_size)?;
+    encode_mir_compilation(
+        compiled,
+        "mir-messagepack",
+        onda_mir::to_messagepack_optimized,
+    )
+}
+
+pub fn compile_project_sources_to_mir_json_with_manifest(
     entry_path: &str,
     sources: &HashMap<String, String>,
     sample_rate: f32,
     block_size: u32,
-) -> Result<onda_mir::OptimizedProgram, Vec<CompilerDiagnostic>> {
-    let config = compile_config(sample_rate, block_size)?;
+) -> Result<CompilationOutput<String>, CompilerFailure> {
+    let compiled =
+        lower_project_sources_to_mir_with_manifest(entry_path, sources, sample_rate, block_size)?;
+    encode_mir_compilation(compiled, "mir-json", onda_mir::to_json_optimized)
+}
+
+pub fn compile_project_sources_to_mir_messagepack_with_manifest(
+    entry_path: &str,
+    sources: &HashMap<String, String>,
+    sample_rate: f32,
+    block_size: u32,
+) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
+    let compiled =
+        lower_project_sources_to_mir_with_manifest(entry_path, sources, sample_rate, block_size)?;
+    encode_mir_compilation(
+        compiled,
+        "mir-messagepack",
+        onda_mir::to_messagepack_optimized,
+    )
+}
+
+fn encode_mir_compilation<T, E>(
+    compiled: CompilationOutput<onda_mir::OptimizedProgram>,
+    stage: &'static str,
+    encode: impl FnOnce(&onda_mir::OptimizedProgram) -> Result<T, E>,
+) -> Result<CompilationOutput<T>, CompilerFailure>
+where
+    E: ToString,
+{
+    let output = encode(&compiled.output).map_err(|error| {
+        CompilerFailure::with_sources(
+            mir_encoding_error(stage, error),
+            compiled.source_files.clone(),
+        )
+    })?;
+    Ok(CompilationOutput {
+        output,
+        source_files: compiled.source_files,
+    })
+}
+
+fn lower_source_to_mir_with_manifest(
+    source: &str,
+    sample_rate: f32,
+    block_size: u32,
+) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
+    let config =
+        compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
+    let parsed = parse_program(source).map_err(|diagnostics| {
+        CompilerFailure::without_sources(
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| CompilerDiagnostic::source("parse", diagnostic))
+                .collect::<Vec<_>>(),
+        )
+    })?;
+    let output = lower_parsed_program(parsed, config).map_err(CompilerFailure::without_sources)?;
+    Ok(CompilationOutput {
+        output,
+        source_files: Vec::new(),
+    })
+}
+
+fn lower_project_sources_to_mir_with_manifest(
+    entry_path: &str,
+    sources: &HashMap<String, String>,
+    sample_rate: f32,
+    block_size: u32,
+) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
+    let config =
+        compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
     // This is a logical namespace rather than a host filesystem path. Keeping
     // it relative avoids target-specific `Path::is_absolute` behavior on
     // `wasm32-unknown-unknown` while the virtual loader still confines every
@@ -132,30 +259,60 @@ fn lower_project_sources_to_mir(
     let root = PathBuf::from("onda-project");
     let mut overlays = HashMap::with_capacity(sources.len());
     for (path, source) in sources {
-        let path = checked_project_path(path)?;
+        let path = checked_project_path(path).map_err(CompilerFailure::without_sources)?;
         let full_path = root.join(path);
         if overlays.insert(full_path, source.clone()).is_some() {
-            return Err(vec![CompilerDiagnostic::configuration(
-                "project contains duplicate normalized source paths",
-            )]);
+            return Err(CompilerFailure::without_sources(vec![
+                CompilerDiagnostic::configuration(
+                    "project contains duplicate normalized source paths",
+                ),
+            ]));
         }
     }
-    let entry_path = root.join(checked_project_path(entry_path)?);
+    let entry_path =
+        root.join(checked_project_path(entry_path).map_err(CompilerFailure::without_sources)?);
     if !overlays.contains_key(&entry_path) {
-        return Err(vec![CompilerDiagnostic::configuration(format!(
-            "project entry '{entry_path}' is not present in the source map",
-            entry_path = entry_path.display()
-        ))]);
+        return Err(CompilerFailure::without_sources(vec![
+            CompilerDiagnostic::configuration(format!(
+                "project entry '{entry_path}' is not present in the source map",
+                entry_path = entry_path.display()
+            )),
+        ]));
     }
-    let parsed = parse_program_file_from_virtual_sources(&root, &entry_path, &overlays).map_err(
-        |diagnostics| {
-            diagnostics
+    let loaded =
+        load_program_file_from_virtual_sources(&root, &entry_path, &overlays).map_err(|error| {
+            let source_files = virtual_source_files(&root, &error.sources);
+            let unresolved_source_files = virtual_paths(&root, &error.sources.unresolved_files);
+            let diagnostics = error
+                .diagnostics
                 .into_iter()
                 .map(|diagnostic| CompilerDiagnostic::source("parse", diagnostic))
-                .collect::<Vec<_>>()
-        },
-    )?;
-    lower_parsed_program(parsed, config)
+                .collect::<Vec<_>>();
+            CompilerFailure::with_source_manifest(
+                diagnostics,
+                source_files,
+                unresolved_source_files,
+            )
+        })?;
+    let source_files = virtual_source_files(&root, &loaded.sources);
+    let output = lower_parsed_program(loaded.program, config)
+        .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
+    Ok(CompilationOutput {
+        output,
+        source_files,
+    })
+}
+
+fn virtual_source_files(root: &Path, manifest: &SourceManifest) -> Vec<String> {
+    virtual_paths(root, &manifest.files)
+}
+
+fn virtual_paths(root: &Path, paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| path.strip_prefix(root).unwrap_or(path))
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect()
 }
 
 fn checked_project_path(path: &str) -> Result<PathBuf, Vec<CompilerDiagnostic>> {
@@ -301,18 +458,75 @@ impl Default for OndaLsp {
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
+pub struct FrontendMessagePackCompilation {
+    mir: Vec<u8>,
+    source_files_json: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+impl FrontendMessagePackCompilation {
+    pub fn take_mir(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.mir)
+    }
+
+    pub fn source_files_json(&self) -> String {
+        self.source_files_json.clone()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn frontend_messagepack_compilation(
+    compiled: CompilationOutput<Vec<u8>>,
+) -> FrontendMessagePackCompilation {
+    FrontendMessagePackCompilation {
+        mir: compiled.output,
+        source_files_json: encode_source_files(&compiled.source_files),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub struct FrontendJsonCompilation {
+    mir: String,
+    source_files_json: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+impl FrontendJsonCompilation {
+    pub fn take_mir(&mut self) -> String {
+        std::mem::take(&mut self.mir)
+    }
+
+    pub fn source_files_json(&self) -> String {
+        self.source_files_json.clone()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn frontend_json_compilation(compiled: CompilationOutput<String>) -> FrontendJsonCompilation {
+    FrontendJsonCompilation {
+        mir: compiled.output,
+        source_files_json: encode_source_files(&compiled.source_files),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn encode_source_files(source_files: &[String]) -> String {
+    serde_json::to_string(source_files).unwrap_or_else(|_| "[]".to_owned())
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
 pub fn compile_to_mir_json(
     source: &str,
     sample_rate: f32,
     block_size: u32,
-) -> Result<String, wasm_bindgen::JsValue> {
-    compile_source_to_mir_json(source, sample_rate, block_size).map_err(|diagnostics| {
-        let json = serde_json::to_string(&diagnostics).unwrap_or_else(|_| {
-            "[{\"stage\":\"internal\",\"message\":\"failed to encode compiler diagnostics\"}]"
-                .to_owned()
-        });
-        wasm_bindgen::JsValue::from_str(&json)
-    })
+) -> Result<FrontendJsonCompilation, wasm_bindgen::JsValue> {
+    compile_source_to_mir_json_with_manifest(source, sample_rate, block_size)
+        .map(frontend_json_compilation)
+        .map_err(compiler_failure_js)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -321,9 +535,10 @@ pub fn compile_to_mir_messagepack(
     source: &str,
     sample_rate: f32,
     block_size: u32,
-) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
-    compile_source_to_mir_messagepack(source, sample_rate, block_size)
-        .map_err(compiler_diagnostics_js)
+) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
+    compile_source_to_mir_messagepack_with_manifest(source, sample_rate, block_size)
+        .map(frontend_messagepack_compilation)
+        .map_err(compiler_failure_js)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -333,24 +548,11 @@ pub fn compile_project_to_mir_json(
     sources_json: &str,
     sample_rate: f32,
     block_size: u32,
-) -> Result<String, wasm_bindgen::JsValue> {
-    let sources =
-        serde_json::from_str::<HashMap<String, String>>(sources_json).map_err(|error| {
-            wasm_bindgen::JsValue::from_str(&format!(
-                "[{{\"stage\":\"configuration\",\"message\":{}}}]",
-                serde_json::to_string(&format!("invalid project source map JSON: {error}"))
-                    .unwrap_or_else(|_| "\"invalid project source map JSON\"".to_owned())
-            ))
-        })?;
-    compile_project_sources_to_mir_json(entry_path, &sources, sample_rate, block_size).map_err(
-        |diagnostics| {
-            let json = serde_json::to_string(&diagnostics).unwrap_or_else(|_| {
-                "[{\"stage\":\"internal\",\"message\":\"failed to encode compiler diagnostics\"}]"
-                    .to_owned()
-            });
-            wasm_bindgen::JsValue::from_str(&json)
-        },
-    )
+) -> Result<FrontendJsonCompilation, wasm_bindgen::JsValue> {
+    let sources = decode_project_sources_json(sources_json)?;
+    compile_project_sources_to_mir_json_with_manifest(entry_path, &sources, sample_rate, block_size)
+        .map(frontend_json_compilation)
+        .map_err(compiler_failure_js)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -360,24 +562,33 @@ pub fn compile_project_to_mir_messagepack(
     sources_json: &str,
     sample_rate: f32,
     block_size: u32,
-) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
-    let sources =
-        serde_json::from_str::<HashMap<String, String>>(sources_json).map_err(|error| {
-            wasm_bindgen::JsValue::from_str(&format!(
-                "[{{\"stage\":\"configuration\",\"message\":{}}}]",
-                serde_json::to_string(&format!("invalid project source map JSON: {error}"))
-                    .unwrap_or_else(|_| "\"invalid project source map JSON\"".to_owned())
-            ))
-        })?;
-    compile_project_sources_to_mir_messagepack(entry_path, &sources, sample_rate, block_size)
-        .map_err(compiler_diagnostics_js)
+) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
+    let sources = decode_project_sources_json(sources_json)?;
+    compile_project_sources_to_mir_messagepack_with_manifest(
+        entry_path,
+        &sources,
+        sample_rate,
+        block_size,
+    )
+    .map(frontend_messagepack_compilation)
+    .map_err(compiler_failure_js)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn compiler_diagnostics_js(diagnostics: Vec<CompilerDiagnostic>) -> wasm_bindgen::JsValue {
-    let encoded = serde_json::to_string(&diagnostics).unwrap_or_else(|_| {
-        "[{\"stage\":\"internal\",\"message\":\"failed to encode compiler diagnostics\"}]"
-            .to_owned()
+fn decode_project_sources_json(
+    sources_json: &str,
+) -> Result<HashMap<String, String>, wasm_bindgen::JsValue> {
+    serde_json::from_str(sources_json).map_err(|error| {
+        compiler_failure_js(CompilerFailure::without_sources(vec![
+            CompilerDiagnostic::configuration(format!("invalid project source map JSON: {error}")),
+        ]))
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn compiler_failure_js(failure: CompilerFailure) -> wasm_bindgen::JsValue {
+    let encoded = serde_json::to_string(&failure).unwrap_or_else(|_| {
+        "{\"diagnostics\":[{\"stage\":\"internal\",\"message\":\"failed to encode compiler diagnostics\"}],\"source_files\":[],\"unresolved_source_files\":[]}".to_owned()
     });
     wasm_bindgen::JsValue::from_str(&encoded)
 }
@@ -472,6 +683,88 @@ sample:
             .expect("virtual import should compile without filesystem access");
         unsafe { onda_mir::from_json_with_producer_proofs(&json) }
             .expect("virtual project result should be valid producer MIR");
+    }
+
+    #[test]
+    fn project_compilation_returns_only_contributing_virtual_sources() {
+        let sources = HashMap::from([
+            (
+                "main.onda".to_owned(),
+                "include \"./shared.onda\"\nimport dsp/filter\nimport std/math\nouts 1\nsample:\n  out1 = DSP::value()\n"
+                    .to_owned(),
+            ),
+            (
+                "shared.onda".to_owned(),
+                "const shared = 0.25\n".to_owned(),
+            ),
+            (
+                "dsp/filter.onda".to_owned(),
+                "namespace DSP:\n  def value() -> f32:\n    return 0.75\n".to_owned(),
+            ),
+            (
+                "unused.onda".to_owned(),
+                "const unused = 1.0\n".to_owned(),
+            ),
+        ]);
+        let compiled_messagepack = compile_project_sources_to_mir_messagepack_with_manifest(
+            "main.onda",
+            &sources,
+            48_000.0,
+            128,
+        )
+        .expect("virtual project should compile");
+        assert_eq!(
+            compiled_messagepack.source_files,
+            vec!["main.onda", "shared.onda", "dsp/filter.onda"]
+        );
+
+        let compiled_json =
+            compile_project_sources_to_mir_json_with_manifest("main.onda", &sources, 48_000.0, 128)
+                .expect("virtual project should compile to JSON");
+        assert_eq!(
+            compiled_json.source_files,
+            vec!["main.onda", "shared.onda", "dsp/filter.onda"]
+        );
+        unsafe { onda_mir::from_json_with_producer_proofs(&compiled_json.output) }
+            .expect("manifest-bearing JSON result should be valid producer MIR");
+    }
+
+    #[test]
+    fn failed_project_compilation_returns_partial_source_manifest() {
+        let sources = HashMap::from([
+            (
+                "main.onda".to_owned(),
+                "import dsp\nouts 1\nsample:\n  out1 = 0.0\n".to_owned(),
+            ),
+            ("dsp.onda".to_owned(), "this is not valid onda\n".to_owned()),
+        ]);
+        let failure = compile_project_sources_to_mir_messagepack_with_manifest(
+            "main.onda",
+            &sources,
+            48_000.0,
+            128,
+        )
+        .expect_err("dependency should fail to parse");
+        assert_eq!(failure.source_files, vec!["main.onda", "dsp.onda"]);
+        assert!(failure.unresolved_source_files.is_empty());
+        assert!(!failure.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn failed_project_compilation_returns_unresolved_source_candidates() {
+        let sources = HashMap::from([("main.onda".to_owned(), "import dsp/filter\n".to_owned())]);
+        let failure = compile_project_sources_to_mir_messagepack_with_manifest(
+            "main.onda",
+            &sources,
+            48_000.0,
+            128,
+        )
+        .expect_err("missing dependency should fail");
+        assert_eq!(failure.source_files, vec!["main.onda"]);
+        assert_eq!(
+            failure.unresolved_source_files,
+            vec!["dsp/filter.onda", "dsp/filter.on"]
+        );
     }
 
     #[test]

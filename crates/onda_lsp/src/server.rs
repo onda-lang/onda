@@ -8,7 +8,9 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use onda_frontend::{parse_program_file_with_overlays, parse_stdlib_module, Diagnostic, Program};
+use onda_frontend::{
+    load_program_file_with_overlays, parse_stdlib_module, Diagnostic, Program, SourceManifest,
+};
 use onda_semantics::{AnalysisOptions, AnalysisSession, DocumentVersion};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,6 +19,7 @@ mod completion;
 mod diagnostics;
 mod namespace_resolution;
 mod navigation;
+mod param_domain;
 mod path_utils;
 mod position;
 mod semantic_tokens;
@@ -41,7 +44,6 @@ const JSONRPC_VERSION: &str = "2.0";
 const INVALID_PARAMS: i64 = -32602;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INTERNAL_ERROR: i64 = -32603;
-const ONDA_SOURCE_EXTENSIONS: &[&str] = &["onda", "on"];
 const CHANGE_DIAGNOSTIC_DEBOUNCE: Duration = Duration::from_millis(400);
 const IMMEDIATE_DIAGNOSTICS: Duration = Duration::from_millis(0);
 
@@ -133,6 +135,7 @@ struct DiagnosticJobResult {
     entry_path: PathBuf,
     generation: u64,
     diagnostics: Vec<Diagnostic>,
+    sources: SourceManifest,
     parsed: Option<Program>,
     parse_fingerprint: Option<DocumentFingerprint>,
     completion_index_snapshot: Option<CompletionIndexSnapshot>,
@@ -383,6 +386,7 @@ impl LspSession {
 
 struct CachedParsedDocument {
     fingerprint: DocumentFingerprint,
+    sources: SourceManifest,
     parsed: Option<Arc<Program>>,
 }
 
@@ -411,7 +415,6 @@ struct DependencyFingerprintCache {
 struct CachedDependencyFile {
     stamp: DependencyFileStamp,
     source_hash: u64,
-    dependencies: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -919,17 +922,20 @@ impl LspServer {
             return parsed;
         }
 
-        let parsed = parse_program_file_with_overlays(&normalized, overlays)
-            .ok()
-            .map(Arc::new)?;
+        let loaded = load_program_file_with_overlays(&normalized, overlays);
+        let (parsed, sources) = match loaded {
+            Ok(loaded) => (Some(Arc::new(loaded.program)), loaded.sources),
+            Err(error) => (None, error.sources),
+        };
         self.parse_cache.insert(
             normalized,
             CachedParsedDocument {
                 fingerprint,
-                parsed: Some(parsed.clone()),
+                sources,
+                parsed: parsed.clone(),
             },
         );
-        Some(parsed)
+        parsed
     }
 
     fn parsed_program_for_open_request(
@@ -947,21 +953,24 @@ impl LspServer {
         {
             return Some(parsed);
         }
-        if let Ok(program) =
-            parse_program_file_with_overlays(&normalized, &self.session.overlay_map())
-        {
-            let parsed = Some(Arc::new(program));
-            self.store_parsed_program_for_path(
-                &normalized,
-                DocumentFingerprint {
+        let overlays = self.session.overlay_map();
+        let loaded = load_program_file_with_overlays(&normalized, &overlays);
+        let (parsed, sources) = match loaded {
+            Ok(loaded) => (Some(Arc::new(loaded.program)), loaded.sources),
+            Err(error) => (None, error.sources),
+        };
+        self.parse_cache.insert(
+            normalized,
+            CachedParsedDocument {
+                fingerprint: DocumentFingerprint {
                     source_hash,
                     dependency_hash: 0,
                 },
-                parsed.clone(),
-            );
-            return parsed;
-        }
-        None
+                sources,
+                parsed: parsed.clone(),
+            },
+        );
+        parsed
     }
 
     fn parsed_program_for_open_navigation_request(
@@ -972,23 +981,10 @@ impl LspServer {
         let normalized = normalize_path(path);
         let overlays = self.session.overlay_map();
         let fingerprint = self.document_fingerprint_for_path(&normalized, source, &overlays);
-        if let Some(parsed) = self
-            .parse_cache
+        self.parse_cache
             .get(&normalized)
             .filter(|cached| cached.fingerprint == fingerprint)
             .and_then(|cached| cached.parsed.clone())
-        {
-            return Some(parsed);
-        }
-
-        match parse_program_file_with_overlays(&normalized, &overlays) {
-            Ok(program) => {
-                let parsed = Some(Arc::new(program));
-                self.store_parsed_program_for_path(&normalized, fingerprint, parsed.clone());
-                parsed
-            }
-            Err(_) => None,
-        }
     }
 
     fn document_fingerprint_for_path(
@@ -997,10 +993,52 @@ impl LspServer {
         source: &str,
         overlays: &HashMap<PathBuf, String>,
     ) -> DocumentFingerprint {
-        self.dependency_fingerprint_cache
-            .document_fingerprint(path, source, overlays)
+        let normalized = normalize_path(path);
+        if let Some(cached) = self.parse_cache.get(&normalized) {
+            let fingerprint = self
+                .dependency_fingerprint_cache
+                .document_fingerprint_from_manifest(&normalized, source, overlays, &cached.sources);
+            if fingerprint == cached.fingerprint {
+                return fingerprint;
+            }
+        }
+        let previous_sources = self
+            .parse_cache
+            .get(&normalized)
+            .map(|cached| cached.sources.clone())
+            .unwrap_or_default();
+        let loaded = load_program_file_with_overlays(&normalized, overlays);
+        let (parsed, mut sources, succeeded) = match loaded {
+            Ok(loaded) => (Some(Arc::new(loaded.program)), loaded.sources, true),
+            Err(error) => (None, error.sources, false),
+        };
+        if !succeeded {
+            for path in previous_sources.files {
+                if !sources.files.contains(&path) && !sources.unresolved_files.contains(&path) {
+                    sources.files.push(path);
+                }
+            }
+            for path in previous_sources.unresolved_files {
+                if !sources.files.contains(&path) && !sources.unresolved_files.contains(&path) {
+                    sources.unresolved_files.push(path);
+                }
+            }
+        }
+        let fingerprint = self
+            .dependency_fingerprint_cache
+            .document_fingerprint_from_manifest(&normalized, source, overlays, &sources);
+        self.parse_cache.insert(
+            normalized,
+            CachedParsedDocument {
+                fingerprint,
+                sources,
+                parsed,
+            },
+        );
+        fingerprint
     }
 
+    #[cfg(test)]
     fn cache_parsed_program_for_path(
         &mut self,
         path: &Path,
@@ -1012,6 +1050,27 @@ impl LspServer {
         }
     }
 
+    fn cache_parsed_program_with_sources(
+        &mut self,
+        path: &Path,
+        fingerprint: DocumentFingerprint,
+        sources: SourceManifest,
+        parsed: Option<Program>,
+    ) {
+        let normalized = normalize_path(path);
+        self.parse_cache.insert(
+            normalized.clone(),
+            CachedParsedDocument {
+                fingerprint,
+                sources,
+                parsed: parsed.map(Arc::new),
+            },
+        );
+        self.completion_index_cache.remove(&normalized);
+        self.semantic_token_cache.remove(&normalized);
+    }
+
+    #[cfg(test)]
     fn store_parsed_program_for_path(
         &mut self,
         path: &Path,
@@ -1019,10 +1078,16 @@ impl LspServer {
         parsed: Option<Arc<Program>>,
     ) {
         let normalized = normalize_path(path);
+        let sources = self
+            .parse_cache
+            .get(&normalized)
+            .map(|cached| cached.sources.clone())
+            .unwrap_or_default();
         self.parse_cache.insert(
             normalized.clone(),
             CachedParsedDocument {
                 fingerprint,
+                sources,
                 parsed,
             },
         );
@@ -1122,7 +1187,12 @@ impl LspServer {
         let should_refresh_semantic_tokens =
             self.semantic_tokens_refresh && result.parsed.is_some();
         if let Some(fingerprint) = result.parse_fingerprint {
-            self.cache_parsed_program_for_path(&entry_path, fingerprint, result.parsed);
+            self.cache_parsed_program_with_sources(
+                &entry_path,
+                fingerprint,
+                result.sources,
+                result.parsed,
+            );
             if let Some(snapshot) = result.completion_index_snapshot {
                 self.completion_index_cache.insert(
                     normalize_path(&entry_path),
@@ -1159,16 +1229,27 @@ impl LspServer {
 
         let source = self.source_text_for_path(&entry_path).ok();
         let overlays = self.session.overlay_map();
-        let parse_fingerprint = source
-            .as_deref()
-            .map(|source| self.document_fingerprint_for_path(&entry_path, source, &overlays));
         let snapshot = self
             .session
             .analyze_document(&entry_path, self.analysis_options);
+        let parse_fingerprint = source.as_deref().map(|source| {
+            self.dependency_fingerprint_cache
+                .document_fingerprint_from_manifest(
+                    &entry_path,
+                    source,
+                    &overlays,
+                    &snapshot.sources,
+                )
+        });
         let should_refresh_semantic_tokens =
             self.semantic_tokens_refresh && snapshot.parsed.is_some();
         if let Some(fingerprint) = parse_fingerprint {
-            self.cache_parsed_program_for_path(&entry_path, fingerprint, snapshot.parsed.clone());
+            self.cache_parsed_program_with_sources(
+                &entry_path,
+                fingerprint,
+                snapshot.sources.clone(),
+                snapshot.parsed.clone(),
+            );
         }
         let default_uri = self
             .document_uris
@@ -1240,12 +1321,17 @@ impl LspServer {
 
         for (entry_path, document) in self.session.open_documents() {
             let entry_path = normalize_path(entry_path);
+            let previous_sources = self
+                .parse_cache
+                .get(&entry_path)
+                .map(|cached| &cached.sources);
             let affected = entry_path == changed_path
                 || self.dependency_fingerprint_cache.source_depends_on_path(
                     &entry_path,
                     &document.text,
                     &changed_path,
                     &overlays,
+                    previous_sources,
                 );
             if affected && seen.insert(entry_path.clone()) {
                 out.push(entry_path);
@@ -1496,14 +1582,15 @@ fn run_diagnostic_job(job: DiagnosticJob) -> DiagnosticJobResult {
         .get(&job.entry_path)
         .cloned()
         .or_else(|| fs::read_to_string(&job.entry_path).ok());
+    let snapshot = session.analyze_document(&job.entry_path, AnalysisOptions::default());
     let parse_fingerprint = source.as_deref().map(|source| {
-        DependencyFingerprintCache::default().document_fingerprint(
+        DependencyFingerprintCache::default().document_fingerprint_from_manifest(
             &job.entry_path,
             source,
             &overlays,
+            &snapshot.sources,
         )
     });
-    let snapshot = session.analyze_document(&job.entry_path, AnalysisOptions::default());
     let completion_index_snapshot = snapshot
         .parsed
         .as_ref()
@@ -1512,6 +1599,7 @@ fn run_diagnostic_job(job: DiagnosticJob) -> DiagnosticJobResult {
         entry_path: job.entry_path,
         generation: job.generation,
         diagnostics: snapshot.diagnostics,
+        sources: snapshot.sources,
         parsed: snapshot.parsed,
         parse_fingerprint,
         completion_index_snapshot,
@@ -1533,22 +1621,43 @@ fn source_fingerprint(source: &str) -> DocumentFingerprint {
 }
 
 impl DependencyFingerprintCache {
-    fn document_fingerprint(
+    fn document_fingerprint_from_manifest(
         &mut self,
         path: &Path,
         source: &str,
         overlays: &HashMap<PathBuf, String>,
+        manifest: &SourceManifest,
     ) -> DocumentFingerprint {
         let mut dependency_hasher = DefaultHasher::new();
-        let mut visited = HashSet::<PathBuf>::new();
-        self.collect_dependency_fingerprint_from_source(
-            &normalize_path(path),
-            source,
-            overlays,
-            &mut visited,
-            &mut dependency_hasher,
-            0,
-        );
+        let entry = normalize_path(path);
+        for (kind, dependencies) in [
+            ("resolved", manifest.files.as_slice()),
+            ("unresolved", manifest.unresolved_files.as_slice()),
+        ] {
+            kind.hash(&mut dependency_hasher);
+            for dependency in dependencies {
+                let dependency = normalize_path(dependency);
+                if dependency == entry {
+                    continue;
+                }
+                dependency.hash(&mut dependency_hasher);
+                if let Some(overlay_source) = overlay_source_for_path(&dependency, overlays) {
+                    "overlay".hash(&mut dependency_hasher);
+                    overlay_source.hash(&mut dependency_hasher);
+                    continue;
+                }
+                match self.disk_file_summary(&dependency) {
+                    Ok(summary) => {
+                        "disk".hash(&mut dependency_hasher);
+                        summary.source_hash.hash(&mut dependency_hasher);
+                    }
+                    Err(kind) => {
+                        "missing".hash(&mut dependency_hasher);
+                        kind.hash(&mut dependency_hasher);
+                    }
+                }
+            }
+        }
         DocumentFingerprint {
             source_hash: hash_source(source),
             dependency_hash: dependency_hasher.finish(),
@@ -1566,166 +1675,33 @@ impl DependencyFingerprintCache {
     fn source_depends_on_path(
         &mut self,
         path: &Path,
-        source: &str,
+        _source: &str,
         target: &Path,
         overlays: &HashMap<PathBuf, String>,
+        previous_sources: Option<&SourceManifest>,
     ) -> bool {
-        let mut visited = HashSet::<PathBuf>::new();
-        self.source_depends_on_path_from_source(
-            &normalize_path(path),
-            source,
-            &normalize_path(target),
-            overlays,
-            &mut visited,
-            0,
-        )
-    }
-
-    fn collect_dependency_fingerprint_from_source(
-        &mut self,
-        path: &Path,
-        source: &str,
-        overlays: &HashMap<PathBuf, String>,
-        visited: &mut HashSet<PathBuf>,
-        hasher: &mut DefaultHasher,
-        depth: usize,
-    ) {
-        self.collect_dependency_fingerprint_from_dependencies(
-            path,
-            dependency_paths_for_source(path, source),
-            overlays,
-            visited,
-            hasher,
-            depth,
-        );
-    }
-
-    fn collect_dependency_fingerprint_from_dependencies(
-        &mut self,
-        path: &Path,
-        dependencies: Vec<PathBuf>,
-        overlays: &HashMap<PathBuf, String>,
-        visited: &mut HashSet<PathBuf>,
-        hasher: &mut DefaultHasher,
-        depth: usize,
-    ) {
-        if depth > 64 {
-            "dependency-depth-limit".hash(hasher);
-            return;
-        }
-        let normalized = normalize_path(path);
-        if !visited.insert(normalized.clone()) {
-            return;
-        }
-        normalized.hash(hasher);
-
-        for dependency in dependencies {
-            let dependency = normalize_path(&dependency);
-            dependency.hash(hasher);
-            if let Some(overlay_source) = overlay_source_for_path(&dependency, overlays) {
-                "overlay".hash(hasher);
-                overlay_source.hash(hasher);
-                self.collect_dependency_fingerprint_from_source(
-                    &dependency,
-                    overlay_source,
-                    overlays,
-                    visited,
-                    hasher,
-                    depth + 1,
-                );
-                continue;
-            }
-
-            match self.disk_file_summary(&dependency) {
-                Ok(summary) => {
-                    "disk".hash(hasher);
-                    summary.source_hash.hash(hasher);
-                    self.collect_dependency_fingerprint_from_dependencies(
-                        &dependency,
-                        summary.dependencies,
-                        overlays,
-                        visited,
-                        hasher,
-                        depth + 1,
-                    );
-                }
-                Err(kind) => {
-                    "missing".hash(hasher);
-                    kind.hash(hasher);
+        let target = normalize_path(target);
+        let loaded = load_program_file_with_overlays(path, overlays);
+        let (mut sources, succeeded) = match loaded {
+            Ok(loaded) => (loaded.sources, true),
+            Err(error) => (error.sources, false),
+        };
+        if !succeeded {
+            for source in previous_sources
+                .into_iter()
+                .flat_map(|sources| sources.files.iter().chain(&sources.unresolved_files))
+            {
+                if !sources.files.contains(source) && !sources.unresolved_files.contains(source) {
+                    sources.unresolved_files.push(source.clone());
                 }
             }
         }
-    }
-
-    fn source_depends_on_path_from_source(
-        &mut self,
-        path: &Path,
-        source: &str,
-        target: &Path,
-        overlays: &HashMap<PathBuf, String>,
-        visited: &mut HashSet<PathBuf>,
-        depth: usize,
-    ) -> bool {
-        self.source_depends_on_path_from_dependencies(
-            path,
-            dependency_paths_for_source(path, source),
-            target,
-            overlays,
-            visited,
-            depth,
-        )
-    }
-
-    fn source_depends_on_path_from_dependencies(
-        &mut self,
-        path: &Path,
-        dependencies: Vec<PathBuf>,
-        target: &Path,
-        overlays: &HashMap<PathBuf, String>,
-        visited: &mut HashSet<PathBuf>,
-        depth: usize,
-    ) -> bool {
-        if depth > 64 {
-            return false;
-        }
-        let normalized = normalize_path(path);
-        if !visited.insert(normalized) {
-            return false;
-        }
-
-        for dependency in dependencies {
-            let dependency = normalize_path(&dependency);
-            if dependency == target {
-                return true;
-            }
-            if let Some(overlay_source) = overlay_source_for_path(&dependency, overlays) {
-                if self.source_depends_on_path_from_source(
-                    &dependency,
-                    overlay_source,
-                    target,
-                    overlays,
-                    visited,
-                    depth + 1,
-                ) {
-                    return true;
-                }
-                continue;
-            }
-            if let Ok(summary) = self.disk_file_summary(&dependency) {
-                if self.source_depends_on_path_from_dependencies(
-                    &dependency,
-                    summary.dependencies,
-                    target,
-                    overlays,
-                    visited,
-                    depth + 1,
-                ) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        sources
+            .files
+            .into_iter()
+            .chain(sources.unresolved_files)
+            .map(|source| normalize_path(&source))
+            .any(|source| source == target)
     }
 
     fn disk_file_summary(&mut self, path: &Path) -> Result<CachedDependencyFile, io::ErrorKind> {
@@ -1757,7 +1733,6 @@ impl DependencyFingerprintCache {
         let summary = CachedDependencyFile {
             stamp,
             source_hash: hash_source(&source),
-            dependencies: dependency_paths_for_source(&normalized, &source),
         };
         self.disk_files.insert(normalized, summary.clone());
         Ok(summary)
@@ -1772,138 +1747,6 @@ fn overlay_source_for_path<'a>(
         .get(path)
         .or_else(|| overlays.get(&normalize_path(path)))
         .map(String::as_str)
-}
-
-fn dependency_paths_for_source(path: &Path, source: &str) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for line in source.lines() {
-        let line = strip_line_comment(line);
-        for statement in statement_slices(line) {
-            let statement = statement.trim();
-            if let Some(module) = statement.strip_prefix("import ").map(str::trim) {
-                out.extend(import_dependency_paths(path, module));
-                continue;
-            }
-            if let Some(rest) = statement.strip_prefix("include ").map(str::trim) {
-                if let Some(path) = include_dependency_path(path, rest) {
-                    out.push(path);
-                }
-            }
-        }
-    }
-    out
-}
-
-fn import_dependency_paths(current_file: &Path, module: &str) -> Vec<PathBuf> {
-    let module = module
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(';');
-    if module.is_empty()
-        || module.starts_with("std/")
-        || module.contains('"')
-        || module.contains('\\')
-        || ONDA_SOURCE_EXTENSIONS
-            .iter()
-            .any(|ext| module.ends_with(&format!(".{ext}")))
-    {
-        return Vec::new();
-    }
-    let base = if Path::new(module).is_absolute() {
-        PathBuf::from(module)
-    } else {
-        current_file
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(module)
-    };
-    let mut out = Vec::new();
-    for ext in ONDA_SOURCE_EXTENSIONS {
-        let candidate = base.with_extension(ext);
-        if candidate.exists() {
-            return vec![candidate];
-        }
-        out.push(candidate);
-    }
-    out
-}
-
-fn include_dependency_path(current_file: &Path, rest: &str) -> Option<PathBuf> {
-    let include = quoted_prefix(rest)?;
-    let include = PathBuf::from(include);
-    if include.is_absolute() {
-        Some(include)
-    } else {
-        Some(
-            current_file
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(include),
-        )
-    }
-}
-
-fn statement_slices(line: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (idx, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            ';' if !in_string => {
-                out.push(&line[start..idx]);
-                start = idx + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    out.push(&line[start..]);
-    out
-}
-
-fn quoted_prefix(rest: &str) -> Option<String> {
-    let rest = rest.strip_prefix('"')?;
-    let mut out = String::new();
-    let mut escaped = false;
-    for ch in rest.chars() {
-        if escaped {
-            out.push(ch);
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' => escaped = true,
-            '"' => return Some(out),
-            _ => out.push(ch),
-        }
-    }
-    None
-}
-
-fn strip_line_comment(line: &str) -> &str {
-    let mut in_string = false;
-    let mut escaped = false;
-    for (idx, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            '#' if !in_string => return &line[..idx],
-            _ => {}
-        }
-    }
-    line
 }
 
 fn parse_params<T>(params: Option<Value>) -> Result<T, String>
@@ -2100,7 +1943,7 @@ mod tests {
         DiagnosticJobResult, DiagnosticScheduleRequest, LspCore, LspServer, LspSession, Position,
         TextDocumentContentChangeEvent,
     };
-    use onda_frontend::{DiagCode, Diagnostic};
+    use onda_frontend::{DiagCode, Diagnostic, SourceManifest};
     use onda_semantics as onda_daemon;
     use serde_json::json;
     use std::fs;
@@ -2508,6 +2351,49 @@ sample:
         assert!(
             !new_labels.contains(&"Old".to_owned()),
             "completion should not use stale parse when changed text parses: {new_labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unresolved_dependency_creation_invalidates_the_parse_cache() {
+        let dir = mk_temp_dir("parse_cache_unresolved_dependency");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let source = "import lib\nsample:\n  out1 = target()\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let overlays = server.session.overlay_map();
+        let missing_fingerprint = server.document_fingerprint_for_path(&main, source, &overlays);
+        assert!(
+            server
+                .parse_cache
+                .get(&super::normalize_path(&main))
+                .is_some_and(|cached| cached.parsed.is_none()),
+            "the unresolved import should initially fail to parse"
+        );
+        assert!(
+            server
+                .dependency_fingerprint_cache
+                .source_depends_on_path(&main, source, &lib, &overlays, None,),
+            "an unresolved candidate must still count as a dependency"
+        );
+
+        write_file(&lib, "def target():\n  return 0.0\n");
+        let resolved_fingerprint = server.document_fingerprint_for_path(&main, source, &overlays);
+
+        assert_ne!(
+            resolved_fingerprint, missing_fingerprint,
+            "creating an unresolved dependency must invalidate the cached fingerprint"
+        );
+        assert!(
+            server
+                .parse_cache
+                .get(&super::normalize_path(&main))
+                .is_some_and(|cached| cached.parsed.is_some()),
+            "the importer should be reparsed after its dependency appears"
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -3265,61 +3151,6 @@ namespace sc:
     }
 
     #[test]
-    fn dependency_scanner_tracks_semicolon_imports() {
-        let dir = mk_temp_dir("dependency_scanner_semicolon_imports");
-        let main = dir.join("main.onda");
-        let deps = super::dependency_paths_for_source(&main, "import first; import second\n");
-
-        assert!(
-            deps.contains(&dir.join("first.onda")),
-            "first import should be tracked: {deps:?}"
-        );
-        assert!(
-            deps.contains(&dir.join("second.onda")),
-            "second import should be tracked: {deps:?}"
-        );
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn dependency_scanner_uses_frontend_import_extension_order() {
-        let dir = mk_temp_dir("dependency_scanner_import_extension_order");
-        let main = dir.join("main.onda");
-        let onda = dir.join("lib.onda");
-        let on = dir.join("lib.on");
-        write_file(&onda, "namespace Lib:\n  const A = 1\n");
-        write_file(&on, "namespace Lib:\n  const A = 2\n");
-
-        let deps = super::dependency_paths_for_source(&main, "import lib\n");
-
-        assert!(
-            deps.contains(&onda),
-            ".onda import candidate should be tracked first: {deps:?}"
-        );
-        assert!(
-            !deps.contains(&on),
-            ".on sibling should not invalidate an import resolved to .onda: {deps:?}"
-        );
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn dependency_scanner_tracks_on_import_when_onda_is_absent() {
-        let dir = mk_temp_dir("dependency_scanner_on_import");
-        let main = dir.join("main.onda");
-        let on = dir.join("lib.on");
-        write_file(&on, "namespace Lib:\n  const A = 1\n");
-
-        let deps = super::dependency_paths_for_source(&main, "import lib\n");
-
-        assert!(
-            deps.contains(&on),
-            ".on import should be tracked when no .onda file exists: {deps:?}"
-        );
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
     fn diagnostic_entries_include_open_importers_after_dependency_change() {
         let dir = mk_temp_dir("diagnostic_dependency_importers");
         let lib = dir.join("lib.onda");
@@ -3442,6 +3273,88 @@ namespace sc:
 
         assert!(triggers.contains(&"("), "triggers: {triggers:?}");
         assert!(triggers.contains(&","), "triggers: {triggers:?}");
+        assert!(triggers.contains(&"{"), "triggers: {triggers:?}");
+    }
+
+    #[test]
+    fn completion_offers_unused_parameter_domain_fields() {
+        let dir = mk_temp_dir("completion_param_domain_fields");
+        let main = dir.join("main.onda");
+        let source = "params:\n  cutoff = 440.0 {min = 20, ";
+        write_file(&main, source);
+
+        let mut server = LspServer {
+            completion_snippets: true,
+            ..LspServer::default()
+        };
+        let items = completion_items_for(&mut server, &main, source, source);
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!labels.contains(&"min"), "items: {items:?}");
+        for expected in ["max", "scale", "curve", "unit", "step"] {
+            assert!(labels.contains(&expected), "missing {expected}: {items:?}");
+        }
+        let scale = items
+            .iter()
+            .find(|item| item["label"] == json!("scale"))
+            .expect("scale field completion");
+        assert_eq!(scale["kind"], json!(10));
+        assert_eq!(scale["detail"], json!("parameter domain field"));
+        assert_eq!(scale["insertText"], json!("scale = ${1|linear,log|}"));
+        assert_eq!(scale["insertTextFormat"], json!(2));
+        let curve = items
+            .iter()
+            .find(|item| item["label"] == json!("curve"))
+            .expect("curve field completion");
+        assert_eq!(curve["insertText"], json!("curve = $1"));
+
+        let shorthand_source = "params:\n  cutoff = 440.0 {20000, scale = linear, ";
+        write_file(&main, shorthand_source);
+        let items = completion_items_for(&mut server, &main, shorthand_source, shorthand_source);
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"min"), "items: {items:?}");
+        assert!(labels.contains(&"max"), "items: {items:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_treats_log_as_a_contextual_parameter_scale() {
+        let dir = mk_temp_dir("completion_param_domain_log");
+        let main = dir.join("main.onda");
+        let named_source = "params:\n  cutoff = 440.0 {min = 20, max = 20000, scale = lo";
+        write_file(&main, named_source);
+
+        let mut server = LspServer::default();
+        let named_items = completion_items_for(&mut server, &main, named_source, "scale = lo");
+        assert_eq!(named_items.len(), 1, "items: {named_items:?}");
+        assert_eq!(named_items[0]["label"], json!("log"));
+        assert_eq!(named_items[0]["kind"], json!(20));
+        assert_eq!(named_items[0]["detail"], json!("parameter scale"));
+
+        let positional_source = "params:\n  cutoff = 440.0 {20, 20000, lo";
+        let positional_items =
+            completion_items_for(&mut server, &main, positional_source, positional_source);
+        assert_eq!(positional_items.len(), 1, "items: {positional_items:?}");
+        assert_eq!(positional_items[0]["label"], json!("log"));
+        assert_eq!(positional_items[0]["kind"], json!(20));
+
+        let expression_source = "params:\n  cutoff = 440.0 {lo";
+        let expression_items =
+            completion_items_for(&mut server, &main, expression_source, expression_source);
+        let expression_log = expression_items
+            .iter()
+            .find(|item| item["label"] == json!("log"))
+            .expect("stdlib log expression completion");
+        assert_eq!(expression_log["kind"], json!(3));
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -4308,6 +4221,7 @@ init:
                 entry_path: main,
                 generation: 1,
                 diagnostics: Vec::new(),
+                sources: SourceManifest::default(),
                 parsed: None,
                 parse_fingerprint: None,
                 completion_index_snapshot: None,
@@ -4342,6 +4256,7 @@ init:
                 entry_path: main,
                 generation: 1,
                 diagnostics: Vec::new(),
+                sources: SourceManifest::default(),
                 parsed: None,
                 parse_fingerprint: None,
                 completion_index_snapshot: None,

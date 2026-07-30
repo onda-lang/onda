@@ -13,6 +13,13 @@ function scalarParam(overrides = {}) {
     default_reprs: ["440"],
     range_min_repr: "20",
     range_max_repr: "1000",
+    param_control: {
+      scale: "log",
+      curve: null,
+      unit: "Hz",
+      step_repr: null,
+      step_count: null,
+    },
     ...overrides,
   };
 }
@@ -27,6 +34,7 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       default_reprs: ["true"],
       range_min_repr: null,
       range_max_repr: null,
+      param_control: null,
     }),
     scalarParam({
       name: "partials",
@@ -44,6 +52,11 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       default: 440,
       rangeMin: 20,
       rangeMax: 1000,
+      scale: "log",
+      curve: null,
+      unit: "Hz",
+      step: null,
+      stepCount: null,
       scalar: true,
       value: 440,
     },
@@ -54,6 +67,11 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       default: true,
       rangeMin: null,
       rangeMax: null,
+      scale: null,
+      curve: null,
+      unit: null,
+      step: null,
+      stepCount: null,
       scalar: true,
       value: true,
     },
@@ -71,6 +89,33 @@ test("preserves an edited value only while the artifact param shape matches", ()
   assert.equal(reset.value, 220);
 });
 
+test("resets an edited value when parameter curvature changes", () => {
+  const [initial] = mergeParams([
+    scalarParam({
+      param_control: {
+        scale: "linear",
+        curve: -4,
+        unit: "Hz",
+        step_repr: null,
+        step_count: null,
+      },
+    }),
+  ], []);
+  const [reset] = mergeParams([
+    scalarParam({
+      param_control: {
+        scale: "linear",
+        curve: 4,
+        unit: "Hz",
+        step_repr: null,
+        step_count: null,
+      },
+    }),
+  ], [{ ...initial, value: 880 }]);
+
+  assert.equal(reset.value, 440);
+});
+
 test("decodes floating-point bit-pattern representations", () => {
   const [param] = mergeParams([
     scalarParam({
@@ -85,6 +130,41 @@ test("decodes floating-point bit-pattern representations", () => {
   assert.equal(param.value, 1.5);
   assert.equal(param.rangeMin, 0);
   assert.equal(param.rangeMax, 2);
+});
+
+test("decodes finite f32 representations at their declared precision", () => {
+  const [param, stepped] = mergeParams([
+    scalarParam({
+      default_reprs: ["0.72"],
+      range_min_repr: "0",
+      range_max_repr: "0.98",
+      param_control: {
+        scale: "linear",
+        curve: null,
+        unit: null,
+        step_repr: null,
+        step_count: null,
+      },
+    }),
+    scalarParam({
+      name: "stepped",
+      default_reprs: ["0.2"],
+      range_min_repr: "0",
+      range_max_repr: "0.3",
+      param_control: {
+        scale: "linear",
+        curve: null,
+        unit: null,
+        step_repr: "0.1",
+        step_count: 3,
+      },
+    }),
+  ], []);
+
+  assert.equal(param.default, Math.fround(0.72));
+  assert.equal(param.value, Math.fround(0.72));
+  assert.equal(param.rangeMax, Math.fround(0.98));
+  assert.equal(stepped.step, Math.fround(0.1));
 });
 
 test("preserves event array shapes instead of presenting them as scalars", () => {
@@ -184,6 +264,7 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
   const previousDocument = globalThis.document;
   const previousMutationObserver = globalThis.MutationObserver;
   let starts = 0;
+  let paramResets = 0;
   globalThis.window = {
     location: { href: "https://onda.test/play/" },
     addEventListener() {},
@@ -203,7 +284,22 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
   try {
     const host = new BrowserRunViewHost(iframe, {
       start: async () => { starts += 1; },
+      resetParams: async () => { paramResets += 1; },
     });
+    assert.deepEqual(
+      {
+        sourceSelection: host.state.supportsSourceSelection,
+        transport: host.state.supportsTransport,
+        deviceSelection: host.state.supportsDeviceSelection,
+        scope: host.state.supportsScope,
+      },
+      {
+        sourceSelection: false,
+        transport: true,
+        deviceSelection: false,
+        scope: true,
+      },
+    );
     host.setArtifact({
       metadata: {
         compile: {
@@ -246,6 +342,20 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
     );
     await host.handleMessage({ type: "start" });
     assert.equal(starts, 1);
+
+    host.state.params = [{ name: "gain", default: 1, value: 0.5 }];
+    host.state.events = [{
+      name: "note",
+      args: [{ name: "velocity", default: 1, value: 0.25 }],
+    }];
+    await host.handleMessage({ type: "resetParams" });
+    assert.equal(paramResets, 1);
+    assert.equal(host.state.params[0].value, 1);
+    assert.equal(host.state.events[0].args[0].value, 0.25);
+
+    await host.handleMessage({ type: "resetEventArguments" });
+    assert.equal(host.state.params[0].value, 1);
+    assert.equal(host.state.events[0].args[0].value, 1);
     host.dispose();
   } finally {
     globalThis.window = previousWindow;

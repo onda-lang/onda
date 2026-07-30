@@ -38,6 +38,8 @@ mod platform {
     use wry::{DragDropEvent, Rect, WebViewBuilder};
 
     const RUN_HTML: &str = include_str!("../../../ui/run/run.html");
+    const PARAM_CONTROL_JS: &str =
+        include_str!("../../../packages/onda_processor_abi/src/param-control.js");
     const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-dark.png");
     const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo.png");
 
@@ -74,6 +76,7 @@ mod platform {
         let theme_mode = web_theme_mode(run_theme);
         let init_script = format!(
             r#"
+            {PARAM_CONTROL_JS}
             window.__hostBridge = {{ mode: "wry", theme: "{theme_mode}" }};
             window.__ondaForcedTheme = "{theme_mode}";
             if ("{theme_mode}" !== "auto" && document && document.documentElement) {{
@@ -318,9 +321,15 @@ mod platform {
                 }
                 true
             }
-            "reset" => {
+            "resetParams" => {
                 if let Some(controller) = controller.as_mut() {
-                    controller.reset();
+                    controller.reset_params();
+                }
+                true
+            }
+            "resetEventArguments" => {
+                if let Some(controller) = controller.as_mut() {
+                    controller.reset_event_arguments();
                 }
                 true
             }
@@ -431,6 +440,11 @@ mod platform {
             "outputDevices": [],
             "currentInputDevice": null,
             "currentOutputDevice": null,
+            "supportsSourceSelection": true,
+            "supportsTransport": true,
+            "supportsDeviceSelection": true,
+            "supportsRunSettings": true,
+            "supportsScope": true,
             "sampleRateHz": options.sample_rate_hz,
             "blockFrames": options.block_frames,
             "themeMode": theme_mode,
@@ -459,6 +473,11 @@ mod platform {
             "outputDevices": state.output_devices,
             "currentInputDevice": state.current_input_device,
             "currentOutputDevice": state.current_output_device,
+            "supportsSourceSelection": true,
+            "supportsTransport": true,
+            "supportsDeviceSelection": true,
+            "supportsRunSettings": true,
+            "supportsScope": true,
             "sampleRateHz": options.sample_rate_hz,
             "blockFrames": options.block_frames,
             "themeMode": theme_mode,

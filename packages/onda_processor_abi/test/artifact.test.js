@@ -7,8 +7,13 @@ import {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
   PROCESSOR_SNAPSHOT_FORMAT_VERSION,
+  createParamDomain,
+  createParamControl,
+  constrainParamPlain,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
+  paramNormalizedToPlain,
+  paramPlainToNormalized,
   validateProcessorArtifact,
   validateProcessorModule,
   validateProcessorMetadata,
@@ -18,7 +23,7 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 test("validates the descriptor fixture shared with the Rust schema", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v1.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
     "utf8",
   ));
   assert.equal(
@@ -41,6 +46,347 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
   );
 });
 
+function controlledParam({
+  name = "cutoff",
+  scalar = "f64",
+  minimum = "20",
+  maximum = "20000",
+  scale = "log",
+  curve = null,
+  step = null,
+  stepCount = null,
+  arrayLen = 1,
+} = {}) {
+  return {
+    name,
+    type_repr: arrayLen === 1 ? scalar : `${scalar}[${arrayLen}]`,
+    scalar,
+    array_len: arrayLen,
+    element_size_bytes: scalar === "f64" || scalar === "i64" ? 8 : 4,
+    slot_offset: 0,
+    byte_offset: 0,
+    state_byte_offset: null,
+    byte_size: (scalar === "f64" || scalar === "i64" ? 8 : 4) * arrayLen,
+    default_reprs: null,
+    range_min_repr: minimum,
+    range_max_repr: maximum,
+    param_control: {
+      scale,
+      curve,
+      unit: null,
+      step_repr: step,
+      step_count: stepCount,
+    },
+  };
+}
+
+test("converts linear and logarithmic parameter domains in both directions", () => {
+  const linear = controlledParam({ scale: "linear" });
+  assert.equal(paramNormalizedToPlain(linear, 0.5), 10_010);
+  assert.equal(paramNormalizedToPlain(linear, Number.NaN), 20);
+  assert.equal(paramNormalizedToPlain(linear, Number.POSITIVE_INFINITY), 20_000);
+  assert.equal(paramPlainToNormalized(linear, 10_010), 0.5);
+
+  const logarithmic = controlledParam();
+  const midpoint = Math.sqrt(20 * 20_000);
+  assert.ok(Math.abs(paramNormalizedToPlain(logarithmic, 0.5) - midpoint) < 1e-12);
+  assert.ok(Math.abs(paramPlainToNormalized(logarithmic, midpoint) - 0.5) < 1e-12);
+
+  const normalized440 = paramPlainToNormalized(logarithmic, 440);
+  assert.ok(Math.abs(paramNormalizedToPlain(logarithmic, normalized440) - 440) < 1e-12);
+  assert.equal(paramNormalizedToPlain(logarithmic, 0), 20);
+  assert.equal(paramNormalizedToPlain(logarithmic, 1), 20_000);
+
+  const wideLinear = controlledParam({
+    name: "wide-linear",
+    minimum: "-1e308",
+    maximum: "1e308",
+    scale: "linear",
+  });
+  assert.equal(paramNormalizedToPlain(wideLinear, 0.5), 0);
+  assert.equal(paramPlainToNormalized(wideLinear, 0), 0.5);
+
+  const wideCurve = controlledParam({
+    name: "wide-curve",
+    minimum: "-1e308",
+    maximum: "1e308",
+    scale: "linear",
+    curve: -4,
+  });
+  const wideCurveMidpoint = paramNormalizedToPlain(wideCurve, 0.5);
+  assert.equal(Number.isFinite(wideCurveMidpoint), true);
+  assert.ok(Math.abs(paramPlainToNormalized(wideCurve, wideCurveMidpoint) - 0.5) < 1e-12);
+});
+
+test("prepares a reusable decoded parameter control", () => {
+  const param = controlledParam({
+    minimum: "0",
+    maximum: "1",
+    scale: "linear",
+    curve: -4,
+  });
+  const control = createParamControl(param);
+  const midpoint = control.normalizedToPlain(0.5);
+
+  assert.equal(control.minimum, 0);
+  assert.equal(control.maximum, 1);
+  assert.equal(control.curve, -4);
+  assert.equal(control.step, null);
+  assert.ok(Math.abs(control.plainToNormalized(midpoint) - 0.5) < 1e-12);
+  assert.equal(control.constrainPlain(2), 1);
+  assert.equal(Object.isFrozen(control), true);
+});
+
+test("prepares an already-decoded parameter domain", () => {
+  const control = createParamDomain({
+    name: "gain",
+    scalar: "f64",
+    minimum: 0,
+    maximum: 1,
+    scale: "linear",
+    curve: null,
+    unit: "dB",
+    step: 0.25,
+    stepCount: 4,
+  });
+
+  assert.equal(control.name, "gain");
+  assert.equal(control.unit, "dB");
+  assert.equal(control.normalizedToPlain(0.5), 0.5);
+  assert.equal(control.plainToNormalized(0.5), 0.5);
+  assert.equal(control.constrainPlain(0.7), 0.75);
+
+  const f32Control = createParamDomain({
+    name: "frequency",
+    scalar: "f32",
+    minimum: 0,
+    maximum: 100_000,
+    scale: "linear",
+    step: 0.1,
+    stepCount: 1_000_000,
+  });
+  assert.equal(f32Control.stepCount, 1_000_000);
+  assert.equal(f32Control.step, Math.fround(0.1));
+});
+
+test("constrains stepped and boolean host-control values", () => {
+  const stepped = controlledParam({
+    name: "mode",
+    scalar: "i32",
+    minimum: "0",
+    maximum: "10",
+    scale: "linear",
+    step: "2",
+    stepCount: 5,
+  });
+  assert.equal(constrainParamPlain(stepped, 3.2), 4);
+  assert.equal(paramNormalizedToPlain(stepped, 0.3), 4);
+  assert.equal(paramPlainToNormalized(stepped, 3.2), 0.4);
+  assert.equal(constrainParamPlain(stepped, 100), 10);
+
+  const fine = controlledParam({
+    name: "fine",
+    scalar: "f64",
+    minimum: "0",
+    maximum: "0.000001",
+    scale: "linear",
+    step: "0.0000001",
+    stepCount: 10,
+  });
+  assert.equal(constrainParamPlain(fine, 0.0000003), 0.0000003);
+
+  const wideLog = controlledParam({
+    name: "wide-log",
+    scalar: "f64",
+    minimum: "1e-300",
+    maximum: "1e300",
+    scale: "log",
+  });
+  assert.ok(Math.abs(paramNormalizedToPlain(wideLog, 0.5) - 1) < 1e-12);
+  assert.ok(Math.abs(paramPlainToNormalized(wideLog, 1) - 0.5) < 1e-12);
+
+  const inverseCurve = controlledParam({
+    name: "inverse-curve",
+    minimum: "0",
+    maximum: "1",
+    scale: "linear",
+    curve: -4,
+  });
+  const curvedMidpoint = paramNormalizedToPlain(inverseCurve, 0.5);
+  const expectedCurveMidpoint = Math.expm1(-2) / Math.expm1(-4);
+  assert.ok(Math.abs(curvedMidpoint - expectedCurveMidpoint) < 1e-12);
+  assert.ok(Math.abs(paramPlainToNormalized(inverseCurve, curvedMidpoint) - 0.5) < 1e-12);
+
+  const forwardCurve = controlledParam({
+    name: "forward-curve",
+    minimum: "0",
+    maximum: "1",
+    scale: "linear",
+    curve: 4,
+  });
+  assert.ok(
+    Math.abs(paramNormalizedToPlain(forwardCurve, 0.5) + curvedMidpoint - 1) < 1e-12,
+  );
+
+  const boolean = controlledParam({
+    name: "enabled",
+    scalar: "bool",
+    minimum: null,
+    maximum: null,
+    scale: null,
+  });
+  boolean.param_control = null;
+  assert.equal(constrainParamPlain(boolean, -1), false);
+  assert.equal(constrainParamPlain(boolean, 0.49), false);
+  assert.equal(constrainParamPlain(boolean, 0.5), true);
+  assert.equal(paramNormalizedToPlain(boolean, 0.49), false);
+  assert.equal(paramNormalizedToPlain(boolean, 0.5), true);
+  assert.equal(paramPlainToNormalized(boolean, 0.49), 0);
+  assert.equal(paramPlainToNormalized(boolean, 0.5), 1);
+  assert.equal(paramPlainToNormalized(boolean, false), 0);
+  assert.equal(paramPlainToNormalized(boolean, true), 1);
+});
+
+test("rejects parameters without a scalar host-control domain", () => {
+  const unranged = controlledParam();
+  unranged.param_control = null;
+  unranged.range_min_repr = null;
+  unranged.range_max_repr = null;
+  assert.throws(
+    () => paramNormalizedToPlain(unranged, 0.5),
+    /no numeric host-control domain/,
+  );
+  assert.throws(
+    () => paramPlainToNormalized(controlledParam({ arrayLen: 2 }), 440),
+    /scalar host-control domain/,
+  );
+  const booleanArray = controlledParam({
+    name: "flags",
+    scalar: "bool",
+    arrayLen: 1,
+  });
+  booleanArray.type_repr = "bool[1]";
+  booleanArray.param_control = null;
+  assert.throws(
+    () => paramNormalizedToPlain(booleanArray, 1),
+    /scalar host-control domain/,
+  );
+});
+
+test("rejects i64 control domains that are not exact through host numbers", () => {
+  const unsafe = controlledParam({
+    name: "wide",
+    scalar: "i64",
+    minimum: "9223372036854771711",
+    maximum: "9223372036854775807",
+    scale: "linear",
+    step: "1024",
+    stepCount: 4,
+  });
+  assert.throws(
+    () => paramNormalizedToPlain(unsafe, 1),
+    /outside the exact host-control integer range/,
+  );
+});
+
+test("validates parameter-control semantics before accepting a descriptor", () => {
+  const fixture = JSON.parse(readFileSync(
+    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
+    "utf8",
+  ));
+
+  const integerLog = structuredClone(fixture);
+  Object.assign(integerLog.metadata.params[0], {
+    type_repr: "i32",
+    scalar: "i32",
+    range_min_repr: "-20",
+    range_max_repr: "20000",
+    default_reprs: ["440"],
+  });
+  assert.throws(
+    () => validateProcessorMetadata(integerLog),
+    /logarithmic scale with a non-floating scalar/,
+  );
+
+  const wrongStepCount = structuredClone(fixture);
+  Object.assign(wrongStepCount.metadata.params[0].param_control, {
+    scale: "linear",
+    step_repr: "10",
+    step_count: 1997,
+  });
+  assert.throws(
+    () => validateProcessorMetadata(wrongStepCount),
+    /step_count inconsistent/,
+  );
+
+  const offGridDefault = structuredClone(fixture);
+  offGridDefault.metadata.params[0].default_reprs = ["445"];
+  Object.assign(offGridDefault.metadata.params[0].param_control, {
+    scale: "linear",
+    step_repr: "10",
+    step_count: 1998,
+  });
+  assert.throws(
+    () => validateProcessorMetadata(offGridDefault),
+    /default outside its host-control step grid/,
+  );
+
+  const largeOffGridDefault = structuredClone(fixture);
+  Object.assign(largeOffGridDefault.metadata.params[0], {
+    type_repr: "f32",
+    scalar: "f32",
+    element_size_bytes: 4,
+    byte_size: 4,
+    range_min_repr: "0",
+    range_max_repr: "100000",
+    default_reprs: ["50000.5"],
+  });
+  Object.assign(largeOffGridDefault.metadata.params[0].param_control, {
+    scale: "linear",
+    step_repr: "1",
+    step_count: 100000,
+  });
+  assert.throws(
+    () => validateProcessorMetadata(largeOffGridDefault),
+    /default outside its host-control step grid/,
+  );
+
+  const nonDividingLargeRange = structuredClone(largeOffGridDefault);
+  Object.assign(nonDividingLargeRange.metadata.params[0], {
+    range_max_repr: "100000.5",
+    default_reprs: ["0"],
+  });
+  Object.assign(nonDividingLargeRange.metadata.params[0].param_control, {
+    step_count: 100001,
+  });
+  assert.throws(
+    () => validateProcessorMetadata(nonDividingLargeRange),
+    /step_count inconsistent/,
+  );
+
+  const mixedLogCurve = structuredClone(fixture);
+  mixedLogCurve.metadata.params[0].param_control.curve = -4;
+  assert.throws(
+    () => validateProcessorMetadata(mixedLogCurve),
+    /cannot combine logarithmic scale with curve/,
+  );
+
+  const controlOnInput = structuredClone(fixture);
+  controlOnInput.metadata.inputs[0].range_min_repr = "0";
+  controlOnInput.metadata.inputs[0].range_max_repr = "1";
+  controlOnInput.metadata.inputs[0].param_control = {
+    scale: "linear",
+    curve: null,
+    unit: null,
+    step_repr: null,
+    step_count: null,
+  };
+  assert.throws(
+    () => validateProcessorMetadata(controlOnInput),
+    /only valid for parameters/,
+  );
+});
+
 test("rejects an unsupported snapshot format", () => {
   const fixture = metadata();
   fixture.runtime.snapshot_format_version = PROCESSOR_SNAPSHOT_FORMAT_VERSION + 1;
@@ -50,7 +396,7 @@ test("rejects an unsupported snapshot format", () => {
   );
 });
 
-test("rejects runtime semantics not implemented by processor ABI v1", () => {
+test("rejects runtime semantics not implemented by the current processor ABI", () => {
   for (const [field, value, expected] of [
     ["state_initialization", "host_initialized", "zeroed"],
     ["snapshot_byte_order", "big_endian", "little_endian"],
@@ -74,7 +420,7 @@ test("rejects runtime semantics not implemented by processor ABI v1", () => {
 
 test("rejects metadata layouts outside or overlapping their runtime regions", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v1.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
     "utf8",
   ));
 

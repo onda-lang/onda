@@ -141,13 +141,12 @@ function visibleEditorMargins(view) {
   const viewportBottom = viewportTop + viewport.height;
   const viewportLeft = viewport.offsetLeft;
   const viewportRight = viewportLeft + viewport.width;
-  const gutterWidth =
-    view.dom.querySelector(".cm-gutters")?.getBoundingClientRect().width ?? 0;
   const padding = 16;
   return {
     top: Math.max(0, viewportTop - editor.top + padding),
     bottom: Math.max(0, editor.bottom - viewportBottom + padding),
-    left: Math.max(0, viewportLeft - editor.left) + gutterWidth + padding,
+    // CodeMirror's gutter plugin already contributes its own left margin.
+    left: Math.max(0, viewportLeft - editor.left + padding),
     right: Math.max(0, editor.right - viewportRight + padding),
   };
 }
@@ -155,29 +154,6 @@ function visibleEditorMargins(view) {
 function hasCompactEditingViewport() {
   const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
   return viewportWidth <= 720 || window.matchMedia?.("(pointer: coarse)").matches;
-}
-
-function hiddenCaretAxes(view, leftComfort = 0) {
-  const caret = view.coordsAtPos(view.state.selection.main.head);
-  if (!caret) return { horizontal: true, vertical: true };
-  const editor = view.scrollDOM.getBoundingClientRect();
-  const viewport = window.visualViewport;
-  const viewportLeft = viewport?.offsetLeft ?? 0;
-  const viewportTop = viewport?.offsetTop ?? 0;
-  const viewportRight = viewportLeft + (viewport?.width ?? window.innerWidth);
-  const viewportBottom = viewportTop + (viewport?.height ?? window.innerHeight);
-  const gutterWidth =
-    view.dom.querySelector(".cm-gutters")?.getBoundingClientRect().width ?? 0;
-  const padding = 16;
-  const left = Math.max(editor.left, viewportLeft) + gutterWidth + padding;
-  const right = Math.min(editor.right, viewportRight) - padding;
-  const top = Math.max(editor.top, viewportTop) + padding;
-  const bottom = Math.min(editor.bottom, viewportBottom) - padding;
-  const comfortableLeft = left + Math.max(0, right - left) * leftComfort;
-  return {
-    horizontal: caret.right < comfortableLeft || caret.left > right,
-    vertical: caret.bottom < top || caret.top > bottom,
-  };
 }
 
 export function colonIndentText(lineBeforeCursor) {
@@ -260,11 +236,6 @@ const ondaEditorTheme = EditorView.theme({
   ".cm-onda-semantic-state": { color: "var(--syntax-string)" },
   "&.cm-onda-definition-mode .cm-content": { cursor: "pointer" },
   "&.cm-focused": { outline: "none" },
-  "@media (pointer: coarse), (max-width: 720px)": {
-    // iOS zooms focused editable content below 16px, which can pan the caret
-    // underneath CodeMirror's sticky line-number gutter.
-    ".cm-content": { fontSize: "max(16px, 1em)" },
-  },
 });
 
 export function validProjectPath(value) {
@@ -315,28 +286,37 @@ export class OndaProjectEditor {
     this.tabs.addEventListener("dragover", (event) => this.dragTabOver(event));
     this.tabs.addEventListener("drop", (event) => this.dropTab(event));
     this.view = new EditorView({ state: this.states.get(this.active), parent });
+    this.scrollPointerDown = () => this.preserveFocusThroughPointer(this.view);
+    this.view.scrollDOM.addEventListener("pointerdown", this.scrollPointerDown, true);
+    this.editorBlurredAt = -Infinity;
+    this.view.contentDOM.addEventListener("blur", () => {
+      this.editorBlurredAt = performance.now();
+    });
+    this.view.scrollDOM.addEventListener("scroll", () => {
+      if (
+        performance.now() - this.editorBlurredAt < 500
+        && this.view.dom.isConnected
+        && !this.view.hasFocus
+      ) {
+        this.view.focus();
+      }
+    }, { passive: true });
     this.visualViewportResize = () =>
       this.keepCaretVisible(this.view, { centerVertically: true });
     window.visualViewport?.addEventListener("resize", this.visualViewportResize);
     this.renderFiles();
   }
 
-  keepCaretVisible(
-    view,
-    { centerVertically = false, refocus = false, leftComfort = 0 } = {},
-  ) {
+  keepCaretVisible(view, { centerVertically = false } = {}) {
     if (!view.hasFocus) return;
     cancelAnimationFrame(this.caretVisibilityFrame);
     this.caretVisibilityFrame = requestAnimationFrame(() => {
       if (!view.hasFocus) return;
       const compact = hasCompactEditingViewport();
-      const hidden = refocus
-        ? hiddenCaretAxes(view, leftComfort)
-        : { horizontal: false, vertical: false };
       view.dispatch({
         effects: EditorView.scrollIntoView(view.state.selection.main.head, {
-          x: hidden.horizontal ? "center" : "nearest",
-          y: hidden.vertical || (centerVertically && compact) ? "center" : "nearest",
+          x: "nearest",
+          y: centerVertically && compact ? "center" : "nearest",
           xMargin: compact ? 32 : 16,
           yMargin: 16,
         }),
@@ -351,12 +331,7 @@ export class OndaProjectEditor {
       editorWindow.removeEventListener("pointerup", finish);
       editorWindow.removeEventListener("pointercancel", finish);
       requestAnimationFrame(() => {
-        const activeElement = view.root.activeElement;
-        if (
-          view.dom.isConnected
-          && !view.hasFocus
-          && (!activeElement || !view.dom.contains(activeElement))
-        ) {
+        if (view.dom.isConnected && !view.hasFocus) {
           view.focus();
         }
       });
@@ -402,27 +377,10 @@ export class OndaProjectEditor {
             this.onChange?.(this.project());
           }
           if ((update.docChanged || update.selectionSet) && update.view.hasFocus) {
-            const deletingBackward = update.docChanged && (
-              update.transactions.some((transaction) =>
-                transaction.isUserEvent("delete.backward")
-              )
-              || (
-                update.state.doc.length < update.startState.doc.length
-                && update.state.selection.main.head
-                  <= update.startState.selection.main.head
-              )
-            );
-            this.keepCaretVisible(update.view, {
-              refocus: update.docChanged,
-              leftComfort: deletingBackward ? 0.25 : 0,
-            });
+            this.keepCaretVisible(update.view);
           }
         }),
         EditorView.domEventHandlers({
-          pointerdown: (_event, view) => {
-            this.preserveFocusThroughPointer(view);
-            return false;
-          },
           keydown: (event, view) => {
             this.updateDefinitionCursor(path, view, event);
             return false;

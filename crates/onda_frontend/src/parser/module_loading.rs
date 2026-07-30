@@ -1,7 +1,7 @@
 use super::loading_support::{
     annotate_diagnostics_with_file, builtin_std_module_source, display_path,
-    is_builtin_std_module_path, resolve_import_path, resolve_include_path, split_top_level_items,
-    validate_file_mode_transition, FileLoadMode, TopLevelItem,
+    is_builtin_std_module_path, split_top_level_items, validate_file_mode_transition, FileLoadMode,
+    TopLevelItem, ONDA_SOURCE_EXTENSIONS,
 };
 use super::preprocess::preprocess_indentation_blocks;
 use super::*;
@@ -16,9 +16,79 @@ struct LoadState {
     import_once: HashSet<PathBuf>,
     import_once_builtin: HashSet<String>,
     file_modes: HashMap<PathBuf, FileLoadMode>,
+    source_files: Vec<PathBuf>,
+    source_file_set: HashSet<PathBuf>,
+    unresolved_source_files: Vec<PathBuf>,
+    unresolved_source_file_set: HashSet<PathBuf>,
     stack: Vec<PathBuf>,
     builtin_stack: Vec<String>,
     top_level_const_names: HashSet<String>,
+}
+
+impl LoadState {
+    fn record_source_file(&mut self, path: &Path) {
+        let path = path.to_path_buf();
+        if self.source_file_set.insert(path.clone()) {
+            self.source_files.push(path);
+        }
+    }
+
+    fn record_unresolved_source_file(&mut self, path: PathBuf) {
+        if self.unresolved_source_file_set.insert(path.clone()) {
+            self.unresolved_source_files.push(path);
+        }
+    }
+
+    fn source_manifest(&self) -> SourceManifest {
+        SourceManifest {
+            files: self.source_files.clone(),
+            unresolved_files: self.unresolved_source_files.clone(),
+        }
+    }
+}
+
+/// The non-standard-library source files reached while loading one program.
+///
+/// Files are unique and ordered deterministically: the entry is first, followed
+/// by transitive includes/imports in source discovery order.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct SourceManifest {
+    pub files: Vec<PathBuf>,
+    /// Non-standard-library paths which were referenced but did not resolve.
+    ///
+    /// These paths do not contribute to a successful compilation. They are
+    /// exposed separately so filesystem hosts can watch for their creation
+    /// while a project is temporarily incomplete.
+    pub unresolved_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedProgram {
+    pub program: Program,
+    pub sources: SourceManifest,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadError {
+    pub diagnostics: Vec<Diagnostic>,
+    pub sources: SourceManifest,
+}
+
+pub type LoadResult = Result<LoadedProgram, LoadError>;
+
+#[derive(Debug)]
+struct SourceResolutionError {
+    message: String,
+    candidates: Vec<PathBuf>,
+}
+
+impl SourceResolutionError {
+    fn without_candidates(message: String) -> Self {
+        Self {
+            message,
+            candidates: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -188,15 +258,30 @@ pub fn parse_program_with_path(source: &str, path: &Path) -> Result<Program, Vec
 }
 
 pub fn parse_program_file(path: &Path) -> Result<Program, Vec<Diagnostic>> {
-    parse_program_file_with_overlays(path, &HashMap::new())
+    load_program_file(path)
+        .map(|loaded| loaded.program)
+        .map_err(|error| error.diagnostics)
 }
 
 pub fn parse_program_file_with_overlays(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<Program, Vec<Diagnostic>> {
+    load_program_file_with_overlays(path, overlays)
+        .map(|loaded| loaded.program)
+        .map_err(|error| error.diagnostics)
+}
+
+pub fn load_program_file(path: &Path) -> LoadResult {
+    load_program_file_with_overlays(path, &HashMap::new())
+}
+
+pub fn load_program_file_with_overlays(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> LoadResult {
     let loader = SourceLoader::filesystem(overlays);
-    parse_program_file_with_loader(path, &loader)
+    load_program_file_with_loader(path, &loader)
 }
 
 /// Parses an in-memory source tree without consulting the host filesystem.
@@ -210,28 +295,46 @@ pub fn parse_program_file_from_virtual_sources(
     path: &Path,
     sources: &HashMap<PathBuf, String>,
 ) -> Result<Program, Vec<Diagnostic>> {
-    let loader = SourceLoader::virtual_tree(root, sources)
-        .map_err(|message| vec![Diagnostic::syntax(message, 0, 0)])?;
-    parse_program_file_with_loader(path, &loader)
+    load_program_file_from_virtual_sources(root, path, sources)
+        .map(|loaded| loaded.program)
+        .map_err(|error| error.diagnostics)
 }
 
-fn parse_program_file_with_loader(
+pub fn load_program_file_from_virtual_sources(
+    root: &Path,
     path: &Path,
-    loader: &SourceLoader,
-) -> Result<Program, Vec<Diagnostic>> {
-    let canonical = loader.resolve(path).map_err(|err| {
-        vec![Diagnostic::syntax(
+    sources: &HashMap<PathBuf, String>,
+) -> LoadResult {
+    let loader = SourceLoader::virtual_tree(root, sources).map_err(|message| LoadError {
+        diagnostics: vec![Diagnostic::syntax(message, 0, 0)],
+        sources: SourceManifest::default(),
+    })?;
+    load_program_file_with_loader(path, &loader)
+}
+
+fn load_program_file_with_loader(path: &Path, loader: &SourceLoader) -> LoadResult {
+    let canonical = loader.resolve(path).map_err(|err| LoadError {
+        diagnostics: vec![Diagnostic::syntax(
             format!("failed to resolve '{}': {err}", path.display()),
             0,
             0,
-        )]
+        )],
+        sources: SourceManifest::default(),
     })?;
     let mut state = LoadState::default();
     state
         .file_modes
         .insert(canonical.clone(), FileLoadMode::Entry);
-    let blocks = load_program_blocks_from_file(&canonical, false, &mut state, &[], loader)?;
-    Ok(Program { blocks })
+    match load_program_blocks_from_file(&canonical, false, &mut state, &[], loader) {
+        Ok(blocks) => Ok(LoadedProgram {
+            program: Program { blocks },
+            sources: state.source_manifest(),
+        }),
+        Err(diagnostics) => Err(LoadError {
+            diagnostics,
+            sources: state.source_manifest(),
+        }),
+    }
 }
 
 pub fn parse_stdlib_module(module: &str) -> Result<Program, Vec<Diagnostic>> {
@@ -342,6 +445,7 @@ fn load_program_blocks_from_file(
             0,
         )
     })?;
+    state.record_source_file(&canonical);
     if let Some(pos) = state.stack.iter().position(|p| p == &canonical) {
         let mut chain = state.stack[pos..]
             .iter()
@@ -405,14 +509,19 @@ fn load_program_blocks_from_file(
                     blocks.append(&mut parsed.blocks);
                 }
                 TopLevelItem::Include { path, line } => {
-                    let include_path =
-                        loader.resolve_include(&canonical, &path).map_err(|msg| {
-                            annotate_diagnostics_with_file(
-                                vec![Diagnostic::syntax(msg, line, 1)],
+                    let include_path = match loader.resolve_include(&canonical, &path) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            for candidate in error.candidates {
+                                state.record_unresolved_source_file(candidate);
+                            }
+                            return Err(annotate_diagnostics_with_file(
+                                vec![Diagnostic::syntax(error.message, line, 1)],
                                 &canonical,
                                 0,
-                            )
-                        })?;
+                            ));
+                        }
+                    };
                     validate_file_mode_transition(
                         &include_path,
                         FileLoadMode::Include,
@@ -450,14 +559,19 @@ fn load_program_blocks_from_file(
                         blocks.append(&mut imported);
                         continue;
                     }
-                    let import_path =
-                        loader.resolve_import(&canonical, &module).map_err(|msg| {
-                            annotate_diagnostics_with_file(
-                                vec![Diagnostic::syntax(msg, line, 1)],
+                    let import_path = match loader.resolve_import(&canonical, &module) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            for candidate in error.candidates {
+                                state.record_unresolved_source_file(candidate);
+                            }
+                            return Err(annotate_diagnostics_with_file(
+                                vec![Diagnostic::syntax(error.message, line, 1)],
                                 &canonical,
                                 0,
-                            )
-                        })?;
+                            ));
+                        }
+                    };
                     validate_file_mode_transition(
                         &import_path,
                         FileLoadMode::Import,
@@ -603,52 +717,105 @@ impl SourceLoader {
         }
     }
 
-    fn resolve_include(&self, current_file: &Path, include_path: &str) -> Result<PathBuf, String> {
-        match &self.policy {
-            SourcePolicy::Filesystem => {
-                resolve_include_path_with_overlays(current_file, include_path, &self.overlays)
-            }
-            SourcePolicy::Virtual { root } => {
-                if is_portable_absolute_virtual_path(include_path) {
-                    return Err(format!(
-                        "virtual source path '{include_path}' escapes project root '{}'",
-                        root.display()
-                    ));
-                }
-                let include = Path::new(include_path);
-                let unresolved = current_file.parent().unwrap_or(root).join(include);
-                let resolved = normalize_path_lexically(&unresolved);
-                ensure_virtual_root(root, &resolved)?;
-                self.resolve(&resolved)
+    fn resolve_include(
+        &self,
+        current_file: &Path,
+        include_path: &str,
+    ) -> Result<PathBuf, SourceResolutionError> {
+        if let SourcePolicy::Virtual { root } = &self.policy {
+            if is_portable_absolute_virtual_path(include_path) {
+                return Err(SourceResolutionError::without_candidates(format!(
+                    "virtual source path '{include_path}' escapes project root '{}'",
+                    root.display()
+                )));
             }
         }
+        let include = Path::new(include_path);
+        let candidate = if include.is_absolute() {
+            include.to_path_buf()
+        } else {
+            current_file
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(include)
+        };
+        let candidate = self
+            .normalize_candidate(candidate)
+            .map_err(SourceResolutionError::without_candidates)?;
+        self.resolve(&candidate).map_err(|message| {
+            let message = match self.policy {
+                SourcePolicy::Filesystem => {
+                    format!(
+                        "failed to resolve include '{}': {message}",
+                        candidate.display()
+                    )
+                }
+                SourcePolicy::Virtual { .. } => message,
+            };
+            SourceResolutionError {
+                message,
+                candidates: vec![candidate],
+            }
+        })
     }
 
-    fn resolve_import(&self, current_file: &Path, module_path: &str) -> Result<PathBuf, String> {
-        match &self.policy {
-            SourcePolicy::Filesystem => {
-                resolve_import_path_with_overlays(current_file, module_path, &self.overlays)
+    fn resolve_import(
+        &self,
+        current_file: &Path,
+        module_path: &str,
+    ) -> Result<PathBuf, SourceResolutionError> {
+        if let SourcePolicy::Virtual { root } = &self.policy {
+            if is_portable_absolute_virtual_path(module_path) {
+                return Err(SourceResolutionError::without_candidates(format!(
+                    "virtual source path '{module_path}' escapes project root '{}'",
+                    root.display()
+                )));
             }
+        }
+        let module = Path::new(module_path);
+        let base = if module.is_absolute() {
+            module.to_path_buf()
+        } else {
+            current_file
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(module)
+        };
+        let candidates = ONDA_SOURCE_EXTENSIONS
+            .iter()
+            .copied()
+            .map(|extension| self.normalize_candidate(base.with_extension(extension)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(SourceResolutionError::without_candidates)?;
+        for candidate in &candidates {
+            if let Ok(resolved) = self.resolve(candidate) {
+                return Ok(resolved);
+            }
+        }
+        let message = match self.policy {
+            SourcePolicy::Filesystem => format!(
+                "failed to resolve import '{}.{{{}}}'",
+                base.display(),
+                ONDA_SOURCE_EXTENSIONS.join(",")
+            ),
+            SourcePolicy::Virtual { .. } => format!(
+                "failed to resolve imported module '{module_path}' from '{}'",
+                display_path(current_file)
+            ),
+        };
+        Err(SourceResolutionError {
+            message,
+            candidates,
+        })
+    }
+
+    fn normalize_candidate(&self, path: PathBuf) -> Result<PathBuf, String> {
+        match &self.policy {
+            SourcePolicy::Filesystem => Ok(normalize_overlay_path(&path)),
             SourcePolicy::Virtual { root } => {
-                if is_portable_absolute_virtual_path(module_path) {
-                    return Err(format!(
-                        "virtual source path '{module_path}' escapes project root '{}'",
-                        root.display()
-                    ));
-                }
-                let module = Path::new(module_path);
-                let base = current_file.parent().unwrap_or(root).join(module);
-                for extension in ["onda", "on"] {
-                    let candidate = normalize_path_lexically(&base.with_extension(extension));
-                    ensure_virtual_root(root, &candidate)?;
-                    if self.overlays.contains_key(&candidate) {
-                        return Ok(candidate);
-                    }
-                }
-                Err(format!(
-                    "failed to resolve imported module '{module_path}' from '{}'",
-                    display_path(current_file)
-                ))
+                let path = normalize_path_lexically(&path);
+                ensure_virtual_root(root, &path)?;
+                Ok(path)
             }
         }
     }
@@ -729,54 +896,6 @@ fn resolve_file_or_overlay_path(
             }
         }
     }
-}
-
-fn resolve_include_path_with_overlays(
-    current_file: &Path,
-    include_path: &str,
-    overlays: &HashMap<PathBuf, String>,
-) -> Result<PathBuf, String> {
-    resolve_include_path(current_file, include_path).or_else(|message| {
-        let include = PathBuf::from(include_path);
-        let unresolved = if include.is_absolute() {
-            include
-        } else {
-            current_file
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(include)
-        };
-        let normalized = normalize_overlay_path(&unresolved);
-        if overlays.contains_key(&normalized) {
-            Ok(normalized)
-        } else {
-            Err(message)
-        }
-    })
-}
-
-fn resolve_import_path_with_overlays(
-    current_file: &Path,
-    module_path: &str,
-    overlays: &HashMap<PathBuf, String>,
-) -> Result<PathBuf, String> {
-    resolve_import_path(current_file, module_path).or_else(|message| {
-        let base = if Path::new(module_path).is_absolute() {
-            PathBuf::from(module_path)
-        } else {
-            current_file
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(module_path)
-        };
-        for ext in ["onda", "on"] {
-            let candidate = normalize_overlay_path(&base.with_extension(ext));
-            if overlays.contains_key(&candidate) {
-                return Ok(candidate);
-            }
-        }
-        Err(message)
-    })
 }
 
 fn load_builtin_module_blocks(

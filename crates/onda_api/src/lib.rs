@@ -11,13 +11,17 @@ use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredEventParam,
     DeclaredState, JitProgram, MirCompileOptions, RuntimeAllocator, TargetOptLevel,
 };
-use onda_frontend::{parse_program, parse_program_file, DiagCode, Diagnostic, PrimitiveType};
+use onda_frontend::{
+    load_program_file, parse_program, DiagCode, Diagnostic, PrimitiveType, SourceManifest,
+};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
     prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
     process_unchecked_segment, read_control_output_bytes, reset_instance_state, set_param_by_index,
-    trigger_event_by_index, trigger_event_by_index_unchecked, validate_bindings, validate_buffers,
-    validate_inputs, validate_outputs, Instance, InstanceConfig,
+    set_param_normalized as runtime_set_param_normalized,
+    set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
+    trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
+    validate_outputs, Instance, InstanceConfig,
 };
 use onda_semantics::{
     analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedProgram,
@@ -26,6 +30,16 @@ use onda_semantics::{
 pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESS_BEGIN_BLOCK as i32;
 pub const ONDA_PROCESS_END_BLOCK: i32 = onda_runtime::PROCESS_END_BLOCK as i32;
 pub const ONDA_PROCESS_FULL_BLOCK: i32 = onda_runtime::PROCESS_FULL_BLOCK as i32;
+pub const ONDA_EXECUTION_OK: i32 = onda_codegen_llvm::PROCESSOR_EXECUTION_OK as i32;
+pub const ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE: i32 =
+    onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE as i32;
+
+fn execution_status_to_c(status: Result<u32, Diagnostic>) -> i32 {
+    match status {
+        Ok(value) => i32::try_from(value).unwrap_or(-2),
+        Err(_) => -2,
+    }
+}
 
 #[repr(C)]
 pub struct onda_diag_t {
@@ -96,6 +110,12 @@ pub struct onda_program {
 }
 
 #[allow(non_camel_case_types)]
+pub struct onda_source_manifest {
+    paths: Vec<CString>,
+    unresolved_paths: Vec<CString>,
+}
+
+#[allow(non_camel_case_types)]
 pub struct onda_instance {
     allocation: OndaInstanceAllocation,
     inner: Instance,
@@ -133,6 +153,38 @@ fn build_nested_cstring_cache(
         out.push(build_cstring_cache(group, context)?);
     }
     Ok(out)
+}
+
+unsafe fn write_source_manifest(
+    out_manifest: *mut *mut onda_source_manifest,
+    manifest: &SourceManifest,
+) -> Result<(), Diagnostic> {
+    if out_manifest.is_null() {
+        return Ok(());
+    }
+    fn path_strings(paths: &[std::path::PathBuf]) -> Result<Vec<String>, Diagnostic> {
+        paths
+            .iter()
+            .map(|path| {
+                path.to_str().map(ToOwned::to_owned).ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "source path '{}' is not valid UTF-8",
+                        path.display()
+                    ))
+                })
+            })
+            .collect()
+    }
+    let paths = build_cstring_cache(path_strings(&manifest.files)?, "source path")?;
+    let unresolved_paths = build_cstring_cache(
+        path_strings(&manifest.unresolved_files)?,
+        "unresolved source path",
+    )?;
+    *out_manifest = Box::into_raw(Box::new(onda_source_manifest {
+        paths,
+        unresolved_paths,
+    }));
+    Ok(())
 }
 
 fn diag_to_c(diag: &Diagnostic) -> onda_diag_t {
@@ -225,11 +277,7 @@ unsafe fn runtime_allocator_from_c(
     let Some(free) = allocator.free else {
         return Err(static_runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
     };
-    Ok(RuntimeAllocator {
-        context: allocator.context,
-        alloc,
-        free,
-    })
+    Ok(RuntimeAllocator::new(allocator.context, alloc, free))
 }
 
 fn allocate_instance_handle(
@@ -243,7 +291,7 @@ fn allocate_instance_handle(
     };
 
     let layout = Layout::new::<onda_instance>();
-    let raw = unsafe { (allocator.alloc)(allocator.context, layout.size(), layout.align()) };
+    let raw = unsafe { allocator.allocate(layout.size(), layout.align()) };
     if raw.is_null() {
         write_diag(
             out_diag,
@@ -254,7 +302,7 @@ fn allocate_instance_handle(
     }
     if !(raw as usize).is_multiple_of(layout.align()) {
         unsafe {
-            (allocator.free)(allocator.context, raw, layout.size(), layout.align());
+            allocator.deallocate(raw, layout.size(), layout.align());
         }
         write_diag(
             out_diag,
@@ -601,16 +649,21 @@ unsafe fn onda_compile_impl(
 pub unsafe extern "C" fn onda_compile_file(
     file_path_utf8: *const c_char,
     options: *const onda_compile_options_t,
+    out_sources: *mut *mut onda_source_manifest,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
-    onda_compile_file_impl(file_path_utf8, options, out_diag)
+    onda_compile_file_impl(file_path_utf8, options, out_sources, out_diag)
 }
 
 unsafe fn onda_compile_file_impl(
     file_path_utf8: *const c_char,
     options: *const onda_compile_options_t,
+    out_sources: *mut *mut onda_source_manifest,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
+    if !out_sources.is_null() {
+        *out_sources = ptr::null_mut();
+    }
     if file_path_utf8.is_null() || options.is_null() {
         write_diag(
             out_diag,
@@ -683,10 +736,15 @@ unsafe fn onda_compile_file_impl(
         }
     };
 
-    let parsed = match parse_program_file(std::path::Path::new(path_str)) {
-        Ok(p) => p,
-        Err(errs) => {
-            let diag = errs
+    let loaded = match load_program_file(std::path::Path::new(path_str)) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            if let Err(diag) = write_source_manifest(out_sources, &error.sources) {
+                write_diag(out_diag, diag_to_c(&diag));
+                return ptr::null_mut();
+            }
+            let diag = error
+                .diagnostics
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| Diagnostic::internal("parse failed"));
@@ -694,6 +752,11 @@ unsafe fn onda_compile_file_impl(
             return ptr::null_mut();
         }
     };
+    if let Err(diag) = write_source_manifest(out_sources, &loaded.sources) {
+        write_diag(out_diag, diag_to_c(&diag));
+        return ptr::null_mut();
+    }
+    let parsed = loaded.program;
 
     let typed = match analyze_with_options(
         parsed,
@@ -932,6 +995,62 @@ pub unsafe extern "C" fn onda_program_destroy(program: *mut onda_program) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_count(manifest: *const onda_source_manifest) -> i32 {
+    if manifest.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*manifest).paths.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_path(
+    manifest: *const onda_source_manifest,
+    index: i32,
+) -> *const c_char {
+    if manifest.is_null() || index < 0 {
+        return ptr::null();
+    }
+    let manifest = &*manifest;
+    manifest
+        .paths
+        .get(index as usize)
+        .map_or(ptr::null(), |path| path.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_unresolved_count(
+    manifest: *const onda_source_manifest,
+) -> i32 {
+    if manifest.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*manifest).unresolved_paths.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_unresolved_path(
+    manifest: *const onda_source_manifest,
+    index: i32,
+) -> *const c_char {
+    if manifest.is_null() || index < 0 {
+        return ptr::null();
+    }
+    let manifest = &*manifest;
+    manifest
+        .unresolved_paths
+        .get(index as usize)
+        .map_or(ptr::null(), |path| path.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_destroy(manifest: *mut onda_source_manifest) {
+    if manifest.is_null() {
+        return;
+    }
+    drop(Box::from_raw(manifest));
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_instance_create(
     program: *const onda_program,
     in_channels: i32,
@@ -1018,12 +1137,7 @@ pub unsafe extern "C" fn onda_instance_destroy(instance: *mut onda_instance) {
     if let Some(allocator) = allocator {
         ptr::drop_in_place(instance);
         let layout = Layout::new::<onda_instance>();
-        (allocator.free)(
-            allocator.context,
-            instance.cast::<c_void>(),
-            layout.size(),
-            layout.align(),
-        );
+        allocator.deallocate(instance.cast::<c_void>(), layout.size(), layout.align());
     } else {
         drop(Box::from_raw(instance));
     }
@@ -1049,6 +1163,36 @@ pub unsafe extern "C" fn onda_set_param_by_index(
     };
     match set_param_by_index(&mut (*instance).inner, index as usize, bytes) {
         Ok(_) => 0,
+        Err(_) => -3,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_set_param_plain_f64(
+    instance: *mut onda_instance,
+    index: i32,
+    plain: f64,
+) -> i32 {
+    if instance.is_null() || index < 0 {
+        return -1;
+    }
+    match runtime_set_param_plain_f64(&mut (*instance).inner, index as usize, plain) {
+        Ok(()) => 0,
+        Err(_) => -3,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_set_param_normalized(
+    instance: *mut onda_instance,
+    index: i32,
+    normalized: f64,
+) -> i32 {
+    if instance.is_null() || index < 0 {
+        return -1;
+    }
+    match runtime_set_param_normalized(&mut (*instance).inner, index as usize, normalized) {
+        Ok(()) => 0,
         Err(_) => -3,
     }
 }
@@ -1122,10 +1266,11 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
     } else {
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
-    match trigger_event_by_index_unchecked(&mut (*instance).inner, index as usize, payload) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    execution_status_to_c(trigger_event_by_index_unchecked(
+        &mut (*instance).inner,
+        index as usize,
+        payload,
+    ))
 }
 
 #[no_mangle]
@@ -1352,10 +1497,7 @@ pub unsafe extern "C" fn onda_process_unchecked(instance: *mut onda_instance) ->
     if instance.is_null() {
         return -1;
     }
-    match process_unchecked(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    execution_status_to_c(process_unchecked(&mut (*instance).inner))
 }
 
 #[no_mangle]
@@ -1379,15 +1521,12 @@ pub unsafe extern "C" fn onda_process_unchecked_segment(
     if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
         return -1;
     }
-    match process_unchecked_segment(
+    execution_status_to_c(process_unchecked_segment(
         &mut (*instance).inner,
         start_frame as usize,
         frames as usize,
         flags as u32,
-    ) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    ))
 }
 
 #[no_mangle]
@@ -2496,4 +2635,193 @@ pub unsafe extern "C" fn onda_param_range_max_f64(program: *const onda_program, 
             .get(idx)
             .and_then(|d| d.range_max_as_f64())
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_scale(program: *const onda_program, index: i32) -> i32 {
+    if program.is_null() || index < 0 {
+        return -1;
+    }
+    match (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .and_then(|param| param.param_domain())
+        .map(|domain| domain.scale_name())
+    {
+        Some("linear") => 0,
+        Some("log") => 1,
+        None => -1,
+        Some(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_has_curve(program: *const onda_program, index: i32) -> i32 {
+    if program.is_null() || index < 0 {
+        return -1;
+    }
+    (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .map(|param| {
+            i32::from(
+                param
+                    .param_domain()
+                    .is_some_and(|domain| domain.curve().is_some()),
+            )
+        })
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_curve(program: *const onda_program, index: i32) -> f64 {
+    if program.is_null() {
+        return f64::NAN;
+    }
+    f64_from_index_or_nan(index, |idx| {
+        (*program)
+            .jit
+            .params()
+            .get(idx)
+            .and_then(|param| param.param_domain())
+            .and_then(|domain| domain.curve())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_unit_copy(
+    program: *const onda_program,
+    index: i32,
+    out_bytes: *mut c_char,
+    out_capacity: i32,
+) -> i32 {
+    if program.is_null() || index < 0 || out_capacity < 0 {
+        return -1;
+    }
+    let Some(param) = (*program).jit.params().get(index as usize) else {
+        return -1;
+    };
+    let Some(unit) = param.param_domain().and_then(|domain| domain.unit()) else {
+        return 0;
+    };
+    let Ok(required) = i32::try_from(unit.len().saturating_add(1)) else {
+        return -1;
+    };
+    if out_bytes.is_null() || out_capacity < required {
+        return required;
+    }
+    ptr::copy_nonoverlapping(unit.as_ptr().cast::<c_char>(), out_bytes, unit.len());
+    *out_bytes.add(unit.len()) = 0;
+    required
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_has_step(program: *const onda_program, index: i32) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    if index < 0 {
+        return -1;
+    }
+    (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .map(|param| {
+            i32::from(
+                param
+                    .param_domain()
+                    .is_some_and(|domain| domain.step_count().is_some()),
+            )
+        })
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_step_f64(program: *const onda_program, index: i32) -> f64 {
+    if program.is_null() {
+        return f64::NAN;
+    }
+    f64_from_index_or_nan(index, |idx| {
+        (*program)
+            .jit
+            .params()
+            .get(idx)
+            .and_then(|param| param.param_domain())
+            .and_then(|domain| domain.step())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_step_count(program: *const onda_program, index: i32) -> u32 {
+    if program.is_null() || index < 0 {
+        return 0;
+    }
+    (*program)
+        .jit
+        .params()
+        .get(index as usize)
+        .and_then(|param| param.param_domain())
+        .and_then(|domain| domain.step_count())
+        .unwrap_or(0)
+}
+
+#[derive(Clone, Copy)]
+enum ParamValueConversion {
+    NormalizedToPlain,
+    PlainToNormalized,
+}
+
+unsafe fn convert_param_value(
+    program: *const onda_program,
+    index: i32,
+    value: f64,
+    conversion: ParamValueConversion,
+) -> f64 {
+    if program.is_null() || index < 0 {
+        return f64::NAN;
+    }
+    let Some(param) = (*program).jit.params().get(index as usize) else {
+        return f64::NAN;
+    };
+    if !param.is_array() && param.elem_ty() == PrimitiveType::Bool {
+        return if value >= 0.5 { 1.0 } else { 0.0 };
+    }
+    let Some(domain) = param.param_domain() else {
+        return f64::NAN;
+    };
+    match conversion {
+        ParamValueConversion::NormalizedToPlain => domain.normalized_to_plain(value),
+        ParamValueConversion::PlainToNormalized => domain.plain_to_normalized(value),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_normalized_to_plain(
+    program: *const onda_program,
+    index: i32,
+    normalized: f64,
+) -> f64 {
+    convert_param_value(
+        program,
+        index,
+        normalized,
+        ParamValueConversion::NormalizedToPlain,
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_plain_to_normalized(
+    program: *const onda_program,
+    index: i32,
+    plain: f64,
+) -> f64 {
+    convert_param_value(
+        program,
+        index,
+        plain,
+        ParamValueConversion::PlainToNormalized,
+    )
 }

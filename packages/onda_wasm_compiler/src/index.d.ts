@@ -5,6 +5,8 @@ export {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_EXECUTION_OK,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   PROCESSOR_SNAPSHOT_FORMAT_VERSION,
   createProcessorArtifactFiles,
   loadProcessorArtifactFiles,
@@ -53,15 +55,21 @@ export interface OndaProject {
   sources: Record<string, string>;
 }
 
+export interface OndaCompilationResult {
+  artifact: OndaProcessorArtifact;
+  /** Entry first, then transitive non-stdlib imports/includes in discovery order. */
+  sourceFiles: string[];
+}
+
 export interface OndaCompilerInstance {
   compileSource(
     source: string,
     options?: OndaCompileOptions,
-  ): Promise<OndaProcessorArtifact>;
+  ): Promise<OndaCompilationResult>;
   compileProject(
     project: OndaProject,
     options?: OndaCompileOptions,
-  ): Promise<OndaProcessorArtifact>;
+  ): Promise<OndaCompilationResult>;
   sendLspMessage(message: OndaLspMessage): Promise<OndaLspMessage[]>;
   setLspAnalysisOptions(options?: OndaCompileOptions): Promise<void>;
   dispose(): Promise<void>;
@@ -108,6 +116,9 @@ export class OndaCompilerError extends Error {
 
 export class OndaCompileError extends OndaCompilerError {
   readonly diagnostics: OndaCompilerDiagnostic[];
+  readonly sourceFiles: string[];
+  /** Referenced non-stdlib source candidates which were not present. */
+  readonly unresolvedSourceFiles: string[];
 }
 
 export class OndaBinaryenError extends Error {}

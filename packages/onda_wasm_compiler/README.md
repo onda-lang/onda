@@ -8,12 +8,12 @@ require LLVM, a Wasm linker, Rust, or `wasm-pack` after installation.
 import { createCompiler } from "@onda-lang/wasm-compiler";
 
 const compiler = await createCompiler();
-const artifact = await compiler.compileSource(source, {
+const { artifact, sourceFiles } = await compiler.compileSource(source, {
   sampleRate: 48_000,
   blockSize: 128,
 });
 
-console.log(artifact.wasm, artifact.metadata);
+console.log(artifact.wasm, artifact.metadata, sourceFiles);
 ```
 
 The package composes Onda's embedded Rust frontend with its Binaryen backend. The frontend emits
@@ -31,7 +31,7 @@ Project compilation resolves imports and includes entirely from the supplied sou
 embedded standard library:
 
 ```js
-const artifact = await compiler.compileProject({
+const { artifact, sourceFiles } = await compiler.compileProject({
   entry: "main.onda",
   sources: {
     "main.onda": mainSource,
@@ -41,10 +41,17 @@ const artifact = await compiler.compileProject({
   sampleRate: 48_000,
   blockSize: 128,
 });
+
+// Entry first, then transitive imports/includes. Embedded stdlib is excluded.
+console.log(sourceFiles);
 ```
 
 Compilation failures throw `OndaCompileError`. Its `diagnostics` property contains structured
-parse, semantic, MIR, configuration, or code-generation diagnostics.
+parse, semantic, MIR, configuration, or code-generation diagnostics. Its `sourceFiles` property
+contains every project source resolved before compilation stopped, allowing hosts to retain useful
+watch registrations while the project is temporarily invalid. `unresolvedSourceFiles` contains
+referenced non-standard-library candidates which were not present, allowing hosts to watch for their
+creation without treating them as contributing compilation inputs.
 
 ## Browser workers
 
@@ -52,7 +59,7 @@ Compilation is CPU-intensive. Use the built-in worker client in interactive brow
 
 ```js
 const compiler = await createCompiler({ worker: true });
-const artifact = await compiler.compileSource(source, options);
+const { artifact, sourceFiles } = await compiler.compileSource(source, options);
 await compiler.dispose();
 ```
 

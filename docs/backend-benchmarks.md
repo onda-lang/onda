@@ -43,9 +43,11 @@ The benchmark is a development diagnostic, with these safeguards:
    abort the benchmark. The f32 reference block is exchanged as raw
    little-endian samples, so aggregate checksums cannot hide offsetting errors.
 4. Native storage and pointer tables are validated once, then the helper and
-   WebAssembly both call their raw `onda_process` backend entries. Both sides process complete blocks with
-   strict arithmetic, the runtime audio-thread denormal policy, and no daemon,
-   JSON, audio-device, or control-transport work in the timed loop.
+   WebAssembly both call their raw `onda_process` backend entries and reject a
+   nonzero execution status after every block. Both sides process complete
+   blocks with strict arithmetic, the runtime audio-thread denormal policy, and
+   no daemon, JSON, audio-device, worklet-adapter, or control-transport work in
+   the timed loop.
 5. Each side receives 200 warmup blocks. A preflight calibration chooses one
    shared native/Wasm block count per scenario, never below
    `ONDA_BENCH_ITERATIONS`, targeting at least

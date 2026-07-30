@@ -470,7 +470,14 @@ impl Validator<'_> {
                         "parameter '{}' default is outside its declared range",
                         param.name
                     ));
+                } else if let Some(reason) = self.param_control_validation_error(param, range) {
+                    self.program_error(format!("parameter '{}' control {reason}", param.name));
                 }
+            } else if param.control != crate::ParamControl::default() {
+                self.program_error(format!(
+                    "parameter '{}' has control metadata without a range",
+                    param.name
+                ));
             }
         }
         for state in &self.program.state {
@@ -2216,7 +2223,10 @@ impl Validator<'_> {
 
                 let numeric = matches!(
                     intrinsic,
-                    crate::Intrinsic::Abs | crate::Intrinsic::Min | crate::Intrinsic::Max
+                    crate::Intrinsic::Abs
+                        | crate::Intrinsic::Min
+                        | crate::Intrinsic::Max
+                        | crate::Intrinsic::RangeClamp
                 );
                 let mut argument_type = None;
                 for (index, arg) in args.iter().enumerate() {
@@ -3335,6 +3345,155 @@ impl Validator<'_> {
         }
     }
 
+    fn param_control_validation_error(
+        &self,
+        param: &crate::Param,
+        range: crate::ValueRange,
+    ) -> Option<String> {
+        use crate::{ParamScale, ScalarType, ScalarValue, Type};
+
+        if param
+            .control
+            .unit
+            .as_ref()
+            .is_some_and(|unit| unit.contains('\0'))
+        {
+            return Some("unit must not contain a NUL character".to_owned());
+        }
+        let Some(Type::Scalar(ty)) = self.program.types.get(param.ty.index()) else {
+            return Some("requires a scalar parameter".to_owned());
+        };
+        if let (ScalarValue::I64(min), ScalarValue::I64(max)) = (range.min, range.max) {
+            let exact_limit = i128::from(crate::MAX_EXACT_HOST_CONTROL_INTEGER);
+            let width = i128::from(max) - i128::from(min);
+            if i128::from(min).abs() > exact_limit
+                || i128::from(max).abs() > exact_limit
+                || width > exact_limit
+            {
+                return Some(
+                    "i64 range and width must fit the exact host integer range".to_owned(),
+                );
+            }
+        }
+        let min = range.min.as_f64();
+        let max = range.max.as_f64();
+        if min >= max {
+            return Some("range requires min < max".to_owned());
+        }
+        if param.control.curve.is_some_and(|curve| !curve.is_finite()) {
+            return Some("curve must be finite".to_owned());
+        }
+        if param.control.scale == ParamScale::Log {
+            if param.control.curve.is_some() {
+                return Some("cannot combine logarithmic scale with curve".to_owned());
+            }
+            if !matches!(ty, ScalarType::F32 | ScalarType::F64) {
+                return Some("logarithmic scale requires f32 or f64".to_owned());
+            }
+            if min <= 0.0 {
+                return Some("logarithmic scale requires min > 0".to_owned());
+            }
+            if param.control.step.is_some() || param.control.step_count.is_some() {
+                return Some("cannot combine logarithmic scale with step".to_owned());
+            }
+        }
+
+        let (Some(step), Some(step_count)) = (param.control.step, param.control.step_count) else {
+            if param.control.step.is_some() != param.control.step_count.is_some() {
+                return Some(
+                    "step and step_count must either both be present or absent".to_owned(),
+                );
+            }
+            if matches!(ty, ScalarType::I32 | ScalarType::I64) {
+                return Some("integer ranges require a step".to_owned());
+            }
+            return None;
+        };
+        if step.ty() != *ty {
+            return Some("step does not match the parameter scalar type".to_owned());
+        }
+        if step_count == 0 {
+            return Some("step_count must be greater than zero".to_owned());
+        }
+
+        let default = match &param.default {
+            crate::ConstantValue::Scalar(value) => *value,
+            crate::ConstantValue::Aggregate(_) => {
+                return Some("requires a scalar default".to_owned())
+            }
+        };
+        match (range.min, range.max, default, step) {
+            (
+                ScalarValue::I32(min),
+                ScalarValue::I32(max),
+                ScalarValue::I32(default),
+                ScalarValue::I32(step),
+            ) => {
+                if step <= 0 {
+                    return Some("step must be greater than zero".to_owned());
+                }
+                let width = i64::from(max) - i64::from(min);
+                let step = i64::from(step);
+                if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
+                    return Some("step_count does not match the range and step".to_owned());
+                }
+                if (i64::from(default) - i64::from(min)) % step != 0 {
+                    return Some("default is not on the step grid".to_owned());
+                }
+            }
+            (
+                ScalarValue::I64(min),
+                ScalarValue::I64(max),
+                ScalarValue::I64(default),
+                ScalarValue::I64(step),
+            ) => {
+                let width = i128::from(max) - i128::from(min);
+                if step <= 0 {
+                    return Some("step must be greater than zero".to_owned());
+                }
+                let step = i128::from(step);
+                if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
+                    return Some("step_count does not match the range and step".to_owned());
+                }
+                if (i128::from(default) - i128::from(min)) % step != 0 {
+                    return Some("default is not on the step grid".to_owned());
+                }
+            }
+            (
+                ScalarValue::F32(min),
+                ScalarValue::F32(max),
+                ScalarValue::F32(default),
+                ScalarValue::F32(step),
+            ) => {
+                return validate_float_param_control_grid(
+                    ScalarType::F32,
+                    min as f64,
+                    max as f64,
+                    default as f64,
+                    step as f64,
+                    step_count,
+                );
+            }
+            (
+                ScalarValue::F64(min),
+                ScalarValue::F64(max),
+                ScalarValue::F64(default),
+                ScalarValue::F64(step),
+            ) => {
+                return validate_float_param_control_grid(
+                    ScalarType::F64,
+                    min,
+                    max,
+                    default,
+                    step,
+                    step_count,
+                );
+            }
+            _ => return Some("step requires a numeric scalar parameter".to_owned()),
+        }
+        None
+    }
+
     fn constant_is_within_range(
         &self,
         value: &crate::ConstantValue,
@@ -4043,6 +4202,26 @@ fn access_permits(source: crate::AccessMode, requested: crate::AccessMode) -> bo
     source == crate::AccessMode::ReadWrite || requested == crate::AccessMode::ReadOnly
 }
 
+fn validate_float_param_control_grid(
+    scalar: crate::ScalarType,
+    min: f64,
+    max: f64,
+    default: f64,
+    step: f64,
+    step_count: u32,
+) -> Option<String> {
+    if !step.is_finite() || step <= 0.0 {
+        return Some("step must be finite and greater than zero".to_owned());
+    }
+    if crate::validated_step_count(scalar, min, max, step) != Some(step_count) {
+        return Some("step_count does not match the range and step".to_owned());
+    }
+    if !crate::value_is_on_step_grid(scalar, min, default, step, step_count) {
+        return Some("default is not on the step grid".to_owned());
+    }
+    None
+}
+
 fn intrinsic_arity(intrinsic: crate::Intrinsic) -> usize {
     match intrinsic {
         crate::Intrinsic::Sin
@@ -4063,6 +4242,7 @@ fn intrinsic_arity(intrinsic: crate::Intrinsic) -> usize {
         | crate::Intrinsic::Min
         | crate::Intrinsic::Max => 2,
         crate::Intrinsic::Fma => 3,
+        crate::Intrinsic::RangeClamp => 3,
     }
 }
 
@@ -4086,6 +4266,7 @@ fn intrinsic_name(intrinsic: crate::Intrinsic) -> &'static str {
         crate::Intrinsic::Min => "min",
         crate::Intrinsic::Max => "max",
         crate::Intrinsic::Fma => "fma",
+        crate::Intrinsic::RangeClamp => "range_clamp",
     }
 }
 
@@ -4235,6 +4416,7 @@ mod tests {
                     min: ScalarValue::F32(f32::NEG_INFINITY),
                     max: ScalarValue::F32(1.0),
                 }),
+                control: crate::ParamControl::default(),
             },
             Param {
                 name: "boolean".to_owned(),
@@ -4244,6 +4426,7 @@ mod tests {
                     min: ScalarValue::Bool(false),
                     max: ScalarValue::Bool(true),
                 }),
+                control: crate::ParamControl::default(),
             },
             Param {
                 name: "outside".to_owned(),
@@ -4253,6 +4436,7 @@ mod tests {
                     min: ScalarValue::I32(0),
                     max: ScalarValue::I32(2),
                 }),
+                control: crate::ParamControl::default(),
             },
         ]);
 
@@ -4269,6 +4453,89 @@ mod tests {
         assert!(errors.iter().any(|error| error
             .message
             .contains("parameter 'outside' default is outside")));
+    }
+
+    #[test]
+    fn validates_parameter_control_metadata() {
+        let mut valid = empty_program();
+        valid.types.push(Type::Scalar(ScalarType::F32));
+        valid.interface.params.push(Param {
+            name: "cutoff".to_owned(),
+            ty: test_type(0),
+            default: ConstantValue::Scalar(ScalarValue::F32(440.0)),
+            range: Some(crate::ValueRange {
+                min: ScalarValue::F32(20.0),
+                max: ScalarValue::F32(20_000.0),
+            }),
+            control: crate::ParamControl {
+                scale: crate::ParamScale::Log,
+                curve: None,
+                unit: Some("Hz".to_owned()),
+                step: None,
+                step_count: None,
+            },
+        });
+        super::validate(&valid).expect("valid logarithmic control metadata should pass");
+
+        let mut non_finite_curve = valid.clone();
+        non_finite_curve.interface.params[0].control.scale = crate::ParamScale::Linear;
+        non_finite_curve.interface.params[0].control.curve = Some(f64::NAN);
+        let errors =
+            super::validate(&non_finite_curve).expect_err("non-finite curve metadata must fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("curve must be finite")));
+
+        let mut mixed_log_curve = valid.clone();
+        mixed_log_curve.interface.params[0].control.curve = Some(-4.0);
+        let errors =
+            super::validate(&mixed_log_curve).expect_err("logarithmic curve metadata must fail");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("cannot combine logarithmic scale with curve")));
+
+        let mut invalid = empty_program();
+        invalid.types.push(Type::Scalar(ScalarType::I32));
+        invalid.interface.params.push(Param {
+            name: "mode".to_owned(),
+            ty: test_type(0),
+            default: ConstantValue::Scalar(ScalarValue::I32(4)),
+            range: Some(crate::ValueRange {
+                min: ScalarValue::I32(0),
+                max: ScalarValue::I32(10),
+            }),
+            control: crate::ParamControl {
+                step: Some(ScalarValue::I32(2)),
+                step_count: Some(4),
+                ..crate::ParamControl::default()
+            },
+        });
+        let errors = super::validate(&invalid).expect_err("wrong step count must fail");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("step_count does not match the range and step")));
+
+        let mut inexact_i64 = empty_program();
+        inexact_i64.types.push(Type::Scalar(ScalarType::I64));
+        inexact_i64.interface.params.push(Param {
+            name: "wide".to_owned(),
+            ty: test_type(0),
+            default: ConstantValue::Scalar(ScalarValue::I64(9_007_199_254_740_992)),
+            range: Some(crate::ValueRange {
+                min: ScalarValue::I64(9_007_199_254_740_992),
+                max: ScalarValue::I64(9_007_199_254_741_002),
+            }),
+            control: crate::ParamControl {
+                step: Some(ScalarValue::I64(1)),
+                step_count: Some(10),
+                ..crate::ParamControl::default()
+            },
+        });
+        let errors =
+            super::validate(&inexact_i64).expect_err("inexact i64 control range must fail");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("must fit the exact host integer range")));
     }
 
     #[test]
@@ -5064,6 +5331,7 @@ mod tests {
             ty: test_type(4),
             default: ConstantValue::Aggregate(Vec::new()),
             range: None,
+            control: crate::ParamControl::default(),
         });
 
         let errors = super::validate(&program).expect_err("runtime handles must not be stored");
@@ -5426,7 +5694,7 @@ mod tests {
                     base: PlaceBase::Local(LocalId::new(0)),
                     projections: vec![Projection::Index {
                         index: Value::Constant(ScalarValue::I32(0)),
-                        bounds: crate::BoundsMode::Trap,
+                        bounds: crate::BoundsMode::Checked,
                     }],
                 },
                 value: Rvalue::Use(Value::Constant(ScalarValue::F32(1.0))),
@@ -5484,6 +5752,7 @@ mod tests {
             ty: test_type(0),
             default: ConstantValue::Scalar(ScalarValue::F32(1.0)),
             range: None,
+            control: crate::ParamControl::default(),
         });
         let mut callee = function("mutate", FunctionKind::User);
         callee.params.push(FunctionParam {
@@ -5526,7 +5795,7 @@ mod tests {
                 channel: None,
                 index: Value::Constant(ScalarValue::I32(0)),
                 value: Value::Constant(ScalarValue::F32(1.0)),
-                bounds: crate::BoundsMode::Trap,
+                bounds: crate::BoundsMode::Checked,
             },
             source: SourceSpan::UNKNOWN,
         });
@@ -5995,7 +6264,7 @@ mod tests {
                         base: PlaceBase::Local(LocalId::new(0)),
                         projections: vec![Projection::Index {
                             index: Value::Local(LocalId::new(1)),
-                            bounds: crate::BoundsMode::Trap,
+                            bounds: crate::BoundsMode::Checked,
                         }],
                     }),
                 },
@@ -6046,7 +6315,7 @@ mod tests {
                     }),
                     start: Value::Constant(ScalarValue::I32(4)),
                     len: Value::Constant(ScalarValue::I32(0)),
-                    bounds: crate::BoundsMode::Trap,
+                    bounds: crate::BoundsMode::Checked,
                     access: AccessMode::ReadOnly,
                 },
             },
@@ -6134,6 +6403,7 @@ mod tests {
             ty: test_type(0),
             default: ConstantValue::Scalar(ScalarValue::F32(0.0)),
             range: None,
+            control: crate::ParamControl::default(),
         });
         program.interface.events.push(Event {
             name: "update".to_owned(),
@@ -6258,7 +6528,7 @@ mod tests {
                     args: vec![CallArgument::SliceWindow {
                         slice: Value::Local(LocalId::new(0)),
                         start: Value::Constant(ScalarValue::I32(0)),
-                        bounds: crate::BoundsMode::Trap,
+                        bounds: crate::BoundsMode::Checked,
                     }],
                 },
                 source: SourceSpan::UNKNOWN,
@@ -6273,7 +6543,7 @@ mod tests {
         args[0] = CallArgument::SliceElement {
             slice: Value::Local(LocalId::new(0)),
             index: Value::Constant(ScalarValue::I32(0)),
-            bounds: crate::BoundsMode::Trap,
+            bounds: crate::BoundsMode::Checked,
         };
         let errors =
             super::validate(&program).expect_err("slice element cannot impersonate an array");

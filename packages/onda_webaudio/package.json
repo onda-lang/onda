@@ -1,6 +1,6 @@
 {
   "name": "@onda-lang/webaudio",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "type": "module",
   "description": "Optional Web Audio adapter for Onda processor WebAssembly artifacts",
   "license": "MIT",
@@ -32,7 +32,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@onda-lang/processor-abi": "0.5.4"
+    "@onda-lang/processor-abi": "0.6.0"
   },
   "publishConfig": {
     "access": "public"

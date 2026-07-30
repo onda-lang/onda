@@ -40,6 +40,8 @@ use crate::{RuntimeAllocator, RuntimeBuffer, RuntimeState, TargetOptLevel};
 
 use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_buffer_abi};
 
+const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 12;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 /// Classification for failures at the validated MIR-to-LLVM boundary.
 pub enum MirCodegenErrorKind {
@@ -139,8 +141,8 @@ type NativeProcessFn = unsafe extern "C" fn(
     *const i32,
     *const i32,
     *const f32,
-);
-type NativeInitFn = unsafe extern "C" fn(*const u8, *mut u8);
+) -> u32;
+type NativeInitFn = unsafe extern "C" fn(*const u8, *mut u8) -> u32;
 type NativeEventFn = unsafe extern "C" fn(
     *const u8,
     *const u8,
@@ -149,7 +151,7 @@ type NativeEventFn = unsafe extern "C" fn(
     *const i32,
     *const i32,
     *const f32,
-);
+) -> u32;
 
 #[derive(Debug)]
 struct NativeOrcProcess {
@@ -158,6 +160,16 @@ struct NativeOrcProcess {
     init: NativeInitFn,
     events: Vec<NativeEventFn>,
 }
+
+// SAFETY: construction finishes all LLJIT mutation before this owner is published. The stored
+// entrypoints are immutable code addresses whose mutable data is supplied entirely by each
+// runtime instance. LLVM permits concurrent execution of compiled code, and the Arc-backed
+// MirJitProgram owner prevents LLJIT disposal until no caller can retain an entrypoint.
+unsafe impl Send for NativeOrcProcess {}
+// SAFETY: shared access performs no LLJIT mutation. Process/init/event calls receive disjoint
+// host-owned runtime storage, so synchronization belongs to the exclusive Instance owner rather
+// than this immutable executable owner.
+unsafe impl Sync for NativeOrcProcess {}
 
 impl Drop for NativeOrcProcess {
     fn drop(&mut self) {
@@ -530,7 +542,7 @@ impl<'a> ModuleEmitter<'a> {
         let i32_ty = LLVMInt32TypeInContext(context);
         let mut runtime_fields = [
             ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
-            ptr_ty,
+            ptr_ty, i32_ty,
         ];
         let runtime_context_ty = LLVMStructTypeInContext(
             context,
@@ -540,8 +552,7 @@ impl<'a> ModuleEmitter<'a> {
         );
         let effects = onda_mir::analyze_effects(program);
         let const_globals = build_const_globals(program, context, module)?;
-        let functions =
-            declare_functions(program, &effects, context, module, types, layouts, ptr_ty)?;
+        let functions = declare_functions(program, &effects, context, module, types, layouts)?;
         Ok(Self {
             program,
             effects,
@@ -572,10 +583,10 @@ unsafe fn declare_functions(
     module: LLVMModuleRef,
     types: &LoweredTypes,
     layouts: &NativeLayouts,
-    ptr_ty: LLVMTypeRef,
 ) -> Result<Vec<FunctionDecl>, MirCodegenError> {
     let void_ty = LLVMVoidTypeInContext(context);
     let i32_ty = LLVMInt32TypeInContext(context);
+    let ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
     let mut declarations = Vec::with_capacity(program.functions.len());
     for (index, function) in program.functions.iter().enumerate() {
         let (name, fn_ty, internal) = match function.kind {
@@ -583,7 +594,7 @@ unsafe fn declare_functions(
                 let mut args = [ptr_ty, ptr_ty];
                 (
                     "onda_init".to_owned(),
-                    LLVMFunctionType(void_ty, args.as_mut_ptr(), args.len() as u32, 0),
+                    LLVMFunctionType(i32_ty, args.as_mut_ptr(), args.len() as u32, 0),
                     false,
                 )
             }
@@ -594,7 +605,7 @@ unsafe fn declare_functions(
                 ];
                 (
                     "onda_process".to_owned(),
-                    LLVMFunctionType(void_ty, args.as_mut_ptr(), args.len() as u32, 0),
+                    LLVMFunctionType(i32_ty, args.as_mut_ptr(), args.len() as u32, 0),
                     false,
                 )
             }
@@ -602,7 +613,7 @@ unsafe fn declare_functions(
                 let mut args = [ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty];
                 (
                     format!("onda_event_{}", event.raw()),
-                    LLVMFunctionType(void_ty, args.as_mut_ptr(), args.len() as u32, 0),
+                    LLVMFunctionType(i32_ty, args.as_mut_ptr(), args.len() as u32, 0),
                     false,
                 )
             }
@@ -664,7 +675,8 @@ unsafe fn declare_functions(
                 0,
             )?;
         }
-        if function_effects.is_memory_free() {
+        let writes_failure_context = function_effects.may_fail;
+        if function_effects.is_memory_free() && !writes_failure_context {
             add_enum_attribute_at_index(
                 context,
                 value,
@@ -672,7 +684,7 @@ unsafe fn declare_functions(
                 "memory",
                 0,
             )?;
-        } else if function_effects.is_read_only() {
+        } else if function_effects.is_read_only() && !writes_failure_context {
             // LLVM 21 encodes MemoryEffects as two Mod/Ref bits for each of
             // its four memory locations. `0b01` repeated is read-only.
             add_enum_attribute_at_index(
@@ -683,7 +695,7 @@ unsafe fn declare_functions(
                 0b01_01_01_01,
             )?;
         }
-        if !function_effects.may_not_return && !function_effects.may_trap {
+        if !function_effects.may_not_return {
             add_enum_attribute_at_index(
                 context,
                 value,
@@ -1056,7 +1068,12 @@ unsafe fn emit_function_body(
         emitter.allocate_storage()?;
         emitter.lower_block(&function.body)?;
         if !current_block_terminated(builder) {
-            if function.results.is_empty() {
+            if !matches!(function.kind, FunctionKind::User) {
+                LLVMBuildRet(
+                    builder,
+                    LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0),
+                );
+            } else if function.results.is_empty() {
                 LLVMBuildRetVoid(builder);
             } else {
                 return Err(MirCodegenError::invalid(format!(
@@ -1414,6 +1431,18 @@ impl FunctionEmitter<'_, '_> {
     }
 
     unsafe fn lower_return(&mut self, values: &[onda_mir::Value]) -> Result<(), MirCodegenError> {
+        if !matches!(self.function.kind, FunctionKind::User) {
+            if !values.is_empty() {
+                return Err(MirCodegenError::invalid(
+                    "native MIR entry point unexpectedly returns values",
+                ));
+            }
+            LLVMBuildRet(
+                self.builder,
+                LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 0, 0),
+            );
+            return Ok(());
+        }
         match values {
             [] => {
                 LLVMBuildRetVoid(self.builder);
@@ -1565,6 +1594,30 @@ impl FunctionEmitter<'_, '_> {
                 add_enum_callsite_attribute(self.module.context, call, llvm_index, "writeonly", 0)?;
             }
         }
+        if self.module.effects.function(function).may_fail {
+            let failure_status = load_context_field(
+                self.module,
+                self.builder,
+                self.runtime_context,
+                RUNTIME_FAILURE_CONTEXT_INDEX,
+                "runtime_failure",
+            )?;
+            let failed = LLVMBuildICmp(
+                self.builder,
+                LLVMIntPredicate::LLVMIntNE,
+                failure_status,
+                LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 0, 0),
+                c_name("call_failed")?.as_ptr(),
+            );
+            let failure =
+                append_block(self.module.context, self.declaration.value, "call_failure")?;
+            let success =
+                append_block(self.module.context, self.declaration.value, "call_success")?;
+            LLVMBuildCondBr(self.builder, failed, failure, success);
+            LLVMPositionBuilderAtEnd(self.builder, failure);
+            self.emit_failure_return(failure_status)?;
+            LLVMPositionBuilderAtEnd(self.builder, success);
+        }
         match results {
             [] => {}
             [result] => self.store(self.locals[result.index()], call),
@@ -1694,7 +1747,7 @@ impl FunctionEmitter<'_, '_> {
                 too_short,
                 c_name("slice_window_invalid_shape")?.as_ptr(),
             );
-            self.emit_trap_if(invalid, "slice_window_shape_ok")?;
+            self.emit_failure_if(invalid, "slice_window_shape_ok")?;
         }
         let max_start = LLVMBuildSub(
             self.builder,
@@ -1768,7 +1821,7 @@ impl FunctionEmitter<'_, '_> {
                     c_name("window_start_clamped")?.as_ptr(),
                 ))
             }
-            onda_mir::BoundsMode::Trap => {
+            onda_mir::BoundsMode::Checked => {
                 let below = LLVMBuildICmp(
                     self.builder,
                     LLVMIntPredicate::LLVMIntSLT,
@@ -1789,7 +1842,7 @@ impl FunctionEmitter<'_, '_> {
                     above,
                     c_name("window_start_invalid")?.as_ptr(),
                 );
-                self.emit_trap_if(invalid, "window_start_ok")?;
+                self.emit_failure_if(invalid, "window_start_ok")?;
                 Ok(start)
             }
         }
@@ -1919,31 +1972,12 @@ impl FunctionEmitter<'_, '_> {
             frames,
             c_name("process_frame_valid")?.as_ptr(),
         );
-        let ok = append_block(
-            self.module.context,
-            self.declaration.value,
-            "process_frame_ok",
-        )?;
-        let trap = append_block(
-            self.module.context,
-            self.declaration.value,
-            "process_frame_trap",
-        )?;
-        LLVMBuildCondBr(self.builder, valid, ok, trap);
-        LLVMPositionBuilderAtEnd(self.builder, trap);
-        let void_ty = LLVMVoidTypeInContext(self.module.context);
-        let trap_ty = LLVMFunctionType(void_ty, null_mut(), 0, 0);
-        let trap_fn = ensure_named_function(self.module.module, "llvm.trap", trap_ty)?;
-        LLVMBuildCall2(
+        let invalid = LLVMBuildNot(
             self.builder,
-            trap_ty,
-            trap_fn,
-            null_mut(),
-            0,
-            c_name("")?.as_ptr(),
+            valid,
+            c_name("process_frame_invalid")?.as_ptr(),
         );
-        LLVMBuildUnreachable(self.builder);
-        LLVMPositionBuilderAtEnd(self.builder, ok);
+        self.emit_failure_if(invalid, "process_frame_ok")?;
         Ok(LLVMBuildAdd(
             self.builder,
             start_frame,
@@ -2086,7 +2120,7 @@ impl FunctionEmitter<'_, '_> {
             zero,
             c_name("division_by_zero")?.as_ptr(),
         );
-        self.emit_trap_if(divisor_is_zero, "division_nonzero")?;
+        self.emit_failure_if(divisor_is_zero, "division_nonzero")?;
 
         // LLVM makes signed MIN / -1 and MIN % -1 poison. MIR instead uses
         // two's-complement wrapping division semantics: quotient MIN,
@@ -2143,28 +2177,45 @@ impl FunctionEmitter<'_, '_> {
         ))
     }
 
-    unsafe fn emit_trap_if(
+    unsafe fn emit_failure_if(
         &mut self,
-        should_trap: LLVMValueRef,
+        failed: LLVMValueRef,
         ok_name: &str,
     ) -> Result<(), MirCodegenError> {
         let ok = append_block(self.module.context, self.declaration.value, ok_name)?;
-        let trap = append_block(self.module.context, self.declaration.value, "trap")?;
-        LLVMBuildCondBr(self.builder, should_trap, trap, ok);
-        LLVMPositionBuilderAtEnd(self.builder, trap);
-        let void_ty = LLVMVoidTypeInContext(self.module.context);
-        let trap_ty = LLVMFunctionType(void_ty, null_mut(), 0, 0);
-        let trap_fn = ensure_named_function(self.module.module, "llvm.trap", trap_ty)?;
-        LLVMBuildCall2(
-            self.builder,
-            trap_ty,
-            trap_fn,
-            null_mut(),
+        let failure = append_block(self.module.context, self.declaration.value, "failure")?;
+        LLVMBuildCondBr(self.builder, failed, failure, ok);
+        LLVMPositionBuilderAtEnd(self.builder, failure);
+        self.emit_failure_return(LLVMConstInt(
+            LLVMInt32TypeInContext(self.module.context),
+            u64::from(crate::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE),
             0,
-            c_name("")?.as_ptr(),
-        );
-        LLVMBuildUnreachable(self.builder);
+        ))?;
         LLVMPositionBuilderAtEnd(self.builder, ok);
+        Ok(())
+    }
+
+    unsafe fn emit_failure_return(
+        &mut self,
+        failure_status: LLVMValueRef,
+    ) -> Result<(), MirCodegenError> {
+        let failure_ptr = context_field_ptr(
+            self.module,
+            self.builder,
+            self.runtime_context,
+            RUNTIME_FAILURE_CONTEXT_INDEX,
+        )?;
+        LLVMBuildStore(self.builder, failure_status, failure_ptr);
+        if matches!(self.function.kind, FunctionKind::User) {
+            let result_ty = LLVMGetReturnType(self.declaration.ty);
+            if LLVMGetTypeKind(result_ty) == llvm_sys::LLVMTypeKind::LLVMVoidTypeKind {
+                LLVMBuildRetVoid(self.builder);
+            } else {
+                LLVMBuildRet(self.builder, LLVMConstNull(result_ty));
+            }
+        } else {
+            LLVMBuildRet(self.builder, failure_status);
+        }
         Ok(())
     }
 
@@ -2279,6 +2330,43 @@ impl FunctionEmitter<'_, '_> {
             .iter()
             .map(|value| self.lower_value(*value))
             .collect::<Result<Vec<_>, _>>()?;
+        if intrinsic == onda_mir::Intrinsic::RangeClamp {
+            if matches!(
+                scalar,
+                onda_mir::ScalarType::I32 | onda_mir::ScalarType::I64
+            ) {
+                let lower = self.lower_integer_intrinsic(
+                    onda_mir::Intrinsic::Max,
+                    scalar,
+                    &mut vec![lowered[0], lowered[1]],
+                )?;
+                return self.lower_integer_intrinsic(
+                    onda_mir::Intrinsic::Min,
+                    scalar,
+                    &mut vec![lower, lowered[2]],
+                );
+            }
+            let suffix = if scalar == onda_mir::ScalarType::F64 {
+                "f64"
+            } else {
+                "f32"
+            };
+            let scalar_ty = llvm_scalar_type(self.module.context, scalar);
+            let lower = self.lower_binary_float_intrinsic(
+                &format!("llvm.maxnum.{suffix}"),
+                scalar_ty,
+                lowered[0],
+                lowered[1],
+                "range_clamp_lower",
+            )?;
+            return self.lower_binary_float_intrinsic(
+                &format!("llvm.minnum.{suffix}"),
+                scalar_ty,
+                lower,
+                lowered[2],
+                "range_clamp_upper",
+            );
+        }
         if matches!(
             scalar,
             onda_mir::ScalarType::I32 | onda_mir::ScalarType::I64
@@ -2333,6 +2421,9 @@ impl FunctionEmitter<'_, '_> {
             onda_mir::Intrinsic::Min => "llvm.minimum",
             onda_mir::Intrinsic::Max => "llvm.maximum",
             onda_mir::Intrinsic::Fma => "llvm.fma",
+            onda_mir::Intrinsic::RangeClamp => {
+                unreachable!("range clamp lowers before ordinary float intrinsics")
+            }
         };
         let name = if base.starts_with("llvm.") {
             format!("{base}.{suffix}")
@@ -3163,7 +3254,7 @@ impl FunctionEmitter<'_, '_> {
                 );
                 Ok((start, len))
             }
-            onda_mir::BoundsMode::Trap => {
+            onda_mir::BoundsMode::Checked => {
                 let start_negative = LLVMBuildICmp(
                     self.builder,
                     LLVMIntPredicate::LLVMIntSLT,
@@ -3189,7 +3280,7 @@ impl FunctionEmitter<'_, '_> {
                     self.builder,
                     source_len,
                     start,
-                    c_name("slice_trap_remaining")?.as_ptr(),
+                    c_name("slice_checked_remaining")?.as_ptr(),
                 );
                 let len_above = LLVMBuildICmp(
                     self.builder,
@@ -3216,7 +3307,7 @@ impl FunctionEmitter<'_, '_> {
                     invalid_len,
                     c_name("slice_invalid_range")?.as_ptr(),
                 );
-                self.emit_trap_if(invalid, "slice_range_ok")?;
+                self.emit_failure_if(invalid, "slice_range_ok")?;
                 Ok((start, len))
             }
         }
@@ -3562,7 +3653,7 @@ impl FunctionEmitter<'_, '_> {
         // deterministic backend contract rejects that rare shape. Equal
         // strides retain memmove directionality; disjoint unequal strides use
         // the normal forward loop.
-        self.emit_trap_if(unsupported_overlap, "slice_copy_strided_safe")?;
+        self.emit_failure_if(unsupported_overlap, "slice_copy_strided_safe")?;
         let copy_backward = LLVMBuildAnd(
             self.builder,
             LLVMBuildNot(
@@ -3755,12 +3846,12 @@ impl FunctionEmitter<'_, '_> {
                     c_name("dynamic_len_empty")?.as_ptr(),
                 );
                 // Clamp selects the nearest existing element. An empty
-                // runtime sequence has no such element, so it must trap rather
+                // runtime sequence has no such element, so it must fail rather
                 // than fabricate an access to index zero.
-                self.emit_trap_if(empty, "dynamic_clamp_nonempty")?;
+                self.emit_failure_if(empty, "dynamic_clamp_nonempty")?;
                 self.clamp_dynamic_index(index, len)
             }
-            onda_mir::BoundsMode::Trap => {
+            onda_mir::BoundsMode::Checked => {
                 let in_bounds = LLVMBuildICmp(
                     self.builder,
                     LLVMIntPredicate::LLVMIntULT,
@@ -3768,31 +3859,12 @@ impl FunctionEmitter<'_, '_> {
                     len,
                     c_name("dynamic_index_in_bounds")?.as_ptr(),
                 );
-                let ok = append_block(
-                    self.module.context,
-                    self.declaration.value,
-                    "dynamic_bounds_ok",
-                )?;
-                let trap = append_block(
-                    self.module.context,
-                    self.declaration.value,
-                    "dynamic_bounds_trap",
-                )?;
-                LLVMBuildCondBr(self.builder, in_bounds, ok, trap);
-                LLVMPositionBuilderAtEnd(self.builder, trap);
-                let void_ty = LLVMVoidTypeInContext(self.module.context);
-                let trap_ty = LLVMFunctionType(void_ty, null_mut(), 0, 0);
-                let trap_fn = ensure_named_function(self.module.module, "llvm.trap", trap_ty)?;
-                LLVMBuildCall2(
+                let invalid = LLVMBuildNot(
                     self.builder,
-                    trap_ty,
-                    trap_fn,
-                    null_mut(),
-                    0,
-                    c_name("")?.as_ptr(),
+                    in_bounds,
+                    c_name("dynamic_index_out_of_bounds")?.as_ptr(),
                 );
-                LLVMBuildUnreachable(self.builder);
-                LLVMPositionBuilderAtEnd(self.builder, ok);
+                self.emit_failure_if(invalid, "dynamic_bounds_ok")?;
                 Ok(index)
             }
         }
@@ -4111,7 +4183,7 @@ impl FunctionEmitter<'_, '_> {
                     c_name("index_clamped")?.as_ptr(),
                 ))
             }
-            onda_mir::BoundsMode::Trap => {
+            onda_mir::BoundsMode::Checked => {
                 let in_bounds = LLVMBuildICmp(
                     self.builder,
                     LLVMIntPredicate::LLVMIntULT,
@@ -4119,24 +4191,12 @@ impl FunctionEmitter<'_, '_> {
                     LLVMConstInt(i32_ty, len as u64, 0),
                     c_name("index_in_bounds")?.as_ptr(),
                 );
-                let ok = append_block(self.module.context, self.declaration.value, "bounds_ok")?;
-                let trap =
-                    append_block(self.module.context, self.declaration.value, "bounds_trap")?;
-                LLVMBuildCondBr(self.builder, in_bounds, ok, trap);
-                LLVMPositionBuilderAtEnd(self.builder, trap);
-                let void_ty = LLVMVoidTypeInContext(self.module.context);
-                let trap_ty = LLVMFunctionType(void_ty, null_mut(), 0, 0);
-                let trap_fn = ensure_named_function(self.module.module, "llvm.trap", trap_ty)?;
-                LLVMBuildCall2(
+                let invalid = LLVMBuildNot(
                     self.builder,
-                    trap_ty,
-                    trap_fn,
-                    null_mut(),
-                    0,
-                    c_name("")?.as_ptr(),
+                    in_bounds,
+                    c_name("index_out_of_bounds")?.as_ptr(),
                 );
-                LLVMBuildUnreachable(self.builder);
-                LLVMPositionBuilderAtEnd(self.builder, ok);
+                self.emit_failure_if(invalid, "bounds_ok")?;
                 Ok(index)
             }
         }
@@ -4203,7 +4263,7 @@ unsafe fn build_entry_runtime_context(
     let null = LLVMConstPointerNull(module.ptr_ty);
     let zero = LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0);
     let mut fields = [
-        null, null, zero, zero, zero, null, null, null, null, null, null, null,
+        null, null, zero, zero, zero, null, null, null, null, null, null, null, zero,
     ];
     match kind {
         FunctionKind::Init => {
@@ -4256,7 +4316,7 @@ unsafe fn load_context_field(
 ) -> Result<LLVMValueRef, MirCodegenError> {
     let ptr = context_field_ptr(module, builder, context, index)?;
     let ty = match index {
-        2..=4 => LLVMInt32TypeInContext(module.context),
+        2..=4 | RUNTIME_FAILURE_CONTEXT_INDEX => LLVMInt32TypeInContext(module.context),
         _ => module.ptr_ty,
     };
     Ok(LLVMBuildLoad2(builder, ty, ptr, c_name(name)?.as_ptr()))
@@ -4945,12 +5005,13 @@ impl MirJitProgram {
         }
         let words = self.layouts.state.size.saturating_add(7) / 8;
         let mut state_words = RuntimeBuffer::try_from_elem_in(words, 0_u64, allocator)?;
-        unsafe {
+        let status = unsafe {
             (self.compiled.init)(
                 abi_const_ptr(params),
                 abi_mut_ptr(state_words.as_mut_slice()).cast::<u8>(),
-            );
-        }
+            )
+        };
+        crate::check_execution_status(status)?;
         Ok(RuntimeState {
             state_words,
             state_size_bytes: self.layouts.state.size,
@@ -5014,7 +5075,7 @@ impl MirJitProgram {
             .map_err(|_| Diagnostic::runtime("start frame does not fit u32", 0, 0))?;
         let frames = u32::try_from(frames)
             .map_err(|_| Diagnostic::runtime("frame count does not fit u32", 0, 0))?;
-        unsafe {
+        let status = unsafe {
             (self.compiled.process)(
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
                 abi_const_ptr(params),
@@ -5027,8 +5088,9 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
-            );
-        }
+            )
+        };
+        crate::check_execution_status(status)?;
         Ok(())
     }
 
@@ -5052,7 +5114,7 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-    ) {
+    ) -> u32 {
         unsafe {
             (self.compiled.process)(
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
@@ -5066,7 +5128,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
-            );
+            )
         }
     }
 
@@ -5100,7 +5162,7 @@ impl MirJitProgram {
             buffer_channels,
             buffer_sample_rates,
         )?;
-        unsafe {
+        let status = unsafe {
             event(
                 abi_const_ptr(payload),
                 abi_const_ptr(params),
@@ -5109,8 +5171,9 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
-            );
-        }
+            )
+        };
+        crate::check_execution_status(status)?;
         Ok(())
     }
 
@@ -5130,9 +5193,9 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-    ) {
+    ) -> u32 {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
-            return;
+            return 0;
         };
         unsafe {
             event(
@@ -5143,7 +5206,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
-            );
+            )
         }
     }
 
@@ -6486,7 +6549,7 @@ sample:
                         projections: Vec::new(),
                     },
                     start: onda_mir::Value::Constant(onda_mir::ScalarValue::I32(1)),
-                    bounds: onda_mir::BoundsMode::Trap,
+                    bounds: onda_mir::BoundsMode::Checked,
                 }],
             },
             source: onda_mir::SourceSpan::UNKNOWN,
@@ -6818,6 +6881,57 @@ sample:
     }
 
     #[test]
+    fn ranged_params_map_nan_to_minimum_with_and_without_fast_math() {
+        let (_, mir) = source_program(
+            r#"
+params:
+  value = 0.5 {-1.0, 1.0}
+
+sample:
+  out1 = value
+"#,
+            1,
+        );
+        let inputs: [*const u8; 0] = [];
+        let buffers: [*mut u8; 0] = [];
+        let metadata_i32: [i32; 0] = [];
+        let metadata_f32: [f32; 0] = [];
+        for fast_math in [false, true] {
+            let native = lower_mir_and_jit_with_options(
+                mir.clone(),
+                MirCompileOptions {
+                    fast_math,
+                    opt_level: TargetOptLevel::O3,
+                },
+            )
+            .expect("ranged-param source should compile");
+            let mut params = native.default_param_bytes();
+            params[..4].copy_from_slice(&f32::NAN.to_ne_bytes());
+            let mut state = native
+                .initialize_state(&params)
+                .expect("ranged-param state should initialize");
+            let mut output = [0.0_f32];
+            let outputs = [output.as_mut_ptr().cast::<u8>()];
+            native
+                .test_process_checked(
+                    &mut state,
+                    &params,
+                    0,
+                    1,
+                    onda_mir::PROCESS_FULL_BLOCK as u32,
+                    &inputs,
+                    &outputs,
+                    &buffers,
+                    &metadata_i32,
+                    &metadata_i32,
+                    &metadata_f32,
+                )
+                .expect("ranged-param process should run");
+            assert_eq!(output, [-1.0]);
+        }
+    }
+
+    #[test]
     fn numeric_edge_lowering_has_explicit_llvm_semantics() {
         let (_, mir) = source_program(
             r#"
@@ -6848,8 +6962,251 @@ sample:
         assert!(ir.contains(", 31"));
         assert!(ir.contains("fcmp une float"));
         assert!(ir.contains("@llvm.fptosi.sat.i32.f32"));
-        assert!(ir.contains("@llvm.trap"));
+        assert!(!ir.contains("@llvm.trap"));
+        assert!(ir.contains("i32 @onda_process("));
         assert!(ir.contains("sdiv i32"));
+
+        let mut target = crate::TargetConfig::host();
+        target.opt_level = TargetOptLevel::O0;
+        let targeted_ir = lower_mir_to_target_llvm_ir(
+            &mir,
+            &MirTargetOptions {
+                fast_math: false,
+                target,
+            },
+        )
+        .expect("numeric edge MIR should emit targeted LLVM IR");
+        assert!(!targeted_ir.contains("@llvm.trap"));
+        assert!(targeted_ir.contains("i32 @onda_process("));
+    }
+
+    #[test]
+    fn generated_runtime_failure_returns_through_user_calls() {
+        let (_, mir) = source_program(
+            r#"
+params:
+  divisor: i32 = 0
+
+def quotient(value: i32, by: i32):
+  return value / by
+
+sample:
+  out1 = f32(quotient(i32(1), divisor))
+"#,
+            1,
+        );
+        let native = lower_mir_and_jit(mir).expect("failing source should JIT");
+        let params = native.default_param_bytes();
+        let mut state = native
+            .initialize_state(&params)
+            .expect("failing source should initialize");
+        let inputs: [*const u8; 0] = [];
+        let mut output = [0.0_f32];
+        let outputs = [output.as_mut_ptr().cast::<u8>()];
+        let buffers: [*mut u8; 0] = [];
+        let metadata_i32: [i32; 0] = [];
+        let metadata_f32: [f32; 0] = [];
+        let error = native
+            .test_process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &metadata_i32,
+                &metadata_i32,
+                &metadata_f32,
+            )
+            .expect_err("division by zero should return a runtime failure");
+        assert!(error.message.contains("runtime safety check"));
+    }
+
+    #[test]
+    fn recoverable_failure_helpers_remain_willreturn() {
+        let (_, mut mir) = source_program(
+            r#"
+params:
+  divisor: i32 = 1
+
+def quotient(value: i32, by: i32):
+  return value / by
+
+sample:
+  out1 = f32(quotient(i32(1), divisor))
+"#,
+            1,
+        );
+        let helper = mir
+            .functions
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, function)| {
+                matches!(function.kind, FunctionKind::User).then(|| {
+                    function.attributes.inline = onda_mir::InlineHint::Never;
+                    index
+                })
+            })
+            .expect("source should lower one user helper");
+        let effects = onda_mir::analyze_effects(&mir);
+        let helper_effects = effects.function(onda_mir::FunctionId::new(
+            u32::try_from(helper).expect("function id should fit u32"),
+        ));
+        assert!(helper_effects.may_fail);
+        assert!(!helper_effects.may_not_return);
+        let symbol = format!("@__onda_mir_fn_{helper}");
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("failure-capable helper should emit LLVM IR");
+        let definition = ir
+            .lines()
+            .find(|line| line.starts_with("define internal") && line.contains(&symbol))
+            .expect("noinline helper definition");
+        let attribute_id = definition
+            .rsplit_once(" #")
+            .and_then(|(_, suffix)| suffix.strip_suffix(" {"))
+            .expect("helper definition should reference an attribute group");
+        let attributes = ir
+            .lines()
+            .find(|line| line.starts_with(&format!("attributes #{attribute_id} =")))
+            .expect("helper attribute group");
+        assert!(attributes.contains("willreturn"), "{attributes}");
+    }
+
+    #[test]
+    fn generated_runtime_failure_returns_from_init_and_events() {
+        let (_, init_mir) = source_program(
+            r#"
+params:
+  divisor: i32 = 0
+
+init:
+  held = i32(1) / divisor
+
+sample:
+  out1 = f32(held)
+"#,
+            1,
+        );
+        let init_native = lower_mir_and_jit(init_mir).expect("failing init should JIT");
+        let init_error = init_native
+            .initialize_state(&init_native.default_param_bytes())
+            .expect_err("division by zero in init should return a runtime failure");
+        assert!(init_error.message.contains("runtime safety check"));
+
+        let (_, event_mir) = source_program(
+            r#"
+init:
+  held = i32(0)
+
+event divide(divisor: i32) {
+  held = i32(1) / divisor
+}
+
+sample:
+  out1 = f32(held)
+"#,
+            1,
+        );
+        let event_native = lower_mir_and_jit(event_mir).expect("failing event should JIT");
+        let params = event_native.default_param_bytes();
+        let mut state = event_native
+            .initialize_state(&params)
+            .expect("event source should initialize");
+        let buffers: [*mut u8; 0] = [];
+        let metadata_i32: [i32; 0] = [];
+        let metadata_f32: [f32; 0] = [];
+        let error = event_native
+            .test_trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &0_i32.to_ne_bytes(),
+                &buffers,
+                &metadata_i32,
+                &metadata_i32,
+                &metadata_f32,
+            )
+            .expect_err("division by zero in an event should return a runtime failure");
+        assert!(error.message.contains("runtime safety check"));
+    }
+
+    #[test]
+    fn safe_optimized_process_has_no_runtime_failure_branch() {
+        let (_, mir) = source_program(
+            include_str!("../../../../examples/foundations/sine.onda"),
+            512,
+        );
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("safe source should emit optimized LLVM IR");
+        assert!(ir.contains("i32 @onda_process("));
+        assert!(!ir.contains("@llvm.trap"));
+        assert!(!ir.contains("runtime_failure"));
+        assert!(!ir.contains("call_failure"));
+    }
+
+    #[test]
+    fn non_failing_noinline_helpers_need_no_failure_propagation() {
+        let (_, mut mir) = source_program(
+            r#"
+ins:
+  in1
+
+def ratio(x: f32):
+  return x / 2.0
+
+def pick(values: f32[4], index: i32):
+  return values[index]
+
+sample:
+  values = [1.0, 2.0, 3.0, 4.0]
+  out1 = ratio(in1) + pick(values, i32(in1))
+"#,
+            64,
+        );
+        let helper_ids = mir
+            .functions
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, function)| {
+                if matches!(function.kind, FunctionKind::User) {
+                    function.attributes.inline = onda_mir::InlineHint::Never;
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(helper_ids.len(), 2);
+
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("non-failing noinline helpers should emit optimized LLVM IR");
+        for helper in helper_ids {
+            assert!(ir.lines().any(|line| {
+                line.contains("call") && line.contains(&format!("@__onda_mir_fn_{helper}"))
+            }));
+        }
+        assert!(!ir.contains("runtime_failure"));
+        assert!(!ir.contains("call_failure"));
     }
 
     #[test]
@@ -7344,7 +7701,7 @@ sample:
         )
         .expect("zero-initialized state should emit LLVM IR");
         let init = ir
-            .split("define void @onda_init")
+            .split("define i32 @onda_init")
             .nth(1)
             .and_then(|tail| tail.split("\n}").next())
             .expect("onda_init definition");
@@ -7478,10 +7835,11 @@ sample:
         assert!(!object.is_empty());
         assert!(ir.contains("target triple ="));
         assert!(ir.contains("target datalayout ="));
-        assert!(ir.contains("define void @onda_process("));
+        assert!(ir.contains("define i32 @onda_process("));
+        assert!(!ir.contains("@llvm.trap"));
         let signature = ir
             .lines()
-            .find(|line| line.contains("define void @onda_process("))
+            .find(|line| line.contains("define i32 @onda_process("))
             .expect("process definition");
         assert_eq!(signature.matches("ptr").count(), 8);
         assert_eq!(signature.matches("i32 noundef range(i32").count(), 3);

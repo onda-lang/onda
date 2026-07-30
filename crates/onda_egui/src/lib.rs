@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
-use onda_run::{RunController, RunHostOptions, RunThemeMode};
+use onda_run::{
+    ParamDomain, ParamScalarType, ParamScale, RunController, RunHostOptions, RunThemeMode,
+};
 use serde_json::{Number, Value};
 
 const LOGO_DARK_URI: &str = "bytes://onda-logo-dark-rect.svg";
@@ -23,6 +25,11 @@ const EVENT_ARRAY_CELL_WIDTH: f32 = 147.0;
 const EVENT_ARRAY_CELL_GAP: f32 = 7.0;
 const RUN_SAMPLE_RATE_CHOICES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
 const RUN_BLOCK_SIZE_CHOICES: [usize; 6] = [64, 128, 256, 512, 1_024, 2_048];
+const CONTROL_CORNER_RADIUS: f32 = 5.0;
+const CONTROL_GROUP_CORNER_RADIUS: f32 = 8.0;
+const CARD_CORNER_RADIUS: f32 = 9.0;
+const SECTION_CORNER_RADIUS: f32 = 12.0;
+const WINDOW_CORNER_RADIUS: f32 = 14.0;
 
 pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result<(), String> {
     let theme_mode = options.theme;
@@ -264,6 +271,16 @@ impl RunApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(run_window_title(None)));
     }
 
+    fn choose_onda_file(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Onda source", &["onda"])
+            .set_title("Open an Onda file")
+            .pick_file()
+        {
+            self.load_path(ctx, &path);
+        }
+    }
+
     fn render_file_picker(&mut self, ui: &mut egui::Ui, theme: &RunTheme, file_hovered: bool) {
         let available = ui.available_size();
         let panel_size = egui::vec2(available.x.min(520.0), available.y.min(440.0));
@@ -275,7 +292,7 @@ impl RunApp {
         );
         ui.painter().rect(
             panel_rect,
-            14.0,
+            WINDOW_CORNER_RADIUS,
             ui.visuals().panel_fill,
             if file_hovered {
                 egui::Stroke::new(2.0_f32, theme.accent)
@@ -286,9 +303,9 @@ impl RunApp {
         );
 
         let content_height = if self.load_error.is_some() {
-            248.0
+            276.0
         } else {
-            220.0
+            238.0
         };
         let content_rect = egui::Rect::from_center_size(
             panel_rect.center(),
@@ -309,26 +326,36 @@ impl RunApp {
                 .maintain_aspect_ratio(true)
                 .texture_options(egui::TextureOptions::LINEAR),
         );
-        content_ui.add_space(14.0);
-        content_ui.label(
-            egui::RichText::new(if file_hovered {
-                "Drop to open"
-            } else {
-                "Open an Onda file"
-            })
-            .strong()
-            .size(20.0),
-        );
-        content_ui.add_space(6.0);
-        content_ui.label(
-            egui::RichText::new(if file_hovered {
-                "Release the .onda file anywhere in this window"
-            } else {
-                "Drag an .onda file here, or click to choose one"
-            })
-            .weak()
-            .size(13.0),
-        );
+        content_ui.add_space(18.0);
+        let choose_clicked = if file_hovered {
+            content_ui.add_sized(
+                [168.0, 32.0],
+                egui::Label::new(egui::RichText::new("Drop to open").strong().size(20.0)),
+            );
+            content_ui.add_space(6.0);
+            content_ui.add_sized(
+                [380.0, 19.0],
+                egui::Label::new(
+                    egui::RichText::new("Release anywhere in this window")
+                        .weak()
+                        .size(13.0),
+                ),
+            );
+            false
+        } else {
+            let clicked = content_ui
+                .add_sized(
+                    [168.0, 32.0],
+                    run_button(egui::RichText::new("Choose Onda file").strong()),
+                )
+                .clicked();
+            content_ui.add_space(6.0);
+            content_ui.add_sized(
+                [380.0, 19.0],
+                egui::Label::new(egui::RichText::new("or drop one here").weak().size(13.0)),
+            );
+            clicked
+        };
         content_ui.add_space(14.0);
         let settings_response = content_ui
             .allocate_ui(egui::vec2(380.0, 62.0), |ui| {
@@ -339,45 +366,55 @@ impl RunApp {
                         ui.spacing_mut().item_spacing.x = 12.0;
                         ui.add_sized(
                             [184.0, 16.0],
-                            egui::Label::new(egui::RichText::new("Sample rate").weak().size(11.0)),
+                            egui::Label::new(egui::RichText::new("Sample rate").weak().size(11.0))
+                                .halign(egui::Align::Center),
                         );
                         ui.add_sized(
                             [184.0, 16.0],
-                            egui::Label::new(egui::RichText::new("Block size").weak().size(11.0)),
+                            egui::Label::new(egui::RichText::new("Block size").weak().size(11.0))
+                                .halign(egui::Align::Center),
                         );
                     });
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
-                        ui.allocate_ui(egui::vec2(184.0, 30.0), |ui| {
-                            egui::ComboBox::from_id_salt("run-sample-rate")
-                                .width(ui.available_width())
-                                .selected_text(format_sample_rate(
-                                    self.options.sample_rate_hz as f64,
-                                ))
-                                .show_ui(ui, |ui| {
-                                    for sample_rate in RUN_SAMPLE_RATE_CHOICES {
-                                        ui.selectable_value(
-                                            &mut self.options.sample_rate_hz,
-                                            sample_rate,
-                                            format_sample_rate(sample_rate as f64),
-                                        );
-                                    }
-                                });
-                        });
-                        ui.allocate_ui(egui::vec2(184.0, 30.0), |ui| {
-                            egui::ComboBox::from_id_salt("run-block-size")
-                                .width(ui.available_width())
-                                .selected_text(format!("{} frames", self.options.block_frames))
-                                .show_ui(ui, |ui| {
-                                    for block_frames in RUN_BLOCK_SIZE_CHOICES {
-                                        ui.selectable_value(
-                                            &mut self.options.block_frames,
-                                            block_frames,
-                                            format!("{block_frames} frames"),
-                                        );
-                                    }
-                                });
-                        });
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(184.0, 30.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("run-sample-rate")
+                                    .width(ui.available_width())
+                                    .selected_text(format_sample_rate(
+                                        self.options.sample_rate_hz as f64,
+                                    ))
+                                    .show_ui(ui, |ui| {
+                                        for sample_rate in RUN_SAMPLE_RATE_CHOICES {
+                                            ui.selectable_value(
+                                                &mut self.options.sample_rate_hz,
+                                                sample_rate,
+                                                format_sample_rate(sample_rate as f64),
+                                            );
+                                        }
+                                    });
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(184.0, 30.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("run-block-size")
+                                    .width(ui.available_width())
+                                    .selected_text(format!("{} frames", self.options.block_frames))
+                                    .show_ui(ui, |ui| {
+                                        for block_frames in RUN_BLOCK_SIZE_CHOICES {
+                                            ui.selectable_value(
+                                                &mut self.options.block_frames,
+                                                block_frames,
+                                                format!("{block_frames} frames"),
+                                            );
+                                        }
+                                    });
+                            },
+                        );
                     });
                 });
             })
@@ -391,14 +428,8 @@ impl RunApp {
             .ctx()
             .pointer_hover_pos()
             .is_some_and(|position| settings_response.rect.contains(position));
-        if response.clicked() && !pointer_over_settings {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Onda source", &["onda"])
-                .set_title("Open an Onda file")
-                .pick_file()
-            {
-                self.load_path(ui.ctx(), &path);
-            }
+        if choose_clicked || (response.clicked() && !pointer_over_settings) {
+            self.choose_onda_file(ui.ctx());
         }
     }
 
@@ -420,7 +451,7 @@ impl RunApp {
             egui::Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                .corner_radius(9.0)
+                .corner_radius(CARD_CORNER_RADIUS)
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
@@ -436,9 +467,7 @@ impl RunApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let clear_clicked = loaded_path.is_some()
                                 && ui
-                                    .add(
-                                        egui::Button::new("Clear").min_size(egui::vec2(48.0, 26.0)),
-                                    )
+                                    .add(run_button("Clear").min_size(egui::vec2(48.0, 26.0)))
                                     .clicked();
                             let bind_label = if loaded_path.is_some() {
                                 "Replace"
@@ -446,7 +475,7 @@ impl RunApp {
                                 "Bind"
                             };
                             let bind_clicked = ui
-                                .add(egui::Button::new(bind_label).min_size(egui::vec2(56.0, 26.0)))
+                                .add(run_button(bind_label).min_size(egui::vec2(56.0, 26.0)))
                                 .on_hover_text("Bind a WAV file to this buffer")
                                 .clicked();
 
@@ -544,37 +573,49 @@ impl RunApp {
             egui::Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                .corner_radius(9.0)
+                .corner_radius(CARD_CORNER_RADIUS)
                 .inner_margin(egui::Margin::same(10))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(name).strong().size(14.0).monospace())
-                                .on_hover_text(name);
-                            let summary = match args.len() {
-                                0 => "No arguments".to_owned(),
-                                1 => "1 argument".to_owned(),
-                                count => format!("{count} arguments"),
-                            };
-                            ui.label(egui::RichText::new(summary).size(11.0).weak());
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add_enabled(
-                                    connected,
-                                    egui::Button::new(egui::RichText::new("Trigger").strong())
-                                        .min_size(egui::vec2(72.0, 30.0)),
-                                )
-                                .clicked()
-                            {
-                                self.controller
-                                    .as_mut()
-                                    .expect("loaded run controller")
-                                    .trigger_event(name, values.clone());
+                    let heading_height = if args.is_empty() { 30.0 } else { 38.0 };
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), heading_height),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            let name_text =
+                                egui::RichText::new(name).strong().size(14.0).monospace();
+                            if args.is_empty() {
+                                ui.label(name_text).on_hover_text(name);
+                            } else {
+                                ui.vertical(|ui| {
+                                    ui.label(name_text).on_hover_text(name);
+                                    let summary = match args.len() {
+                                        1 => "1 argument".to_owned(),
+                                        count => format!("{count} arguments"),
+                                    };
+                                    ui.label(egui::RichText::new(summary).size(11.0).weak());
+                                });
                             }
-                        });
-                    });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            connected,
+                                            run_button(egui::RichText::new("Trigger").strong())
+                                                .min_size(egui::vec2(72.0, 30.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.controller
+                                            .as_mut()
+                                            .expect("loaded run controller")
+                                            .trigger_event(name, values.clone());
+                                    }
+                                },
+                            );
+                        },
+                    );
 
                     if !args.is_empty() {
                         ui.add_space(8.0);
@@ -623,7 +664,7 @@ impl RunApp {
                     );
                     ui.painter().rect(
                         card_rect,
-                        10.0,
+                        CARD_CORNER_RADIUS,
                         ui.visuals().faint_bg_color,
                         ui.visuals().widgets.noninteractive.bg_stroke,
                         egui::StrokeKind::Inside,
@@ -650,29 +691,28 @@ impl RunApp {
             return;
         };
         let ty = param_type(&param);
-        let min = param.get("rangeMin").and_then(Value::as_f64);
-        let max = param.get("rangeMax").and_then(Value::as_f64);
         let default = param.get("default").and_then(Value::as_f64);
+        let domain = prepared_param_domain(&param);
+        let unit = domain.and_then(ParamDomain::unit);
+        let display_name = unit
+            .filter(|unit| !unit.is_empty())
+            .map(|unit| format!("{name} ({unit})"))
+            .unwrap_or_else(|| name.clone());
         let value = param
             .get("value")
             .cloned()
             .unwrap_or_else(|| default_value_for_type(ty));
         let number_draft = self.number_drafts.get(&name).copied();
+        let spec = ParamControlSpec {
+            label: &display_name,
+            ty,
+            default,
+            domain,
+        };
         let outcome = if compact {
-            render_compact_param_value_editor(
-                ui,
-                ParamControlSpec {
-                    label: &name,
-                    ty,
-                    min,
-                    max,
-                    default,
-                },
-                &value,
-                number_draft,
-            )
+            render_compact_param_value_editor(ui, spec, &value, number_draft)
         } else {
-            render_param_value_editor(ui, &name, ty, min, max, &value, number_draft)
+            render_param_value_editor(ui, spec, &value, number_draft)
         };
         match outcome {
             ParamEditOutcome::None => {}
@@ -680,6 +720,10 @@ impl RunApp {
                 self.number_drafts.insert(name, next_value);
             }
             ParamEditOutcome::Commit(next_value) => {
+                let next_value = next_value
+                    .as_f64()
+                    .map(|value| json_number(spec.constrain_plain(value)))
+                    .unwrap_or(next_value);
                 self.number_drafts.remove(&name);
                 set_param_value(&mut param, next_value.clone());
                 self.controller
@@ -792,7 +836,7 @@ impl eframe::App for RunApp {
                                         |ui| {
                                             let button_width = 104.0;
                                             let button_gap = 8.0;
-                                            let total_width = button_width * 4.0 + button_gap * 3.0;
+                                            let total_width = button_width * 3.0 + button_gap * 2.0;
                                             let leading_space =
                                                 ((ui.available_width() - total_width) * 0.5)
                                                     .max(0.0);
@@ -808,7 +852,7 @@ impl eframe::App for RunApp {
                                                                 .and_then(Value::as_str)
                                                                 .is_some()
                                                         }),
-                                                    egui::Button::new("Play")
+                                                    run_button("Play")
                                                         .min_size(egui::vec2(button_width, 30.0)),
                                                 )
                                                 .clicked()
@@ -822,7 +866,7 @@ impl eframe::App for RunApp {
                                             if ui
                                                 .add_enabled(
                                                     state.running,
-                                                    egui::Button::new("Stop")
+                                                    run_button("Stop")
                                                         .min_size(egui::vec2(button_width, 30.0)),
                                                 )
                                                 .clicked()
@@ -833,17 +877,7 @@ impl eframe::App for RunApp {
                                                     .stop();
                                             }
                                             if ui
-                                                .add_sized(button_size, egui::Button::new("Reset"))
-                                                .clicked()
-                                            {
-                                                self.controller
-                                                    .as_mut()
-                                                    .expect("loaded run controller")
-                                                    .reset();
-                                                self.reset_event_inputs();
-                                            }
-                                            if ui
-                                                .add_sized(button_size, egui::Button::new("Unload"))
+                                                .add_sized(button_size, run_button("Unload"))
                                                 .clicked()
                                             {
                                                 self.unload(ctx);
@@ -952,7 +986,7 @@ impl eframe::App for RunApp {
                                                                                     refresh_width,
                                                                                     control_height,
                                                                                 ],
-                                                                                egui::Button::new(
+                                                                                run_button(
                                                                                     "Refresh Devices",
                                                                                 ),
                                                                             )
@@ -988,43 +1022,82 @@ impl eframe::App for RunApp {
 
                         if state.running {
                             ui.add_space(12.0);
-                        section_box(ui, "", |ui| {
-                            egui::CollapsingHeader::new("Scope")
-                                .default_open(true)
-                                .show_unindented(ui, |ui| {
+                            section_box(ui, "", |ui| {
+                                let mut scope_state =
+                                    egui::collapsing_header::CollapsingState::load_with_default_open(
+                                        ui.ctx(),
+                                        ui.make_persistent_id("scope-section"),
+                                        true,
+                                    );
+                                render_section_header(ui, &mut scope_state, "Scope", |_| {});
+                                scope_state.show_body_unindented(ui, |ui| {
                                     ui.add_space(8.0);
                                     draw_scope(
                                         ui,
                                         state.scope_channels,
                                         &state.scope_samples,
-                                            egui::vec2(ui.available_width(), 140.0),
-                                            &theme,
-                                        );
-                                    });
+                                        egui::vec2(ui.available_width(), 140.0),
+                                        &theme,
+                                    );
+                                });
                             });
                         }
 
                         if !state.buffers.is_empty() {
                             ui.add_space(12.0);
                             section_box(ui, "", |ui| {
-                                egui::CollapsingHeader::new("Buffers")
-                                    .default_open(true)
-                                    .show_unindented(ui, |ui| {
-                                        ui.add_space(8.0);
-                                        self.render_buffers(ui, &state.buffers);
-                                    });
+                                let mut buffers_state =
+                                    egui::collapsing_header::CollapsingState::load_with_default_open(
+                                        ui.ctx(),
+                                        ui.make_persistent_id("buffers-section"),
+                                        true,
+                                    );
+                                render_section_header(
+                                    ui,
+                                    &mut buffers_state,
+                                    "Buffers",
+                                    |_| {},
+                                );
+                                buffers_state.show_body_unindented(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    self.render_buffers(ui, &state.buffers);
+                                });
                             });
                         }
 
                         if !state.events.is_empty() {
                             ui.add_space(12.0);
                             section_box(ui, "", |ui| {
-                                egui::CollapsingHeader::new("Events")
-                                    .default_open(true)
-                                    .show_unindented(ui, |ui| {
-                                        ui.add_space(8.0);
-                                        self.render_events(ui, &state.events, state.connected);
-                                    });
+                                let mut events_state =
+                                    egui::collapsing_header::CollapsingState::load_with_default_open(
+                                        ui.ctx(),
+                                        ui.make_persistent_id("events-section"),
+                                        true,
+                                    );
+                                render_section_header(
+                                    ui,
+                                    &mut events_state,
+                                    "Events",
+                                    |ui| {
+                                        if ui
+                                            .add(
+                                                run_button("Reset")
+                                                    .min_size(egui::vec2(52.0, 26.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.controller
+                                                .as_mut()
+                                                .expect("loaded run controller")
+                                                .reset_event_arguments();
+                                            self.reset_event_inputs();
+                                        }
+                                    },
+                                );
+                                events_state.show_body_unindented(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    self.render_events(ui, &state.events, state.connected);
+                                });
                             });
                         }
 
@@ -1038,28 +1111,31 @@ impl eframe::App for RunApp {
                                         ui.make_persistent_id("params-section"),
                                         true,
                                     );
-                                ui.horizontal(|ui| {
-                                    params_state.show_toggle_button(
-                                        ui,
-                                        egui::collapsing_header::paint_default_icon,
-                                    );
-                                    ui.label(egui::RichText::new("Params").strong());
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.selectable_value(
-                                                &mut param_layout,
-                                                ParamLayout::Knobs,
-                                                "Knobs",
-                                            );
-                                            ui.selectable_value(
-                                                &mut param_layout,
-                                                ParamLayout::Sliders,
-                                                "Sliders",
-                                            );
-                                        },
-                                    );
-                                });
+                                render_section_header(
+                                    ui,
+                                    &mut params_state,
+                                    "Params",
+                                    |ui| {
+                                        if ui
+                                            .add(
+                                                run_button("Reset")
+                                                    .min_size(egui::vec2(52.0, 26.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.controller
+                                                .as_mut()
+                                                .expect("loaded run controller")
+                                                .reset_params();
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                render_param_layout_toggle(ui, &mut param_layout);
+                                            },
+                                        );
+                                    },
+                                );
                                 self.param_layout = param_layout;
                                 params_state.show_body_unindented(ui, |ui| {
                                     ui.add_space(8.0);
@@ -1106,13 +1182,68 @@ impl ParamLayout {
     }
 }
 
+fn run_button(text: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+    egui::Button::new(text).corner_radius(CONTROL_CORNER_RADIUS)
+}
+
+fn render_param_layout_toggle(ui: &mut egui::Ui, layout: &mut ParamLayout) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(114.0, 30.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if ui
+                .add(
+                    run_button("Sliders")
+                        .selected(*layout == ParamLayout::Sliders)
+                        .min_size(egui::vec2(58.0, 26.0)),
+                )
+                .clicked()
+            {
+                *layout = ParamLayout::Sliders;
+            }
+            if ui
+                .add(
+                    run_button("Knobs")
+                        .selected(*layout == ParamLayout::Knobs)
+                        .min_size(egui::vec2(52.0, 26.0)),
+                )
+                .clicked()
+            {
+                *layout = ParamLayout::Knobs;
+            }
+        },
+    );
+}
+
+fn render_section_header(
+    ui: &mut egui::Ui,
+    state: &mut egui::collapsing_header::CollapsingState,
+    title: &str,
+    add_actions: impl FnOnce(&mut egui::Ui),
+) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 30.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
+                ui.label(egui::RichText::new(title).strong());
+            });
+            add_actions(ui);
+        },
+    );
+}
+
 fn section_box(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::group(ui.style())
         .fill(ui.visuals().panel_fill)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .corner_radius(12.0)
+        .corner_radius(SECTION_CORNER_RADIUS)
         .inner_margin(egui::Margin::symmetric(8, 10))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             if !title.is_empty() {
                 ui.label(
                     egui::RichText::new(title)
@@ -1230,7 +1361,7 @@ fn render_event_array_editor(
                 if ui
                     .add_enabled(
                         connected && values.len() < EVENT_ARRAY_VISIBLE_LIMIT,
-                        egui::Button::new("+").small(),
+                        run_button("+").small(),
                     )
                     .on_hover_text("Add element")
                     .clicked()
@@ -1238,10 +1369,7 @@ fn render_event_array_editor(
                     values.push(default_value_for_type(scalar_ty));
                 }
                 if ui
-                    .add_enabled(
-                        connected && !values.is_empty(),
-                        egui::Button::new("−").small(),
-                    )
+                    .add_enabled(connected && !values.is_empty(), run_button("−").small())
                     .on_hover_text("Remove last element")
                     .clicked()
                 {
@@ -1254,7 +1382,7 @@ fn render_event_array_editor(
     ui.add_space(5.0);
     egui::Frame::NONE
         .fill(ui.visuals().faint_bg_color)
-        .corner_radius(7.0)
+        .corner_radius(CONTROL_GROUP_CORNER_RADIUS)
         .inner_margin(egui::Margin::symmetric(9, 8))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
@@ -1277,7 +1405,7 @@ fn render_event_array_editor(
                         egui::Frame::NONE
                             .fill(ui.visuals().extreme_bg_color)
                             .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                            .corner_radius(5.0)
+                            .corner_radius(CONTROL_CORNER_RADIUS)
                             .inner_margin(egui::Margin::symmetric(7, 5))
                             .show(ui, |ui| {
                                 ui.allocate_ui_with_layout(
@@ -1388,20 +1516,37 @@ enum ParamEditOutcome {
 struct ParamControlSpec<'a> {
     label: &'a str,
     ty: &'a str,
-    min: Option<f64>,
-    max: Option<f64>,
     default: Option<f64>,
+    domain: Option<ParamDomain<'a>>,
+}
+
+impl ParamControlSpec<'_> {
+    fn bounds(self) -> Option<(f64, f64)> {
+        self.domain
+            .map(|domain| (domain.minimum(), domain.maximum()))
+    }
+
+    fn effective_step(self) -> f64 {
+        let (min, max) = self.bounds().unzip();
+        self.domain
+            .and_then(ParamDomain::step)
+            .unwrap_or_else(|| scalar_step(self.ty, min, max))
+    }
+
+    fn constrain_plain(self, value: f64) -> f64 {
+        self.domain
+            .map_or(value, |domain| domain.constrain_plain(value))
+    }
 }
 
 fn render_param_value_editor(
     ui: &mut egui::Ui,
-    label: &str,
-    ty: &str,
-    min: Option<f64>,
-    max: Option<f64>,
+    spec: ParamControlSpec<'_>,
     value: &Value,
     number_draft: Option<f64>,
 ) -> ParamEditOutcome {
+    let ParamControlSpec { label, ty, .. } = spec;
+    let (min, max) = spec.bounds().unzip();
     if ty == "bool" {
         let mut checked = value.as_bool().unwrap_or(false);
         if ui
@@ -1419,7 +1564,7 @@ fn render_param_value_editor(
     let committed_number = value.as_f64().unwrap_or(0.0);
     let displayed_number = number_draft.unwrap_or(committed_number);
     let is_integer = is_integer_type(ty);
-    let step = scalar_step(ty, min, max);
+    let step = spec.effective_step();
     let mut outcome = ParamEditOutcome::None;
 
     ui.vertical(|ui| {
@@ -1492,10 +1637,23 @@ fn render_param_value_editor(
                 .scope(|ui| {
                     ui.spacing_mut().interact_size.y = 24.0;
                     ui.spacing_mut().slider_width = ui.available_width();
-                    let slider = if is_integer {
+                    let domain = spec
+                        .domain
+                        .expect("ranged parameter controls must have a prepared domain");
+                    let slider = if domain.curve().is_some() || domain.scale() == ParamScale::Log {
+                        let mut normalized = domain.plain_to_normalized(slider_value);
+                        let response = ui.add_sized(
+                            [ui.available_width(), 24.0],
+                            egui::Slider::new(&mut normalized, 0.0..=1.0)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        );
+                        slider_value = domain.normalized_to_plain(normalized);
+                        return response;
+                    } else if is_integer {
                         egui::Slider::new(&mut slider_value, min..=max)
                             .integer()
-                            .step_by(1.0)
+                            .step_by(step)
                             .show_value(false)
                             .trailing_fill(true)
                     } else {
@@ -1543,21 +1701,10 @@ fn render_compact_param_value_editor(
 
     let committed_number = value.as_f64().unwrap_or(0.0);
     let mut displayed_number = number_draft.unwrap_or(committed_number);
-    let step = scalar_step(spec.ty, spec.min, spec.max);
 
-    if let (Some(min), Some(max)) = (spec.min, spec.max) {
+    if let Some((min, max)) = spec.bounds() {
         let mut knob_value = committed_number;
-        if render_param_knob(
-            ui,
-            &mut knob_value,
-            min,
-            max,
-            step,
-            spec.default,
-            spec.label,
-        )
-        .changed()
-        {
+        if render_param_knob(ui, &mut knob_value, min, max, spec).changed() {
             displayed_number = knob_value;
             outcome = ParamEditOutcome::Commit(json_number(knob_value));
         }
@@ -1569,8 +1716,9 @@ fn render_compact_param_value_editor(
     let next = render_compact_number_input(
         ui,
         spec.ty,
-        spec.min,
-        spec.max,
+        spec.bounds().map(|(min, _)| min),
+        spec.bounds().map(|(_, max)| max),
+        spec.effective_step(),
         displayed_number,
         number_draft.is_some(),
     );
@@ -1595,14 +1743,21 @@ fn render_param_heading(ui: &mut egui::Ui, label: &str, ty: &str, width: f32, al
         .x;
     let spacing = 5.0;
     let visible_name_width = name_width.min((width - type_width - spacing).max(0.0));
+    let content_width = visible_name_width + spacing + type_width;
+    let leading_space = match align {
+        egui::Align::Min => 0.0,
+        egui::Align::Center => (width - content_width).max(0.0) / 2.0,
+        egui::Align::Max => (width - content_width).max(0.0),
+    };
 
     ui.allocate_ui_with_layout(
         egui::vec2(width, 20.0),
         egui::Layout::left_to_right(egui::Align::Center)
             .with_main_wrap(false)
-            .with_main_align(align),
+            .with_main_align(egui::Align::Min),
         |ui| {
             ui.spacing_mut().item_spacing.x = spacing;
+            ui.add_space(leading_space);
             ui.add_sized(
                 [visible_name_width, 20.0],
                 egui::Label::new(egui::RichText::new(label).strong().monospace()).truncate(),
@@ -1617,6 +1772,7 @@ fn render_compact_number_input(
     ty: &str,
     min: Option<f64>,
     max: Option<f64>,
+    step: f64,
     displayed_number: f64,
     has_draft: bool,
 ) -> ParamEditOutcome {
@@ -1646,7 +1802,6 @@ fn render_compact_number_input(
         }
     } else {
         let mut number = displayed_number;
-        let step = scalar_step(ty, min, max);
         let drag = if let (Some(min), Some(max)) = (min, max) {
             egui::DragValue::new(&mut number)
                 .speed(scalar_drag_speed(ty, Some(min), Some(max)))
@@ -1678,21 +1833,34 @@ fn render_param_knob(
     value: &mut f64,
     min: f64,
     max: f64,
-    step: f64,
-    default: Option<f64>,
-    label: &str,
+    spec: ParamControlSpec<'_>,
 ) -> egui::Response {
+    let step = spec.effective_step();
+    let domain = spec
+        .domain
+        .expect("knob controls must have a prepared parameter domain");
     let size = egui::vec2(64.0, 64.0);
     let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), *value, label));
+    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), *value, spec.label));
     if response.clicked() {
         response.request_focus();
     }
 
     let mut next_value = *value;
+    if response.drag_started() {
+        ui.data_mut(|data| {
+            data.insert_temp(response.id, KnobDragState::new(domain, next_value));
+        });
+    }
     if response.dragged() {
-        let delta_y = ui.input(|input| input.pointer.delta().y) as f64;
-        next_value -= delta_y * (max - min) / 160.0;
+        let delta_y = response.drag_delta().y as f64;
+        next_value = ui.data_mut(|data| {
+            data.get_temp_mut_or_insert_with(response.id, || KnobDragState::new(domain, next_value))
+                .drag(domain, delta_y)
+        });
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|data| data.remove::<KnobDragState>(response.id));
     }
     if response.has_focus() {
         ui.input(|input| {
@@ -1711,10 +1879,10 @@ fn render_param_knob(
         });
     }
     if response.double_clicked() {
-        next_value = default.unwrap_or(min);
+        next_value = spec.default.unwrap_or(min);
     }
 
-    next_value = quantize_control_value(next_value, min, max, step);
+    next_value = spec.constrain_plain(next_value);
     if next_value != *value {
         *value = next_value;
         response.mark_changed();
@@ -1728,11 +1896,7 @@ fn render_param_knob(
     ui.painter()
         .circle_stroke(center, radius, visuals.bg_stroke);
 
-    let ratio = if max > min {
-        ((*value - min) / (max - min)).clamp(0.0, 1.0) as f32
-    } else {
-        0.0
-    };
+    let ratio = domain.plain_to_normalized(*value) as f32;
     let start = 135.0_f32.to_radians();
     let sweep = 270.0_f32.to_radians();
     paint_knob_arc(
@@ -1764,6 +1928,31 @@ fn render_param_knob(
     response.on_hover_text("Drag vertically to adjust; double-click to reset")
 }
 
+const KNOB_DRAG_POINTS_PER_RANGE: f64 = 160.0;
+
+#[derive(Clone, Copy)]
+struct KnobDragState {
+    start_normalized: f64,
+    delta_y: f64,
+}
+
+impl KnobDragState {
+    fn new(domain: ParamDomain<'_>, plain: f64) -> Self {
+        Self {
+            start_normalized: domain.plain_to_normalized(plain),
+            delta_y: 0.0,
+        }
+    }
+
+    fn drag(&mut self, domain: ParamDomain<'_>, delta_y: f64) -> f64 {
+        let minimum_delta = (self.start_normalized - 1.0) * KNOB_DRAG_POINTS_PER_RANGE;
+        let maximum_delta = self.start_normalized * KNOB_DRAG_POINTS_PER_RANGE;
+        self.delta_y = (self.delta_y + delta_y).clamp(minimum_delta, maximum_delta);
+        domain
+            .normalized_to_plain(self.start_normalized - self.delta_y / KNOB_DRAG_POINTS_PER_RANGE)
+    }
+}
+
 fn paint_knob_arc(
     painter: &egui::Painter,
     center: egui::Pos2,
@@ -1780,14 +1969,6 @@ fn paint_knob_arc(
         })
         .collect();
     painter.add(egui::Shape::line(points, stroke));
-}
-
-fn quantize_control_value(value: f64, min: f64, max: f64, step: f64) -> f64 {
-    let value = value.clamp(min, max);
-    if !step.is_finite() || step <= 0.0 {
-        return value;
-    }
-    (min + ((value - min) / step).round() * step).clamp(min, max)
 }
 
 fn param_grid_columns(available_width: f32, layout: ParamLayout) -> usize {
@@ -2008,13 +2189,13 @@ fn apply_run_theme(ctx: &egui::Context, theme: &RunTheme) {
     visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, theme.border);
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border);
     visuals.widgets.noninteractive.weak_bg_fill = theme.panel_tint;
-    visuals.window_corner_radius = 14.0.into();
-    visuals.menu_corner_radius = 12.0.into();
-    visuals.widgets.noninteractive.corner_radius = 10.0.into();
-    visuals.widgets.inactive.corner_radius = 10.0.into();
-    visuals.widgets.hovered.corner_radius = 10.0.into();
-    visuals.widgets.active.corner_radius = 10.0.into();
-    visuals.widgets.open.corner_radius = 10.0.into();
+    visuals.window_corner_radius = WINDOW_CORNER_RADIUS.into();
+    visuals.menu_corner_radius = SECTION_CORNER_RADIUS.into();
+    visuals.widgets.noninteractive.corner_radius = CONTROL_CORNER_RADIUS.into();
+    visuals.widgets.inactive.corner_radius = CONTROL_CORNER_RADIUS.into();
+    visuals.widgets.hovered.corner_radius = CONTROL_CORNER_RADIUS.into();
+    visuals.widgets.active.corner_radius = CONTROL_CORNER_RADIUS.into();
+    visuals.widgets.open.corner_radius = CONTROL_CORNER_RADIUS.into();
     style.spacing.slider_width = 220.0;
 
     ctx.set_style(style);
@@ -2030,6 +2211,36 @@ fn param_name(param: &Value) -> Option<&str> {
 
 fn param_type(param: &Value) -> &str {
     param.get("type").and_then(Value::as_str).unwrap_or("f32")
+}
+
+fn prepared_param_domain(param: &Value) -> Option<ParamDomain<'_>> {
+    if param.get("scalar").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let scalar = match param_type(param) {
+        "f32" => ParamScalarType::F32,
+        "f64" => ParamScalarType::F64,
+        "i32" => ParamScalarType::I32,
+        "i64" => ParamScalarType::I64,
+        _ => return None,
+    };
+    let scale = match param.get("scale").and_then(Value::as_str) {
+        Some("log") => ParamScale::Log,
+        _ => ParamScale::Linear,
+    };
+    ParamDomain::new(
+        scalar,
+        param.get("rangeMin").and_then(Value::as_f64)?,
+        param.get("rangeMax").and_then(Value::as_f64)?,
+        scale,
+        param.get("curve").and_then(Value::as_f64),
+        param.get("unit").and_then(Value::as_str),
+        param.get("step").and_then(Value::as_f64),
+        param
+            .get("stepCount")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok()),
+    )
 }
 
 fn buffer_name(buffer: &Value) -> Option<&str> {
@@ -2155,8 +2366,9 @@ mod tests {
     use super::{
         buffer_loaded_summary, control_decimals, event_arg_signature, event_array_grid_columns,
         event_array_len, event_array_scalar_type, format_run_status, param_grid_columns,
-        quantize_control_value, render_compact_param_value_editor, scalar_drag_speed, scalar_step,
-        ParamControlSpec, ParamLayout, PARAM_LAYOUT_STORAGE_KEY,
+        prepared_param_domain, render_compact_param_value_editor, scalar_drag_speed, scalar_step,
+        KnobDragState, ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale,
+        PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
     struct TestStorage(HashMap<String, String>);
@@ -2194,8 +2406,155 @@ mod tests {
 
     #[test]
     fn knob_values_follow_the_shared_scalar_step() {
-        assert_eq!(quantize_control_value(705.06, 40.0, 12_000.0, 0.1), 705.1);
-        assert_eq!(quantize_control_value(705.6, 40.0, 12_000.0, 1.0), 706.0);
+        let fine = ParamDomain::new(
+            ParamScalarType::F64,
+            40.0,
+            12_000.0,
+            ParamScale::Linear,
+            None,
+            None,
+            Some(0.1),
+            Some(119_600),
+        )
+        .expect("valid fine domain");
+        let coarse = ParamDomain::new(
+            ParamScalarType::F64,
+            40.0,
+            12_000.0,
+            ParamScale::Linear,
+            None,
+            None,
+            Some(1.0),
+            Some(11_960),
+        )
+        .expect("valid coarse domain");
+        assert_eq!(fine.constrain_plain(705.06), 705.1);
+        assert_eq!(coarse.constrain_plain(705.6), 706.0);
+    }
+
+    #[test]
+    fn stepped_knob_drag_accumulates_sub_step_motion() {
+        let domain = ParamDomain::new(
+            ParamScalarType::F64,
+            0.0,
+            800.0,
+            ParamScale::Linear,
+            None,
+            None,
+            Some(100.0),
+            Some(8),
+        )
+        .expect("valid stepped domain");
+        let mut drag = KnobDragState::new(domain, 0.0);
+
+        for _ in 0..9 {
+            assert_eq!(drag.drag(domain, -1.0), 0.0);
+        }
+        assert_eq!(drag.drag(domain, -1.0), 100.0);
+    }
+
+    #[test]
+    fn logarithmic_controls_map_the_geometric_midpoint_to_the_center() {
+        let min = 20.0;
+        let max = 20_000.0;
+        let domain = ParamDomain::new(
+            ParamScalarType::F64,
+            min,
+            max,
+            ParamScale::Log,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid logarithmic domain");
+        let midpoint = domain.normalized_to_plain(0.5);
+
+        assert!((midpoint - (min * max).sqrt()).abs() < 1e-10);
+        assert!((domain.plain_to_normalized(midpoint) - 0.5).abs() < 1e-12);
+        assert_eq!(domain.normalized_to_plain(0.0), min);
+        assert_eq!(domain.normalized_to_plain(1.0), max);
+        assert_eq!(domain.plain_to_normalized(min), 0.0);
+        assert_eq!(domain.plain_to_normalized(max), 1.0);
+
+        let wide = ParamDomain::new(
+            ParamScalarType::F64,
+            1.0e-300,
+            1.0e300,
+            ParamScale::Log,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid wide logarithmic domain");
+        let wide_midpoint = wide.normalized_to_plain(0.5);
+        assert!((wide_midpoint - 1.0).abs() < 1.0e-12);
+        assert!((wide.plain_to_normalized(1.0) - 0.5).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn curved_controls_follow_supercollider_lincurve_shape() {
+        let inverse = ParamDomain::new(
+            ParamScalarType::F64,
+            0.0,
+            1.0,
+            ParamScale::Linear,
+            Some(-4.0),
+            None,
+            None,
+            None,
+        )
+        .expect("valid inverse curve");
+        let inverse_midpoint = inverse.normalized_to_plain(0.5);
+        let expected = (-2.0_f64).exp_m1() / (-4.0_f64).exp_m1();
+        assert!((inverse_midpoint - expected).abs() < 1.0e-12);
+        assert!((inverse.plain_to_normalized(inverse_midpoint) - 0.5).abs() < 1.0e-12);
+        let forward = ParamDomain::new(
+            ParamScalarType::F64,
+            0.0,
+            1.0,
+            ParamScale::Linear,
+            Some(4.0),
+            None,
+            None,
+            None,
+        )
+        .expect("valid forward curve");
+        assert!((forward.normalized_to_plain(0.5) + inverse_midpoint - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn run_param_json_prepares_the_declared_scalar_domain() {
+        let param = serde_json::json!({
+            "name": "cutoff",
+            "type": "f32",
+            "scalar": true,
+            "rangeMin": 20.0,
+            "rangeMax": 20_000.0,
+            "scale": "log",
+            "curve": null,
+            "unit": "Hz",
+            "step": null,
+            "stepCount": null,
+        });
+        let domain = prepared_param_domain(&param).expect("scalar parameter domain");
+
+        assert_eq!(domain.scalar(), ParamScalarType::F32);
+        assert_eq!(domain.scale(), ParamScale::Log);
+        assert_eq!(domain.unit(), Some("Hz"));
+        assert!(
+            (domain.normalized_to_plain(0.5) - 20_000.0_f64.sqrt() * 20.0_f64.sqrt()).abs() < 0.001
+        );
+
+        let array = serde_json::json!({
+            "type": "f32[2]",
+            "scalar": false,
+            "rangeMin": 0.0,
+            "rangeMax": 1.0,
+            "scale": "linear",
+        });
+        assert!(prepared_param_domain(&array).is_none());
     }
 
     #[test]
@@ -2220,6 +2579,22 @@ mod tests {
         assert_eq!(control_decimals(1.0), 0);
         assert_eq!(control_decimals(0.1), 1);
         assert_eq!(control_decimals(0.001), 3);
+        let spec = ParamControlSpec {
+            label: "fine",
+            ty: "f64",
+            default: Some(0.0),
+            domain: ParamDomain::new(
+                ParamScalarType::F64,
+                0.0,
+                0.000_001,
+                ParamScale::Linear,
+                None,
+                None,
+                Some(0.000_000_1),
+                Some(10),
+            ),
+        };
+        assert_eq!(control_decimals(spec.effective_step()), 7);
     }
 
     #[test]
@@ -2300,9 +2675,17 @@ mod tests {
                 ParamControlSpec {
                     label: "a_very_long_parameter_name",
                     ty: "f32",
-                    min: Some(20.0),
-                    max: Some(20_000.0),
                     default: Some(880.0),
+                    domain: ParamDomain::new(
+                        ParamScalarType::F64,
+                        20.0,
+                        20_000.0,
+                        ParamScale::Log,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
                 },
                 &serde_json::json!(880.0),
                 None,

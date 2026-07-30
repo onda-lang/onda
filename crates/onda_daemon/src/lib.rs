@@ -566,6 +566,55 @@ mod tests {
     }
 
     #[test]
+    fn resetting_parameters_does_not_rewind_processor_state() {
+        let dir = mk_temp_dir("run_reset");
+        let main = dir.join("main.onda");
+
+        write_file(
+            &main,
+            "outs:\n  out1\nparams:\n  offset = 2.0\ninit:\n  counter = offset\nsample:\n  out1 = counter\n  counter = counter + 1.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    float_param_smoothing_ms: 0.0,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should compile and start");
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .set_param_f64("offset", 4.0)
+            .expect("param update should succeed");
+
+        let first = session
+            .render_run_block(&main)
+            .expect("first render should succeed");
+        assert!((first[0][0] - 2.0).abs() < 1e-6);
+        assert!(first[0][1] > first[0][0]);
+
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .reset_params()
+            .expect("parameter reset should succeed");
+        let params_reset = session
+            .render_run_block(&main)
+            .expect("parameter-reset render should succeed");
+
+        assert!(params_reset[0][0] > first[0][0]);
+        assert_eq!(
+            session.run(&main).expect("active run").param_info()[0].value,
+            Some(2.0)
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn run_exposes_all_events_and_triggers_scalar_events() {
         let dir = mk_temp_dir("run_events");
         let main = dir.join("main.onda");

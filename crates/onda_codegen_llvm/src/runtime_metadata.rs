@@ -2,12 +2,12 @@
 use std::collections::HashMap;
 
 use onda_frontend::PrimitiveType;
-use onda_mir::{ScalarValue, ValueRange};
+use onda_mir::{ParamControl, ScalarValue, ValueRange};
 
 use crate::primitives::{primitive_type_bytes, primitive_type_name, scalar_value_to_f64};
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
-    DeclaredState,
+    DeclaredState, ParamDomain,
 };
 
 #[cfg(any(feature = "llvm-orc", test))]
@@ -94,6 +94,14 @@ impl DeclaredIo {
 
     pub fn range_max_as_f64(&self) -> Option<f64> {
         self.range.map(|r| scalar_value_to_f64(r.max))
+    }
+
+    pub(crate) fn param_control(&self) -> Option<&ParamControl> {
+        self.control.as_ref()
+    }
+
+    pub fn param_domain(&self) -> Option<ParamDomain<'_>> {
+        self.control.as_ref()?.domain(self.range?)
     }
 
     pub fn type_repr(&self) -> String {

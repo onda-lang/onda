@@ -112,6 +112,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.outputPtrs = [];
     this.outputCapacityFrames = 0;
     this.blockCursor = 0;
+    this.executionFailed = false;
 
     const paramBytes = Number(metadata.runtime?.param_size_bytes ?? 0);
     if (!Number.isInteger(paramBytes) || paramBytes < 0) {
@@ -338,14 +339,28 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     ) {
       throw new Error(`Onda parameter '${param.name}' has invalid storage metadata`);
     }
-    this.writeStorage(this.paramsPtr + offset, param, value);
+    this.writeStorage(
+      this.paramsPtr + offset,
+      param,
+      value,
+    );
   }
 
   reset() {
     this.refreshMemoryCache();
     this.stateBytes.fill(0);
     this.blockCursor = 0;
-    this.exports.onda_init(this.paramsPtr, this.statePtr);
+    this.executionFailed = false;
+    this.checkExecutionStatus(
+      this.exports.onda_init(this.paramsPtr, this.statePtr),
+      "processor init",
+    );
+  }
+
+  checkExecutionStatus(status, operation) {
+    if (status === 0) return;
+    this.executionFailed = true;
+    throw new Error(`${operation} failed with Onda execution status ${String(status)}`);
   }
 
   createSnapshot() {
@@ -536,14 +551,17 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (typeof handler !== "function") {
       throw new Error(`missing WebAssembly export '${event.export}'`);
     }
-    handler(
-      this.eventPayloadPtr,
-      this.paramsPtr,
-      this.statePtr,
-      this.bufferPointersPtr,
-      this.bufferFramesPtr,
-      this.bufferChannelsPtr,
-      this.bufferSampleRatesPtr,
+    this.checkExecutionStatus(
+      handler(
+        this.eventPayloadPtr,
+        this.paramsPtr,
+        this.statePtr,
+        this.bufferPointersPtr,
+        this.bufferFramesPtr,
+        this.bufferChannelsPtr,
+        this.bufferSampleRatesPtr,
+      ),
+      `event '${event.name}'`,
     );
   }
 
@@ -1110,8 +1128,18 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     );
   }
 
+  clearOutputs(outputs) {
+    for (const bus of outputs) {
+      for (const channel of bus) channel.fill(0);
+    }
+  }
+
   process(inputs, outputs) {
     this.refreshMemoryCache();
+    if (this.executionFailed) {
+      this.clearOutputs(outputs);
+      return true;
+    }
     const frames = this.audioFrameCount(inputs, outputs);
 
     let callbackOffset = 0;
@@ -1132,11 +1160,21 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         startFrame,
         segmentFrames,
       );
-      this.invokeProcessSegment(
+      const status = this.invokeProcessSegment(
         startFrame,
         segmentFrames,
         flags,
       );
+      if (status !== 0) {
+        this.executionFailed = true;
+        this.clearOutputs(outputs);
+        this.port.postMessage({
+          type: "onda-error",
+          operation: "process",
+          error: `processor process failed with Onda execution status ${String(status)}`,
+        });
+        return true;
+      }
       this.marshalOutputSegment(
         outputs,
         frames,

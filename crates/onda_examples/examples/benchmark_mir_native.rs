@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use onda_codegen_llvm::{
     lower_optimized_mir_and_jit_with_options, MirCompileOptions, MirJitProgram, RuntimeState,
-    TargetOptLevel,
+    TargetOptLevel, PROCESSOR_EXECUTION_OK,
 };
 use onda_frontend::parse_program_file;
 use onda_realtime::configure_current_thread_audio_fp_mode;
@@ -95,7 +95,7 @@ impl NativeBenchmark {
     }
 
     unsafe fn process_unchecked(&mut self) {
-        unsafe {
+        let status = unsafe {
             self.jit.process_unchecked(
                 &mut self.state,
                 &self.params,
@@ -108,8 +108,9 @@ impl NativeBenchmark {
                 &self.buffer_frames,
                 &self.buffer_channels,
                 &self.buffer_sample_rates,
-            );
-        }
+            )
+        };
+        assert_eq!(status, PROCESSOR_EXECUTION_OK);
     }
 }
 

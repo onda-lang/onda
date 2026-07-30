@@ -15,7 +15,8 @@ use std::fmt;
 
 use onda_frontend::{
     ArrayElemType, AssignTarget, BinaryOp as AstBinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr,
-    LogicalOp, PrimitiveType, SourceLoc, Stmt, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
+    LogicalOp, ParamScale, PrimitiveType, SourceLoc, Stmt, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_WRITE2_FN,
 };
 use onda_mir::{
     BinaryOp as MirBinaryOp, Block as MirBlock, BoundsMode, CallArgument, CompareOp,
@@ -40,8 +41,8 @@ use crate::{
     AggregatePathComponent, AnalysisOptions, ProcSincStageStateFields, ProcStepOversampleMeta,
     ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType, TypedArrayInfo, TypedBufferChannels,
     TypedConstValue, TypedEvent, TypedEventParamDefault, TypedEventParamType, TypedFieldType,
-    TypedFnParam, TypedFunction, TypedNestedProcArray, TypedProgram, TypedStructField,
-    TypedValueRange,
+    TypedFnParam, TypedFunction, TypedNestedProcArray, TypedParamControl, TypedProgram,
+    TypedStructField, TypedValueRange,
 };
 
 const SINC_A1_COEFF: f64 = 0.039_151_597_734_460_045;
@@ -1086,6 +1087,7 @@ fn populate_interface(
                 ty: type_id,
                 default: onda_mir::ConstantValue::Aggregate(defaults),
                 range: None,
+                control: onda_mir::ParamControl::default(),
             });
             globals
                 .param_arrays
@@ -1101,6 +1103,7 @@ fn populate_interface(
             ty: type_id,
             default: mir_constant(param.default),
             range: param.range.map(mir_range),
+            control: mir_param_control(&param.control),
         });
         globals.params.insert(param.name.clone(), (id, param.ty));
         index += 1;
@@ -1164,7 +1167,7 @@ fn populate_runtime_interface_views(
         let Some(view) = view else {
             continue;
         };
-        match resolve_runtime_interface_view(globals, kind, view) {
+        match resolve_runtime_interface_view(program, globals, kind, view) {
             Ok(view) => {
                 globals.interface_views.insert(kind, view);
             }
@@ -1179,6 +1182,7 @@ fn populate_runtime_interface_views(
 }
 
 fn resolve_runtime_interface_view(
+    program: &TypedProgram,
     globals: &RuntimeGlobals,
     kind: DynamicInterfaceKind,
     view: &ResolvedInterfaceView,
@@ -1207,7 +1211,8 @@ fn resolve_runtime_interface_view(
                 SourceLoc::ZERO,
             ));
         }
-        let (endpoint, actual_type) = resolve_runtime_interface_endpoint(globals, kind, slot)?;
+        let (endpoint, actual_type) =
+            resolve_runtime_interface_endpoint(program, globals, kind, slot)?;
         if actual_type != view.element_type {
             return Err(MirLoweringError::new(
                 format!(
@@ -1228,6 +1233,7 @@ fn resolve_runtime_interface_view(
 }
 
 fn resolve_runtime_interface_endpoint(
+    program: &TypedProgram,
     globals: &RuntimeGlobals,
     kind: DynamicInterfaceKind,
     slot: &ResolvedInterfaceSlot,
@@ -1253,10 +1259,12 @@ fn resolve_runtime_interface_endpoint(
                 .get(&slot.root)
                 .copied()
                 .ok_or_else(missing)?;
+            let clamped = program.dynamic_input_range_aliases.get(&slot.root).cloned();
             Ok((
                 RuntimeInterfaceEndpoint::Input {
                     input,
                     element: None,
+                    clamped,
                 },
                 ty,
             ))
@@ -1271,6 +1279,7 @@ fn resolve_runtime_interface_endpoint(
                 RuntimeInterfaceEndpoint::Input {
                     input,
                     element: Some(checked_element(element, len)?),
+                    clamped: None,
                 },
                 ty,
             ))
@@ -1338,10 +1347,22 @@ fn resolve_runtime_interface_endpoint(
                 .get(&slot.root)
                 .copied()
                 .ok_or_else(missing)?;
+            let clamped = program
+                .dynamic_param_range_aliases
+                .get(&slot.root)
+                .map(|alias| {
+                    globals
+                        .states
+                        .get(alias)
+                        .map(|(state, _)| *state)
+                        .ok_or_else(missing)
+                })
+                .transpose()?;
             Ok((
                 RuntimeInterfaceEndpoint::Param {
                     param,
                     element: None,
+                    clamped,
                 },
                 ty,
             ))
@@ -1356,6 +1377,7 @@ fn resolve_runtime_interface_endpoint(
                 RuntimeInterfaceEndpoint::Param {
                     param,
                     element: Some(checked_element(element, len)?),
+                    clamped: None,
                 },
                 ty,
             ))
@@ -1953,6 +1975,19 @@ fn mir_range(range: TypedValueRange) -> onda_mir::ValueRange {
     }
 }
 
+fn mir_param_control(control: &TypedParamControl) -> onda_mir::ParamControl {
+    onda_mir::ParamControl {
+        scale: match control.scale {
+            ParamScale::Linear => onda_mir::ParamScale::Linear,
+            ParamScale::Log => onda_mir::ParamScale::Log,
+        },
+        curve: control.curve,
+        unit: control.unit.clone(),
+        step: control.step.map(mir_scalar),
+        step_count: control.step_count,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 struct CompileContext {
     sample_rate_bits: u32,
@@ -1983,11 +2018,12 @@ enum DynamicInterfaceKind {
     Params,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum RuntimeInterfaceEndpoint {
     Input {
         input: onda_mir::InputId,
         element: Option<u32>,
+        clamped: Option<String>,
     },
     AudioOutput {
         output: onda_mir::OutputId,
@@ -2000,6 +2036,7 @@ enum RuntimeInterfaceEndpoint {
     Param {
         param: onda_mir::ParamId,
         element: Option<u32>,
+        clamped: Option<onda_mir::StateId>,
     },
 }
 
@@ -2919,6 +2956,7 @@ fn map_intrinsic(function: BuiltinFn) -> Intrinsic {
         BuiltinFn::Min => Intrinsic::Min,
         BuiltinFn::Max => Intrinsic::Max,
         BuiltinFn::Fma => Intrinsic::Fma,
+        BuiltinFn::RangeClamp => Intrinsic::RangeClamp,
     }
 }
 

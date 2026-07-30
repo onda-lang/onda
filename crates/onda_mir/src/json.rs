@@ -259,7 +259,7 @@ mod tests {
                     }),
                     start: Value::Constant(ScalarValue::I32(4)),
                     len: Value::Constant(ScalarValue::I32(0)),
-                    bounds: BoundsMode::Trap,
+                    bounds: BoundsMode::Checked,
                     access: AccessMode::ReadOnly,
                 },
             },
@@ -272,7 +272,7 @@ mod tests {
         assert!(json.contains("\"control_mirror\""));
         assert!(json.contains("\"origin\": \"compiler_generated\""));
         assert!(json.contains("\"inline\": \"always\""));
-        assert!(json.contains("\"bounds\": \"trap\""));
+        assert!(json.contains("\"bounds\": \"checked\""));
         let decoded = super::from_json(&json).expect("current-schema MIR should decode");
         assert_eq!(decoded.as_program(), &program);
     }

@@ -11,12 +11,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
     RunEventValue, RunParamInfo, UNBOUND_BUFFERS_MESSAGE,
 };
-use onda_frontend::Diagnostic;
-use serde::Deserialize;
+use onda_frontend::{load_program_file, Diagnostic};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod playback;
@@ -118,9 +119,21 @@ pub fn available_audio_devices() -> (Vec<String>, Vec<String>) {
 
 #[derive(Debug)]
 enum ControllerEvent {
-    ChildReady(ReadyEvent),
-    TcpResponse(String),
-    FileChanged,
+    ChildReady { generation: u64, ready: ReadyEvent },
+    TcpResponse { generation: u64, line: String },
+    SourcesMayHaveChanged,
+}
+
+impl ControllerEvent {
+    fn is_current_for(&self, child_generation: u64) -> bool {
+        let event_generation = match self {
+            Self::ChildReady { generation, .. } | Self::TcpResponse { generation, .. } => {
+                Some(*generation)
+            }
+            Self::SourcesMayHaveChanged => None,
+        };
+        event_generation.is_none_or(|generation| generation == child_generation)
+    }
 }
 
 #[derive(Debug)]
@@ -128,6 +141,7 @@ enum PendingCommand {
     BindBuffer { name: String, path: String },
     ClearBuffer { name: String },
     Play,
+    ResetParams,
 }
 
 #[derive(Debug, Clone)]
@@ -149,7 +163,7 @@ struct RawReadyEvent {
     event: String,
     path: Option<String>,
     port: Option<u16>,
-    params: Option<Vec<Value>>,
+    params: Option<Vec<RunParamWire>>,
     buffers: Option<Vec<Value>>,
     events: Option<Vec<Value>>,
     #[serde(rename = "outputChannels")]
@@ -164,6 +178,25 @@ struct RawReadyEvent {
     current_output_device: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunParamWire {
+    index: usize,
+    name: String,
+    #[serde(rename = "type")]
+    type_repr: String,
+    value_repr: Option<String>,
+    default_repr: Option<String>,
+    range_min_repr: Option<String>,
+    range_max_repr: Option<String>,
+    scale: Option<String>,
+    curve_repr: Option<String>,
+    unit: Option<String>,
+    step_repr: Option<String>,
+    step_count: Option<u32>,
+    scalar: bool,
+}
+
 pub struct RunController {
     onda_path: PathBuf,
     options: RunHostOptions,
@@ -172,7 +205,9 @@ pub struct RunController {
     events_tx: Sender<ControllerEvent>,
     bridge: IpcBridge,
     child: ChildSession,
+    child_generation: u64,
     _watcher: Option<FileWatcher>,
+    watched_sources: Vec<PathBuf>,
     preserved_params: Vec<(String, Value)>,
     preserved_buffers: Vec<(String, String)>,
     preserved_events: Vec<(String, Vec<Value>)>,
@@ -181,8 +216,7 @@ pub struct RunController {
     scope_polling_active: bool,
     scope_polling_in_flight: bool,
     last_scope_poll: Instant,
-    compiled_source: Option<Vec<u8>>,
-    pending_source: Option<Vec<u8>>,
+    source_compilation: SourceCompilationState,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -198,13 +232,12 @@ impl RunController {
         let (events_tx, events_rx) = mpsc::channel();
         let bridge = IpcBridge::new();
         let state = RunState::new(&onda_path, &options);
-        let pending_source = fs::read(&onda_path).ok();
-        let child = ChildSession::spawn(&onda_path, &options, events_tx.clone())
+        let pending_sources = source_snapshot(&onda_path, &[]);
+        let watched_sources = pending_sources.paths();
+        let watcher = start_source_watcher(&watched_sources, events_tx.clone());
+        let child_generation = 1;
+        let child = ChildSession::spawn(&onda_path, &options, child_generation, events_tx.clone())
             .map_err(|e| format!("failed to start run subprocess: {e}"))?;
-        let watcher_tx = events_tx.clone();
-        let watcher = FileWatcher::watch(&onda_path, move || {
-            let _ = watcher_tx.send(ControllerEvent::FileChanged);
-        });
 
         let mut controller = Self {
             onda_path,
@@ -214,7 +247,9 @@ impl RunController {
             events_tx,
             bridge,
             child,
+            child_generation,
             _watcher: watcher,
+            watched_sources,
             preserved_params: Vec::new(),
             preserved_buffers: Vec::new(),
             preserved_events: Vec::new(),
@@ -223,8 +258,7 @@ impl RunController {
             scope_polling_active: false,
             scope_polling_in_flight: false,
             last_scope_poll: Instant::now(),
-            compiled_source: None,
-            pending_source,
+            source_compilation: SourceCompilationState::Compiling(pending_sources),
         };
         controller.state.running = true;
         controller.state.status = "Starting...".to_owned();
@@ -258,24 +292,33 @@ impl RunController {
         }
 
         while let Ok(event) = self.events_rx.try_recv() {
+            if !event.is_current_for(self.child_generation) {
+                continue;
+            }
             match event {
-                ControllerEvent::ChildReady(ready) => {
+                ControllerEvent::ChildReady { ready, .. } => {
                     self.handle_child_ready(ready);
                     result.state_changed = true;
                 }
-                ControllerEvent::TcpResponse(line) => {
+                ControllerEvent::TcpResponse { line, .. } => {
                     let response = self.handle_tcp_response(&line);
                     result.state_changed |= response.state_changed;
                     result.scope_changed |= response.scope_changed;
                 }
-                ControllerEvent::FileChanged => {
-                    if self.source_requires_recompile() {
-                        if self.processing_requested {
-                            let _ = self.restart_with_status("Restarting...");
-                        } else {
-                            self.invalidate_compiled_child();
-                        }
+                ControllerEvent::SourcesMayHaveChanged => {
+                    if self.sources_require_recompile() {
+                        self.recompile_after_source_change();
                         result.state_changed = true;
+                    } else if self.watched_sources.iter().any(|path| !path.exists()) {
+                        // A parent of an unresolved nested candidate may have
+                        // just appeared. Retarget the watch as the path becomes
+                        // reachable without recompiling for directory-only
+                        // changes.
+                        let refreshed = self.refresh_source_watcher();
+                        if !self.source_compilation.matches(&refreshed) {
+                            self.recompile_after_source_change();
+                            result.state_changed = true;
+                        }
                     }
                 }
             }
@@ -323,9 +366,10 @@ impl RunController {
         if self.state.connected && self.child.is_active() {
             let _ = self.bridge.send_command("pause", &json!({}));
         } else {
+            self.advance_child_generation();
             self.child.kill();
             self.bridge.disconnect();
-            self.pending_source = None;
+            self.source_compilation = SourceCompilationState::None;
         }
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
@@ -344,22 +388,23 @@ impl RunController {
         self.state.error = None;
     }
 
-    pub fn reset(&mut self) {
+    pub fn reset_params(&mut self) {
         self.preserved_params.clear();
-        self.preserved_events.clear();
         for param in &mut self.state.params {
-            let Some(name) = param_name(param).map(str::to_owned) else {
-                continue;
-            };
             let Some(default_value) = param_default_value(param) else {
                 continue;
             };
-            set_param_value(param, default_value.clone());
-            self.bridge.send_command_notification(
-                "setParam",
-                &json!({ "name": name, "value": default_value }),
-            );
+            set_param_value(param, default_value);
         }
+        if let Some(id) = self.bridge.send_command("resetParams", &json!({})) {
+            self.pending_commands
+                .insert(id, PendingCommand::ResetParams);
+        }
+        self.state.error = None;
+    }
+
+    pub fn reset_event_arguments(&mut self) {
+        self.preserved_events.clear();
         reset_event_values(&mut self.state.events);
         self.state.error = None;
     }
@@ -448,8 +493,11 @@ impl RunController {
     }
 
     fn restart_with_status(&mut self, status: &str) -> Result<(), String> {
+        let pending_sources = self.refresh_source_watcher();
+        self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
+        self.source_compilation = SourceCompilationState::None;
         self.pending_commands.clear();
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
@@ -461,15 +509,20 @@ impl RunController {
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
 
-        self.pending_source = fs::read(&self.onda_path).ok();
-        match ChildSession::spawn(&self.onda_path, &self.options, self.events_tx.clone()) {
+        match ChildSession::spawn(
+            &self.onda_path,
+            &self.options,
+            self.child_generation,
+            self.events_tx.clone(),
+        ) {
             Ok(child) => {
                 self.child = child;
+                self.source_compilation = SourceCompilationState::Compiling(pending_sources);
                 self.state.running = true;
                 Ok(())
             }
             Err(e) => {
-                self.pending_source = None;
+                self.source_compilation = SourceCompilationState::Failed(pending_sources);
                 self.state.status = "Failed to start".to_owned();
                 self.state.error = Some(e.clone());
                 Err(e)
@@ -480,25 +533,30 @@ impl RunController {
     fn can_reuse_compiled_child(&self) -> bool {
         self.bridge.is_connected()
             && self.child.is_active()
-            && self.compiled_source.is_some()
-            && self.compiled_source == fs::read(&self.onda_path).ok()
+            && self.source_compilation.ready().is_some_and(|compiled| {
+                *compiled == source_snapshot(&self.onda_path, &self.watched_sources)
+            })
     }
 
-    fn source_requires_recompile(&self) -> bool {
-        let current = fs::read(&self.onda_path).ok();
-        source_differs_from_cached(
-            current.as_deref(),
-            self.compiled_source.as_deref(),
-            self.pending_source.as_deref(),
-        )
+    fn sources_require_recompile(&self) -> bool {
+        let current = source_snapshot(&self.onda_path, &self.watched_sources);
+        !self.source_compilation.matches(&current)
+    }
+
+    fn recompile_after_source_change(&mut self) {
+        if self.processing_requested {
+            let _ = self.restart_with_status("Restarting...");
+        } else {
+            self.invalidate_compiled_child();
+        }
     }
 
     fn invalidate_compiled_child(&mut self) {
+        self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
         self.pending_commands.clear();
-        self.compiled_source = None;
-        self.pending_source = None;
+        self.source_compilation = SourceCompilationState::None;
         self.state.connected = false;
         self.state.status = "Stopped".to_owned();
         self.state.error = None;
@@ -507,13 +565,23 @@ impl RunController {
     }
 
     fn handle_child_ready(&mut self, ready: ReadyEvent) {
-        self.compiled_source = self
-            .pending_source
-            .take()
-            .or_else(|| fs::read(&self.onda_path).ok());
+        let current_sources = source_snapshot(&self.onda_path, &self.watched_sources);
+        if !matches!(
+            &self.source_compilation,
+            SourceCompilationState::Compiling(pending) if pending == &current_sources
+        ) {
+            let _ = self.restart_with_status("Restarting...");
+            return;
+        }
+        let SourceCompilationState::Compiling(compiled_sources) =
+            std::mem::take(&mut self.source_compilation)
+        else {
+            unreachable!("matching source compilation must be pending");
+        };
+        self.source_compilation = SourceCompilationState::Ready(compiled_sources);
         let bridge_error = self
             .bridge
-            .connect(ready.port, self.events_tx.clone())
+            .connect(ready.port, self.child_generation, self.events_tx.clone())
             .err();
 
         reconcile_preserved_params(
@@ -568,11 +636,26 @@ impl RunController {
         self.last_scope_poll = Instant::now();
     }
 
+    fn refresh_source_watcher(&mut self) -> SourceSnapshot {
+        let snapshot = source_snapshot(&self.onda_path, &self.watched_sources);
+        self.watched_sources = snapshot.paths();
+        self._watcher = start_source_watcher(&self.watched_sources, self.events_tx.clone());
+        snapshot
+    }
+
+    fn advance_child_generation(&mut self) {
+        self.child_generation = self
+            .child_generation
+            .checked_add(1)
+            .expect("run child generation exhausted");
+    }
+
     fn handle_child_exited(&mut self, code: Option<i32>, error: Option<String>) {
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
         self.bridge.disconnect();
         self.pending_commands.clear();
+        self.source_compilation.mark_failed();
         self.state.running = false;
         self.state.connected = false;
         self.state.status = "Runtime error".to_owned();
@@ -607,6 +690,7 @@ impl RunController {
                             self.state.status = "Running".to_owned();
                             self.scope_polling_active = true;
                         }
+                        PendingCommand::ResetParams => {}
                     }
                 } else {
                     match command {
@@ -622,6 +706,7 @@ impl RunController {
                                 UNBOUND_BUFFERS_MESSAGE.to_owned()
                             };
                         }
+                        PendingCommand::ResetParams => {}
                     }
                 }
                 poll.state_changed = true;
@@ -672,14 +757,6 @@ impl RunController {
     }
 }
 
-fn source_differs_from_cached(
-    current: Option<&[u8]>,
-    compiled: Option<&[u8]>,
-    pending: Option<&[u8]>,
-) -> bool {
-    current != compiled && pending.is_none_or(|pending| current != Some(pending))
-}
-
 impl Drop for RunController {
     fn drop(&mut self) {
         self.child.kill();
@@ -716,17 +793,96 @@ fn format_single_diagnostic(prefix: &str, diag: &Diagnostic) -> String {
     format!("{prefix}: {} ({location})", diag.message)
 }
 
-fn run_param_json(param: &RunParamInfo) -> Value {
-    json!({
-        "index": param.index,
-        "name": param.name,
-        "type": param.type_repr,
-        "value": param.value,
-        "default": param.default,
-        "rangeMin": param.range_min,
-        "rangeMax": param.range_max,
-        "scalar": param.scalar,
-    })
+fn run_param_json(param: &RunParamInfo) -> RunParamWire {
+    RunParamWire::from(param)
+}
+
+impl From<&RunParamInfo> for RunParamWire {
+    fn from(param: &RunParamInfo) -> Self {
+        let scalar_repr = |value| run_param_scalar_repr(&param.type_repr, value);
+        Self {
+            index: param.index,
+            name: param.name.clone(),
+            type_repr: param.type_repr.clone(),
+            value_repr: param.value.map(scalar_repr),
+            default_repr: param.default.map(scalar_repr),
+            range_min_repr: param.range_min.map(scalar_repr),
+            range_max_repr: param.range_max.map(scalar_repr),
+            scale: param.scale.clone(),
+            curve_repr: param.curve.map(|curve| curve.to_string()),
+            unit: param.unit.clone(),
+            step_repr: param.step.map(scalar_repr),
+            step_count: param.step_count,
+            scalar: param.scalar,
+        }
+    }
+}
+
+impl RunParamWire {
+    fn into_host_value(self) -> Result<Value, String> {
+        let value = decode_run_param_scalar_repr(&self.type_repr, self.value_repr, "valueRepr")?;
+        let default =
+            decode_run_param_scalar_repr(&self.type_repr, self.default_repr, "defaultRepr")?;
+        let range_min =
+            decode_run_param_scalar_repr(&self.type_repr, self.range_min_repr, "rangeMinRepr")?;
+        let range_max =
+            decode_run_param_scalar_repr(&self.type_repr, self.range_max_repr, "rangeMaxRepr")?;
+        let curve = decode_run_param_scalar_repr("f64", self.curve_repr, "curveRepr")?;
+        let step = decode_run_param_scalar_repr(&self.type_repr, self.step_repr, "stepRepr")?;
+        Ok(json!({
+            "index": self.index,
+            "name": self.name,
+            "type": self.type_repr,
+            "value": value,
+            "default": default,
+            "rangeMin": range_min,
+            "rangeMax": range_max,
+            "scale": self.scale,
+            "curve": curve,
+            "unit": self.unit,
+            "step": step,
+            "stepCount": self.step_count,
+            "scalar": self.scalar,
+        }))
+    }
+}
+
+fn run_param_scalar_repr(ty: &str, value: f64) -> String {
+    match ty {
+        "f32" => (value as f32).to_string(),
+        "i32" => (value as i32).to_string(),
+        "i64" => (value as i64).to_string(),
+        "bool" => (value != 0.0).to_string(),
+        _ => value.to_string(),
+    }
+}
+
+fn decode_run_param_scalar_repr(
+    ty: &str,
+    repr: Option<String>,
+    field: &str,
+) -> Result<Value, String> {
+    let Some(repr) = repr else {
+        return Ok(Value::Null);
+    };
+    let value = match ty {
+        "f32" => repr
+            .parse::<f32>()
+            .ok()
+            .map(f64::from)
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        "f64" => repr
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        "i32" => repr.parse::<i32>().ok().map(Value::from),
+        "i64" => repr.parse::<i64>().ok().map(Value::from),
+        "bool" => repr.parse::<bool>().ok().map(Value::Bool),
+        _ => None,
+    };
+    value.ok_or_else(|| format!("run parameter has invalid {ty} '{field}' value '{repr}'"))
 }
 
 fn run_buffer_json(buffer: &onda_daemon::RunBufferInfo) -> Value {
@@ -784,6 +940,7 @@ impl ChildSession {
     fn spawn(
         onda_path: &Path,
         options: &RunHostOptions,
+        generation: u64,
         event_tx: Sender<ControllerEvent>,
     ) -> Result<Self, String> {
         let mut cmd = Command::new(&options.onda_bin);
@@ -866,10 +1023,23 @@ impl ChildSession {
                 }
                 if let Ok(raw) = serde_json::from_str::<RawReadyEvent>(trimmed) {
                     if raw.event == "ready" {
+                        let params = match raw
+                            .params
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(RunParamWire::into_host_value)
+                            .collect::<Result<Vec<_>, _>>()
+                        {
+                            Ok(params) => params,
+                            Err(error) => {
+                                eprintln!("[onda run stdout] invalid ready event: {error}");
+                                continue;
+                            }
+                        };
                         let ready = ReadyEvent {
                             path: raw.path.unwrap_or_default(),
                             port: raw.port.unwrap_or(0),
-                            params: raw.params.unwrap_or_default(),
+                            params,
                             buffers: raw.buffers.unwrap_or_default(),
                             events: raw.events.unwrap_or_default(),
                             output_channels: raw.output_channels.unwrap_or(0),
@@ -878,7 +1048,7 @@ impl ChildSession {
                             current_input_device: raw.current_input_device,
                             current_output_device: raw.current_output_device,
                         };
-                        let _ = event_tx.send(ControllerEvent::ChildReady(ready));
+                        let _ = event_tx.send(ControllerEvent::ChildReady { generation, ready });
                         continue;
                     }
                 }
@@ -962,7 +1132,12 @@ impl IpcBridge {
         }
     }
 
-    fn connect(&self, port: u16, event_tx: Sender<ControllerEvent>) -> Result<(), String> {
+    fn connect(
+        &self,
+        port: u16,
+        generation: u64,
+        event_tx: Sender<ControllerEvent>,
+    ) -> Result<(), String> {
         self.disconnect();
 
         let stream = TcpStream::connect(("127.0.0.1", port))
@@ -982,7 +1157,10 @@ impl IpcBridge {
                     Ok(line) => {
                         let trimmed = line.trim().to_owned();
                         if !trimmed.is_empty() {
-                            let _ = event_tx.send(ControllerEvent::TcpResponse(trimmed));
+                            let _ = event_tx.send(ControllerEvent::TcpResponse {
+                                generation,
+                                line: trimmed,
+                            });
                         }
                     }
                     Err(_) => break,
@@ -1053,29 +1231,55 @@ struct FileWatcher {
 }
 
 impl FileWatcher {
-    fn watch(path: &Path, on_change: impl Fn() + Send + 'static) -> Option<Self> {
+    fn watch(paths: &[PathBuf], on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> Option<Self> {
+        if paths.is_empty() {
+            return None;
+        }
+        let mut watch_roots = HashMap::<PathBuf, notify::RecursiveMode>::new();
+        for path in paths {
+            let (root, mode) = source_watch_root(path);
+            watch_roots
+                .entry(root)
+                .and_modify(|existing| {
+                    if mode == notify::RecursiveMode::Recursive {
+                        *existing = mode;
+                    }
+                })
+                .or_insert(mode);
+        }
+        Self::watch_roots(watch_roots, on_change)
+    }
+
+    fn watch_roots(
+        watch_roots: HashMap<PathBuf, notify::RecursiveMode>,
+        on_change: impl Fn(Vec<PathBuf>) + Send + 'static,
+    ) -> Option<Self> {
         let (tx, rx) = mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_millis(200), tx).ok()?;
-        let watch_root = path.parent().unwrap_or_else(|| Path::new("."));
-        debouncer
-            .watcher()
-            .watch(watch_root, notify::RecursiveMode::NonRecursive)
-            .ok()?;
-        let watched_path = path.to_path_buf();
-        let mut last_stamp = file_stamp(&watched_path);
+        let mut registered_root = false;
+        for (root, mode) in watch_roots {
+            registered_root |= debouncer.watcher().watch(&root, mode).is_ok();
+        }
+        if !registered_root {
+            return None;
+        }
 
         thread::spawn(move || {
             while let Ok(Ok(events)) = rx.recv() {
-                if !events
-                    .iter()
-                    .any(|event| event.kind == DebouncedEventKind::Any)
-                {
-                    continue;
-                }
-                let next_stamp = file_stamp(&watched_path);
-                if next_stamp != last_stamp {
-                    last_stamp = next_stamp;
-                    on_change();
+                let mut changed = events
+                    .into_iter()
+                    .filter(|event| {
+                        matches!(
+                            event.kind,
+                            DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous
+                        )
+                    })
+                    .map(|event| event.path)
+                    .collect::<Vec<_>>();
+                changed.sort();
+                changed.dedup();
+                if !changed.is_empty() {
+                    on_change(changed);
                 }
             }
         });
@@ -1086,26 +1290,132 @@ impl FileWatcher {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FileStamp {
-    exists: bool,
-    len: u64,
-    modified: Option<std::time::SystemTime>,
+fn source_watch_root(path: &Path) -> (PathBuf, notify::RecursiveMode) {
+    let desired = path.parent().unwrap_or_else(|| Path::new("."));
+    if desired.is_dir() {
+        return (desired.to_path_buf(), notify::RecursiveMode::NonRecursive);
+    }
+
+    let mut existing = desired;
+    while !existing.is_dir() {
+        let Some(parent) = existing.parent() else {
+            return (PathBuf::from("."), notify::RecursiveMode::Recursive);
+        };
+        existing = parent;
+    }
+    let mode = if existing.parent().is_some() {
+        notify::RecursiveMode::Recursive
+    } else {
+        // Never recursively subscribe to an entire filesystem while waiting
+        // for the first component of an absolute include path.
+        notify::RecursiveMode::NonRecursive
+    };
+    (existing.to_path_buf(), mode)
 }
 
-fn file_stamp(path: &Path) -> FileStamp {
-    match fs::metadata(path) {
-        Ok(metadata) => FileStamp {
-            exists: true,
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-        },
-        Err(_) => FileStamp {
-            exists: false,
-            len: 0,
-            modified: None,
-        },
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceSnapshot {
+    load_succeeded: bool,
+    sources: Vec<SourceFileSnapshot>,
+}
+
+impl SourceSnapshot {
+    fn paths(&self) -> Vec<PathBuf> {
+        self.sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect()
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceFileSnapshot {
+    path: PathBuf,
+    contents: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum SourceCompilationState {
+    #[default]
+    None,
+    Compiling(SourceSnapshot),
+    Ready(SourceSnapshot),
+    Failed(SourceSnapshot),
+}
+
+impl SourceCompilationState {
+    fn snapshot(&self) -> Option<&SourceSnapshot> {
+        match self {
+            Self::None => None,
+            Self::Compiling(snapshot) | Self::Ready(snapshot) | Self::Failed(snapshot) => {
+                Some(snapshot)
+            }
+        }
+    }
+
+    fn ready(&self) -> Option<&SourceSnapshot> {
+        match self {
+            Self::Ready(snapshot) => Some(snapshot),
+            Self::None | Self::Compiling(_) | Self::Failed(_) => None,
+        }
+    }
+
+    fn matches(&self, snapshot: &SourceSnapshot) -> bool {
+        self.snapshot() == Some(snapshot)
+    }
+
+    fn mark_failed(&mut self) {
+        let previous = std::mem::take(self);
+        *self = match previous {
+            Self::None => Self::None,
+            Self::Compiling(snapshot) | Self::Ready(snapshot) | Self::Failed(snapshot) => {
+                Self::Failed(snapshot)
+            }
+        };
+    }
+}
+
+fn source_snapshot(entry: &Path, previous: &[PathBuf]) -> SourceSnapshot {
+    let loaded = load_program_file(entry);
+    let (manifest, load_succeeded) = match loaded {
+        Ok(loaded) => (loaded.sources, true),
+        Err(error) => (error.sources, false),
+    };
+    let mut paths = manifest.files;
+    if !paths.iter().any(|path| path == entry) {
+        paths.insert(0, entry.to_path_buf());
+    }
+    for path in manifest.unresolved_files {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    if !load_succeeded {
+        for path in previous {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+    }
+    SourceSnapshot {
+        load_succeeded,
+        sources: paths
+            .into_iter()
+            .map(|path| SourceFileSnapshot {
+                contents: fs::read(&path).ok(),
+                path,
+            })
+            .collect(),
+    }
+}
+
+fn start_source_watcher(
+    paths: &[PathBuf],
+    events_tx: Sender<ControllerEvent>,
+) -> Option<FileWatcher> {
+    FileWatcher::watch(paths, move |_| {
+        let _ = events_tx.send(ControllerEvent::SourcesMayHaveChanged);
+    })
 }
 
 fn list_input_devices() -> Vec<String> {
@@ -1208,6 +1518,11 @@ fn params_are_compatible_for_preservation(old_param: &Value, new_param: &Value) 
         && old_param.get("default") == new_param.get("default")
         && old_param.get("rangeMin") == new_param.get("rangeMin")
         && old_param.get("rangeMax") == new_param.get("rangeMax")
+        && old_param.get("scale") == new_param.get("scale")
+        && old_param.get("curve") == new_param.get("curve")
+        && old_param.get("unit") == new_param.get("unit")
+        && old_param.get("step") == new_param.get("step")
+        && old_param.get("stepCount") == new_param.get("stepCount")
         && old_param.get("scalar") == new_param.get("scalar")
 }
 
@@ -1375,10 +1690,12 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::{
         events_are_compatible_for_preservation, params_are_compatible_for_preservation,
-        reconcile_preserved_events, reconcile_preserved_params, source_differs_from_cached,
-        FileWatcher, RunHostOptions,
+        reconcile_preserved_events, reconcile_preserved_params, run_param_json, source_snapshot,
+        ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, RunHostOptions,
+        RunParamInfo, RunParamWire, SourceCompilationState,
     };
     use serde_json::{json, Value};
+    use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
     use std::sync::mpsc;
@@ -1387,6 +1704,118 @@ mod tests {
     #[test]
     fn realtime_host_defaults_to_256_frame_blocks() {
         assert_eq!(RunHostOptions::default().block_frames, 256);
+    }
+
+    #[test]
+    fn control_json_dispatches_typed_parameter_values() {
+        let coupling = RunParamInfo {
+            index: 0,
+            name: "coupling".to_owned(),
+            type_repr: "f32".to_owned(),
+            value: Some(f64::from(0.72_f32)),
+            default: Some(f64::from(0.72_f32)),
+            range_min: Some(0.0),
+            range_max: Some(f64::from(0.98_f32)),
+            scale: Some("linear".to_owned()),
+            curve: Some(-4.000000000000001),
+            unit: None,
+            step: None,
+            step_count: None,
+            scalar: true,
+        };
+        let stepped = RunParamInfo {
+            index: 1,
+            name: "stepped".to_owned(),
+            type_repr: "f32".to_owned(),
+            value: Some(f64::from(0.2_f32)),
+            default: Some(f64::from(0.1_f32)),
+            range_min: Some(0.0),
+            range_max: Some(f64::from(0.3_f32)),
+            scale: Some("linear".to_owned()),
+            curve: None,
+            unit: None,
+            step: Some(f64::from(0.1_f32)),
+            step_count: Some(3),
+            scalar: true,
+        };
+        let gate = RunParamInfo {
+            index: 2,
+            name: "gate".to_owned(),
+            type_repr: "bool".to_owned(),
+            value: Some(1.0),
+            default: Some(1.0),
+            range_min: None,
+            range_max: None,
+            scale: None,
+            curve: None,
+            unit: None,
+            step: None,
+            step_count: None,
+            scalar: true,
+        };
+        let wire_params = vec![
+            run_param_json(&coupling),
+            run_param_json(&stepped),
+            run_param_json(&gate),
+        ];
+        assert_eq!(wire_params[0].range_max_repr.as_deref(), Some("0.98"));
+        assert_eq!(wire_params[1].step_repr.as_deref(), Some("0.1"));
+        assert_eq!(wire_params[2].value_repr.as_deref(), Some("true"));
+
+        let encoded = serde_json::to_string(&wire_params).expect("serialize run parameters");
+        let parsed: Vec<RunParamWire> =
+            serde_json::from_str(&encoded).expect("deserialize run parameters");
+        let decoded = parsed
+            .into_iter()
+            .map(RunParamWire::into_host_value)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode typed run parameters");
+
+        assert_eq!(
+            decoded[0]["rangeMax"]
+                .as_f64()
+                .expect("numeric range maximum")
+                .to_bits(),
+            f64::from(0.98_f32).to_bits()
+        );
+        assert_eq!(
+            decoded[1]["step"]
+                .as_f64()
+                .expect("numeric parameter step")
+                .to_bits(),
+            f64::from(0.1_f32).to_bits()
+        );
+        assert_eq!(
+            decoded[0]["curve"]
+                .as_f64()
+                .expect("numeric parameter curve")
+                .to_bits(),
+            (-4.000000000000001_f64).to_bits()
+        );
+        assert_eq!(decoded[2]["value"], true);
+        assert_eq!(decoded[2]["default"], true);
+        ParamDomain::new(
+            ParamScalarType::F32,
+            decoded[0]["rangeMin"].as_f64().expect("range minimum"),
+            decoded[0]["rangeMax"].as_f64().expect("range maximum"),
+            ParamScale::Linear,
+            decoded[0]["curve"].as_f64(),
+            None,
+            None,
+            None,
+        )
+        .expect("transported parameter domain");
+    }
+
+    #[test]
+    fn child_event_generation_filter_rejects_stale_events() {
+        let event = ControllerEvent::TcpResponse {
+            generation: 41,
+            line: String::new(),
+        };
+        assert!(event.is_current_for(41));
+        assert!(!event.is_current_for(42));
+        assert!(ControllerEvent::SourcesMayHaveChanged.is_current_for(42));
     }
 
     #[test]
@@ -1403,7 +1832,7 @@ mod tests {
         fs::write(&watched, "outs:\n  out1\nsample:\n  out1 = 0.0\n").expect("write initial file");
 
         let (tx, rx) = mpsc::channel();
-        let _watcher = FileWatcher::watch(&watched, move || {
+        let _watcher = FileWatcher::watch(std::slice::from_ref(&watched), move |_| {
             let _ = tx.send(());
         })
         .expect("watcher should start");
@@ -1415,6 +1844,171 @@ mod tests {
         replace_file(&watched, "outs:\n  out1\nsample:\n  out1 = 2.0\n");
         rx.recv_timeout(Duration::from_secs(5))
             .expect("second replace should trigger");
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn file_watcher_reports_changes_to_transitive_sources() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_dependency_watch_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let dependency = temp_root.join("dependency.onda");
+        fs::write(&entry, "import dependency\n").expect("write entry");
+        fs::write(&dependency, "const value = 1.0\n").expect("write dependency");
+
+        let paths = vec![entry, dependency.clone()];
+        let (tx, rx) = mpsc::channel();
+        let _watcher = FileWatcher::watch(&paths, move |paths| {
+            let _ = tx.send(paths);
+        })
+        .expect("watcher should start");
+
+        replace_file(&dependency, "const value = 22.0\n");
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("dependency replace should trigger")
+                .contains(&dependency),
+            "dependency event should include the replaced path"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn file_watcher_keeps_valid_roots_when_another_root_cannot_be_watched() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_partial_watch_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let missing_root = temp_root.join("missing");
+        let roots = HashMap::from([
+            (temp_root.clone(), notify::RecursiveMode::NonRecursive),
+            (missing_root, notify::RecursiveMode::NonRecursive),
+        ]);
+
+        let watcher = FileWatcher::watch_roots(roots, |_| {})
+            .expect("one invalid root must not disable a valid watch root");
+
+        drop(watcher);
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn source_snapshot_replaces_on_success_and_unions_on_failure() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_source_manifest_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let dependency = temp_root.join("dependency.onda");
+        fs::write(&entry, "import dependency\n").expect("write entry");
+        fs::write(&dependency, "const value = 1.0\n").expect("write dependency");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+        let dependency = fs::canonicalize(dependency).expect("canonical dependency");
+
+        let initial = source_snapshot(&entry, &[]);
+        assert_eq!(initial.paths(), vec![entry.clone(), dependency.clone()]);
+
+        fs::write(&entry, "this is not valid onda\nimport dependency\n").expect("break entry");
+        let failed = source_snapshot(&entry, &initial.paths());
+        assert_eq!(
+            failed.paths(),
+            initial.paths(),
+            "failed loads should retain previous sources"
+        );
+
+        fs::write(&entry, "outs 1\nsample:\n  out1 = 0.0\n").expect("remove dependency");
+        let recovered = source_snapshot(&entry, &failed.paths());
+        assert_eq!(
+            recovered.paths(),
+            vec![entry.clone()],
+            "successful loads should replace the watch set"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn source_snapshot_detects_dependency_changes_during_compilation() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_compile_generation_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let dependency = temp_root.join("dependency.onda");
+        fs::write(&entry, "import dependency\n").expect("write entry");
+        fs::write(&dependency, "const value = 1.0\n").expect("write dependency");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+
+        let launched = source_snapshot(&entry, &[]);
+        fs::write(&dependency, "const value = 2.0\n").expect("change dependency");
+        let ready = source_snapshot(&entry, &launched.paths());
+
+        assert_ne!(
+            ready, launched,
+            "a child compiled from the launched snapshot must not be accepted"
+        );
+        assert!(!SourceCompilationState::Compiling(launched).matches(&ready));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn missing_nested_dependency_creation_invalidates_the_snapshot() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_missing_dependency_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let dependency = temp_root.join("dsp/filter.onda");
+        fs::write(&entry, "import dsp/filter\n").expect("write entry");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+
+        let failed = source_snapshot(&entry, &[]);
+        assert!(!failed.load_succeeded);
+        assert!(
+            failed.paths().contains(&dependency),
+            "the unresolved .onda candidate should be watched"
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let _watcher = FileWatcher::watch(&failed.paths(), move |paths| {
+            let _ = tx.send(paths);
+        })
+        .expect("watcher should start");
+
+        fs::create_dir_all(dependency.parent().expect("dependency parent"))
+            .expect("create dependency directory");
+        fs::write(&dependency, "const value = 1.0\n").expect("create dependency");
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("nested dependency creation should trigger a rescan");
+
+        let recovered = source_snapshot(&entry, &failed.paths());
+        assert!(recovered.load_succeeded);
+        assert!(!SourceCompilationState::Compiling(failed).matches(&recovered));
 
         let _ = fs::remove_dir_all(temp_root);
     }
@@ -1444,23 +2038,50 @@ mod tests {
     }
 
     #[test]
-    fn source_cache_only_invalidates_for_different_contents() {
-        assert!(!source_differs_from_cached(
-            Some(b"same"),
-            Some(b"same"),
-            None,
+    fn source_compilation_state_tracks_only_the_current_child() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_source_cache_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
         ));
-        assert!(!source_differs_from_cached(
-            Some(b"pending"),
-            Some(b"old"),
-            Some(b"pending"),
-        ));
-        assert!(source_differs_from_cached(
-            Some(b"changed"),
-            Some(b"old"),
-            None,
-        ));
-        assert!(source_differs_from_cached(None, Some(b"old"), None));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        fs::write(&entry, "sample:\n  out1 = 0.0\n").expect("write entry");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+
+        let compiled = source_snapshot(&entry, &[]);
+        let mut state = SourceCompilationState::Ready(compiled.clone());
+        assert!(state.matches(&compiled));
+
+        fs::write(&entry, "sample:\n  out1 = 1.0\n").expect("change entry");
+        let pending = source_snapshot(&entry, &compiled.paths());
+        state = SourceCompilationState::Compiling(pending.clone());
+        assert!(state.matches(&pending));
+        assert!(
+            !state.matches(&compiled),
+            "starting a new child must forget the source state of the killed child"
+        );
+        state.mark_failed();
+        assert!(
+            state.matches(&pending),
+            "a failed child must retain its source baseline"
+        );
+        assert!(
+            state.ready().is_none(),
+            "a failed child must never be reused"
+        );
+
+        fs::write(&entry, "sample:\n  out1 = 0.0\n").expect("revert entry");
+        let reverted = source_snapshot(&entry, &pending.paths());
+        assert_eq!(reverted, compiled);
+        assert!(
+            !state.matches(&reverted),
+            "reverting must replace the in-flight child after the old child was killed"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -1501,6 +2122,12 @@ mod tests {
             &base,
             &run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), false)
         ));
+        let mut curved = base.clone();
+        curved["curve"] = json!(-4.0);
+        assert!(
+            !params_are_compatible_for_preservation(&base, &curved),
+            "changed curve should reset preserved param"
+        );
     }
 
     #[test]
@@ -1586,6 +2213,11 @@ mod tests {
             "default": default,
             "rangeMin": range_min,
             "rangeMax": range_max,
+            "scale": null,
+            "curve": null,
+            "unit": null,
+            "step": null,
+            "stepCount": null,
             "scalar": scalar,
         })
     }

@@ -72,7 +72,7 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
 fn builtin_requires_float_arguments(func: BuiltinFn) -> bool {
     !matches!(
         func,
-        BuiltinFn::Abs | BuiltinFn::Min | BuiltinFn::Max | BuiltinFn::Pow
+        BuiltinFn::Abs | BuiltinFn::Min | BuiltinFn::Max | BuiltinFn::Pow | BuiltinFn::RangeClamp
     )
 }
 
@@ -899,6 +899,14 @@ fn infer_expr_primitive_type(
                 BuiltinFn::Abs => arg_types.first().copied(),
                 BuiltinFn::Min | BuiltinFn::Max => {
                     merge_monomorphized_numeric_types(*arg_types.first()?, *arg_types.get(1)?)
+                }
+                BuiltinFn::RangeClamp => {
+                    let value = *arg_types.first()?;
+                    arg_types
+                        .iter()
+                        .copied()
+                        .skip(1)
+                        .try_fold(value, merge_monomorphized_numeric_types)
                 }
                 BuiltinFn::Pow
                 | BuiltinFn::Sin

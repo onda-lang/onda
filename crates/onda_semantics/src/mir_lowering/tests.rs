@@ -16,6 +16,20 @@ fn validate(program: &Program) -> Result<(), Vec<onda_mir::ValidationError>> {
     unsafe { onda_mir::validate_with_producer_proofs(program) }
 }
 
+fn formatted_function<'a>(dump: &'a str, name: &str) -> &'a str {
+    let marker = format!("\"{name}\"");
+    let name_offset = dump
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing MIR function '{name}'"));
+    let start = dump[..name_offset]
+        .rfind("\nfn @")
+        .map_or(0, |offset| offset + 1);
+    let end = dump[name_offset..]
+        .find("\nfn @")
+        .map_or(dump.len(), |offset| name_offset + offset);
+    &dump[start..end]
+}
+
 fn empty_function(name: &str, kind: FunctionKind) -> Function {
     Function {
         name: name.to_owned(),
@@ -27,6 +41,224 @@ fn empty_function(name: &str, kind: FunctionKind) -> Function {
         body: MirBlock::default(),
         source: SourceSpan::UNKNOWN,
     }
+}
+
+#[test]
+fn ranged_top_level_params_are_clamped_once_per_export_entry() {
+    let source = r#"
+params:
+  value = 0.5 {0.0, 1.0}
+  unused = 0.25 {0.0, 1.0}
+outs:
+  out1
+init:
+  cached = value + value
+event bang():
+  cached = value + value
+sample:
+  out1 = value + value + cached
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("ranged parameters should lower");
+    let dump = format_program(&mir);
+
+    for entry in ["onda_init", "onda_process", "onda_event::bang"] {
+        let function = formatted_function(&dump, entry);
+        assert_eq!(
+            function.matches("load @param0").count(),
+            1,
+            "{entry} should load the used ranged parameter once:\n{function}"
+        );
+        assert_eq!(
+            function.matches("intrinsic range_clamp(").count(),
+            1,
+            "{entry} should clamp the used ranged parameter once:\n{function}"
+        );
+        assert!(
+            !function.contains("load @param1"),
+            "{entry} should not clamp an unused parameter:\n{function}"
+        );
+    }
+}
+
+#[test]
+fn range_clamps_respect_event_and_loop_variable_shadowing() {
+    let source = r#"
+params:
+  i: i32 = 7 {0, 10}
+  value: f32 = 0.75 {0.0, 1.0}
+outs:
+  out1
+init:
+  cached = 0.0
+event set(value: f32):
+  cached = value
+sample:
+  for i in 0..1:
+    out1 = cached + f32(i)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("shadowed parameter names should analyze");
+    let mir = lower_test_program(&typed).expect("shadowed parameter names should lower");
+    let dump = format_program(&mir);
+
+    let process = formatted_function(&dump, "onda_process");
+    assert!(
+        !process.contains("intrinsic range_clamp("),
+        "a loop variable must not be rewritten as the same-named parameter:\n{process}"
+    );
+    assert!(
+        !process.contains("load @param0"),
+        "the shadowed top-level parameter must remain unused:\n{process}"
+    );
+
+    let event = formatted_function(&dump, "onda_event::set");
+    assert!(
+        event.contains("load @event_param0"),
+        "the event body should read its event parameter:\n{event}"
+    );
+    assert!(
+        !event.contains("intrinsic range_clamp(") && !event.contains("load @param1"),
+        "an event parameter must not inherit the same-named top-level parameter range:\n{event}"
+    );
+}
+
+#[test]
+fn dynamic_input_and_param_reads_use_entry_point_range_clamps() {
+    let source = r#"
+ins:
+  low: f32 = 0.0 {-1.0, 1.0}
+  high: f32 = 0.0 {-2.0, 2.0}
+kins:
+  gain: f32 = 0.5 {0.0, 1.0}
+  mix: f32 = 0.5 {0.0, 1.0}
+outs:
+  out1
+init:
+  selected: i32 = 1
+sample:
+  out1 = ins[0] + ins[selected] + params[0] + kins[selected]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("ranged dynamic reads should lower");
+    validate(&mir).expect("ranged dynamic-read MIR should validate");
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    assert_eq!(
+        process.matches("intrinsic range_clamp(").count(),
+        4,
+        "each ranged dynamic endpoint should be clamped once:\n{process}"
+    );
+    for raw_endpoint in [
+        "load_input @in0",
+        "load_input @in1",
+        "load @param0",
+        "load @param1",
+    ] {
+        assert_eq!(
+            process.matches(raw_endpoint).count(),
+            1,
+            "the range hoist should be the only raw read of {raw_endpoint}:\n{process}"
+        );
+    }
+    for alias in ["__onda_clamped_in__low", "__onda_clamped_in__high"] {
+        assert!(
+            process.contains(alias),
+            "dynamic dispatch should read clamp alias '{alias}':\n{process}"
+        );
+    }
+    for alias in ["__onda_clamped_param__gain", "__onda_clamped_param__mix"] {
+        let state = mir
+            .state
+            .iter()
+            .position(|slot| slot.name == alias)
+            .unwrap_or_else(|| panic!("missing clamp alias state '{alias}'"));
+        assert!(
+            process.contains(&format!("load @state{state}")),
+            "dynamic dispatch should read clamp alias '{alias}':\n{process}"
+        );
+    }
+}
+
+#[test]
+fn ranged_top_level_param_clamps_preserve_scalar_types() {
+    let source = r#"
+params:
+  f32_value: f32 = 0.5 {0.0, 1.0}
+  f64_value: f64 = 0.5 {0.0, 1.0}
+  i32_value: i32 = 5 {0, 10}
+  i64_value: i64 = 5 {0, 10}
+outs:
+  out1
+sample:
+  out1 = f32_value + f32(f64_value) + f32(i32_value) + f32(i64_value)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("ranged scalar parameters should lower");
+    validate(&mir).expect("typed range clamps should produce valid MIR");
+
+    for (name, expected) in [
+        ("f32_value", onda_mir::ScalarType::F32),
+        ("f64_value", onda_mir::ScalarType::F64),
+        ("i32_value", onda_mir::ScalarType::I32),
+        ("i64_value", onda_mir::ScalarType::I64),
+    ] {
+        let alias = format!("__onda_clamped_param__{name}");
+        let slot = mir
+            .state
+            .iter()
+            .find(|slot| slot.name == alias)
+            .unwrap_or_else(|| panic!("missing clamp alias state '{alias}'"));
+        assert_eq!(
+            mir.types[slot.ty.index()],
+            onda_mir::Type::Scalar(expected),
+            "clamp alias for '{name}' must preserve its declared scalar type"
+        );
+    }
+}
+
+#[test]
+fn ranged_proc_params_are_clamped_once_when_assigned() {
+    let source = r#"
+proc Gain:
+  params:
+    amount = 0.5 {0.0, 1.0}
+  outs:
+    out1
+  sample:
+    out1 = amount + amount
+
+params:
+  drive = 0.5
+outs:
+  out1
+init:
+  gain = Gain()
+sample:
+  gain.amount = drive
+  out1 = gain()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("ranged proc parameters should lower");
+    let dump = format_program(&mir);
+
+    let process = formatted_function(&dump, "onda_process");
+    assert_eq!(
+        process.matches("intrinsic range_clamp(").count(),
+        1,
+        "the proc-param assignment should clamp once:\n{process}"
+    );
+
+    let step = formatted_function(&dump, "Gain.__proc_step");
+    assert!(
+        !step.contains("intrinsic range_clamp("),
+        "reads of the already-constrained proc parameter should not reclamp:\n{step}"
+    );
 }
 
 fn empty_mir() -> Program {
@@ -2675,10 +2907,10 @@ sample:
     assert!(dump.contains("buffer_len @buffer0"));
     assert!(dump.contains("buffer_channels @buffer0"));
     assert!(dump.contains("buffer_sample_rate @buffer0"));
-    assert!(dump.contains("load_buffer @buffer0[i32(2)] trap"));
-    assert!(dump.contains("store_buffer @buffer0[i32(3)] trap"));
-    assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(6)] trap"));
-    assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(7)] trap"));
+    assert!(dump.contains("load_buffer @buffer0[i32(2)] checked"));
+    assert!(dump.contains("store_buffer @buffer0[i32(3)] checked"));
+    assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(6)] checked"));
+    assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(7)] checked"));
     assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(2)] clamp"));
     assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(3)] clamp"));
     assert!(dump.contains("] clamp"));

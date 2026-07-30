@@ -62,6 +62,7 @@ await Promise.all([
     resolve(assetsRoot, "onda_compiler_web_bg.wasm"),
   ),
   cp(resolve(abiRoot, "src/index.js"), resolve(assetsRoot, "processor-abi.js")),
+  cp(resolve(abiRoot, "src/param-control.js"), resolve(assetsRoot, "param-control.js")),
   cp(resolve(webAudioRoot, "src/index.js"), resolve(assetsRoot, "webaudio.js")),
   cp(resolve(webAudioRoot, "src/worklet.js"), resolve(assetsRoot, "worklet.js")),
   bundlePlayground(resolve(assetsRoot, "playground.js")),

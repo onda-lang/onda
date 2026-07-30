@@ -33,7 +33,7 @@ signed 32-bit values. Public LLVM entry points use the target's C calling conven
 WebAssembly modules use ordinary core-Wasm function calls.
 
 ```text
-onda_init(params: Ptr, state: Ptr) -> void
+onda_init(params: Ptr, state: Ptr) -> i32
 
 onda_process(
   state: Ptr,
@@ -47,7 +47,7 @@ onda_process(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
-) -> void
+) -> i32
 
 onda_event_N(
   payload: Ptr,
@@ -57,12 +57,17 @@ onda_event_N(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
-) -> void
+) -> i32
 ```
 
 There is one `onda_event_N` for each declared event, in metadata order. The current ABI uses
 unprefixed symbol names and therefore permits one public processor namespace per artifact. A future
 ABI may add namespacing for multi-processor libraries without changing MIR.
+
+Every entry point returns zero on success or a positive execution-failure code. Code `1` is
+`RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
+cannot continue safely. The host must stop using the current processor state after any nonzero
+result; it may discard the instance or reset its state and call `onda_init` again.
 
 The process order intentionally places state, parameters, and audio tables before segment controls
 and optional buffer tables. This keeps the hottest pointers in argument registers on common native
@@ -199,6 +204,49 @@ descriptor. A dynamic event slice contains its scalar data after the fixed paylo
 the generated offset and length in that header. Event handlers receive the same parameter, state,
 and buffer bindings as processing.
 
+Descriptor format version 2 gives every parameter `range_min_repr`, `range_max_repr`, and
+`param_control`. `param_control` is null for a parameter without a numeric host-control domain;
+otherwise it contains:
+
+- `scale`: `linear` or `log`;
+- `curve`: an optional finite SuperCollider-style `lincurve` value, mutually
+  exclusive with `scale = log`;
+- `unit`: optional display text;
+- `step_repr`: the optional plain-domain step encoded in the declared scalar representation;
+- `step_count`: the number of equal intervals between the inclusive endpoints.
+
+The raw processor object does not export parameter conversion functions. Native hosts decode each
+numeric control into the `onda_processor_param_domain` structure from
+`include/onda_processor_abi.h`, whose header-only functions implement clamping, snapping, and
+plain/normalized conversion without linking the Onda runtime. The structure carries the declared
+scalar type so stepped floating-point grids are validated at their actual storage precision. The
+reference generator in
+`examples/native/raw_processor_object` emits decoded tables, indexed wrappers, typed reads, and
+typed writes around that shared header implementation.
+
+For a scalar numeric parameter, normalized-to-plain conversion is:
+
+1. Map NaN to zero and clamp the normalized input to `[0, 1]`.
+2. Return the exact range endpoint for normalized zero or one.
+3. If `curve` is present, transform `n` with the SuperCollider-style `lincurve`
+   mapping, then apply `min + n * (max - min)`. Otherwise apply that linear
+   mapping directly for `linear`, or the overflow-safe equivalent
+   `exp(log(min) + n * (log(max) - log(min)))` for `log`.
+4. Map a plain NaN to `min`, then clamp the plain value to the inclusive range.
+5. For a stepped domain, snap to `min + round((plain - min) / step) * step` and clamp again.
+6. Convert to the declared scalar width when writing parameter storage.
+
+Plain-to-normalized first performs the same plain clamping and step snapping, preserves exact
+endpoints, then applies the inverse curved, linear, or logarithmic mapping. Boolean plain and
+normalized host-control values use the threshold `value >= 0.5` and store one byte containing zero
+or one. Parameter arrays and un-ranged numeric parameters do not have normalized host-control
+domains.
+
+Because the shared host-control surface uses binary64 values, an `i64` control domain and its
+range width are restricted to the exactly representable integer interval
+`[-9007199254740991, 9007199254740991]`. This restriction does not apply to unranged `i64`
+parameters written through their typed/raw storage representation.
+
 External buffers use four parallel tables in declaration order:
 
 - `buffers`: data pointers.
@@ -219,9 +267,11 @@ one-rounding FMA semantics. Fast math is an explicit compilation policy recorded
 Native floating-point control registers belong to the calling thread. Onda's realtime hosts enable
 x86 FTZ/DAZ before entering init, process, or event code to prevent subnormal feedback-state stalls;
 a raw-object host that wants the same audio policy must configure its calling threads likewise.
-Bounds checks, integer division, invalid conversions, or an invalid host contract may trap. A host
-must treat a trap as a failed processor instance instead of continuing with possibly corrupted
-state.
+Bounds checks, integer division, and other generated safety checks return
+`RUNTIME_SAFETY_FAILURE` instead of trapping. Invalid host pointers, storage extents, or other
+violations of the raw ABI remain outside generated-code recovery and can still trap or cause
+undefined behavior. A host must treat every nonzero execution result as a failed processor state
+instead of continuing with potentially partial state or output writes.
 
 ## Web Audio reference adapter
 

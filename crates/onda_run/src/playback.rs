@@ -80,6 +80,9 @@ enum PlaybackControlCommand {
     Play {
         reply: PlaybackReply<()>,
     },
+    ResetParams {
+        reply: PlaybackReply<()>,
+    },
     GetParams {
         reply: PlaybackReply<Vec<RunParamInfo>>,
     },
@@ -634,6 +637,25 @@ fn spawn_run_render_thread(
                             }
                             let _ = reply.send(result);
                         }
+                        PlaybackControlCommand::ResetParams { reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
+                            let result = session
+                                .run_mut(&launch.input)
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .and_then(|run| {
+                                    run.reset_params().map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "daemon run parameter reset failed",
+                                            &diag,
+                                        )
+                                    })
+                                });
+                            let _ = reply.send(result);
+                        }
                         PlaybackControlCommand::GetParams { reply } => {
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
@@ -1017,12 +1039,13 @@ fn run_control_response(
 ) -> Option<Value> {
     let request_id = request.id;
     let result = match request.command.as_str() {
-        "pause" | "play" => {
+        "pause" | "play" | "resetParams" => {
             let (reply_tx, reply_rx) = mpsc::channel();
-            let command = if request.command == "pause" {
-                PlaybackControlCommand::Pause { reply: reply_tx }
-            } else {
-                PlaybackControlCommand::Play { reply: reply_tx }
+            let command = match request.command.as_str() {
+                "pause" => PlaybackControlCommand::Pause { reply: reply_tx },
+                "play" => PlaybackControlCommand::Play { reply: reply_tx },
+                "resetParams" => PlaybackControlCommand::ResetParams { reply: reply_tx },
+                _ => unreachable!("matched playback transport command"),
             };
             control_tx
                 .send(command)
@@ -1463,6 +1486,41 @@ mod tests {
 
         worker.join().expect("play worker should finish");
         assert_eq!(response.get("id"), Some(&Value::from(7)));
+        assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn run_reset_params_command_waits_for_runtime_reset() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let worker = std::thread::spawn(move || {
+            match control_rx.recv().expect("resetParams should be queued") {
+                PlaybackControlCommand::ResetParams { reply } => {
+                    reply
+                        .send(Ok(()))
+                        .expect("resetParams reply should be received");
+                }
+                _ => panic!("expected resetParams command"),
+            }
+        });
+
+        let response = run_control_response(
+            PlaybackControlRequest {
+                id: Some(Value::from(8)),
+                command: "resetParams".to_owned(),
+                name: None,
+                path: None,
+                value: None,
+                values: None,
+                max_frames: None,
+            },
+            &control_tx,
+            &scope_ring,
+        )
+        .expect("resetParams request should return a response");
+
+        worker.join().expect("resetParams worker should finish");
+        assert_eq!(response.get("id"), Some(&Value::from(8)));
         assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
     }
 }

@@ -9,6 +9,7 @@ use onda_frontend::{
     EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef, InitBlock, NamespaceAliasDecl,
     NamespaceDecl, NamespaceItem, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl,
     PortBlock, PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, UseDecl, LANGUAGE_KEYWORDS,
+    PARAM_SCALES,
 };
 use onda_semantics::builtins::{
     builtin_constant_names, public_builtin_function_names, ARRAY_LEN_METHOD,
@@ -27,6 +28,10 @@ use super::namespace_resolution::{
     visible_uses_in_namespace, AliasTargetPolicy, NamespaceAliasInfo, NamespaceResolutionContext,
     UseInfo,
 };
+use super::param_domain::{
+    completion_context_at as param_domain_completion_context_at, ParamDomainCompletionContext,
+    ParamDomainValueKind, PARAM_DOMAIN_FIELDS,
+};
 use super::position::{
     byte_index_for_lsp_character, byte_offset_for_lsp_position, span_end_position,
     span_start_position, LspPosition,
@@ -40,7 +45,9 @@ const COMPLETION_ITEM_KIND_VARIABLE: u32 = 6;
 const COMPLETION_ITEM_KIND_MODULE: u32 = 9;
 const COMPLETION_ITEM_KIND_PROPERTY: u32 = 10;
 const COMPLETION_ITEM_KIND_KEYWORD: u32 = 14;
+const COMPLETION_ITEM_KIND_SNIPPET: u32 = 15;
 const COMPLETION_ITEM_KIND_FILE: u32 = 17;
+const COMPLETION_ITEM_KIND_ENUM_MEMBER: u32 = 20;
 const COMPLETION_ITEM_KIND_CONSTANT: u32 = 21;
 const COMPLETION_ITEM_KIND_STRUCT: u32 = 22;
 const COMPLETION_ITEM_KIND_EVENT: u32 = 23;
@@ -49,6 +56,36 @@ const COMPLETION_ITEM_KIND_TYPE_PARAMETER: u32 = 25;
 const INSERT_TEXT_FORMAT_SNIPPET: u32 = 2;
 
 const MAX_DEFERRED_COUNT_COMPLETIONS: usize = 128;
+const COMPLETION_PLACEHOLDER: &str = "__lsp_completion_placeholder";
+
+#[derive(Debug, Clone, Copy)]
+struct PluginEventCompletion {
+    name: &'static str,
+    params: &'static str,
+}
+
+const PLUGIN_EVENT_COMPLETIONS: &[PluginEventCompletion] = &[
+    PluginEventCompletion {
+        name: "note_on",
+        params: "id: i32, channel: i32, key: i32, velocity: f32",
+    },
+    PluginEventCompletion {
+        name: "note_off",
+        params: "id: i32, channel: i32, key: i32, velocity: f32",
+    },
+    PluginEventCompletion {
+        name: "pitch_bend",
+        params: "channel: i32, value: f32",
+    },
+    PluginEventCompletion {
+        name: "channel_pressure",
+        params: "channel: i32, pressure: f32",
+    },
+    PluginEventCompletion {
+        name: "cc",
+        params: "channel: i32, index: i32, value: f32",
+    },
+];
 
 #[derive(Debug, Clone, Copy)]
 struct BufferBuiltinMethod {
@@ -102,7 +139,7 @@ pub(super) struct CompletionPosition {
 }
 
 pub(super) fn completion_trigger_characters() -> &'static [&'static str] {
-    &[".", ":", "/", " ", "(", ","]
+    &[".", ":", "/", " ", "(", ",", "{"]
 }
 
 pub(super) struct CompletionResult {
@@ -154,6 +191,9 @@ pub(super) fn completion_items_for_document_with_index(
             index.namespace_items(namespace, &context.prefix)
         }
         CompletionContextKind::CallArgs { callee } => index.call_arg_items(callee),
+        CompletionContextKind::ParamDomain(domain) => {
+            index.param_domain_items(domain, &context.prefix)
+        }
         CompletionContextKind::General => index.general_items(&context.prefix),
         CompletionContextKind::ImportPath { .. } => Vec::new(),
     };
@@ -241,6 +281,7 @@ enum CompletionContextKind {
     Member { receiver: String },
     Namespace { namespace: String },
     CallArgs { callee: String },
+    ParamDomain(ParamDomainCompletionContext),
     ImportPath { typed: String },
 }
 
@@ -305,6 +346,14 @@ impl CompletionContext {
                         callee: active_call.callee,
                     }
                 },
+                in_comment,
+            };
+        }
+
+        if let Some(domain) = param_domain_completion_context_at(source, prefix_start) {
+            return Self {
+                prefix,
+                kind: CompletionContextKind::ParamDomain(domain),
                 in_comment,
             };
         }
@@ -1734,6 +1783,14 @@ impl CompletionIndex {
 
     fn general_items(&self, prefix: &str) -> Vec<CompletionItem> {
         let mut out = Vec::new();
+        if self.is_top_level_completion_position(prefix) {
+            out.extend(
+                PLUGIN_EVENT_COMPLETIONS
+                    .iter()
+                    .copied()
+                    .map(plugin_event_item),
+            );
+        }
         for &keyword in LANGUAGE_KEYWORDS {
             out.push(
                 CompletionItem::new(keyword, COMPLETION_ITEM_KIND_KEYWORD)
@@ -1788,6 +1845,48 @@ impl CompletionIndex {
                 .filter(|item| prefix_matches(&item.label, prefix))
                 .collect()
         }
+    }
+
+    fn is_top_level_completion_position(&self, prefix: &str) -> bool {
+        let Some(line) = self.source.split('\n').nth(self.position.line as usize) else {
+            return self.source.is_empty()
+                && self.position.line == 0
+                && self.position.character == 0;
+        };
+        let cursor = byte_index_for_lsp_character(line, self.position.character);
+        line.get(..cursor) == Some(prefix)
+    }
+
+    fn param_domain_items(
+        &self,
+        context: &ParamDomainCompletionContext,
+        prefix: &str,
+    ) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        if context.allow_fields {
+            items.extend(
+                PARAM_DOMAIN_FIELDS
+                    .iter()
+                    .copied()
+                    .filter(|field| !context.used_fields.contains(field))
+                    .map(param_domain_field_item),
+            );
+        }
+        match context.value_kind {
+            ParamDomainValueKind::Expression => items.extend(self.general_items(prefix)),
+            ParamDomainValueKind::Scale => {
+                items.extend(PARAM_SCALES.iter().copied().map(|(_, scale)| {
+                    CompletionItem::new(scale, COMPLETION_ITEM_KIND_ENUM_MEMBER)
+                        .detail("parameter scale")
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::LocalVariable,
+                            scale,
+                        ))
+                }));
+            }
+            ParamDomainValueKind::Unit | ParamDomainValueKind::None => {}
+        }
+        items
     }
 
     fn namespace_items(&self, namespace: &str, prefix: &str) -> Vec<CompletionItem> {
@@ -2587,6 +2686,33 @@ fn argument_item(name: &str, detail: &str) -> CompletionItem {
         ))
 }
 
+fn param_domain_field_item(name: &str) -> CompletionItem {
+    let snippet = match name {
+        "scale" => format!(
+            "scale = ${{1|{}|}}",
+            PARAM_SCALES
+                .iter()
+                .map(|(_, name)| *name)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        "unit" => "unit = \"$1\"".to_owned(),
+        "min" => "min = $1".to_owned(),
+        "max" => "max = $1".to_owned(),
+        "curve" => "curve = $1".to_owned(),
+        "step" => "step = $1".to_owned(),
+        _ => unreachable!("unknown parameter domain field"),
+    };
+    CompletionItem::new(name, COMPLETION_ITEM_KIND_PROPERTY)
+        .detail("parameter domain field")
+        .insert_text(format!("{name} = "))
+        .snippet(snippet)
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::LocalVariable,
+            name,
+        ))
+}
+
 fn variable_item(name: &str, detail: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_VARIABLE)
         .detail(detail)
@@ -2635,6 +2761,16 @@ fn event_item(event: &EventDef) -> CompletionItem {
             CompletionSortGroup::Event,
             &event.name,
         ))
+}
+
+fn plugin_event_item(event: PluginEventCompletion) -> CompletionItem {
+    let label = format!("plugin_{}", event.name);
+    let insert_text = format!("event {}({}):\n  ", event.name, event.params);
+    CompletionItem::new(&label, COMPLETION_ITEM_KIND_SNIPPET)
+        .detail(format!("declare the plugin {} event", event.name))
+        .insert_text(&insert_text)
+        .snippet(format!("{insert_text}$0"))
+        .sort_text(completion_sort_text(CompletionSortGroup::Event, &label))
 }
 
 fn function_item(info: &FunctionInfo, detail: &str, kind: u32) -> CompletionItem {
@@ -3354,7 +3490,7 @@ fn prefix_match_case_rank(label: &str, prefix: &str) -> Option<u8> {
 }
 
 fn is_generated_completion_label(label: &str) -> bool {
-    label.starts_with("__onda")
+    label.starts_with("__onda") || label == COMPLETION_PLACEHOLDER
 }
 
 fn completion_order_key(
@@ -3726,10 +3862,13 @@ fn source_with_current_line_placeholder(source: &str, offset: usize) -> String {
     let mut sanitized = String::with_capacity(source.len());
     sanitized.push_str(&source[..line_start]);
     if indent.is_empty() {
-        sanitized.push_str("const __onda_completion_placeholder = 0\n");
+        sanitized.push_str("const ");
+        sanitized.push_str(COMPLETION_PLACEHOLDER);
+        sanitized.push_str(" = 0\n");
     } else {
         sanitized.push_str(&indent);
-        sanitized.push_str("__onda_completion_placeholder = 0.0\n");
+        sanitized.push_str(COMPLETION_PLACEHOLDER);
+        sanitized.push_str(" = 0.0\n");
     }
     if line_end < source.len() {
         sanitized.push_str(&source[line_end + 1..]);
@@ -3988,6 +4127,102 @@ fn normalize_file_key(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encoded_item<'a>(items: &'a [Value], label: &str) -> &'a Value {
+        items
+            .iter()
+            .find(|item| item["label"] == label)
+            .expect("completion item should be present")
+    }
+
+    #[test]
+    fn generated_completion_labels_include_lsp_placeholder() {
+        assert!(is_generated_completion_label("__onda_internal"));
+        assert!(is_generated_completion_label(COMPLETION_PLACEHOLDER));
+        assert!(!is_generated_completion_label("visible"));
+    }
+
+    #[test]
+    fn plugin_event_helpers_insert_individual_colon_style_declarations() {
+        let source = "plugin_";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 0,
+                character: source.len() as u32,
+            },
+            true,
+        );
+        for event in PLUGIN_EVENT_COMPLETIONS {
+            let label = format!("plugin_{}", event.name);
+            let item = encoded_item(&result.items, &label);
+            let insertion = item["insertText"]
+                .as_str()
+                .expect("snippet should have insertion text");
+
+            assert_eq!(item["kind"], COMPLETION_ITEM_KIND_SNIPPET);
+            assert_eq!(item["insertTextFormat"], INSERT_TEXT_FORMAT_SNIPPET);
+            assert_eq!(
+                insertion,
+                format!("event {}({}):\n  $0", event.name, event.params)
+            );
+        }
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item["label"] != "vst3_midi_events"));
+    }
+
+    #[test]
+    fn plugin_event_helpers_have_plain_text_fallbacks_and_are_top_level_only() {
+        let source = "plugin_";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 0,
+                character: source.len() as u32,
+            },
+            false,
+        );
+        for event in PLUGIN_EVENT_COMPLETIONS {
+            let label = format!("plugin_{}", event.name);
+            let item = encoded_item(&result.items, &label);
+            assert!(item.get("insertTextFormat").is_none());
+            assert_eq!(
+                item["insertText"],
+                format!("event {}({}):\n  ", event.name, event.params)
+            );
+        }
+
+        let nested = "sample:\n  plugin_ = 0.0\n";
+        let nested_result = completion_items_for_document_with_index(
+            nested,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            position_at(nested, "plugin_", "plugin_".len()),
+            true,
+        );
+        assert!(
+            PLUGIN_EVENT_COMPLETIONS.iter().all(|event| {
+                let label = format!("plugin_{}", event.name);
+                nested_result
+                    .items
+                    .iter()
+                    .all(|item| item["label"] != label)
+            }),
+            "the event declaration helpers must not be offered inside a runtime block"
+        );
+    }
 
     fn position_at(source: &str, needle: &str, token_offset: usize) -> CompletionPosition {
         let byte = source

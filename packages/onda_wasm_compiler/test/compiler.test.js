@@ -23,14 +23,14 @@ test("retries direct frontend initialization after a failure", async () => {
     /failed to initialize the Onda frontend Wasm/,
   );
   const compiler = await createCompiler();
-  const artifact = await compiler.compileSource(SOURCE);
+  const { artifact } = await compiler.compileSource(SOURCE);
   assert.equal(WebAssembly.validate(artifact.wasm), true);
   await compiler.dispose();
 });
 
 test("compiles Onda source to a complete processor artifact", async () => {
   const compiler = await createCompiler();
-  const artifact = await compiler.compileSource(SOURCE, {
+  const { artifact, sourceFiles } = await compiler.compileSource(SOURCE, {
     sampleRate: 48_000,
     blockSize: 128,
   });
@@ -46,6 +46,7 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.equal(artifact.metadata.compile.sample_rate, 48_000);
   assert.equal(artifact.metadata.compile.block_size, 128);
   assert.equal(artifact.metadata.artifact_kind, "webassembly_module");
+  assert.deepEqual(sourceFiles, []);
 
   const files = await createProcessorArtifactFiles(artifact, { baseName: "gain" });
   assert.equal(files.wasm.name, "gain.wasm");
@@ -55,7 +56,7 @@ test("compiles Onda source to a complete processor artifact", async () => {
 
 test("compiles an in-memory project through the same product API", async () => {
   const compiler = await createCompiler();
-  const artifact = await compiler.compileProject({
+  const { artifact, sourceFiles } = await compiler.compileProject({
     entry: "main.onda",
     sources: {
       "main.onda": `include "./level.onda"
@@ -75,6 +76,7 @@ sample:
     blockSize: 256,
   });
   assert.equal(WebAssembly.validate(artifact.wasm), true);
+  assert.deepEqual(sourceFiles, ["main.onda", "level.onda"]);
   assert.equal(artifact.metadata.compile.block_size, 256);
   assert.deepEqual(
     artifact.metadata.metadata.buffers.map((buffer) => buffer.name),
@@ -96,6 +98,8 @@ test("confines in-memory projects inside the browser virtual namespace", async (
       (error) => {
         assert.equal(error instanceof OndaCompileError, true);
         assert.match(error.diagnostics[0].message, /escapes project root/);
+        assert.deepEqual(error.sourceFiles, ["main.onda"]);
+        assert.deepEqual(error.unresolvedSourceFiles, []);
         return true;
       },
     );
@@ -111,6 +115,49 @@ test("returns structured frontend diagnostics", async () => {
       assert.equal(error.diagnostics.length > 0, true);
       assert.equal(typeof error.diagnostics[0].message, "string");
       assert.equal(error.diagnostics[0].stage, "semantic");
+      assert.deepEqual(error.sourceFiles, []);
+      return true;
+    },
+  );
+});
+
+test("returns contributing project sources with semantic failures", async () => {
+  const compiler = await createCompiler();
+  await assert.rejects(
+    compiler.compileProject({
+      entry: "main.onda",
+      sources: {
+        "main.onda": "import dsp\nsample:\n  out1 = DSP::missing()\n",
+        "dsp.onda": "namespace DSP:\n  const value = 1.0\n",
+        "unused.onda": "const unused = 1.0\n",
+      },
+    }),
+    (error) => {
+      assert.equal(error instanceof OndaCompileError, true);
+      assert.equal(error.diagnostics[0].stage, "semantic");
+      assert.deepEqual(error.sourceFiles, ["main.onda", "dsp.onda"]);
+      assert.deepEqual(error.unresolvedSourceFiles, []);
+      return true;
+    },
+  );
+});
+
+test("returns unresolved project source candidates with parse failures", async () => {
+  const compiler = await createCompiler();
+  await assert.rejects(
+    compiler.compileProject({
+      entry: "main.onda",
+      sources: {
+        "main.onda": "import dsp/filter\n",
+      },
+    }),
+    (error) => {
+      assert.equal(error instanceof OndaCompileError, true);
+      assert.deepEqual(error.sourceFiles, ["main.onda"]);
+      assert.deepEqual(
+        error.unresolvedSourceFiles,
+        ["dsp/filter.onda", "dsp/filter.on"],
+      );
       return true;
     },
   );
@@ -234,7 +281,10 @@ test("offers an asynchronous browser-worker client", async () => {
 
     postMessage(message) {
       const value = message.type === "compileSource"
-        ? { wasm: new Uint8Array([0, 97, 115, 109]), metadata: {} }
+        ? {
+          artifact: { wasm: new Uint8Array([0, 97, 115, 109]), metadata: {} },
+          sourceFiles: [],
+        }
         : message.type === "lspMessage"
           ? [{ jsonrpc: "2.0", id: message.message.id, result: null }]
           : null;
@@ -251,8 +301,9 @@ test("offers an asynchronous browser-worker client", async () => {
   }
 
   const compiler = await createCompiler({ worker: true, Worker: FakeWorker });
-  const artifact = await compiler.compileSource(SOURCE);
+  const { artifact, sourceFiles } = await compiler.compileSource(SOURCE);
   assert.deepEqual([...artifact.wasm], [0, 97, 115, 109]);
+  assert.deepEqual(sourceFiles, []);
   assert.deepEqual(
     await compiler.sendLspMessage({ jsonrpc: "2.0", id: 9, method: "shutdown" }),
     [{ jsonrpc: "2.0", id: 9, result: null }],

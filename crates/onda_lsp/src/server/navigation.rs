@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 use crate::formatting::{
     format_buffer_type, format_decl_type, format_event_param_type, format_expr,
-    format_fn_param_type,
+    format_fn_param_type, format_param_decl,
 };
 
 use super::namespace_resolution::{
@@ -774,12 +774,11 @@ impl NavigationIndex {
     }
 
     fn add_param_definition(&mut self, owner: &str, decl: &ParamDecl, detail: &str) -> usize {
-        let pin = if decl.pinned { "pin " } else { "" };
         self.add_definition(DefinitionInfo {
             name: decl.name.clone(),
             full_name: namespace_join(owner, &decl.name),
             kind: DefinitionKind::Param,
-            detail: format!("{detail} {pin}{}", decl.name),
+            detail: format!("{detail} {}", format_param_decl(decl)),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
             pinned: decl.pinned,
@@ -3153,10 +3152,10 @@ fn source_with_current_line_placeholder(source: &str, offset: usize) -> String {
     let mut sanitized = String::with_capacity(source.len());
     sanitized.push_str(&source[..line_start]);
     if indent.is_empty() {
-        sanitized.push_str("const __onda_navigation_placeholder = 0\n");
+        sanitized.push_str("const __lsp_navigation_placeholder = 0\n");
     } else {
         sanitized.push_str(&indent);
-        sanitized.push_str("__onda_navigation_placeholder = 0.0\n");
+        sanitized.push_str("__lsp_navigation_placeholder = 0.0\n");
     }
     if line_end < source.len() {
         sanitized.push_str(&source[line_end + 1..]);
@@ -4101,6 +4100,62 @@ sample:
             output.contains("proc output out1"),
             "output hover should describe generated output port: {output:?}"
         );
+    }
+
+    #[test]
+    fn hover_shows_control_domains_for_top_level_and_proc_param_references() {
+        let source = r#"proc Voice:
+  params:
+    gain = 1.0 {0.0, 2.0}
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+params:
+  mix = 0.5 {0.0, 1.0, curve = -4, unit = "%", step = 0.25}
+  cutoff = 440.0 {20.0, 20000.0, log, "Hz"}
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = mix + cutoff + voice.gain
+"#;
+
+        let top_level = hover_at(source, "mix +", 1).expect("top-level param should hover");
+        let logarithmic = hover_at(source, "cutoff +", 1).expect("logarithmic param should hover");
+        let proc_local =
+            hover_at(source, "out1 = gain", "out1 = ".len() + 1).expect("proc param should hover");
+        let proc_external = hover_at(source, "voice.gain", "voice.".len() + 1)
+            .expect("external proc param should hover");
+
+        let top_level = top_level["contents"]["value"].as_str().unwrap_or_default();
+        let logarithmic = logarithmic["contents"]["value"]
+            .as_str()
+            .unwrap_or_default();
+        let proc_local = proc_local["contents"]["value"].as_str().unwrap_or_default();
+        let proc_external = proc_external["contents"]["value"]
+            .as_str()
+            .unwrap_or_default();
+
+        assert!(
+            top_level.contains(
+                r#"param mix = 0.5 {0.0, 1.0, curve = 0.0 - 4, unit = "%", step = 0.25}"#
+            ),
+            "top-level param hover should include its control domain: {top_level:?}"
+        );
+        assert!(
+            logarithmic
+                .contains(r#"param cutoff = 440.0 {20.0, 20000.0, scale = log, unit = "Hz"}"#),
+            "logarithmic param hover should include its control domain: {logarithmic:?}"
+        );
+        for hover in [proc_local, proc_external] {
+            assert!(
+                hover.contains("proc param gain = 1.0 {0.0, 2.0}"),
+                "proc param hover should include its range: {hover:?}"
+            );
+        }
     }
 
     #[test]

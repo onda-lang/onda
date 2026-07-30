@@ -5,6 +5,7 @@ use serde::Serialize;
 pub use onda_processor_abi::{
     ProcessorDescriptor as AotMetadata, StateMetadata as AotStateMetadata, PROCESSOR_ABI_VERSION,
     PROCESSOR_ARTIFACT_FORMAT, PROCESSOR_ARTIFACT_FORMAT_VERSION as AOT_METADATA_FORMAT_VERSION,
+    PROCESSOR_EXECUTION_OK, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
     PROCESSOR_SNAPSHOT_FORMAT_VERSION as AOT_SNAPSHOT_FORMAT_VERSION,
 };
 
@@ -16,8 +17,8 @@ use onda_processor_abi::{
     BufferMetadata as AotBufferMetadata, CompileInfo as AotCompileInfo,
     EventMetadata as AotEventMetadata, EventParamMetadata as AotEventParamMetadata,
     Exports as AotExports, IntegrationInfo as AotIntegrationInfo, IoMetadata as AotIoMetadata,
-    ProgramMetadata as AotProgramMetadata, RuntimeInfo as AotRuntimeInfo,
-    TargetInfo as AotTargetInfo,
+    ParamControlMetadata as AotParamControlMetadata, ProgramMetadata as AotProgramMetadata,
+    RuntimeInfo as AotRuntimeInfo, TargetInfo as AotTargetInfo,
 };
 
 #[cfg(feature = "llvm-orc")]
@@ -214,6 +215,17 @@ fn map_io_metadata(io: &crate::DeclaredIo) -> AotIoMetadata {
             .map(|values| values.iter().copied().map(format_const_value).collect()),
         range_min_repr: io.range().map(|range| format_const_value(range.min)),
         range_max_repr: io.range().map(|range| format_const_value(range.max)),
+        param_control: io.param_control().map(|control| AotParamControlMetadata {
+            scale: match control.scale {
+                onda_mir::ParamScale::Linear => "linear",
+                onda_mir::ParamScale::Log => "log",
+            }
+            .to_owned(),
+            curve: control.curve,
+            unit: control.unit.clone(),
+            step_repr: control.step.map(format_const_value),
+            step_count: control.step_count,
+        }),
     }
 }
 

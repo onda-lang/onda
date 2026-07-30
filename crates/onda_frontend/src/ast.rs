@@ -414,7 +414,43 @@ pub struct ParamDecl {
     pub ty_loc: Span,
     pub default: Option<Expr>,
     pub range: Option<DeclRange>,
+    pub control: ParamControl,
     pub bind: Option<String>,
+}
+
+#[derive(Debug, Copy, Clone, Default, Eq, PartialEq, Hash)]
+pub enum ParamScale {
+    #[default]
+    Linear,
+    Log,
+}
+
+pub const PARAM_SCALES: &[(ParamScale, &str)] =
+    &[(ParamScale::Linear, "linear"), (ParamScale::Log, "log")];
+pub const PARAM_DOMAIN_FIELDS: &[&str] = &["min", "max", "scale", "curve", "unit", "step"];
+pub const PARAM_DOMAIN_POSITIONAL_FIELDS: &[&str] = &["min", "max", "scale", "unit", "step"];
+
+impl ParamScale {
+    pub fn from_name(name: &str) -> Option<Self> {
+        PARAM_SCALES
+            .iter()
+            .find_map(|(scale, scale_name)| (*scale_name == name).then_some(*scale))
+    }
+
+    pub fn name(self) -> &'static str {
+        PARAM_SCALES
+            .iter()
+            .find_map(|(scale, name)| (*scale == self).then_some(*name))
+            .expect("PARAM_SCALES must contain every ParamScale variant")
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParamControl {
+    pub scale: ParamScale,
+    pub curve: Option<Expr>,
+    pub unit: Option<String>,
+    pub step: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1614,6 +1650,10 @@ pub enum BuiltinFn {
     Min,
     Max,
     Fma,
+    /// Compiler-generated range clamp. This is intentionally absent from
+    /// `ALL` and `from_name`, so it is not part of the source-language
+    /// builtin surface.
+    RangeClamp,
 }
 
 impl BuiltinFn {
@@ -1682,6 +1722,7 @@ impl BuiltinFn {
             Self::Min => "min",
             Self::Max => "max",
             Self::Fma => "fma",
+            Self::RangeClamp => "<range-clamp>",
         }
     }
 
@@ -1702,6 +1743,7 @@ impl BuiltinFn {
             | Self::Trunc => 1,
             Self::Pow | Self::Atan2 | Self::Min | Self::Max => 2,
             Self::Fma => 3,
+            Self::RangeClamp => 3,
         }
     }
 }

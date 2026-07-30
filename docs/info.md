@@ -63,7 +63,7 @@ Non-crate directories of note:
 - `parser.rs`, `parser/` — parser entry plus submodules:
   - `parser/block_parsing.rs`, `parser/expr_stmt.rs` — block and expression/statement parsing.
   - `parser/preprocess.rs` — source preprocessing.
-  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution.
+  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution and authoritative non-stdlib source manifests.
   - `parser/type_helpers.rs` — type-syntax helpers.
   - `parser/tests.rs` — parser tests.
 - `grammar.pest` — the PEG grammar.
@@ -146,7 +146,9 @@ Non-crate directories of note:
   outside every compiler/backend crate.
 
 ### `onda_runtime` (`crates/onda_runtime/src`)
-- `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants, reset, param hoisting/clamping, event dispatch.
+- `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants,
+  reset, event dispatch, and public validated parameter-domain discovery/conversion through
+  `Instance::param_domain`.
 
 ### `onda_api` (`crates/onda_api/src`)
 - `lib.rs` — C ABI surface (compile/create/process/destroy, bind/set, metadata queries, event trigger, state snapshot/restore).
@@ -160,7 +162,8 @@ Non-crate directories of note:
 - `run_session.rs` — live JIT instance lifecycle, param/buffer binding, `render_block`.
 
 ### `onda_run` (`crates/onda_run/src`)
-- `lib.rs` — run controller wiring real-time audio to a daemon run session.
+- `lib.rs` — run controller wiring real-time audio to a daemon run session, including dynamic
+  watching of the entry and every transitive non-stdlib source reported by the frontend loader.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
 
 ### `onda_lsp` (`crates/onda_lsp/src`)
@@ -186,7 +189,6 @@ Non-crate directories of note:
 - `lib.rs` — webview run host.
 - `ipc.rs` — JSON IPC with the run control socket.
 - `process.rs` — `onda run play` child process management.
-- `watcher.rs` — auto-restart on `.onda` save.
 
 ## Practical navigation entrypoints
 
@@ -251,7 +253,13 @@ Non-crate directories of note:
   and the flag mask; zero-frame segments are legal. The Binaryen wrapper and reference
   AudioWorklet implement the same scheduling contract. The worklet maintains the host-side
   compile-block cursor needed when Web Audio callback sizes differ from the compiled block size.
-- Per-block behavior: declared buffers must be bound before processing; top-level ranged params are hoisted/clamped once per block; top-level ranged inputs once per sample; host-triggered events run synchronously via index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous element bytes).
+- Entry-point behavior: declared buffers must be bound before processing; each top-level ranged
+  parameter used by an entry point is hoisted and clamped once at the start of init, each event, or
+  each logical process block; top-level ranged inputs are clamped once per sample; ranged proc
+  parameters are clamped once when stored and are not reclamped when read. Floating NaN maps to the
+  range minimum at these generated clamp boundaries. Host-triggered events run synchronously via
+  index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous
+  element bytes).
 
 ## Browser build and verification
 

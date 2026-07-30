@@ -13,8 +13,9 @@ use onda_frontend::{
     EventDef, EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType, FnReturnType,
     FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl,
     NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock,
-    ParamDecl, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc,
-    Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
+    ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
+    SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_WRITE2_FN,
 };
 
 pub mod aggregate_layout;
@@ -91,6 +92,8 @@ pub struct TypedProgram {
     pub param_types: HashMap<String, PrimitiveType>,
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
+    pub(crate) dynamic_input_range_aliases: HashMap<String, String>,
+    pub(crate) dynamic_param_range_aliases: HashMap<String, String>,
     pub in_arrays: HashMap<String, TypedArrayInfo>,
     pub out_arrays: HashMap<String, TypedArrayInfo>,
     pub control_out_arrays: HashMap<String, TypedArrayInfo>,
@@ -327,6 +330,29 @@ pub struct TypedParam {
     pub ty: PrimitiveType,
     pub default: TypedConstValue,
     pub range: Option<TypedValueRange>,
+    pub control: TypedParamControl,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedParamControl {
+    pub scale: ParamScale,
+    pub curve: Option<f64>,
+    pub unit: Option<String>,
+    pub step: Option<TypedConstValue>,
+    /// Number of equal intervals between the inclusive range endpoints.
+    pub step_count: Option<u32>,
+}
+
+impl Default for TypedParamControl {
+    fn default() -> Self {
+        Self {
+            scale: ParamScale::Linear,
+            curve: None,
+            unit: None,
+            step: None,
+            step_count: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -564,6 +590,197 @@ mod tests {
         assert!(
             errors.iter().any(|diag| diag.message.contains(expected)),
             "expected diagnostic containing '{expected}', got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validates_top_level_parameter_control_domains() {
+        let program = parse_program(
+            r#"
+params {
+  cutoff = 440.0 {20, 20000, log, "Hz"}
+  mode: i32 = 4 {0, 10, step = 2}
+  mix = 0.5 {0, 1, curve = -4}
+}
+outs { out1 }
+sample { out1 = cutoff + mode + mix }
+"#,
+        )
+        .expect("parse should succeed");
+        let typed = analyze(program).expect("valid parameter domains should analyze");
+
+        assert_eq!(typed.params[0].control.scale, ParamScale::Log);
+        assert_eq!(typed.params[0].control.unit.as_deref(), Some("Hz"));
+        assert_eq!(typed.params[0].control.step, None);
+        assert_eq!(typed.params[1].control.step, Some(TypedConstValue::I32(2)));
+        assert_eq!(typed.params[1].control.step_count, Some(5));
+        assert_eq!(typed.params[2].control.curve, Some(-4.0));
+
+        let mir =
+            lower_program_to_optimized_mir(&typed).expect("parameter domains should lower to MIR");
+        let params = &mir.as_program().interface.params;
+        assert_eq!(params[0].control.scale, onda_mir::ParamScale::Log);
+        assert_eq!(params[0].control.unit.as_deref(), Some("Hz"));
+        assert_eq!(params[1].control.step, Some(onda_mir::ScalarValue::I32(2)));
+        assert_eq!(params[1].control.step_count, Some(5));
+        assert_eq!(params[2].control.curve, Some(-4.0));
+    }
+
+    #[test]
+    fn parameter_curves_accept_the_full_constant_expression_pipeline() {
+        let program = parse_program(
+            r#"
+const def curve_value() -> f64:
+  return -2.0
+
+const Curve = -3.0
+const Curves: f64[1] = [-4.0]
+
+params:
+  scalar = 0.5 {0, 1, curve = Curve}
+  array = 0.5 {0, 1, curve = Curves[0]}
+  function = 0.5 {0, 1, curve = curve_value()}
+
+outs:
+  out1
+
+sample:
+  out1 = scalar + array + function
+"#,
+        )
+        .expect("constant curve expressions should parse");
+        let typed = analyze(program).expect("constant curve expressions should analyze");
+        let curves = typed
+            .params
+            .iter()
+            .map(|param| param.control.curve)
+            .collect::<Vec<_>>();
+
+        assert_eq!(curves, vec![Some(-3.0), Some(-4.0), Some(-2.0)]);
+    }
+
+    #[test]
+    fn parameter_curves_reject_forward_constant_references() {
+        assert_analyze_error_contains(
+            r#"
+params:
+  mix = 0.5 {0, 1, curve = Curve}
+
+const Curve = -4.0
+
+outs:
+  out1
+
+sample:
+  out1 = mix
+"#,
+            "constant 'Curve' is not visible before its declaration",
+        );
+    }
+
+    #[test]
+    fn integer_parameter_ranges_have_an_implicit_unit_step() {
+        let program = parse_program(
+            r#"
+params { mode: i32 = 4 {0, 10} }
+outs { out1 }
+sample { out1 = mode }
+"#,
+        )
+        .expect("parse should succeed");
+        let typed = analyze(program).expect("integer domain should analyze");
+        assert_eq!(typed.params[0].control.step, Some(TypedConstValue::I32(1)));
+        assert_eq!(typed.params[0].control.step_count, Some(10));
+    }
+
+    #[test]
+    fn float_parameter_grids_validate_at_the_declared_storage_precision() {
+        let program = parse_program(
+            r#"
+params:
+  value: f32 = 50000.0 {0, 100000, step = 0.1}
+outs:
+  out1
+sample:
+  out1 = value
+"#,
+        )
+        .expect("parse should succeed");
+        let typed = analyze(program).expect("representable f32 grid should analyze");
+        assert_eq!(typed.params[0].control.step_count, Some(1_000_000));
+
+        assert_analyze_error_contains(
+            "params { p: f32 = 50000.5 {0, 100000, step = 1} }\n\
+             outs { out1 }\nsample { out1 = p }\n",
+            "default must lie on the step grid",
+        );
+        assert_analyze_error_contains(
+            "params { p: f32 = 0 {0, 100000.5, step = 1} }\n\
+             outs { out1 }\nsample { out1 = p }\n",
+            "step must divide the range exactly",
+        );
+    }
+
+    #[test]
+    fn accepts_the_exact_host_i64_control_boundary() {
+        let program = parse_program(
+            r#"
+params { p: i64 = 0 {0, 9007199254740991, step = 9007199254740991} }
+outs<i64> { out1 }
+sample { out1 = p }
+"#,
+        )
+        .expect("parse should succeed");
+        let typed = analyze(program).expect("exact host boundary should analyze");
+
+        assert_eq!(
+            typed.params[0].control.step,
+            Some(TypedConstValue::I64(9_007_199_254_740_991))
+        );
+        assert_eq!(typed.params[0].control.step_count, Some(1));
+    }
+
+    #[test]
+    fn rejects_invalid_top_level_parameter_control_domains() {
+        for (domain, expected) in [
+            ("{-20, 20000, log}", "0 < min < max"),
+            (
+                "{20, 20000, log, curve = -4}",
+                "cannot combine logarithmic scale with curve",
+            ),
+            ("{0, 1, curve = 1.0 / 0.0}", "must be finite"),
+            ("{20, 20000, log, step = 10}", "cannot combine"),
+            ("{0, 10, step = 3}", "divide the range exactly"),
+            ("{0, 10, step = 2}", "default must lie on the step grid"),
+        ] {
+            assert_analyze_error_contains(
+                &format!("params {{ p = 3.0 {domain} }}\nouts {{ out1 }}\nsample {{ out1 = p }}\n"),
+                expected,
+            );
+        }
+        assert_analyze_error_contains(
+            "params { p: i32 = 1 {0, 10, log} }\nouts { out1 }\nsample { out1 = p }\n",
+            "logarithmic scale requires f32 or f64",
+        );
+        assert_analyze_error_contains(
+            "params { p: i64 = 9007199254740992 {9007199254740992, 9007199254741002} }\n\
+             outs<i64> { out1 }\nsample { out1 = p }\n",
+            "must fit the exact host integer range",
+        );
+        assert_analyze_error_contains(
+            "params { p: i64 = -9007199254740991 {-9007199254740991, 9007199254740991, step = 2} }\n\
+             outs<i64> { out1 }\nsample { out1 = p }\n",
+            "must fit the exact host integer range",
+        );
+        assert_analyze_error_contains(
+            "params { p = 11.0 {0, 10, step = 2} }\n\
+             outs { out1 }\nsample { out1 = p }\n",
+            "default must lie on the step grid",
+        );
+        assert_analyze_error_contains(
+            "params { p: i32 = 12 {0, 10, step = 2} }\n\
+             outs<i32> { out1 }\nsample { out1 = p }\n",
+            "default must lie on the step grid",
         );
     }
 

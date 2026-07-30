@@ -462,46 +462,127 @@ pub(super) fn clamp_expr_to_range(expr: Expr, range: TypedValueRange) -> Expr {
     let max_expr = typed_const_expr(range.max);
     Expr::Call {
         loc: Default::default(),
-        func: BuiltinFn::Max,
-        args: vec![
-            Expr::Call {
-                loc: Default::default(),
-                func: BuiltinFn::Min,
-                args: vec![expr, max_expr],
-            },
-            min_expr,
-        ],
+        func: BuiltinFn::RangeClamp,
+        args: vec![expr, min_expr, max_expr],
     }
+}
+
+fn expr_matches_typed_const(expr: &Expr, value: TypedConstValue) -> bool {
+    match (expr, value) {
+        (
+            Expr::Cast {
+                to: PrimitiveType::F32,
+                expr,
+                ..
+            },
+            TypedConstValue::F32(expected),
+        ) => matches!(
+            expr.as_ref(),
+            Expr::Number { value, .. } if value.to_bits() == (expected as f64).to_bits()
+        ),
+        (Expr::Number { value, .. }, TypedConstValue::F64(expected)) => {
+            value.to_bits() == expected.to_bits()
+        }
+        (
+            Expr::Cast {
+                to: PrimitiveType::I32,
+                expr,
+                ..
+            },
+            TypedConstValue::I32(expected),
+        ) => matches!(
+            expr.as_ref(),
+            Expr::Int { value, .. } if *value == i64::from(expected)
+        ),
+        (Expr::Int { value, .. }, TypedConstValue::I64(expected)) => *value == expected,
+        (Expr::Bool { value, .. }, TypedConstValue::Bool(expected)) => *value == expected,
+        _ => false,
+    }
+}
+
+pub(super) fn expr_is_clamped_to_range(
+    expr: &Expr,
+    range: TypedValueRange,
+    ty: PrimitiveType,
+) -> bool {
+    let Expr::Cast {
+        to, expr: clamped, ..
+    } = expr
+    else {
+        return false;
+    };
+    if *to != ty {
+        return false;
+    }
+    let Expr::Call {
+        func: BuiltinFn::RangeClamp,
+        args,
+        ..
+    } = clamped.as_ref()
+    else {
+        return false;
+    };
+    let [_, minimum, maximum] = args.as_slice() else {
+        return false;
+    };
+    expr_matches_typed_const(minimum, range.min) && expr_matches_typed_const(maximum, range.max)
+}
+
+#[derive(Default)]
+pub(super) struct TopLevelRangeClampUsage {
+    pub(super) aliases: HashSet<String>,
+    pub(super) dynamic_input_aliases: HashSet<String>,
+    pub(super) dynamic_param_aliases: HashSet<String>,
 }
 
 pub(super) fn rewrite_top_level_range_clamps_in_expr(
     expr: &mut Expr,
     input_aliases: &HashMap<String, String>,
     param_aliases: &HashMap<String, String>,
+    shadowed: &HashSet<String>,
     clamp_inputs: bool,
     clamp_params: bool,
+    usage: &mut TopLevelRangeClampUsage,
 ) {
     match expr {
         Expr::Var { name, .. } => {
+            if shadowed.contains(name) {
+                return;
+            }
             if clamp_inputs {
                 if let Some(alias) = input_aliases.get(name) {
+                    usage.aliases.insert(alias.clone());
                     *expr = Expr::var(alias.clone());
                     return;
                 }
             }
             if clamp_params {
                 if let Some(alias) = param_aliases.get(name) {
+                    usage.aliases.insert(alias.clone());
                     *expr = Expr::var(alias.clone());
                 }
             }
         }
-        Expr::Index { index, .. } => {
+        Expr::Index { base, index, .. } => {
+            if base == "ins" && clamp_inputs {
+                usage.aliases.extend(input_aliases.values().cloned());
+                usage
+                    .dynamic_input_aliases
+                    .extend(input_aliases.values().cloned());
+            } else if matches!(base.as_str(), "params" | "kins") && clamp_params {
+                usage.aliases.extend(param_aliases.values().cloned());
+                usage
+                    .dynamic_param_aliases
+                    .extend(param_aliases.values().cloned());
+            }
             rewrite_top_level_range_clamps_in_expr(
                 index,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
         }
         Expr::Slice { start, end, .. } => {
@@ -510,8 +591,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     start,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
             if let Some(end) = end {
@@ -519,8 +602,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     end,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
         }
@@ -529,8 +614,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 &mut spec.size,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
             if let Some(values) = init {
                 for value in values {
@@ -538,8 +625,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                         value,
                         input_aliases,
                         param_aliases,
+                        shadowed,
                         clamp_inputs,
                         clamp_params,
+                        usage,
                     );
                 }
             }
@@ -551,15 +640,19 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 lhs,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
             rewrite_top_level_range_clamps_in_expr(
                 rhs,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
         }
         Expr::Call { args, .. } => {
@@ -568,8 +661,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     arg,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
         }
@@ -580,8 +675,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 inner,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
         }
         Expr::ArrayLiteral { values, .. } => {
@@ -590,8 +687,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     value,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
         }
@@ -601,8 +700,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     &mut arg.expr,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
         }
@@ -612,8 +713,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                     value,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
         }
@@ -625,8 +728,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
     stmt: &mut Stmt,
     input_aliases: &HashMap<String, String>,
     param_aliases: &HashMap<String, String>,
+    shadowed: &HashSet<String>,
     clamp_inputs: bool,
     clamp_params: bool,
+    usage: &mut TopLevelRangeClampUsage,
 ) {
     match stmt {
         Stmt::Const { .. } => {}
@@ -636,16 +741,20 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     index,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
             rewrite_top_level_range_clamps_in_expr(
                 expr,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -653,8 +762,10 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 expr,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
         }
         Stmt::If {
@@ -667,16 +778,20 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 cond,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
             for nested in then_branch {
                 rewrite_top_level_range_clamps_in_stmt(
                     nested,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
             for nested in else_branch {
@@ -684,12 +799,15 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     nested,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
         }
         Stmt::For {
+            var,
             start,
             end,
             step,
@@ -700,32 +818,42 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 start,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
             rewrite_top_level_range_clamps_in_expr(
                 end,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
             if let Some(step_expr) = step {
                 rewrite_top_level_range_clamps_in_expr(
                     step_expr,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
+            let mut body_shadowed = shadowed.clone();
+            body_shadowed.insert(var.clone());
             for nested in body {
                 rewrite_top_level_range_clamps_in_stmt(
                     nested,
                     input_aliases,
                     param_aliases,
+                    &body_shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
         }
@@ -734,16 +862,20 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 cond,
                 input_aliases,
                 param_aliases,
+                shadowed,
                 clamp_inputs,
                 clamp_params,
+                usage,
             );
             for nested in body {
                 rewrite_top_level_range_clamps_in_stmt(
                     nested,
                     input_aliases,
                     param_aliases,
+                    shadowed,
                     clamp_inputs,
                     clamp_params,
+                    usage,
                 );
             }
         }
@@ -754,7 +886,6 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
 pub(super) fn build_top_level_range_hoist_assign(
     alias_name: String,
     source_name: &str,
-    _ty: PrimitiveType,
     range: TypedValueRange,
 ) -> Stmt {
     Stmt::Assign {
@@ -767,6 +898,37 @@ pub(super) fn build_top_level_range_hoist_assign(
         typed_decl_ty_loc: Default::default(),
         expr: clamp_expr_to_range(Expr::var(source_name), range),
     }
+}
+
+pub(super) fn build_top_level_range_clamp_entry(
+    names: &[String],
+    ranges: &HashMap<String, TypedValueRange>,
+    mut make_alias: impl FnMut(&str) -> String,
+) -> (HashMap<String, String>, Vec<(String, Stmt)>) {
+    let mut aliases = HashMap::new();
+    let mut hoists = Vec::new();
+    for name in names {
+        let range = *ranges
+            .get(name)
+            .expect("range-clamp entry names must come from its range map");
+        let alias = make_alias(name);
+        aliases.insert(name.clone(), alias.clone());
+        hoists.push((
+            alias.clone(),
+            build_top_level_range_hoist_assign(alias, name, range),
+        ));
+    }
+    (aliases, hoists)
+}
+
+pub(super) fn used_top_level_range_clamp_hoists(
+    hoists: Vec<(String, Stmt)>,
+    used_aliases: &HashSet<String>,
+) -> Vec<Stmt> {
+    hoists
+        .into_iter()
+        .filter_map(|(alias, stmt)| used_aliases.contains(&alias).then_some(stmt))
+        .collect()
 }
 
 type ExpandedPortDecls = (

@@ -113,12 +113,17 @@ port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_sep* }
 decl_type = { array_type | tuple_type | type_name | namespace_ref | qualified_ident }
 tuple_type = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
 decl_range = { "{" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)? ~ comma_sep? ~ NEWLINE* ~ "}" }
+param_unit = @{ "\"" ~ (("\\" ~ ("\"" | "\\" | "n" | "r" | "t")) | (!("\"" | "\\" | NEWLINE) ~ ANY))* ~ "\"" }
+param_domain_value = _{ param_unit | expr }
+param_domain_named = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ param_domain_value }
+param_domain_item = { param_domain_named | param_unit | expr }
+param_domain = { "{" ~ NEWLINE* ~ param_domain_item ~ (comma_sep ~ param_domain_item)* ~ comma_sep? ~ NEWLINE* ~ "}" }
 port_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? }
 param_list = { param_decl ~ (list_sep+ ~ param_decl)* ~ list_sep* }
 proc_param_list = { proc_param_decl ~ (list_sep+ ~ proc_param_decl)* ~ list_sep* }
 param_pin = @{ "pin" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 param_bind = { "=>" ~ ident }
-param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? ~ param_bind? }
+param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ param_domain? ~ param_bind? }
 proc_param_decl = { param_pin? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? ~ param_bind? }
 buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_sep* }
 buffer_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ buffer_decl_type)? }
@@ -227,6 +232,6 @@ keyword = _{
     | "true" | "false"
   ) ~ !ident_char
 }
-ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
+ident = @{ !"__onda_" ~ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
 number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }

@@ -327,7 +327,7 @@ pub(super) fn build_proc_write_helper(
         // Keep the unsafe OOB sentinel exclusively on the unmatched path.
         // A trailing dead `1 / 0` used to be harmless in the direct LLVM
         // backend because poison was unused, but MIR gives integer division
-        // by zero observable trap semantics.
+        // by-zero observable failure semantics.
         let mut unmatched = vec![Stmt::Expr {
             loc: Default::default(),
             expr: Expr::Binary {
@@ -3679,7 +3679,10 @@ fn maybe_clamp_flattened_nested_proc_param_assignment_expr(
     else {
         return;
     };
-    if let Some(range) = param_slot.range {
+    if let Some(range) = param_slot
+        .range
+        .filter(|range| !expr_is_clamped_to_range(expr, *range, param_slot.ty))
+    {
         let original = std::mem::replace(expr, Expr::number(0.0));
         *expr = cast_expr_to_primitive(clamp_expr_to_range(original, range), param_slot.ty);
     }
@@ -4298,7 +4301,10 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
     else {
         return;
     };
-    if let Some(range) = param_slot.range {
+    if let Some(range) = param_slot
+        .range
+        .filter(|range| !expr_is_clamped_to_range(expr, *range, param_slot.ty))
+    {
         let original = std::mem::replace(expr, Expr::number(0.0));
         *expr = cast_expr_to_primitive(clamp_expr_to_range(original, range), param_slot.ty);
     }

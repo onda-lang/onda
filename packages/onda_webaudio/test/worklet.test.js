@@ -20,7 +20,7 @@ await import("../src/worklet.js");
 
 const wasm = new Uint8Array([
   0, 97, 115, 109, 1, 0, 0, 0,
-  1, 4, 1, 96, 0, 0,
+  1, 5, 1, 96, 0, 1, 127,
   3, 3, 2, 0, 0,
   5, 3, 1, 0, 1,
   6, 7, 1, 127, 0, 65, 128, 8, 11,
@@ -29,13 +29,13 @@ const wasm = new Uint8Array([
   11, 95, 95, 104, 101, 97, 112, 95, 98, 97, 115, 101, 3, 0,
   9, 111, 110, 100, 97, 95, 105, 110, 105, 116, 0, 0,
   12, 111, 110, 100, 97, 95, 112, 114, 111, 99, 101, 115, 115, 0, 1,
-  10, 7, 2, 2, 0, 11, 2, 0, 11,
+  10, 11, 2, 4, 0, 65, 0, 11, 4, 0, 65, 0, 11,
 ]);
 
 const highBitHeapBaseWasm = new Uint8Array([
-  ...wasm.slice(0, 24),
+  ...wasm.slice(0, 25),
   6, 10, 1, 127, 0, 65, 128, 128, 128, 128, 120, 11,
-  ...wasm.slice(33),
+  ...wasm.slice(34),
 ]);
 
 function metadata() {
@@ -164,4 +164,43 @@ test("worklet interprets the wasm32 heap base as an unsigned address", () => {
   } finally {
     Processor.prototype.alloc = originalAlloc;
   }
+});
+
+test("worklet writes adapter-canonical parameter values without reconversion", () => {
+  const descriptor = metadata();
+  descriptor.runtime.param_size_bytes = 4;
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.params = [{
+    name: "mode",
+    type_repr: "i32",
+    scalar: "i32",
+    array_len: 1,
+    element_size_bytes: 4,
+    slot_offset: 0,
+    byte_offset: 0,
+    state_byte_offset: null,
+    byte_size: 4,
+    default_reprs: ["0"],
+    range_min_repr: "0",
+    range_max_repr: "10",
+    param_control: {
+      scale: "linear",
+      curve: null,
+      unit: null,
+      step_repr: "2",
+      step_count: 5,
+    },
+  }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+    },
+  });
+  const view = new DataView(processor.memory.buffer);
+
+  processor.setParam("mode", 4);
+  assert.equal(view.getInt32(processor.paramsPtr, true), 4);
+  processor.setParam("mode", 10);
+  assert.equal(view.getInt32(processor.paramsPtr, true), 10);
 });

@@ -1186,6 +1186,13 @@ fn eval_const_builtin_call(
         BuiltinFn::Min => values[0].min(values[1]),
         BuiltinFn::Max => values[0].max(values[1]),
         BuiltinFn::Fma => values[0].mul_add(values[1], values[2]),
+        BuiltinFn::RangeClamp => {
+            if values[0].is_nan() {
+                values[1]
+            } else {
+                values[0].min(values[2]).max(values[1])
+            }
+        }
     };
     Some(Expr::number(value).with_loc(loc))
 }
@@ -2943,6 +2950,12 @@ fn fold_param_decl_const_arrays(
         errors,
     );
     fold_decl_range_const_arrays(&mut decl.range, const_values, options, errors);
+    for expr in [&mut decl.control.curve, &mut decl.control.step]
+        .into_iter()
+        .flatten()
+    {
+        fold_const_array_expr(expr, const_values, options, errors, false);
+    }
 }
 
 fn fold_buffer_type_const_arrays(
@@ -3292,6 +3305,12 @@ fn reject_forward_const_refs_param_decl(
         reject_forward_const_refs_expr(default, visible_consts, future_consts, errors);
     }
     reject_forward_const_refs_decl_range(&decl.range, visible_consts, future_consts, errors);
+    for expr in [&decl.control.curve, &decl.control.step]
+        .into_iter()
+        .flatten()
+    {
+        reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
+    }
 }
 
 fn reject_forward_const_refs_buffer_type(
@@ -4542,6 +4561,12 @@ fn fold_direct_const_def_param_decl(
         fold_direct_const_def_call_expr(default, artifacts, options, context, errors);
     }
     fold_direct_const_def_decl_range(&mut decl.range, artifacts, options, context, errors);
+    for expr in [&mut decl.control.curve, &mut decl.control.step]
+        .into_iter()
+        .flatten()
+    {
+        fold_direct_const_def_call_expr(expr, artifacts, options, context, errors);
+    }
 }
 
 fn fold_direct_const_def_stmt(
@@ -5214,6 +5239,12 @@ fn fold_local_scalar_const_param_decl(
         fold_local_scalar_const_expr(default, local_consts);
     }
     fold_local_scalar_const_decl_range(&mut decl.range, local_consts);
+    for expr in [&mut decl.control.curve, &mut decl.control.step]
+        .into_iter()
+        .flatten()
+    {
+        fold_local_scalar_const_expr(expr, local_consts);
+    }
 }
 
 fn eval_local_scalar_const_decl(
@@ -6045,6 +6076,7 @@ fn expand_param_count_shorthand(
                 ty_loc: Span::ZERO,
                 default: None,
                 range: None,
+                control: Default::default(),
                 bind: None,
             });
         }
@@ -7372,59 +7404,129 @@ pub fn analyze_with_options(
         }
     };
 
-    let mut input_aliases = HashMap::<String, String>::new();
-    let mut input_hoists = Vec::<Stmt>::new();
     let mut input_names = in_ranges.keys().cloned().collect::<Vec<_>>();
     input_names.sort();
-    for name in input_names {
-        let Some(range) = in_ranges.get(&name).copied() else {
-            continue;
-        };
-        let ty = *in_types.get(&name).unwrap_or(&PrimitiveType::F32);
-        let alias = make_unique_temp(format!(
-            "__onda_clamped_in__{}",
-            sanitize_symbol_component(&name)
-        ));
-        input_aliases.insert(name.clone(), alias.clone());
-        input_hoists.push(build_top_level_range_hoist_assign(alias, &name, ty, range));
-    }
+    let (input_aliases, input_hoists) =
+        build_top_level_range_clamp_entry(&input_names, &in_ranges, |name| {
+            make_unique_temp(format!(
+                "__onda_clamped_in__{}",
+                sanitize_symbol_component(name)
+            ))
+        });
 
-    let mut param_aliases = HashMap::<String, String>::new();
-    let mut param_hoists = Vec::<Stmt>::new();
     let mut param_names_sorted = param_ranges.keys().cloned().collect::<Vec<_>>();
     param_names_sorted.sort();
-    for name in param_names_sorted {
-        let Some(range) = param_ranges.get(&name).copied() else {
-            continue;
-        };
-        let ty = *param_types.get(&name).unwrap_or(&PrimitiveType::F32);
-        let alias = make_unique_temp(format!(
-            "__onda_clamped_param__{}",
-            sanitize_symbol_component(&name)
-        ));
-        param_aliases.insert(name.clone(), alias.clone());
-        param_hoists.push(build_top_level_range_hoist_assign(alias, &name, ty, range));
-    }
+    let (param_aliases, param_hoists) =
+        build_top_level_range_clamp_entry(&param_names_sorted, &param_ranges, |name| {
+            make_unique_temp(format!(
+                "__onda_clamped_param__{}",
+                sanitize_symbol_component(name)
+            ))
+        });
+    let init_param_hoists = param_hoists.clone();
+    let no_shadowed_names = HashSet::new();
 
+    let mut process_clamp_usage = TopLevelRangeClampUsage::default();
     for stmt in &mut block_pre {
-        rewrite_top_level_range_clamps_in_stmt(stmt, &input_aliases, &param_aliases, false, true);
+        rewrite_top_level_range_clamps_in_stmt(
+            stmt,
+            &input_aliases,
+            &param_aliases,
+            &no_shadowed_names,
+            false,
+            true,
+            &mut process_clamp_usage,
+        );
     }
     for stmt in &mut sample {
-        rewrite_top_level_range_clamps_in_stmt(stmt, &input_aliases, &param_aliases, true, true);
+        rewrite_top_level_range_clamps_in_stmt(
+            stmt,
+            &input_aliases,
+            &param_aliases,
+            &no_shadowed_names,
+            true,
+            true,
+            &mut process_clamp_usage,
+        );
     }
     for stmt in &mut block_post {
-        rewrite_top_level_range_clamps_in_stmt(stmt, &input_aliases, &param_aliases, false, true);
+        rewrite_top_level_range_clamps_in_stmt(
+            stmt,
+            &input_aliases,
+            &param_aliases,
+            &no_shadowed_names,
+            false,
+            true,
+            &mut process_clamp_usage,
+        );
     }
 
-    if !param_hoists.is_empty() {
-        let mut rewritten = param_hoists;
+    let process_param_hoists =
+        used_top_level_range_clamp_hoists(param_hoists, &process_clamp_usage.aliases);
+    if !process_param_hoists.is_empty() {
+        let mut rewritten = process_param_hoists;
         rewritten.append(&mut block_pre);
         block_pre = rewritten;
     }
-    if !input_hoists.is_empty() {
-        let mut rewritten = input_hoists;
+    let process_input_hoists =
+        used_top_level_range_clamp_hoists(input_hoists, &process_clamp_usage.aliases);
+    if !process_input_hoists.is_empty() {
+        let mut rewritten = process_input_hoists;
         rewritten.append(&mut sample);
         sample = rewritten;
+    }
+
+    let mut init_clamp_usage = TopLevelRangeClampUsage::default();
+    for stmt in &mut init {
+        rewrite_top_level_range_clamps_in_stmt(
+            stmt,
+            &HashMap::new(),
+            &param_aliases,
+            &no_shadowed_names,
+            false,
+            true,
+            &mut init_clamp_usage,
+        );
+    }
+    let mut used_init_hoists =
+        used_top_level_range_clamp_hoists(init_param_hoists, &init_clamp_usage.aliases);
+    if !used_init_hoists.is_empty() {
+        used_init_hoists.append(&mut init);
+        init = used_init_hoists;
+    }
+
+    for event in &mut events {
+        let (event_param_aliases, event_param_hoists) =
+            build_top_level_range_clamp_entry(&param_names_sorted, &param_ranges, |name| {
+                make_unique_temp(format!(
+                    "__onda_clamped_event_{}_param__{}",
+                    sanitize_symbol_component(&event.name),
+                    sanitize_symbol_component(name)
+                ))
+            });
+        let mut event_clamp_usage = TopLevelRangeClampUsage::default();
+        let shadowed_names = event
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<HashSet<_>>();
+        for stmt in &mut event.body {
+            rewrite_top_level_range_clamps_in_stmt(
+                stmt,
+                &HashMap::new(),
+                &event_param_aliases,
+                &shadowed_names,
+                false,
+                true,
+                &mut event_clamp_usage,
+            );
+        }
+        let mut used_event_hoists =
+            used_top_level_range_clamp_hoists(event_param_hoists, &event_clamp_usage.aliases);
+        if !used_event_hoists.is_empty() {
+            used_event_hoists.append(&mut event.body);
+            event.body = used_event_hoists;
+        }
     }
 
     let mut all_declared = HashSet::new();
@@ -8512,6 +8614,15 @@ pub fn analyze_with_options(
         state_tuples,
         ..
     } = init_st;
+    for (param_name, alias) in &param_aliases {
+        if process_clamp_usage.dynamic_param_aliases.contains(alias) {
+            let ty = param_types
+                .get(param_name)
+                .copied()
+                .expect("range-clamped parameter must have a declared scalar type");
+            state_scalars.insert(alias.clone(), ty);
+        }
+    }
     let control_out_array_slots = control_out_arrays
         .iter()
         .flat_map(|(name, info)| (0..info.len).map(move |idx| format!("{name}[{idx}]")))
@@ -9307,6 +9418,14 @@ pub fn analyze_with_options(
                 return Err(errors);
             }
         };
+        let dynamic_input_range_aliases = input_aliases
+            .into_iter()
+            .filter(|(_, alias)| process_clamp_usage.dynamic_input_aliases.contains(alias))
+            .collect();
+        let dynamic_param_range_aliases = param_aliases
+            .into_iter()
+            .filter(|(_, alias)| process_clamp_usage.dynamic_param_aliases.contains(alias))
+            .collect();
 
         Ok(TypedProgram {
             analysis_options: options,
@@ -9319,6 +9438,8 @@ pub fn analyze_with_options(
             param_types,
             in_defaults,
             in_ranges,
+            dynamic_input_range_aliases,
+            dynamic_param_range_aliases,
             in_arrays,
             out_arrays,
             control_out_arrays,

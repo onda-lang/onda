@@ -23,7 +23,11 @@ export class BrowserRunViewHost {
       outputDevices: [],
       currentInputDevice: null,
       currentOutputDevice: null,
+      supportsSourceSelection: false,
+      supportsTransport: true,
       supportsDeviceSelection: false,
+      supportsRunSettings: false,
+      supportsScope: true,
       sampleRateHz: 48_000,
       blockFrames: 512,
       themeMode: document.documentElement.dataset.theme || "auto",
@@ -160,11 +164,15 @@ export class BrowserRunViewHost {
     this.setState({ error: String(error?.message ?? error) });
   }
 
-  resetValues() {
+  resetParamValues() {
     this.state.params = this.state.params.map((param) => ({
       ...param,
       value: initialParamValue(param),
     }));
+    this.postState();
+  }
+
+  resetEventArguments() {
     this.state.events = this.state.events.map((event) => ({
       ...event,
       args: event.args.map((arg) => ({ ...arg, value: initialEventArgValue(arg) })),
@@ -225,8 +233,12 @@ export class BrowserRunViewHost {
         case "stop":
           await this.handlers.stop?.();
           break;
-        case "reset":
-          await this.handlers.reset?.();
+        case "resetParams":
+          this.resetParamValues();
+          await this.handlers.resetParams?.();
+          break;
+        case "resetEventArguments":
+          this.resetEventArguments();
           break;
         case "setParam":
           this.state.params = this.state.params.map((param) =>
@@ -324,6 +336,7 @@ export function mergeParams(params, existing) {
     .filter((param) => param.array_len === 1)
     .map((param, index) => {
       const previous = existing.find((item) => item.name === param.name);
+      const control = param.param_control;
       const next = {
         index,
         name: param.name,
@@ -331,6 +344,11 @@ export function mergeParams(params, existing) {
         default: decodeScalarRepr(param.scalar, param.default_reprs?.[0]),
         rangeMin: decodeScalarRepr(param.scalar, param.range_min_repr),
         rangeMax: decodeScalarRepr(param.scalar, param.range_max_repr),
+        scale: control?.scale ?? null,
+        curve: control?.curve ?? null,
+        unit: control?.unit ?? null,
+        step: decodeScalarRepr(param.scalar, control?.step_repr),
+        stepCount: control?.step_count ?? null,
         scalar: true,
       };
       return {
@@ -402,7 +420,12 @@ function paramShapeMatches(left, right) {
   return left.type === right.type
     && left.default === right.default
     && left.rangeMin === right.rangeMin
-    && left.rangeMax === right.rangeMax;
+    && left.rangeMax === right.rangeMax
+    && left.scale === right.scale
+    && left.curve === right.curve
+    && left.unit === right.unit
+    && left.step === right.step
+    && left.stepCount === right.stepCount;
 }
 
 function eventArgShapeMatches(left, right) {
@@ -442,7 +465,10 @@ function decodeScalarRepr(type, value) {
   if (value === null || value === undefined) return null;
   if (type === "bool") return value === "true";
   if (type !== "f32" && type !== "f64") return Number(value);
-  if (!value.startsWith("0x")) return Number(value);
+  if (!value.startsWith("0x")) {
+    const decoded = Number(value);
+    return type === "f32" ? Math.fround(decoded) : decoded;
+  }
   const width = type === "f32" ? 32 : 64;
   const digits = value.startsWith("0x") ? value.slice(2) : "";
   if (digits.length !== width / 4) return Number.NaN;

@@ -680,3 +680,40 @@ test("AudioWorklet segments arbitrary callback sizes across compile blocks", () 
   ]);
   assert.equal(processor.blockCursor, 3);
 });
+
+test("AudioWorklet latches generated execution failures and emits silence", () => {
+  const artifact = compileMir(f64PassthroughMir());
+  const processor = new WorkletProcessor({
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+    },
+  });
+  let calls = 0;
+  processor.invokeProcessSegment = () => {
+    calls += 1;
+    return 1;
+  };
+  const output = Float32Array.from([1, 1, 1, 1]);
+
+  assert.equal(
+    processor.process([[new Float32Array(4)]], [[output]]),
+    true,
+  );
+  assert.deepEqual([...output], [0, 0, 0, 0]);
+  assert.equal(processor.executionFailed, true);
+  assert.equal(calls, 1);
+  assert.deepEqual(processor.port.messages.at(-1), {
+    type: "onda-error",
+    operation: "process",
+    error: "processor process failed with Onda execution status 1",
+  });
+
+  output.fill(1);
+  assert.equal(
+    processor.process([[new Float32Array(4)]], [[output]]),
+    true,
+  );
+  assert.deepEqual([...output], [0, 0, 0, 0]);
+  assert.equal(calls, 1);
+});

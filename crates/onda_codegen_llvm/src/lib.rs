@@ -6,12 +6,11 @@ use std::ffi::c_void;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
-#[cfg(feature = "llvm-orc")]
-use std::rc::Rc;
 use std::sync::Arc;
 
 use onda_frontend::{Diagnostic, PrimitiveType};
-use onda_mir::{ScalarValue, ValueRange};
+use onda_mir::{ParamControl, ScalarValue, ValueRange};
+pub use onda_mir::{ParamDomain, ParamScale, ScalarType as ParamScalarType};
 
 mod aot_artifact;
 #[cfg(any(feature = "llvm-orc", test))]
@@ -26,6 +25,7 @@ mod target_config;
 pub use aot_artifact::{
     AotMetadata, AotObjectArtifact, AotStateMetadata, AOT_METADATA_FORMAT_VERSION,
     AOT_SNAPSHOT_FORMAT_VERSION, PROCESSOR_ABI_VERSION, PROCESSOR_ARTIFACT_FORMAT,
+    PROCESSOR_EXECUTION_OK, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
 };
 #[cfg(feature = "llvm-orc")]
 pub use orc_backend::{
@@ -40,6 +40,18 @@ pub use orc_backend::{
 pub use target_config::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
 };
+
+pub fn check_execution_status(status: u32) -> Result<(), Diagnostic> {
+    if status == PROCESSOR_EXECUTION_OK {
+        Ok(())
+    } else {
+        Err(Diagnostic::runtime(
+            format!("generated Onda code failed a runtime safety check ({status})"),
+            0,
+            0,
+        ))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct JitProgram {
@@ -61,7 +73,7 @@ pub struct JitProgram {
     snapshot_segments: Arc<Vec<StateSnapshotSegment>>,
     snapshot_size_bytes: usize,
     #[cfg(feature = "llvm-orc")]
-    compiled: Rc<orc_backend::MirJitProgram>,
+    compiled: Arc<orc_backend::MirJitProgram>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,9 +86,64 @@ struct StateSnapshotSegment {
 
 #[derive(Clone, Copy)]
 pub struct RuntimeAllocator {
-    pub context: *mut c_void,
-    pub alloc: unsafe extern "C" fn(*mut c_void, usize, usize) -> *mut c_void,
-    pub free: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize),
+    context: *mut c_void,
+    alloc: unsafe extern "C" fn(*mut c_void, usize, usize) -> *mut c_void,
+    free: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize),
+}
+
+impl RuntimeAllocator {
+    /// Creates a host allocator for instance-owned runtime storage.
+    ///
+    /// Onda invokes `alloc` only synchronously while creating an instance. Once
+    /// instance creation returns, no operation on that instance invokes
+    /// `alloc`. Onda may invoke `free` while unwinding failed creation and when
+    /// the completed instance is later destroyed.
+    ///
+    /// # Safety
+    ///
+    /// `context` and both callbacks must remain valid until every instance
+    /// created with this allocator has been destroyed. `alloc` must return
+    /// writable storage of at least `size` bytes aligned to `align`, or null on
+    /// failure. `free` must accept every non-null allocation returned by
+    /// `alloc`, with its original size and alignment.
+    ///
+    /// `alloc` must be callable on each thread where the host creates an
+    /// instance. `free` must be callable on every thread where creation can
+    /// fail or an instance can be destroyed, including concurrently when the
+    /// host creates or destroys multiple instances at once.
+    pub unsafe fn new(
+        context: *mut c_void,
+        alloc: unsafe extern "C" fn(*mut c_void, usize, usize) -> *mut c_void,
+        free: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize),
+    ) -> Self {
+        Self {
+            context,
+            alloc,
+            free,
+        }
+    }
+
+    /// Invokes the host allocation callback.
+    ///
+    /// # Safety
+    ///
+    /// `size` and `align` must describe a valid non-zero allocation layout,
+    /// and the current thread must satisfy the contract given to [`Self::new`].
+    pub unsafe fn allocate(self, size: usize, align: usize) -> *mut c_void {
+        unsafe { (self.alloc)(self.context, size, align) }
+    }
+
+    /// Invokes the host deallocation callback.
+    ///
+    /// # Safety
+    ///
+    /// `ptr`, `size`, and `align` must identify a live allocation previously
+    /// returned by [`Self::allocate`] through this allocator. The allocation
+    /// must not be used again after this call, and the current thread must
+    /// satisfy the contract given to [`Self::new`].
+    pub unsafe fn deallocate(self, ptr: *mut c_void, size: usize, align: usize) {
+        unsafe { (self.free)(self.context, ptr, size, align) }
+    }
 }
 
 impl fmt::Debug for RuntimeAllocator {
@@ -260,8 +327,7 @@ impl<T: Copy> Drop for CustomRuntimeBuffer<T> {
             return;
         };
         unsafe {
-            (self.allocator.free)(
-                self.allocator.context,
+            self.allocator.deallocate(
                 self.ptr.as_ptr().cast::<c_void>(),
                 layout.size(),
                 layout.align(),
@@ -283,13 +349,13 @@ fn allocate_custom_runtime_buffer<T>(
     if layout.size() == 0 {
         return Ok(NonNull::dangling());
     }
-    let raw = unsafe { (allocator.alloc)(allocator.context, layout.size(), layout.align()) };
+    let raw = unsafe { allocator.allocate(layout.size(), layout.align()) };
     let Some(ptr) = NonNull::new(raw.cast::<T>()) else {
         return Err(Diagnostic::runtime("runtime allocator returned null", 0, 0));
     };
     if !(ptr.as_ptr() as usize).is_multiple_of(layout.align()) {
         unsafe {
-            (allocator.free)(allocator.context, raw, layout.size(), layout.align());
+            allocator.deallocate(raw, layout.size(), layout.align());
         }
         return Err(Diagnostic::runtime(
             "runtime allocator returned misaligned memory",
@@ -322,6 +388,7 @@ pub struct DeclaredIo {
     default_values: Option<Vec<ScalarValue>>,
     default_bytes: Option<Vec<u8>>,
     range: Option<ValueRange>,
+    control: Option<ParamControl>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -453,7 +520,7 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
         state_entries: Arc::new(metadata.state_entries),
         snapshot_segments: Arc::new(snapshot_segments),
         snapshot_size_bytes,
-        compiled: Rc::new(compiled),
+        compiled: Arc::new(compiled),
     })
 }
 
@@ -476,6 +543,13 @@ mod tests {
 
     use onda_frontend::parse_program;
     use onda_semantics::{analyze_with_options, AnalysisOptions, TypedProgram};
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn jit_program_is_send_and_sync() {
+        assert_send_sync::<JitProgram>();
+    }
 
     #[derive(Debug, Clone, Copy)]
     struct SourceCompileOptions {

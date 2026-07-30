@@ -56,7 +56,9 @@ cp -R "$compiler_package/src" "$compiler_out/src"
 cp -R "$compiler_package/dist" "$compiler_out/dist"
 cp "$binaryen_js" "$compiler_out/dist/backend/binaryen.js"
 cp "$abi_package/src/index.js" "$compiler_out/src/processor-abi.js"
+cp "$abi_package/src/param-control.js" "$compiler_out/src/param-control.js"
 cp "$abi_package/src/index.js" "$compiler_out/dist/backend/processor-abi.js"
+cp "$abi_package/src/param-control.js" "$compiler_out/dist/backend/param-control.js"
 sed \
   -e 's/from "#onda-frontend-loader"/from ".\/frontend-browser.js"/' \
   -e 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
@@ -67,7 +69,9 @@ sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$compiler_package/dist/backend/artifact.js" > "$compiler_out/dist/backend/artifact.js"
 cp "$webaudio_package/src/worklet.js" "$webaudio_out/worklet.js"
 cp "$repo_root/ui/run/run.html" "$demo_dir/run.html"
+cp "$abi_package/src/param-control.js" "$demo_dir/param-control.js"
 cp "$abi_package/src/index.js" "$webaudio_out/processor-abi.js"
+cp "$abi_package/src/param-control.js" "$webaudio_out/param-control.js"
 sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$webaudio_package/src/index.js" > "$webaudio_out/index.js"
 node "$repo_root/scripts/bundle-web-playground.mjs" "$demo_dir/playground.js"

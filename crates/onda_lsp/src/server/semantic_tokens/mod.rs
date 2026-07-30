@@ -8,6 +8,10 @@ use onda_frontend::{
 mod ast_index;
 mod source_fallback;
 
+use super::param_domain::{
+    identifier_role_at, is_identifier_candidate as is_param_domain_identifier_candidate,
+    ParamDomainIdentifierRole,
+};
 use ast_index::{
     build_semantic_scope_index, collect_all_symbols, normalize_file_key,
     normalize_file_key_for_path,
@@ -385,6 +389,25 @@ fn semantic_tokens_for_document_with_optional_parse(
                     token_modifiers: 0,
                 });
                 return;
+            }
+            if is_param_domain_identifier_candidate(name) {
+                let role = source_offset_for_position(&source_lines, line, start)
+                    .and_then(|offset| identifier_role_at(source, offset, offset + name.len()));
+                if let Some(role) = role {
+                    tokens.push(SemanticToken {
+                        line,
+                        start,
+                        length,
+                        token_type: match role {
+                            ParamDomainIdentifierRole::Field => SEMANTIC_TOKEN_TYPE_STATE,
+                            ParamDomainIdentifierRole::ScaleValue => {
+                                SEMANTIC_TOKEN_TYPE_ENUM_MEMBER
+                            }
+                        },
+                        token_modifiers: 0,
+                    });
+                    return;
+                }
             }
             if is_named_arg_label {
                 let token_type = named_arg_label_token_type(

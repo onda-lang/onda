@@ -1,5 +1,10 @@
 use std::alloc::{alloc, dealloc, Layout};
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread::ThreadId;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use onda::*;
 
@@ -29,6 +34,16 @@ impl Drop for ProgramHandle {
     fn drop(&mut self) {
         unsafe {
             onda_program_destroy(self.0);
+        }
+    }
+}
+
+struct SourceManifestHandle(*mut onda_source_manifest);
+
+impl Drop for SourceManifestHandle {
+    fn drop(&mut self) {
+        unsafe {
+            onda_source_manifest_destroy(self.0);
         }
     }
 }
@@ -71,6 +86,75 @@ unsafe extern "C" fn test_free(context: *mut c_void, ptr: *mut c_void, size: usi
     stats.live -= 1;
 }
 
+struct ThreadBoundAllocStats {
+    owner: ThreadId,
+    allocs: AtomicUsize,
+    frees: AtomicUsize,
+    rejected_foreign_allocs: AtomicUsize,
+    foreign_frees: AtomicUsize,
+}
+
+impl ThreadBoundAllocStats {
+    fn new() -> Self {
+        Self {
+            owner: std::thread::current().id(),
+            allocs: AtomicUsize::new(0),
+            frees: AtomicUsize::new(0),
+            rejected_foreign_allocs: AtomicUsize::new(0),
+            foreign_frees: AtomicUsize::new(0),
+        }
+    }
+}
+
+unsafe extern "C" fn thread_bound_alloc(
+    context: *mut c_void,
+    size: usize,
+    align: usize,
+) -> *mut c_void {
+    let stats = &*(context.cast::<ThreadBoundAllocStats>());
+    if std::thread::current().id() != stats.owner {
+        stats
+            .rejected_foreign_allocs
+            .fetch_add(1, Ordering::Relaxed);
+        return std::ptr::null_mut();
+    }
+    let Ok(layout) = Layout::from_size_align(size, align) else {
+        return std::ptr::null_mut();
+    };
+    let ptr = alloc(layout).cast::<c_void>();
+    if !ptr.is_null() {
+        stats.allocs.fetch_add(1, Ordering::Relaxed);
+    }
+    ptr
+}
+
+unsafe extern "C" fn thread_bound_free(
+    context: *mut c_void,
+    ptr: *mut c_void,
+    size: usize,
+    align: usize,
+) {
+    let stats = &*(context.cast::<ThreadBoundAllocStats>());
+    if std::thread::current().id() != stats.owner {
+        stats.foreign_frees.fetch_add(1, Ordering::Relaxed);
+    }
+    let layout = Layout::from_size_align(size, align).expect("valid free layout");
+    dealloc(ptr.cast::<u8>(), layout);
+    stats.frees.fetch_add(1, Ordering::Relaxed);
+}
+
+struct TransferredInstance(*mut onda_instance);
+
+// SAFETY: the test gives the handle one exclusive owner and its allocator
+// explicitly supports destruction from the receiving thread.
+unsafe impl Send for TransferredInstance {}
+
+impl TransferredInstance {
+    fn into_raw(self) -> *mut onda_instance {
+        self.0
+    }
+}
+
 unsafe fn compile_program(src: &str) -> ProgramHandle {
     let src_c = CString::new(src).expect("source contains no NUL bytes");
     let options = onda_compile_options_t {
@@ -86,6 +170,117 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
         diag_message(&diag)
     );
     ProgramHandle(program)
+}
+
+fn temp_source_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("onda_api_{prefix}_{nanos}"));
+    fs::create_dir_all(&path).expect("create temp source directory");
+    path
+}
+
+unsafe fn manifest_paths(manifest: *const onda_source_manifest) -> Vec<PathBuf> {
+    (0..onda_source_manifest_count(manifest))
+        .map(|index| {
+            PathBuf::from(
+                CStr::from_ptr(onda_source_manifest_path(manifest, index))
+                    .to_str()
+                    .expect("source path should be UTF-8"),
+            )
+        })
+        .collect()
+}
+
+unsafe fn manifest_unresolved_paths(manifest: *const onda_source_manifest) -> Vec<PathBuf> {
+    (0..onda_source_manifest_unresolved_count(manifest))
+        .map(|index| {
+            PathBuf::from(
+                CStr::from_ptr(onda_source_manifest_unresolved_path(manifest, index))
+                    .to_str()
+                    .expect("unresolved source path should be UTF-8"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn c_file_compile_returns_source_manifest_on_success_and_failure() {
+    unsafe {
+        let dir = temp_source_dir("source_manifest");
+        let main = dir.join("main.onda");
+        let dependency = dir.join("dependency.onda");
+        fs::write(
+            &main,
+            "import dependency\nouts 1\nsample:\n  out1 = dependency_value()\n",
+        )
+        .expect("write entry");
+        fs::write(
+            &dependency,
+            "def dependency_value() -> f32:\n  return 0.5\n",
+        )
+        .expect("write dependency");
+
+        let path = CString::new(main.to_str().expect("UTF-8 entry path")).expect("C entry path");
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+        };
+        let mut diag = empty_diag();
+        let mut manifest = std::ptr::null_mut();
+        let program = onda_compile_file(path.as_ptr(), &options, &mut manifest, &mut diag);
+        assert!(
+            !program.is_null(),
+            "compile failed: {}",
+            diag_message(&diag)
+        );
+        let _program = ProgramHandle(program);
+        let manifest = SourceManifestHandle(manifest);
+        assert_eq!(
+            manifest_paths(manifest.0),
+            vec![
+                fs::canonicalize(&main).expect("canonical entry"),
+                fs::canonicalize(&dependency).expect("canonical dependency"),
+            ]
+        );
+        assert!(manifest_unresolved_paths(manifest.0).is_empty());
+
+        fs::write(&dependency, "this is not valid onda\n").expect("break dependency");
+        let mut failed_manifest = std::ptr::null_mut();
+        let failed = onda_compile_file(path.as_ptr(), &options, &mut failed_manifest, &mut diag);
+        assert!(failed.is_null(), "broken dependency unexpectedly compiled");
+        let failed_manifest = SourceManifestHandle(failed_manifest);
+        assert_eq!(
+            manifest_paths(failed_manifest.0),
+            vec![
+                fs::canonicalize(&main).expect("canonical entry"),
+                fs::canonicalize(&dependency).expect("canonical dependency"),
+            ]
+        );
+        assert!(manifest_unresolved_paths(failed_manifest.0).is_empty());
+
+        fs::write(&main, "import missing/module\n").expect("write missing import");
+        let mut unresolved_manifest = std::ptr::null_mut();
+        let unresolved =
+            onda_compile_file(path.as_ptr(), &options, &mut unresolved_manifest, &mut diag);
+        assert!(
+            unresolved.is_null(),
+            "missing dependency unexpectedly compiled"
+        );
+        let unresolved_manifest = SourceManifestHandle(unresolved_manifest);
+        assert_eq!(
+            manifest_unresolved_paths(unresolved_manifest.0),
+            vec![
+                dir.join("missing/module.onda"),
+                dir.join("missing/module.on"),
+            ]
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[test]
@@ -694,6 +889,58 @@ sample {
 }
 
 #[test]
+fn c_api_custom_allocator_allocates_on_creation_thread_and_frees_on_instance_owner_thread() {
+    unsafe {
+        let frames = 512_usize;
+        let program = compile_program("sample:\n  out1 = 0.25\n");
+        let stats = Box::new(ThreadBoundAllocStats::new());
+        let allocator = onda_allocator_t {
+            context: (stats.as_ref() as *const ThreadBoundAllocStats)
+                .cast_mut()
+                .cast::<c_void>(),
+            alloc: Some(thread_bound_alloc),
+            free: Some(thread_bound_free),
+        };
+        let mut diag = empty_diag();
+        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        assert!(stats.allocs.load(Ordering::Relaxed) > 0);
+
+        let transferred = TransferredInstance(instance);
+        let output = std::thread::spawn(move || {
+            let instance = transferred.into_raw();
+            let mut output = vec![0.0_f32; frames];
+            assert_eq!(
+                onda_bind_output(
+                    instance,
+                    0,
+                    output.as_mut_ptr().cast::<c_void>(),
+                    std::mem::size_of_val(output.as_slice()) as i32,
+                ),
+                0
+            );
+            assert_eq!(onda_process_checked(instance, frames as i32), 0);
+            onda_instance_destroy(instance);
+            output
+        })
+        .join()
+        .expect("instance owner thread should complete");
+
+        assert!(output.iter().all(|sample| *sample == 0.25));
+        assert_eq!(stats.rejected_foreign_allocs.load(Ordering::Relaxed), 0);
+        assert!(stats.foreign_frees.load(Ordering::Relaxed) > 0);
+        assert_eq!(
+            stats.allocs.load(Ordering::Relaxed),
+            stats.frees.load(Ordering::Relaxed)
+        );
+    }
+}
+
+#[test]
 fn c_api_state_manifest_and_snapshot_restore_work() {
     unsafe {
         let frames = 512_i32;
@@ -774,6 +1021,72 @@ sample {
         assert_eq!(onda_process_checked(instance.0, frames), 0);
         assert_eq!(out[0], 513.0);
         assert_eq!(out[frames as usize - 1], 1024.0);
+    }
+}
+
+#[test]
+fn c_api_parameter_unit_query_distinguishes_absence_from_invalid_index() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params {
+  cutoff = 440.0 {20, 20000, log, "Hz"}
+  gain = 1.0 {0, 2, curve = -4}
+}
+outs { out1 }
+sample { out1 = cutoff * gain }
+"#,
+        );
+
+        assert_eq!(
+            onda_param_unit_copy(program.0, 0, std::ptr::null_mut(), 0),
+            3
+        );
+        let mut unit = [0 as c_char; 3];
+        assert_eq!(
+            onda_param_unit_copy(program.0, 0, unit.as_mut_ptr(), unit.len() as i32),
+            3
+        );
+        assert_eq!(CStr::from_ptr(unit.as_ptr()).to_bytes(), b"Hz");
+        assert_eq!(
+            onda_param_unit_copy(program.0, 1, std::ptr::null_mut(), 0),
+            0
+        );
+        assert_eq!(
+            onda_param_unit_copy(program.0, 2, std::ptr::null_mut(), 0),
+            -1
+        );
+        assert_eq!(onda_param_has_curve(program.0, 0), 0);
+        assert!(onda_param_curve(program.0, 0).is_nan());
+        assert_eq!(onda_param_has_curve(program.0, 1), 1);
+        assert_eq!(onda_param_curve(program.0, 1), -4.0);
+        assert_eq!(onda_param_has_curve(program.0, 2), -1);
+        assert!(onda_param_curve(program.0, 2).is_nan());
+    }
+}
+
+#[test]
+fn c_api_parameter_conversions_support_boolean_thresholds() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params {
+  gate: bool = false
+  flags: bool[1] = [false]
+}
+outs { out1 }
+sample { out1 = 0.0 }
+"#,
+        );
+
+        assert_eq!(onda_param_normalized_to_plain(program.0, 0, 0.49), 0.0);
+        assert_eq!(onda_param_normalized_to_plain(program.0, 0, 0.5), 1.0);
+        assert_eq!(onda_param_plain_to_normalized(program.0, 0, -1.0), 0.0);
+        assert_eq!(onda_param_plain_to_normalized(program.0, 0, 0.5), 1.0);
+        assert_eq!(onda_param_normalized_to_plain(program.0, 0, f64::NAN), 0.0);
+
+        assert!(onda_param_normalized_to_plain(program.0, 1, 1.0).is_nan());
+        assert!(onda_param_plain_to_normalized(program.0, 2, 1.0).is_nan());
     }
 }
 
@@ -1149,6 +1462,48 @@ sample { out1 = SAMPLE_RATE }
         for sample in out {
             assert!((sample - sample_rate).abs() < 1e-3);
         }
+    }
+}
+
+#[test]
+fn c_api_unchecked_process_returns_generated_runtime_failure_code() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params:
+  divisor: i32 = 0
+
+def quotient(value: i32, by: i32):
+  return value / by
+
+sample:
+  out1 = f32(quotient(i32(1), divisor))
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+        let mut output = vec![0.0_f32; 512];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast::<c_void>(),
+                (output.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_prepare_unchecked_process(instance.0), 0);
+        assert_eq!(
+            onda_process_unchecked_segment(instance.0, 0, 1, ONDA_PROCESS_BEGIN_BLOCK),
+            ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE,
+            "generated runtime failures must cross the C ABI with their named status code"
+        );
     }
 }
 

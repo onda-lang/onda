@@ -1,6 +1,15 @@
 import {
+  createParamControl,
   validateProcessorArtifact,
   validateProcessorModule,
+} from "@onda-lang/processor-abi";
+
+export {
+  createParamDomain,
+  createParamControl,
+  constrainParamPlain,
+  paramNormalizedToPlain,
+  paramPlainToNormalized,
 } from "@onda-lang/processor-abi";
 
 export const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
@@ -65,7 +74,10 @@ function audioWorkletNodeOptionsFromValidated(
         ? { wasmBytes: wasm }
         : { wasmModule: options.compiledModule }),
       metadata,
-      params: options.params ?? {},
+      params: constrainInitialParamValues(
+        metadata.metadata.params,
+        options.params ?? {},
+      ),
       buffers: options.buffers ?? {},
       eventPayloadCapacityBytes: options.eventPayloadCapacityBytes,
     },
@@ -76,6 +88,50 @@ function audioWorkletNodeOptionsFromValidated(
     delete nodeOptions.outputChannelCount;
   }
   return nodeOptions;
+}
+
+function paramInfoFor(paramInfo, selector) {
+  const info = Number.isInteger(selector)
+    ? paramInfo[selector]
+    : paramInfo.find((candidate) => candidate.name === selector);
+  if (!info) {
+    throw new Error(`unknown Onda parameter '${String(selector)}'`);
+  }
+  return info;
+}
+
+function preparedParamControl(info, cache = null) {
+  if (Number(info.array_len) !== 1) return null;
+  if (info.scalar !== "bool" && info.param_control === null) return null;
+  let control = cache?.get(info);
+  if (!control) {
+    control = createParamControl(info);
+    cache?.set(info, control);
+  }
+  return control;
+}
+
+function constrainParamValue(info, value, cache = null) {
+  return preparedParamControl(info, cache)?.constrainPlain(value) ?? value;
+}
+
+function constrainInitialParamValues(paramInfo, values) {
+  if (Array.isArray(values)) {
+    return values.map((value, index) => (
+      value === undefined
+        ? value
+        : constrainParamValue(paramInfoFor(paramInfo, index), value)
+    ));
+  }
+  if (values && typeof values === "object") {
+    return Object.fromEntries(
+      Object.entries(values).map(([name, value]) => [
+        name,
+        constrainParamValue(paramInfoFor(paramInfo, name), value),
+      ]),
+    );
+  }
+  throw new Error("params must be an array or object");
 }
 
 export async function registerOndaAudioWorklet(
@@ -123,7 +179,7 @@ export async function createOndaAudioProcessor(context, artifact, options = {}) 
       false,
     ),
   );
-  return new OndaAudioProcessor(node);
+  return new OndaAudioProcessor(node, validated.metadata);
 }
 
 export async function compileOndaProcessorModule(artifact) {
@@ -139,8 +195,11 @@ async function compileValidatedProcessorModule({ wasm, metadata }) {
 }
 
 export class OndaAudioProcessor {
-  constructor(node) {
+  constructor(node, metadata = null) {
     this.node = node;
+    this.metadata = metadata;
+    this.paramInfo = metadata?.metadata?.params ?? null;
+    this.paramControls = new WeakMap();
     this.nextRequestId = 1;
     this.pending = new Map();
     this.handleMessage = (event) => {
@@ -173,7 +232,39 @@ export class OndaAudioProcessor {
   }
 
   setParam(param, value) {
-    return this.request("set-param", { param, value });
+    try {
+      if (!Array.isArray(this.paramInfo)) {
+        return this.request("set-param", { param, value });
+      }
+      const info = paramInfoFor(this.paramInfo ?? [], param);
+      return this.request("set-param", {
+        param,
+        value: constrainParamValue(info, value, this.paramControls),
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  setParamNormalized(param, value) {
+    try {
+      if (!Array.isArray(this.paramInfo)) {
+        throw new Error(
+          "setParamNormalized requires processor metadata; construct the adapter with createOndaAudioProcessor()",
+        );
+      }
+      const info = paramInfoFor(this.paramInfo, param);
+      const control = preparedParamControl(info, this.paramControls);
+      if (!control) {
+        throw new Error(`Onda parameter '${info.name}' has no scalar host-control domain`);
+      }
+      return this.request("set-param", {
+        param,
+        value: control.normalizedToPlain(value),
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   trigger(event, values = {}) {

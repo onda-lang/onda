@@ -1,7 +1,9 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 1;
-export const PROCESSOR_ABI_VERSION: 1;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 2;
+export const PROCESSOR_ABI_VERSION: 2;
+export const PROCESSOR_EXECUTION_OK: 0;
+export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
 
 export type OndaScalarType = "f32" | "f64" | "i32" | "i64" | "bool";
@@ -50,7 +52,68 @@ export interface OndaIoMetadata {
   default_reprs: string[] | null;
   range_min_repr: string | null;
   range_max_repr: string | null;
+  param_control: OndaParamControlMetadata | null;
 }
+
+export interface OndaParamControlMetadata {
+  scale: "linear" | "log";
+  /** SuperCollider-style lincurve value; null selects linear/log scale directly. */
+  curve: number | null;
+  unit: string | null;
+  step_repr: string | null;
+  step_count: number | null;
+}
+
+export interface OndaPreparedParamControl {
+  readonly name: string | null;
+  readonly scalar: OndaScalarType;
+  readonly minimum: number | null;
+  readonly maximum: number | null;
+  readonly scale: "linear" | "log" | null;
+  readonly curve: number | null;
+  readonly unit: string | null;
+  readonly step: number | null;
+  readonly stepCount: number | null;
+  constrainPlain(plain: number | boolean): number | boolean;
+  normalizedToPlain(normalized: number): number | boolean;
+  plainToNormalized(plain: number | boolean): number;
+}
+
+export interface OndaParamDomain {
+  name?: string | null;
+  scalar: OndaScalarType;
+  minimum: number | null;
+  maximum: number | null;
+  scale: "linear" | "log" | null;
+  curve?: number | null;
+  unit?: string | null;
+  step?: number | null;
+  stepCount?: number | null;
+}
+
+/** Validate an already-decoded domain once for repeated host-control use. */
+export function createParamDomain(domain: OndaParamDomain): OndaPreparedParamControl;
+
+/** Validate and decode descriptor metadata once for repeated host-control use. */
+export function createParamControl(param: OndaIoMetadata): OndaPreparedParamControl;
+
+/** Clamp and snap a plain scalar value according to descriptor metadata. */
+export function constrainParamPlain(
+  param: OndaIoMetadata,
+  plain: number | boolean,
+): number | boolean;
+
+/** Convert a normalized host value to its canonical plain scalar value. */
+export function paramNormalizedToPlain(
+  param: OndaIoMetadata,
+  normalized: number,
+): number | boolean;
+
+/** Convert a plain scalar value to its canonical normalized host value. */
+export function paramPlainToNormalized(
+  param: OndaIoMetadata,
+  plain: number | boolean,
+): number;
 
 export interface OndaBufferMetadata {
   name: string;
@@ -98,9 +161,9 @@ export interface OndaStateMetadata {
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
-  format_version: 1;
+  format_version: 2;
   artifact_kind: OndaArtifactKind;
-  abi_version: 1;
+  abi_version: 2;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;

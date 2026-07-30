@@ -2155,11 +2155,16 @@ impl<'a> FunctionLowerer<'a> {
             (base, &args[1..], true, BoundsMode::Clamp)
         } else if name == UNSAFE_READ_FN || name == UNSAFE_READ2_FN {
             let base = call_resource_base(name, args, location)?;
-            (base, &args[1..], name == UNSAFE_READ2_FN, BoundsMode::Trap)
+            (
+                base,
+                &args[1..],
+                name == UNSAFE_READ2_FN,
+                BoundsMode::Checked,
+            )
         } else if let Some(base) = parse_unsafe_read_instance_base(name) {
-            (base.to_owned(), args, false, BoundsMode::Trap)
+            (base.to_owned(), args, false, BoundsMode::Checked)
         } else if let Some(base) = parse_unsafe_read2_instance_base(name) {
-            (base.to_owned(), args, true, BoundsMode::Trap)
+            (base.to_owned(), args, true, BoundsMode::Checked)
         } else {
             return Ok(None);
         };
@@ -2391,11 +2396,16 @@ impl<'a> FunctionLowerer<'a> {
             (base, &args[1..], true, BoundsMode::Clamp)
         } else if name == UNSAFE_WRITE_FN || name == UNSAFE_WRITE2_FN {
             let base = call_resource_base(name, args, location)?;
-            (base, &args[1..], name == UNSAFE_WRITE2_FN, BoundsMode::Trap)
+            (
+                base,
+                &args[1..],
+                name == UNSAFE_WRITE2_FN,
+                BoundsMode::Checked,
+            )
         } else if let Some(base) = parse_unsafe_write_instance_base(name) {
-            (base.to_owned(), args, false, BoundsMode::Trap)
+            (base.to_owned(), args, false, BoundsMode::Checked)
         } else if let Some(base) = parse_unsafe_write2_instance_base(name) {
-            (base.to_owned(), args, true, BoundsMode::Trap)
+            (base.to_owned(), args, true, BoundsMode::Checked)
         } else {
             return Ok(false);
         };

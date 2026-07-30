@@ -97,8 +97,8 @@ pub struct FunctionEffects {
     pub reads: MemoryRegionSet,
     pub writes: MemoryRegionSet,
     pub parameters: Vec<ReferenceEffects>,
-    /// The function may execute an explicit trap or a checked operation.
-    pub may_trap: bool,
+    /// The function may encounter a checked runtime condition that fails.
+    pub may_fail: bool,
     /// The function contains a loop, or calls a function that may not return.
     /// MIR loops are structured but are not required to have a static trip
     /// count, so this is intentionally conservative.
@@ -186,7 +186,13 @@ pub fn analyze_effects(program: &Program) -> EffectAnalysis {
             effects.writes.insert(MemoryRegionSet::ARGUMENTS);
         }
         let mut function_calls = Vec::new();
-        scan_block(&function.body, &mut effects, &mut function_calls);
+        scan_block(
+            program,
+            function,
+            &function.body,
+            &mut effects,
+            &mut function_calls,
+        );
         normalize_value_parameter_effects(function, &mut effects);
         functions.push(effects);
         calls.push(function_calls);
@@ -204,8 +210,8 @@ pub fn analyze_effects(program: &Program) -> EffectAnalysis {
                 changed |= functions[caller_index]
                     .writes
                     .insert(callee.writes.without(MemoryRegionSet::ARGUMENTS));
-                if callee.may_trap && !functions[caller_index].may_trap {
-                    functions[caller_index].may_trap = true;
+                if callee.may_fail && !functions[caller_index].may_fail {
+                    functions[caller_index].may_fail = true;
                     changed = true;
                 }
                 if callee.may_not_return && !functions[caller_index].may_not_return {
@@ -534,6 +540,21 @@ fn range_of_rvalue(
                 _ => unreachable!(),
             }
         }
+        Rvalue::Intrinsic {
+            intrinsic: crate::Intrinsic::RangeClamp,
+            args,
+        } if args.len() == 3 => {
+            let lower = range_of_value(args[1], environment)?;
+            let upper = range_of_value(args[2], environment)?;
+            if lower.scalar != upper.scalar
+                || lower.min != lower.max
+                || upper.min != upper.max
+                || lower.min > upper.max
+            {
+                return None;
+            }
+            IntegerRange::new(lower.scalar, lower.min, upper.max)
+        }
         Rvalue::ProcessFrame { .. } => IntegerRange::new(
             ScalarType::I32,
             0,
@@ -704,12 +725,18 @@ fn insert_range_mutation(mutated: &mut Vec<LocalId>, local: LocalId) {
     }
 }
 
-fn scan_block(block: &Block, effects: &mut FunctionEffects, calls: &mut Vec<CallSite>) {
+fn scan_block(
+    program: &Program,
+    function: &crate::Function,
+    block: &Block,
+    effects: &mut FunctionEffects,
+    calls: &mut Vec<CallSite>,
+) {
     for statement in &block.statements {
         match &statement.kind {
             StatementKind::Assign { destination, value } => {
                 scan_place(destination, Access::Write, effects);
-                scan_rvalue(value, effects);
+                scan_rvalue(program, function, value, effects);
             }
             StatementKind::Call { function, args, .. } => {
                 for argument in args {
@@ -729,14 +756,14 @@ fn scan_block(block: &Block, effects: &mut FunctionEffects, calls: &mut Vec<Call
                 effects.writes.insert(MemoryRegionSet::OUTPUTS);
                 scan_optional_value(*element, effects);
                 scan_value(*frame, effects);
-                mark_checked(*bounds, effects);
+                mark_checked_bounds(*bounds, effects);
             }
             StatementKind::ControlOutputStore {
                 element, bounds, ..
             } => {
                 effects.writes.insert(MemoryRegionSet::CONTROL_OUTPUTS);
                 scan_optional_value(*element, effects);
-                mark_checked(*bounds, effects);
+                mark_checked_bounds(*bounds, effects);
             }
             StatementKind::BufferStore {
                 channel,
@@ -747,7 +774,7 @@ fn scan_block(block: &Block, effects: &mut FunctionEffects, calls: &mut Vec<Call
                 effects.writes.insert(MemoryRegionSet::BUFFERS);
                 scan_optional_value(*channel, effects);
                 scan_value(*index, effects);
-                mark_checked(*bounds, effects);
+                mark_checked_bounds(*bounds, effects);
             }
             StatementKind::BufferParamStore {
                 parameter,
@@ -760,7 +787,7 @@ fn scan_block(block: &Block, effects: &mut FunctionEffects, calls: &mut Vec<Call
                 effects.writes.insert(MemoryRegionSet::INDIRECT);
                 scan_optional_value(*channel, effects);
                 scan_value(*index, effects);
-                mark_checked(*bounds, effects);
+                mark_checked_bounds(*bounds, effects);
             }
             StatementKind::SliceStore {
                 slice,
@@ -771,7 +798,7 @@ fn scan_block(block: &Block, effects: &mut FunctionEffects, calls: &mut Vec<Call
                 effects.writes.insert(MemoryRegionSet::INDIRECT);
                 scan_value(*slice, effects);
                 scan_value(*index, effects);
-                mark_checked(*bounds, effects);
+                mark_dynamic_bounds(*bounds, effects);
             }
             StatementKind::SliceFill { destination, .. } => {
                 effects.writes.insert(MemoryRegionSet::INDIRECT);
@@ -785,7 +812,7 @@ fn scan_block(block: &Block, effects: &mut FunctionEffects, calls: &mut Vec<Call
                 effects.writes.insert(MemoryRegionSet::INDIRECT);
                 scan_value(*destination, effects);
                 scan_value(*source, effects);
-                effects.may_trap = true;
+                effects.may_fail = true;
             }
             StatementKind::If {
                 condition,
@@ -793,12 +820,12 @@ fn scan_block(block: &Block, effects: &mut FunctionEffects, calls: &mut Vec<Call
                 else_block,
             } => {
                 scan_value(*condition, effects);
-                scan_block(then_block, effects, calls);
-                scan_block(else_block, effects, calls);
+                scan_block(program, function, then_block, effects, calls);
+                scan_block(program, function, else_block, effects, calls);
             }
             StatementKind::Loop { body } => {
                 effects.may_not_return = true;
-                scan_block(body, effects, calls);
+                scan_block(program, function, body, effects, calls);
             }
             StatementKind::Return { values } => {
                 for value in values {
@@ -810,7 +837,12 @@ fn scan_block(block: &Block, effects: &mut FunctionEffects, calls: &mut Vec<Call
     }
 }
 
-fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
+fn scan_rvalue(
+    program: &Program,
+    function: &crate::Function,
+    value: &Rvalue,
+    effects: &mut FunctionEffects,
+) {
     match value {
         Rvalue::Use(value) | Rvalue::SliceLen(value) => scan_value(*value, effects),
         Rvalue::Load(place) => scan_place(place, Access::Read, effects),
@@ -818,8 +850,13 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
         Rvalue::Binary { op, lhs, rhs } => {
             scan_value(*lhs, effects);
             scan_value(*rhs, effects);
-            if matches!(op, crate::BinaryOp::Divide | crate::BinaryOp::Remainder) {
-                effects.may_trap = true;
+            if matches!(op, crate::BinaryOp::Divide | crate::BinaryOp::Remainder)
+                && matches!(
+                    value_scalar_type(program, function, *lhs),
+                    Some(ScalarType::I32 | ScalarType::I64)
+                )
+            {
+                effects.may_fail = true;
             }
         }
         Rvalue::Compare { lhs, rhs, .. } => {
@@ -834,7 +871,7 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
         }
         Rvalue::ProcessFrame { offset } => {
             scan_value(*offset, effects);
-            effects.may_trap = true;
+            effects.may_fail = true;
         }
         Rvalue::InputLoad {
             element,
@@ -845,7 +882,7 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
             effects.reads.insert(MemoryRegionSet::INPUTS);
             scan_optional_value(*element, effects);
             scan_value(*frame, effects);
-            mark_checked(*bounds, effects);
+            mark_checked_bounds(*bounds, effects);
         }
         Rvalue::OutputLoad {
             element,
@@ -856,7 +893,7 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
             effects.reads.insert(MemoryRegionSet::OUTPUTS);
             scan_optional_value(*element, effects);
             scan_value(*frame, effects);
-            mark_checked(*bounds, effects);
+            mark_checked_bounds(*bounds, effects);
         }
         Rvalue::BufferLoad {
             channel,
@@ -867,7 +904,7 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
             scan_optional_value(*channel, effects);
             scan_value(*index, effects);
-            mark_checked(*bounds, effects);
+            mark_checked_bounds(*bounds, effects);
         }
         Rvalue::BufferParamLoad {
             parameter,
@@ -879,7 +916,7 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
             effects.reads.insert(MemoryRegionSet::INDIRECT);
             scan_optional_value(*channel, effects);
             scan_value(*index, effects);
-            mark_checked(*bounds, effects);
+            mark_checked_bounds(*bounds, effects);
         }
         Rvalue::BufferLen(_) | Rvalue::BufferChannels(_) | Rvalue::BufferSampleRate(_) => {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
@@ -892,7 +929,7 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
         Rvalue::ConstDataLoad { index, bounds, .. } => {
             effects.reads.insert(MemoryRegionSet::CONST_DATA);
             scan_value(*index, effects);
-            mark_checked(*bounds, effects);
+            mark_checked_bounds(*bounds, effects);
         }
         Rvalue::MakeSlice {
             source,
@@ -904,7 +941,7 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
             scan_slice_source(source, effects);
             scan_value(*start, effects);
             scan_value(*len, effects);
-            mark_checked(*bounds, effects);
+            mark_checked_bounds(*bounds, effects);
         }
         Rvalue::SliceLoad {
             slice,
@@ -914,7 +951,7 @@ fn scan_rvalue(value: &Rvalue, effects: &mut FunctionEffects) {
             effects.reads.insert(MemoryRegionSet::INDIRECT);
             scan_value(*slice, effects);
             scan_value(*index, effects);
-            mark_checked(*bounds, effects);
+            mark_dynamic_bounds(*bounds, effects);
         }
     }
 }
@@ -947,7 +984,7 @@ fn scan_call_argument(argument: &CallArgument, effects: &mut FunctionEffects) {
         } => {
             scan_value(*slice, effects);
             scan_value(*index, effects);
-            mark_checked(*bounds, effects);
+            mark_dynamic_bounds(*bounds, effects);
         }
         CallArgument::ArrayWindow {
             array,
@@ -956,7 +993,7 @@ fn scan_call_argument(argument: &CallArgument, effects: &mut FunctionEffects) {
         } => {
             scan_place_indices(array, effects);
             scan_value(*start, effects);
-            mark_checked(*bounds, effects);
+            mark_checked_bounds(*bounds, effects);
         }
         CallArgument::SliceWindow {
             slice,
@@ -965,7 +1002,7 @@ fn scan_call_argument(argument: &CallArgument, effects: &mut FunctionEffects) {
         } => {
             scan_value(*slice, effects);
             scan_value(*start, effects);
-            mark_checked(*bounds, effects);
+            mark_dynamic_bounds(*bounds, effects);
         }
         CallArgument::Buffer(_) => {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
@@ -988,7 +1025,7 @@ fn scan_place_indices(place: &Place, effects: &mut FunctionEffects) {
     for projection in &place.projections {
         if let Projection::Index { index, bounds } = projection {
             scan_value(*index, effects);
-            mark_checked(*bounds, effects);
+            mark_checked_bounds(*bounds, effects);
         }
     }
 }
@@ -1085,9 +1122,32 @@ fn scan_value(_value: Value, _effects: &mut FunctionEffects) {
     // accounted for by the operation that consumes them.
 }
 
-fn mark_checked(bounds: BoundsMode, effects: &mut FunctionEffects) {
+fn mark_checked_bounds(bounds: BoundsMode, effects: &mut FunctionEffects) {
+    if bounds == BoundsMode::Checked {
+        effects.may_fail = true;
+    }
+}
+
+fn mark_dynamic_bounds(bounds: BoundsMode, effects: &mut FunctionEffects) {
     if bounds != BoundsMode::Unchecked {
-        effects.may_trap = true;
+        effects.may_fail = true;
+    }
+}
+
+fn value_scalar_type(
+    program: &Program,
+    function: &crate::Function,
+    value: Value,
+) -> Option<ScalarType> {
+    match value {
+        Value::Constant(value) => Some(value.ty()),
+        Value::Local(local) => {
+            let ty = function.locals.get(local.index())?.ty;
+            match program.types.get(ty.index())? {
+                crate::Type::Scalar(scalar) => Some(*scalar),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -1278,6 +1338,147 @@ mod tests {
             .function(FunctionId::new(1))
             .reads
             .contains(MemoryRegionSet::STATE));
+    }
+
+    #[test]
+    fn failure_effects_match_lowered_runtime_checks() {
+        let f32_ty = TypeId::new(0);
+        let i32_ty = TypeId::new(1);
+        let array_ty = TypeId::new(2);
+        let slice_ty = TypeId::new(3);
+        let expression_function = |name: &str, ty: TypeId, value: Rvalue| {
+            let mut function = function(name, Vec::new(), Block::default());
+            function.locals.push(Local { name: None, ty });
+            function
+                .body
+                .statements
+                .push(statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value,
+                }));
+            function
+        };
+        let float_divide = expression_function(
+            "float_divide",
+            f32_ty,
+            Rvalue::Binary {
+                op: BinaryOp::Divide,
+                lhs: Value::Constant(ScalarValue::F32(1.0)),
+                rhs: Value::Constant(ScalarValue::F32(2.0)),
+            },
+        );
+        let integer_divide = expression_function(
+            "integer_divide",
+            i32_ty,
+            Rvalue::Binary {
+                op: BinaryOp::Divide,
+                lhs: Value::Constant(ScalarValue::I32(1)),
+                rhs: Value::Constant(ScalarValue::I32(2)),
+            },
+        );
+        let indexed_array = |name: &str, bounds| {
+            let mut function = function(name, Vec::new(), Block::default());
+            function.locals.extend([
+                Local {
+                    name: None,
+                    ty: f32_ty,
+                },
+                Local {
+                    name: None,
+                    ty: array_ty,
+                },
+            ]);
+            function
+                .body
+                .statements
+                .push(statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value: Rvalue::Load(Place {
+                        base: PlaceBase::Local(LocalId::new(1)),
+                        projections: vec![Projection::Index {
+                            index: Value::Constant(ScalarValue::I32(0)),
+                            bounds,
+                        }],
+                    }),
+                }));
+            function
+        };
+        let clamped_array = indexed_array("clamped_array", BoundsMode::Clamp);
+        let checked_array = indexed_array("checked_array", BoundsMode::Checked);
+        let mut clamped_slice = function("clamped_slice", Vec::new(), Block::default());
+        clamped_slice.locals.extend([
+            Local {
+                name: None,
+                ty: f32_ty,
+            },
+            Local {
+                name: None,
+                ty: slice_ty,
+            },
+        ]);
+        clamped_slice
+            .body
+            .statements
+            .push(statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::SliceLoad {
+                    slice: Value::Local(LocalId::new(1)),
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    bounds: BoundsMode::Clamp,
+                },
+            }));
+        let call = |name: &str, callee: u32| {
+            function(
+                name,
+                Vec::new(),
+                Block {
+                    statements: vec![statement(StatementKind::Call {
+                        results: Vec::new(),
+                        function: FunctionId::new(callee),
+                        args: Vec::new(),
+                    })],
+                },
+            )
+        };
+
+        let mut program = Program::new(
+            CompileConfig {
+                sample_rate: 48_000.0,
+                block_size: 64,
+            },
+            FunctionId::new(0),
+            FunctionId::new(0),
+        );
+        program.types = vec![
+            Type::Scalar(ScalarType::F32),
+            Type::Scalar(ScalarType::I32),
+            Type::Array {
+                element: f32_ty,
+                len: 4,
+            },
+            Type::Slice {
+                element: ScalarType::F32,
+                access: AccessMode::ReadOnly,
+            },
+        ];
+        program.functions = vec![
+            float_divide,
+            integer_divide,
+            clamped_array,
+            checked_array,
+            clamped_slice,
+            call("calls_float_divide", 0),
+            call("calls_integer_divide", 1),
+        ];
+
+        let analysis = analyze_effects(&program);
+        assert!(!analysis.function(FunctionId::new(0)).may_fail);
+        assert!(analysis.function(FunctionId::new(1)).may_fail);
+        assert!(!analysis.function(FunctionId::new(2)).may_fail);
+        assert!(analysis.function(FunctionId::new(3)).may_fail);
+        assert!(analysis.function(FunctionId::new(4)).may_fail);
+        assert!(!analysis.function(FunctionId::new(5)).may_fail);
+        assert!(analysis.function(FunctionId::new(6)).may_fail);
     }
 
     #[test]

@@ -185,7 +185,8 @@ params:
   gain = 1.0
   mode: i32 = 0
   spread: f32[2] = [0.25, 0.75]
-  freq = 440.0 {20.0, 20000.0}
+  cutoff = 440.0 {20.0, 20000.0, log, "Hz"}
+  mode: i32 = 4 {0, 10, step = 2}
 ```
 
 At the top level only, `kins` is an alias for `params`.
@@ -201,11 +202,68 @@ Rules:
 - Omitted param types without defaults become `f32`.
 - Omitted param types with defaults infer from the default.
 - `gain = 0.5` becomes `f32`; `mode = 0` becomes `i32`.
-- Scalar params can have ranges. Array params cannot have ranges.
+- Scalar params can have host-control domains. Array params cannot.
 - `params N` expands to `param1..paramN`; top-level `kins N` expands to `kin1..kinN`.
 - Top-level code may declare either `params` or `kins`, not both.
 - Top-level `paramN` or `kinN` usage can implicitly create params up to that ordinal.
 - Top-level params are readable in executable code but are not writable from top-level event handlers.
+
+A parameter domain extends the existing range braces with `scale`, `curve`,
+`unit`, and `step`. Positional fields remain ordered as
+`min, max, scale, unit, step`; all fields may be named and named fields may
+appear in any order. `curve` is named-only:
+
+```onda
+params:
+  cutoff = 440.0 {20, 20000, log, "Hz"}
+  resonance = 0.5 {0, 1, unit = "%"}
+  envelope = 0.5 {0, 1, curve = -4}
+  voices: i32 = 4 {min = 0, max = 16, step = 1}
+  gain = 1.0 {max = 2, scale = linear}
+```
+
+Positional fields must precede named fields, fields cannot be repeated, and
+`{max}` retains the existing maximum-only shorthand. `scale` defaults to
+`linear`; the other optional fields default to absent.
+
+`scale`, `curve`, `unit`, and `step` describe external control of explicit
+top-level `params` (and their top-level `kins` alias). They are not available
+on inputs or processor-local params, and do not change the Onda DSP
+calculation:
+
+- `linear` maps normalized `n` to `min + n * (max - min)`.
+- `log` maps it in logarithmic space to
+  `exp(log(min) + n * (log(max) - log(min)))` and requires a floating parameter
+  with `0 < min < max`.
+- `curve = c` applies SuperCollider-style `lincurve` curvature to the normalized
+  value before linear range mapping. For negative `c`, this is
+  `expm1(c * n) / expm1(c)`; positive curves use its mirrored form. Negative
+  values bend toward `max`, positive values bend toward `min`, and values with
+  `abs(c) < 0.001` are linear. Unlike `log`, curves support zero, negative, and
+  zero-crossing ranges.
+- `unit` is presentation metadata.
+- `step` must be positive, must divide the range exactly, and requires the
+  default to lie on the resulting grid. External plain and normalized writes
+  are clamped and snapped to that grid.
+- Ranged `i32` and `i64` params have an implicit step of `1`.
+- An `i64` control domain and its range width must fit within
+  `[-9007199254740991, 9007199254740991]`, the integer range represented
+  exactly by the shared host-control APIs. Unranged `i64` params retain their
+  full width through typed/raw parameter storage.
+- Logarithmic stepped domains are not supported.
+- `curve` may be combined with `step`, but not with `scale = log`.
+
+The step count is the number of intervals from `min` to `max` and must fit the
+host descriptor. Normalization, snapping, and units are host-boundary
+semantics; Onda code reads the resulting plain parameter value.
+
+The range itself is also a DSP boundary invariant. Generated code clamps each
+used ranged top-level parameter once at the start of `init`, once at the start
+of each event invocation, and once at the start of each logical process block.
+Every read in that entry point uses the resulting typed value. A floating NaN
+maps to the range minimum; infinities clamp to the corresponding endpoint.
+This protects raw parameter storage writes independently of any host-control
+conversion.
 
 Explicitly declared homogeneous params can be indexed directly:
 
@@ -303,7 +361,7 @@ sample:
 ```
 
 Non-clamping access exists as both methods and free functions. Despite the
-historical `unsafe_` spelling, these operations trap on an invalid index; only
+historical `unsafe_` spelling, these operations fail processing on an invalid index; only
 compiler-proven accesses may be unchecked in MIR:
 
 ```onda
@@ -1090,6 +1148,10 @@ Rules:
 - Positional proc call args bind inputs only.
 - Named call args can bind inputs or params.
 - Named param args store the clamped param value before the call runs.
+- Every ranged proc-param write, including construction, builtin `init(...)`,
+  named call arguments, and direct assignment, is clamped once before storage.
+  Floating NaN maps to the range minimum; later reads use the stored typed
+  value without reclamping.
 - Generic procs specialize on construction.
 - Multiple proc calls in one expression are evaluated in source order.
 - Named param args are not supported inside logical `&&` / `||` expressions or `while` conditions.
@@ -1658,6 +1720,7 @@ or stored from `init`, `event`, or top-level `def` bodies.
 - `in` separates the loop variable from its range in `for i in A..B`; use names such as `input` for ports and variables.
 - `import`, `include`, `use`, `as`, `pub`, and `pin` are reserved for their declaration and modifier syntax.
 - `true` and `false` are reserved boolean literals.
+- Identifiers beginning with `__onda_` are reserved for compiler-generated symbols.
 - Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.
 
 ### Common Current Limits

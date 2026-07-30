@@ -42,6 +42,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Test C processor ABI header
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            tests/onda_processor_abi_header_test.c -lm \
+            -o /tmp/onda_processor_abi_header_test
+          /tmp/onda_processor_abi_header_test
+
       - name: Install native system dependencies
         run: |
           sudo apt-get update
@@ -75,10 +82,26 @@ jobs:
             --exclude onda_webview
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
+          cargo build --release -p onda_api
 
-      - uses: actions/setup-node@v4
+      - name: Test CMake SDK
+        shell: bash
+        run: |
+          cmake \
+            -S tests/cmake_sdk \
+            -B /tmp/onda-cmake-sdk \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOnda_DIR="$PWD/cmake"
+          cmake --build /tmp/onda-cmake-sdk --parallel
+          module=/tmp/onda-cmake-sdk/libonda_cmake_static_smoke.so
+          bash tests/cmake_sdk/check-exports.sh "$module"
+          bash tests/cmake_sdk/check-linux-shared-library.sh \
+            target/release/libonda.so \
+            /tmp/onda-cmake-sdk/libonda_cmake_shared_smoke.so
+
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -102,9 +125,9 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
 

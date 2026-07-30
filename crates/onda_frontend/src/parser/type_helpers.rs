@@ -94,6 +94,261 @@ pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, V
     Ok(DeclRange { min, max })
 }
 
+#[derive(Default)]
+struct ParsedParamDomain {
+    min: Option<Expr>,
+    max: Option<Expr>,
+    scale: Option<ParamScale>,
+    curve: Option<Expr>,
+    unit: Option<String>,
+    step: Option<Expr>,
+}
+
+impl ParsedParamDomain {
+    fn set_expr(
+        &mut self,
+        name: &str,
+        value: Expr,
+        pair: &Pair<'_, Rule>,
+    ) -> Result<(), Vec<Diagnostic>> {
+        let target = match name {
+            "min" => &mut self.min,
+            "max" => &mut self.max,
+            "step" => &mut self.step,
+            "curve" => &mut self.curve,
+            _ => {
+                return Err(vec![syntax_at_pair(
+                    pair,
+                    format!("unknown parameter domain field '{name}'"),
+                )])
+            }
+        };
+        if target.replace(value).is_some() {
+            return Err(vec![syntax_at_pair(
+                pair,
+                format!("duplicate parameter domain field '{name}'"),
+            )]);
+        }
+        Ok(())
+    }
+
+    fn set_scale(
+        &mut self,
+        value: ParamScale,
+        pair: &Pair<'_, Rule>,
+    ) -> Result<(), Vec<Diagnostic>> {
+        if self.scale.replace(value).is_some() {
+            return Err(vec![syntax_at_pair(
+                pair,
+                "duplicate parameter domain field 'scale'",
+            )]);
+        }
+        Ok(())
+    }
+
+    fn set_unit(&mut self, value: String, pair: &Pair<'_, Rule>) -> Result<(), Vec<Diagnostic>> {
+        if self.unit.replace(value).is_some() {
+            return Err(vec![syntax_at_pair(
+                pair,
+                "duplicate parameter domain field 'unit'",
+            )]);
+        }
+        Ok(())
+    }
+}
+
+fn parse_param_scale(pair: &Pair<'_, Rule>) -> Result<ParamScale, Vec<Diagnostic>> {
+    let value = pair.as_str().trim();
+    ParamScale::from_name(value).ok_or_else(|| {
+        vec![syntax_at_pair(
+            pair,
+            format!("unknown parameter scale '{value}'"),
+        )]
+    })
+}
+
+fn parse_param_unit(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
+    let raw = pair.as_str();
+    let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        return Err(vec![syntax_at_pair(
+            pair,
+            "parameter unit must be a quoted string",
+        )]);
+    };
+    let mut unit = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            unit.push(ch);
+            continue;
+        }
+        let Some(escaped) = chars.next() else {
+            return Err(vec![syntax_at_pair(pair, "unterminated unit escape")]);
+        };
+        unit.push(match escaped {
+            '"' => '"',
+            '\\' => '\\',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            _ => {
+                return Err(vec![syntax_at_pair(
+                    pair,
+                    format!("unsupported unit escape '\\{escaped}'"),
+                )])
+            }
+        });
+    }
+    Ok(unit)
+}
+
+fn parse_named_param_domain_item(
+    pair: Pair<'_, Rule>,
+    parsed: &mut ParsedParamDomain,
+) -> Result<(), Vec<Diagnostic>> {
+    let item_loc = stmt_loc_from_pair(&pair);
+    let mut inner = pair.clone().into_inner();
+    let Some(name_pair) = inner.next() else {
+        return Err(vec![syntax_at_loc(
+            item_loc.as_ref(),
+            "missing parameter domain field name",
+        )]);
+    };
+    let name = name_pair.as_str();
+    let Some(value_pair) = inner.next() else {
+        return Err(vec![syntax_at_loc(
+            item_loc.as_ref(),
+            format!("missing value for parameter domain field '{name}'"),
+        )]);
+    };
+    match name {
+        "min" | "max" | "step" | "curve" if value_pair.as_rule() == Rule::expr => {
+            parsed.set_expr(name, parse_expr_inner(value_pair), &pair)
+        }
+        "scale" if value_pair.as_rule() == Rule::expr => {
+            parsed.set_scale(parse_param_scale(&value_pair)?, &pair)
+        }
+        "unit" if value_pair.as_rule() == Rule::param_unit => {
+            parsed.set_unit(parse_param_unit(&value_pair)?, &pair)
+        }
+        "min" | "max" | "step" | "curve" => Err(vec![syntax_at_pair(
+            &pair,
+            format!("parameter domain field '{name}' requires a constant expression"),
+        )]),
+        "scale" => Err(vec![syntax_at_pair(
+            &pair,
+            format!(
+                "parameter domain field 'scale' must be {}",
+                PARAM_SCALES
+                    .iter()
+                    .map(|(_, name)| format!("'{name}'"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ),
+        )]),
+        "unit" => Err(vec![syntax_at_pair(
+            &pair,
+            "parameter domain field 'unit' must be a quoted string",
+        )]),
+        _ => Err(vec![syntax_at_pair(
+            &pair,
+            format!("unknown parameter domain field '{name}'"),
+        )]),
+    }
+}
+
+pub(super) fn parse_param_domain_pair(
+    pair: Pair<'_, Rule>,
+) -> Result<(DeclRange, ParamControl), Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::param_domain {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "internal parser error: expected parameter domain",
+        )]);
+    }
+    let loc = stmt_loc_from_pair(&pair);
+    let mut positional = Vec::new();
+    let mut named = Vec::new();
+    let mut saw_named = false;
+    for item in pair.into_inner() {
+        let Some(value) = item.into_inner().next() else {
+            continue;
+        };
+        if value.as_rule() == Rule::param_domain_named {
+            saw_named = true;
+            named.push(value);
+        } else {
+            if saw_named {
+                return Err(vec![syntax_at_pair(
+                    &value,
+                    "positional parameter domain fields must precede named fields",
+                )]);
+            }
+            positional.push(value);
+        }
+    }
+    if positional.len() > PARAM_DOMAIN_POSITIONAL_FIELDS.len() {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            format!(
+                "parameter domain accepts at most {} positional fields",
+                PARAM_DOMAIN_POSITIONAL_FIELDS.len()
+            ),
+        )]);
+    }
+
+    let mut parsed = ParsedParamDomain::default();
+    for item in &named {
+        parse_named_param_domain_item(item.clone(), &mut parsed)?;
+    }
+
+    let positional_len = positional.len();
+    let single_is_max = positional_len == 1 && parsed.max.is_none();
+    for (index, item) in positional.into_iter().enumerate() {
+        let field = if index == 0 && single_is_max {
+            "max"
+        } else {
+            PARAM_DOMAIN_POSITIONAL_FIELDS[index]
+        };
+        match (field, item.as_rule()) {
+            ("min" | "max" | "step", Rule::expr) => {
+                parsed.set_expr(field, parse_expr_inner(item.clone()), &item)?;
+            }
+            ("scale", Rule::expr) => {
+                parsed.set_scale(parse_param_scale(&item)?, &item)?;
+            }
+            ("unit", Rule::param_unit) => {
+                parsed.set_unit(parse_param_unit(&item)?, &item)?;
+            }
+            _ => {
+                return Err(vec![syntax_at_pair(
+                    &item,
+                    format!("invalid positional parameter domain field '{field}'"),
+                )])
+            }
+        }
+    }
+
+    let Some(max) = parsed.max else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "parameter domain requires a 'max' value",
+        )]);
+    };
+    Ok((
+        DeclRange {
+            min: parsed.min,
+            max,
+        },
+        ParamControl {
+            scale: parsed.scale.unwrap_or_default(),
+            curve: parsed.curve,
+            unit: parsed.unit,
+            step: parsed.step,
+        },
+    ))
+}
+
 pub(super) fn parse_int(text: &str) -> Result<i32, Vec<Diagnostic>> {
     text.parse::<i32>().map_err(|_| {
         vec![Diagnostic::syntax(

@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 
 pub const PROCESSOR_ARTIFACT_FORMAT: &str = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 1;
-pub const PROCESSOR_ABI_VERSION: u32 = 1;
+pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 2;
+pub const PROCESSOR_ABI_VERSION: u32 = 2;
+pub const PROCESSOR_EXECUTION_OK: u32 = 0;
+pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
 pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +149,16 @@ pub struct IoMetadata {
     pub default_reprs: Option<Vec<String>>,
     pub range_min_repr: Option<String>,
     pub range_max_repr: Option<String>,
+    pub param_control: Option<ParamControlMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParamControlMetadata {
+    pub scale: String,
+    pub curve: Option<f64>,
+    pub unit: Option<String>,
+    pub step_repr: Option<String>,
+    pub step_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,7 +217,7 @@ mod tests {
     #[test]
     fn shared_web_descriptor_fixture_round_trips_through_rust_schema() {
         let json = include_str!(
-            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v1.json"
+            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v2.json"
         );
         let descriptor: ProcessorDescriptor =
             serde_json::from_str(json).expect("shared descriptor should deserialize");

@@ -272,7 +272,7 @@ process.stdout.write(
     `Binaryen O${binaryenOptimizeLevel}, strict arithmetic, SIMD enabled, StackIR ${binaryenStackIr ? "enabled" : "disabled"}; timing cells are median ± MAD across ${compileRepetitions} compile/instantiate samples or ${repetitions} throughput rounds.`,
     "First-block parity checks every f32 output sample (absolute and relative tolerance 1e-6) before throughput timing.",
     `Each scenario uses one shared native/Wasm block count calibrated to target at least ${fixed(minimumRoundMs)} ms per round.`,
-    "Both throughput paths call the raw validated onda_process backend entry; host runtime/worklet overhead is excluded.",
+    "Both throughput paths call the raw validated onda_process backend entry and reject nonzero execution status after every block; daemon/worklet adapter overhead is excluded.",
     requireLlvmWin
       ? `LLVM win gate: every Wasm/LLVM ratio must be at least ${minimumWasmToLlvmRatio.toFixed(2)}×.`
       : "LLVM win gate: disabled by ONDA_BENCH_REQUIRE_LLVM_WIN.",
@@ -342,9 +342,11 @@ async function prepareWasmBenchmark(artifact) {
     throw new Error("benchmark scenarios must not require external buffers");
   }
   writeParameterDefaults(memory, params, metadata.metadata.params);
-  onda_init(params, state);
-  const process = () =>
-    onda_process(state, params, 0, outputTable, 0, blockSize, 3, 0, 0, 0, 0);
+  requireExecutionSuccess(onda_init(params, state), "processor init");
+  const process = () => requireExecutionSuccess(
+    onda_process(state, params, 0, outputTable, 0, blockSize, 3, 0, 0, 0, 0),
+    "processor process",
+  );
 
   process();
   const firstOutputs = outputPointers.map((pointer, index) =>
@@ -408,6 +410,12 @@ function writeFirstBlockFixture(path, channels) {
     bytes.writeFloatLE(sample, index * 4);
   });
   writeFileSync(path, bytes);
+}
+
+function requireExecutionSuccess(status, operation) {
+  if (status !== 0) {
+    throw new Error(`${operation} failed with execution status ${status}`);
+  }
 }
 
 function flattenPorts(ports) {

@@ -31,6 +31,13 @@
         --scrollbar-thumb-hover: #47739f;
         --shadow: 0 20px 60px rgba(3, 10, 18, 0.34);
         --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        /* Shared with the native view: controls 5, groups 8, cards 9, sections 12. */
+        --radius-control: 5px;
+        --radius-group: 8px;
+        --radius-card: 9px;
+        --radius-section: 12px;
+        --radius-window: 14px;
+        --radius-round: 999px;
       }
 
       :root[data-theme="light"] {
@@ -75,7 +82,7 @@
       *::-webkit-scrollbar-track { background: var(--scrollbar-track); }
       *::-webkit-scrollbar-thumb {
         border: 2px solid var(--scrollbar-track);
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: var(--scrollbar-thumb);
       }
       *::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
@@ -91,6 +98,7 @@
 
       .shell {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
         gap: 16px;
         width: 100%;
         margin: 0 auto;
@@ -102,7 +110,7 @@
         min-height: calc(100vh - 36px);
         padding: 24px;
         border: 1px solid var(--border);
-        border-radius: 16px;
+        border-radius: var(--radius-window);
         background: var(--panel);
         box-shadow: var(--shadow);
         text-align: center;
@@ -120,12 +128,6 @@
         height: 76px;
       }
 
-      .file-picker-title {
-        margin-top: 8px;
-        font-size: 20px;
-        font-weight: 700;
-      }
-
       .file-picker-copy {
         color: var(--muted);
       }
@@ -139,14 +141,21 @@
         text-align: left;
       }
 
+      .file-picker-settings .param-setting-label {
+        text-align: center;
+      }
+
       [hidden] {
         display: none !important;
       }
 
       .header, .buffers, .events, .params, .scope-section {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 14px;
+        border-radius: var(--radius-section);
         padding: 14px;
         box-shadow: var(--shadow);
         backdrop-filter: blur(8px);
@@ -192,7 +201,7 @@
 
       .error {
         padding: 10px 12px;
-        border-radius: 10px;
+        border-radius: var(--radius-card);
         border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
         background: color-mix(in srgb, var(--panel-strong) 84%, black 16%);
         color: var(--danger);
@@ -234,7 +243,7 @@
 
       button {
         border: 1px solid transparent;
-        border-radius: 10px;
+        border-radius: var(--radius-control);
         padding: 8px 16px;
         font: inherit;
         font-weight: 700;
@@ -283,32 +292,27 @@
 
       .params-toolbar {
         align-items: center;
+        width: 100%;
       }
 
-      .params-toolbar > .params-title {
+      .section-heading {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
         margin-right: auto;
-      }
-
-      .params-toolbar .params-disclosure {
-        flex: 0 0 28px;
-        width: 28px;
-        justify-content: flex-end;
       }
 
       .param-layout-toggle {
         display: inline-flex;
         flex: 0 0 auto;
-        padding: 2px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: var(--field-bg);
+        gap: 4px;
       }
 
       .param-layout-toggle button {
         min-height: 28px;
         padding: 4px 8px;
         border: 0;
-        border-radius: 5px;
+        border-radius: var(--radius-control);
         background: transparent;
         color: var(--muted);
         font-size: 11px;
@@ -320,11 +324,11 @@
       }
 
       .section-toggle {
-        width: 100%;
         display: flex;
-        justify-content: space-between;
         align-items: center;
-        gap: 12px;
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 14px;
         padding: 0;
         margin: 0;
         background: transparent;
@@ -337,7 +341,7 @@
         background: transparent;
       }
 
-      .section-toggle::after {
+      .section-toggle::before {
         content: "▾";
         color: var(--muted);
         font-size: 14px;
@@ -345,7 +349,7 @@
         transition: transform 120ms ease;
       }
 
-      .section-toggle[aria-expanded="false"]::after {
+      .section-toggle[aria-expanded="false"]::before {
         transform: rotate(-90deg);
       }
 
@@ -369,7 +373,7 @@
         gap: 3px 10px;
         background: var(--panel-soft);
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: var(--radius-card);
         padding: 7px 8px 7px 10px;
       }
 
@@ -439,7 +443,7 @@
       .compact-action {
         min-height: 30px;
         padding: 4px 9px;
-        border-radius: 7px;
+        border-radius: var(--radius-control);
         font-size: 12px;
       }
 
@@ -527,7 +531,7 @@
         width: 100%;
         min-height: 30px;
         padding: 4px 7px;
-        border-radius: 7px;
+        border-radius: var(--radius-control);
       }
 
       .event-arg > .param-toggle {
@@ -563,7 +567,7 @@
         width: 25px;
         min-height: 25px;
         padding: 2px;
-        border-radius: 6px;
+        border-radius: var(--radius-control);
         font-size: 11px;
       }
 
@@ -573,7 +577,7 @@
         gap: 7px;
         margin-top: 6px;
         padding: 7px;
-        border-radius: 7px;
+        border-radius: var(--radius-group);
         background: var(--panel);
         box-shadow: inset 0 0 0 1px var(--border);
       }
@@ -585,7 +589,7 @@
         min-width: 0;
         padding: 6px 7px 7px;
         border: 1px solid var(--border);
-        border-radius: 6px;
+        border-radius: var(--radius-control);
         background: var(--bg);
       }
 
@@ -600,7 +604,7 @@
         min-width: 0;
         min-height: 28px;
         padding: 3px 6px;
-        border-radius: 6px;
+        border-radius: var(--radius-control);
       }
 
       .event-array-element .param-toggle {
@@ -610,7 +614,7 @@
       .event-array-note {
         margin-top: 6px;
         padding: 8px 9px;
-        border-radius: 7px;
+        border-radius: var(--radius-group);
         background: var(--panel);
         box-shadow: inset 0 0 0 1px var(--border);
         color: var(--muted);
@@ -633,13 +637,17 @@
 
       .param-list {
         display: grid;
-        gap: 12px;
+        grid-template-columns: repeat(
+          auto-fit,
+          minmax(min(100%, 200px), 1fr)
+        );
+        gap: 8px;
       }
 
       .param {
         background: var(--panel-soft);
         border: 1px solid var(--border);
-        border-radius: 12px;
+        border-radius: var(--radius-card);
         padding: 12px;
       }
 
@@ -656,6 +664,7 @@
         flex: 0 1 auto;
         min-width: 0;
         overflow: hidden;
+        font-size: 14px;
         font-weight: 700;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -664,6 +673,7 @@
       .param-type {
         flex: 0 0 auto;
         color: var(--muted);
+        font-size: 12px;
       }
 
       .param-name,
@@ -691,6 +701,50 @@
         margin-top: 10px;
       }
 
+      /* Keep these card dimensions aligned with onda_egui::param_grid_columns. */
+      #params[data-layout="sliders"] .param {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(88px, 104px);
+        grid-template-rows: 26px 24px;
+        grid-template-areas:
+          "heading value"
+          "control control";
+        align-content: center;
+        gap: 4px 8px;
+        min-width: 0;
+        height: 80px;
+        padding: 8px 9px;
+      }
+
+      #params[data-layout="sliders"] .param-head {
+        grid-area: heading;
+        min-width: 0;
+        align-self: center;
+      }
+
+      #params[data-layout="sliders"] .param-controls {
+        display: contents;
+      }
+
+      #params[data-layout="sliders"] .param-slider {
+        grid-area: control;
+        align-self: center;
+      }
+
+      #params[data-layout="sliders"] .param-number {
+        grid-area: value;
+        align-self: center;
+        height: 26px;
+        padding: 3px 8px;
+      }
+
+      #params[data-layout="sliders"] .param-bool .param-controls {
+        display: grid;
+        grid-area: control;
+        align-self: center;
+        margin: 0;
+      }
+
       .param-range {
         width: 100%;
       }
@@ -700,7 +754,7 @@
         width: 100%;
         height: 22px;
         border: 1px solid var(--border);
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: var(--field-bg);
         cursor: pointer;
         touch-action: none;
@@ -717,7 +771,7 @@
         right: 10px;
         top: 50%;
         height: 4px;
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: color-mix(in srgb, var(--text) 10%, transparent);
         transform: translateY(-50%);
       }
@@ -728,7 +782,7 @@
         top: 0;
         bottom: 0;
         width: 0%;
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: linear-gradient(90deg, var(--accent), var(--accent-strong));
       }
 
@@ -737,7 +791,7 @@
         top: 50%;
         width: 14px;
         height: 14px;
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: var(--text);
         box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 78%, transparent);
         transform: translate(-50%, -50%);
@@ -765,15 +819,33 @@
         height: 58px;
         border: 1px solid var(--border);
         border-radius: 50%;
-        background:
-          radial-gradient(circle at center, var(--panel-soft) 0 58%, transparent 59%),
-          conic-gradient(
-            from 225deg,
-            var(--accent) 0deg var(--knob-angle),
-            color-mix(in srgb, var(--text) 14%, transparent) var(--knob-angle) 270deg,
-            transparent 270deg
-          );
+        background: var(--panel-soft);
         box-shadow: inset 0 0 0 3px var(--field-bg);
+      }
+
+      .param-knob-ring {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        pointer-events: none;
+      }
+
+      .param-knob-ring-track,
+      .param-knob-ring-value {
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .param-knob-ring-track {
+        stroke: color-mix(in srgb, var(--text) 14%, transparent);
+      }
+
+      .param-knob-ring-value {
+        stroke: var(--accent);
       }
 
       .param-knob-indicator {
@@ -789,19 +861,23 @@
         left: 50%;
         width: 3px;
         height: 12px;
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: var(--text);
         transform: translateX(-50%);
       }
 
       #params[data-layout="knobs"] {
-        grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
+        grid-template-columns: repeat(
+          auto-fit,
+          minmax(min(100%, 140px), 1fr)
+        );
         gap: 8px;
       }
 
       #params[data-layout="knobs"] .param {
         min-width: 0;
-        padding: 9px;
+        height: 140px;
+        padding: 8px 9px;
       }
 
       #params[data-layout="knobs"] .param-head {
@@ -823,14 +899,21 @@
       }
 
       #params[data-layout="knobs"] .param-controls {
-        gap: 6px;
-        margin-top: 7px;
+        gap: 4px;
+        margin-top: 4px;
+      }
+
+      #params[data-layout="knobs"] .param-number {
+        justify-self: center;
+        width: 104px;
+        height: 26px;
+        padding: 3px 8px;
       }
 
       .param-number {
         width: 100%;
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: var(--radius-control);
         background: var(--field-bg);
         color: var(--text);
         padding: 8px 10px;
@@ -840,7 +923,7 @@
       .param-select {
         width: 100%;
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: var(--radius-control);
         background: var(--field-bg);
         color: var(--text);
         padding: 8px 10px;
@@ -864,7 +947,7 @@
       .scope-canvas {
         width: 100%;
         height: 140px;
-        border-radius: 10px;
+        border-radius: var(--radius-card);
         background: var(--scope-bg);
         display: block;
       }
@@ -876,22 +959,17 @@
 
         .header, .buffers, .events, .params, .scope-section {
           padding: 12px;
-          border-radius: 12px;
+          border-radius: var(--radius-section);
         }
 
         .hero {
           min-height: 160px;
         }
 
-        .param-list {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 8px;
-        }
-
         .param {
           min-width: 0;
           padding: 9px;
-          border-radius: 10px;
+          border-radius: var(--radius-card);
         }
 
         .param-head {
@@ -933,15 +1011,20 @@
         }
       }
     </style>
+    <script>
+      if (!globalThis.__ONDA_PARAM_CONTROL_V2__) {
+        document.write('<script src="./param-control.js"><\/script>');
+      }
+    </script>
   </head>
   <body>
     <div class="shell">
       <section class="file-picker" id="file-picker" hidden>
         <div class="file-picker-content">
           <img class="file-picker-logo" id="file-picker-logo" alt="Onda logo" />
-          <div class="file-picker-title">Open an Onda file</div>
-          <div class="file-picker-copy">Drag an .onda file here, or choose one from your computer.</div>
-          <div class="file-picker-settings">
+          <button class="primary" id="choose-onda-file" type="button">Choose Onda file</button>
+          <div class="file-picker-copy">or drop one here</div>
+          <div class="file-picker-settings" id="file-picker-settings">
             <div class="param-setting">
               <label class="param-setting-label" for="run-sample-rate">Sample Rate</label>
               <select class="param-select" id="run-sample-rate">
@@ -964,7 +1047,6 @@
               </select>
             </div>
           </div>
-          <button class="primary" id="choose-onda-file" type="button">Choose .onda file</button>
           <div class="error" id="file-picker-error"></div>
         </div>
       </section>
@@ -978,7 +1060,6 @@
           <div class="actions">
             <button class="primary" id="start">Play</button>
             <button class="secondary" id="stop">Stop</button>
-            <button class="secondary" id="reset">Reset</button>
             <button class="secondary" id="unload">Unload</button>
           </div>
           <div class="error" id="error"></div>
@@ -996,43 +1077,78 @@
         </div>
       </section>
       <section class="scope-section" id="scope-section">
-        <button class="params-header section-toggle" id="scope-toggle" type="button" aria-expanded="true">
-          <div class="params-title">Scope</div>
-        </button>
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="scope-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Scope"
+            ></button>
+            <div class="params-title">Scope</div>
+          </div>
+        </div>
         <div class="section-body" id="scope-body">
           <canvas class="scope-canvas" id="scope-canvas"></canvas>
         </div>
       </section>
       <section class="buffers" id="buffers-section">
-        <button class="params-header section-toggle" id="buffers-toggle" type="button" aria-expanded="true">
-          <div class="params-title">Buffers</div>
-        </button>
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="buffers-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Buffers"
+            ></button>
+            <div class="params-title">Buffers</div>
+          </div>
+        </div>
         <div class="section-body buffers-list" id="buffers-body">
           <div class="buffers-list" id="buffers"></div>
         </div>
       </section>
       <section class="events" id="events-section">
-        <button class="params-header section-toggle" id="events-toggle" type="button" aria-expanded="true">
-          <div class="params-title">Events</div>
-        </button>
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="events-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Events"
+            ></button>
+            <div class="params-title">Events</div>
+            <button class="secondary compact-action" id="reset-event-arguments" type="button">
+              Reset
+            </button>
+          </div>
+        </div>
         <div class="section-body" id="events-body">
           <div class="buffers-list" id="events"></div>
         </div>
       </section>
       <section class="params" id="params-section">
         <div class="params-header params-toolbar">
-          <div class="params-title">Params</div>
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="params-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Params"
+            ></button>
+            <div class="params-title">Params</div>
+            <button class="secondary compact-action" id="reset-params" type="button">
+              Reset
+            </button>
+          </div>
           <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
             <button type="button" data-param-layout="sliders" aria-pressed="true">Sliders</button>
             <button type="button" data-param-layout="knobs" aria-pressed="false">Knobs</button>
           </div>
-          <button
-            class="section-toggle params-disclosure"
-            id="params-toggle"
-            type="button"
-            aria-expanded="true"
-            aria-label="Toggle Params"
-          ></button>
         </div>
         <div class="section-body" id="params-body">
           <div class="param-list" id="params"></div>
@@ -1199,18 +1315,24 @@
         outputDevices: [],
         currentInputDevice: null,
         currentOutputDevice: null,
-        supportsDeviceSelection: hostBridge.mode !== "browser",
+        supportsSourceSelection: false,
+        supportsTransport: false,
+        supportsDeviceSelection: false,
+        supportsRunSettings: false,
+        supportsScope: false,
         sampleRateHz: 48_000,
         blockFrames: 256,
       };
 
       const startButton = document.getElementById("start");
       const stopButton = document.getElementById("stop");
-      const resetButton = document.getElementById("reset");
+      const resetParamsButton = document.getElementById("reset-params");
+      const resetEventArgumentsButton = document.getElementById("reset-event-arguments");
       const refreshDevicesButton = document.getElementById("refresh-devices");
       const unloadButton = document.getElementById("unload");
       const chooseOndaFileButton = document.getElementById("choose-onda-file");
       const filePickerNode = document.getElementById("file-picker");
+      const filePickerSettingsNode = document.getElementById("file-picker-settings");
       const filePickerErrorNode = document.getElementById("file-picker-error");
       const runSampleRateNode = document.getElementById("run-sample-rate");
       const runBlockSizeNode = document.getElementById("run-block-size");
@@ -1245,7 +1367,10 @@
       const filePickerLogoNode = document.getElementById("file-picker-logo");
       const PARAM_LAYOUT_STORAGE_KEY = "onda.run-view.param-layout.v1";
       const pendingParamMessages = new Map();
+      const activeParamGestures = new Set();
+      const paramBindings = new Map();
       let pendingParamFrame = 0;
+      let renderedParamSignature = "";
       let pendingScopeFrame = 0;
       let latestScopeData = { channels: 0, samples: [] };
       let currentTheme = "";
@@ -1283,8 +1408,11 @@
       stopButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "stop" });
       });
-      resetButton.addEventListener("click", () => {
-        hostBridge.postMessage({ type: "reset" });
+      resetParamsButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "resetParams" });
+      });
+      resetEventArgumentsButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "resetEventArguments" });
       });
       refreshDevicesButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "refreshDevices" });
@@ -1312,7 +1440,7 @@
       });
       document.addEventListener("keydown", (event) => {
         if (
-          hostBridge.mode !== "browser"
+          !state.supportsTransport
           || event.isComposing
           || event.altKey
           || (!event.ctrlKey && !event.metaKey)
@@ -1514,9 +1642,10 @@
       }
 
       function decimalPlaces(step) {
-        const text = String(step);
-        const dot = text.indexOf(".");
-        return dot === -1 ? 0 : text.length - dot - 1;
+        const [coefficient, exponentText] = String(step).toLowerCase().split("e");
+        const fractionDigits = coefficient.split(".")[1]?.length ?? 0;
+        const exponent = exponentText === undefined ? 0 : Number(exponentText);
+        return Math.max(0, fractionDigits - exponent);
       }
 
       const FLOAT_CONTROL_TARGET_STEPS = 2000;
@@ -1525,6 +1654,10 @@
 
       function scalarStepForParam(param) {
         // Keep this host policy aligned with onda_egui::scalar_step.
+        const declaredStep = Number(param.step);
+        if (Number.isFinite(declaredStep) && declaredStep > 0) {
+          return declaredStep;
+        }
         if (param.type === "i32" || param.type === "i64") {
           return 1;
         }
@@ -1549,7 +1682,10 @@
         if (!Number.isFinite(numericValue)) {
           return "0";
         }
-        const places = Math.min(decimalPlaces(step), 8);
+        const places = decimalPlaces(step);
+        if (places > 8) {
+          return String(numericValue);
+        }
         if (places === 0) {
           return String(Math.round(numericValue));
         }
@@ -1562,9 +1698,39 @@
         if (!Number.isFinite(step) || step <= 0) {
           return value;
         }
-        const places = decimalPlaces(step);
-        const snapped = min + Math.round((value - min) / step) * step;
-        return Number(snapped.toFixed(places));
+        return min + Math.round((value - min) / step) * step;
+      }
+
+      const paramControlCache = new WeakMap();
+
+      function paramControl(param) {
+        let control = paramControlCache.get(param);
+        if (control) return control;
+        control = globalThis.__ONDA_PARAM_CONTROL_V2__.createParamDomain({
+          name: param.name,
+          scalar: param.type,
+          minimum: param.rangeMin,
+          maximum: param.rangeMax,
+          scale: param.scale,
+          curve: param.curve,
+          unit: param.unit,
+          step: param.step,
+          stepCount: param.stepCount,
+        });
+        paramControlCache.set(param, control);
+        return control;
+      }
+
+      function paramPlainToNormalized(param, value) {
+        return paramControl(param).plainToNormalized(value);
+      }
+
+      function constrainParamPlain(param, value) {
+        return paramControl(param).constrainPlain(value);
+      }
+
+      function paramNormalizedToPlain(param, normalized) {
+        return paramControl(param).normalizedToPlain(normalized);
       }
 
       function canEditRunControls() {
@@ -1573,17 +1739,15 @@
 
       function createRangeValueController({
         currentValue,
-        min,
-        max,
-        step,
+        constrainValue,
         renderValue,
         onInputValue,
         onCommitValue,
       }) {
-        let value = clamp(currentValue, min, max);
+        let value = constrainValue(currentValue);
 
         const update = (nextValue, notify) => {
-          value = clamp(quantizeToStep(nextValue, min, step), min, max);
+          value = constrainValue(nextValue);
           renderValue(value);
           if (notify === "input") onInputValue(value);
           if (notify === "commit") onCommitValue(value);
@@ -1627,7 +1791,7 @@
         const canEdit = canEditRunControls();
         control.tabIndex = canEdit ? 0 : -1;
         control.setAttribute("role", "slider");
-        control.setAttribute("aria-label", param.name);
+        control.setAttribute("aria-label", paramDisplayName(param));
         control.setAttribute("aria-valuemin", String(param.rangeMin));
         control.setAttribute("aria-valuemax", String(param.rangeMax));
         control.setAttribute("aria-disabled", canEdit ? "false" : "true");
@@ -1635,8 +1799,6 @@
       }
 
       function createSliderControl(param, currentValue, step, onInputValue, onCommitValue) {
-        const min = Number(param.rangeMin);
-        const max = Number(param.rangeMax);
         const slider = document.createElement("div");
         slider.className = "param-slider";
         const canEdit = initializeRangeControl(slider, param);
@@ -1652,11 +1814,9 @@
 
         const controller = createRangeValueController({
           currentValue,
-          min,
-          max,
-          step: Number(step),
+          constrainValue: (value) => constrainParamPlain(param, value),
           renderValue: (value) => {
-            const ratio = max > min ? (value - min) / (max - min) : 0;
+            const ratio = paramPlainToNormalized(param, value);
             const pct = clamp(ratio, 0, 1) * 100;
             fill.style.width = pct + "%";
             thumb.style.left = pct + "%";
@@ -1673,7 +1833,7 @@
             return;
           }
           const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
-          const rawValue = min + ratio * (max - min);
+          const rawValue = paramNormalizedToPlain(param, ratio);
           if (commit) controller.commit(rawValue);
           else controller.input(rawValue);
         };
@@ -1716,8 +1876,6 @@
       }
 
       function createKnobControl(param, currentValue, step, onInputValue, onCommitValue) {
-        const min = Number(param.rangeMin);
-        const max = Number(param.rangeMax);
         const knob = document.createElement("div");
         knob.className = "param-knob";
         knob.title = "Drag vertically to adjust; double-click to reset";
@@ -1725,19 +1883,30 @@
 
         const dial = document.createElement("div");
         dial.className = "param-knob-dial";
+        const ring = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        ring.classList.add("param-knob-ring");
+        ring.setAttribute("viewBox", "0 0 58 58");
+        ring.setAttribute("aria-hidden", "true");
+        const ringPath = "M 11.322 46.678 A 25 25 0 1 1 46.678 46.678";
+        const track = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        track.classList.add("param-knob-ring-track");
+        track.setAttribute("d", ringPath);
+        const valueArc = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        valueArc.classList.add("param-knob-ring-value");
+        valueArc.setAttribute("d", ringPath);
+        valueArc.setAttribute("pathLength", "1");
+        ring.append(track, valueArc);
         const indicator = document.createElement("div");
         indicator.className = "param-knob-indicator";
-        dial.appendChild(indicator);
+        dial.append(ring, indicator);
         knob.appendChild(dial);
 
         const controller = createRangeValueController({
           currentValue,
-          min,
-          max,
-          step: Number(step),
+          constrainValue: (value) => constrainParamPlain(param, value),
           renderValue: (value) => {
-            const ratio = max > min ? clamp((value - min) / (max - min), 0, 1) : 0;
-            dial.style.setProperty("--knob-angle", `${ratio * 270}deg`);
+            const ratio = paramPlainToNormalized(param, value);
+            valueArc.style.strokeDasharray = `${ratio} 1`;
             dial.style.setProperty("--knob-rotation", `${-135 + ratio * 270}deg`);
             knob.setAttribute("aria-valuenow", String(value));
             knob.dataset.value = String(value);
@@ -1751,12 +1920,14 @@
             event.preventDefault();
             knob.setPointerCapture(event.pointerId);
             const startY = event.clientY;
-            const startValue = controller.value;
-            const valuePerPixel = (max - min) / 160;
+            const startNormalized = paramPlainToNormalized(param, controller.value);
 
             const onMove = (moveEvent) => {
               if (moveEvent.pointerId !== event.pointerId) return;
-              controller.input(startValue + (startY - moveEvent.clientY) * valuePerPixel);
+              controller.input(paramNormalizedToPlain(
+                param,
+                startNormalized + (startY - moveEvent.clientY) / 160,
+              ));
             };
 
             const onEnd = (endEvent) => {
@@ -1837,6 +2008,73 @@
               value: (p.value !== undefined && p.value !== null) ? p.value : initialParamValue(p),
             });
           });
+      }
+
+      function paramRenderSignature(params) {
+        return JSON.stringify([
+          paramLayout,
+          canEditRunControls(),
+          params.map((param) => [
+            param.name,
+            param.label,
+            param.type,
+            param.default,
+            param.rangeMin,
+            param.rangeMax,
+            param.scale,
+            param.curve,
+            param.unit,
+            param.step,
+            param.stepCount,
+          ]),
+        ]);
+      }
+
+      function paramDisplayName(param) {
+        const label = typeof param.label === "string" && param.label
+          ? param.label
+          : param.name;
+        return param.unit ? `${label} (${param.unit})` : label;
+      }
+
+      function updateRenderedParams(params) {
+        const signature = paramRenderSignature(params);
+        if (signature !== renderedParamSignature) {
+          return false;
+        }
+
+        for (const incoming of params) {
+          if (!paramBindings.has(incoming.name)) {
+            return false;
+          }
+        }
+
+        for (let index = 0; index < params.length; index += 1) {
+          const incoming = params[index];
+          const binding = paramBindings.get(incoming.name);
+          const localValue = binding.param.value;
+          Object.assign(binding.param, incoming);
+          if (activeParamGestures.has(incoming.name)) {
+            binding.param.value = localValue;
+          } else {
+            binding.setValue(incoming.value);
+          }
+          params[index] = binding.param;
+        }
+        return true;
+      }
+
+      function resetRenderedParams(signature) {
+        for (const name of activeParamGestures) {
+          const binding = paramBindings.get(name);
+          if (binding) {
+            commitParamMessage(name, binding.param.value);
+          }
+        }
+        activeParamGestures.clear();
+        paramBindings.clear();
+        paramsNode.replaceChildren();
+        renderedParamSignature = signature;
       }
 
       function initialEventArgValue(arg) {
@@ -1993,9 +2231,14 @@
 
       function render() {
         applyTheme();
-        const supportsSourceSelection = hostBridge.mode === "wry";
+        const supportsSourceSelection = state.supportsSourceSelection === true;
+        const supportsTransport = state.supportsTransport === true;
+        const supportsDeviceSelection = state.supportsDeviceSelection === true;
+        const supportsRunSettings = state.supportsRunSettings === true;
+        const supportsScope = state.supportsScope === true;
         const hasSource = Boolean(state.path);
         filePickerNode.hidden = !supportsSourceSelection || hasSource;
+        filePickerSettingsNode.hidden = !supportsRunSettings;
         runHeaderNode.hidden = supportsSourceSelection && !hasSource;
         unloadButton.hidden = !supportsSourceSelection;
         pathNode.textContent = state.path ? state.path : "No file selected";
@@ -2021,11 +2264,10 @@
           state.blockFrames,
           state.blockFrames + " frames",
         );
-        scopeSection.style.display = state.running ? "block" : "none";
+        scopeSection.style.display = supportsScope && state.running ? "block" : "none";
         const hasBuffers = state.buffers.length > 0;
         const hasEvents = state.events.length > 0;
         const hasParams = state.params.length > 0;
-        const supportsDeviceSelection = state.supportsDeviceSelection !== false;
         const canEditRun = canEditRunControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
         eventsSection.style.display = hasEvents ? "" : "none";
@@ -2035,9 +2277,10 @@
         ioSettingsNode.style.display = supportsDeviceSelection ? "grid" : "none";
         const buffersReady = state.buffers.every(buffer => Boolean(buffer.loadedPath));
         const canStart = buffersReady || Boolean(state.sourceDirty);
+        startButton.hidden = !supportsTransport;
+        stopButton.hidden = !supportsTransport;
         startButton.disabled = !state.path || state.running || !canStart;
         stopButton.disabled = !state.running;
-        resetButton.disabled = !hasParams && !hasEvents;
         renderDeviceOptions(inputDeviceNode, state.inputDevices, state.currentInputDevice, true);
         renderDeviceOptions(outputDeviceNode, state.outputDevices, state.currentOutputDevice, true);
 
@@ -2111,14 +2354,17 @@
             eventHead.className = "event-head";
             const head = document.createElement("div");
             head.className = "event-identity";
-            head.innerHTML = '<div class="param-name"></div><div class="event-summary"></div>';
+            head.innerHTML = '<div class="param-name"></div>';
             head.querySelector(".param-name").textContent = event.name;
             const argumentCount = Array.isArray(event.args) ? event.args.length : 0;
-            head.querySelector(".event-summary").textContent = argumentCount === 0
-              ? "No arguments"
-              : argumentCount === 1
+            if (argumentCount > 0) {
+              const summary = document.createElement("div");
+              summary.className = "event-summary";
+              summary.textContent = argumentCount === 1
                 ? "1 argument"
                 : argumentCount + " arguments";
+              head.appendChild(summary);
+            }
             head.title = event.name;
 
             const trigger = document.createElement("button");
@@ -2264,7 +2510,11 @@
           }
         }
 
-        paramsNode.replaceChildren();
+        const paramSignature = paramRenderSignature(state.params);
+        if (updateRenderedParams(state.params)) {
+          return;
+        }
+        resetRenderedParams(paramSignature);
         for (const param of state.params) {
           const card = document.createElement("div");
           card.className = "param";
@@ -2272,7 +2522,10 @@
           const head = document.createElement("div");
           head.className = "param-head";
           head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
-          head.querySelector(".param-name").textContent = param.name;
+          const displayName = paramDisplayName(param);
+          const name = head.querySelector(".param-name");
+          name.textContent = displayName;
+          name.title = displayName;
           head.querySelector(".param-type").textContent = param.type;
           card.appendChild(head);
 
@@ -2281,25 +2534,37 @@
           card.appendChild(controls);
 
           if (param.type === "bool") {
+            card.classList.add("param-bool");
             const label = document.createElement("label");
             label.className = "param-toggle";
             const input = document.createElement("input");
             input.type = "checkbox";
             input.checked = Boolean(param.value);
             input.disabled = !canEditRun;
-            input.addEventListener("change", () => {
-              param.value = input.checked;
-              hostBridge.postMessage({ type: "setParam", name: param.name, value: input.checked });
-            });
             const text = document.createElement("span");
             text.textContent = input.checked ? "On" : "Off";
             input.addEventListener("change", () => {
+              param.value = input.checked;
               text.textContent = input.checked ? "On" : "Off";
+              hostBridge.postMessage({
+                type: "setParam",
+                name: param.name,
+                value: input.checked,
+                commit: true,
+              });
             });
             label.append(input, text);
             controls.appendChild(label);
+            paramBindings.set(param.name, {
+              param,
+              setValue(nextValue) {
+                input.checked = Boolean(nextValue);
+                text.textContent = input.checked ? "On" : "Off";
+              },
+            });
           } else {
             const hasRange = Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax);
+            card.classList.add(hasRange ? "param-ranged" : "param-unbounded");
             const stepValue = scalarStepForParam(param);
             const step = String(stepValue);
             const currentValue = typeof param.value === "number" ? param.value : 0;
@@ -2322,12 +2587,14 @@
                 currentValue,
                 step,
                 (nextValue) => {
+                  activeParamGestures.add(param.name);
                   param.value = nextValue;
                   const nextText = formatNumberForInput(nextValue, stepValue);
                   number.value = nextText;
                   scheduleParamMessage(param.name, nextValue);
                 },
                 (nextValue) => {
+                  activeParamGestures.delete(param.name);
                   param.value = nextValue;
                   const nextText = formatNumberForInput(nextValue, stepValue);
                   number.value = nextText;
@@ -2341,11 +2608,7 @@
                 if (!Number.isFinite(parsed)) {
                   return;
                 }
-                const quantized = clamp(
-                  quantizeToStep(parsed, Number(param.rangeMin), stepValue),
-                  Number(param.rangeMin),
-                  Number(param.rangeMax),
-                );
+                const quantized = constrainParamPlain(param, parsed);
                 param.value = quantized;
                 rangeControl.setValue(quantized);
                 number.value = formatNumberForInput(quantized, stepValue);
@@ -2355,6 +2618,7 @@
                 sync(number.value);
                 commitParamMessage(param.name, Number(number.value));
               });
+              paramBindings.set(param.name, { param, setValue: sync });
             } else {
               const number = document.createElement("input");
               number.className = "param-number";
@@ -2370,9 +2634,26 @@
                 const quantized = quantizeToStep(parsed, 0, stepValue);
                 param.value = quantized;
                 number.value = formatNumberForInput(quantized, stepValue);
-                hostBridge.postMessage({ type: "setParam", name: param.name, value: quantized });
+                hostBridge.postMessage({
+                  type: "setParam",
+                  name: param.name,
+                  value: quantized,
+                  commit: true,
+                });
               });
               controls.appendChild(number);
+              paramBindings.set(param.name, {
+                param,
+                setValue(nextValue) {
+                  const parsed = Number(nextValue);
+                  if (!Number.isFinite(parsed)) {
+                    return;
+                  }
+                  const quantized = quantizeToStep(parsed, 0, stepValue);
+                  param.value = quantized;
+                  number.value = formatNumberForInput(quantized, stepValue);
+                },
+              });
             }
 
           }

@@ -136,6 +136,21 @@ impl<'a> Formatter<'a> {
                 )
                 .expect("writing a string");
             }
+            if param.control.scale != crate::ParamScale::Linear {
+                write!(suffix, " scale={:?}", param.control.scale).expect("writing a string");
+            }
+            if let Some(curve) = param.control.curve {
+                write!(suffix, " curve={curve}").expect("writing a string");
+            }
+            if let Some(unit) = &param.control.unit {
+                write!(suffix, " unit={unit:?}").expect("writing a string");
+            }
+            if let Some(step) = param.control.step {
+                write!(suffix, " step={}", format_scalar(step)).expect("writing a string");
+            }
+            if let Some(step_count) = param.control.step_count {
+                write!(suffix, " step_count={step_count}").expect("writing a string");
+            }
             self.line(format_args!(
                 "param @param{index} {:?}: {}{suffix}",
                 param.name,
@@ -687,7 +702,7 @@ fn format_channels(channels: BufferChannels) -> String {
 fn format_bounds(bounds: BoundsMode) -> &'static str {
     match bounds {
         BoundsMode::Clamp => "clamp",
-        BoundsMode::Trap => "trap",
+        BoundsMode::Checked => "checked",
         BoundsMode::Unchecked => "unchecked",
     }
 }
@@ -778,6 +793,7 @@ fn format_intrinsic(intrinsic: Intrinsic) -> &'static str {
         Intrinsic::Min => "min",
         Intrinsic::Max => "max",
         Intrinsic::Fma => "fma",
+        Intrinsic::RangeClamp => "range_clamp",
     }
 }
 

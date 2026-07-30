@@ -2,14 +2,14 @@ use std::path::{Path, PathBuf};
 use std::{collections::HashMap, mem};
 
 use onda_codegen_llvm::{
-    jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredEvent,
-    DeclaredEventParam, JitProgram, MirCompileOptions, TargetOptLevel,
+    check_execution_status, jit_program_from_optimized_mir_with_options, DeclaredBufferChannels,
+    DeclaredEvent, DeclaredEventParam, JitProgram, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, prepare_unchecked_process,
-    process_unchecked_segment, reset_instance_state, set_param_by_index, trigger_event_by_index,
-    Instance, InstanceConfig,
+    process_unchecked_segment, set_param_by_index, trigger_event_by_index, Instance,
+    InstanceConfig,
 };
 use onda_semantics::{lower_program_to_optimized_mir, AnalysisOptions, TypedProgram};
 
@@ -63,6 +63,11 @@ pub struct RunParamInfo {
     pub default: Option<f64>,
     pub range_min: Option<f64>,
     pub range_max: Option<f64>,
+    pub scale: Option<String>,
+    pub curve: Option<f64>,
+    pub unit: Option<String>,
+    pub step: Option<f64>,
+    pub step_count: Option<u32>,
     pub scalar: bool,
 }
 
@@ -259,6 +264,7 @@ impl RunSession {
                     .get(desc.name())
                     .copied()
                     .or_else(|| desc.default_as_f64());
+                let domain = desc.param_domain();
                 Some(RunParamInfo {
                     index,
                     name: desc.name().to_owned(),
@@ -267,6 +273,13 @@ impl RunSession {
                     default: desc.default_as_f64(),
                     range_min: desc.range_min_as_f64(),
                     range_max: desc.range_max_as_f64(),
+                    scale: domain.map(|domain| domain.scale_name().to_owned()),
+                    curve: domain.and_then(|domain| domain.curve()),
+                    unit: domain
+                        .and_then(|domain| domain.unit())
+                        .map(ToOwned::to_owned),
+                    step: domain.and_then(|domain| domain.step()),
+                    step_count: domain.and_then(|domain| domain.step_count()),
                     scalar: desc.array_len() == 1,
                 })
             })
@@ -359,8 +372,23 @@ impl RunSession {
                 0,
             ));
         }
+        let value = if desc.elem_ty() == PrimitiveType::Bool {
+            if value >= 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            desc.param_domain()
+                .map(|domain| domain.constrain_plain(value))
+                .unwrap_or(value)
+        };
         self.param_values.insert(name.to_owned(), value);
-        if should_smooth_run_param(desc.elem_ty()) {
+        if should_smooth_run_param(desc.elem_ty())
+            && desc
+                .param_domain()
+                .is_none_or(|domain| domain.step_count().is_none())
+        {
             self.param_runtime_values
                 .entry(name.to_owned())
                 .or_insert_with(|| default_run_param_value(desc));
@@ -463,7 +491,9 @@ impl RunSession {
         // stable for the lifetime of this instance.
         for &(start_frame, frames, flags) in segments {
             unsafe {
-                process_unchecked_segment(&mut self.instance, start_frame, frames, flags)?;
+                let status =
+                    process_unchecked_segment(&mut self.instance, start_frame, frames, flags)?;
+                check_execution_status(status)?;
             }
         }
 
@@ -519,12 +549,21 @@ impl RunSession {
         }
     }
 
-    pub fn reset(&mut self) {
-        reset_instance_state(&mut self.instance);
-        if self.buffers_ready() {
-            prepare_unchecked_process(&mut self.instance)
-                .expect("run session bindings remain valid across state reset");
+    /// Restores parameter defaults without changing processor state.
+    pub fn reset_params(&mut self) -> Result<(), Diagnostic> {
+        for index in 0..self.jit.param_count() {
+            let desc = self
+                .jit
+                .param_descriptor(index)
+                .expect("parameter index is within the compiled descriptor count");
+            let default = desc
+                .default_bytes()
+                .expect("validated parameter metadata has default bytes");
+            set_param_by_index(&mut self.instance, index, default)?;
         }
+        self.param_values.clear();
+        self.param_runtime_values.clear();
+        Ok(())
     }
 
     /// Creates a new runtime instance from the already-compiled JIT program.
@@ -702,7 +741,11 @@ impl RunSession {
                 let Some(desc) = self.jit.param_descriptor(index) else {
                     continue;
                 };
-                if !should_smooth_run_param(desc.elem_ty()) {
+                if !should_smooth_run_param(desc.elem_ty())
+                    || desc
+                        .param_domain()
+                        .is_some_and(|domain| domain.step_count().is_some())
+                {
                     continue;
                 }
                 let bytes = scalar_param_bytes(desc.elem_ty(), target_value)?;
@@ -724,7 +767,11 @@ impl RunSession {
             let Some(desc) = self.jit.param_descriptor(index) else {
                 continue;
             };
-            if !should_smooth_run_param(desc.elem_ty()) {
+            if !should_smooth_run_param(desc.elem_ty())
+                || desc
+                    .param_domain()
+                    .is_some_and(|domain| domain.step_count().is_some())
+            {
                 continue;
             }
             let current_value = self

@@ -37,7 +37,7 @@ that stable executable location instead of the extracted archive. Run `./uninsta
 archive to remove those three installed files.
 
 Launching `onda` without command-line arguments opens the Onda Run file picker. The macOS package
-also includes `Onda.app`, and Windows packages include a console-free `Onda Run.exe` launcher. Keep
+also includes `Onda.app`, and Windows packages include a console-free `Onda.exe` launcher. Keep
 the Windows launcher in the extracted package and create a shortcut when moving it to the desktop
 or Start menu, because it launches the bundled `bin\onda.exe`.
 
