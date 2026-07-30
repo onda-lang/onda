@@ -57,42 +57,35 @@ const INSERT_TEXT_FORMAT_SNIPPET: u32 = 2;
 
 const MAX_DEFERRED_COUNT_COMPLETIONS: usize = 128;
 const COMPLETION_PLACEHOLDER: &str = "__lsp_completion_placeholder";
-const VST3_MIDI_EVENTS_LABEL: &str = "vst3_midi_events";
-const VST3_MIDI_EVENTS_INSERT_TEXT: &str = "\
-event note_on(id: i32, channel: i32, key: i32, velocity: f32) {
+
+#[derive(Debug, Clone, Copy)]
+struct PluginEventCompletion {
+    name: &'static str,
+    params: &'static str,
 }
 
-event note_off(id: i32, channel: i32, key: i32, velocity: f32) {
-}
-
-event pitch_bend(channel: i32, value: f32) {
-}
-
-event channel_pressure(channel: i32, pressure: f32) {
-}
-
-event cc(channel: i32, index: i32, value: f32) {
-}";
-const VST3_MIDI_EVENTS_SNIPPET: &str = "\
-event note_on(id: i32, channel: i32, key: i32, velocity: f32) {
-  $1
-}
-
-event note_off(id: i32, channel: i32, key: i32, velocity: f32) {
-  $2
-}
-
-event pitch_bend(channel: i32, value: f32) {
-  $3
-}
-
-event channel_pressure(channel: i32, pressure: f32) {
-  $4
-}
-
-event cc(channel: i32, index: i32, value: f32) {
-  $5
-}$0";
+const PLUGIN_EVENT_COMPLETIONS: &[PluginEventCompletion] = &[
+    PluginEventCompletion {
+        name: "note_on",
+        params: "id: i32, channel: i32, key: i32, velocity: f32",
+    },
+    PluginEventCompletion {
+        name: "note_off",
+        params: "id: i32, channel: i32, key: i32, velocity: f32",
+    },
+    PluginEventCompletion {
+        name: "pitch_bend",
+        params: "channel: i32, value: f32",
+    },
+    PluginEventCompletion {
+        name: "channel_pressure",
+        params: "channel: i32, pressure: f32",
+    },
+    PluginEventCompletion {
+        name: "cc",
+        params: "channel: i32, index: i32, value: f32",
+    },
+];
 
 #[derive(Debug, Clone, Copy)]
 struct BufferBuiltinMethod {
@@ -1791,7 +1784,12 @@ impl CompletionIndex {
     fn general_items(&self, prefix: &str) -> Vec<CompletionItem> {
         let mut out = Vec::new();
         if self.is_top_level_completion_position(prefix) {
-            out.push(vst3_midi_events_item());
+            out.extend(
+                PLUGIN_EVENT_COMPLETIONS
+                    .iter()
+                    .copied()
+                    .map(plugin_event_item),
+            );
         }
         for &keyword in LANGUAGE_KEYWORDS {
             out.push(
@@ -2765,15 +2763,14 @@ fn event_item(event: &EventDef) -> CompletionItem {
         ))
 }
 
-fn vst3_midi_events_item() -> CompletionItem {
-    CompletionItem::new(VST3_MIDI_EVENTS_LABEL, COMPLETION_ITEM_KIND_SNIPPET)
-        .detail("declare the complete VST3 MIDI event surface")
-        .insert_text(VST3_MIDI_EVENTS_INSERT_TEXT)
-        .snippet(VST3_MIDI_EVENTS_SNIPPET)
-        .sort_text(completion_sort_text(
-            CompletionSortGroup::Event,
-            VST3_MIDI_EVENTS_LABEL,
-        ))
+fn plugin_event_item(event: PluginEventCompletion) -> CompletionItem {
+    let label = format!("plugin_{}", event.name);
+    let insert_text = format!("event {}({}):\n  ", event.name, event.params);
+    CompletionItem::new(&label, COMPLETION_ITEM_KIND_SNIPPET)
+        .detail(format!("declare the plugin {} event", event.name))
+        .insert_text(&insert_text)
+        .snippet(format!("{insert_text}$0"))
+        .sort_text(completion_sort_text(CompletionSortGroup::Event, &label))
 }
 
 fn function_item(info: &FunctionInfo, detail: &str, kind: u32) -> CompletionItem {
@@ -4146,8 +4143,8 @@ mod tests {
     }
 
     #[test]
-    fn vst3_midi_helper_expands_all_events_as_a_snippet() {
-        let source = "vst3_";
+    fn plugin_event_helpers_insert_individual_colon_style_declarations() {
+        let source = "plugin_";
         let result = completion_items_for_document_with_index(
             source,
             None,
@@ -4160,32 +4157,29 @@ mod tests {
             },
             true,
         );
-        let item = encoded_item(&result.items, VST3_MIDI_EVENTS_LABEL);
-        let insertion = item["insertText"]
-            .as_str()
-            .expect("snippet should have insertion text");
+        for event in PLUGIN_EVENT_COMPLETIONS {
+            let label = format!("plugin_{}", event.name);
+            let item = encoded_item(&result.items, &label);
+            let insertion = item["insertText"]
+                .as_str()
+                .expect("snippet should have insertion text");
 
-        assert_eq!(item["kind"], COMPLETION_ITEM_KIND_SNIPPET);
-        assert_eq!(item["insertTextFormat"], INSERT_TEXT_FORMAT_SNIPPET);
-        for (index, declaration) in [
-            "event note_on(id: i32, channel: i32, key: i32, velocity: f32)",
-            "event note_off(id: i32, channel: i32, key: i32, velocity: f32)",
-            "event pitch_bend(channel: i32, value: f32)",
-            "event channel_pressure(channel: i32, pressure: f32)",
-            "event cc(channel: i32, index: i32, value: f32)",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            assert!(insertion.contains(declaration));
-            assert!(insertion.contains(&format!("${}", index + 1)));
+            assert_eq!(item["kind"], COMPLETION_ITEM_KIND_SNIPPET);
+            assert_eq!(item["insertTextFormat"], INSERT_TEXT_FORMAT_SNIPPET);
+            assert_eq!(
+                insertion,
+                format!("event {}({}):\n  $0", event.name, event.params)
+            );
         }
-        assert!(insertion.ends_with("$0"));
+        assert!(result
+            .items
+            .iter()
+            .all(|item| item["label"] != "vst3_midi_events"));
     }
 
     #[test]
-    fn vst3_midi_helper_has_a_valid_plain_text_fallback_and_is_top_level_only() {
-        let source = "vst3_";
+    fn plugin_event_helpers_have_plain_text_fallbacks_and_are_top_level_only() {
+        let source = "plugin_";
         let result = completion_items_for_document_with_index(
             source,
             None,
@@ -4198,49 +4192,35 @@ mod tests {
             },
             false,
         );
-        let item = encoded_item(&result.items, VST3_MIDI_EVENTS_LABEL);
-        assert!(item.get("insertTextFormat").is_none());
-        let insertion = item["insertText"]
-            .as_str()
-            .expect("plain completion should have insertion text");
-        let program = parse_program(insertion).expect("plain expansion should be valid Onda");
-        let event_names = program
-            .blocks
-            .iter()
-            .filter_map(|block| match block {
-                Block::Events(events) => Some(events.iter()),
-                _ => None,
-            })
-            .flatten()
-            .map(|event| event.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            event_names,
-            [
-                "note_on",
-                "note_off",
-                "pitch_bend",
-                "channel_pressure",
-                "cc"
-            ]
-        );
+        for event in PLUGIN_EVENT_COMPLETIONS {
+            let label = format!("plugin_{}", event.name);
+            let item = encoded_item(&result.items, &label);
+            assert!(item.get("insertTextFormat").is_none());
+            assert_eq!(
+                item["insertText"],
+                format!("event {}({}):\n  ", event.name, event.params)
+            );
+        }
 
-        let nested = "sample:\n  vst3_ = 0.0\n";
+        let nested = "sample:\n  plugin_ = 0.0\n";
         let nested_result = completion_items_for_document_with_index(
             nested,
             None,
             &HashMap::new(),
             None,
             None,
-            position_at(nested, "vst3_", "vst3_".len()),
+            position_at(nested, "plugin_", "plugin_".len()),
             true,
         );
         assert!(
-            nested_result
-                .items
-                .iter()
-                .all(|item| item["label"] != VST3_MIDI_EVENTS_LABEL),
-            "the declaration scaffold must not be offered inside a runtime block"
+            PLUGIN_EVENT_COMPLETIONS.iter().all(|event| {
+                let label = format!("plugin_{}", event.name);
+                nested_result
+                    .items
+                    .iter()
+                    .all(|item| item["label"] != label)
+            }),
+            "the event declaration helpers must not be offered inside a runtime block"
         );
     }
 
