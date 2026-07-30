@@ -139,9 +139,9 @@ The `@onda-lang/webaudio` adapter registers the worklet module before constructi
 channel options from metadata, and provides request-correlated helpers. Parameters are
 initialized from generated metadata and updated with
 `{ type: "set-param", param: "name", value }`. Scalar and fixed-array parameter types are written
-according to their metadata rather than by a name-specific convention. The playground's Reset
-control restores parameter and event-input defaults, then `{ type: "reset" }` clears physical state,
-resets the compile-block cursor, and runs `onda_init` again.
+according to their metadata rather than by a name-specific convention. The Params reset restores
+parameter defaults through the same update path, while the Events reset restores only the event
+argument editors. Neither action clears physical processor state or reruns `onda_init`.
 
 The generic event/control-output ABI accepts
 `{ type: "event", event: "event_name", values: { param: value } }`; scalar, fixed-array, and slice

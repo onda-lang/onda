@@ -321,9 +321,15 @@ mod platform {
                 }
                 true
             }
-            "reset" => {
+            "resetParams" => {
                 if let Some(controller) = controller.as_mut() {
-                    controller.reset();
+                    controller.reset_params();
+                }
+                true
+            }
+            "resetEventArguments" => {
+                if let Some(controller) = controller.as_mut() {
+                    controller.reset_event_arguments();
                 }
                 true
             }
@@ -438,7 +444,6 @@ mod platform {
             "supportsTransport": true,
             "supportsDeviceSelection": true,
             "supportsRunSettings": true,
-            "supportsReset": true,
             "supportsScope": true,
             "sampleRateHz": options.sample_rate_hz,
             "blockFrames": options.block_frames,
@@ -472,7 +477,6 @@ mod platform {
             "supportsTransport": true,
             "supportsDeviceSelection": true,
             "supportsRunSettings": true,
-            "supportsReset": true,
             "supportsScope": true,
             "sampleRateHz": options.sample_rate_hz,
             "blockFrames": options.block_frames,

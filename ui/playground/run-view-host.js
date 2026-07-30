@@ -27,7 +27,6 @@ export class BrowserRunViewHost {
       supportsTransport: true,
       supportsDeviceSelection: false,
       supportsRunSettings: false,
-      supportsReset: true,
       supportsScope: true,
       sampleRateHz: 48_000,
       blockFrames: 512,
@@ -165,11 +164,15 @@ export class BrowserRunViewHost {
     this.setState({ error: String(error?.message ?? error) });
   }
 
-  resetValues() {
+  resetParamValues() {
     this.state.params = this.state.params.map((param) => ({
       ...param,
       value: initialParamValue(param),
     }));
+    this.postState();
+  }
+
+  resetEventArguments() {
     this.state.events = this.state.events.map((event) => ({
       ...event,
       args: event.args.map((arg) => ({ ...arg, value: initialEventArgValue(arg) })),
@@ -230,8 +233,12 @@ export class BrowserRunViewHost {
         case "stop":
           await this.handlers.stop?.();
           break;
-        case "reset":
-          await this.handlers.reset?.();
+        case "resetParams":
+          this.resetParamValues();
+          await this.handlers.resetParams?.();
+          break;
+        case "resetEventArguments":
+          this.resetEventArguments();
           break;
         case "setParam":
           this.state.params = this.state.params.map((param) =>

@@ -80,7 +80,7 @@ enum PlaybackControlCommand {
     Play {
         reply: PlaybackReply<()>,
     },
-    Reset {
+    ResetParams {
         reply: PlaybackReply<()>,
     },
     GetParams {
@@ -637,7 +637,7 @@ fn spawn_run_render_thread(
                             }
                             let _ = reply.send(result);
                         }
-                        PlaybackControlCommand::Reset { reply } => {
+                        PlaybackControlCommand::ResetParams { reply } => {
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
                                 &mut session,
@@ -647,18 +647,13 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.reset().map_err(|diag| {
-                                        format_single_diagnostic("daemon run reset failed", &diag)
+                                    run.reset_params().map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "daemon run parameter reset failed",
+                                            &diag,
+                                        )
                                     })
                                 });
-                            if result.is_ok() {
-                                if let Ok(mut ring) = scope_ring.try_lock() {
-                                    *ring = ScopeRing::new(
-                                        SCOPE_CAPACITY_FRAMES,
-                                        render_output_channels,
-                                    );
-                                }
-                            }
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::GetParams { reply } => {
@@ -1044,12 +1039,12 @@ fn run_control_response(
 ) -> Option<Value> {
     let request_id = request.id;
     let result = match request.command.as_str() {
-        "pause" | "play" | "reset" => {
+        "pause" | "play" | "resetParams" => {
             let (reply_tx, reply_rx) = mpsc::channel();
             let command = match request.command.as_str() {
                 "pause" => PlaybackControlCommand::Pause { reply: reply_tx },
                 "play" => PlaybackControlCommand::Play { reply: reply_tx },
-                "reset" => PlaybackControlCommand::Reset { reply: reply_tx },
+                "resetParams" => PlaybackControlCommand::ResetParams { reply: reply_tx },
                 _ => unreachable!("matched playback transport command"),
             };
             control_tx
@@ -1495,23 +1490,24 @@ mod tests {
     }
 
     #[test]
-    fn run_reset_command_waits_for_runtime_reset() {
+    fn run_reset_params_command_waits_for_runtime_reset() {
         let (control_tx, control_rx) = mpsc::channel();
         let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
-        let worker =
-            std::thread::spawn(
-                move || match control_rx.recv().expect("reset should be queued") {
-                    PlaybackControlCommand::Reset { reply } => {
-                        reply.send(Ok(())).expect("reset reply should be received");
-                    }
-                    _ => panic!("expected reset command"),
-                },
-            );
+        let worker = std::thread::spawn(move || {
+            match control_rx.recv().expect("resetParams should be queued") {
+                PlaybackControlCommand::ResetParams { reply } => {
+                    reply
+                        .send(Ok(()))
+                        .expect("resetParams reply should be received");
+                }
+                _ => panic!("expected resetParams command"),
+            }
+        });
 
         let response = run_control_response(
             PlaybackControlRequest {
                 id: Some(Value::from(8)),
-                command: "reset".to_owned(),
+                command: "resetParams".to_owned(),
                 name: None,
                 path: None,
                 value: None,
@@ -1521,9 +1517,9 @@ mod tests {
             &control_tx,
             &scope_ring,
         )
-        .expect("reset request should return a response");
+        .expect("resetParams request should return a response");
 
-        worker.join().expect("reset worker should finish");
+        worker.join().expect("resetParams worker should finish");
         assert_eq!(response.get("id"), Some(&Value::from(8)));
         assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
     }

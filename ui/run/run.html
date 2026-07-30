@@ -31,6 +31,13 @@
         --scrollbar-thumb-hover: #47739f;
         --shadow: 0 20px 60px rgba(3, 10, 18, 0.34);
         --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        /* Shared with the native view: controls 5, groups 8, cards 9, sections 12. */
+        --radius-control: 5px;
+        --radius-group: 8px;
+        --radius-card: 9px;
+        --radius-section: 12px;
+        --radius-window: 14px;
+        --radius-round: 999px;
       }
 
       :root[data-theme="light"] {
@@ -75,7 +82,7 @@
       *::-webkit-scrollbar-track { background: var(--scrollbar-track); }
       *::-webkit-scrollbar-thumb {
         border: 2px solid var(--scrollbar-track);
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: var(--scrollbar-thumb);
       }
       *::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
@@ -91,6 +98,7 @@
 
       .shell {
         display: grid;
+        grid-template-columns: minmax(0, 1fr);
         gap: 16px;
         width: 100%;
         margin: 0 auto;
@@ -102,7 +110,7 @@
         min-height: calc(100vh - 36px);
         padding: 24px;
         border: 1px solid var(--border);
-        border-radius: 16px;
+        border-radius: var(--radius-window);
         background: var(--panel);
         box-shadow: var(--shadow);
         text-align: center;
@@ -133,14 +141,21 @@
         text-align: left;
       }
 
+      .file-picker-settings .param-setting-label {
+        text-align: center;
+      }
+
       [hidden] {
         display: none !important;
       }
 
       .header, .buffers, .events, .params, .scope-section {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 14px;
+        border-radius: var(--radius-section);
         padding: 14px;
         box-shadow: var(--shadow);
         backdrop-filter: blur(8px);
@@ -186,7 +201,7 @@
 
       .error {
         padding: 10px 12px;
-        border-radius: 10px;
+        border-radius: var(--radius-card);
         border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
         background: color-mix(in srgb, var(--panel-strong) 84%, black 16%);
         color: var(--danger);
@@ -228,7 +243,7 @@
 
       button {
         border: 1px solid transparent;
-        border-radius: 10px;
+        border-radius: var(--radius-control);
         padding: 8px 16px;
         font: inherit;
         font-weight: 700;
@@ -277,32 +292,27 @@
 
       .params-toolbar {
         align-items: center;
+        width: 100%;
       }
 
-      .params-toolbar > .params-title {
+      .section-heading {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
         margin-right: auto;
-      }
-
-      .params-toolbar .params-disclosure {
-        flex: 0 0 28px;
-        width: 28px;
-        justify-content: flex-end;
       }
 
       .param-layout-toggle {
         display: inline-flex;
         flex: 0 0 auto;
-        padding: 2px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: var(--field-bg);
+        gap: 4px;
       }
 
       .param-layout-toggle button {
         min-height: 28px;
         padding: 4px 8px;
         border: 0;
-        border-radius: 5px;
+        border-radius: var(--radius-control);
         background: transparent;
         color: var(--muted);
         font-size: 11px;
@@ -314,11 +324,11 @@
       }
 
       .section-toggle {
-        width: 100%;
         display: flex;
-        justify-content: space-between;
         align-items: center;
-        gap: 12px;
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 14px;
         padding: 0;
         margin: 0;
         background: transparent;
@@ -331,7 +341,7 @@
         background: transparent;
       }
 
-      .section-toggle::after {
+      .section-toggle::before {
         content: "▾";
         color: var(--muted);
         font-size: 14px;
@@ -339,7 +349,7 @@
         transition: transform 120ms ease;
       }
 
-      .section-toggle[aria-expanded="false"]::after {
+      .section-toggle[aria-expanded="false"]::before {
         transform: rotate(-90deg);
       }
 
@@ -363,7 +373,7 @@
         gap: 3px 10px;
         background: var(--panel-soft);
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: var(--radius-card);
         padding: 7px 8px 7px 10px;
       }
 
@@ -433,7 +443,7 @@
       .compact-action {
         min-height: 30px;
         padding: 4px 9px;
-        border-radius: 7px;
+        border-radius: var(--radius-control);
         font-size: 12px;
       }
 
@@ -521,7 +531,7 @@
         width: 100%;
         min-height: 30px;
         padding: 4px 7px;
-        border-radius: 7px;
+        border-radius: var(--radius-control);
       }
 
       .event-arg > .param-toggle {
@@ -557,7 +567,7 @@
         width: 25px;
         min-height: 25px;
         padding: 2px;
-        border-radius: 6px;
+        border-radius: var(--radius-control);
         font-size: 11px;
       }
 
@@ -567,7 +577,7 @@
         gap: 7px;
         margin-top: 6px;
         padding: 7px;
-        border-radius: 7px;
+        border-radius: var(--radius-group);
         background: var(--panel);
         box-shadow: inset 0 0 0 1px var(--border);
       }
@@ -579,7 +589,7 @@
         min-width: 0;
         padding: 6px 7px 7px;
         border: 1px solid var(--border);
-        border-radius: 6px;
+        border-radius: var(--radius-control);
         background: var(--bg);
       }
 
@@ -594,7 +604,7 @@
         min-width: 0;
         min-height: 28px;
         padding: 3px 6px;
-        border-radius: 6px;
+        border-radius: var(--radius-control);
       }
 
       .event-array-element .param-toggle {
@@ -604,7 +614,7 @@
       .event-array-note {
         margin-top: 6px;
         padding: 8px 9px;
-        border-radius: 7px;
+        border-radius: var(--radius-group);
         background: var(--panel);
         box-shadow: inset 0 0 0 1px var(--border);
         color: var(--muted);
@@ -637,7 +647,7 @@
       .param {
         background: var(--panel-soft);
         border: 1px solid var(--border);
-        border-radius: 12px;
+        border-radius: var(--radius-card);
         padding: 12px;
       }
 
@@ -654,6 +664,7 @@
         flex: 0 1 auto;
         min-width: 0;
         overflow: hidden;
+        font-size: 14px;
         font-weight: 700;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -662,6 +673,7 @@
       .param-type {
         flex: 0 0 auto;
         color: var(--muted);
+        font-size: 12px;
       }
 
       .param-name,
@@ -742,7 +754,7 @@
         width: 100%;
         height: 22px;
         border: 1px solid var(--border);
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: var(--field-bg);
         cursor: pointer;
         touch-action: none;
@@ -759,7 +771,7 @@
         right: 10px;
         top: 50%;
         height: 4px;
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: color-mix(in srgb, var(--text) 10%, transparent);
         transform: translateY(-50%);
       }
@@ -770,7 +782,7 @@
         top: 0;
         bottom: 0;
         width: 0%;
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: linear-gradient(90deg, var(--accent), var(--accent-strong));
       }
 
@@ -779,7 +791,7 @@
         top: 50%;
         width: 14px;
         height: 14px;
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: var(--text);
         box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 78%, transparent);
         transform: translate(-50%, -50%);
@@ -807,15 +819,33 @@
         height: 58px;
         border: 1px solid var(--border);
         border-radius: 50%;
-        background:
-          radial-gradient(circle at center, var(--panel-soft) 0 58%, transparent 59%),
-          conic-gradient(
-            from 225deg,
-            var(--accent) 0deg var(--knob-angle),
-            color-mix(in srgb, var(--text) 14%, transparent) var(--knob-angle) 270deg,
-            transparent 270deg
-          );
+        background: var(--panel-soft);
         box-shadow: inset 0 0 0 3px var(--field-bg);
+      }
+
+      .param-knob-ring {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        pointer-events: none;
+      }
+
+      .param-knob-ring-track,
+      .param-knob-ring-value {
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .param-knob-ring-track {
+        stroke: color-mix(in srgb, var(--text) 14%, transparent);
+      }
+
+      .param-knob-ring-value {
+        stroke: var(--accent);
       }
 
       .param-knob-indicator {
@@ -831,7 +861,7 @@
         left: 50%;
         width: 3px;
         height: 12px;
-        border-radius: 999px;
+        border-radius: var(--radius-round);
         background: var(--text);
         transform: translateX(-50%);
       }
@@ -883,7 +913,7 @@
       .param-number {
         width: 100%;
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: var(--radius-control);
         background: var(--field-bg);
         color: var(--text);
         padding: 8px 10px;
@@ -893,7 +923,7 @@
       .param-select {
         width: 100%;
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: var(--radius-control);
         background: var(--field-bg);
         color: var(--text);
         padding: 8px 10px;
@@ -917,7 +947,7 @@
       .scope-canvas {
         width: 100%;
         height: 140px;
-        border-radius: 10px;
+        border-radius: var(--radius-card);
         background: var(--scope-bg);
         display: block;
       }
@@ -929,7 +959,7 @@
 
         .header, .buffers, .events, .params, .scope-section {
           padding: 12px;
-          border-radius: 12px;
+          border-radius: var(--radius-section);
         }
 
         .hero {
@@ -939,7 +969,7 @@
         .param {
           min-width: 0;
           padding: 9px;
-          border-radius: 10px;
+          border-radius: var(--radius-card);
         }
 
         .param-head {
@@ -1030,7 +1060,6 @@
           <div class="actions">
             <button class="primary" id="start">Play</button>
             <button class="secondary" id="stop">Stop</button>
-            <button class="secondary" id="reset">Reset</button>
             <button class="secondary" id="unload">Unload</button>
           </div>
           <div class="error" id="error"></div>
@@ -1048,43 +1077,78 @@
         </div>
       </section>
       <section class="scope-section" id="scope-section">
-        <button class="params-header section-toggle" id="scope-toggle" type="button" aria-expanded="true">
-          <div class="params-title">Scope</div>
-        </button>
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="scope-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Scope"
+            ></button>
+            <div class="params-title">Scope</div>
+          </div>
+        </div>
         <div class="section-body" id="scope-body">
           <canvas class="scope-canvas" id="scope-canvas"></canvas>
         </div>
       </section>
       <section class="buffers" id="buffers-section">
-        <button class="params-header section-toggle" id="buffers-toggle" type="button" aria-expanded="true">
-          <div class="params-title">Buffers</div>
-        </button>
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="buffers-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Buffers"
+            ></button>
+            <div class="params-title">Buffers</div>
+          </div>
+        </div>
         <div class="section-body buffers-list" id="buffers-body">
           <div class="buffers-list" id="buffers"></div>
         </div>
       </section>
       <section class="events" id="events-section">
-        <button class="params-header section-toggle" id="events-toggle" type="button" aria-expanded="true">
-          <div class="params-title">Events</div>
-        </button>
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="events-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Events"
+            ></button>
+            <div class="params-title">Events</div>
+            <button class="secondary compact-action" id="reset-event-arguments" type="button">
+              Reset
+            </button>
+          </div>
+        </div>
         <div class="section-body" id="events-body">
           <div class="buffers-list" id="events"></div>
         </div>
       </section>
       <section class="params" id="params-section">
         <div class="params-header params-toolbar">
-          <div class="params-title">Params</div>
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="params-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Params"
+            ></button>
+            <div class="params-title">Params</div>
+            <button class="secondary compact-action" id="reset-params" type="button">
+              Reset
+            </button>
+          </div>
           <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
             <button type="button" data-param-layout="sliders" aria-pressed="true">Sliders</button>
             <button type="button" data-param-layout="knobs" aria-pressed="false">Knobs</button>
           </div>
-          <button
-            class="section-toggle params-disclosure"
-            id="params-toggle"
-            type="button"
-            aria-expanded="true"
-            aria-label="Toggle Params"
-          ></button>
         </div>
         <div class="section-body" id="params-body">
           <div class="param-list" id="params"></div>
@@ -1255,7 +1319,6 @@
         supportsTransport: false,
         supportsDeviceSelection: false,
         supportsRunSettings: false,
-        supportsReset: false,
         supportsScope: false,
         sampleRateHz: 48_000,
         blockFrames: 256,
@@ -1263,7 +1326,8 @@
 
       const startButton = document.getElementById("start");
       const stopButton = document.getElementById("stop");
-      const resetButton = document.getElementById("reset");
+      const resetParamsButton = document.getElementById("reset-params");
+      const resetEventArgumentsButton = document.getElementById("reset-event-arguments");
       const refreshDevicesButton = document.getElementById("refresh-devices");
       const unloadButton = document.getElementById("unload");
       const chooseOndaFileButton = document.getElementById("choose-onda-file");
@@ -1344,8 +1408,11 @@
       stopButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "stop" });
       });
-      resetButton.addEventListener("click", () => {
-        hostBridge.postMessage({ type: "reset" });
+      resetParamsButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "resetParams" });
+      });
+      resetEventArgumentsButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "resetEventArguments" });
       });
       refreshDevicesButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "refreshDevices" });
@@ -1816,9 +1883,22 @@
 
         const dial = document.createElement("div");
         dial.className = "param-knob-dial";
+        const ring = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        ring.classList.add("param-knob-ring");
+        ring.setAttribute("viewBox", "0 0 58 58");
+        ring.setAttribute("aria-hidden", "true");
+        const ringPath = "M 11.322 46.678 A 25 25 0 1 1 46.678 46.678";
+        const track = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        track.classList.add("param-knob-ring-track");
+        track.setAttribute("d", ringPath);
+        const valueArc = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        valueArc.classList.add("param-knob-ring-value");
+        valueArc.setAttribute("d", ringPath);
+        valueArc.setAttribute("pathLength", "1");
+        ring.append(track, valueArc);
         const indicator = document.createElement("div");
         indicator.className = "param-knob-indicator";
-        dial.appendChild(indicator);
+        dial.append(ring, indicator);
         knob.appendChild(dial);
 
         const controller = createRangeValueController({
@@ -1826,7 +1906,7 @@
           constrainValue: (value) => constrainParamPlain(param, value),
           renderValue: (value) => {
             const ratio = paramPlainToNormalized(param, value);
-            dial.style.setProperty("--knob-angle", `${ratio * 270}deg`);
+            valueArc.style.strokeDasharray = `${ratio} 1`;
             dial.style.setProperty("--knob-rotation", `${-135 + ratio * 270}deg`);
             knob.setAttribute("aria-valuenow", String(value));
             knob.dataset.value = String(value);
@@ -2155,7 +2235,6 @@
         const supportsTransport = state.supportsTransport === true;
         const supportsDeviceSelection = state.supportsDeviceSelection === true;
         const supportsRunSettings = state.supportsRunSettings === true;
-        const supportsReset = state.supportsReset === true;
         const supportsScope = state.supportsScope === true;
         const hasSource = Boolean(state.path);
         filePickerNode.hidden = !supportsSourceSelection || hasSource;
@@ -2200,10 +2279,8 @@
         const canStart = buffersReady || Boolean(state.sourceDirty);
         startButton.hidden = !supportsTransport;
         stopButton.hidden = !supportsTransport;
-        resetButton.hidden = !supportsReset;
         startButton.disabled = !state.path || state.running || !canStart;
         stopButton.disabled = !state.running;
-        resetButton.disabled = !hasSource;
         renderDeviceOptions(inputDeviceNode, state.inputDevices, state.currentInputDevice, true);
         renderDeviceOptions(outputDeviceNode, state.outputDevices, state.currentOutputDevice, true);
 
@@ -2277,14 +2354,17 @@
             eventHead.className = "event-head";
             const head = document.createElement("div");
             head.className = "event-identity";
-            head.innerHTML = '<div class="param-name"></div><div class="event-summary"></div>';
+            head.innerHTML = '<div class="param-name"></div>';
             head.querySelector(".param-name").textContent = event.name;
             const argumentCount = Array.isArray(event.args) ? event.args.length : 0;
-            head.querySelector(".event-summary").textContent = argumentCount === 0
-              ? "No arguments"
-              : argumentCount === 1
+            if (argumentCount > 0) {
+              const summary = document.createElement("div");
+              summary.className = "event-summary";
+              summary.textContent = argumentCount === 1
                 ? "1 argument"
                 : argumentCount + " arguments";
+              head.appendChild(summary);
+            }
             head.title = event.name;
 
             const trigger = document.createElement("button");

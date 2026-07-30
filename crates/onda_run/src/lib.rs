@@ -141,7 +141,7 @@ enum PendingCommand {
     BindBuffer { name: String, path: String },
     ClearBuffer { name: String },
     Play,
-    Reset,
+    ResetParams,
 }
 
 #[derive(Debug, Clone)]
@@ -388,22 +388,25 @@ impl RunController {
         self.state.error = None;
     }
 
-    pub fn reset(&mut self) {
+    pub fn reset_params(&mut self) {
         self.preserved_params.clear();
-        self.preserved_events.clear();
         for param in &mut self.state.params {
             let Some(default_value) = param_default_value(param) else {
                 continue;
             };
             set_param_value(param, default_value);
         }
-        reset_event_values(&mut self.state.events);
-        if let Some(id) = self.bridge.send_command("reset", &json!({})) {
-            self.pending_commands.insert(id, PendingCommand::Reset);
+        if let Some(id) = self.bridge.send_command("resetParams", &json!({})) {
+            self.pending_commands
+                .insert(id, PendingCommand::ResetParams);
         }
         self.state.error = None;
-        self.state.scope_channels = 0;
-        self.state.scope_samples.clear();
+    }
+
+    pub fn reset_event_arguments(&mut self) {
+        self.preserved_events.clear();
+        reset_event_values(&mut self.state.events);
+        self.state.error = None;
     }
 
     pub fn set_param(&mut self, name: &str, value: Value) {
@@ -687,11 +690,7 @@ impl RunController {
                             self.state.status = "Running".to_owned();
                             self.scope_polling_active = true;
                         }
-                        PendingCommand::Reset => {
-                            self.scope_polling_in_flight = false;
-                            self.state.scope_channels = 0;
-                            self.state.scope_samples.clear();
-                        }
+                        PendingCommand::ResetParams => {}
                     }
                 } else {
                     match command {
@@ -707,7 +706,7 @@ impl RunController {
                                 UNBOUND_BUFFERS_MESSAGE.to_owned()
                             };
                         }
-                        PendingCommand::Reset => {}
+                        PendingCommand::ResetParams => {}
                     }
                 }
                 poll.state_changed = true;

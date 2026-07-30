@@ -73,7 +73,7 @@ runViewFrame.src = hostedAssets.runViewUrl ?? "./run.html";
 const runView = new BrowserRunViewHost(runViewFrame, {
   start: () => runProject(),
   stop: () => stopExecution(),
-  reset: () => resetRun(),
+  resetParams: () => resetRunParams(),
   setParam: (name, value) => audioProcessor?.setParam(name, value),
   triggerEvent: (name, values) => audioProcessor?.trigger(name, values),
   bindBufferFile: (name, file) => bindBufferFile(name, file),
@@ -683,10 +683,8 @@ async function closeAudioContext() {
   await closing.close();
 }
 
-async function resetRun() {
-  runView.resetValues();
+async function resetRunParams() {
   if (!audioProcessor) return;
-  await audioProcessor.reset();
   await Promise.all(
     runView.state.params.map((param) => audioProcessor.setParam(param.name, param.value)),
   );

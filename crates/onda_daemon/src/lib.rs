@@ -566,13 +566,13 @@ mod tests {
     }
 
     #[test]
-    fn run_reset_restores_parameter_defaults_and_initial_runtime_state() {
+    fn resetting_parameters_does_not_rewind_processor_state() {
         let dir = mk_temp_dir("run_reset");
         let main = dir.join("main.onda");
 
         write_file(
             &main,
-            "outs:\n  out1\nparams:\n  offset = 2.0\ninit:\n  counter = 1.0\nsample:\n  out1 = counter + offset\n  counter = counter + 1.0\n",
+            "outs:\n  out1\nparams:\n  offset = 2.0\ninit:\n  counter = offset\nsample:\n  out1 = counter\n  counter = counter + 1.0\n",
         );
 
         let mut session = DaemonSession::default();
@@ -594,19 +594,19 @@ mod tests {
         let first = session
             .render_run_block(&main)
             .expect("first render should succeed");
-        assert!((first[0][0] - 5.0).abs() < 1e-6);
+        assert!((first[0][0] - 2.0).abs() < 1e-6);
         assert!(first[0][1] > first[0][0]);
 
         session
             .run_mut(&main)
             .expect("active run")
-            .reset()
-            .expect("reset should succeed");
-        let reset = session
+            .reset_params()
+            .expect("parameter reset should succeed");
+        let params_reset = session
             .render_run_block(&main)
-            .expect("reset render should succeed");
+            .expect("parameter-reset render should succeed");
 
-        assert!((reset[0][0] - 3.0).abs() < 1e-6);
+        assert!(params_reset[0][0] > first[0][0]);
         assert_eq!(
             session.run(&main).expect("active run").param_info()[0].value,
             Some(2.0)

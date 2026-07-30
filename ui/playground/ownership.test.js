@@ -97,7 +97,6 @@ test("the shared run view renders host features from explicit capabilities", asy
     "supportsTransport",
     "supportsDeviceSelection",
     "supportsRunSettings",
-    "supportsReset",
     "supportsScope",
   ]) {
     assert.match(runView, new RegExp(`state\\.${capability} === true`));
@@ -106,11 +105,19 @@ test("the shared run view renders host features from explicit capabilities", asy
   assert.doesNotMatch(runView, /hostBridge\.mode !== "browser"/);
 });
 
-test("the shared run view allows reset for every loaded source", async () => {
+test("the shared run view keeps parameter and event resets independent", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 
-  assert.match(runView, /resetButton\.disabled = !hasSource/);
-  assert.doesNotMatch(runView, /resetButton\.disabled = !hasParams && !hasEvents/);
+  assert.match(runView, /id="reset-params"/);
+  assert.match(runView, /id="reset-event-arguments"/);
+  assert.match(runView, /type: "resetParams"/);
+  assert.match(runView, /type: "resetEventArguments"/);
+  assert.doesNotMatch(runView, /resetState|Reset state/);
+  assert.match(runView, /\.shell \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(
+    runView,
+    /\.header, \.buffers, \.events, \.params, \.scope-section \{[\s\S]*?width: 100%/,
+  );
 });
 
 test("the empty native run view owns its compile settings", async () => {
@@ -160,8 +167,11 @@ test("the shared run view offers a device-cached knob layout", async () => {
   assert.match(runView, /function paramDisplayName\(param\)/);
   assert.match(
     runView,
-    /<div class="params-title">Params<\/div>\s*<div class="param-layout-toggle"[\s\S]*?<\/div>\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"/,
+    /<div class="section-heading">\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"[\s\S]*?<\/button>\s*<div class="params-title">Params<\/div>\s*<button[^>]+id="reset-params"[\s\S]*?<\/div>\s*<div class="param-layout-toggle"/,
   );
+  assert.match(runView, /classList\.add\("param-knob-ring-value"\)/);
+  assert.match(runView, /valueArc\.style\.strokeDasharray = `\$\{ratio\} 1`/);
+  assert.doesNotMatch(runView, /conic-gradient\(/);
 });
 
 test("the shared run view preserves controls across independent parameter updates", async () => {

@@ -8,8 +8,8 @@ use onda_codegen_llvm::{
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, prepare_unchecked_process,
-    process_unchecked_segment, reset_instance_state, set_param_by_index, trigger_event_by_index,
-    Instance, InstanceConfig,
+    process_unchecked_segment, set_param_by_index, trigger_event_by_index, Instance,
+    InstanceConfig,
 };
 use onda_semantics::{lower_program_to_optimized_mir, AnalysisOptions, TypedProgram};
 
@@ -549,9 +549,8 @@ impl RunSession {
         }
     }
 
-    /// Restores parameter defaults and the initial processor state while
-    /// retaining host-owned input/output and buffer bindings.
-    pub fn reset(&mut self) -> Result<(), Diagnostic> {
+    /// Restores parameter defaults without changing processor state.
+    pub fn reset_params(&mut self) -> Result<(), Diagnostic> {
         for index in 0..self.jit.param_count() {
             let desc = self
                 .jit
@@ -564,10 +563,6 @@ impl RunSession {
         }
         self.param_values.clear();
         self.param_runtime_values.clear();
-        reset_instance_state(&mut self.instance);
-        if self.buffers_ready() {
-            prepare_unchecked_process(&mut self.instance)?;
-        }
         Ok(())
     }
 

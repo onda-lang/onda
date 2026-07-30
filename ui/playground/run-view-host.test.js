@@ -264,6 +264,7 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
   const previousDocument = globalThis.document;
   const previousMutationObserver = globalThis.MutationObserver;
   let starts = 0;
+  let paramResets = 0;
   globalThis.window = {
     location: { href: "https://onda.test/play/" },
     addEventListener() {},
@@ -283,20 +284,19 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
   try {
     const host = new BrowserRunViewHost(iframe, {
       start: async () => { starts += 1; },
+      resetParams: async () => { paramResets += 1; },
     });
     assert.deepEqual(
       {
         sourceSelection: host.state.supportsSourceSelection,
         transport: host.state.supportsTransport,
         deviceSelection: host.state.supportsDeviceSelection,
-        reset: host.state.supportsReset,
         scope: host.state.supportsScope,
       },
       {
         sourceSelection: false,
         transport: true,
         deviceSelection: false,
-        reset: true,
         scope: true,
       },
     );
@@ -342,6 +342,20 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
     );
     await host.handleMessage({ type: "start" });
     assert.equal(starts, 1);
+
+    host.state.params = [{ name: "gain", default: 1, value: 0.5 }];
+    host.state.events = [{
+      name: "note",
+      args: [{ name: "velocity", default: 1, value: 0.25 }],
+    }];
+    await host.handleMessage({ type: "resetParams" });
+    assert.equal(paramResets, 1);
+    assert.equal(host.state.params[0].value, 1);
+    assert.equal(host.state.events[0].args[0].value, 0.25);
+
+    await host.handleMessage({ type: "resetEventArguments" });
+    assert.equal(host.state.params[0].value, 1);
+    assert.equal(host.state.events[0].args[0].value, 1);
     host.dispose();
   } finally {
     globalThis.window = previousWindow;

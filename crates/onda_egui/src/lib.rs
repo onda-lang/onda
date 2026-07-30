@@ -25,6 +25,11 @@ const EVENT_ARRAY_CELL_WIDTH: f32 = 147.0;
 const EVENT_ARRAY_CELL_GAP: f32 = 7.0;
 const RUN_SAMPLE_RATE_CHOICES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
 const RUN_BLOCK_SIZE_CHOICES: [usize; 6] = [64, 128, 256, 512, 1_024, 2_048];
+const CONTROL_CORNER_RADIUS: f32 = 5.0;
+const CONTROL_GROUP_CORNER_RADIUS: f32 = 8.0;
+const CARD_CORNER_RADIUS: f32 = 9.0;
+const SECTION_CORNER_RADIUS: f32 = 12.0;
+const WINDOW_CORNER_RADIUS: f32 = 14.0;
 
 pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result<(), String> {
     let theme_mode = options.theme;
@@ -287,7 +292,7 @@ impl RunApp {
         );
         ui.painter().rect(
             panel_rect,
-            14.0,
+            WINDOW_CORNER_RADIUS,
             ui.visuals().panel_fill,
             if file_hovered {
                 egui::Stroke::new(2.0_f32, theme.accent)
@@ -341,7 +346,7 @@ impl RunApp {
             let clicked = content_ui
                 .add_sized(
                     [168.0, 32.0],
-                    egui::Button::new(egui::RichText::new("Choose Onda file").strong()),
+                    run_button(egui::RichText::new("Choose Onda file").strong()),
                 )
                 .clicked();
             content_ui.add_space(6.0);
@@ -361,45 +366,55 @@ impl RunApp {
                         ui.spacing_mut().item_spacing.x = 12.0;
                         ui.add_sized(
                             [184.0, 16.0],
-                            egui::Label::new(egui::RichText::new("Sample rate").weak().size(11.0)),
+                            egui::Label::new(egui::RichText::new("Sample rate").weak().size(11.0))
+                                .halign(egui::Align::Center),
                         );
                         ui.add_sized(
                             [184.0, 16.0],
-                            egui::Label::new(egui::RichText::new("Block size").weak().size(11.0)),
+                            egui::Label::new(egui::RichText::new("Block size").weak().size(11.0))
+                                .halign(egui::Align::Center),
                         );
                     });
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
-                        ui.allocate_ui(egui::vec2(184.0, 30.0), |ui| {
-                            egui::ComboBox::from_id_salt("run-sample-rate")
-                                .width(ui.available_width())
-                                .selected_text(format_sample_rate(
-                                    self.options.sample_rate_hz as f64,
-                                ))
-                                .show_ui(ui, |ui| {
-                                    for sample_rate in RUN_SAMPLE_RATE_CHOICES {
-                                        ui.selectable_value(
-                                            &mut self.options.sample_rate_hz,
-                                            sample_rate,
-                                            format_sample_rate(sample_rate as f64),
-                                        );
-                                    }
-                                });
-                        });
-                        ui.allocate_ui(egui::vec2(184.0, 30.0), |ui| {
-                            egui::ComboBox::from_id_salt("run-block-size")
-                                .width(ui.available_width())
-                                .selected_text(format!("{} frames", self.options.block_frames))
-                                .show_ui(ui, |ui| {
-                                    for block_frames in RUN_BLOCK_SIZE_CHOICES {
-                                        ui.selectable_value(
-                                            &mut self.options.block_frames,
-                                            block_frames,
-                                            format!("{block_frames} frames"),
-                                        );
-                                    }
-                                });
-                        });
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(184.0, 30.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("run-sample-rate")
+                                    .width(ui.available_width())
+                                    .selected_text(format_sample_rate(
+                                        self.options.sample_rate_hz as f64,
+                                    ))
+                                    .show_ui(ui, |ui| {
+                                        for sample_rate in RUN_SAMPLE_RATE_CHOICES {
+                                            ui.selectable_value(
+                                                &mut self.options.sample_rate_hz,
+                                                sample_rate,
+                                                format_sample_rate(sample_rate as f64),
+                                            );
+                                        }
+                                    });
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(184.0, 30.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("run-block-size")
+                                    .width(ui.available_width())
+                                    .selected_text(format!("{} frames", self.options.block_frames))
+                                    .show_ui(ui, |ui| {
+                                        for block_frames in RUN_BLOCK_SIZE_CHOICES {
+                                            ui.selectable_value(
+                                                &mut self.options.block_frames,
+                                                block_frames,
+                                                format!("{block_frames} frames"),
+                                            );
+                                        }
+                                    });
+                            },
+                        );
                     });
                 });
             })
@@ -436,7 +451,7 @@ impl RunApp {
             egui::Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                .corner_radius(9.0)
+                .corner_radius(CARD_CORNER_RADIUS)
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
@@ -452,9 +467,7 @@ impl RunApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let clear_clicked = loaded_path.is_some()
                                 && ui
-                                    .add(
-                                        egui::Button::new("Clear").min_size(egui::vec2(48.0, 26.0)),
-                                    )
+                                    .add(run_button("Clear").min_size(egui::vec2(48.0, 26.0)))
                                     .clicked();
                             let bind_label = if loaded_path.is_some() {
                                 "Replace"
@@ -462,7 +475,7 @@ impl RunApp {
                                 "Bind"
                             };
                             let bind_clicked = ui
-                                .add(egui::Button::new(bind_label).min_size(egui::vec2(56.0, 26.0)))
+                                .add(run_button(bind_label).min_size(egui::vec2(56.0, 26.0)))
                                 .on_hover_text("Bind a WAV file to this buffer")
                                 .clicked();
 
@@ -560,37 +573,49 @@ impl RunApp {
             egui::Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                .corner_radius(9.0)
+                .corner_radius(CARD_CORNER_RADIUS)
                 .inner_margin(egui::Margin::same(10))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(name).strong().size(14.0).monospace())
-                                .on_hover_text(name);
-                            let summary = match args.len() {
-                                0 => "No arguments".to_owned(),
-                                1 => "1 argument".to_owned(),
-                                count => format!("{count} arguments"),
-                            };
-                            ui.label(egui::RichText::new(summary).size(11.0).weak());
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add_enabled(
-                                    connected,
-                                    egui::Button::new(egui::RichText::new("Trigger").strong())
-                                        .min_size(egui::vec2(72.0, 30.0)),
-                                )
-                                .clicked()
-                            {
-                                self.controller
-                                    .as_mut()
-                                    .expect("loaded run controller")
-                                    .trigger_event(name, values.clone());
+                    let heading_height = if args.is_empty() { 30.0 } else { 38.0 };
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), heading_height),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            let name_text =
+                                egui::RichText::new(name).strong().size(14.0).monospace();
+                            if args.is_empty() {
+                                ui.label(name_text).on_hover_text(name);
+                            } else {
+                                ui.vertical(|ui| {
+                                    ui.label(name_text).on_hover_text(name);
+                                    let summary = match args.len() {
+                                        1 => "1 argument".to_owned(),
+                                        count => format!("{count} arguments"),
+                                    };
+                                    ui.label(egui::RichText::new(summary).size(11.0).weak());
+                                });
                             }
-                        });
-                    });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            connected,
+                                            run_button(egui::RichText::new("Trigger").strong())
+                                                .min_size(egui::vec2(72.0, 30.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.controller
+                                            .as_mut()
+                                            .expect("loaded run controller")
+                                            .trigger_event(name, values.clone());
+                                    }
+                                },
+                            );
+                        },
+                    );
 
                     if !args.is_empty() {
                         ui.add_space(8.0);
@@ -639,7 +664,7 @@ impl RunApp {
                     );
                     ui.painter().rect(
                         card_rect,
-                        10.0,
+                        CARD_CORNER_RADIUS,
                         ui.visuals().faint_bg_color,
                         ui.visuals().widgets.noninteractive.bg_stroke,
                         egui::StrokeKind::Inside,
@@ -811,7 +836,7 @@ impl eframe::App for RunApp {
                                         |ui| {
                                             let button_width = 104.0;
                                             let button_gap = 8.0;
-                                            let total_width = button_width * 4.0 + button_gap * 3.0;
+                                            let total_width = button_width * 3.0 + button_gap * 2.0;
                                             let leading_space =
                                                 ((ui.available_width() - total_width) * 0.5)
                                                     .max(0.0);
@@ -827,7 +852,7 @@ impl eframe::App for RunApp {
                                                                 .and_then(Value::as_str)
                                                                 .is_some()
                                                         }),
-                                                    egui::Button::new("Play")
+                                                    run_button("Play")
                                                         .min_size(egui::vec2(button_width, 30.0)),
                                                 )
                                                 .clicked()
@@ -841,7 +866,7 @@ impl eframe::App for RunApp {
                                             if ui
                                                 .add_enabled(
                                                     state.running,
-                                                    egui::Button::new("Stop")
+                                                    run_button("Stop")
                                                         .min_size(egui::vec2(button_width, 30.0)),
                                                 )
                                                 .clicked()
@@ -852,17 +877,7 @@ impl eframe::App for RunApp {
                                                     .stop();
                                             }
                                             if ui
-                                                .add_sized(button_size, egui::Button::new("Reset"))
-                                                .clicked()
-                                            {
-                                                self.controller
-                                                    .as_mut()
-                                                    .expect("loaded run controller")
-                                                    .reset();
-                                                self.reset_event_inputs();
-                                            }
-                                            if ui
-                                                .add_sized(button_size, egui::Button::new("Unload"))
+                                                .add_sized(button_size, run_button("Unload"))
                                                 .clicked()
                                             {
                                                 self.unload(ctx);
@@ -971,7 +986,7 @@ impl eframe::App for RunApp {
                                                                                     refresh_width,
                                                                                     control_height,
                                                                                 ],
-                                                                                egui::Button::new(
+                                                                                run_button(
                                                                                     "Refresh Devices",
                                                                                 ),
                                                                             )
@@ -1007,43 +1022,82 @@ impl eframe::App for RunApp {
 
                         if state.running {
                             ui.add_space(12.0);
-                        section_box(ui, "", |ui| {
-                            egui::CollapsingHeader::new("Scope")
-                                .default_open(true)
-                                .show_unindented(ui, |ui| {
+                            section_box(ui, "", |ui| {
+                                let mut scope_state =
+                                    egui::collapsing_header::CollapsingState::load_with_default_open(
+                                        ui.ctx(),
+                                        ui.make_persistent_id("scope-section"),
+                                        true,
+                                    );
+                                render_section_header(ui, &mut scope_state, "Scope", |_| {});
+                                scope_state.show_body_unindented(ui, |ui| {
                                     ui.add_space(8.0);
                                     draw_scope(
                                         ui,
                                         state.scope_channels,
                                         &state.scope_samples,
-                                            egui::vec2(ui.available_width(), 140.0),
-                                            &theme,
-                                        );
-                                    });
+                                        egui::vec2(ui.available_width(), 140.0),
+                                        &theme,
+                                    );
+                                });
                             });
                         }
 
                         if !state.buffers.is_empty() {
                             ui.add_space(12.0);
                             section_box(ui, "", |ui| {
-                                egui::CollapsingHeader::new("Buffers")
-                                    .default_open(true)
-                                    .show_unindented(ui, |ui| {
-                                        ui.add_space(8.0);
-                                        self.render_buffers(ui, &state.buffers);
-                                    });
+                                let mut buffers_state =
+                                    egui::collapsing_header::CollapsingState::load_with_default_open(
+                                        ui.ctx(),
+                                        ui.make_persistent_id("buffers-section"),
+                                        true,
+                                    );
+                                render_section_header(
+                                    ui,
+                                    &mut buffers_state,
+                                    "Buffers",
+                                    |_| {},
+                                );
+                                buffers_state.show_body_unindented(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    self.render_buffers(ui, &state.buffers);
+                                });
                             });
                         }
 
                         if !state.events.is_empty() {
                             ui.add_space(12.0);
                             section_box(ui, "", |ui| {
-                                egui::CollapsingHeader::new("Events")
-                                    .default_open(true)
-                                    .show_unindented(ui, |ui| {
-                                        ui.add_space(8.0);
-                                        self.render_events(ui, &state.events, state.connected);
-                                    });
+                                let mut events_state =
+                                    egui::collapsing_header::CollapsingState::load_with_default_open(
+                                        ui.ctx(),
+                                        ui.make_persistent_id("events-section"),
+                                        true,
+                                    );
+                                render_section_header(
+                                    ui,
+                                    &mut events_state,
+                                    "Events",
+                                    |ui| {
+                                        if ui
+                                            .add(
+                                                run_button("Reset")
+                                                    .min_size(egui::vec2(52.0, 26.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.controller
+                                                .as_mut()
+                                                .expect("loaded run controller")
+                                                .reset_event_arguments();
+                                            self.reset_event_inputs();
+                                        }
+                                    },
+                                );
+                                events_state.show_body_unindented(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    self.render_events(ui, &state.events, state.connected);
+                                });
                             });
                         }
 
@@ -1057,28 +1111,31 @@ impl eframe::App for RunApp {
                                         ui.make_persistent_id("params-section"),
                                         true,
                                     );
-                                ui.horizontal(|ui| {
-                                    params_state.show_toggle_button(
-                                        ui,
-                                        egui::collapsing_header::paint_default_icon,
-                                    );
-                                    ui.label(egui::RichText::new("Params").strong());
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.selectable_value(
-                                                &mut param_layout,
-                                                ParamLayout::Knobs,
-                                                "Knobs",
-                                            );
-                                            ui.selectable_value(
-                                                &mut param_layout,
-                                                ParamLayout::Sliders,
-                                                "Sliders",
-                                            );
-                                        },
-                                    );
-                                });
+                                render_section_header(
+                                    ui,
+                                    &mut params_state,
+                                    "Params",
+                                    |ui| {
+                                        if ui
+                                            .add(
+                                                run_button("Reset")
+                                                    .min_size(egui::vec2(52.0, 26.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.controller
+                                                .as_mut()
+                                                .expect("loaded run controller")
+                                                .reset_params();
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                render_param_layout_toggle(ui, &mut param_layout);
+                                            },
+                                        );
+                                    },
+                                );
                                 self.param_layout = param_layout;
                                 params_state.show_body_unindented(ui, |ui| {
                                     ui.add_space(8.0);
@@ -1125,13 +1182,68 @@ impl ParamLayout {
     }
 }
 
+fn run_button(text: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+    egui::Button::new(text).corner_radius(CONTROL_CORNER_RADIUS)
+}
+
+fn render_param_layout_toggle(ui: &mut egui::Ui, layout: &mut ParamLayout) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(114.0, 30.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if ui
+                .add(
+                    run_button("Sliders")
+                        .selected(*layout == ParamLayout::Sliders)
+                        .min_size(egui::vec2(58.0, 26.0)),
+                )
+                .clicked()
+            {
+                *layout = ParamLayout::Sliders;
+            }
+            if ui
+                .add(
+                    run_button("Knobs")
+                        .selected(*layout == ParamLayout::Knobs)
+                        .min_size(egui::vec2(52.0, 26.0)),
+                )
+                .clicked()
+            {
+                *layout = ParamLayout::Knobs;
+            }
+        },
+    );
+}
+
+fn render_section_header(
+    ui: &mut egui::Ui,
+    state: &mut egui::collapsing_header::CollapsingState,
+    title: &str,
+    add_actions: impl FnOnce(&mut egui::Ui),
+) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 30.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
+                ui.label(egui::RichText::new(title).strong());
+            });
+            add_actions(ui);
+        },
+    );
+}
+
 fn section_box(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::group(ui.style())
         .fill(ui.visuals().panel_fill)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .corner_radius(12.0)
+        .corner_radius(SECTION_CORNER_RADIUS)
         .inner_margin(egui::Margin::symmetric(8, 10))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             if !title.is_empty() {
                 ui.label(
                     egui::RichText::new(title)
@@ -1249,7 +1361,7 @@ fn render_event_array_editor(
                 if ui
                     .add_enabled(
                         connected && values.len() < EVENT_ARRAY_VISIBLE_LIMIT,
-                        egui::Button::new("+").small(),
+                        run_button("+").small(),
                     )
                     .on_hover_text("Add element")
                     .clicked()
@@ -1257,10 +1369,7 @@ fn render_event_array_editor(
                     values.push(default_value_for_type(scalar_ty));
                 }
                 if ui
-                    .add_enabled(
-                        connected && !values.is_empty(),
-                        egui::Button::new("−").small(),
-                    )
+                    .add_enabled(connected && !values.is_empty(), run_button("−").small())
                     .on_hover_text("Remove last element")
                     .clicked()
                 {
@@ -1273,7 +1382,7 @@ fn render_event_array_editor(
     ui.add_space(5.0);
     egui::Frame::NONE
         .fill(ui.visuals().faint_bg_color)
-        .corner_radius(7.0)
+        .corner_radius(CONTROL_GROUP_CORNER_RADIUS)
         .inner_margin(egui::Margin::symmetric(9, 8))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
@@ -1296,7 +1405,7 @@ fn render_event_array_editor(
                         egui::Frame::NONE
                             .fill(ui.visuals().extreme_bg_color)
                             .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                            .corner_radius(5.0)
+                            .corner_radius(CONTROL_CORNER_RADIUS)
                             .inner_margin(egui::Margin::symmetric(7, 5))
                             .show(ui, |ui| {
                                 ui.allocate_ui_with_layout(
@@ -1634,14 +1743,21 @@ fn render_param_heading(ui: &mut egui::Ui, label: &str, ty: &str, width: f32, al
         .x;
     let spacing = 5.0;
     let visible_name_width = name_width.min((width - type_width - spacing).max(0.0));
+    let content_width = visible_name_width + spacing + type_width;
+    let leading_space = match align {
+        egui::Align::Min => 0.0,
+        egui::Align::Center => (width - content_width).max(0.0) / 2.0,
+        egui::Align::Max => (width - content_width).max(0.0),
+    };
 
     ui.allocate_ui_with_layout(
         egui::vec2(width, 20.0),
         egui::Layout::left_to_right(egui::Align::Center)
             .with_main_wrap(false)
-            .with_main_align(align),
+            .with_main_align(egui::Align::Min),
         |ui| {
             ui.spacing_mut().item_spacing.x = spacing;
+            ui.add_space(leading_space);
             ui.add_sized(
                 [visible_name_width, 20.0],
                 egui::Label::new(egui::RichText::new(label).strong().monospace()).truncate(),
@@ -2073,13 +2189,13 @@ fn apply_run_theme(ctx: &egui::Context, theme: &RunTheme) {
     visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, theme.border);
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border);
     visuals.widgets.noninteractive.weak_bg_fill = theme.panel_tint;
-    visuals.window_corner_radius = 14.0.into();
-    visuals.menu_corner_radius = 12.0.into();
-    visuals.widgets.noninteractive.corner_radius = 10.0.into();
-    visuals.widgets.inactive.corner_radius = 10.0.into();
-    visuals.widgets.hovered.corner_radius = 10.0.into();
-    visuals.widgets.active.corner_radius = 10.0.into();
-    visuals.widgets.open.corner_radius = 10.0.into();
+    visuals.window_corner_radius = WINDOW_CORNER_RADIUS.into();
+    visuals.menu_corner_radius = SECTION_CORNER_RADIUS.into();
+    visuals.widgets.noninteractive.corner_radius = CONTROL_CORNER_RADIUS.into();
+    visuals.widgets.inactive.corner_radius = CONTROL_CORNER_RADIUS.into();
+    visuals.widgets.hovered.corner_radius = CONTROL_CORNER_RADIUS.into();
+    visuals.widgets.active.corner_radius = CONTROL_CORNER_RADIUS.into();
+    visuals.widgets.open.corner_radius = CONTROL_CORNER_RADIUS.into();
     style.spacing.slider_width = 220.0;
 
     ctx.set_style(style);
