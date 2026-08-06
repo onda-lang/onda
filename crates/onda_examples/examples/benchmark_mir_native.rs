@@ -10,6 +10,7 @@ use onda_codegen_llvm::{
     TargetOptLevel, PROCESSOR_EXECUTION_OK,
 };
 use onda_frontend::parse_program_file;
+use onda_mir::{BufferChannels, ScalarType};
 use onda_realtime::configure_current_thread_audio_fp_mode;
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
@@ -38,6 +39,7 @@ struct NativeBenchmark {
     state: RuntimeState,
     input_ptrs: Vec<*const u8>,
     output_ptrs: Vec<*mut u8>,
+    _buffer_storage: Vec<Vec<u64>>,
     buffer_ptrs: Vec<*mut u8>,
     buffer_frames: Vec<i32>,
     buffer_channels: Vec<i32>,
@@ -60,16 +62,34 @@ impl NativeBenchmark {
             .iter_mut()
             .map(|output| output.as_mut_ptr().cast::<u8>())
             .collect::<Vec<_>>();
+        let buffer_frames_i32 = i32::try_from(block_size)?;
+        let mut buffer_storage = Vec::with_capacity(jit.buffer_count());
+        let mut buffer_channels = Vec::with_capacity(jit.buffer_count());
+        for buffer in &jit.mir().interface.buffers {
+            let channels = benchmark_buffer_channels(buffer.channels);
+            let bytes = block_size
+                .checked_mul(channels)
+                .and_then(|elements| elements.checked_mul(scalar_size(buffer.element)))
+                .ok_or("benchmark buffer byte size overflow")?;
+            buffer_storage.push(vec![0_u64; bytes.div_ceil(std::mem::size_of::<u64>())]);
+            buffer_channels.push(i32::try_from(channels)?);
+        }
+        let buffer_ptrs = buffer_storage
+            .iter_mut()
+            .map(|storage| storage.as_mut_ptr().cast::<u8>())
+            .collect::<Vec<_>>();
+        let buffer_count = buffer_ptrs.len();
         Ok(Self {
             jit,
             params,
             state,
             input_ptrs,
             output_ptrs,
-            buffer_ptrs: Vec::new(),
-            buffer_frames: Vec::new(),
-            buffer_channels: Vec::new(),
-            buffer_sample_rates: Vec::new(),
+            _buffer_storage: buffer_storage,
+            buffer_ptrs,
+            buffer_frames: vec![buffer_frames_i32; buffer_count],
+            buffer_channels,
+            buffer_sample_rates: vec![SAMPLE_RATE; buffer_count],
             outputs,
             block_size_u32: u32::try_from(block_size)?,
         })
@@ -205,9 +225,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     if output_channels == 0 {
         return Err("native benchmark scenarios must expose an audio output".into());
     }
-    if jit.buffer_count() != 0 {
-        return Err("native benchmark scenarios must not require external buffers".into());
-    }
     if jit.mir().interface.outputs.iter().any(|output| {
         !matches!(
             jit.mir().types.get(output.ty.index()),
@@ -280,6 +297,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         output_channels,
     );
     Ok(())
+}
+
+fn benchmark_buffer_channels(channels: BufferChannels) -> usize {
+    match channels {
+        BufferChannels::Mono => 1,
+        BufferChannels::Static(channels) => channels as usize,
+        BufferChannels::Dynamic => 2,
+    }
+}
+
+fn scalar_size(scalar: ScalarType) -> usize {
+    match scalar {
+        ScalarType::Bool => 1,
+        ScalarType::F32 | ScalarType::I32 => 4,
+        ScalarType::F64 | ScalarType::I64 => 8,
+    }
 }
 
 fn validate_first_block(

@@ -1,7 +1,7 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 2;
-export const PROCESSOR_ABI_VERSION: 2;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 3;
+export const PROCESSOR_ABI_VERSION: 3;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
@@ -122,8 +122,16 @@ export interface OndaBufferMetadata {
   element_size_bytes: number;
   channels: "mono" | "static" | "dynamic";
   static_channels: number | null;
+  /** Declared buffer access capability. */
   access: "read_only" | "read_write";
+  /** Whether reachable code may write this physical slot; unresolved selectors are conservative. */
   may_write: boolean;
+}
+
+export interface OndaBufferArrayMetadata {
+  name: string;
+  first_buffer: number;
+  len: number;
 }
 
 export interface OndaEventParamMetadata {
@@ -161,9 +169,9 @@ export interface OndaStateMetadata {
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
-  format_version: 2;
+  format_version: 3;
   artifact_kind: OndaArtifactKind;
-  abi_version: 2;
+  abi_version: 3;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;
@@ -198,6 +206,7 @@ export interface OndaProcessorMetadata {
     control_outputs: OndaIoMetadata[];
     params: OndaIoMetadata[];
     buffers: OndaBufferMetadata[];
+    buffer_arrays: OndaBufferArrayMetadata[];
     events: OndaEventMetadata[];
     states: OndaStateMetadata[];
   };

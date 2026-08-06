@@ -343,12 +343,14 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(else_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut buffer_aliases = HashMap::new();
                 let mut tuple_vars = HashMap::new();
                 merge_branch_scope_flow_state(
                     &mut st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut buffer_aliases,
                     &mut tuple_vars,
                     then_flow,
                     else_flow,
@@ -398,12 +400,14 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut buffer_aliases = HashMap::new();
                 let mut tuple_vars = HashMap::new();
                 adopt_loop_scope_flow_state(
                     &st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut buffer_aliases,
                     &mut tuple_vars,
                     loop_flow,
                 );
@@ -432,12 +436,14 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut buffer_aliases = HashMap::new();
                 let mut tuple_vars = HashMap::new();
                 adopt_loop_scope_flow_state(
                     &st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut buffer_aliases,
                     &mut tuple_vars,
                     loop_flow,
                 );
@@ -663,17 +669,20 @@ fn analyze_assign_init(
                 .unwrap_or(PrimitiveType::F32);
             require_expr_assignable_type(expr, expr_ty, expected_ty, "array/buffer write", errors);
         }
-        AssignTarget::Slice { base, start, end } => {
+        AssignTarget::Slice {
+            base,
+            selector,
+            channel,
+            start,
+            end,
+        } => {
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 target_error!("typed declaration is only supported for plain scalar variables",);
             }
             if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Init)) {
                 push_io_surface_scope_error(errors, target_loc, name);
-                if let Some(start) = start {
-                    validate_expr(start, scope_expr_env!(ScopeKind::Init), errors);
-                }
-                if let Some(end) = end {
-                    validate_expr(end, scope_expr_env!(ScopeKind::Init), errors);
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    validate_expr(coordinate, scope_expr_env!(ScopeKind::Init), errors);
                 }
                 validate_expr(expr, scope_expr_env!(scope), errors);
                 return;
@@ -682,11 +691,8 @@ fn analyze_assign_init(
                 target_error!(format!(
                     "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
                 ),);
-                if let Some(start) = start {
-                    validate_expr(start, scope_expr_env!(ScopeKind::Init), errors);
-                }
-                if let Some(end) = end {
-                    validate_expr(end, scope_expr_env!(ScopeKind::Init), errors);
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    validate_expr(coordinate, scope_expr_env!(ScopeKind::Init), errors);
                 }
                 validate_expr(expr, scope_expr_env!(scope), errors);
                 return;
@@ -730,8 +736,8 @@ fn analyze_assign_init(
             }
             let Some(target_info) = infer_init_slice_alias_info(
                 base,
-                start.as_ref(),
-                end.as_ref(),
+                start.as_deref(),
+                end.as_deref(),
                 &st.declared_symbols,
                 &st.state_arrays,
                 &st.local_array_aliases,
@@ -1125,7 +1131,12 @@ fn analyze_assign_init(
             }
 
             if let Expr::Slice {
-                base, start, end, ..
+                base,
+                selector,
+                channel,
+                start,
+                end,
+                ..
             } = expr
             {
                 if let Some(surface) =
@@ -1134,11 +1145,8 @@ fn analyze_assign_init(
                     target_error!(format!(
                         "dynamic param array '{surface}' is not a first-class value; use '{surface}[i]' directly in block or sample"
                     ),);
-                    if let Some(start) = start {
-                        validate_expr(start, scope_expr_env!(ScopeKind::Init), errors);
-                    }
-                    if let Some(end) = end {
-                        validate_expr(end, scope_expr_env!(ScopeKind::Init), errors);
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        validate_expr(coordinate, scope_expr_env!(ScopeKind::Init), errors);
                     }
                     return;
                 }

@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 onda_frontend = { path = "../onda_frontend" }
+onda_project = { path = "../onda_project" }
 onda_mir = { path = "../onda_mir" }
 onda_lsp = { path = "../onda_lsp" }
 onda_semantics = { path = "../onda_semantics" }

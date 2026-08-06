@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::overloads::OverloadRewriteEnv;
 use crate::*;
-use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
+use onda_frontend::ast::{FnReturnScalarType, FnReturnType, Span};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum MonoParamKey {
@@ -69,120 +69,6 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
     format!("{base}.__mono{suffix}")
 }
 
-fn builtin_requires_float_arguments(func: BuiltinFn) -> bool {
-    !matches!(
-        func,
-        BuiltinFn::Abs | BuiltinFn::Min | BuiltinFn::Max | BuiltinFn::Pow | BuiltinFn::RangeClamp
-    )
-}
-
-fn expr_value_depends_on_param(expr: &Expr, param: &str) -> bool {
-    match expr {
-        Expr::Var { name, .. } => name == param,
-        // An explicit cast severs the source parameter's scalar constraint.
-        Expr::Cast { .. } => false,
-        Expr::Binary { lhs, rhs, .. }
-        | Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. } => {
-            expr_value_depends_on_param(lhs, param) || expr_value_depends_on_param(rhs, param)
-        }
-        Expr::Call { args, .. } => args
-            .iter()
-            .any(|arg| expr_value_depends_on_param(arg, param)),
-        Expr::UserCall { args, .. } => args
-            .iter()
-            .any(|arg| expr_value_depends_on_param(&arg.expr, param)),
-        Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            expr_value_depends_on_param(expr, param)
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
-            .iter()
-            .any(|value| expr_value_depends_on_param(value, param)),
-        // An index affects selection, not the selected value's scalar type.
-        Expr::Index { .. }
-        | Expr::Slice { .. }
-        | Expr::ArrayCtor { .. }
-        | Expr::Number { .. }
-        | Expr::Int { .. }
-        | Expr::Bool { .. } => false,
-    }
-}
-
-fn expr_requires_float_param(expr: &Expr, param: &str) -> bool {
-    let directly_required = match expr {
-        Expr::Call { func, args, .. } if builtin_requires_float_arguments(*func) => args
-            .iter()
-            .any(|arg| expr_value_depends_on_param(arg, param)),
-        _ => false,
-    };
-    if directly_required {
-        return true;
-    }
-
-    match expr {
-        Expr::Binary { lhs, rhs, .. }
-        | Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. } => {
-            expr_requires_float_param(lhs, param) || expr_requires_float_param(rhs, param)
-        }
-        Expr::Call { args, .. } => args.iter().any(|arg| expr_requires_float_param(arg, param)),
-        Expr::UserCall { args, .. } => args
-            .iter()
-            .any(|arg| expr_requires_float_param(&arg.expr, param)),
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            expr_requires_float_param(expr, param)
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
-            .iter()
-            .any(|value| expr_requires_float_param(value, param)),
-        Expr::Index { index, .. } => expr_requires_float_param(index, param),
-        Expr::Slice { start, end, .. } => start
-            .iter()
-            .chain(end.iter())
-            .any(|bound| expr_requires_float_param(bound, param)),
-        Expr::ArrayCtor { init, .. } => init
-            .iter()
-            .flatten()
-            .any(|value| expr_requires_float_param(value, param)),
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => false,
-    }
-}
-
-fn statements_require_float_param(statements: &[Stmt], param: &str) -> bool {
-    statements.iter().any(|statement| match statement {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
-        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            expr_requires_float_param(expr, param)
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            expr_requires_float_param(cond, param)
-                || statements_require_float_param(then_branch, param)
-                || statements_require_float_param(else_branch, param)
-        }
-        Stmt::For {
-            step,
-            start,
-            end,
-            body,
-            ..
-        } => {
-            step.as_ref()
-                .is_some_and(|step| expr_requires_float_param(step, param))
-                || expr_requires_float_param(start, param)
-                || expr_requires_float_param(end, param)
-                || statements_require_float_param(body, param)
-        }
-        Stmt::While { cond, body, .. } => {
-            expr_requires_float_param(cond, param) || statements_require_float_param(body, param)
-        }
-    })
-}
-
 fn infer_mono_arg_key(
     arg_expr: &Expr,
     param_ty: Option<&FnParamType>,
@@ -190,7 +76,6 @@ fn infer_mono_arg_key(
     generic_templates: &HashSet<String>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    requires_float: bool,
 ) -> Option<MonoParamKey> {
     match param_ty {
         Some(FnParamType::Struct(struct_name)) if generic_templates.contains(struct_name) => {
@@ -260,9 +145,6 @@ fn infer_mono_arg_key(
             if let Some(primitive) =
                 infer_concrete_untyped_scalar_arg_type(arg_expr, env, return_types, struct_defs)
             {
-                if requires_float && !matches!(primitive, PrimitiveType::F32 | PrimitiveType::F64) {
-                    return Some(MonoParamKey::Passthrough);
-                }
                 if primitive != PrimitiveType::F32 {
                     return Some(MonoParamKey::ResolvedScalar(primitive));
                 }
@@ -355,8 +237,10 @@ fn infer_buffer_arg_info(
     expr: &Expr,
     env: &OverloadRewriteEnv,
 ) -> Option<(PrimitiveType, TypedBufferChannels)> {
-    let Expr::Var { name, .. } = expr else {
-        return None;
+    let name = match expr {
+        Expr::Var { name, .. } => name,
+        Expr::Index { base, .. } if env.buffer_arrays.contains(base) => base,
+        _ => return None,
     };
     if let Some((elem_ty, channels)) = env.buffer_types.get(name) {
         return Some((*elem_ty, channels.clone()));
@@ -476,11 +360,151 @@ fn infer_tuple_elem_type(expr: &Expr, env: &OverloadRewriteEnv) -> PrimitiveType
     }
 }
 
+/// Generated definitions are implementation details, so diagnostics originating
+/// in them should point at the user expression that requested the specialization.
+/// Rebasing the complete cloned body also carries that origin through nested
+/// monomorphization (for example `readL(i32)` -> `calcIdx(i32)`).
+fn rebase_generated_expr(expr: &mut Expr, origin: Span) {
+    match expr {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                rebase_generated_expr(value, origin);
+            }
+        }
+        Expr::Index { index, .. } => rebase_generated_expr(index, origin),
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for value in [selector, channel, start, end].into_iter().flatten() {
+                rebase_generated_expr(value, origin);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            rebase_generated_expr(&mut spec.size, origin);
+            if let Some(values) = init {
+                for value in values {
+                    rebase_generated_expr(value, origin);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            rebase_generated_expr(lhs, origin);
+            rebase_generated_expr(rhs, origin);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                rebase_generated_expr(arg, origin);
+            }
+        }
+        Expr::UserCall { args, .. } => {
+            for arg in args {
+                rebase_generated_expr(&mut arg.expr, origin);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            rebase_generated_expr(expr, origin)
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+    expr.set_loc(origin);
+}
+
+fn rebase_generated_target(target: &mut AssignTarget, origin: Span) {
+    match target {
+        AssignTarget::Index { index, .. } => rebase_generated_expr(index, origin),
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for value in [selector, channel, start, end].into_iter().flatten() {
+                rebase_generated_expr(value, origin);
+            }
+        }
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
+    }
+}
+
+fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
+    match stmt {
+        Stmt::Const { loc, decl } => {
+            *loc = origin;
+            decl.loc = origin;
+            rebase_generated_expr(&mut decl.expr, origin);
+        }
+        Stmt::Assign {
+            loc,
+            target_loc,
+            target,
+            typed_decl_ty_loc,
+            expr,
+            ..
+        } => {
+            *loc = origin;
+            *target_loc = origin;
+            *typed_decl_ty_loc = origin;
+            rebase_generated_target(target, origin);
+            rebase_generated_expr(expr, origin);
+        }
+        Stmt::Expr { loc, expr } | Stmt::Return { loc, expr } => {
+            *loc = origin;
+            rebase_generated_expr(expr, origin);
+        }
+        Stmt::If {
+            loc,
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            *loc = origin;
+            rebase_generated_expr(cond, origin);
+            for nested in then_branch.iter_mut().chain(else_branch) {
+                rebase_generated_stmt(nested, origin);
+            }
+        }
+        Stmt::For {
+            loc,
+            step,
+            start,
+            end,
+            body,
+            ..
+        } => {
+            *loc = origin;
+            if let Some(step) = step {
+                rebase_generated_expr(step, origin);
+            }
+            rebase_generated_expr(start, origin);
+            rebase_generated_expr(end, origin);
+            for nested in body {
+                rebase_generated_stmt(nested, origin);
+            }
+        }
+        Stmt::While { loc, cond, body } => {
+            *loc = origin;
+            rebase_generated_expr(cond, origin);
+            for nested in body {
+                rebase_generated_stmt(nested, origin);
+            }
+        }
+        Stmt::Break { loc } | Stmt::Continue { loc } => *loc = origin,
+    }
+}
+
 fn generate_mono_def(
     original: &FunctionDef,
     original_sig: &FnSignature,
     keys: &[MonoParamKey],
     mono_name: &str,
+    origin: Span,
     _generic_templates: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> (FunctionDef, FnSignature) {
@@ -687,6 +711,21 @@ fn generate_mono_def(
         // Clear type_params — the generated def is no longer generic.
         new_def.type_params.clear();
         new_sig.type_params.clear();
+    }
+
+    new_def.loc = origin;
+    for param in &mut new_def.params {
+        param.loc = origin;
+        param.ty_loc = origin;
+        if let Some(default) = &mut param.default {
+            rebase_generated_expr(default, origin);
+        }
+    }
+    if let Some(FnReturnType::Array { size, .. }) = &mut new_def.return_ty {
+        rebase_generated_expr(size, origin);
+    }
+    for stmt in &mut new_def.body {
+        rebase_generated_stmt(stmt, origin);
     }
 
     (new_def, new_sig)
@@ -1330,18 +1369,6 @@ fn monomorphize_calls_in_expr(
             let Some(sig) = fn_signatures.get(name.as_str()) else {
                 return;
             };
-            let float_required_params = original_defs
-                .iter()
-                .find(|def| def.name == *name)
-                .or_else(|| generated_defs.iter().find(|def| def.name == *name))
-                .map(|def| {
-                    def.params
-                        .iter()
-                        .map(|param| statements_require_float_param(&def.body, &param.name))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_else(|| vec![false; sig.params.len()]);
-
             // For generic defs, resolve type param bindings from explicit type args
             // or infer from argument types.  Unresolved params default to f32,
             // consistent with struct/proc generic defaults.
@@ -1447,7 +1474,7 @@ fn monomorphize_calls_in_expr(
                             // Fall through to Phase 3 inference
                         }
                     }
-                    // buffer[T] / buffer[T[N]] — generic element type buffer param
+                    // buffer<T> / buffer<T[N]> — generic element type buffer param
                     if let Some(FnParamType::Buffer(BufferType {
                         elem: BufferElemType::Generic(ref s),
                         channels: ref _declared_channels,
@@ -1480,7 +1507,6 @@ fn monomorphize_calls_in_expr(
                         generic_templates,
                         return_types,
                         struct_defs,
-                        float_required_params.get(idx).copied().unwrap_or(false),
                     ) {
                         keys.push(key);
                     } else {
@@ -1560,6 +1586,7 @@ fn monomorphize_calls_in_expr(
                         sig,
                         &keys,
                         &new_name,
+                        *loc,
                         generic_templates,
                         errors,
                     );
@@ -1693,6 +1720,17 @@ mod tests {
             .collect()
     }
 
+    fn returned_call(def: &TypedFunction) -> (&str, &[CallArg]) {
+        let [Stmt::Return {
+            expr: Expr::UserCall { name, args, .. },
+            ..
+        }] = def.body.as_slice()
+        else {
+            panic!("expected '{}' to contain one returned call", def.name);
+        };
+        (name, args)
+    }
+
     #[test]
     fn loop_indices_and_proc_fields_specialize_generated_calls() {
         let source = r#"
@@ -1804,7 +1842,205 @@ sample:
     }
 
     #[test]
-    fn integer_arguments_do_not_violate_float_only_body_constraints() {
+    fn scalar_specializations_preserve_every_concrete_argument_type_transitively() {
+        let source = r#"
+def leaf(x):
+  return x
+
+def middle(x):
+  return leaf(x)
+
+params:
+  value_i32: i32
+  value_i64: i64
+  value_f32: f32
+  value_f64: f64
+
+sample:
+  result_i32 = middle(value_i32)
+  result_i64 = middle(value_i64)
+  result_f32 = middle(value_f32)
+  result_f64 = middle(value_f64)
+  total = f32(result_i32) + f32(result_i64) + result_f32 + f32(result_f64)
+  if middle(value_i32 > 0):
+    total = total + 1.0
+  out1 = total
+"#;
+        let parsed = parse_program(source).expect("scalar specialization matrix should parse");
+        let typed = crate::analyze(parsed).expect("scalar specialization matrix should analyze");
+
+        let expected = [
+            ("i32", PrimitiveType::I32),
+            ("i64", PrimitiveType::I64),
+            ("f64", PrimitiveType::F64),
+            ("bool", PrimitiveType::Bool),
+        ];
+        for (suffix, primitive) in expected {
+            let leaf_name = format!("leaf.__mono__scalar_{suffix}");
+            let middle_name = format!("middle.__mono__scalar_{suffix}");
+            let leaf = typed
+                .defs
+                .iter()
+                .find(|def| def.name == leaf_name)
+                .unwrap_or_else(|| panic!("missing specialization '{leaf_name}'"));
+            let middle = typed
+                .defs
+                .iter()
+                .find(|def| def.name == middle_name)
+                .unwrap_or_else(|| panic!("missing specialization '{middle_name}'"));
+
+            assert_eq!(scalar_param_types(leaf), [Some(primitive)]);
+            assert_eq!(scalar_param_types(middle), [Some(primitive)]);
+            assert_eq!(leaf.return_ty, ReturnType::Scalar(primitive));
+            assert_eq!(middle.return_ty, ReturnType::Scalar(primitive));
+
+            let (callee, args) = returned_call(middle);
+            assert_eq!(callee, leaf_name);
+            assert!(
+                matches!(args, [CallArg { expr: Expr::Var { name, .. }, .. }] if name == "x"),
+                "specialization '{middle_name}' inserted an unexpected argument adaptation: {args:?}"
+            );
+        }
+
+        let default_leaf = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "leaf")
+            .expect("missing canonical f32 leaf specialization");
+        let default_middle = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "middle")
+            .expect("missing canonical f32 middle specialization");
+        assert_eq!(scalar_param_types(default_leaf), [None]);
+        assert_eq!(scalar_param_types(default_middle), [None]);
+        assert_eq!(
+            default_leaf.return_ty,
+            ReturnType::Scalar(PrimitiveType::F32)
+        );
+        assert_eq!(
+            default_middle.return_ty,
+            ReturnType::Scalar(PrimitiveType::F32)
+        );
+
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("every scalar specialization should lower to MIR");
+    }
+
+    #[test]
+    fn typed_float_boundaries_widen_without_changing_untyped_specialization_types() {
+        let source = r#"
+def accept_float(x: f32):
+  return x
+
+def wrapper(x):
+  return accept_float(x)
+
+params:
+  value: i32
+
+sample:
+  out1 = wrapper(value)
+"#;
+        let parsed = parse_program(source).expect("typed boundary source should parse");
+        let typed = crate::analyze(parsed).expect("i32-to-f32 widening should analyze");
+        let wrapper = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "wrapper.__mono__scalar_i32")
+            .expect("missing i32 wrapper specialization");
+
+        assert_eq!(scalar_param_types(wrapper), [Some(PrimitiveType::I32)]);
+        assert_eq!(wrapper.return_ty, ReturnType::Scalar(PrimitiveType::F32));
+        let (callee, args) = returned_call(wrapper);
+        assert_eq!(callee, "accept_float");
+        assert!(matches!(
+            args,
+            [CallArg {
+                expr: Expr::Var { name, .. },
+                ..
+            }] if name == "x"
+        ));
+
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("legal typed-boundary widening should lower to MIR");
+    }
+
+    #[test]
+    fn numeric_literals_select_their_source_language_specialization_types() {
+        let source = r#"
+def identity(x):
+  return x
+
+sample:
+  value_i32 = identity(1)
+  value_f32 = identity(1.0)
+  value_i64 = identity(2147483648)
+  value_f64 = identity(f64(1))
+  out1 = f32(value_i32) + value_f32 + f32(value_i64) + f32(value_f64)
+"#;
+        let parsed = parse_program(source).expect("literal specialization source should parse");
+        let typed = crate::analyze(parsed).expect("literal specializations should analyze");
+
+        for (name, primitive) in [
+            ("identity.__mono__scalar_i32", PrimitiveType::I32),
+            ("identity.__mono__scalar_i64", PrimitiveType::I64),
+            ("identity.__mono__scalar_f64", PrimitiveType::F64),
+        ] {
+            let specialization = typed
+                .defs
+                .iter()
+                .find(|def| def.name == name)
+                .unwrap_or_else(|| panic!("missing literal specialization '{name}'"));
+            assert_eq!(scalar_param_types(specialization), [Some(primitive)]);
+            assert_eq!(specialization.return_ty, ReturnType::Scalar(primitive));
+        }
+        let default_f32 = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "identity")
+            .expect("missing canonical f32 specialization");
+        assert_eq!(scalar_param_types(default_f32), [None]);
+        assert_eq!(
+            default_f32.return_ty,
+            ReturnType::Scalar(PrimitiveType::F32)
+        );
+
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("literal specializations should lower to MIR");
+    }
+
+    #[test]
+    fn invalid_concrete_specialization_bodies_fail_during_semantic_analysis() {
+        let source = r#"
+def floor_value(x):
+  return floor(x)
+
+def wrapper(x):
+  return floor_value(x)
+
+params:
+  value: i32
+
+sample:
+  out1 = f32(wrapper(value))
+"#;
+        let parsed = parse_program(source).expect("invalid specialization source should parse");
+        let errors = crate::analyze(parsed)
+            .expect_err("an i32 specialization using floor must fail semantically");
+        assert!(
+            errors.iter().any(|error| {
+                error
+                    .message
+                    .contains("while checking specialization of 'floor_value'")
+                    && error.message.contains("got I32")
+            }),
+            "missing concrete specialization diagnostic: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn integer_arguments_specialize_untyped_callees_without_forced_float_coercion() {
         let source = r#"
 def inner(freq):
   return log(freq / 440.0)
@@ -1816,24 +2052,17 @@ sample:
   out1 = wrapper(440)
 "#;
         let parsed = parse_program(source).expect("float-constraint source should parse");
-        let typed = crate::analyze(parsed).expect("integer call should adapt to float body");
+        let typed = crate::analyze(parsed).expect("integer specializations should analyze");
 
         assert!(typed
             .defs
             .iter()
             .any(|def| def.name == "wrapper.__mono__scalar_i32"));
-        assert!(
-            typed
-                .defs
-                .iter()
-                .all(|def| def.name != "inner.__mono__scalar_i32"),
-            "float-only callee must not receive an i32 specialization: {:?}",
-            typed
-                .defs
-                .iter()
-                .filter(|def| def.name.starts_with("inner"))
-                .map(|def| (&def.name, &def.param_kinds))
-                .collect::<Vec<_>>()
-        );
+        assert!(typed
+            .defs
+            .iter()
+            .any(|def| def.name == "inner.__mono__scalar_i32"));
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("nested integer specializations should lower to MIR");
     }
 }

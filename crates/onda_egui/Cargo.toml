@@ -9,6 +9,7 @@ authors.workspace = true
 eframe = { version = "0.31", features = ["persistence"] }
 egui_extras = { version = "0.31", features = ["svg"] }
 onda_run = { path = "../onda_run" }
+onda_project = { path = "../onda_project" }
 rfd = "0.15"
 serde_json = "1.0"
 

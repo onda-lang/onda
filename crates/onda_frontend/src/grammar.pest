@@ -58,7 +58,7 @@ kins_block = {
   )
 }
 buffers_block = {
-  "buffers" ~ section_default_elem_type? ~ (
+  "buffers" ~ section_default_buffer_type? ~ (
     (NEWLINE* ~ "{" ~ NEWLINE* ~ buffer_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
     | (section_count ~ NEWLINE*)
   )
@@ -107,7 +107,7 @@ outs_kw = { "outs" | "outputs" }
 kouts_kw = { "kouts" }
 proc_kw = { "proc" | "processor" }
 section_default_decl_type = { "<" ~ NEWLINE* ~ (type_name | namespace_ref | qualified_ident) ~ NEWLINE* ~ ">" }
-section_default_elem_type = { "[" ~ NEWLINE* ~ (type_name | namespace_ref | qualified_ident) ~ NEWLINE* ~ "]" }
+section_default_buffer_type = { "<" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ ">" }
 
 port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_sep* }
 decl_type = { array_type | tuple_type | type_name | namespace_ref | qualified_ident }
@@ -126,10 +126,12 @@ param_bind = { "=>" ~ ident }
 param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ param_domain? ~ param_bind? }
 proc_param_decl = { param_pin? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? ~ param_bind? }
 buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_sep* }
-buffer_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ buffer_decl_type)? }
+buffer_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ buffer_decl_type)? ~ (NEWLINE* ~ buffer_count)? }
 buffer_decl_type = { buffer_type | buffer_inner }
-buffer_type = { "buffer" ~ "[" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ "]" }
+buffer_type = { "buffer" ~ "<" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ ">" }
 buffer_inner = { (type_name | qualified_ident) ~ ("[" ~ NEWLINE* ~ (expr)? ~ NEWLINE* ~ "]")? }
+buffer_count = { "{" ~ NEWLINE* ~ (buffer_count_named | expr) ~ NEWLINE* ~ "}" }
+buffer_count_named = { "count" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
 field_list = { field_decl ~ (field_sep+ ~ field_decl)* ~ field_sep* }
 field_decl = {
   (ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ field_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)?)
@@ -168,8 +170,8 @@ plain_assign_stmt = { assign_target ~ "=" ~ expr }
 assign_target = _{ slice_target | indexed_member_target | index_target | tuple_target | path_ident }
 tuple_target = { "(" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
 indexed_member_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" }
-index_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ ("[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]")? }
-slice_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ slice_start? ~ NEWLINE* ~ ":" ~ NEWLINE* ~ slice_end? ~ NEWLINE* ~ "]" }
+index_target = { (namespace_ref | path_ident) ~ index_group ~ index_group? }
+slice_target = { (namespace_ref | path_ident) ~ (index_group ~ slice_group | slice_group) }
 return_stmt = { "return" ~ expr }
 call_stmt = { call_expr }
 if_cond = { expr }
@@ -201,9 +203,14 @@ call_index_member_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ exp
 call_index_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ !"::" }
 arg_list = { call_arg ~ (NEWLINE* ~ "," ~ NEWLINE* ~ call_arg)* ~ (NEWLINE* ~ ",")? }
 call_arg = { (ident ~ NEWLINE* ~ "=" ~ NEWLINE*)? ~ expr }
-index_expr = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ !"::" ~ ("[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]")? }
+index_expr = { (namespace_ref | path_ident) ~ index_group ~ !"::" ~ index_group? }
 indexed_member_expr = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" ~ ("[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]")? }
-slice_expr = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ slice_start? ~ NEWLINE* ~ ":" ~ NEWLINE* ~ slice_end? ~ NEWLINE* ~ "]" ~ !"::" }
+slice_expr = { (namespace_ref | path_ident) ~ (index_group ~ slice_group | slice_group) ~ !"::" }
+index_group = { "[" ~ NEWLINE* ~ index_args ~ NEWLINE* ~ "]" }
+index_args = { expr ~ (comma_sep ~ expr)? }
+slice_group = { "[" ~ NEWLINE* ~ (buffer_slice_args | slice_range) ~ NEWLINE* ~ "]" }
+buffer_slice_args = { expr ~ comma_sep ~ slice_range }
+slice_range = { slice_start? ~ NEWLINE* ~ ":" ~ NEWLINE* ~ slice_end? }
 slice_start = { expr }
 slice_end = { expr }
 bool_lit = { "true" | "false" }

@@ -45,29 +45,27 @@ block:
 
 Take a look at the `examples/` folder for more usage examples.
 
+## Precompiled releases
+
+[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application entry, static and shared C libraries, public headers, language guide and examples. The Linux archive includes `install.sh` and `uninstall.sh` for a per-user CLI and desktop installation.
+
+Tagged releases attach portable tarballs and publish the four public npm packages:
+`@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and `@onda-lang/wasm-compiler`.
+
 ## Documentation
 
 - [CHANGELOG.md](CHANGELOG.md): release history and migration notes
 - [docs/syntax.md](docs/syntax.md): language syntax and semantics
 - [docs/info.md](docs/info.md): project structure and implementation notes
+- [docs/projects.md](docs/projects.md): project manifests, typed buffer assets, and project images
 - [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
 - [docs/processor-abi.md](docs/processor-abi.md): generic processor ABI and target/artifact profiles
-- [crates/onda_compiler_web](crates/onda_compiler_web/README.md): in-browser Onda source-to-MIR compiler API
 - [packages/onda_wasm_compiler](packages/onda_wasm_compiler/README.md): packaged source-to-WebAssembly compiler and `onda-wasm` CLI
 - [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): current MIR-to-Wasm backend
 - [packages/onda_processor_abi](packages/onda_processor_abi/README.md): compiler-free artifact schema, validation, and integrity helpers
 - [packages/onda_webaudio](packages/onda_webaudio/README.md): optional reusable Web Audio adapter
 - [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground
-- [examples/web/onda_wasm_aot_sample_player](examples/web/onda_wasm_aot_sample_player/README.md): precompiled Wasm sample player and AudioWorklet host
 - [examples/native/raw_processor_object](examples/native/raw_processor_object/README.md): link and call a native relocatable processor object directly
-
-## Precompiled releases
-
-[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application entry, static and shared C libraries, public headers, language guide and examples. The Linux archive includes `install.sh` and `uninstall.sh` for a per-user CLI and desktop installation.
-
-Tagged releases attach portable tarballs and publish the four public npm packages with provenance:
-`@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and
-`@onda-lang/wasm-compiler`.
 
 ## The `onda` CLI
 
@@ -75,16 +73,34 @@ The CLI surface is:
 
 ```text
 onda
-onda compile <input.onda>
+onda project <directory> [--from <input.onda>] [--buffer <name=path>]
+onda compile <input>
 onda lsp
-onda run [input.onda] [--theme <auto|dark|light>]
-onda run play <input.onda>
-onda run render <input.onda>
-onda daemon diagnose <input.onda>
+onda run [input] [--theme <auto|dark|light>]
+onda run play <input>
+onda run render <input>
+onda daemon diagnose <input>
 onda daemon stdio
 ```
 
+`<input>` may be an `.onda` source file or an `.ondaproject` project file.
+
 For a full list of all commands and their flags, run the help file via `onda --help`.
+
+### `onda project`
+
+Creates an empty, editable Onda project folder with a project file named after the target,
+`code/main.onda`, and an `assets` directory. With `--from`, it instead captures an existing source
+graph and packages supplied buffers into canonical project assets.
+
+```bash
+onda project my-project
+onda run my-project/my-project.ondaproject
+
+onda project portable-sampler \
+  --from sampler.onda \
+  --buffer sample=recording.wav
+```
 
 ### `onda compile`
 
@@ -271,7 +287,7 @@ To build the C API in release mode:
 cargo build -p onda_api --release
 ```
 
-This produces the `onda` C API library artifacts in `target/release/` along with the public header in `include/onda.h`.
+This produces the `onda` C API library artifacts in `target/release/` along with the public header in `include/onda.h`. 
 Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 On Windows, the shipped static `onda.lib` is built with the static MSVC CRT (`/MT`), so hosts linking that library should use a compatible runtime choice.
 

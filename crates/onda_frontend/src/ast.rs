@@ -465,6 +465,9 @@ pub struct BufferDecl {
     pub name: String,
     pub ty: Option<BufferType>,
     pub ty_loc: Span,
+    /// Compile-time number of external buffer resources in this declaration.
+    /// `None` denotes one ordinary buffer.
+    pub array_size: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -607,6 +610,12 @@ impl PrimitiveType {
 
 pub const INTERNAL_BUFFER_READ2_FN: &str = "__onda_buffer_read2";
 pub const INTERNAL_BUFFER_WRITE2_FN: &str = "__onda_buffer_write2";
+pub const INTERNAL_BUFFER_READ_CHANNEL_FN: &str = "__onda_buffer_read_channel";
+pub const INTERNAL_BUFFER_WRITE_CHANNEL_FN: &str = "__onda_buffer_write_channel";
+pub const INTERNAL_BUFFER_READ3_FN: &str = "__onda_buffer_read3";
+pub const INTERNAL_BUFFER_WRITE3_FN: &str = "__onda_buffer_write3";
+/// Preserves the receiver in `value.method(...)` until semantic resolution.
+pub const METHOD_RECEIVER_ARG: &str = "__onda_method_receiver";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstType {
@@ -629,6 +638,14 @@ pub enum FnParamType {
     Primitive(PrimitiveType),
     Struct(String),
     Buffer(BufferType),
+    /// Compiler-generated fixed collection of buffer references. Source
+    /// `buffers` declarations use `{count}`; this type carries that shape
+    /// through generated processor functions without exposing an aggregate
+    /// runtime value.
+    BufferArray {
+        buffer: BufferType,
+        len: usize,
+    },
     Array(Option<PrimitiveType>),
     ArrayGeneric(String),
     /// Sized array param: `f32[4]` → `SizedArray(Some(F32), expr)`,
@@ -769,8 +786,10 @@ pub enum AssignTarget {
     },
     Slice {
         base: String,
-        start: Option<Expr>,
-        end: Option<Expr>,
+        selector: Option<Box<Expr>>,
+        channel: Option<Box<Expr>>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
     },
     Tuple(Vec<String>),
 }
@@ -1333,6 +1352,8 @@ pub enum Expr {
     Slice {
         loc: Span,
         base: String,
+        selector: Option<Box<Expr>>,
+        channel: Option<Box<Expr>>,
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
     },

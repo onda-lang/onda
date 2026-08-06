@@ -81,12 +81,15 @@ fn rewrite_proc_alias_calls_in_expr_impl(
         Expr::Index { index, .. } => {
             rewrite_proc_alias_calls_in_expr_impl(index, aliases, rewrite_var_fields)
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                rewrite_proc_alias_calls_in_expr_impl(start, aliases, rewrite_var_fields);
-            }
-            if let Some(end) = end {
-                rewrite_proc_alias_calls_in_expr_impl(end, aliases, rewrite_var_fields);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_proc_alias_calls_in_expr_impl(coordinate, aliases, rewrite_var_fields);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {

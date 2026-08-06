@@ -70,15 +70,13 @@ const RESERVED_METHOD_NAMES_EXAMPLE: &str = r#"
 struct Ops {
   def len(self) { return 1.25 }
   def chans(self) { return 0.25 }
-  def unsafe_read(self, i) { return f32(i) }
-  def unsafe_write(self, i, v) { return v + f32(i) }
 }
 outs { out1 }
 init {
   o = Ops()
 }
 sample {
-  out1 = o.len() + o.chans() + o.unsafe_read(1) + o.unsafe_write(2, 0.5)
+  out1 = o.len() + o.chans()
 }
 "#;
 
@@ -292,7 +290,7 @@ const DEF_CANNOT_CAPTURE_TOP_LEVEL_SYMBOLS_ERROR_EXAMPLE: &str = r#"
 ins { in1 }
 outs { out1 }
 params { p = 0.5 }
-buffers { b: buffer[f32] }
+buffers { b: buffer<f32> }
 init { s = 1.0 }
 def leak() {
   return in1 + p + s + b[0]
@@ -696,12 +694,12 @@ sample {
 "#;
 
 const DEF_OVERLOAD_BUFFER_AND_SCALAR_EXAMPLE: &str = r#"
-buffers { b: buffer[f32] }
+buffers { b: buffer<f32> }
 outs { out1 }
 def kind(x: f32) {
   return x
 }
-def kind(buf: buffer[f32]) {
+def kind(buf: buffer<f32>) {
   return buf[0]
 }
 sample {
@@ -729,7 +727,7 @@ sample {
 
 const BUFFER_MONO_CLAMP_READ_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32]
+  buf1: buffer<f32>
 }
 outs {
   out1
@@ -745,7 +743,7 @@ sample {
 
 const BUFFER_MONO_I32_READ_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[i32]
+  buf1: buffer<i32>
 }
 outs {
   out1: i32
@@ -761,7 +759,7 @@ sample {
 
 const BUFFER_MONO_I64_READ_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[i64]
+  buf1: buffer<i64>
 }
 outs {
   out1: i64
@@ -777,7 +775,7 @@ sample {
 
 const BUFFER_MONO_BOOL_READ_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[bool]
+  buf1: buffer<bool>
 }
 outs {
   out1: bool
@@ -791,9 +789,9 @@ sample {
 }
 "#;
 
-const BUFFER_MONO_UNSAFE_RW_EXAMPLE: &str = r#"
+const BUFFER_MONO_RW_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32]
+  buf1: buffer<f32>
 }
 outs {
   out1
@@ -802,14 +800,14 @@ init {
   idx: i32 = 1
 }
 sample {
-  unsafe_write(buf1, idx, 7.0)
-  out1 = unsafe_read(buf1, idx)
+  buf1[idx] = 7.0
+  out1 = buf1[idx]
 }
 "#;
 
 const BUFFER_STEREO_2D_READ_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[2]]
+  buf1: buffer<f32[2]>
 }
 outs {
   out1
@@ -818,27 +816,27 @@ init {
   idx: i32 = 0
 }
 sample {
-  out1 = buf1[1][idx]
+  out1 = buf1[1, idx]
   idx = idx + 1
 }
 "#;
 
 const BUFFER_STEREO_2D_WRITE_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[2]]
+  buf1: buffer<f32[2]>
 }
 outs {
   out1
 }
 sample {
-  buf1[1][0] = 7.0
-  out1 = buf1[1][0]
+  buf1[1, 0] = 7.0
+  out1 = buf1[1, 0]
 }
 "#;
 
-const BUFFER_STEREO_UNSAFE_2D_RW_EXAMPLE: &str = r#"
+const BUFFER_STEREO_2D_RW_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[2]]
+  buf1: buffer<f32[2]>
 }
 outs {
   out1
@@ -847,15 +845,15 @@ init {
   idx: i32 = 1
 }
 sample {
-  unsafe_write2(buf1, 1, idx, 11.0)
-  buf1.unsafe_write2(1, idx, unsafe_read2(buf1, 1, idx) + 2.0)
-  out1 = buf1.unsafe_read2(1, idx)
+  buf1[1, idx] = 11.0
+  buf1[1, idx] = buf1[1, idx] + 2.0
+  out1 = buf1[1, idx]
 }
 "#;
 
 const BUFFER_STEREO_1D_INDEX_ERROR_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[2]]
+  buf1: buffer<f32[2]>
 }
 outs {
   out1
@@ -867,7 +865,7 @@ sample {
 
 const BUFFER_STATIC_CHANS_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[2]]
+  buf1: buffer<f32[2]>
 }
 outs {
   out1
@@ -879,7 +877,7 @@ sample {
 
 const BUFFER_DYNAMIC_CHANS_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[]]
+  buf1: buffer<f32[]>
 }
 outs {
   out1
@@ -891,7 +889,7 @@ sample {
 
 const BUFFER_DYNAMIC_LEN_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[]]
+  buf1: buffer<f32[]>
 }
 outs {
   out1
@@ -903,12 +901,12 @@ sample {
 
 const DEF_BUFFER_MONO_PARAM_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32]
+  buf1: buffer<f32>
 }
 outs {
   out1
 }
-def read_at(b: buffer[f32], i: i32) {
+def read_at(b: buffer<f32>, i: i32) {
   return b[i]
 }
 init {
@@ -922,13 +920,13 @@ sample {
 
 const DEF_BUFFER_STEREO_PARAM_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[2]]
+  buf1: buffer<f32[2]>
 }
 outs {
   out1
 }
-def read_r(b: buffer[f32[2]], i: i32) {
-  return b[1][i]
+def read_r(b: buffer<f32[2]>, i: i32) {
+  return b[1, i]
 }
 init {
   idx: i32 = 0
@@ -941,12 +939,12 @@ sample {
 
 const DEF_BUFFER_DYNAMIC_LEN_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32[]]
+  buf1: buffer<f32[]>
 }
 outs {
   out1
 }
-def frames_of(b: buffer[f32[]]) {
+def frames_of(b: buffer<f32[]>) {
   return f32(b.len())
 }
 sample {
@@ -956,12 +954,12 @@ sample {
 
 const DEF_BUFFER_PARAM_TYPE_MISMATCH_ERROR_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f64]
+  buf1: buffer<f64>
 }
 outs {
   out1
 }
-def read_at(b: buffer[f32], i: i32) {
+def read_at(b: buffer<f32>, i: i32) {
   return b[i]
 }
 sample {
@@ -971,7 +969,7 @@ sample {
 
 const DEF_BUFFER_DUCK_PARAM_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32]
+  buf1: buffer<f32>
 }
 outs {
   out1
@@ -990,7 +988,7 @@ sample {
 
 const DEF_BUFFER_DUCK_PROPAGATION_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32]
+  buf1: buffer<f32>
 }
 outs {
   out1
@@ -998,7 +996,7 @@ outs {
 def inner(b, i: i32) {
   return b[i]
 }
-def outer(b: buffer[f32], i: i32) {
+def outer(b: buffer<f32>, i: i32) {
   return inner(b, i)
 }
 init {
@@ -1012,8 +1010,8 @@ sample {
 
 const DEF_BUFFER_DUCK_MIXED_ELEM_EXAMPLE: &str = r#"
 buffers {
-  a: buffer[f32]
-  b: buffer[f64]
+  a: buffer<f32>
+  b: buffer<f64>
 }
 outs {
   out1
@@ -1028,7 +1026,7 @@ sample {
 
 const DEF_INDEXABLE_ARG_ARRAY_AND_BUFFER_EXAMPLE: &str = r#"
 buffers {
-  buf1: buffer[f32]
+  buf1: buffer<f32>
 }
 outs {
   out1
@@ -1050,13 +1048,13 @@ sample {
 
 const DEF_INDEXABLE_ARG_STEREO_BUFFER_EXAMPLE: &str = r#"
 buffers {
-  b: buffer[f32[2]]
+  b: buffer<f32[2]>
 }
 outs {
   out1
 }
 def read_ch(xs, ch: i32, i: i32) {
-  return xs[ch][i]
+  return xs[ch, i]
 }
 sample {
   out1 = read_ch(b, 1, 2)

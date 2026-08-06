@@ -23,7 +23,7 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 test("validates the descriptor fixture shared with the Rust schema", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v3.json", import.meta.url),
     "utf8",
   ));
   assert.equal(
@@ -43,6 +43,29 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
   assert.throws(
     () => validateProcessorMetadata(inconsistentLayout),
     /byte_size does not match/,
+  );
+
+  const readOnlyUse = structuredClone(fixture);
+  readOnlyUse.metadata.buffers[0].may_write = false;
+  assert.equal(
+    validateProcessorMetadata(readOnlyUse).metadata.buffers[0].access,
+    "read_write",
+  );
+
+  const grouped = structuredClone(fixture);
+  grouped.metadata.buffer_arrays = [{ name: "bank", first_buffer: 0, len: 1 }];
+  assert.equal(validateProcessorMetadata(grouped).metadata.buffer_arrays[0].name, "bank");
+  grouped.metadata.buffer_arrays.push({ name: "other", first_buffer: 0, len: 1 });
+  assert.throws(
+    () => validateProcessorMetadata(grouped),
+    /overlaps another buffer array/,
+  );
+
+  const invalidReadOnlyWrite = structuredClone(fixture);
+  invalidReadOnlyWrite.metadata.buffers[0].access = "read_only";
+  assert.throws(
+    () => validateProcessorMetadata(invalidReadOnlyWrite),
+    /may_write requires read_write access/,
   );
 });
 
@@ -291,7 +314,7 @@ test("rejects i64 control domains that are not exact through host numbers", () =
 
 test("validates parameter-control semantics before accepting a descriptor", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v3.json", import.meta.url),
     "utf8",
   ));
 
@@ -420,7 +443,7 @@ test("rejects runtime semantics not implemented by the current processor ABI", (
 
 test("rejects metadata layouts outside or overlapping their runtime regions", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v2.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v3.json", import.meta.url),
     "utf8",
   ));
 

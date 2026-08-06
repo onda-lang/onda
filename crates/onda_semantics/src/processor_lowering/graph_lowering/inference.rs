@@ -208,14 +208,16 @@ fn infer_graph_input_expr(
             infer_graph_input_expr(index, param_names, inferred);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             infer_graph_input_base(base, param_names, inferred);
-            if let Some(start) = start {
-                infer_graph_input_expr(start, param_names, inferred);
-            }
-            if let Some(end) = end {
-                infer_graph_input_expr(end, param_names, inferred);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                infer_graph_input_expr(coordinate, param_names, inferred);
             }
         }
         Expr::Compare { lhs, rhs, .. }

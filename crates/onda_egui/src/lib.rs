@@ -112,6 +112,14 @@ fn is_onda_path(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("onda"))
 }
 
+fn is_project_path(path: &Path) -> bool {
+    path.is_file() && onda_project::is_project_file_path(path)
+}
+
+fn is_loadable_path(path: &Path) -> bool {
+    is_onda_path(path) || is_project_path(path)
+}
+
 fn load_app_icon(is_dark: bool) -> Result<egui::IconData, String> {
     let png_bytes = if is_dark {
         APP_ICON_DARK_PNG
@@ -151,6 +159,7 @@ struct RunApp {
     controller: Option<RunController>,
     options: RunHostOptions,
     load_error: Option<String>,
+    project_notice: Option<Result<String, String>>,
     event_inputs: HashMap<String, Vec<Value>>,
     event_input_signatures: HashMap<String, Vec<EventArgSignature>>,
     number_drafts: HashMap<String, f64>,
@@ -169,6 +178,7 @@ impl RunApp {
             controller,
             options,
             load_error: None,
+            project_notice: None,
             event_inputs: HashMap::new(),
             event_input_signatures: HashMap::new(),
             number_drafts: HashMap::new(),
@@ -243,8 +253,8 @@ impl RunApp {
     }
 
     fn load_path(&mut self, ctx: &egui::Context, path: &Path) {
-        if !is_onda_path(path) {
-            self.load_error = Some("Choose an .onda file".to_owned());
+        if !is_loadable_path(path) {
+            self.load_error = Some("Choose an Onda file or project".to_owned());
             return;
         }
         match RunController::new(path, self.options.clone()) {
@@ -254,6 +264,7 @@ impl RunApp {
                 ))));
                 self.controller = Some(controller);
                 self.load_error = None;
+                self.project_notice = None;
                 self.sync_event_inputs();
             }
             Err(error) => self.load_error = Some(error),
@@ -265,6 +276,7 @@ impl RunApp {
             self.options = controller.options().clone();
         }
         self.load_error = None;
+        self.project_notice = None;
         self.event_inputs.clear();
         self.event_input_signatures.clear();
         self.number_drafts.clear();
@@ -273,23 +285,42 @@ impl RunApp {
 
     fn choose_onda_file(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Onda source", &["onda"])
-            .set_title("Open an Onda file")
+            .add_filter("Onda source or project", &["onda", "ondaproject"])
+            .set_title("Open an Onda file or project")
             .pick_file()
         {
             self.load_path(ctx, &path);
         }
     }
 
+    fn save_as_project(&mut self) {
+        let Some(controller) = self.controller.as_ref() else {
+            return;
+        };
+        let suggested_name = controller
+            .path()
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .map(|name| format!("{name}-project"))
+            .unwrap_or_else(|| "onda-project".to_owned());
+        let Some(destination) = rfd::FileDialog::new()
+            .set_title("Save as Onda project")
+            .set_file_name(&suggested_name)
+            .save_file()
+        else {
+            return;
+        };
+        self.project_notice = Some(
+            controller
+                .save_as_project(&destination)
+                .map(|()| format!("Saved project to {}", destination.display())),
+        );
+    }
+
     fn render_file_picker(&mut self, ui: &mut egui::Ui, theme: &RunTheme, file_hovered: bool) {
         let available = ui.available_size();
         let panel_size = egui::vec2(available.x.min(520.0), available.y.min(440.0));
         let panel_rect = egui::Rect::from_center_size(ui.max_rect().center(), panel_size);
-        let response = ui.interact(
-            panel_rect,
-            ui.make_persistent_id("onda-file-picker"),
-            egui::Sense::click(),
-        );
         ui.painter().rect(
             panel_rect,
             WINDOW_CORNER_RADIUS,
@@ -345,91 +376,88 @@ impl RunApp {
         } else {
             let clicked = content_ui
                 .add_sized(
-                    [168.0, 32.0],
-                    run_button(egui::RichText::new("Choose Onda file").strong()),
+                    [220.0, 32.0],
+                    run_button(egui::RichText::new("Open Onda source or project").strong()),
                 )
                 .clicked();
             content_ui.add_space(6.0);
             content_ui.add_sized(
                 [380.0, 19.0],
-                egui::Label::new(egui::RichText::new("or drop one here").weak().size(13.0)),
+                egui::Label::new(
+                    egui::RichText::new("or drop an .onda or .ondaproject file here")
+                        .weak()
+                        .size(13.0),
+                ),
             );
             clicked
         };
+        if choose_clicked {
+            self.choose_onda_file(content_ui.ctx());
+        }
         content_ui.add_space(14.0);
-        let settings_response = content_ui
-            .allocate_ui(egui::vec2(380.0, 62.0), |ui| {
-                ui.spacing_mut().interact_size.y = 30.0;
-                ui.spacing_mut().item_spacing.y = 4.0;
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
-                        ui.add_sized(
-                            [184.0, 16.0],
-                            egui::Label::new(egui::RichText::new("Sample rate").weak().size(11.0))
-                                .halign(egui::Align::Center),
-                        );
-                        ui.add_sized(
-                            [184.0, 16.0],
-                            egui::Label::new(egui::RichText::new("Block size").weak().size(11.0))
-                                .halign(egui::Align::Center),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(184.0, 30.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                egui::ComboBox::from_id_salt("run-sample-rate")
-                                    .width(ui.available_width())
-                                    .selected_text(format_sample_rate(
-                                        self.options.sample_rate_hz as f64,
-                                    ))
-                                    .show_ui(ui, |ui| {
-                                        for sample_rate in RUN_SAMPLE_RATE_CHOICES {
-                                            ui.selectable_value(
-                                                &mut self.options.sample_rate_hz,
-                                                sample_rate,
-                                                format_sample_rate(sample_rate as f64),
-                                            );
-                                        }
-                                    });
-                            },
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(184.0, 30.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                egui::ComboBox::from_id_salt("run-block-size")
-                                    .width(ui.available_width())
-                                    .selected_text(format!("{} frames", self.options.block_frames))
-                                    .show_ui(ui, |ui| {
-                                        for block_frames in RUN_BLOCK_SIZE_CHOICES {
-                                            ui.selectable_value(
-                                                &mut self.options.block_frames,
-                                                block_frames,
-                                                format!("{block_frames} frames"),
-                                            );
-                                        }
-                                    });
-                            },
-                        );
-                    });
+        content_ui.allocate_ui(egui::vec2(380.0, 62.0), |ui| {
+            ui.spacing_mut().interact_size.y = 30.0;
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.add_sized(
+                        [184.0, 16.0],
+                        egui::Label::new(egui::RichText::new("Sample rate").weak().size(11.0))
+                            .halign(egui::Align::Center),
+                    );
+                    ui.add_sized(
+                        [184.0, 16.0],
+                        egui::Label::new(egui::RichText::new("Block size").weak().size(11.0))
+                            .halign(egui::Align::Center),
+                    );
                 });
-            })
-            .response;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(184.0, 30.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::ComboBox::from_id_salt("run-sample-rate")
+                                .width(ui.available_width())
+                                .selected_text(format_sample_rate(
+                                    self.options.sample_rate_hz as f64,
+                                ))
+                                .show_ui(ui, |ui| {
+                                    for sample_rate in RUN_SAMPLE_RATE_CHOICES {
+                                        ui.selectable_value(
+                                            &mut self.options.sample_rate_hz,
+                                            sample_rate,
+                                            format_sample_rate(sample_rate as f64),
+                                        );
+                                    }
+                                });
+                        },
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(184.0, 30.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::ComboBox::from_id_salt("run-block-size")
+                                .width(ui.available_width())
+                                .selected_text(format!("{} frames", self.options.block_frames))
+                                .show_ui(ui, |ui| {
+                                    for block_frames in RUN_BLOCK_SIZE_CHOICES {
+                                        ui.selectable_value(
+                                            &mut self.options.block_frames,
+                                            block_frames,
+                                            format!("{block_frames} frames"),
+                                        );
+                                    }
+                                });
+                        },
+                    );
+                });
+            });
+        });
         if let Some(error) = &self.load_error {
             content_ui.add_space(12.0);
             content_ui.colored_label(theme.error, error);
-        }
-
-        let pointer_over_settings = ui
-            .ctx()
-            .pointer_hover_pos()
-            .is_some_and(|position| settings_response.rect.contains(position));
-        if choose_clicked || (response.clicked() && !pointer_over_settings) {
-            self.choose_onda_file(ui.ctx());
         }
     }
 
@@ -447,6 +475,7 @@ impl RunApp {
         for buffer in buffers {
             let name = buffer_name(buffer).unwrap_or("buffer");
             let loaded_path = buffer.get("loadedPath").and_then(Value::as_str);
+            let is_bound = buffer.get("loadedFrames").and_then(Value::as_u64).is_some();
             let loaded_summary = buffer_loaded_summary(buffer);
             egui::Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
@@ -465,18 +494,14 @@ impl RunApp {
                                 .monospace(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let clear_clicked = loaded_path.is_some()
+                            let clear_clicked = is_bound
                                 && ui
                                     .add(run_button("Clear").min_size(egui::vec2(48.0, 26.0)))
                                     .clicked();
-                            let bind_label = if loaded_path.is_some() {
-                                "Replace"
-                            } else {
-                                "Bind"
-                            };
+                            let bind_label = if is_bound { "Replace" } else { "Bind" };
                             let bind_clicked = ui
                                 .add(run_button(bind_label).min_size(egui::vec2(56.0, 26.0)))
-                                .on_hover_text("Bind a WAV file to this buffer")
+                                .on_hover_text("Bind a WAV or .ondabuffer file to this buffer")
                                 .clicked();
 
                             if clear_clicked {
@@ -487,7 +512,7 @@ impl RunApp {
                             }
                             if bind_clicked {
                                 if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Wave Audio", &["wav"])
+                                    .add_filter("Onda buffer", &["wav", "ondabuffer"])
                                     .set_title(format!("Bind '{name}' buffer"))
                                     .pick_file()
                                 {
@@ -506,6 +531,7 @@ impl RunApp {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let file_name = match loaded_path {
                             Some(path) => buffer_file_name(path),
+                            None if is_bound => "Embedded project asset".to_owned(),
                             None => "No file bound".to_owned(),
                         };
                         if let Some(summary) = loaded_summary.as_deref() {
@@ -749,7 +775,7 @@ impl eframe::App for RunApp {
                 (
                     paths
                         .clone()
-                        .find(|path| is_onda_path(path))
+                        .find(|path| is_loadable_path(path))
                         .map(Path::to_owned),
                     paths.next().is_some(),
                 )
@@ -757,7 +783,7 @@ impl eframe::App for RunApp {
             if let Some(path) = dropped_path {
                 self.load_path(ctx, &path);
             } else if dropped_file {
-                self.load_error = Some("Choose an .onda file".to_owned());
+                self.load_error = Some("Choose an Onda file or project".to_owned());
             }
         }
         if let Some(controller) = self.controller.as_mut() {
@@ -799,7 +825,7 @@ impl eframe::App for RunApp {
 
                         section_box(ui, "", |ui| {
                             ui.allocate_ui_with_layout(
-                                egui::vec2(ui.available_width(), 236.0),
+                                egui::vec2(ui.available_width(), 258.0),
                                 egui::Layout::top_down(egui::Align::Center),
                                 |ui| {
                                     let logo = if theme.is_dark {
@@ -834,9 +860,9 @@ impl eframe::App for RunApp {
                                         egui::vec2(ui.available_width(), 30.0),
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
-                                            let button_width = 104.0;
+                                            let button_width = 116.0;
                                             let button_gap = 8.0;
-                                            let total_width = button_width * 3.0 + button_gap * 2.0;
+                                            let total_width = button_width * 4.0 + button_gap * 3.0;
                                             let leading_space =
                                                 ((ui.available_width() - total_width) * 0.5)
                                                     .max(0.0);
@@ -845,13 +871,7 @@ impl eframe::App for RunApp {
                                             let button_size = [button_width, 30.0];
                                             if ui
                                                 .add_enabled(
-                                                    !state.running
-                                                        && state.buffers.iter().all(|buffer| {
-                                                            buffer
-                                                                .get("loadedPath")
-                                                                .and_then(Value::as_str)
-                                                                .is_some()
-                                                        }),
+                                                    !state.running,
                                                     run_button("Play")
                                                         .min_size(egui::vec2(button_width, 30.0)),
                                                 )
@@ -877,6 +897,15 @@ impl eframe::App for RunApp {
                                                     .stop();
                                             }
                                             if ui
+                                                .add_sized(
+                                                    button_size,
+                                                    run_button("Save as project"),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.save_as_project();
+                                            }
+                                            if ui
                                                 .add_sized(button_size, run_button("Unload"))
                                                 .clicked()
                                             {
@@ -884,6 +913,20 @@ impl eframe::App for RunApp {
                                             }
                                         },
                                     );
+                                    if let Some(notice) = &self.project_notice {
+                                        ui.add_space(6.0);
+                                        match notice {
+                                            Ok(message) => {
+                                                ui.label(egui::RichText::new(message).size(11.0));
+                                            }
+                                            Err(error) => {
+                                                ui.colored_label(
+                                                    theme.error,
+                                                    egui::RichText::new(error).size(11.0),
+                                                );
+                                            }
+                                        }
+                                    }
                                     if self.controller.is_none() {
                                         return;
                                     }

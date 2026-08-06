@@ -1,0 +1,17 @@
+buffers:
+  mono: f32 {4}
+  fixed: f32[2] {4}
+  dynamic: f32[] {4}
+
+init:
+  index = 0
+  slot = 1
+
+block:
+  frames = mono[slot].len()
+
+  sample:
+    out1 = mono[slot][index] + fixed[slot][1, index] + dynamic[slot][1, index]
+    index = index + 1
+    if index >= frames:
+      index = 0

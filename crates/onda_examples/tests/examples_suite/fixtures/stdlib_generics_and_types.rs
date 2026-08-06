@@ -150,7 +150,7 @@ sample {
 
 const STDLIB_BUFFER_READ_MONO_EXAMPLE: &str = r#"
 import std/lookup
-buffers { b: buffer[f32] }
+buffers { b: buffer<f32> }
 outs { out1 }
 sample {
   out1 = std::lookup::read(b, 2)
@@ -159,15 +159,15 @@ sample {
 
 const STDLIB_BUFFER_INTERP_STEREO_EXAMPLE: &str = r#"
 import std/lookup
-buffers { b: buffer[f32[2]] }
+buffers { b: buffer<f32[2]> }
 outs { out1 }
 sample {
-  out1 = std::lookup::read(b, 0, 1) + std::lookup::readL(b, 1, 0.5) + std::lookup::readC(b, 1, 1.0)
+  out1 = std::lookup::read(b, 0, 1) + std::lookup::readL(b, 1, 0.5) + std::lookup::readLW(b, 0, 3.5) + std::lookup::readC(b, 1, 1.0) + std::lookup::readCW(b, 0, 3.5)
 }
 "#;
 
 const STDLIB_BUFFER_AUTO_IMPORT_ARRAY_AND_BUFFER_EXAMPLE: &str = r#"
-buffers { b: buffer[f32] }
+buffers { b: buffer<f32> }
 outs { out1 }
 init {
   a: f32[4]
@@ -177,13 +177,13 @@ init {
   a[3] = 4.0
 }
 sample {
-  out1 = a.read(1) + readL(a, 1.5) + b.readC(2.0)
+  out1 = a.read(1) + readL(a, 1.5) + readCW(a, 3.5) + b.readC(2.0) + b.readCW(3.5)
 }
 "#;
 
 const STDLIB_LOOKUP_WRITE_ARRAY_AND_BUFFER_EXAMPLE: &str = r#"
 import std/lookup
-buffers { b: buffer[f32] }
+buffers { b: buffer<f32> }
 outs { out1 }
 init {
   a: f32[4]
@@ -1437,9 +1437,9 @@ sample {
 "#;
 
 const GENERIC_PROC_BUFFER_DECL_TYPE_COMPILES_EXAMPLE: &str = r#"
-buffers { buf1: buffer[f64] }
+buffers { buf1: buffer<f64> }
 proc Tap<T> {
-  buffers { line: buffer[T] }
+  buffers { line: buffer<T> }
   outs { out1: T }
   sample {
     out1 = line[0]

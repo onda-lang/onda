@@ -176,10 +176,10 @@ pub(super) fn validate_buffer_abi(
                 0,
             ));
         }
-        if frames <= 0 || channels <= 0 || pointer_is_null {
+        if frames <= 0 || channels <= 0 {
             return Err(Diagnostic::runtime(
                 format!(
-                    "runtime buffer {index} must be bound with a non-null pointer and positive dimensions; got pointer_null={pointer_is_null}, {frames} * {channels}"
+                    "runtime buffer {index} requires positive dimensions; got {frames} * {channels}"
                 ),
                 0,
                 0,
@@ -189,7 +189,7 @@ pub(super) fn validate_buffer_abi(
         let alignment =
             usize::try_from(scalar_store_size(program.interface.buffers[index].element))
                 .expect("primitive scalar alignment fits usize");
-        if !buffer_ptrs[index].addr().is_multiple_of(alignment) {
+        if !pointer_is_null && !buffer_ptrs[index].addr().is_multiple_of(alignment) {
             return Err(Diagnostic::runtime(
                 format!("runtime buffer {index} pointer requires {alignment}-byte alignment"),
                 0,

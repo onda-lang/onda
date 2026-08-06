@@ -3562,17 +3562,18 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "onda_api"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
+ "onda_project",
  "onda_runtime",
  "onda_semantics",
 ]
 
 [[package]]
 name = "onda_cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embed-resource",
  "hound",
@@ -3582,6 +3583,7 @@ dependencies = [
  "onda_frontend",
  "onda_lsp",
  "onda_mir",
+ "onda_project",
  "onda_run",
  "onda_runtime",
  "onda_semantics",
@@ -3592,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "onda_codegen_llvm"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "llvm-sys",
  "onda_frontend",
@@ -3604,11 +3606,12 @@ dependencies = [
 
 [[package]]
 name = "onda_compiler_web"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "onda_frontend",
  "onda_lsp",
  "onda_mir",
+ "onda_project",
  "onda_semantics",
  "serde",
  "serde_json",
@@ -3617,7 +3620,7 @@ dependencies = [
 
 [[package]]
 name = "onda_cpal"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "cpal",
  "libc",
@@ -3626,21 +3629,23 @@ dependencies = [
 
 [[package]]
 name = "onda_daemon"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "hound",
  "onda_codegen_llvm",
  "onda_frontend",
+ "onda_project",
  "onda_runtime",
  "onda_semantics",
 ]
 
 [[package]]
 name = "onda_egui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "eframe",
  "egui_extras",
+ "onda_project",
  "onda_run",
  "rfd",
  "serde_json",
@@ -3649,7 +3654,7 @@ dependencies = [
 
 [[package]]
 name = "onda_examples"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "hound",
  "onda_codegen_llvm",
@@ -3662,7 +3667,7 @@ dependencies = [
 
 [[package]]
 name = "onda_frontend"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "pest",
  "pest_derive",
@@ -3670,7 +3675,7 @@ dependencies = [
 
 [[package]]
 name = "onda_lsp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "onda_frontend",
  "onda_semantics",
@@ -3680,7 +3685,7 @@ dependencies = [
 
 [[package]]
 name = "onda_mir"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "rmp-serde",
  "serde",
@@ -3689,19 +3694,32 @@ dependencies = [
 
 [[package]]
 name = "onda_processor_abi"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_json",
 ]
 
 [[package]]
+name = "onda_project"
+version = "0.7.0"
+dependencies = [
+ "hex",
+ "hound",
+ "onda_frontend",
+ "serde",
+ "serde_json",
+ "sha2",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "onda_realtime"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "onda_run"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "libc",
  "notify",
@@ -3710,14 +3728,16 @@ dependencies = [
  "onda_cpal",
  "onda_daemon",
  "onda_frontend",
+ "onda_project",
  "onda_semantics",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "onda_runtime"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
@@ -3727,7 +3747,7 @@ dependencies = [
 
 [[package]]
 name = "onda_semantics"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "onda_frontend",
  "onda_mir",
@@ -3735,12 +3755,13 @@ dependencies = [
 
 [[package]]
 name = "onda_webview"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "image",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "onda_project",
  "onda_run",
  "rfd",
  "serde_json",
@@ -5360,6 +5381,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb4ebadaa0af04fab11ae01eb5f9fdb5f9c5b875506e210e71c07873528baa7f"
+dependencies = [
+ "tinyvec_macros",
+]
+
+[[package]]
+name = "tinyvec_macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+
+[[package]]
 name = "toml"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5536,6 +5572,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

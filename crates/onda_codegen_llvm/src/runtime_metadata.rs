@@ -6,8 +6,8 @@ use onda_mir::{ParamControl, ScalarValue, ValueRange};
 
 use crate::primitives::{primitive_type_bytes, primitive_type_name, scalar_value_to_f64};
 use crate::{
-    DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
-    DeclaredState, ParamDomain,
+    DeclaredBuffer, DeclaredBufferArray, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam,
+    DeclaredIo, DeclaredState, ParamDomain,
 };
 
 #[cfg(any(feature = "llvm-orc", test))]
@@ -18,6 +18,7 @@ pub(crate) struct ProgramMetadata {
     pub(crate) params: Vec<DeclaredIo>,
     pub(crate) events: Vec<DeclaredEvent>,
     pub(crate) buffers: Vec<DeclaredBuffer>,
+    pub(crate) buffer_arrays: Vec<DeclaredBufferArray>,
     pub(crate) state_entries: Vec<DeclaredState>,
     pub(crate) input_index: HashMap<String, usize>,
     pub(crate) output_index: HashMap<String, usize>,
@@ -173,16 +174,34 @@ impl DeclaredBuffer {
     }
 
     pub fn may_write(&self) -> bool {
-        self.access == onda_mir::AccessMode::ReadWrite
+        self.may_write
     }
 
     pub fn type_repr(&self) -> String {
         let elem = primitive_type_name(self.elem_ty);
         match self.channels {
-            DeclaredBufferChannels::Mono => format!("buffer[{elem}]"),
-            DeclaredBufferChannels::Static(ch) => format!("buffer[{elem}[{ch}]]"),
-            DeclaredBufferChannels::Dynamic => format!("buffer[{elem}[]]"),
+            DeclaredBufferChannels::Mono => format!("buffer<{elem}>"),
+            DeclaredBufferChannels::Static(ch) => format!("buffer<{elem}[{ch}]>"),
+            DeclaredBufferChannels::Dynamic => format!("buffer<{elem}[]>"),
         }
+    }
+}
+
+impl DeclaredBufferArray {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn first(&self) -> usize {
+        self.first
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 

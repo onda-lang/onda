@@ -48,6 +48,26 @@ impl Drop for SourceManifestHandle {
     }
 }
 
+struct ProjectImageHandle(*mut onda_project_image);
+
+impl Drop for ProjectImageHandle {
+    fn drop(&mut self) {
+        unsafe {
+            onda_project_image_destroy(self.0);
+        }
+    }
+}
+
+struct ProjectPlanHandle(*mut onda_project_materialization_plan);
+
+impl Drop for ProjectPlanHandle {
+    fn drop(&mut self) {
+        unsafe {
+            onda_project_materialization_destroy(self.0);
+        }
+    }
+}
+
 struct InstanceHandle(*mut onda_instance);
 
 impl Drop for InstanceHandle {
@@ -211,12 +231,16 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
     unsafe {
         let dir = temp_source_dir("source_manifest");
         let main = dir.join("main.onda");
+        let shared = dir.join("shared.onda");
+        let nested = dir.join("nested.onda");
         let dependency = dir.join("dependency.onda");
         fs::write(
             &main,
-            "import dependency\nouts 1\nsample:\n  out1 = dependency_value()\n",
+            "include \"shared.onda\"\nimport dependency\nouts 1\nsample:\n  out1 = dependency_value()\n",
         )
         .expect("write entry");
+        fs::write(&shared, "import nested\nconst SHARED = 1.0\n").expect("write include");
+        fs::write(&nested, "const NESTED = 2.0\n").expect("write nested import");
         fs::write(
             &dependency,
             "def dependency_value() -> f32:\n  return 0.5\n",
@@ -243,10 +267,57 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
             manifest_paths(manifest.0),
             vec![
                 fs::canonicalize(&main).expect("canonical entry"),
+                fs::canonicalize(&shared).expect("canonical include"),
+                fs::canonicalize(&nested).expect("canonical nested import"),
                 fs::canonicalize(&dependency).expect("canonical dependency"),
             ]
         );
         assert!(manifest_unresolved_paths(manifest.0).is_empty());
+
+        let replay_sources = (0..onda_source_manifest_document_count(manifest.0))
+            .map(|index| {
+                let mut source_bytes = 0;
+                onda_source_graph_document_t {
+                    path_utf8: onda_source_manifest_document_path(manifest.0, index),
+                    source_utf8: onda_source_manifest_document_contents(
+                        manifest.0,
+                        index,
+                        &mut source_bytes,
+                    ),
+                    source_bytes,
+                }
+            })
+            .collect::<Vec<_>>();
+        let replay_resolutions = (0..onda_source_manifest_resolution_count(manifest.0))
+            .map(|index| onda_source_graph_resolution_t {
+                source_path_utf8: onda_source_manifest_resolution_source_path(manifest.0, index),
+                kind: onda_source_manifest_resolution_kind(manifest.0, index),
+                specifier_utf8: onda_source_manifest_resolution_specifier(manifest.0, index),
+                target_path_utf8: onda_source_manifest_resolution_target_path(manifest.0, index),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(replay_sources.len(), 4);
+        assert_eq!(replay_resolutions.len(), 3);
+        let mut replay_manifest = std::ptr::null_mut();
+        let replayed = onda_compile_source_graph(
+            onda_source_manifest_path(manifest.0, 0),
+            replay_sources.as_ptr(),
+            replay_sources.len(),
+            replay_resolutions.as_ptr(),
+            replay_resolutions.len(),
+            &options,
+            &mut replay_manifest,
+            &mut diag,
+        );
+        assert!(
+            !replayed.is_null(),
+            "captured source graph did not replay: {}",
+            diag_message(&diag)
+        );
+        let _replayed = ProgramHandle(replayed);
+        let replay_manifest = SourceManifestHandle(replay_manifest);
+        assert_eq!(onda_source_manifest_document_count(replay_manifest.0), 4);
+        assert_eq!(onda_source_manifest_resolution_count(replay_manifest.0), 3);
 
         fs::write(&dependency, "this is not valid onda\n").expect("break dependency");
         let mut failed_manifest = std::ptr::null_mut();
@@ -257,6 +328,8 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
             manifest_paths(failed_manifest.0),
             vec![
                 fs::canonicalize(&main).expect("canonical entry"),
+                fs::canonicalize(&shared).expect("canonical include"),
+                fs::canonicalize(&nested).expect("canonical nested import"),
                 fs::canonicalize(&dependency).expect("canonical dependency"),
             ]
         );
@@ -278,8 +351,639 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
                 dir.join("missing/module.on"),
             ]
         );
+        assert_eq!(
+            onda_source_manifest_unresolved_resolution_count(unresolved_manifest.0),
+            1
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_source_manifest_unresolved_resolution_source_path(
+                unresolved_manifest.0,
+                0
+            ))
+            .to_str()
+            .unwrap(),
+            fs::canonicalize(&main)
+                .expect("canonical entry")
+                .to_str()
+                .unwrap()
+        );
+        assert_eq!(
+            onda_source_manifest_unresolved_resolution_kind(unresolved_manifest.0, 0),
+            ONDA_SOURCE_REFERENCE_IMPORT
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_source_manifest_unresolved_resolution_specifier(
+                unresolved_manifest.0,
+                0
+            ))
+            .to_str()
+            .unwrap(),
+            "missing/module"
+        );
+        assert_eq!(
+            onda_source_manifest_unresolved_resolution_candidate_count(unresolved_manifest.0, 0),
+            2
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_source_manifest_unresolved_resolution_candidate_path(
+                unresolved_manifest.0,
+                0,
+                0,
+            ))
+            .to_str()
+            .unwrap(),
+            dir.join("missing/module.onda").to_str().unwrap()
+        );
 
         fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[test]
+fn c_project_compile_replays_an_exact_in_memory_source_graph() {
+    unsafe {
+        let entry_path = CString::new("C:/saved/project/main.onda").unwrap();
+        let dependency_path = CString::new("/original/shared/filter.onda").unwrap();
+        let unused_empty_path = CString::new("unused-empty.onda").unwrap();
+        let specifier = CString::new("/absolute/filter.onda").unwrap();
+        let entry_source =
+            "include \"/absolute/filter.onda\"\nouts 1\nsample:\n  out1 = FILTER_VALUE\n";
+        let dependency_source = "const FILTER_VALUE = 0.375\n";
+        let entry_source_c = CString::new(entry_source).unwrap();
+        let dependency_source_c = CString::new(dependency_source).unwrap();
+        let sources = [
+            onda_source_graph_document_t {
+                path_utf8: entry_path.as_ptr(),
+                source_utf8: entry_source_c.as_ptr(),
+                source_bytes: entry_source.len(),
+            },
+            onda_source_graph_document_t {
+                path_utf8: dependency_path.as_ptr(),
+                source_utf8: dependency_source_c.as_ptr(),
+                source_bytes: dependency_source.len(),
+            },
+            onda_source_graph_document_t {
+                path_utf8: unused_empty_path.as_ptr(),
+                source_utf8: std::ptr::null(),
+                source_bytes: 0,
+            },
+        ];
+        let resolutions = [onda_source_graph_resolution_t {
+            source_path_utf8: entry_path.as_ptr(),
+            kind: ONDA_SOURCE_REFERENCE_INCLUDE,
+            specifier_utf8: specifier.as_ptr(),
+            target_path_utf8: dependency_path.as_ptr(),
+        }];
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+        };
+        let mut diag = empty_diag();
+        let mut manifest = std::ptr::null_mut();
+        let program = onda_compile_source_graph(
+            entry_path.as_ptr(),
+            sources.as_ptr(),
+            sources.len(),
+            resolutions.as_ptr(),
+            resolutions.len(),
+            &options,
+            &mut manifest,
+            &mut diag,
+        );
+        assert!(
+            !program.is_null(),
+            "project compile failed: {}",
+            diag_message(&diag)
+        );
+        let _program = ProgramHandle(program);
+        let manifest = SourceManifestHandle(manifest);
+        assert_eq!(onda_source_manifest_document_count(manifest.0), 2);
+        assert_eq!(onda_source_manifest_resolution_count(manifest.0), 1);
+        assert_eq!(
+            CStr::from_ptr(onda_source_manifest_resolution_source_path(manifest.0, 0))
+                .to_str()
+                .unwrap(),
+            entry_path.to_str().unwrap()
+        );
+        assert_eq!(
+            onda_source_manifest_resolution_kind(manifest.0, 0),
+            ONDA_SOURCE_REFERENCE_INCLUDE
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_source_manifest_resolution_specifier(manifest.0, 0))
+                .to_str()
+                .unwrap(),
+            specifier.to_str().unwrap()
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_source_manifest_resolution_target_path(manifest.0, 0))
+                .to_str()
+                .unwrap(),
+            dependency_path.to_str().unwrap()
+        );
+        let mut source_bytes = 0;
+        let source_ptr = onda_source_manifest_document_contents(manifest.0, 0, &mut source_bytes);
+        assert_eq!(
+            std::str::from_utf8(std::slice::from_raw_parts(
+                source_ptr.cast::<u8>(),
+                source_bytes
+            ))
+            .unwrap(),
+            entry_source
+        );
+    }
+}
+
+#[test]
+fn c_project_image_and_typed_asset_api_round_trip() {
+    unsafe {
+        let dir = std::env::temp_dir().join(format!(
+            "onda_c_project_image_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("create project source directory");
+        let entry = dir.join("main.onda");
+        let dependency = dir.join("voice.onda");
+        fs::write(
+            &entry,
+            concat!(
+                "include \"./voice.onda\"\n",
+                "buffers:\n  sequence: buffer<i64>\n",
+                "sample:\n  out1 = LEVEL\n",
+            ),
+        )
+        .expect("write project entry");
+        fs::write(&dependency, "const LEVEL = 0.25\n").expect("write project dependency");
+
+        let entry_c = CString::new(entry.to_string_lossy().as_bytes()).unwrap();
+        let root_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+        };
+        let mut diag = empty_diag();
+        let mut manifest = std::ptr::null_mut();
+        let program = onda_compile_file(entry_c.as_ptr(), &options, &mut manifest, &mut diag);
+        assert!(
+            !program.is_null(),
+            "compile failed: {}",
+            diag_message(&diag)
+        );
+        let _program = ProgramHandle(program);
+        let manifest = SourceManifestHandle(manifest);
+
+        assert_eq!(onda_project_image_format_version(), 1);
+        assert_eq!(onda_buffer_asset_format_version(), 1);
+        assert!(CStr::from_ptr(onda_current_stdlib_digest())
+            .to_bytes()
+            .starts_with(b"sha256:"));
+
+        let samples = [-7_i64, i64::MAX];
+        let required = onda_buffer_asset_encode(
+            ONDA_PRIMITIVE_I64,
+            2,
+            1,
+            48_000.0,
+            samples.as_ptr().cast(),
+            std::mem::size_of_val(&samples),
+            std::ptr::null_mut(),
+            0,
+            &mut diag,
+        );
+        assert!(required > 0, "asset sizing failed: {}", diag_message(&diag));
+        let mut asset = vec![0_u8; required as usize];
+        assert_eq!(
+            onda_buffer_asset_encode(
+                ONDA_PRIMITIVE_I64,
+                2,
+                1,
+                48_000.0,
+                samples.as_ptr().cast(),
+                std::mem::size_of_val(&samples),
+                asset.as_mut_ptr().cast(),
+                asset.len(),
+                &mut diag,
+            ),
+            required
+        );
+        let mut decoded_info = onda_buffer_asset_info_t {
+            element_type: -1,
+            frames: 0,
+            channels: 0,
+            sample_rate: 0.0,
+            sample_bytes: 0,
+        };
+        let mut decoded_samples = [0_i64; 2];
+        assert_eq!(
+            onda_buffer_asset_decode(
+                asset.as_ptr().cast(),
+                asset.len(),
+                &mut decoded_info,
+                decoded_samples.as_mut_ptr().cast(),
+                std::mem::size_of_val(&decoded_samples),
+                &mut diag,
+            ),
+            std::mem::size_of_val(&decoded_samples) as i64
+        );
+        assert_eq!(decoded_info.element_type, ONDA_PRIMITIVE_I64);
+        assert_eq!(decoded_samples, samples);
+
+        let buffer_name = CString::new("sequence").unwrap();
+        let binding = onda_project_buffer_asset_t {
+            name_utf8: buffer_name.as_ptr(),
+            ondabuffer_bytes: asset.as_ptr().cast(),
+            ondabuffer_byte_count: asset.len(),
+        };
+        let image = onda_project_image_capture(
+            entry_c.as_ptr(),
+            root_c.as_ptr(),
+            manifest.0,
+            &binding,
+            1,
+            &mut diag,
+        );
+        assert!(!image.is_null(), "capture failed: {}", diag_message(&diag));
+        let image = ProjectImageHandle(image);
+        let digest = CStr::from_ptr(onda_project_image_content_digest(image.0))
+            .to_string_lossy()
+            .into_owned();
+        assert!(digest.starts_with("sha256:"));
+
+        let image_bytes = onda_project_image_serialize(image.0, std::ptr::null_mut(), 0, &mut diag);
+        assert!(image_bytes > 0, "serialize failed: {}", diag_message(&diag));
+        let mut serialized = vec![0_u8; image_bytes as usize];
+        assert_eq!(
+            onda_project_image_serialize(
+                image.0,
+                serialized.as_mut_ptr().cast(),
+                serialized.len(),
+                &mut diag,
+            ),
+            image_bytes
+        );
+        let restored =
+            onda_project_image_deserialize(serialized.as_ptr().cast(), serialized.len(), &mut diag);
+        assert!(
+            !restored.is_null(),
+            "restore failed: {}",
+            diag_message(&diag)
+        );
+        let restored = ProjectImageHandle(restored);
+        assert_eq!(
+            CStr::from_ptr(onda_project_image_content_digest(restored.0)).to_bytes(),
+            digest.as_bytes()
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_project_image_entry(restored.0)).to_bytes(),
+            b"main.onda"
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_project_image_stdlib_digest(restored.0)).to_bytes(),
+            CStr::from_ptr(onda_current_stdlib_digest()).to_bytes()
+        );
+        assert_eq!(onda_project_image_document_count(restored.0), 2);
+        assert_eq!(
+            CStr::from_ptr(onda_project_image_document_path(restored.0, 0)).to_bytes(),
+            b"main.onda"
+        );
+        let mut document_bytes = 0;
+        let document = onda_project_image_document_contents(restored.0, 0, &mut document_bytes);
+        assert_eq!(
+            std::slice::from_raw_parts(document.cast::<u8>(), document_bytes),
+            concat!(
+                "include \"voice.onda\"\n",
+                "buffers:\n  sequence: buffer<i64>\n",
+                "sample:\n  out1 = LEVEL\n",
+            )
+            .as_bytes()
+        );
+        assert_eq!(onda_project_image_resolution_count(restored.0), 1);
+        assert_eq!(
+            onda_project_image_resolution_kind(restored.0, 0),
+            ONDA_SOURCE_REFERENCE_INCLUDE
+        );
+        assert_eq!(onda_project_image_buffer_count(restored.0), 1);
+        assert_eq!(
+            CStr::from_ptr(onda_project_image_buffer_name(restored.0, 0)).to_bytes(),
+            b"sequence"
+        );
+        assert!(
+            CStr::from_ptr(onda_project_image_buffer_asset_id(restored.0, 0))
+                .to_bytes()
+                .starts_with(b"sha256:")
+        );
+        assert_eq!(
+            onda_project_image_buffer_element_type(restored.0, 0),
+            ONDA_PRIMITIVE_I64
+        );
+        assert_eq!(onda_project_image_buffer_frames(restored.0, 0), 2);
+        assert_eq!(onda_project_image_buffer_channels(restored.0, 0), 1);
+        assert_eq!(
+            onda_project_image_buffer_sample_rate(restored.0, 0),
+            48_000.0
+        );
+        let replayed = onda_project_image_compile(restored.0, &options, &mut diag);
+        assert!(
+            !replayed.is_null(),
+            "replay failed: {}",
+            diag_message(&diag)
+        );
+        let _replayed = ProgramHandle(replayed);
+
+        let plan = onda_project_image_materialize(restored.0, &mut diag);
+        assert!(
+            !plan.is_null(),
+            "materialize failed: {}",
+            diag_message(&diag)
+        );
+        let plan = ProjectPlanHandle(plan);
+        let paths = (0..onda_project_materialization_file_count(plan.0))
+            .map(|index| {
+                CStr::from_ptr(onda_project_materialization_file_path(plan.0, index))
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert!(paths.iter().any(|path| path == "code/main.onda"));
+        assert!(paths.iter().any(|path| path == "code/voice.onda"));
+        assert!(paths.iter().any(|path| path == "project.ondaproject"));
+        assert!(paths.iter().any(|path| path.ends_with(".ondabuffer")));
+
+        fs::remove_dir_all(dir).ok();
+    }
+}
+
+#[test]
+fn c_project_file_loader_accepts_an_explicit_manifest_selection() {
+    let paths = [
+        CString::new("first.ondaproject").unwrap(),
+        CString::new("second.ondaproject").unwrap(),
+        CString::new("first.onda").unwrap(),
+        CString::new("second.onda").unwrap(),
+    ];
+    let contents = [
+        br#"{"entry":"first.onda"}"#.to_vec(),
+        br#"{"entry":"second.onda"}"#.to_vec(),
+        b"outs 1\nsample:\n  out1 = 1.0\n".to_vec(),
+        b"outs 1\nsample:\n  out1 = 2.0\n".to_vec(),
+    ];
+    let files = paths
+        .iter()
+        .zip(&contents)
+        .map(|(path, contents)| onda_project_file_t {
+            path_utf8: path.as_ptr(),
+            bytes: contents.as_ptr().cast(),
+            byte_count: contents.len(),
+        })
+        .collect::<Vec<_>>();
+    let selected = CString::new("second.ondaproject").unwrap();
+    let mut diag = empty_diag();
+
+    let image = unsafe {
+        onda_project_image_load_files(files.as_ptr(), files.len(), selected.as_ptr(), &mut diag)
+    };
+    assert!(!image.is_null(), "load failed: {}", diag_message(&diag));
+    let image = ProjectImageHandle(image);
+    assert_eq!(
+        unsafe { CStr::from_ptr(onda_project_image_entry(image.0)) }.to_bytes(),
+        b"second.onda"
+    );
+}
+
+#[test]
+fn project_instances_share_immutable_defaults_and_allow_host_overrides() {
+    unsafe {
+        let paths = [
+            CString::new("project.ondaproject").unwrap(),
+            CString::new("main.onda").unwrap(),
+        ];
+        let contents = [
+            br#"{
+                "entry": "main.onda",
+                "buffers": {
+                    "samples": {
+                        "inline": {
+                            "element": "f32",
+                            "channels": 1,
+                            "sample_rate": 48000,
+                            "values": [0.75]
+                        }
+                    }
+                }
+            }"#
+            .to_vec(),
+            br#"
+outs { out1 }
+buffers { samples: buffer<f32> }
+sample { out1 = samples[0] }
+"#
+            .to_vec(),
+        ];
+        let files = paths
+            .iter()
+            .zip(&contents)
+            .map(|(path, contents)| onda_project_file_t {
+                path_utf8: path.as_ptr(),
+                bytes: contents.as_ptr().cast(),
+                byte_count: contents.len(),
+            })
+            .collect::<Vec<_>>();
+        let mut diag = empty_diag();
+        let image = onda_project_image_load_files(
+            files.as_ptr(),
+            files.len(),
+            paths[0].as_ptr(),
+            &mut diag,
+        );
+        assert!(!image.is_null(), "load failed: {}", diag_message(&diag));
+
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 4,
+        };
+        let program = onda_project_image_compile(image, &options, &mut diag);
+        assert!(
+            !program.is_null(),
+            "project compile failed: {}",
+            diag_message(&diag)
+        );
+        onda_project_image_destroy(image);
+
+        let instance = onda_instance_create(program, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        onda_program_destroy(program);
+        let instance = InstanceHandle(instance);
+
+        let mut output = [0.0_f32; 4];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_process_checked(instance.0, output.len() as i32), 0);
+        assert_eq!(output, [0.75; 4]);
+
+        let mut host_samples = [0.25_f32];
+        assert_eq!(
+            onda_bind_buffer(
+                instance.0,
+                0,
+                host_samples.as_mut_ptr().cast(),
+                1,
+                1,
+                48_000.0,
+                ONDA_PRIMITIVE_F32,
+            ),
+            0
+        );
+        assert_eq!(onda_process_checked(instance.0, output.len() as i32), 0);
+        assert_eq!(output, [0.25; 4]);
+
+        assert_eq!(onda_reset_buffer_to_project_default(instance.0, 0), 0);
+        assert_eq!(onda_process_checked(instance.0, output.len() as i32), 0);
+        assert_eq!(output, [0.75; 4]);
+    }
+}
+
+#[test]
+fn project_compilation_rejects_writes_to_immutable_assets() {
+    unsafe {
+        let paths = [
+            CString::new("project.ondaproject").unwrap(),
+            CString::new("main.onda").unwrap(),
+        ];
+        let contents = [
+            br#"{
+                "entry": "main.onda",
+                "buffers": {
+                    "samples": {
+                        "inline": {
+                            "element": "f32",
+                            "channels": 1,
+                            "sample_rate": 48000,
+                            "values": [0.75]
+                        }
+                    }
+                }
+            }"#
+            .to_vec(),
+            br#"
+buffers { samples: buffer<f32> }
+sample { samples[0] = 0.0 }
+"#
+            .to_vec(),
+        ];
+        let files = paths
+            .iter()
+            .zip(&contents)
+            .map(|(path, contents)| onda_project_file_t {
+                path_utf8: path.as_ptr(),
+                bytes: contents.as_ptr().cast(),
+                byte_count: contents.len(),
+            })
+            .collect::<Vec<_>>();
+        let mut diag = empty_diag();
+        let image = onda_project_image_load_files(
+            files.as_ptr(),
+            files.len(),
+            paths[0].as_ptr(),
+            &mut diag,
+        );
+        assert!(!image.is_null(), "load failed: {}", diag_message(&diag));
+        let image = ProjectImageHandle(image);
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 4,
+        };
+        let program = onda_project_image_compile(image.0, &options, &mut diag);
+        assert!(program.is_null());
+        let message = diag_message(&diag);
+        assert!(message.contains("immutable"), "unexpected error: {message}");
+        assert!(message.contains("may write"), "unexpected error: {message}");
+    }
+}
+
+#[test]
+fn c_api_rewrites_only_parsed_source_references() {
+    unsafe {
+        let path = CString::new("saved/main.onda").unwrap();
+        let source = concat!(
+            "# include \"unchanged.onda\"\r\n",
+            "sample:\r\n",
+            "  out1 = 0.0\r\n",
+            "include \"old/shared.onda\" # keep\r\n",
+            "import old/module\r\n",
+            "import std/math\r\n",
+        );
+        let include = CString::new("old/shared.onda").unwrap();
+        let include_replacement = CString::new("external/shared.onda").unwrap();
+        let import = CString::new("old/module").unwrap();
+        let import_replacement = CString::new("sources/module").unwrap();
+        let rewrites = [
+            onda_source_rewrite_t {
+                kind: ONDA_SOURCE_REFERENCE_INCLUDE,
+                specifier_utf8: include.as_ptr(),
+                replacement_utf8: include_replacement.as_ptr(),
+            },
+            onda_source_rewrite_t {
+                kind: ONDA_SOURCE_REFERENCE_IMPORT,
+                specifier_utf8: import.as_ptr(),
+                replacement_utf8: import_replacement.as_ptr(),
+            },
+        ];
+        let mut diag = empty_diag();
+        let required = onda_rewrite_source_references(
+            path.as_ptr(),
+            source.as_ptr().cast::<c_char>(),
+            source.len(),
+            rewrites.as_ptr(),
+            rewrites.len(),
+            std::ptr::null_mut(),
+            0,
+            &mut diag,
+        );
+        assert!(required > 0, "rewrite failed: {}", diag_message(&diag));
+        let mut output = vec![0_u8; required as usize];
+        assert_eq!(
+            onda_rewrite_source_references(
+                path.as_ptr(),
+                source.as_ptr().cast::<c_char>(),
+                source.len(),
+                rewrites.as_ptr(),
+                rewrites.len(),
+                output.as_mut_ptr().cast::<c_char>(),
+                required,
+                &mut diag,
+            ),
+            required
+        );
+        assert_eq!(
+            std::str::from_utf8(&output).unwrap(),
+            concat!(
+                "# include \"unchanged.onda\"\r\n",
+                "sample:\r\n",
+                "  out1 = 0.0\r\n",
+                "include \"external/shared.onda\" # keep\r\n",
+                "import sources/module\r\n",
+                "import std/math\r\n",
+            )
+        );
     }
 }
 
@@ -1508,22 +2212,22 @@ sample:
 }
 
 #[test]
-fn c_api_buffer_may_write_reports_declared_write_capability() {
+fn c_api_buffer_may_write_metadata_tracks_reachable_writes() {
     unsafe {
         let program = compile_program(
             r#"
 outs { out1 }
 buffers {
-  write_buf: buffer[f32]
-  read_buf: buffer[f32]
+  write_buf: buffer<f32>
+  read_buf: buffer<f32>
 }
-def touch(buf: buffer[f32]):
-  unsafe_write(buf, 0, 0.75)
+def touch(buf: buffer<f32>):
+  buf[0] = 0.75
 proc Writer:
   ins:
     in1
   buffers:
-    b: buffer[f32]
+    b: buffer<f32>
   outs:
     out1
   sample:
@@ -1544,35 +2248,35 @@ sample:
         assert!(read_idx >= 0);
 
         assert_eq!(onda_buffer_may_write(program.0, write_idx), 1);
-        assert_eq!(onda_buffer_may_write(program.0, read_idx), 1);
+        assert_eq!(onda_buffer_may_write(program.0, read_idx), 0);
         assert_eq!(onda_buffer_may_write(program.0, -1), -1);
         assert_eq!(onda_buffer_may_write(std::ptr::null(), write_idx), -1);
     }
 }
 
 #[test]
-fn c_api_buffer_may_write_is_independent_of_reachable_write_shapes() {
+fn c_api_buffer_may_write_marks_conditional_and_multichannel_writes() {
     unsafe {
         let program = compile_program(
             r#"
 outs { out1 }
 buffers {
-  branch_buf: buffer[f32]
-  stereo_buf: buffer[f32[2]]
-  read_buf: buffer[f32]
+  branch_buf: buffer<f32>
+  stereo_buf: buffer<f32[2]>
+  read_buf: buffer<f32>
 }
-def write_if(buf: buffer[f32]):
+def write_if(buf: buffer<f32>):
   if (1 > 0):
-    unsafe_write(buf, 0, 1.0)
+    buf[0] = 1.0
 proc StereoWriter:
   ins:
     in1
   outs:
     out1
   buffers:
-    b: buffer[f32[2]]
+    b: buffer<f32[2]>
   sample:
-    b[0][0] = 0.1
+    b[0, 0] = 0.1
     out1 = in1
 init:
   sw = StereoWriter(b = stereo_buf)
@@ -1594,7 +2298,7 @@ sample:
 
         assert_eq!(onda_buffer_may_write(program.0, branch_idx), 1);
         assert_eq!(onda_buffer_may_write(program.0, stereo_idx), 1);
-        assert_eq!(onda_buffer_may_write(program.0, read_idx), 1);
+        assert_eq!(onda_buffer_may_write(program.0, read_idx), 0);
     }
 }
 
@@ -1605,11 +2309,11 @@ fn c_api_buffer_may_write_is_true_when_buffer_is_read_and_written() {
             r#"
 outs { out1 }
 buffers {
-  rw_buf: buffer[f32]
+  rw_buf: buffer<f32>
 }
 sample:
   x = rw_buf[0]
-  unsafe_write(rw_buf, 0, x)
+  rw_buf[0] = x
   out1 = x
 "#,
         );
@@ -1622,31 +2326,31 @@ sample:
 }
 
 #[test]
-fn c_api_buffer_may_write_is_independent_of_call_syntax() {
+fn c_api_buffer_may_write_tracks_method_style_buffer_calls() {
     unsafe {
         let program = compile_program(
             r#"
 outs { out1 }
 buffers {
-  method_write_buf: buffer[f32]
-  method_read_buf: buffer[f32]
+  method_write_buf: buffer<f32>
+  method_read_buf: buffer<f32>
 }
-def touch(buf: buffer[f32]):
-  buf.unsafe_write(0, 0.5)
+def touch(buf: buffer<f32>):
+  buf[0] = 0.5
 proc Writer:
   ins:
     in1
   outs:
     out1
   buffers:
-    b: buffer[f32]
+    b: buffer<f32>
   sample:
     touch(b)
     out1 = in1
 init:
   w = Writer(b = method_write_buf)
 sample:
-  out1 = w(method_read_buf.unsafe_read(0))
+  out1 = w(method_read_buf[0])
 "#,
         );
 
@@ -1657,17 +2361,17 @@ sample:
         assert!(write_idx >= 0);
         assert!(read_idx >= 0);
         assert_eq!(onda_buffer_may_write(program.0, write_idx), 1);
-        assert_eq!(onda_buffer_may_write(program.0, read_idx), 1);
+        assert_eq!(onda_buffer_may_write(program.0, read_idx), 0);
     }
 }
 
 #[test]
-fn c_api_zero_sample_rate_or_null_zero_shape_unbinds_the_buffer() {
+fn c_api_unbound_buffers_remain_processable_with_neutral_descriptors() {
     unsafe {
         let program = compile_program(
             r#"
 outs { out1 }
-buffers { samples: buffer[f32] }
+buffers { samples: buffer<f32> }
 sample { out1 = 0.25 }
 "#,
         );
@@ -1694,7 +2398,8 @@ sample { out1 = 0.25 }
             onda_bind_buffer(instance.0, 0, std::ptr::null_mut(), 0, 0, 48_000.0, 0,),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, 512), -2);
+        assert_eq!(onda_process_checked(instance.0, 512), 0);
+        assert_eq!(onda_reset_buffer_to_project_default(instance.0, 0), -2);
 
         let mut samples = [1.0_f32];
         assert_eq!(
@@ -1724,11 +2429,62 @@ sample { out1 = 0.25 }
             ),
             0
         );
-        assert_eq!(onda_prepare_unchecked_process(instance.0), -2);
+        assert_eq!(onda_prepare_unchecked_process(instance.0), 0);
 
         assert_eq!(
             onda_bind_buffer(instance.0, 0, std::ptr::null_mut(), 1, 1, 48_000.0, 0,),
             -2
+        );
+    }
+}
+
+#[test]
+fn c_api_exposes_contiguous_buffer_array_groups() {
+    unsafe {
+        let program = compile_program(
+            r#"
+buffers:
+  bank: f32 {3}
+  tail: buffer<f32>
+sample:
+  out1 = bank[1][0]
+"#,
+        );
+        assert_eq!(onda_buffer_count(program.0), 4);
+        assert_eq!(onda_buffer_array_count(program.0), 1);
+        assert_eq!(onda_buffer_array_first(program.0, 0), 0);
+        assert_eq!(onda_buffer_array_len(program.0, 0), 3);
+        assert_eq!(
+            CStr::from_ptr(onda_buffer_array_name(program.0, 0)).to_str(),
+            Ok("bank")
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_buffer_name(program.0, 2)).to_str(),
+            Ok("bank[2]")
+        );
+        assert_eq!(onda_buffer_array_len(program.0, 1), -1);
+    }
+}
+
+#[test]
+fn c_api_buffer_may_write_indexes_physical_buffer_array_slots() {
+    unsafe {
+        let program = compile_program(
+            r#"
+buffers:
+  bank: f32 {4}
+sample:
+  bank[2][0] = 1.0
+"#,
+        );
+        let first = onda_buffer_array_first(program.0, 0);
+        assert_eq!(first, 0);
+        assert_eq!(onda_buffer_array_len(program.0, 0), 4);
+        assert_eq!(
+            (0..4)
+                .map(|slot| onda_buffer_may_write(program.0, first + slot))
+                .collect::<Vec<_>>(),
+            vec![0, 0, 1, 0]
         );
     }
 }

@@ -180,8 +180,7 @@ impl<'a> FunctionLowerer<'a> {
                 let flat_name = format!("{root}.{field_name}");
                 let slice = self.lower_named_slice(
                     &flat_name,
-                    None,
-                    None,
+                    SliceSelection::default(),
                     Some(onda_mir::AccessMode::ReadWrite),
                     block,
                     expression.loc(),

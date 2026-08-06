@@ -60,6 +60,12 @@ async function synchronizeFormatVersions() {
   await synchronizeText("crates/onda_mir/src/lib.rs", [
     constant(/pub const MIR_SCHEMA_VERSION: u32 = \d+;/, `pub const MIR_SCHEMA_VERSION: u32 = ${v.mir_schema};`),
   ]);
+  await synchronizeText("crates/onda_project/src/buffer.rs", [
+    constant(/pub const ONDA_BUFFER_FORMAT_VERSION: u32 = \d+;/, `pub const ONDA_BUFFER_FORMAT_VERSION: u32 = ${v.buffer_asset};`),
+  ]);
+  await synchronizeText("crates/onda_project/src/image.rs", [
+    constant(/pub const ONDA_PROJECT_IMAGE_FORMAT_VERSION: u32 = \d+;/, `pub const ONDA_PROJECT_IMAGE_FORMAT_VERSION: u32 = ${v.project_image};`),
+  ]);
   await synchronizeText("crates/onda_processor_abi/src/lib.rs", [
     constant(/pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = \d+;/, `pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = ${v.processor_artifact};`),
     constant(/pub const PROCESSOR_ABI_VERSION: u32 = \d+;/, `pub const PROCESSOR_ABI_VERSION: u32 = ${v.processor_abi};`),

@@ -937,6 +937,13 @@
         color: var(--text);
       }
 
+      .buffer-embedding-control {
+        flex: 0 0 auto;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
       .empty {
         color: var(--muted);
       }
@@ -1022,8 +1029,10 @@
       <section class="file-picker" id="file-picker" hidden>
         <div class="file-picker-content">
           <img class="file-picker-logo" id="file-picker-logo" alt="Onda logo" />
-          <button class="primary" id="choose-onda-file" type="button">Choose Onda file</button>
-          <div class="file-picker-copy">or drop one here</div>
+          <button class="primary" id="choose-onda-file" type="button">
+            Open Onda source or project
+          </button>
+          <div class="file-picker-copy">or drop an .onda or .ondaproject file here</div>
           <div class="file-picker-settings" id="file-picker-settings">
             <div class="param-setting">
               <label class="param-setting-label" for="run-sample-rate">Sample Rate</label>
@@ -1060,6 +1069,7 @@
           <div class="actions">
             <button class="primary" id="start">Play</button>
             <button class="secondary" id="stop">Stop</button>
+            <button class="secondary" id="save-project" type="button">Save as project</button>
             <button class="secondary" id="unload">Unload</button>
           </div>
           <div class="error" id="error"></div>
@@ -1105,6 +1115,14 @@
             ></button>
             <div class="params-title">Buffers</div>
           </div>
+          <label
+            class="param-toggle buffer-embedding-control"
+            id="buffer-embedding-control"
+            title="Store the original encoded audio files in the DAW project state; this can significantly increase project size"
+          >
+            <input id="embed-buffers" type="checkbox" />
+            <span id="embed-buffers-label">Embed in DAW project</span>
+          </label>
         </div>
         <div class="section-body buffers-list" id="buffers-body">
           <div class="buffers-list" id="buffers"></div>
@@ -1205,7 +1223,7 @@
             chooseBufferFile(name) {
               const input = document.createElement("input");
               input.type = "file";
-              input.accept = ".wav,audio/wav,audio/x-wav";
+              input.accept = ".wav,.ondabuffer,audio/wav,audio/x-wav,application/vnd.onda.buffer";
               input.hidden = true;
 
               let settled = false;
@@ -1316,6 +1334,11 @@
         currentInputDevice: null,
         currentOutputDevice: null,
         supportsSourceSelection: false,
+        supportsProjectExport: false,
+        canExportProject: false,
+        supportsBufferEmbedding: false,
+        embedBuffers: false,
+        embeddedBuffersReady: false,
         supportsTransport: false,
         supportsDeviceSelection: false,
         supportsRunSettings: false,
@@ -1330,6 +1353,10 @@
       const resetEventArgumentsButton = document.getElementById("reset-event-arguments");
       const refreshDevicesButton = document.getElementById("refresh-devices");
       const unloadButton = document.getElementById("unload");
+      const saveProjectButton = document.getElementById("save-project");
+      const bufferEmbeddingControl = document.getElementById("buffer-embedding-control");
+      const embedBuffersInput = document.getElementById("embed-buffers");
+      const embedBuffersLabel = document.getElementById("embed-buffers-label");
       const chooseOndaFileButton = document.getElementById("choose-onda-file");
       const filePickerNode = document.getElementById("file-picker");
       const filePickerSettingsNode = document.getElementById("file-picker-settings");
@@ -1419,6 +1446,15 @@
       });
       chooseOndaFileButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "chooseOndaFile" });
+      });
+      saveProjectButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "saveProjectAs" });
+      });
+      embedBuffersInput.addEventListener("change", () => {
+        hostBridge.postMessage({
+          type: "setEmbedBuffers",
+          enabled: embedBuffersInput.checked,
+        });
       });
       const updateRunSettings = () => {
         hostBridge.postMessage({
@@ -2232,6 +2268,8 @@
       function render() {
         applyTheme();
         const supportsSourceSelection = state.supportsSourceSelection === true;
+        const supportsProjectExport = state.supportsProjectExport === true;
+        const supportsBufferEmbedding = state.supportsBufferEmbedding === true;
         const supportsTransport = state.supportsTransport === true;
         const supportsDeviceSelection = state.supportsDeviceSelection === true;
         const supportsRunSettings = state.supportsRunSettings === true;
@@ -2241,6 +2279,8 @@
         filePickerSettingsNode.hidden = !supportsRunSettings;
         runHeaderNode.hidden = supportsSourceSelection && !hasSource;
         unloadButton.hidden = !supportsSourceSelection;
+        saveProjectButton.hidden = !supportsProjectExport || !hasSource;
+        saveProjectButton.disabled = state.canExportProject !== true;
         pathNode.textContent = state.path ? state.path : "No file selected";
         const status = state.connected
           ? state.status
@@ -2270,16 +2310,20 @@
         const hasParams = state.params.length > 0;
         const canEditRun = canEditRunControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
+        bufferEmbeddingControl.hidden = !supportsBufferEmbedding || !hasBuffers;
+        embedBuffersInput.checked = state.embedBuffers === true;
+        embedBuffersLabel.textContent =
+          state.embedBuffers === true && state.embeddedBuffersReady !== true
+            ? "Embedding buffers…"
+            : "Embed in DAW project";
         eventsSection.style.display = hasEvents ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
         refreshDevicesButton.hidden = !supportsDeviceSelection;
         ioSettingsNode.hidden = !supportsDeviceSelection;
         ioSettingsNode.style.display = supportsDeviceSelection ? "grid" : "none";
-        const buffersReady = state.buffers.every(buffer => Boolean(buffer.loadedPath));
-        const canStart = buffersReady || Boolean(state.sourceDirty);
         startButton.hidden = !supportsTransport;
         stopButton.hidden = !supportsTransport;
-        startButton.disabled = !state.path || state.running || !canStart;
+        startButton.disabled = !state.path || state.running;
         stopButton.disabled = !state.running;
         renderDeviceOptions(inputDeviceNode, state.inputDevices, state.currentInputDevice, true);
         renderDeviceOptions(outputDeviceNode, state.outputDevices, state.currentOutputDevice, true);
@@ -2301,9 +2345,13 @@
             detail.className = "buffer-detail";
             const loaded = document.createElement("div");
             loaded.className = "buffer-file";
+            const isBound = Number.isInteger(Number(buffer.loadedFrames))
+              && Number(buffer.loadedFrames) > 0;
             loaded.textContent = buffer.loadedPath
               ? bufferFileName(buffer.loadedPath)
-              : "No file bound";
+              : isBound
+                ? "Embedded project asset"
+                : "No file bound";
             loaded.title = buffer.loadedPath || loaded.textContent;
             detail.appendChild(loaded);
             const metadata = loadedBufferSummary(buffer);
@@ -2319,8 +2367,8 @@
             actions.className = "buffer-actions";
             const choose = document.createElement("button");
             choose.className = "secondary compact-action";
-            choose.textContent = buffer.loadedPath ? "Replace" : "Bind";
-            choose.title = "Bind a WAV file";
+            choose.textContent = isBound ? "Replace" : "Bind";
+            choose.title = "Bind a WAV or .ondabuffer file";
             choose.disabled = !canEditRun;
             choose.addEventListener("click", () => {
               if (typeof hostBridge.chooseBufferFile === "function") {
@@ -2332,8 +2380,8 @@
             const clear = document.createElement("button");
             clear.className = "secondary compact-action";
             clear.textContent = "Clear";
-            clear.hidden = !buffer.loadedPath;
-            clear.disabled = !canEditRun || !buffer.loadedPath;
+            clear.hidden = !isBound;
+            clear.disabled = !canEditRun || !isBound;
             clear.addEventListener("click", () => {
               hostBridge.postMessage({ type: "clearBuffer", name: buffer.name });
             });

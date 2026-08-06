@@ -12,8 +12,8 @@ from typing import Optional
 
 PROCESSOR_ARTIFACT_FORMAT = "onda-processor"
 # Synchronized from format-versions.json; do not edit these copies directly.
-PROCESSOR_ARTIFACT_FORMAT_VERSION = 2
-PROCESSOR_ABI_VERSION = 2
+PROCESSOR_ARTIFACT_FORMAT_VERSION = 3
+PROCESSOR_ABI_VERSION = 3
 MAX_EXACT_HOST_INTEGER = (1 << 53) - 1
 
 SCALAR_FORMATS = {
@@ -61,8 +61,8 @@ def flattened_slots(entries: list[dict]) -> int:
 
 
 def scalar_name(type_repr: str) -> str:
-    if type_repr.startswith("buffer[") and type_repr.endswith("]"):
-        type_repr = type_repr[len("buffer[") : -1]
+    if type_repr.startswith("buffer<") and type_repr.endswith(">"):
+        type_repr = type_repr[len("buffer<") : -1]
     scalar = type_repr.split("[", 1)[0]
     if scalar not in SCALAR_FORMATS:
         fail(f"unsupported scalar type {type_repr!r}")

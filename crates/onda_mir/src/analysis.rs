@@ -4,10 +4,13 @@
 //! ABI.  Optimizers and backends can therefore make the same decisions about
 //! calls without reverse-engineering pointer provenance from lowered code.
 
+use std::collections::HashSet;
+use std::fmt;
+
 use crate::{
-    BinaryOp, Block, BoundsMode, CallArgument, FunctionId, FunctionKind, LocalId, ParameterId,
-    Place, PlaceBase, Program, Projection, Rvalue, ScalarType, ScalarValue, SliceSource,
-    StatementKind, Value,
+    BinaryOp, Block, BoundsMode, BufferId, CallArgument, Function, FunctionId, FunctionKind,
+    LocalId, ParameterId, Place, PlaceBase, Program, Projection, Rvalue, ScalarType, ScalarValue,
+    SliceSource, StatementKind, Type, Value,
 };
 
 /// Logical memory domains visible to a MIR function.
@@ -257,6 +260,576 @@ fn normalize_value_parameter_effects(function: &crate::Function, effects: &mut F
     if !effects.parameters.iter().any(|effect| effect.writes) {
         effects.writes = effects.writes.without(MemoryRegionSet::ARGUMENTS);
     }
+}
+
+/// Reachable write effects for the program's declared interface buffers.
+///
+/// This is distinct from [`crate::AccessMode`]: access mode states what a
+/// declaration permits, while this analysis reports whether any init,
+/// process, or event entry point can actually write the buffer.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BufferWriteAnalysis {
+    may_write: Vec<bool>,
+}
+
+impl BufferWriteAnalysis {
+    pub fn may_write(&self, buffer: BufferId) -> bool {
+        self.may_write.get(buffer.index()).copied().unwrap_or(false)
+    }
+
+    pub fn buffers(&self) -> &[bool] {
+        &self.may_write
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BufferWriteAnalysisError {
+    message: String,
+}
+
+impl BufferWriteAnalysisError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for BufferWriteAnalysisError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for BufferWriteAnalysisError {}
+
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+enum ResourceOrigin {
+    Buffer(usize),
+    Parameter(ParameterSlot),
+}
+
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+struct ParameterSlot {
+    parameter: usize,
+    slot: usize,
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+struct FunctionBufferWriteSummary {
+    buffers: HashSet<usize>,
+    parameters: HashSet<ParameterSlot>,
+}
+
+/// Computes per-buffer writes reachable from every externally callable MIR
+/// entry point, including writes through calls, buffer parameters, and slices.
+pub fn analyze_buffer_writes(
+    program: &Program,
+) -> Result<BufferWriteAnalysis, BufferWriteAnalysisError> {
+    let mut summaries = vec![FunctionBufferWriteSummary::default(); program.functions.len()];
+    loop {
+        let previous = summaries.clone();
+        let mut changed = false;
+        for (function_index, function) in program.functions.iter().enumerate() {
+            let aliases = infer_local_resource_aliases(program, function);
+            let unsupported_results = unsupported_resource_call_results(program, function);
+            let mut next = FunctionBufferWriteSummary::default();
+            collect_block_resource_writes(
+                program,
+                function,
+                &function.body,
+                &aliases,
+                &unsupported_results,
+                &previous,
+                &mut next,
+            )?;
+            if next != summaries[function_index] {
+                summaries[function_index] = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut roots = vec![
+        program.entry_points.init.index(),
+        program.entry_points.process.index(),
+    ];
+    roots.extend(
+        program
+            .interface
+            .events
+            .iter()
+            .map(|event| event.handler.index()),
+    );
+
+    let mut may_write = vec![false; program.interface.buffers.len()];
+    for root in roots {
+        let summary = summaries.get(root).ok_or_else(|| {
+            BufferWriteAnalysisError::new(format!(
+                "MIR buffer-write root function {root} is missing"
+            ))
+        })?;
+        for buffer in &summary.buffers {
+            let Some(effect) = may_write.get_mut(*buffer) else {
+                return Err(BufferWriteAnalysisError::new(format!(
+                    "MIR buffer-write analysis references missing buffer {buffer}"
+                )));
+            };
+            *effect = true;
+        }
+    }
+
+    Ok(BufferWriteAnalysis { may_write })
+}
+
+fn infer_local_resource_aliases(
+    program: &Program,
+    function: &Function,
+) -> Vec<HashSet<ResourceOrigin>> {
+    let mut aliases = vec![HashSet::new(); function.locals.len()];
+    loop {
+        let previous = aliases.clone();
+        collect_block_aliases(program, function, &function.body, &previous, &mut aliases);
+        if aliases == previous {
+            return aliases;
+        }
+    }
+}
+
+fn collect_block_aliases(
+    program: &Program,
+    function: &Function,
+    block: &Block,
+    previous: &[HashSet<ResourceOrigin>],
+    aliases: &mut [HashSet<ResourceOrigin>],
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Assign { destination, value }
+                if destination.projections.is_empty()
+                    && matches!(destination.base, PlaceBase::Local(_)) =>
+            {
+                let PlaceBase::Local(local) = destination.base else {
+                    unreachable!()
+                };
+                aliases[local.index()]
+                    .extend(rvalue_resource_origins(program, function, value, previous));
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_block_aliases(program, function, then_block, previous, aliases);
+                collect_block_aliases(program, function, else_block, previous, aliases);
+            }
+            StatementKind::Loop { body } => {
+                collect_block_aliases(program, function, body, previous, aliases)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rvalue_resource_origins(
+    program: &Program,
+    function: &Function,
+    value: &Rvalue,
+    aliases: &[HashSet<ResourceOrigin>],
+) -> HashSet<ResourceOrigin> {
+    match value {
+        Rvalue::Use(value) => value_resource_origins(*value, aliases),
+        Rvalue::Load(place) => place_resource_origins(place, aliases),
+        Rvalue::MakeSlice { source, .. } => match source {
+            SliceSource::Buffer { buffer, .. } => buffer_ref_resource_origins(*buffer),
+            SliceSource::BufferParam { parameter, .. } => {
+                buffer_param_resource_origins(program, function, *parameter)
+            }
+            SliceSource::Place(place) => place_resource_origins(place, aliases),
+            SliceSource::ConstData(_) => HashSet::new(),
+        },
+        _ => HashSet::new(),
+    }
+}
+
+fn value_resource_origins(
+    value: Value,
+    aliases: &[HashSet<ResourceOrigin>],
+) -> HashSet<ResourceOrigin> {
+    match value {
+        Value::Local(local) => aliases.get(local.index()).cloned().unwrap_or_default(),
+        Value::Constant(_) => HashSet::new(),
+    }
+}
+
+fn place_resource_origins(
+    place: &Place,
+    aliases: &[HashSet<ResourceOrigin>],
+) -> HashSet<ResourceOrigin> {
+    match place.base {
+        PlaceBase::Parameter(parameter) => {
+            HashSet::from([ResourceOrigin::Parameter(ParameterSlot {
+                parameter: parameter.index(),
+                slot: 0,
+            })])
+        }
+        PlaceBase::Local(local) => aliases.get(local.index()).cloned().unwrap_or_default(),
+        PlaceBase::State(_) | PlaceBase::Param(_) | PlaceBase::EventParam(_) => HashSet::new(),
+    }
+}
+
+fn unsupported_resource_call_results(program: &Program, function: &Function) -> HashSet<usize> {
+    let mut locals = HashSet::new();
+    collect_unsupported_resource_call_results(program, function, &function.body, &mut locals);
+    locals
+}
+
+fn collect_unsupported_resource_call_results(
+    program: &Program,
+    function: &Function,
+    block: &Block,
+    locals: &mut HashSet<usize>,
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Call { results, .. } => {
+                for result in results {
+                    let Some(local) = function.locals.get(result.index()) else {
+                        continue;
+                    };
+                    if matches!(
+                        program.types.get(local.ty.index()),
+                        Some(Type::Slice { .. } | Type::Buffer { .. })
+                    ) {
+                        locals.insert(result.index());
+                    }
+                }
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_unsupported_resource_call_results(program, function, then_block, locals);
+                collect_unsupported_resource_call_results(program, function, else_block, locals);
+            }
+            StatementKind::Loop { body } => {
+                collect_unsupported_resource_call_results(program, function, body, locals);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_block_resource_writes(
+    program: &Program,
+    function: &Function,
+    block: &Block,
+    aliases: &[HashSet<ResourceOrigin>],
+    unsupported_results: &HashSet<usize>,
+    summaries: &[FunctionBufferWriteSummary],
+    output: &mut FunctionBufferWriteSummary,
+) -> Result<(), BufferWriteAnalysisError> {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Assign { destination, .. } => {
+                if let PlaceBase::Parameter(parameter) = destination.base {
+                    output.parameters.insert(ParameterSlot {
+                        parameter: parameter.index(),
+                        slot: 0,
+                    });
+                }
+            }
+            StatementKind::BufferStore { buffer, .. } => {
+                mark_resource_origins(buffer_ref_resource_origins(*buffer), output);
+            }
+            StatementKind::BufferParamStore { parameter, .. } => {
+                mark_resource_origins(
+                    buffer_param_resource_origins(program, function, *parameter),
+                    output,
+                );
+            }
+            StatementKind::SliceStore { slice, .. } => {
+                mark_value_resource_write(
+                    *slice,
+                    aliases,
+                    unsupported_results,
+                    "slice store",
+                    output,
+                )?;
+            }
+            StatementKind::SliceFill { destination, .. }
+            | StatementKind::SliceCopy { destination, .. } => {
+                mark_value_resource_write(
+                    *destination,
+                    aliases,
+                    unsupported_results,
+                    "slice write",
+                    output,
+                )?;
+            }
+            StatementKind::Call {
+                function: callee,
+                args,
+                ..
+            } => {
+                let callee_summary = summaries.get(callee.index()).ok_or_else(|| {
+                    BufferWriteAnalysisError::new(format!(
+                        "MIR call references missing function {}",
+                        callee.raw()
+                    ))
+                })?;
+                output
+                    .buffers
+                    .extend(callee_summary.buffers.iter().copied());
+                for parameter in &callee_summary.parameters {
+                    let argument = args.get(parameter.parameter).ok_or_else(|| {
+                        BufferWriteAnalysisError::new(format!(
+                            "MIR call to function {} has no argument for writable parameter {}",
+                            callee.raw(),
+                            parameter.parameter
+                        ))
+                    })?;
+                    if call_argument_uses_unsupported_result(argument, unsupported_results) {
+                        return Err(BufferWriteAnalysisError::new(
+                            "cannot infer interface-buffer writes through a slice or buffer returned by a MIR call",
+                        ));
+                    }
+                    mark_resource_origins(
+                        call_argument_resource_origins(
+                            program,
+                            function,
+                            argument,
+                            aliases,
+                            parameter.slot,
+                        ),
+                        output,
+                    );
+                }
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_block_resource_writes(
+                    program,
+                    function,
+                    then_block,
+                    aliases,
+                    unsupported_results,
+                    summaries,
+                    output,
+                )?;
+                collect_block_resource_writes(
+                    program,
+                    function,
+                    else_block,
+                    aliases,
+                    unsupported_results,
+                    summaries,
+                    output,
+                )?;
+            }
+            StatementKind::Loop { body } => collect_block_resource_writes(
+                program,
+                function,
+                body,
+                aliases,
+                unsupported_results,
+                summaries,
+                output,
+            )?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn mark_value_resource_write(
+    value: Value,
+    aliases: &[HashSet<ResourceOrigin>],
+    unsupported_results: &HashSet<usize>,
+    context: &str,
+    output: &mut FunctionBufferWriteSummary,
+) -> Result<(), BufferWriteAnalysisError> {
+    if let Value::Local(local) = value {
+        if unsupported_results.contains(&local.index()) {
+            return Err(BufferWriteAnalysisError::new(format!(
+                "cannot infer interface-buffer writes for {context} through a slice returned by a MIR call"
+            )));
+        }
+    }
+    mark_resource_origins(value_resource_origins(value, aliases), output);
+    Ok(())
+}
+
+fn call_argument_resource_origins(
+    program: &Program,
+    function: &Function,
+    argument: &CallArgument,
+    aliases: &[HashSet<ResourceOrigin>],
+    slot: usize,
+) -> HashSet<ResourceOrigin> {
+    match argument {
+        CallArgument::Buffer(buffer) => buffer_ref_resource_origins(*buffer),
+        CallArgument::BufferParam(parameter) => {
+            buffer_param_resource_origins(program, function, *parameter)
+        }
+        CallArgument::BufferSpan(span) => match span {
+            crate::BufferSpanRef::Interface { first, len } if slot < *len as usize => {
+                HashSet::from([ResourceOrigin::Buffer(first.index().saturating_add(slot))])
+            }
+            crate::BufferSpanRef::Parameter {
+                span, start, len, ..
+            } if slot < *len as usize => {
+                HashSet::from([ResourceOrigin::Parameter(ParameterSlot {
+                    parameter: span.index(),
+                    slot: (*start as usize).saturating_add(slot),
+                })])
+            }
+            crate::BufferSpanRef::Interface { first, len } => (first.index()
+                ..first.index().saturating_add(*len as usize))
+                .map(ResourceOrigin::Buffer)
+                .collect(),
+            crate::BufferSpanRef::Parameter { span, start, len } => (*start as usize
+                ..(*start as usize).saturating_add(*len as usize))
+                .map(|slot| {
+                    ResourceOrigin::Parameter(ParameterSlot {
+                        parameter: span.index(),
+                        slot,
+                    })
+                })
+                .collect(),
+        },
+        CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => {
+            place_resource_origins(place, aliases)
+        }
+        CallArgument::Value(value)
+        | CallArgument::SliceElement { slice: value, .. }
+        | CallArgument::SliceWindow { slice: value, .. } => value_resource_origins(*value, aliases),
+    }
+}
+
+fn call_argument_uses_unsupported_result(
+    argument: &CallArgument,
+    unsupported_results: &HashSet<usize>,
+) -> bool {
+    let value = match argument {
+        CallArgument::Value(value)
+        | CallArgument::SliceElement { slice: value, .. }
+        | CallArgument::SliceWindow { slice: value, .. } => Some(*value),
+        CallArgument::Place(Place {
+            base: PlaceBase::Local(local),
+            ..
+        })
+        | CallArgument::ArrayWindow {
+            array:
+                Place {
+                    base: PlaceBase::Local(local),
+                    ..
+                },
+            ..
+        } => return unsupported_results.contains(&local.index()),
+        CallArgument::Place(_)
+        | CallArgument::ArrayWindow { .. }
+        | CallArgument::Buffer(_)
+        | CallArgument::BufferParam(_)
+        | CallArgument::BufferSpan(_) => None,
+    };
+    matches!(value, Some(Value::Local(local)) if unsupported_results.contains(&local.index()))
+}
+
+fn mark_resource_origins(
+    origins: HashSet<ResourceOrigin>,
+    output: &mut FunctionBufferWriteSummary,
+) {
+    for origin in origins {
+        match origin {
+            ResourceOrigin::Buffer(buffer) => {
+                output.buffers.insert(buffer);
+            }
+            ResourceOrigin::Parameter(parameter) => {
+                output.parameters.insert(parameter);
+            }
+        }
+    }
+}
+
+fn buffer_ref_resource_origins(buffer: crate::BufferRef) -> HashSet<ResourceOrigin> {
+    match buffer {
+        crate::BufferRef::Direct(buffer) => HashSet::from([ResourceOrigin::Buffer(buffer.index())]),
+        crate::BufferRef::ArrayElement {
+            first,
+            len,
+            selector,
+            bounds,
+        } => selected_slots(selector, len as usize, bounds)
+            .into_iter()
+            .map(|slot| ResourceOrigin::Buffer(first.index().saturating_add(slot)))
+            .collect(),
+    }
+}
+
+fn buffer_param_resource_origins(
+    program: &Program,
+    function: &Function,
+    parameter: crate::BufferParamRef,
+) -> HashSet<ResourceOrigin> {
+    match parameter {
+        crate::BufferParamRef::Direct(parameter) => {
+            HashSet::from([ResourceOrigin::Parameter(ParameterSlot {
+                parameter: parameter.index(),
+                slot: 0,
+            })])
+        }
+        crate::BufferParamRef::ArrayElement {
+            span,
+            selector,
+            bounds,
+        } => {
+            let len = function
+                .params
+                .get(span.index())
+                .and_then(|parameter| program.types.get(parameter.ty.index()))
+                .and_then(|ty| match ty {
+                    Type::BufferSpan { len, .. } => Some(*len as usize),
+                    _ => None,
+                })
+                .unwrap_or(1);
+            selected_slots(selector, len, bounds)
+                .into_iter()
+                .map(|slot| {
+                    ResourceOrigin::Parameter(ParameterSlot {
+                        parameter: span.index(),
+                        slot,
+                    })
+                })
+                .collect()
+        }
+    }
+}
+
+fn selected_slots(selector: Value, len: usize, bounds: crate::BoundsMode) -> Vec<usize> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let exact = match selector {
+        Value::Constant(ScalarValue::I32(selector)) => match bounds {
+            crate::BoundsMode::Clamp => {
+                let maximum = i32::try_from(len - 1).unwrap_or(i32::MAX);
+                Some(selector.clamp(0, maximum) as usize)
+            }
+            crate::BoundsMode::Checked | crate::BoundsMode::Unchecked => usize::try_from(selector)
+                .ok()
+                .filter(|selector| *selector < len),
+        },
+        _ => None,
+    };
+    exact.map_or_else(|| (0..len).collect(), |slot| vec![slot])
 }
 
 /// Inclusive integer interval with an explicit MIR scalar width.
@@ -766,12 +1339,14 @@ fn scan_block(
                 mark_checked_bounds(*bounds, effects);
             }
             StatementKind::BufferStore {
+                buffer,
                 channel,
                 index,
                 bounds,
                 ..
             } => {
                 effects.writes.insert(MemoryRegionSet::BUFFERS);
+                scan_buffer_ref(*buffer, effects);
                 scan_optional_value(*channel, effects);
                 scan_value(*index, effects);
                 mark_checked_bounds(*bounds, effects);
@@ -783,7 +1358,7 @@ fn scan_block(
                 bounds,
                 ..
             } => {
-                mark_parameter(*parameter, Access::Read, effects);
+                mark_buffer_param_ref(*parameter, Access::Read, effects);
                 effects.writes.insert(MemoryRegionSet::INDIRECT);
                 scan_optional_value(*channel, effects);
                 scan_value(*index, effects);
@@ -896,12 +1471,14 @@ fn scan_rvalue(
             mark_checked_bounds(*bounds, effects);
         }
         Rvalue::BufferLoad {
+            buffer,
             channel,
             index,
             bounds,
             ..
         } => {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
+            scan_buffer_ref(*buffer, effects);
             scan_optional_value(*channel, effects);
             scan_value(*index, effects);
             mark_checked_bounds(*bounds, effects);
@@ -912,19 +1489,22 @@ fn scan_rvalue(
             index,
             bounds,
         } => {
-            mark_parameter(*parameter, Access::Read, effects);
+            mark_buffer_param_ref(*parameter, Access::Read, effects);
             effects.reads.insert(MemoryRegionSet::INDIRECT);
             scan_optional_value(*channel, effects);
             scan_value(*index, effects);
             mark_checked_bounds(*bounds, effects);
         }
-        Rvalue::BufferLen(_) | Rvalue::BufferChannels(_) | Rvalue::BufferSampleRate(_) => {
+        Rvalue::BufferLen(buffer)
+        | Rvalue::BufferChannels(buffer)
+        | Rvalue::BufferSampleRate(buffer) => {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
+            scan_buffer_ref(*buffer, effects);
         }
         Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter) => {
-            mark_parameter(*parameter, Access::Read, effects);
+            mark_buffer_param_ref(*parameter, Access::Read, effects);
         }
         Rvalue::ConstDataLoad { index, bounds, .. } => {
             effects.reads.insert(MemoryRegionSet::CONST_DATA);
@@ -959,12 +1539,13 @@ fn scan_rvalue(
 fn scan_slice_source(source: &SliceSource, effects: &mut FunctionEffects) {
     match source {
         SliceSource::Place(place) => scan_place(place, Access::Read, effects),
-        SliceSource::Buffer { channel, .. } => {
+        SliceSource::Buffer { buffer, channel } => {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
+            scan_buffer_ref(*buffer, effects);
             scan_optional_value(*channel, effects);
         }
         SliceSource::BufferParam { parameter, channel } => {
-            mark_parameter(*parameter, Access::Read, effects);
+            mark_buffer_param_ref(*parameter, Access::Read, effects);
             scan_optional_value(*channel, effects);
         }
         SliceSource::ConstData(_) => {
@@ -1004,9 +1585,34 @@ fn scan_call_argument(argument: &CallArgument, effects: &mut FunctionEffects) {
             scan_value(*start, effects);
             mark_dynamic_bounds(*bounds, effects);
         }
-        CallArgument::Buffer(_) => {
+        CallArgument::Buffer(buffer) => {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
+            scan_buffer_ref(*buffer, effects);
         }
+        CallArgument::BufferParam(parameter) => {
+            mark_buffer_param_ref(*parameter, Access::Read, effects);
+        }
+        CallArgument::BufferSpan(span) => match span {
+            crate::BufferSpanRef::Interface { .. } => {
+                effects.reads.insert(MemoryRegionSet::BUFFERS);
+            }
+            crate::BufferSpanRef::Parameter { span, .. } => {
+                effects.reads.insert(MemoryRegionSet::ARGUMENTS);
+                if let Some(parameter) = effects.parameters.get_mut(span.index()) {
+                    parameter.reads = true;
+                }
+            }
+        },
+    }
+}
+
+fn scan_buffer_ref(buffer: crate::BufferRef, effects: &mut FunctionEffects) {
+    if let crate::BufferRef::ArrayElement {
+        selector, bounds, ..
+    } = buffer
+    {
+        scan_value(selector, effects);
+        mark_dynamic_bounds(bounds, effects);
     }
 }
 
@@ -1051,6 +1657,23 @@ fn mark_parameter(parameter: ParameterId, access: Access, effects: &mut Function
     }
 }
 
+fn mark_buffer_param_ref(
+    parameter: crate::BufferParamRef,
+    access: Access,
+    effects: &mut FunctionEffects,
+) {
+    for index in parameter.possible_indices() {
+        mark_parameter(ParameterId::new(index as u32), access, effects);
+    }
+    if let crate::BufferParamRef::ArrayElement {
+        selector, bounds, ..
+    } = parameter
+    {
+        scan_value(selector, effects);
+        mark_checked_bounds(bounds, effects);
+    }
+}
+
 fn mark_region(region: MemoryRegionSet, access: Access, effects: &mut FunctionEffects) {
     match access {
         Access::Read => {
@@ -1068,6 +1691,34 @@ fn merge_argument_effects(
     argument: &CallArgument,
     access: ReferenceEffects,
 ) -> bool {
+    if let CallArgument::BufferParam(parameter) = argument {
+        let mut changed = false;
+        if access.reads {
+            changed |= caller.reads.insert(MemoryRegionSet::ARGUMENTS);
+        }
+        if access.writes {
+            changed |= caller.writes.insert(MemoryRegionSet::ARGUMENTS);
+        }
+        for index in parameter.possible_indices() {
+            if let Some(parameter_effects) = caller.parameters.get_mut(index) {
+                changed |= parameter_effects.merge(access);
+            }
+        }
+        return changed;
+    }
+    if let CallArgument::BufferSpan(crate::BufferSpanRef::Parameter { span, .. }) = argument {
+        let mut changed = false;
+        if access.reads {
+            changed |= caller.reads.insert(MemoryRegionSet::ARGUMENTS);
+        }
+        if access.writes {
+            changed |= caller.writes.insert(MemoryRegionSet::ARGUMENTS);
+        }
+        if let Some(parameter_effects) = caller.parameters.get_mut(span.index()) {
+            changed |= parameter_effects.merge(access);
+        }
+        return changed;
+    }
     let (region, caller_parameter) = match argument {
         CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => {
             match place.base {
@@ -1084,6 +1735,13 @@ fn merge_argument_effects(
             (MemoryRegionSet::INDIRECT, None)
         }
         CallArgument::Buffer(_) => (MemoryRegionSet::BUFFERS, None),
+        CallArgument::BufferParam(_) => unreachable!("buffer parameter arguments return above"),
+        CallArgument::BufferSpan(crate::BufferSpanRef::Interface { .. }) => {
+            (MemoryRegionSet::BUFFERS, None)
+        }
+        CallArgument::BufferSpan(crate::BufferSpanRef::Parameter { .. }) => {
+            unreachable!("buffer span parameter arguments return above")
+        }
         CallArgument::Value(_) => (MemoryRegionSet::INDIRECT, None),
     };
     let mut changed = false;
@@ -1277,6 +1935,349 @@ mod tests {
         let caller = analysis.function(FunctionId::new(3));
         assert!(caller.writes.contains(MemoryRegionSet::STATE));
         assert!(!caller.writes.contains(MemoryRegionSet::ARGUMENTS));
+    }
+
+    #[test]
+    fn buffer_writes_follow_entry_points_calls_and_slice_aliases() {
+        let i32_ty = TypeId::new(1);
+        let buffer_ty = TypeId::new(2);
+        let slice_ty = TypeId::new(3);
+
+        let mut init = function("init", Vec::new(), Block::default());
+        init.kind = FunctionKind::Init;
+
+        let mut process = function(
+            "process",
+            process_function_params(i32_ty),
+            Block {
+                statements: vec![
+                    statement(StatementKind::Assign {
+                        destination: Place::local(LocalId::new(0)),
+                        value: Rvalue::MakeSlice {
+                            source: SliceSource::Buffer {
+                                buffer: crate::BufferRef::Direct(BufferId::new(1)),
+                                channel: None,
+                            },
+                            start: Value::Constant(ScalarValue::I32(0)),
+                            len: Value::Constant(ScalarValue::I32(1)),
+                            bounds: BoundsMode::Clamp,
+                            access: AccessMode::ReadWrite,
+                        },
+                    }),
+                    statement(StatementKind::Call {
+                        results: Vec::new(),
+                        function: FunctionId::new(2),
+                        args: vec![CallArgument::Buffer(crate::BufferRef::Direct(
+                            BufferId::new(0),
+                        ))],
+                    }),
+                    statement(StatementKind::Call {
+                        results: Vec::new(),
+                        function: FunctionId::new(3),
+                        args: vec![CallArgument::Value(Value::Local(LocalId::new(0)))],
+                    }),
+                ],
+            },
+        );
+        process.kind = FunctionKind::Process;
+        process.locals.push(Local {
+            name: Some("buffer_slice".to_owned()),
+            ty: slice_ty,
+        });
+
+        let write_buffer = function(
+            "write_buffer",
+            vec![crate::FunctionParam {
+                name: "buffer".to_owned(),
+                ty: buffer_ty,
+                mode: crate::PassingMode::ReadWriteReference,
+            }],
+            Block {
+                statements: vec![statement(StatementKind::BufferParamStore {
+                    parameter: crate::BufferParamRef::Direct(ParameterId::new(0)),
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    value: Value::Constant(ScalarValue::F32(1.0)),
+                    bounds: BoundsMode::Clamp,
+                })],
+            },
+        );
+
+        let mut write_slice = function(
+            "write_slice",
+            vec![crate::FunctionParam {
+                name: "slice".to_owned(),
+                ty: slice_ty,
+                mode: crate::PassingMode::Value,
+            }],
+            Block {
+                statements: vec![
+                    statement(StatementKind::Assign {
+                        destination: Place::local(LocalId::new(0)),
+                        value: Rvalue::Load(Place {
+                            base: PlaceBase::Parameter(ParameterId::new(0)),
+                            projections: Vec::new(),
+                        }),
+                    }),
+                    statement(StatementKind::SliceStore {
+                        slice: Value::Local(LocalId::new(0)),
+                        index: Value::Constant(ScalarValue::I32(0)),
+                        value: Value::Constant(ScalarValue::F32(0.5)),
+                        bounds: BoundsMode::Clamp,
+                    }),
+                ],
+            },
+        );
+        write_slice.locals.push(Local {
+            name: Some("slice_alias".to_owned()),
+            ty: slice_ty,
+        });
+
+        let unreachable_write = function(
+            "unreachable_write",
+            Vec::new(),
+            Block {
+                statements: vec![statement(StatementKind::BufferStore {
+                    buffer: crate::BufferRef::Direct(BufferId::new(2)),
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    value: Value::Constant(ScalarValue::F32(1.0)),
+                    bounds: BoundsMode::Clamp,
+                })],
+            },
+        );
+
+        let mut event = function(
+            "event",
+            Vec::new(),
+            Block {
+                statements: vec![statement(StatementKind::BufferStore {
+                    buffer: crate::BufferRef::Direct(BufferId::new(3)),
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    value: Value::Constant(ScalarValue::F32(1.0)),
+                    bounds: BoundsMode::Clamp,
+                })],
+            },
+        );
+        event.kind = FunctionKind::Event(crate::EventId::new(0));
+
+        let mut program = Program::new(
+            CompileConfig::new(48_000.0, 64).expect("valid test config"),
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types = vec![
+            Type::Scalar(ScalarType::F32),
+            Type::Scalar(ScalarType::I32),
+            Type::Buffer {
+                element: ScalarType::F32,
+                channels: crate::BufferChannels::Mono,
+                access: AccessMode::ReadWrite,
+            },
+            Type::Slice {
+                element: ScalarType::F32,
+                access: AccessMode::ReadWrite,
+            },
+        ];
+        program.interface.buffers = (0..5)
+            .map(|index| crate::Buffer {
+                name: format!("buffer_{index}"),
+                element: ScalarType::F32,
+                channels: crate::BufferChannels::Mono,
+                access: AccessMode::ReadWrite,
+            })
+            .collect();
+        program.interface.events.push(crate::Event {
+            name: "event".to_owned(),
+            params: Vec::new(),
+            handler: FunctionId::new(5),
+        });
+        program.functions = vec![
+            init,
+            process,
+            write_buffer,
+            write_slice,
+            unreachable_write,
+            event,
+        ];
+
+        let effects =
+            analyze_buffer_writes(&program).expect("buffer-write analysis should succeed");
+        assert!(effects.may_write(BufferId::new(0)));
+        assert!(effects.may_write(BufferId::new(1)));
+        assert!(!effects.may_write(BufferId::new(2)));
+        assert!(effects.may_write(BufferId::new(3)));
+        assert!(!effects.may_write(BufferId::new(4)));
+    }
+
+    #[test]
+    fn buffer_writes_narrow_constant_collection_slots_and_widen_unknown_selectors() {
+        let i32_ty = TypeId::new(1);
+        let mut init = function("init", Vec::new(), Block::default());
+        init.kind = FunctionKind::Init;
+        let mut process = function(
+            "process",
+            process_function_params(i32_ty),
+            Block {
+                statements: vec![statement(StatementKind::BufferStore {
+                    buffer: crate::BufferRef::ArrayElement {
+                        first: BufferId::new(0),
+                        len: 4,
+                        selector: Value::Constant(ScalarValue::I32(2)),
+                        bounds: BoundsMode::Clamp,
+                    },
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    value: Value::Constant(ScalarValue::F32(1.0)),
+                    bounds: BoundsMode::Clamp,
+                })],
+            },
+        );
+        process.kind = FunctionKind::Process;
+
+        let mut program = Program::new(
+            CompileConfig::new(48_000.0, 64).expect("valid test config"),
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types = vec![Type::Scalar(ScalarType::F32), Type::Scalar(ScalarType::I32)];
+        program.interface.buffers = (0..4)
+            .map(|index| crate::Buffer {
+                name: format!("bank[{index}]"),
+                element: ScalarType::F32,
+                channels: crate::BufferChannels::Mono,
+                access: AccessMode::ReadWrite,
+            })
+            .collect();
+        program.functions = vec![init, process];
+
+        let exact = analyze_buffer_writes(&program).expect("analysis should succeed");
+        assert_eq!(exact.buffers(), &[false, false, true, false]);
+
+        let process = &mut program.functions[1];
+        process.locals.push(Local {
+            name: Some("selector".to_owned()),
+            ty: i32_ty,
+        });
+        process.body.statements.insert(
+            0,
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::Parameter(ParameterId::new(0)),
+                    projections: Vec::new(),
+                }),
+            }),
+        );
+        let StatementKind::BufferStore { buffer, .. } = &mut process.body.statements[1].kind else {
+            panic!("expected buffer store")
+        };
+        let crate::BufferRef::ArrayElement { selector, .. } = buffer else {
+            panic!("expected buffer collection selection")
+        };
+        *selector = Value::Local(LocalId::new(0));
+
+        let unknown = analyze_buffer_writes(&program).expect("analysis should succeed");
+        assert_eq!(unknown.buffers(), &[true, true, true, true]);
+    }
+
+    #[test]
+    fn buffer_writes_translate_slots_through_nested_collection_subspans() {
+        let i32_ty = TypeId::new(1);
+        let parent_span_ty = TypeId::new(2);
+        let child_span_ty = TypeId::new(3);
+        let mut init = function("init", Vec::new(), Block::default());
+        init.kind = FunctionKind::Init;
+        let mut process = function(
+            "process",
+            process_function_params(i32_ty),
+            Block {
+                statements: vec![statement(StatementKind::Call {
+                    results: Vec::new(),
+                    function: FunctionId::new(2),
+                    args: vec![CallArgument::BufferSpan(crate::BufferSpanRef::Interface {
+                        first: BufferId::new(0),
+                        len: 4,
+                    })],
+                })],
+            },
+        );
+        process.kind = FunctionKind::Process;
+        let parent = function(
+            "parent",
+            vec![crate::FunctionParam {
+                name: "bank".to_owned(),
+                ty: parent_span_ty,
+                mode: crate::PassingMode::Value,
+            }],
+            Block {
+                statements: vec![statement(StatementKind::Call {
+                    results: Vec::new(),
+                    function: FunctionId::new(3),
+                    args: vec![CallArgument::BufferSpan(crate::BufferSpanRef::Parameter {
+                        span: ParameterId::new(0),
+                        start: 1,
+                        len: 2,
+                    })],
+                })],
+            },
+        );
+        let child = function(
+            "child",
+            vec![crate::FunctionParam {
+                name: "clips".to_owned(),
+                ty: child_span_ty,
+                mode: crate::PassingMode::Value,
+            }],
+            Block {
+                statements: vec![statement(StatementKind::BufferParamStore {
+                    parameter: crate::BufferParamRef::ArrayElement {
+                        span: ParameterId::new(0),
+                        selector: Value::Constant(ScalarValue::I32(1)),
+                        bounds: BoundsMode::Clamp,
+                    },
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    value: Value::Constant(ScalarValue::F32(1.0)),
+                    bounds: BoundsMode::Clamp,
+                })],
+            },
+        );
+
+        let mut program = Program::new(
+            CompileConfig::new(48_000.0, 64).expect("valid test config"),
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types = vec![
+            Type::Scalar(ScalarType::F32),
+            Type::Scalar(ScalarType::I32),
+            Type::BufferSpan {
+                element: ScalarType::F32,
+                channels: crate::BufferChannels::Mono,
+                access: AccessMode::ReadWrite,
+                len: 4,
+            },
+            Type::BufferSpan {
+                element: ScalarType::F32,
+                channels: crate::BufferChannels::Mono,
+                access: AccessMode::ReadWrite,
+                len: 2,
+            },
+        ];
+        program.interface.buffers = (0..4)
+            .map(|index| crate::Buffer {
+                name: format!("bank[{index}]"),
+                element: ScalarType::F32,
+                channels: crate::BufferChannels::Mono,
+                access: AccessMode::ReadWrite,
+            })
+            .collect();
+        program.functions = vec![init, process, parent, child];
+
+        let effects = analyze_buffer_writes(&program).expect("analysis should succeed");
+        assert_eq!(effects.buffers(), &[false, false, true, false]);
     }
 
     #[test]

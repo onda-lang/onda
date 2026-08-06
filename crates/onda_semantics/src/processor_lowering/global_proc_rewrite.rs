@@ -60,19 +60,16 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                 runtime_managed_arrays,
                 guards,
             ),
-            Expr::Slice { start, end, .. } => {
-                if let Some(start) = start {
+            Expr::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     collect_guards_from_expr(
-                        start,
-                        proc_api,
-                        proc_array_slots,
-                        runtime_managed_arrays,
-                        guards,
-                    );
-                }
-                if let Some(end) = end {
-                    collect_guards_from_expr(
-                        end,
+                        coordinate,
                         proc_api,
                         proc_array_slots,
                         runtime_managed_arrays,

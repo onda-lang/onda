@@ -1,4 +1,5 @@
 use super::*;
+use crate::internal_names::runtime_buffer_alias_selector_symbol;
 
 pub(crate) fn resolve_init_default_ty(
     decl_ty: Option<&DeclType>,
@@ -121,13 +122,16 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                     infer_numbered_base_name(base, acc);
                     infer_io_from_expr(index, acc);
                 }
-                AssignTarget::Slice { base, start, end } => {
+                AssignTarget::Slice {
+                    base,
+                    selector,
+                    channel,
+                    start,
+                    end,
+                } => {
                     infer_numbered_base_name(base, acc);
-                    if let Some(start) = start {
-                        infer_io_from_expr(start, acc);
-                    }
-                    if let Some(end) = end {
-                        infer_io_from_expr(end, acc);
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        infer_io_from_expr(coordinate, acc);
                     }
                 }
                 AssignTarget::Tuple(names) => {
@@ -179,14 +183,16 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
             infer_io_from_expr(index, acc);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             infer_numbered_base_name(base, acc);
-            if let Some(start) = start {
-                infer_io_from_expr(start, acc);
-            }
-            if let Some(end) = end {
-                infer_io_from_expr(end, acc);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                infer_io_from_expr(coordinate, acc);
             }
         }
         Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
@@ -269,15 +275,19 @@ pub(crate) fn register_scope_state<'a>(
     param_names: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     registration_mode: RuntimeRegistrationMode,
+    buffer_alias_seed: &LocalBufferAliases,
 ) {
     if matches!(registration_mode, RuntimeRegistrationMode::None) {
         return;
     }
+    let mut buffer_aliases = buffer_alias_seed.clone();
     for stmt in stmts {
+        let visible_declared_symbols = with_local_buffer_aliases(declared_symbols, &buffer_aliases);
+        let visible_declared_symbols = visible_declared_symbols.as_ref();
         register_scope_stmt_state(
             stmt,
             state_scalars,
-            declared_symbols,
+            visible_declared_symbols,
             state_arrays,
             state_array_struct_roots,
             struct_instances,
@@ -287,6 +297,16 @@ pub(crate) fn register_scope_state<'a>(
             struct_defs,
             registration_mode,
         );
+        if let Stmt::Assign {
+            target: AssignTarget::Var(name),
+            expr,
+            ..
+        } = stmt
+        {
+            if let Some(alias) = buffer_reference_expr_info(expr, visible_declared_symbols) {
+                buffer_aliases.insert(name.clone(), alias);
+            }
+        }
     }
 }
 
@@ -314,6 +334,16 @@ fn register_scope_stmt_state(
             ..
         } => {
             if let AssignTarget::Var(name) = target {
+                if buffer_reference_expr_info(expr, declared_symbols).is_some() {
+                    if matches!(registration_mode, RuntimeRegistrationMode::BlockRoot)
+                        && matches!(expr, Expr::Index { .. })
+                    {
+                        state_scalars
+                            .entry(runtime_buffer_alias_selector_symbol(name))
+                            .or_insert(PrimitiveType::I32);
+                    }
+                    return;
+                }
                 if split_simple_field_path(name).is_none()
                     && !is_builtin_constant_name(name)
                     && !input_names.contains(name)

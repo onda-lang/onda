@@ -271,10 +271,17 @@ fn statement_uses_unchecked_bounds(statement: &StatementKind) -> bool {
             place_uses_unchecked_bounds(destination) || rvalue_uses_unchecked_bounds(value)
         }
         StatementKind::Call { args, .. } => args.iter().any(call_arg_uses_unchecked_bounds),
+        StatementKind::BufferStore { buffer, bounds, .. } => {
+            *bounds == crate::BoundsMode::Unchecked || buffer_ref_uses_unchecked_bounds(*buffer)
+        }
+        StatementKind::BufferParamStore {
+            parameter, bounds, ..
+        } => {
+            *bounds == crate::BoundsMode::Unchecked
+                || buffer_param_ref_uses_unchecked_bounds(*parameter)
+        }
         StatementKind::OutputStore { bounds, .. }
         | StatementKind::ControlOutputStore { bounds, .. }
-        | StatementKind::BufferStore { bounds, .. }
-        | StatementKind::BufferParamStore { bounds, .. }
         | StatementKind::SliceStore { bounds, .. } => *bounds == crate::BoundsMode::Unchecked,
         StatementKind::If { .. }
         | StatementKind::Loop { .. }
@@ -289,15 +296,21 @@ fn statement_uses_unchecked_bounds(statement: &StatementKind) -> bool {
 fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
     match value {
         Rvalue::Load(place) => place_uses_unchecked_bounds(place),
+        Rvalue::BufferLoad { buffer, bounds, .. } => {
+            *bounds == crate::BoundsMode::Unchecked || buffer_ref_uses_unchecked_bounds(*buffer)
+        }
+        Rvalue::BufferParamLoad {
+            parameter, bounds, ..
+        } => {
+            *bounds == crate::BoundsMode::Unchecked
+                || buffer_param_ref_uses_unchecked_bounds(*parameter)
+        }
         Rvalue::InputLoad { bounds, .. }
         | Rvalue::OutputLoad { bounds, .. }
-        | Rvalue::BufferLoad { bounds, .. }
-        | Rvalue::BufferParamLoad { bounds, .. }
         | Rvalue::ConstDataLoad { bounds, .. }
         | Rvalue::SliceLoad { bounds, .. } => *bounds == crate::BoundsMode::Unchecked,
         Rvalue::MakeSlice { source, bounds, .. } => {
-            *bounds == crate::BoundsMode::Unchecked
-                || matches!(source, SliceSource::Place(place) if place_uses_unchecked_bounds(place))
+            *bounds == crate::BoundsMode::Unchecked || slice_source_uses_unchecked_bounds(source)
         }
         Rvalue::Use(_)
         | Rvalue::Unary { .. }
@@ -306,13 +319,15 @@ fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
         | Rvalue::Cast { .. }
         | Rvalue::Intrinsic { .. }
         | Rvalue::ProcessFrame { .. }
-        | Rvalue::BufferLen(_)
-        | Rvalue::BufferChannels(_)
-        | Rvalue::BufferSampleRate(_)
-        | Rvalue::BufferParamLen(_)
-        | Rvalue::BufferParamChannels(_)
-        | Rvalue::BufferParamSampleRate(_)
         | Rvalue::SliceLen(_) => false,
+        Rvalue::BufferLen(buffer)
+        | Rvalue::BufferChannels(buffer)
+        | Rvalue::BufferSampleRate(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
+        Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamChannels(parameter)
+        | Rvalue::BufferParamSampleRate(parameter) => {
+            buffer_param_ref_uses_unchecked_bounds(*parameter)
+        }
     }
 }
 
@@ -325,7 +340,41 @@ fn call_arg_uses_unchecked_bounds(argument: &CallArgument) -> bool {
         CallArgument::ArrayWindow { array, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || place_uses_unchecked_bounds(array)
         }
-        CallArgument::Value(_) | CallArgument::Buffer(_) => false,
+        CallArgument::Value(_) => false,
+        CallArgument::Buffer(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
+        CallArgument::BufferParam(parameter) => buffer_param_ref_uses_unchecked_bounds(*parameter),
+        CallArgument::BufferSpan(_) => false,
+    }
+}
+
+fn buffer_ref_uses_unchecked_bounds(buffer: crate::BufferRef) -> bool {
+    matches!(
+        buffer,
+        crate::BufferRef::ArrayElement {
+            bounds: crate::BoundsMode::Unchecked,
+            ..
+        }
+    )
+}
+
+fn buffer_param_ref_uses_unchecked_bounds(parameter: crate::BufferParamRef) -> bool {
+    matches!(
+        parameter,
+        crate::BufferParamRef::ArrayElement {
+            bounds: crate::BoundsMode::Unchecked,
+            ..
+        }
+    )
+}
+
+fn slice_source_uses_unchecked_bounds(source: &SliceSource) -> bool {
+    match source {
+        SliceSource::Place(place) => place_uses_unchecked_bounds(place),
+        SliceSource::Buffer { buffer, .. } => buffer_ref_uses_unchecked_bounds(*buffer),
+        SliceSource::BufferParam { parameter, .. } => {
+            buffer_param_ref_uses_unchecked_bounds(*parameter)
+        }
+        SliceSource::ConstData(_) => false,
     }
 }
 
@@ -379,11 +428,35 @@ impl Validator<'_> {
                         ));
                     }
                 }
-                Type::Buffer { channels, .. } => {
-                    if matches!(channels, crate::BufferChannels::Static(0)) {
+                Type::Buffer {
+                    element, channels, ..
+                } => {
+                    if let crate::BufferChannels::Static(channels) = channels {
+                        if let Some(reason) =
+                            buffer_static_channel_validation_error(*channels, *element)
+                        {
+                            self.program_error(format!("type {index} {reason}"));
+                        }
+                    }
+                }
+                Type::BufferSpan {
+                    element,
+                    channels,
+                    len,
+                    ..
+                } => {
+                    if *len == 0 || *len > i32::MAX as u32 {
                         self.program_error(format!(
-                            "type {index} has a zero-channel static buffer"
+                            "type {index} buffer span length must be in 1..={}",
+                            i32::MAX
                         ));
+                    }
+                    if let crate::BufferChannels::Static(channels) = channels {
+                        if let Some(reason) =
+                            buffer_static_channel_validation_error(*channels, *element)
+                        {
+                            self.program_error(format!("type {index} {reason}"));
+                        }
                     }
                 }
                 Type::Scalar(_) | Type::Slice { .. } => {}
@@ -496,13 +569,15 @@ impl Validator<'_> {
         }
         self.validate_control_output_mirrors();
         for buffer in &self.program.interface.buffers {
-            if matches!(buffer.channels, crate::BufferChannels::Static(0)) {
-                self.program_error(format!(
-                    "buffer '{}' has a zero-channel static layout",
-                    buffer.name
-                ));
+            if let crate::BufferChannels::Static(channels) = buffer.channels {
+                if let Some(reason) =
+                    buffer_static_channel_validation_error(channels, buffer.element)
+                {
+                    self.program_error(format!("buffer '{}' {reason}", buffer.name));
+                }
             }
         }
+        self.validate_buffer_arrays();
         // Constant-data items are scalar-element arrays by construction:
         // `ConstData::element` is a `ScalarType`, so runtime handles cannot be
         // serialized into this storage class.
@@ -624,6 +699,9 @@ impl Validator<'_> {
         for buffer in &self.program.interface.buffers {
             insert(&buffer.name, "a buffer", &mut self.errors);
         }
+        for array in &self.program.interface.buffer_arrays {
+            insert(&array.name, "a buffer array", &mut self.errors);
+        }
         for event in &self.program.interface.events {
             insert(&event.name, "an event", &mut self.errors);
             let mut event_params = HashSet::new();
@@ -632,6 +710,55 @@ impl Validator<'_> {
                     self.program_error(format!(
                         "event '{}' has duplicate parameter name '{}'",
                         event.name, param.name
+                    ));
+                }
+            }
+        }
+    }
+
+    fn validate_buffer_arrays(&mut self) {
+        let groups = self.program.interface.buffer_arrays.clone();
+        let mut occupied = vec![None::<String>; self.program.interface.buffers.len()];
+        for group in groups {
+            if group.len == 0 {
+                self.program_error(format!("buffer array '{}' has zero length", group.name));
+                continue;
+            }
+            let first = group.first.index();
+            let Some(end) = first.checked_add(group.len as usize) else {
+                self.program_error(format!("buffer array '{}' range overflows", group.name));
+                continue;
+            };
+            if end > self.program.interface.buffers.len() {
+                self.program_error(format!(
+                    "buffer array '{}' range {}..{} exceeds {} buffers",
+                    group.name,
+                    first,
+                    end,
+                    self.program.interface.buffers.len()
+                ));
+                continue;
+            }
+            let expected = self.program.interface.buffers[first].clone();
+            for (offset, occupied_by) in occupied[first..end].iter_mut().enumerate() {
+                let index = first + offset;
+                if let Some(previous) = occupied_by.replace(group.name.clone()) {
+                    self.program_error(format!(
+                        "buffer arrays '{}' and '{}' overlap at buffer {}",
+                        previous, group.name, index
+                    ));
+                }
+                let incompatible = {
+                    let buffer = &self.program.interface.buffers[index];
+                    (buffer.element != expected.element
+                        || buffer.channels != expected.channels
+                        || buffer.access != expected.access)
+                        .then(|| buffer.name.clone())
+                };
+                if let Some(buffer_name) = incompatible {
+                    self.program_error(format!(
+                        "buffer array '{}' contains incompatible descriptor '{}'",
+                        group.name, buffer_name
                     ));
                 }
             }
@@ -699,7 +826,10 @@ impl Validator<'_> {
             .types
             .iter()
             .map(|ty| match ty {
-                Type::Scalar(_) | Type::Slice { .. } | Type::Buffer { .. } => Vec::new(),
+                Type::Scalar(_)
+                | Type::Slice { .. }
+                | Type::Buffer { .. }
+                | Type::BufferSpan { .. } => Vec::new(),
                 Type::Tuple(elements) => elements.clone(),
                 Type::Array { element, .. } => vec![*element],
                 Type::Struct(structure) => self
@@ -722,7 +852,9 @@ impl Validator<'_> {
             .iter()
             .map(|ty| match ty {
                 Type::Scalar(scalar) => LogicalSize::Fixed(logical_scalar_bytes(*scalar)),
-                Type::Slice { .. } | Type::Buffer { .. } => LogicalSize::Unsized,
+                Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => {
+                    LogicalSize::Unsized
+                }
                 Type::Tuple(_) | Type::Array { .. } | Type::Struct(_) => LogicalSize::Pending,
             })
             .collect::<Vec<_>>();
@@ -789,7 +921,10 @@ impl Validator<'_> {
                                 total.checked_add(bytes)
                             })
                         }),
-                    Type::Scalar(_) | Type::Slice { .. } | Type::Buffer { .. } => unreachable!(),
+                    Type::Scalar(_)
+                    | Type::Slice { .. }
+                    | Type::Buffer { .. }
+                    | Type::BufferSpan { .. } => unreachable!(),
                 };
                 match computed {
                     Some(bytes) if bytes <= i32::MAX as u64 => {
@@ -849,6 +984,29 @@ impl Validator<'_> {
         }
         for param in &function.params {
             self.require_type(param.ty, Some(id), function.source);
+            match self.program.types.get(param.ty.index()) {
+                Some(Type::BufferSpan { .. }) if param.mode != crate::PassingMode::Value => {
+                    self.function_error(
+                        id,
+                        function.source,
+                        format!(
+                            "buffer span parameter '{}' must use value passing mode",
+                            param.name
+                        ),
+                    );
+                }
+                Some(Type::Buffer { .. }) if param.mode == crate::PassingMode::Value => {
+                    self.function_error(
+                        id,
+                        function.source,
+                        format!(
+                            "buffer parameter '{}' must use reference passing mode",
+                            param.name
+                        ),
+                    );
+                }
+                _ => {}
+            }
         }
         for result in &function.results {
             self.require_type(*result, Some(id), function.source);
@@ -1108,17 +1266,37 @@ impl Validator<'_> {
                                     statement.source,
                                     "buffer call argument",
                                 );
-                                if buffer.index() >= self.program.interface.buffers.len() {
+                                self.require_buffer(
+                                    function_id,
+                                    function,
+                                    *buffer,
+                                    statement.source,
+                                );
+                            }
+                            CallArgument::BufferParam(parameter) => {
+                                if self
+                                    .function_buffer_param_ref(function, *parameter)
+                                    .is_none()
+                                {
                                     self.function_error(
                                         function_id,
                                         statement.source,
-                                        format!(
-                                            "call argument references missing buffer {}",
-                                            buffer.raw()
-                                        ),
+                                        "buffer-parameter call argument references a non-buffer parameter",
+                                    );
+                                }
+                                if let crate::BufferParamRef::ArrayElement { selector, .. } =
+                                    parameter
+                                {
+                                    self.require_i32_value(
+                                        function_id,
+                                        function,
+                                        *selector,
+                                        statement.source,
+                                        "buffer-parameter collection selector",
                                     );
                                 }
                             }
+                            CallArgument::BufferSpan(_) => {}
                         }
                     }
                     for (index, (arg, param)) in
@@ -1249,7 +1427,7 @@ impl Validator<'_> {
                         statement.source,
                         "buffer store",
                     );
-                    self.require_buffer(function_id, *buffer, statement.source);
+                    self.require_buffer(function_id, function, *buffer, statement.source);
                     self.validate_optional_value(function_id, function, *channel, statement.source);
                     self.validate_value(function_id, function, *index, statement.source);
                     self.validate_value(function_id, function, *value, statement.source);
@@ -1294,6 +1472,12 @@ impl Validator<'_> {
                     value,
                     ..
                 } => {
+                    self.validate_buffer_param_ref(
+                        function_id,
+                        function,
+                        *parameter,
+                        statement.source,
+                    );
                     self.validate_optional_value(function_id, function, *channel, statement.source);
                     self.validate_value(function_id, function, *index, statement.source);
                     self.validate_value(function_id, function, *value, statement.source);
@@ -1311,7 +1495,7 @@ impl Validator<'_> {
                         statement.source,
                         "buffer index",
                     );
-                    match self.function_buffer_param(function, *parameter) {
+                    match self.function_buffer_param_ref(function, *parameter) {
                         Some((element, crate::AccessMode::ReadWrite)) => {
                             if !self.value_matches_scalar(function, *value, element) {
                                 self.function_error(
@@ -1692,7 +1876,26 @@ impl Validator<'_> {
                                 state,
                             );
                         }
-                        CallArgument::Buffer(_) => {}
+                        CallArgument::Buffer(buffer) => self.assignment_read_buffer_ref(
+                            function_id,
+                            function,
+                            *buffer,
+                            statement.source,
+                            state,
+                        ),
+                        CallArgument::BufferParam(parameter) => {
+                            if let crate::BufferParamRef::ArrayElement { selector, .. } = parameter
+                            {
+                                self.assignment_read_value(
+                                    function_id,
+                                    function,
+                                    *selector,
+                                    statement.source,
+                                    state,
+                                );
+                            }
+                        }
+                        CallArgument::BufferSpan(_) => {}
                     }
                 }
                 if let Some(parameters) = self
@@ -1745,12 +1948,30 @@ impl Validator<'_> {
                 self.assignment_read_value(function_id, function, *value, statement.source, state);
             }
             StatementKind::BufferStore {
+                buffer,
                 channel,
                 index,
                 value,
                 ..
+            } => {
+                self.assignment_read_buffer_ref(
+                    function_id,
+                    function,
+                    *buffer,
+                    statement.source,
+                    state,
+                );
+                self.assignment_read_optional_value(
+                    function_id,
+                    function,
+                    *channel,
+                    statement.source,
+                    state,
+                );
+                self.assignment_read_value(function_id, function, *index, statement.source, state);
+                self.assignment_read_value(function_id, function, *value, statement.source, state);
             }
-            | StatementKind::BufferParamStore {
+            StatementKind::BufferParamStore {
                 channel,
                 index,
                 value,
@@ -1861,15 +2082,26 @@ impl Validator<'_> {
                     state,
                 );
             }
-            Rvalue::BufferLoad { channel, index, .. }
-            | Rvalue::BufferParamLoad { channel, index, .. } => {
+            Rvalue::BufferLoad {
+                buffer,
+                channel,
+                index,
+                ..
+            } => {
+                self.assignment_read_buffer_ref(function_id, function, *buffer, source, state);
                 self.assignment_read_optional_value(function_id, function, *channel, source, state);
                 self.assignment_read_value(function_id, function, *index, source, state);
             }
-            Rvalue::BufferLen(_)
-            | Rvalue::BufferChannels(_)
-            | Rvalue::BufferSampleRate(_)
-            | Rvalue::BufferParamLen(_)
+            Rvalue::BufferParamLoad { channel, index, .. } => {
+                self.assignment_read_optional_value(function_id, function, *channel, source, state);
+                self.assignment_read_value(function_id, function, *index, source, state);
+            }
+            Rvalue::BufferLen(buffer)
+            | Rvalue::BufferChannels(buffer)
+            | Rvalue::BufferSampleRate(buffer) => {
+                self.assignment_read_buffer_ref(function_id, function, *buffer, source, state);
+            }
+            Rvalue::BufferParamLen(_)
             | Rvalue::BufferParamChannels(_)
             | Rvalue::BufferParamSampleRate(_) => {}
             Rvalue::ConstDataLoad { index, .. } => {
@@ -1896,8 +2128,23 @@ impl Validator<'_> {
                             self.assignment_read_place(function_id, function, place, source, state);
                         }
                     }
-                    SliceSource::Buffer { channel, .. }
-                    | SliceSource::BufferParam { channel, .. } => {
+                    SliceSource::Buffer { buffer, channel } => {
+                        self.assignment_read_buffer_ref(
+                            function_id,
+                            function,
+                            *buffer,
+                            source,
+                            state,
+                        );
+                        self.assignment_read_optional_value(
+                            function_id,
+                            function,
+                            *channel,
+                            source,
+                            state,
+                        );
+                    }
+                    SliceSource::BufferParam { channel, .. } => {
                         self.assignment_read_optional_value(
                             function_id,
                             function,
@@ -1932,6 +2179,19 @@ impl Validator<'_> {
     ) {
         if let Some(value) = value {
             self.assignment_read_value(function_id, function, value, source, state);
+        }
+    }
+
+    fn assignment_read_buffer_ref(
+        &mut self,
+        function_id: FunctionId,
+        function: &Function,
+        buffer: crate::BufferRef,
+        source: SourceSpan,
+        state: &AssignmentState,
+    ) {
+        if let crate::BufferRef::ArrayElement { selector, .. } = buffer {
+            self.assignment_read_value(function_id, function, selector, source, state);
         }
     }
 
@@ -2125,7 +2385,9 @@ impl Validator<'_> {
             CallArgument::Value(_)
             | CallArgument::SliceElement { .. }
             | CallArgument::SliceWindow { .. }
-            | CallArgument::Buffer(_) => return,
+            | CallArgument::Buffer(_)
+            | CallArgument::BufferParam(_)
+            | CallArgument::BufferSpan(_) => return,
         };
         if let Some(initialization) = state.locals.get_mut(local.index()) {
             // A read-write reference call may replace any value reachable
@@ -2359,7 +2621,7 @@ impl Validator<'_> {
                 ..
             } => {
                 self.require_direct_buffer_capability(function_id, function, source, "buffer load");
-                self.require_buffer(function_id, *buffer, source);
+                self.require_buffer(function_id, function, *buffer, source);
                 self.validate_optional_value(function_id, function, *channel, source);
                 self.validate_value(function_id, function, *index, source);
                 self.validate_optional_index(
@@ -2377,7 +2639,11 @@ impl Validator<'_> {
                 index,
                 ..
             } => {
-                if self.function_buffer_param(function, *parameter).is_none() {
+                self.validate_buffer_param_ref(function_id, function, *parameter, source);
+                if self
+                    .function_buffer_param_ref(function, *parameter)
+                    .is_none()
+                {
                     self.function_error(
                         function_id,
                         source,
@@ -2407,12 +2673,16 @@ impl Validator<'_> {
                     source,
                     "buffer metadata query",
                 );
-                self.require_buffer(function_id, *buffer, source);
+                self.require_buffer(function_id, function, *buffer, source);
             }
             Rvalue::BufferParamLen(parameter)
             | Rvalue::BufferParamChannels(parameter)
             | Rvalue::BufferParamSampleRate(parameter) => {
-                if self.function_buffer_param(function, *parameter).is_none() {
+                self.validate_buffer_param_ref(function_id, function, *parameter, source);
+                if self
+                    .function_buffer_param_ref(function, *parameter)
+                    .is_none()
+                {
                     self.function_error(
                         function_id,
                         source,
@@ -2458,7 +2728,7 @@ impl Validator<'_> {
                             source,
                             "buffer slice",
                         );
-                        self.require_buffer(function_id, *buffer, source);
+                        self.require_buffer(function_id, function, *buffer, source);
                         self.validate_optional_value(function_id, function, *channel, source);
                         self.validate_optional_index(
                             function_id,
@@ -2469,7 +2739,11 @@ impl Validator<'_> {
                         );
                     }
                     SliceSource::BufferParam { parameter, channel } => {
-                        if self.function_buffer_param(function, *parameter).is_none() {
+                        self.validate_buffer_param_ref(function_id, function, *parameter, source);
+                        if self
+                            .function_buffer_param_ref(function, *parameter)
+                            .is_none()
+                        {
                             self.function_error(
                                 function_id,
                                 source,
@@ -2842,7 +3116,7 @@ impl Validator<'_> {
                 .get(buffer.index())
                 .is_some_and(|buffer| self.type_is_scalar(expected, buffer.element)),
             Rvalue::BufferParamLoad { parameter, .. } => self
-                .function_buffer_param(function, *parameter)
+                .function_buffer_param_ref(function, *parameter)
                 .is_some_and(|(element, _)| self.type_is_scalar(expected, element)),
             Rvalue::BufferLen(_)
             | Rvalue::BufferChannels(_)
@@ -2952,7 +3226,7 @@ impl Validator<'_> {
                 .get(buffer.index())
                 .map(|buffer| (buffer.element, buffer.access)),
             SliceSource::BufferParam { parameter, .. } => {
-                self.function_buffer_param(function, *parameter)
+                self.function_buffer_param_ref(function, *parameter)
             }
             SliceSource::ConstData(data) => self
                 .program
@@ -3089,11 +3363,14 @@ impl Validator<'_> {
             (crate::PassingMode::Value, CallArgument::Value(value)) => {
                 self.value_matches_type(function, *value, parameter.ty)
             }
+            (crate::PassingMode::Value, CallArgument::BufferSpan(span)) => {
+                self.buffer_span_matches_type(function, *span, parameter.ty)
+            }
             (
                 crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
                 CallArgument::Place(place),
             ) => self.place_type(function, place).is_some_and(|actual| {
-                self.program.types_equivalent(actual, parameter.ty)
+                self.reference_type_matches(actual, parameter.ty)
                     && (parameter.mode != crate::PassingMode::ReadWriteReference
                         || self.place_is_writable(function, place))
             }),
@@ -3190,25 +3467,129 @@ impl Validator<'_> {
                 )
             }
             (_, CallArgument::Buffer(buffer)) => self.buffer_matches_type(*buffer, parameter.ty),
+            (
+                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
+                CallArgument::BufferParam(reference),
+            ) => self.buffer_param_ref_matches_type(function, *reference, parameter.ty),
             _ => false,
         }
     }
 
-    fn buffer_matches_type(&self, buffer: crate::BufferId, expected: crate::TypeId) -> bool {
-        let Some(buffer) = self.program.interface.buffers.get(buffer.index()) else {
+    fn buffer_matches_type(&self, buffer: crate::BufferRef, expected: crate::TypeId) -> bool {
+        let Some(first_buffer) = self.program.interface.buffers.get(buffer.index()) else {
             return false;
         };
-        self.program.types.get(expected.index()).is_some_and(|ty| {
+        let matches = self.program.types.get(expected.index()).is_some_and(|ty| {
             matches!(
                 ty,
                 Type::Buffer {
                     element,
                     channels,
                     access,
-                } if *element == buffer.element && *channels == buffer.channels
-                    && access_permits(buffer.access, *access)
+                } if *element == first_buffer.element
+                    && buffer_channels_accept(*channels, first_buffer.channels)
+                    && access_permits(first_buffer.access, *access)
             )
-        })
+        });
+        matches
+            && buffer.possible_indices().all(|index| {
+                self.program
+                    .interface
+                    .buffers
+                    .get(index)
+                    .is_some_and(|candidate| {
+                        candidate.element == first_buffer.element
+                            && candidate.channels == first_buffer.channels
+                            && candidate.access == first_buffer.access
+                    })
+            })
+    }
+
+    fn buffer_span_matches_type(
+        &self,
+        function: &Function,
+        span: crate::BufferSpanRef,
+        expected: crate::TypeId,
+    ) -> bool {
+        let Some(Type::BufferSpan {
+            element: expected_element,
+            channels: expected_channels,
+            access: expected_access,
+            len: expected_len,
+        }) = self.program.types.get(expected.index())
+        else {
+            return false;
+        };
+        match span {
+            crate::BufferSpanRef::Interface { first, len } => {
+                if len != *expected_len {
+                    return false;
+                }
+                let Some(source) = self.program.interface.buffers.get(first.index()) else {
+                    return false;
+                };
+                source.element == *expected_element
+                    && buffer_channels_accept(*expected_channels, source.channels)
+                    && access_permits(source.access, *expected_access)
+                    && (first.index()..first.index().saturating_add(len as usize)).all(|index| {
+                        self.program
+                            .interface
+                            .buffers
+                            .get(index)
+                            .is_some_and(|candidate| {
+                                candidate.element == source.element
+                                    && candidate.channels == source.channels
+                                    && candidate.access == source.access
+                            })
+                    })
+            }
+            crate::BufferSpanRef::Parameter { span, start, len } => {
+                if len != *expected_len {
+                    return false;
+                }
+                let Some(source) = function.params.get(span.index()) else {
+                    return false;
+                };
+                let Some(Type::BufferSpan {
+                    element,
+                    channels,
+                    access,
+                    len: source_len,
+                }) = self.program.types.get(source.ty.index())
+                else {
+                    return false;
+                };
+                start.checked_add(len).is_some_and(|end| end <= *source_len)
+                    && element == expected_element
+                    && buffer_channels_accept(*expected_channels, *channels)
+                    && access_permits(*access, *expected_access)
+            }
+        }
+    }
+
+    fn reference_type_matches(&self, actual: crate::TypeId, expected: crate::TypeId) -> bool {
+        match (
+            self.program.types.get(actual.index()),
+            self.program.types.get(expected.index()),
+        ) {
+            (
+                Some(Type::Buffer {
+                    element: actual_element,
+                    channels: actual_channels,
+                    access: actual_access,
+                }),
+                Some(Type::Buffer {
+                    element: expected_element,
+                    channels: expected_channels,
+                    access: expected_access,
+                }),
+            ) => {
+                actual_element == expected_element
+                    && buffer_channels_accept(*expected_channels, *actual_channels)
+                    && access_permits(*actual_access, *expected_access)
+            }
+            _ => self.program.types_equivalent(actual, expected),
+        }
     }
 
     fn function_buffer_param(
@@ -3222,6 +3603,88 @@ impl Validator<'_> {
                 element, access, ..
             } => Some((*element, *access)),
             _ => None,
+        }
+    }
+
+    fn buffer_param_ref_matches_type(
+        &self,
+        function: &Function,
+        reference: crate::BufferParamRef,
+        expected: crate::TypeId,
+    ) -> bool {
+        let actual = function
+            .params
+            .get(reference.index())
+            .and_then(|parameter| self.program.types.get(parameter.ty.index()));
+        let (actual_element, actual_channels, actual_access) = match (reference, actual) {
+            (
+                crate::BufferParamRef::Direct(_),
+                Some(Type::Buffer {
+                    element,
+                    channels,
+                    access,
+                }),
+            )
+            | (
+                crate::BufferParamRef::ArrayElement { .. },
+                Some(Type::BufferSpan {
+                    element,
+                    channels,
+                    access,
+                    ..
+                }),
+            ) => (*element, *channels, *access),
+            _ => return false,
+        };
+        matches!(
+            self.program.types.get(expected.index()),
+            Some(Type::Buffer {
+                element,
+                channels,
+                access,
+            }) if *element == actual_element
+                && buffer_channels_accept(*channels, actual_channels)
+                && access_permits(actual_access, *access)
+        )
+    }
+
+    fn function_buffer_param_ref(
+        &self,
+        function: &Function,
+        reference: crate::BufferParamRef,
+    ) -> Option<(crate::ScalarType, crate::AccessMode)> {
+        match reference {
+            crate::BufferParamRef::Direct(parameter) => {
+                self.function_buffer_param(function, parameter)
+            }
+            crate::BufferParamRef::ArrayElement { span, .. } => {
+                let parameter = function.params.get(span.index())?;
+                match self.program.types.get(parameter.ty.index())? {
+                    Type::BufferSpan {
+                        element, access, ..
+                    } => Some((*element, *access)),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    fn validate_buffer_param_ref(
+        &mut self,
+        function_id: crate::FunctionId,
+        function: &Function,
+        reference: crate::BufferParamRef,
+        source: crate::SourceSpan,
+    ) {
+        if let crate::BufferParamRef::ArrayElement { selector, .. } = reference {
+            self.validate_value(function_id, function, selector, source);
+            self.require_i32_value(
+                function_id,
+                function,
+                selector,
+                source,
+                "buffer-parameter collection selector",
+            );
         }
     }
 
@@ -3658,7 +4121,7 @@ impl Validator<'_> {
             }
             *seen = true;
             match &self.program.types[ty.index()] {
-                Type::Slice { .. } | Type::Buffer { .. } => return true,
+                Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => return true,
                 Type::Tuple(elements) => pending.extend(elements.iter().copied()),
                 Type::Array { element, .. } => pending.push(*element),
                 Type::Struct(structure) => {
@@ -3846,14 +4309,58 @@ impl Validator<'_> {
     fn require_buffer(
         &mut self,
         function_id: FunctionId,
-        buffer: crate::BufferId,
+        function: &Function,
+        buffer: crate::BufferRef,
         source: SourceSpan,
     ) {
-        if buffer.index() >= self.program.interface.buffers.len() {
+        if let crate::BufferRef::ArrayElement { len, selector, .. } = buffer {
+            if len == 0 {
+                self.function_error(
+                    function_id,
+                    source,
+                    "buffer array reference has zero length",
+                );
+            }
+            self.require_i32_value(
+                function_id,
+                function,
+                selector,
+                source,
+                "buffer-array selector",
+            );
+        }
+        if buffer
+            .possible_indices()
+            .any(|index| index >= self.program.interface.buffers.len())
+        {
             self.function_error(
                 function_id,
                 source,
-                format!("references missing buffer {}", buffer.raw()),
+                format!(
+                    "references invalid buffer range beginning at {}",
+                    buffer.raw()
+                ),
+            );
+            return;
+        }
+        let Some(first) = self.program.interface.buffers.get(buffer.index()) else {
+            return;
+        };
+        if buffer.possible_indices().any(|index| {
+            self.program
+                .interface
+                .buffers
+                .get(index)
+                .is_none_or(|candidate| {
+                    candidate.element != first.element
+                        || candidate.channels != first.channels
+                        || candidate.access != first.access
+                })
+        }) {
+            self.function_error(
+                function_id,
+                source,
+                "buffer array reference spans incompatible descriptors",
             );
         }
     }
@@ -4001,7 +4508,11 @@ fn direct_initialization_children(
                     .collect::<Vec<_>>(),
             )
         }
-        Type::Scalar(_) | Type::Tuple(_) | Type::Slice { .. } | Type::Buffer { .. } => None,
+        Type::Scalar(_)
+        | Type::Tuple(_)
+        | Type::Slice { .. }
+        | Type::Buffer { .. }
+        | Type::BufferSpan { .. } => None,
     }
 }
 
@@ -4191,6 +4702,22 @@ fn logical_scalar_bytes(scalar: crate::ScalarType) -> u64 {
     }
 }
 
+fn buffer_static_channel_validation_error(
+    channels: u32,
+    element: crate::ScalarType,
+) -> Option<String> {
+    let maximum = (i32::MAX as u64) / logical_scalar_bytes(element);
+    if channels == 0 {
+        Some("has a zero-channel static buffer layout".to_owned())
+    } else if u64::from(channels) > maximum {
+        Some(format!(
+            "static channel count exceeds the signed i32 buffer byte-extent limit; maximum is {maximum}"
+        ))
+    } else {
+        None
+    }
+}
+
 fn scalar_sequence_fits_i32_bytes(len: usize, scalar: crate::ScalarType) -> bool {
     u64::try_from(len)
         .ok()
@@ -4200,6 +4727,23 @@ fn scalar_sequence_fits_i32_bytes(len: usize, scalar: crate::ScalarType) -> bool
 
 fn access_permits(source: crate::AccessMode, requested: crate::AccessMode) -> bool {
     source == crate::AccessMode::ReadWrite || requested == crate::AccessMode::ReadOnly
+}
+
+fn buffer_channels_accept(expected: crate::BufferChannels, actual: crate::BufferChannels) -> bool {
+    match expected {
+        crate::BufferChannels::Dynamic => true,
+        crate::BufferChannels::Mono => matches!(
+            actual,
+            crate::BufferChannels::Mono | crate::BufferChannels::Static(1)
+        ),
+        crate::BufferChannels::Static(1) => matches!(
+            actual,
+            crate::BufferChannels::Mono | crate::BufferChannels::Static(1)
+        ),
+        crate::BufferChannels::Static(expected) => {
+            actual == crate::BufferChannels::Static(expected)
+        }
+    }
 }
 
 fn validate_float_param_control_grid(
@@ -4273,12 +4817,12 @@ fn intrinsic_name(intrinsic: crate::Intrinsic) -> &'static str {
 #[cfg(test)]
 mod tests {
     use crate::{
-        AccessMode, Buffer, BufferChannels, BufferId, CallArgument, CompareOp, CompileConfig,
-        ConstantValue, Event, EventId, EventParam, FieldId, Function, FunctionId, FunctionKind,
-        FunctionParam, Intrinsic, Local, LocalId, Output, OutputId, Param, ParamId, PassingMode,
-        Place, PlaceBase, Program, Projection, Rvalue, ScalarType, ScalarValue, SliceSource,
-        SourceSpan, StatePersistence, StateSlot, Statement, StatementKind, StructField, StructType,
-        Type, TypeId, Value,
+        AccessMode, Buffer, BufferChannels, BufferId, BufferRef, CallArgument, CompareOp,
+        CompileConfig, ConstantValue, Event, EventId, EventParam, FieldId, Function, FunctionId,
+        FunctionKind, FunctionParam, Intrinsic, Local, LocalId, Output, OutputId, Param, ParamId,
+        PassingMode, Place, PlaceBase, Program, Projection, Rvalue, ScalarType, ScalarValue,
+        SliceSource, SourceSpan, StatePersistence, StateSlot, Statement, StatementKind,
+        StructField, StructType, Type, TypeId, Value,
     };
 
     fn function(name: &str, kind: FunctionKind) -> Function {
@@ -5791,7 +6335,7 @@ mod tests {
         });
         program.functions[1].body.statements.push(Statement {
             kind: StatementKind::BufferStore {
-                buffer: BufferId::new(0),
+                buffer: crate::BufferRef::Direct(BufferId::new(0)),
                 channel: None,
                 index: Value::Constant(ScalarValue::I32(0)),
                 value: Value::Constant(ScalarValue::F32(1.0)),
@@ -5804,6 +6348,118 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.message.contains("read-only interface buffer")));
+    }
+
+    #[test]
+    fn ordinary_validation_rejects_unchecked_buffer_collection_selectors() {
+        let mut program = empty_program();
+        program.interface.buffers.push(Buffer {
+            name: "samples".to_owned(),
+            element: ScalarType::F32,
+            channels: BufferChannels::Mono,
+            access: AccessMode::ReadWrite,
+        });
+        program.functions[1].locals.push(Local {
+            name: Some("frames".to_owned()),
+            ty: TypeId::new(0),
+        });
+        program.functions[1].body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::Local(LocalId::new(0)),
+                    projections: Vec::new(),
+                },
+                value: Rvalue::BufferLen(BufferRef::ArrayElement {
+                    first: BufferId::new(0),
+                    len: 1,
+                    selector: Value::Constant(ScalarValue::I32(0)),
+                    bounds: crate::BoundsMode::Unchecked,
+                }),
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        let errors = super::validate(&program)
+            .expect_err("unchecked descriptor selection requires producer proof");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("trusted MIR producer proof")));
+        validate_producer(&program).expect("trusted producer selector is structurally valid");
+    }
+
+    #[test]
+    fn buffer_collection_references_require_homogeneous_descriptors() {
+        let mut program = empty_program();
+        program.types.push(Type::Scalar(ScalarType::F32));
+        program.interface.buffers.extend([
+            Buffer {
+                name: "float_samples".to_owned(),
+                element: ScalarType::F32,
+                channels: BufferChannels::Mono,
+                access: AccessMode::ReadWrite,
+            },
+            Buffer {
+                name: "bool_samples".to_owned(),
+                element: ScalarType::Bool,
+                channels: BufferChannels::Mono,
+                access: AccessMode::ReadWrite,
+            },
+        ]);
+        program.functions[1].locals.push(Local {
+            name: Some("sample".to_owned()),
+            ty: test_type(0),
+        });
+        program.functions[1].body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::Local(LocalId::new(0)),
+                    projections: Vec::new(),
+                },
+                value: Rvalue::BufferLoad {
+                    buffer: BufferRef::ArrayElement {
+                        first: BufferId::new(0),
+                        len: 2,
+                        selector: Value::Constant(ScalarValue::I32(1)),
+                        bounds: crate::BoundsMode::Clamp,
+                    },
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    bounds: crate::BoundsMode::Clamp,
+                },
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        let errors = super::validate(&program)
+            .expect_err("mixed descriptor collection must fail validation");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("spans incompatible descriptors")));
+    }
+
+    #[test]
+    fn static_buffer_channels_must_fit_signed_byte_extents() {
+        let mut program = empty_program();
+        program.types.push(Type::Buffer {
+            element: ScalarType::F32,
+            channels: BufferChannels::Static((i32::MAX as u32 / 4) + 1),
+            access: AccessMode::ReadWrite,
+        });
+        program.interface.buffers.push(Buffer {
+            name: "huge".to_owned(),
+            element: ScalarType::F64,
+            channels: BufferChannels::Static((i32::MAX as u32 / 8) + 1),
+            access: AccessMode::ReadWrite,
+        });
+
+        let errors = super::validate(&program).expect_err("oversized channels must fail");
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|error| error.message.contains("buffer byte-extent limit"))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -5831,7 +6487,9 @@ mod tests {
             kind: StatementKind::Call {
                 results: Vec::new(),
                 function: FunctionId::new(2),
-                args: vec![CallArgument::Buffer(BufferId::new(0))],
+                args: vec![CallArgument::Buffer(crate::BufferRef::Direct(
+                    BufferId::new(0),
+                ))],
             },
             source: SourceSpan::UNKNOWN,
         });

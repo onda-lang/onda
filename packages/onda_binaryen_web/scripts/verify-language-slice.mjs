@@ -243,6 +243,7 @@ try {
   sliceProcessor.port.onmessage({
     data: {
       type: "event",
+      requestId: "seed-event",
       event: "seed",
       values: {
         scale: 2,
@@ -260,7 +261,7 @@ try {
     )
   ) {
     throw new Error(
-      `unexpected primitive-slice render: ${JSON.stringify([...sliceOutput])}`,
+      `unexpected primitive-slice render: ${JSON.stringify([...sliceOutput])}; messages: ${JSON.stringify(sliceProcessor.port.messages)}`,
     );
   }
 

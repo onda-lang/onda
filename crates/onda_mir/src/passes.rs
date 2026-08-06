@@ -755,17 +755,26 @@ fn propagate_statement_values(
             true
         }
         StatementKind::BufferStore {
-            channel,
-            index,
-            value,
-            ..
-        }
-        | StatementKind::BufferParamStore {
+            buffer,
             channel,
             index,
             value,
             ..
         } => {
+            propagate_buffer_ref(buffer, facts, stats);
+            propagate_optional_value(channel, facts, stats);
+            propagate_value(index, facts, stats);
+            propagate_value(value, facts, stats);
+            true
+        }
+        StatementKind::BufferParamStore {
+            parameter,
+            channel,
+            index,
+            value,
+            ..
+        } => {
+            propagate_buffer_param_ref(parameter, facts, stats);
             propagate_optional_value(channel, facts, stats);
             propagate_value(index, facts, stats);
             propagate_value(value, facts, stats);
@@ -916,6 +925,26 @@ fn propagate_value(value: &mut Value, facts: &[Option<Value>], stats: &mut PassS
     }
 }
 
+fn propagate_buffer_ref(
+    buffer: &mut crate::BufferRef,
+    facts: &[Option<Value>],
+    stats: &mut PassStats,
+) {
+    if let crate::BufferRef::ArrayElement { selector, .. } = buffer {
+        propagate_value(selector, facts, stats);
+    }
+}
+
+fn propagate_buffer_param_ref(
+    buffer: &mut crate::BufferParamRef,
+    facts: &[Option<Value>],
+    stats: &mut PassStats,
+) {
+    if let crate::BufferParamRef::ArrayElement { selector, .. } = buffer {
+        propagate_value(selector, facts, stats);
+    }
+}
+
 fn propagate_place_indices(place: &mut Place, facts: &[Option<Value>], stats: &mut PassStats) {
     for projection in &mut place.projections {
         if let Projection::Index { index, .. } = projection {
@@ -946,8 +975,23 @@ fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: 
             propagate_optional_value(element, facts, stats);
             propagate_value(frame, facts, stats);
         }
-        Rvalue::BufferLoad { channel, index, .. }
-        | Rvalue::BufferParamLoad { channel, index, .. } => {
+        Rvalue::BufferLoad {
+            buffer,
+            channel,
+            index,
+            ..
+        } => {
+            propagate_buffer_ref(buffer, facts, stats);
+            propagate_optional_value(channel, facts, stats);
+            propagate_value(index, facts, stats);
+        }
+        Rvalue::BufferParamLoad {
+            parameter,
+            channel,
+            index,
+            ..
+        } => {
+            propagate_buffer_param_ref(parameter, facts, stats);
             propagate_optional_value(channel, facts, stats);
             propagate_value(index, facts, stats);
         }
@@ -959,8 +1003,12 @@ fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: 
                 crate::SliceSource::Place(place) => {
                     propagate_place_indices(place, facts, stats);
                 }
-                crate::SliceSource::Buffer { channel, .. }
-                | crate::SliceSource::BufferParam { channel, .. } => {
+                crate::SliceSource::Buffer { buffer, channel } => {
+                    propagate_buffer_ref(buffer, facts, stats);
+                    propagate_optional_value(channel, facts, stats);
+                }
+                crate::SliceSource::BufferParam { parameter, channel } => {
+                    propagate_buffer_param_ref(parameter, facts, stats);
                     propagate_optional_value(channel, facts, stats);
                 }
                 crate::SliceSource::ConstData(_) => {}
@@ -972,12 +1020,14 @@ fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: 
             propagate_value(slice, facts, stats);
             propagate_value(index, facts, stats);
         }
-        Rvalue::BufferLen(_)
-        | Rvalue::BufferChannels(_)
-        | Rvalue::BufferSampleRate(_)
-        | Rvalue::BufferParamLen(_)
-        | Rvalue::BufferParamChannels(_)
-        | Rvalue::BufferParamSampleRate(_) => {}
+        Rvalue::BufferLen(buffer)
+        | Rvalue::BufferChannels(buffer)
+        | Rvalue::BufferSampleRate(buffer) => propagate_buffer_ref(buffer, facts, stats),
+        Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamChannels(parameter)
+        | Rvalue::BufferParamSampleRate(parameter) => {
+            propagate_buffer_param_ref(parameter, facts, stats);
+        }
     }
 }
 
@@ -1001,7 +1051,11 @@ fn propagate_call_argument(
             propagate_value(slice, facts, stats);
             propagate_value(start, facts, stats);
         }
-        CallArgument::Buffer(_) => {}
+        CallArgument::Buffer(buffer) => propagate_buffer_ref(buffer, facts, stats),
+        CallArgument::BufferParam(parameter) => {
+            propagate_buffer_param_ref(parameter, facts, stats);
+        }
+        CallArgument::BufferSpan(_) => {}
     }
 }
 
@@ -1053,7 +1107,9 @@ fn mutated_argument_local(argument: &CallArgument) -> Option<LocalId> {
         CallArgument::Value(_)
         | CallArgument::SliceElement { .. }
         | CallArgument::SliceWindow { .. }
-        | CallArgument::Buffer(_) => return None,
+        | CallArgument::Buffer(_)
+        | CallArgument::BufferParam(_)
+        | CallArgument::BufferSpan(_) => return None,
     };
     let PlaceBase::Local(local) = place.base else {
         return None;
@@ -1589,6 +1645,18 @@ fn collect_place_read(place: &Place, reads: &mut [u32]) {
     }
 }
 
+fn collect_buffer_ref_read(buffer: crate::BufferRef, reads: &mut [u32]) {
+    if let crate::BufferRef::ArrayElement { selector, .. } = buffer {
+        mark_value_read(selector, reads);
+    }
+}
+
+fn collect_buffer_param_ref_read(buffer: crate::BufferParamRef, reads: &mut [u32]) {
+    if let crate::BufferParamRef::ArrayElement { selector, .. } = buffer {
+        mark_value_read(selector, reads);
+    }
+}
+
 fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
     match value {
         Rvalue::Use(value) | Rvalue::SliceLen(value) => mark_value_read(*value, reads),
@@ -1611,8 +1679,25 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
             }
             mark_value_read(*frame, reads);
         }
-        Rvalue::BufferLoad { channel, index, .. }
-        | Rvalue::BufferParamLoad { channel, index, .. } => {
+        Rvalue::BufferLoad {
+            buffer,
+            channel,
+            index,
+            ..
+        } => {
+            collect_buffer_ref_read(*buffer, reads);
+            if let Some(channel) = channel {
+                mark_value_read(*channel, reads);
+            }
+            mark_value_read(*index, reads);
+        }
+        Rvalue::BufferParamLoad {
+            parameter,
+            channel,
+            index,
+            ..
+        } => {
+            collect_buffer_param_ref_read(*parameter, reads);
             if let Some(channel) = channel {
                 mark_value_read(*channel, reads);
             }
@@ -1624,8 +1709,14 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
         } => {
             match source {
                 crate::SliceSource::Place(place) => collect_place_index_reads(place, reads),
-                crate::SliceSource::Buffer { channel, .. }
-                | crate::SliceSource::BufferParam { channel, .. } => {
+                crate::SliceSource::Buffer { buffer, channel } => {
+                    collect_buffer_ref_read(*buffer, reads);
+                    if let Some(channel) = channel {
+                        mark_value_read(*channel, reads);
+                    }
+                }
+                crate::SliceSource::BufferParam { parameter, channel } => {
+                    collect_buffer_param_ref_read(*parameter, reads);
                     if let Some(channel) = channel {
                         mark_value_read(*channel, reads);
                     }
@@ -1639,10 +1730,10 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
             mark_value_read(*slice, reads);
             mark_value_read(*index, reads);
         }
-        Rvalue::BufferLen(_)
-        | Rvalue::BufferChannels(_)
-        | Rvalue::BufferSampleRate(_)
-        | Rvalue::BufferParamLen(_)
+        Rvalue::BufferLen(buffer)
+        | Rvalue::BufferChannels(buffer)
+        | Rvalue::BufferSampleRate(buffer) => collect_buffer_ref_read(*buffer, reads),
+        Rvalue::BufferParamLen(_)
         | Rvalue::BufferParamChannels(_)
         | Rvalue::BufferParamSampleRate(_) => {}
     }
@@ -1671,7 +1762,11 @@ fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
                         mark_value_read(*slice, reads);
                         mark_value_read(*start, reads);
                     }
-                    CallArgument::Buffer(_) => {}
+                    CallArgument::Buffer(buffer) => collect_buffer_ref_read(*buffer, reads),
+                    CallArgument::BufferParam(parameter) => {
+                        collect_buffer_param_ref_read(*parameter, reads);
+                    }
+                    CallArgument::BufferSpan(_) => {}
                 }
             }
         }
@@ -1694,17 +1789,27 @@ fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
             mark_value_read(*value, reads);
         }
         StatementKind::BufferStore {
-            channel,
-            index,
-            value,
-            ..
-        }
-        | StatementKind::BufferParamStore {
+            buffer,
             channel,
             index,
             value,
             ..
         } => {
+            collect_buffer_ref_read(*buffer, reads);
+            if let Some(channel) = channel {
+                mark_value_read(*channel, reads);
+            }
+            mark_value_read(*index, reads);
+            mark_value_read(*value, reads);
+        }
+        StatementKind::BufferParamStore {
+            parameter,
+            channel,
+            index,
+            value,
+            ..
+        } => {
+            collect_buffer_param_ref_read(*parameter, reads);
             if let Some(channel) = channel {
                 mark_value_read(*channel, reads);
             }
@@ -1762,6 +1867,16 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
             referenced.insert(local);
         }
     }
+    fn buffer_ref(buffer: crate::BufferRef, referenced: &mut HashSet<LocalId>) {
+        if let crate::BufferRef::ArrayElement { selector, .. } = buffer {
+            value(selector, referenced);
+        }
+    }
+    fn buffer_param_ref(buffer: crate::BufferParamRef, referenced: &mut HashSet<LocalId>) {
+        if let crate::BufferParamRef::ArrayElement { selector, .. } = buffer {
+            value(selector, referenced);
+        }
+    }
     fn place(place: &Place, include_base: bool, referenced: &mut HashSet<LocalId>) {
         if include_base {
             if let PlaceBase::Local(local) = place.base {
@@ -1797,8 +1912,25 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                 }
                 value(*frame, referenced);
             }
-            Rvalue::BufferLoad { channel, index, .. }
-            | Rvalue::BufferParamLoad { channel, index, .. } => {
+            Rvalue::BufferLoad {
+                buffer,
+                channel,
+                index,
+                ..
+            } => {
+                buffer_ref(*buffer, referenced);
+                if let Some(v) = channel {
+                    value(*v, referenced);
+                }
+                value(*index, referenced);
+            }
+            Rvalue::BufferParamLoad {
+                parameter,
+                channel,
+                index,
+                ..
+            } => {
+                buffer_param_ref(*parameter, referenced);
                 if let Some(v) = channel {
                     value(*v, referenced);
                 }
@@ -1810,8 +1942,14 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
             } => {
                 match source {
                     crate::SliceSource::Place(p) => place(p, false, referenced),
-                    crate::SliceSource::Buffer { channel, .. }
-                    | crate::SliceSource::BufferParam { channel, .. } => {
+                    crate::SliceSource::Buffer { buffer, channel } => {
+                        buffer_ref(*buffer, referenced);
+                        if let Some(v) = channel {
+                            value(*v, referenced);
+                        }
+                    }
+                    crate::SliceSource::BufferParam { parameter, channel } => {
+                        buffer_param_ref(*parameter, referenced);
                         if let Some(v) = channel {
                             value(*v, referenced);
                         }
@@ -1825,12 +1963,14 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                 value(*slice, referenced);
                 value(*index, referenced);
             }
-            Rvalue::BufferLen(_)
-            | Rvalue::BufferChannels(_)
-            | Rvalue::BufferSampleRate(_)
-            | Rvalue::BufferParamLen(_)
-            | Rvalue::BufferParamChannels(_)
-            | Rvalue::BufferParamSampleRate(_) => {}
+            Rvalue::BufferLen(buffer)
+            | Rvalue::BufferChannels(buffer)
+            | Rvalue::BufferSampleRate(buffer) => buffer_ref(*buffer, referenced),
+            Rvalue::BufferParamLen(parameter)
+            | Rvalue::BufferParamChannels(parameter)
+            | Rvalue::BufferParamSampleRate(parameter) => {
+                buffer_param_ref(*parameter, referenced);
+            }
         }
     }
     for statement in &block.statements {
@@ -1859,7 +1999,11 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                             value(*slice, referenced);
                             value(*start, referenced);
                         }
-                        CallArgument::Buffer(_) => {}
+                        CallArgument::Buffer(buffer) => buffer_ref(*buffer, referenced),
+                        CallArgument::BufferParam(parameter) => {
+                            buffer_param_ref(*parameter, referenced);
+                        }
+                        CallArgument::BufferSpan(_) => {}
                     }
                 }
             }
@@ -1884,17 +2028,27 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                 value(*v, referenced);
             }
             StatementKind::BufferStore {
-                channel,
-                index,
-                value: v,
-                ..
-            }
-            | StatementKind::BufferParamStore {
+                buffer,
                 channel,
                 index,
                 value: v,
                 ..
             } => {
+                buffer_ref(*buffer, referenced);
+                if let Some(v) = channel {
+                    value(*v, referenced);
+                }
+                value(*index, referenced);
+                value(*v, referenced);
+            }
+            StatementKind::BufferParamStore {
+                parameter,
+                channel,
+                index,
+                value: v,
+                ..
+            } => {
+                buffer_param_ref(*parameter, referenced);
                 if let Some(v) = channel {
                     value(*v, referenced);
                 }
@@ -1982,6 +2136,18 @@ fn rewrite_value(value: &mut Value, mapping: &[Option<LocalId>]) {
     }
 }
 
+fn rewrite_buffer_ref(buffer: &mut crate::BufferRef, mapping: &[Option<LocalId>]) {
+    if let crate::BufferRef::ArrayElement { selector, .. } = buffer {
+        rewrite_value(selector, mapping);
+    }
+}
+
+fn rewrite_buffer_param_ref(buffer: &mut crate::BufferParamRef, mapping: &[Option<LocalId>]) {
+    if let crate::BufferParamRef::ArrayElement { selector, .. } = buffer {
+        rewrite_value(selector, mapping);
+    }
+}
+
 fn rewrite_place(place: &mut Place, mapping: &[Option<LocalId>]) {
     if let PlaceBase::Local(local) = &mut place.base {
         *local = mapping[local.index()].expect("referenced local retained during reindexing");
@@ -2015,8 +2181,25 @@ fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
             }
             rewrite_value(frame, mapping);
         }
-        Rvalue::BufferLoad { channel, index, .. }
-        | Rvalue::BufferParamLoad { channel, index, .. } => {
+        Rvalue::BufferLoad {
+            buffer,
+            channel,
+            index,
+            ..
+        } => {
+            rewrite_buffer_ref(buffer, mapping);
+            if let Some(channel) = channel {
+                rewrite_value(channel, mapping);
+            }
+            rewrite_value(index, mapping);
+        }
+        Rvalue::BufferParamLoad {
+            parameter,
+            channel,
+            index,
+            ..
+        } => {
+            rewrite_buffer_param_ref(parameter, mapping);
             if let Some(channel) = channel {
                 rewrite_value(channel, mapping);
             }
@@ -2028,8 +2211,14 @@ fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
         } => {
             match source {
                 crate::SliceSource::Place(place) => rewrite_place(place, mapping),
-                crate::SliceSource::Buffer { channel, .. }
-                | crate::SliceSource::BufferParam { channel, .. } => {
+                crate::SliceSource::Buffer { buffer, channel } => {
+                    rewrite_buffer_ref(buffer, mapping);
+                    if let Some(channel) = channel {
+                        rewrite_value(channel, mapping);
+                    }
+                }
+                crate::SliceSource::BufferParam { parameter, channel } => {
+                    rewrite_buffer_param_ref(parameter, mapping);
                     if let Some(channel) = channel {
                         rewrite_value(channel, mapping);
                     }
@@ -2043,12 +2232,14 @@ fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
             rewrite_value(slice, mapping);
             rewrite_value(index, mapping);
         }
-        Rvalue::BufferLen(_)
-        | Rvalue::BufferChannels(_)
-        | Rvalue::BufferSampleRate(_)
-        | Rvalue::BufferParamLen(_)
-        | Rvalue::BufferParamChannels(_)
-        | Rvalue::BufferParamSampleRate(_) => {}
+        Rvalue::BufferLen(buffer)
+        | Rvalue::BufferChannels(buffer)
+        | Rvalue::BufferSampleRate(buffer) => rewrite_buffer_ref(buffer, mapping),
+        Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamChannels(parameter)
+        | Rvalue::BufferParamSampleRate(parameter) => {
+            rewrite_buffer_param_ref(parameter, mapping);
+        }
     }
 }
 
@@ -2078,7 +2269,11 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
                         rewrite_value(slice, mapping);
                         rewrite_value(start, mapping);
                     }
-                    CallArgument::Buffer(_) => {}
+                    CallArgument::Buffer(buffer) => rewrite_buffer_ref(buffer, mapping),
+                    CallArgument::BufferParam(parameter) => {
+                        rewrite_buffer_param_ref(parameter, mapping);
+                    }
+                    CallArgument::BufferSpan(_) => {}
                 }
             }
         }
@@ -2101,17 +2296,27 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
             rewrite_value(value, mapping);
         }
         StatementKind::BufferStore {
-            channel,
-            index,
-            value,
-            ..
-        }
-        | StatementKind::BufferParamStore {
+            buffer,
             channel,
             index,
             value,
             ..
         } => {
+            rewrite_buffer_ref(buffer, mapping);
+            if let Some(channel) = channel {
+                rewrite_value(channel, mapping);
+            }
+            rewrite_value(index, mapping);
+            rewrite_value(value, mapping);
+        }
+        StatementKind::BufferParamStore {
+            parameter,
+            channel,
+            index,
+            value,
+            ..
+        } => {
+            rewrite_buffer_param_ref(parameter, mapping);
             if let Some(channel) = channel {
                 rewrite_value(channel, mapping);
             }

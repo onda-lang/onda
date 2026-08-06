@@ -1030,35 +1030,37 @@ fn validate_template_assign_target_refs(
             );
             validate_template_expr_refs(index, current_ns, state, scope, context, errors);
         }
-        AssignTarget::Slice { base, start, end } => {
+        AssignTarget::Slice {
+            base,
+            selector,
+            channel,
+            start,
+            end,
+        } => {
             validate_template_named_ref(
                 base,
                 current_ns,
                 state,
                 scope,
                 context,
-                start
-                    .as_ref()
+                [selector, channel, start, end]
+                    .into_iter()
+                    .flatten()
+                    .next()
                     .map(|expr| expr.loc().span())
                     .unwrap_or_default(),
                 errors,
             );
-            validate_template_optional_expr_refs(
-                start.as_ref(),
-                current_ns,
-                state,
-                scope,
-                context,
-                errors,
-            );
-            validate_template_optional_expr_refs(
-                end.as_ref(),
-                current_ns,
-                state,
-                scope,
-                context,
-                errors,
-            );
+            for coordinate in [selector, channel, start, end] {
+                validate_template_optional_expr_refs(
+                    coordinate.as_deref(),
+                    current_ns,
+                    state,
+                    scope,
+                    context,
+                    errors,
+                );
+            }
         }
         AssignTarget::Tuple(_) => {}
     }
@@ -1137,7 +1139,12 @@ fn validate_template_expr_refs(
             validate_template_expr_refs(index, current_ns, state, scope, context, errors);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             validate_template_named_ref(
                 base,
@@ -1148,22 +1155,16 @@ fn validate_template_expr_refs(
                 expr.loc().span(),
                 errors,
             );
-            validate_template_optional_expr_refs(
-                start.as_deref(),
-                current_ns,
-                state,
-                scope,
-                context,
-                errors,
-            );
-            validate_template_optional_expr_refs(
-                end.as_deref(),
-                current_ns,
-                state,
-                scope,
-                context,
-                errors,
-            );
+            for coordinate in [selector, channel, start, end] {
+                validate_template_optional_expr_refs(
+                    coordinate.as_deref(),
+                    current_ns,
+                    state,
+                    scope,
+                    context,
+                    errors,
+                );
+            }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
@@ -1269,7 +1270,12 @@ fn validate_template_static_expr_refs(
             validate_template_static_expr_refs(index, current_ns, state, scope, context, errors);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             validate_template_named_ref(
                 base,
@@ -1280,22 +1286,16 @@ fn validate_template_static_expr_refs(
                 expr.loc().span(),
                 errors,
             );
-            validate_template_optional_static_expr_refs(
-                start.as_deref(),
-                current_ns,
-                state,
-                scope,
-                context,
-                errors,
-            );
-            validate_template_optional_static_expr_refs(
-                end.as_deref(),
-                current_ns,
-                state,
-                scope,
-                context,
-                errors,
-            );
+            for coordinate in [selector, channel, start, end] {
+                validate_template_optional_static_expr_refs(
+                    coordinate.as_deref(),
+                    current_ns,
+                    state,
+                    scope,
+                    context,
+                    errors,
+                );
+            }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
@@ -4127,7 +4127,10 @@ fn rewrite_fn_param_type(
                 errors,
             );
         }
-        FnParamType::Buffer(buffer_ty) => {
+        FnParamType::Buffer(buffer_ty)
+        | FnParamType::BufferArray {
+            buffer: buffer_ty, ..
+        } => {
             rewrite_buffer_type(
                 buffer_ty,
                 current_ns,
@@ -4376,7 +4379,13 @@ fn rewrite_stmt_scoped(
                         local_scope,
                     );
                 }
-                AssignTarget::Slice { base, start, end } => {
+                AssignTarget::Slice {
+                    base,
+                    selector,
+                    channel,
+                    start,
+                    end,
+                } => {
                     if let Some(qualified) = resolve_visible_unqualified_const_name(
                         base,
                         current_ns,
@@ -4403,21 +4412,9 @@ fn rewrite_stmt_scoped(
                             *base = resolved;
                         }
                     }
-                    if let Some(start) = start {
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
                         rewrite_expr_scoped(
-                            start,
-                            current_ns,
-                            template_consts,
-                            options,
-                            state,
-                            generated,
-                            errors,
-                            local_scope,
-                        );
-                    }
-                    if let Some(end) = end {
-                        rewrite_expr_scoped(
-                            end,
+                            coordinate,
                             current_ns,
                             template_consts,
                             options,
@@ -4707,7 +4704,12 @@ fn rewrite_expr_scoped(
             );
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             let qualified = if local_scope.contains_value_name(base) {
                 None
@@ -4736,21 +4738,9 @@ fn rewrite_expr_scoped(
                     *base = resolved;
                 }
             }
-            if let Some(start) = start {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 rewrite_expr_scoped(
-                    start,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    local_scope,
-                );
-            }
-            if let Some(end) = end {
-                rewrite_expr_scoped(
-                    end,
+                    coordinate,
                     current_ns,
                     template_consts,
                     options,

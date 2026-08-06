@@ -16,7 +16,8 @@ use std::fmt;
 use onda_frontend::{
     ArrayElemType, AssignTarget, BinaryOp as AstBinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr,
     LogicalOp, ParamScale, PrimitiveType, SourceLoc, Stmt, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
 };
 use onda_mir::{
     BinaryOp as MirBinaryOp, Block as MirBlock, BoundsMode, CallArgument, CompareOp,
@@ -25,19 +26,16 @@ use onda_mir::{
     SourceSpan, Statement, StatementKind, Type as MirType, TypeId, UnaryOp, Value,
 };
 
-use crate::builtins::{UNSAFE_READ2_FN, UNSAFE_READ_FN, UNSAFE_WRITE2_FN, UNSAFE_WRITE_FN};
 use crate::internal_names::{
-    runtime_proc_array_active_symbol, PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL,
-    PROC_INDEX_EXPR_ARG,
+    runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol, PROC_INDEX_BASE_ARG,
+    PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
 use crate::{
     adapt_binary_operand_types, adapt_numeric_argument_types, builtin_constant_type,
     builtin_constant_value_f64, can_assign_expr_to_type, can_eval_const_expr_exact_int,
     effective_untyped_assignment_type, eval_const_expr_i64_exact, merge_numeric_types,
     parse_array_len_instance_base, parse_buffer_chans_instance_base,
-    parse_buffer_samplerate_instance_base, parse_unsafe_read2_instance_base,
-    parse_unsafe_read_instance_base, parse_unsafe_write2_instance_base,
-    parse_unsafe_write_instance_base, resolve_call_args_at, AggregateLayoutTable,
+    parse_buffer_samplerate_instance_base, resolve_call_args_at, AggregateLayoutTable,
     AggregatePathComponent, AnalysisOptions, ProcSincStageStateFields, ProcStepOversampleMeta,
     ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType, TypedArrayInfo, TypedBufferChannels,
     TypedConstValue, TypedEvent, TypedEventParamDefault, TypedEventParamType, TypedFieldType,
@@ -53,6 +51,14 @@ const SINC_B2_COEFF: f64 = 0.482_468_542_769_700_14;
 const SINC_B3_COEFF: f64 = 0.883_005_025_769_373_1;
 const SINC_TAP_NAMES: [&str; 8] = ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"];
 const MAX_STATIC_SINC_STAGE_ITERATIONS: usize = 2;
+
+#[derive(Clone, Copy, Default)]
+struct SliceSelection<'a> {
+    selector: Option<&'a Expr>,
+    channel: Option<&'a Expr>,
+    start: Option<&'a Expr>,
+    end: Option<&'a Expr>,
+}
 
 /// An error at the boundary between analyzed Onda code and MIR.
 ///
@@ -152,6 +158,7 @@ fn lower_scalar_user_functions_to_mir(
                     | TypedFnParam::Array { .. }
                     | TypedFnParam::Tuple { .. }
                     | TypedFnParam::Buffer { .. }
+                    | TypedFnParam::BufferArray { .. }
                     | TypedFnParam::Struct { .. }
                     | TypedFnParam::StructArray { .. }
                     | TypedFnParam::ProcArray { .. }
@@ -719,11 +726,13 @@ fn mir_program_boundary_errors(program: &TypedProgram) -> Vec<MirLoweringError> 
     }
     for buffer in &program.buffers {
         if let TypedBufferChannels::Static(channels) = &buffer.channels {
-            if *channels == 0 || u32::try_from(*channels).is_err() {
+            let maximum = crate::builtins::max_buffer_static_channels(buffer.elem_ty);
+            if *channels == 0 || *channels > maximum {
                 errors.push(MirLoweringError::new(
                     format!(
-                        "buffer '{}' static channel count must fit u32 and be greater than zero",
-                        buffer.name
+                        "buffer '{}' static channel count must be between 1 and {maximum} for {} elements",
+                        buffer.name,
+                        buffer.elem_ty.name(),
                     ),
                     SourceLoc::ZERO,
                 ));
@@ -1123,16 +1132,40 @@ fn populate_interface(
             }
             TypedBufferChannels::Dynamic => onda_mir::BufferChannels::Dynamic,
         };
-        let id = onda_mir::BufferId::new(mir.interface.buffers.len() as u32);
-        mir.interface.buffers.push(onda_mir::Buffer {
-            name: buffer.name.clone(),
-            element: scalar_type(buffer.elem_ty),
-            channels,
-            access: onda_mir::AccessMode::ReadWrite,
-        });
-        globals
-            .buffers
-            .insert(buffer.name.clone(), (id, buffer.elem_ty));
+        let Ok(array_len) = u32::try_from(buffer.array_len) else {
+            errors.push(MirLoweringError::new(
+                format!("buffer array '{}' length does not fit u32", buffer.name),
+                SourceLoc::ZERO,
+            ));
+            continue;
+        };
+        let first = onda_mir::BufferId::new(mir.interface.buffers.len() as u32);
+        for index in 0..array_len {
+            mir.interface.buffers.push(onda_mir::Buffer {
+                name: if buffer.is_array {
+                    format!("{}[{index}]", buffer.name)
+                } else {
+                    buffer.name.clone()
+                },
+                element: scalar_type(buffer.elem_ty),
+                channels,
+                access: onda_mir::AccessMode::ReadWrite,
+            });
+        }
+        if !buffer.is_array {
+            globals
+                .buffers
+                .insert(buffer.name.clone(), (first, buffer.elem_ty));
+        } else {
+            mir.interface.buffer_arrays.push(onda_mir::BufferArray {
+                name: buffer.name.clone(),
+                first,
+                len: array_len,
+            });
+            globals
+                .buffer_arrays
+                .insert(buffer.name.clone(), (first, buffer.elem_ty, array_len));
+        }
     }
     if errors.is_empty() {
         Ok(())
@@ -2068,6 +2101,7 @@ struct RuntimeGlobals {
     params: HashMap<String, (onda_mir::ParamId, PrimitiveType)>,
     param_arrays: HashMap<String, (onda_mir::ParamId, PrimitiveType, u32)>,
     buffers: HashMap<String, (onda_mir::BufferId, PrimitiveType)>,
+    buffer_arrays: HashMap<String, (onda_mir::BufferId, PrimitiveType, u32)>,
     interface_views: HashMap<DynamicInterfaceKind, RuntimeInterfaceView>,
     structs: HashMap<String, Vec<TypedStructField>>,
     aggregate_layouts: AggregateLayoutTable,
@@ -2283,12 +2317,15 @@ fn collect_calls_in_statements(statements: &[Stmt], calls: &mut Vec<DiscoveredCa
                 match target {
                     AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
                     AssignTarget::Index { index, .. } => collect_calls_in_expr(index, calls),
-                    AssignTarget::Slice { start, end, .. } => {
-                        if let Some(start) = start {
-                            collect_calls_in_expr(start, calls);
-                        }
-                        if let Some(end) = end {
-                            collect_calls_in_expr(end, calls);
+                    AssignTarget::Slice {
+                        selector,
+                        channel,
+                        start,
+                        end,
+                        ..
+                    } => {
+                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                            collect_calls_in_expr(coordinate, calls);
                         }
                     }
                 }
@@ -2338,12 +2375,15 @@ fn collect_calls_in_expr(expression: &Expr, calls: &mut Vec<DiscoveredCall>) {
             }
         }
         Expr::Index { index, .. } => collect_calls_in_expr(index, calls),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                collect_calls_in_expr(start, calls);
-            }
-            if let Some(end) = end {
-                collect_calls_in_expr(end, calls);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                collect_calls_in_expr(coordinate, calls);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -2461,6 +2501,12 @@ enum PreparedCallArgument {
     DirectReference(Expr),
 }
 
+#[derive(Debug, Clone, Copy)]
+enum BufferArrayCallSource {
+    Interface(onda_mir::BufferId),
+    Parameters(ParameterId),
+}
+
 #[derive(Debug, Clone)]
 struct PendingCallDispatch {
     index: LocalId,
@@ -2549,6 +2595,8 @@ enum Binding {
     EventParameter(onda_mir::EventParamId, PrimitiveType),
     EventArrayParameter(onda_mir::EventParamId, PrimitiveType, u32),
     BufferParameter(ParameterId, PrimitiveType),
+    BufferParameterArray(ParameterId, PrimitiveType, u32),
+    BufferAlias(BufferBindingReference, PrimitiveType),
     Local(LocalId, PrimitiveType),
     Array(LocalId, PrimitiveType, u32),
     ArrayParameter(ParameterId, PrimitiveType, u32),
@@ -2580,6 +2628,27 @@ enum Binding {
     StructArrayElementAlias {
         struct_name: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BufferBindingReference {
+    Interface(onda_mir::BufferRef),
+    Parameter(onda_mir::BufferParamRef),
+    InterfaceStateArray {
+        first: onda_mir::BufferId,
+        len: u32,
+        selector: onda_mir::StateId,
+    },
+    ParameterStateArray {
+        span: ParameterId,
+        selector: onda_mir::StateId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MaterializedBufferReference {
+    Interface(onda_mir::BufferRef),
+    Parameter(onda_mir::BufferParamRef),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2832,6 +2901,27 @@ fn intern_buffer_type(
     }
     let id = TypeId::new(types.len() as u32);
     types.push(buffer);
+    id
+}
+
+fn intern_buffer_span_type(
+    types: &mut Vec<MirType>,
+    element: PrimitiveType,
+    channels: onda_mir::BufferChannels,
+    access: onda_mir::AccessMode,
+    len: u32,
+) -> TypeId {
+    let span = MirType::BufferSpan {
+        element: scalar_type(element),
+        channels,
+        access,
+        len,
+    };
+    if let Some(index) = types.iter().position(|candidate| *candidate == span) {
+        return TypeId::new(index as u32);
+    }
+    let id = TypeId::new(types.len() as u32);
+    types.push(span);
     id
 }
 

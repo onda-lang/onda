@@ -30,6 +30,7 @@ pub(crate) struct ScopeFlowState {
     pub(crate) known_scalars: HashSet<String>,
     pub(crate) local_aliases: LocalAliasTypes,
     pub(crate) local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    pub(crate) local_buffer_aliases: LocalBufferAliases,
     pub(crate) local_proc_aliases: HashMap<String, ProcArrayAliasInfo>,
     pub(crate) tuple_vars: HashMap<String, usize>,
 }
@@ -45,6 +46,7 @@ impl ScopeFlowState {
             known_scalars,
             local_aliases,
             local_array_aliases,
+            local_buffer_aliases: HashMap::new(),
             local_proc_aliases,
             tuple_vars: HashMap::new(),
         }
@@ -64,11 +66,35 @@ impl ScopeFlowState {
     }
 }
 
+pub(crate) fn buffer_reference_expr_info(
+    expr: &Expr,
+    declared_symbols: &DeclaredSymbolMap,
+) -> Option<LocalBufferAliasInfo> {
+    let name = match expr {
+        Expr::Var { name, .. }
+            if has_declared_buffer_symbol_info(declared_symbols, name)
+                && !is_declared_buffer_array_info(declared_symbols, name) =>
+        {
+            name
+        }
+        Expr::Index { base, .. }
+            if has_declared_buffer_symbol_info(declared_symbols, base)
+                && is_declared_buffer_array_info(declared_symbols, base) =>
+        {
+            base
+        }
+        _ => return None,
+    };
+    let (elem_ty, channels) = declared_buffer_info(declared_symbols, name)?;
+    Some(LocalBufferAliasInfo { elem_ty, channels })
+}
+
 pub(crate) fn fork_scope_flow_state_with_tuples(
     known_scalars: &HashSet<String>,
     local_aliases: &LocalAliasTypes,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
+    local_buffer_aliases: &LocalBufferAliases,
     tuple_vars: &HashMap<String, usize>,
 ) -> ScopeFlowState {
     let mut st = ScopeFlowState::from_parts(
@@ -78,6 +104,7 @@ pub(crate) fn fork_scope_flow_state_with_tuples(
         local_proc_aliases.clone(),
     );
     st.tuple_vars = tuple_vars.clone();
+    st.local_buffer_aliases = local_buffer_aliases.clone();
     st
 }
 
@@ -86,12 +113,14 @@ pub(crate) fn merge_branch_scope_flow_state(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    local_buffer_aliases: &mut LocalBufferAliases,
     tuple_vars: &mut HashMap<String, usize>,
     then_state: ScopeFlowState,
     else_state: ScopeFlowState,
 ) {
     let base_array_aliases = local_array_aliases.clone();
     let base_proc_aliases = local_proc_aliases.clone();
+    let base_buffer_aliases = local_buffer_aliases.clone();
     let mut merged = known_scalars.clone();
     for name in &then_state.known_scalars {
         if else_state.known_scalars.contains(name) {
@@ -138,6 +167,11 @@ pub(crate) fn merge_branch_scope_flow_state(
         base_proc_aliases.contains_key(name)
             || (then_proc_names.contains(name) && else_proc_names.contains(name))
     });
+    *local_buffer_aliases = then_state.local_buffer_aliases;
+    for (name, info) in else_state.local_buffer_aliases {
+        local_buffer_aliases.entry(name).or_insert(info);
+    }
+    local_buffer_aliases.retain(|name, _| base_buffer_aliases.contains_key(name));
     *tuple_vars = then_state
         .tuple_vars
         .into_iter()
@@ -156,17 +190,21 @@ pub(crate) fn adopt_loop_scope_flow_state(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    local_buffer_aliases: &mut LocalBufferAliases,
     tuple_vars: &mut HashMap<String, usize>,
     loop_state: ScopeFlowState,
 ) {
     let base_array_aliases = local_array_aliases.clone();
     let base_proc_aliases = local_proc_aliases.clone();
+    let base_buffer_aliases = local_buffer_aliases.clone();
     *local_aliases = loop_state.local_aliases;
     local_aliases.retain(|name, _| known_scalars.contains(name));
     *local_array_aliases = loop_state.local_array_aliases;
     local_array_aliases.retain(|name, _| base_array_aliases.contains_key(name));
     *local_proc_aliases = loop_state.local_proc_aliases;
     local_proc_aliases.retain(|name, _| base_proc_aliases.contains_key(name));
+    *local_buffer_aliases = loop_state.local_buffer_aliases;
+    local_buffer_aliases.retain(|name, _| base_buffer_aliases.contains_key(name));
     *tuple_vars = loop_state.tuple_vars;
     tuple_vars.retain(|name, _| known_scalars.contains(name));
 }

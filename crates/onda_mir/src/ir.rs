@@ -205,6 +205,25 @@ impl Program {
                     && lhs_channels == rhs_channels
                     && lhs_access == rhs_access
             }
+            (
+                Type::BufferSpan {
+                    element: lhs_element,
+                    channels: lhs_channels,
+                    access: lhs_access,
+                    len: lhs_len,
+                },
+                Type::BufferSpan {
+                    element: rhs_element,
+                    channels: rhs_channels,
+                    access: rhs_access,
+                    len: rhs_len,
+                },
+            ) => {
+                lhs_element == rhs_element
+                    && lhs_channels == rhs_channels
+                    && lhs_access == rhs_access
+                    && lhs_len == rhs_len
+            }
             _ => false,
         };
         visiting.remove(&(lhs, rhs));
@@ -231,6 +250,10 @@ pub struct Interface {
     pub control_outputs: Vec<ControlOutput>,
     pub params: Vec<Param>,
     pub buffers: Vec<Buffer>,
+    /// Source-level fixed buffer arrays. Elements occupy a contiguous range in
+    /// `buffers`, so selecting one is a single clamped descriptor lookup.
+    #[serde(default)]
+    pub buffer_arrays: Vec<BufferArray>,
     pub events: Vec<Event>,
 }
 
@@ -274,6 +297,101 @@ pub struct Buffer {
     pub element: ScalarType,
     pub channels: BufferChannels,
     pub access: AccessMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BufferArray {
+    pub name: String,
+    pub first: BufferId,
+    pub len: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum BufferRef {
+    Direct(BufferId),
+    ArrayElement {
+        first: BufferId,
+        len: u32,
+        selector: Value,
+        bounds: BoundsMode,
+    },
+}
+
+/// A buffer descriptor received through a function parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum BufferParamRef {
+    Direct(ParameterId),
+    ArrayElement {
+        span: ParameterId,
+        selector: Value,
+        bounds: BoundsMode,
+    },
+}
+
+impl BufferParamRef {
+    pub const fn first(self) -> ParameterId {
+        match self {
+            Self::Direct(parameter)
+            | Self::ArrayElement {
+                span: parameter, ..
+            } => parameter,
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        self.first().index()
+    }
+
+    pub const fn raw(self) -> u32 {
+        self.first().raw()
+    }
+
+    pub fn possible_indices(self) -> impl Iterator<Item = usize> {
+        self.index()..self.index().saturating_add(1)
+    }
+}
+
+/// A fixed buffer collection passed to a function as a constant-size table
+/// view. `start` is measured in descriptors, not bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum BufferSpanRef {
+    Interface {
+        first: BufferId,
+        len: u32,
+    },
+    Parameter {
+        span: ParameterId,
+        start: u32,
+        len: u32,
+    },
+}
+
+impl BufferRef {
+    pub const fn first(self) -> BufferId {
+        match self {
+            Self::Direct(buffer) | Self::ArrayElement { first: buffer, .. } => buffer,
+        }
+    }
+
+    pub fn possible_indices(self) -> impl Iterator<Item = usize> {
+        let first = self.first().index();
+        let len = match self {
+            Self::Direct(_) => 1,
+            Self::ArrayElement { len, .. } => len as usize,
+        };
+        first..first.saturating_add(len)
+    }
+
+    pub const fn index(self) -> usize {
+        self.first().index()
+    }
+
+    pub const fn raw(self) -> u32 {
+        self.first().raw()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -444,14 +562,14 @@ pub enum StatementKind {
         value: Value,
     },
     BufferStore {
-        buffer: BufferId,
+        buffer: BufferRef,
         channel: Option<Value>,
         index: Value,
         value: Value,
         bounds: BoundsMode,
     },
     BufferParamStore {
-        parameter: ParameterId,
+        parameter: BufferParamRef,
         channel: Option<Value>,
         index: Value,
         value: Value,
@@ -542,23 +660,23 @@ pub enum Rvalue {
         frame: Value,
     },
     BufferLoad {
-        buffer: BufferId,
+        buffer: BufferRef,
         channel: Option<Value>,
         index: Value,
         bounds: BoundsMode,
     },
     BufferParamLoad {
-        parameter: ParameterId,
+        parameter: BufferParamRef,
         channel: Option<Value>,
         index: Value,
         bounds: BoundsMode,
     },
-    BufferLen(BufferId),
-    BufferChannels(BufferId),
-    BufferSampleRate(BufferId),
-    BufferParamLen(ParameterId),
-    BufferParamChannels(ParameterId),
-    BufferParamSampleRate(ParameterId),
+    BufferLen(BufferRef),
+    BufferChannels(BufferRef),
+    BufferSampleRate(BufferRef),
+    BufferParamLen(BufferParamRef),
+    BufferParamChannels(BufferParamRef),
+    BufferParamSampleRate(BufferParamRef),
     ConstDataLoad {
         data: ConstDataId,
         index: Value,
@@ -595,11 +713,11 @@ pub enum Rvalue {
 pub enum SliceSource {
     Place(Place),
     Buffer {
-        buffer: BufferId,
+        buffer: BufferRef,
         channel: Option<Value>,
     },
     BufferParam {
-        parameter: ParameterId,
+        parameter: BufferParamRef,
         channel: Option<Value>,
     },
     ConstData(ConstDataId),
@@ -634,7 +752,9 @@ pub enum CallArgument {
         start: Value,
         bounds: BoundsMode,
     },
-    Buffer(BufferId),
+    Buffer(BufferRef),
+    BufferParam(BufferParamRef),
+    BufferSpan(BufferSpanRef),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

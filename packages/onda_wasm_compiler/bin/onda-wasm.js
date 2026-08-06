@@ -72,7 +72,7 @@ export async function main(argv = process.argv.slice(2)) {
   const watOutput = parsed.watOut === undefined ? undefined : resolve(parsed.watOut);
   const compiler = await createCompiler();
   try {
-    const { artifact } = await compiler.compileProject({ entry, sources }, {
+    const { artifact } = await compiler.compileWorkspace({ entry, sources }, {
       sampleRate: parsed.sampleRate,
       blockSize: parsed.blockSize,
       codegen: {

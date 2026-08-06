@@ -31,8 +31,8 @@ use completion::{
 use diagnostics::{diagnostic_to_lsp, diagnostic_uri};
 use navigation::{
     definition_for_document_with_parsed, document_symbols_for_document_with_parsed,
-    hover_for_document_with_parsed, stdlib_virtual_document, stdlib_virtual_source,
-    NavigationPosition,
+    hover_for_document_with_parsed, signature_help_for_document_with_parsed,
+    stdlib_virtual_document, stdlib_virtual_source, NavigationPosition,
 };
 use path_utils::{lsp_document_path, normalize_path, path_to_file_uri};
 use semantic_tokens::{
@@ -617,6 +617,12 @@ impl LspServer {
                 let result = self.hover_for_uri(&params.text_document.uri, params.position)?;
                 write_result(writer, envelope.id.unwrap_or(Value::Null), result)?;
             }
+            "textDocument/signatureHelp" => {
+                let params = parse_params::<SignatureHelpParams>(envelope.params)?;
+                let result =
+                    self.signature_help_for_uri(&params.text_document.uri, params.position)?;
+                write_result(writer, envelope.id.unwrap_or(Value::Null), result)?;
+            }
             "textDocument/definition" => {
                 let params = parse_params::<DefinitionParams>(envelope.params)?;
                 let result = self.definition_for_uri(&params.text_document.uri, params.position)?;
@@ -825,6 +831,32 @@ impl LspServer {
             self.parsed_program_for_path(&normalized, &overlays, fingerprint)
         };
         Ok(definition_for_document_with_parsed(
+            &source,
+            Some(&normalized),
+            &overlays,
+            parsed.as_deref(),
+            NavigationPosition {
+                line: position.line,
+                character: position.character,
+            },
+        )
+        .unwrap_or(Value::Null))
+    }
+
+    fn signature_help_for_uri(&mut self, uri: &str, position: Position) -> Result<Value, String> {
+        let Some(path) = lsp_document_path(uri).map_err(invalid_params)? else {
+            return Ok(Value::Null);
+        };
+        let source = self.source_text_for_path(&path)?;
+        let overlays = self.session.overlay_map();
+        let normalized = normalize_path(&path);
+        let parsed = if self.session.document(&normalized).is_some() {
+            self.parsed_program_for_open_navigation_request(&normalized, &source)
+        } else {
+            let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
+            self.parsed_program_for_path(&normalized, &overlays, fingerprint)
+        };
+        Ok(signature_help_for_document_with_parsed(
             &source,
             Some(&normalized),
             &overlays,
@@ -1493,6 +1525,13 @@ struct HoverParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SignatureHelpParams {
+    text_document: TextDocumentIdentifier,
+    position: Position,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DefinitionParams {
     text_document: TextDocumentIdentifier,
     position: Position,
@@ -1780,6 +1819,9 @@ fn initialize_result(process_id: Option<u32>) -> Value {
                 "triggerCharacters": completion_trigger_characters(),
             },
             "hoverProvider": true,
+            "signatureHelpProvider": {
+                "triggerCharacters": ["(", ","],
+            },
             "definitionProvider": true,
             "documentSymbolProvider": true,
             "experimental": {
@@ -3277,6 +3319,15 @@ namespace sc:
     }
 
     #[test]
+    fn initialize_advertises_signature_help_for_calls() {
+        let result = initialize_result(None);
+        assert_eq!(
+            result["capabilities"]["signatureHelpProvider"]["triggerCharacters"],
+            json!(["(", ","])
+        );
+    }
+
+    #[test]
     fn completion_offers_unused_parameter_domain_fields() {
         let dir = mk_temp_dir("completion_param_domain_fields");
         let main = dir.join("main.onda");
@@ -3320,6 +3371,28 @@ namespace sc:
             .collect::<Vec<_>>();
         assert!(labels.contains(&"min"), "items: {items:?}");
         assert!(labels.contains(&"max"), "items: {items:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_only_offers_count_for_buffer_annotations() {
+        let dir = mk_temp_dir("completion_buffer_count_field");
+        let main = dir.join("main.onda");
+        let source = "buffers:\n  bank: f32 {";
+        write_file(&main, source);
+
+        let mut server = LspServer {
+            completion_snippets: true,
+            ..LspServer::default()
+        };
+        let items = completion_items_for(&mut server, &main, source, source);
+        assert_eq!(items.len(), 1, "items: {items:?}");
+        assert_eq!(items[0]["label"], json!("count"));
+        assert_eq!(items[0]["kind"], json!(10));
+        assert_eq!(items[0]["detail"], json!("buffer count field"));
+        assert_eq!(items[0]["insertText"], json!("count = $1"));
+        assert_eq!(items[0]["insertTextFormat"], json!(2));
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -3819,6 +3892,102 @@ init:
             }),
             "expected didOpen to publish diagnostics: {notifications:?}"
         );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn did_open_reports_unselected_buffer_collection_metadata() {
+        let dir = mk_temp_dir("did_open_buffer_collection");
+        let main = dir.join("main.onda");
+        let source = "buffers:\n  bank: f32[] {2}\nblock:\n  channels = bank.chans()\n  sample:\n    out1 = 0.0\n";
+
+        let mut server = LspServer::default();
+        let mut writer = Vec::new();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": path_to_file_uri(&main),
+                            "languageId": "onda",
+                            "version": 1,
+                            "text": source
+                        }
+                    }
+                }),
+                &mut writer,
+            )
+            .expect("didOpen should succeed");
+
+        let diagnostics = decode_lsp_messages(writer)
+            .into_iter()
+            .filter(|message| message["method"] == json!("textDocument/publishDiagnostics"))
+            .flat_map(|message| {
+                message["params"]["diagnostics"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("select a slot"))),
+            "expected collection diagnostic from didOpen: {diagnostics:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn did_open_reports_invalid_integer_lookup_specializations() {
+        let dir = mk_temp_dir("did_open_integer_lookup_position");
+        let main = dir.join("main.onda");
+        let source = "params:\n  layer: i32\n  position: i32\nbuffers:\n  layers: f32[] {4}\nblock:\n  source = layers[layer]\n  sample:\n    out1 = source.readL(0, position)\n";
+
+        let mut server = LspServer::default();
+        let mut writer = Vec::new();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": path_to_file_uri(&main),
+                            "languageId": "onda",
+                            "version": 1,
+                            "text": source
+                        }
+                    }
+                }),
+                &mut writer,
+            )
+            .expect("didOpen should succeed");
+
+        let diagnostics = decode_lsp_messages(writer)
+            .into_iter()
+            .find(|message| message["method"] == json!("textDocument/publishDiagnostics"))
+            .and_then(|message| message["params"]["diagnostics"].as_array().cloned())
+            .unwrap_or_default();
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        let diagnostic = &diagnostics[0];
+        let message = diagnostic["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("while checking specialization of 'std::lookup::calcIdx'")
+                && message.contains("got I32"),
+            "unexpected diagnostic message: {message}"
+        );
+        assert_eq!(diagnostic["code"], json!("semantic"));
+        assert_eq!(diagnostic["range"]["start"]["line"], json!(8));
+        assert_eq!(diagnostic["range"]["start"]["character"], json!(11));
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -6366,7 +6535,7 @@ init:
   n = buf.len()
 
 sample:
-  x = unsafe_read(buf, 0)
+  x = buf[0]
   y = fabs(0.0 - 1.0)
   sr = HOST_SR
   out1 = x + y + sr
@@ -6374,8 +6543,6 @@ sample:
         write_file(&main, source);
 
         let mut server = LspServer::default();
-        let unsafe_read = hover_markdown_for(&mut server, &main, source, "unsafe_read")
-            .expect("hover should resolve unsafe_read builtin");
         let len = hover_markdown_for(&mut server, &main, source, "len")
             .expect("hover should resolve len builtin");
         let fabs = hover_markdown_for(&mut server, &main, source, "fabs")
@@ -6383,10 +6550,6 @@ sample:
         let host_sr = hover_markdown_for(&mut server, &main, source, "HOST_SR")
             .expect("hover should resolve HOST_SR builtin const");
 
-        assert!(
-            unsafe_read.contains("built-in call unsafe_read(...)"),
-            "hover: {unsafe_read}"
-        );
         assert!(len.contains("built-in call .len(...)"), "hover: {len}");
         assert!(fabs.contains("built-in call fabs(...)"), "hover: {fabs}");
         assert!(
@@ -6414,7 +6577,7 @@ proc Voice<T>:
     gain: f32 = 1.0
 
   buffers:
-    table: buffer[f32]
+    table: buffer<f32>
 
   event set(v: f32 = 0.5):
     gain = v
@@ -6450,7 +6613,7 @@ sample:
         );
         assert!(
             constructor_hover.contains(
-                "proc Voice<T>(pin cutoff: f32 = 1000.0, gain: f32 = 1.0, table: buffer[f32])"
+                "proc Voice<T>(pin cutoff: f32 = 1000.0, gain: f32 = 1.0, table: buffer<f32>)"
             ),
             "hover: {constructor_hover}"
         );
@@ -6521,7 +6684,7 @@ namespace sc:
           gain: f32 = 1.0
 
         buffers:
-          kernel: buffer[T]
+          kernel: buffer<T>
 
         sample:
           out1 = in1 * gain
@@ -6534,7 +6697,7 @@ namespace sc:
           trigger
 
         buffers:
-          kernel: buffer[T]
+          kernel: buffer<T>
 
         init:
           conv = Convolution2<FFTSize, MaxKernel>::Mono::ar<T>(kernel = kernel)
@@ -7093,6 +7256,67 @@ sample:
                 onda_frontend::stdlib_module_source("std/math").expect("embedded std/math")
             );
         }
+
+        drop(_guard);
+        clear_readonly_recursive(&dir);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prelude_method_calls_support_hover_signature_help_and_definition() {
+        let dir = mk_temp_dir("prelude_method_navigation");
+        let cache = dir.join("cache");
+        let _env_lock = stdlib_cache_env_lock();
+        let _guard = EnvVarGuard::set_path("ONDA_STDLIB_CACHE_DIR", &cache);
+        let main = dir.join("main.onda");
+        let source = "buffers:\n  source: f32[]\nsample:\n  out1 = source.readL(0, 0.5)\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let hover = hover_markdown_for(&mut server, &main, source, "readL")
+            .expect("prelude method hover should resolve");
+        assert!(hover.contains("def readL("), "unexpected hover: {hover}");
+
+        let signatures = request_with_position(
+            &mut server,
+            &main,
+            source,
+            "readL(0,",
+            "textDocument/signatureHelp",
+        );
+        let labels = signatures["signatures"]
+            .as_array()
+            .expect("signature list")
+            .iter()
+            .filter_map(|signature| signature["label"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            labels.contains(&"def readL(buf, pos)"),
+            "signatures: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"def readL(buf, ch: i32, pos)"),
+            "signatures: {labels:?}"
+        );
+        assert_eq!(signatures["activeParameter"], json!(2));
+
+        let definition = definition_for(&mut server, &main, source, "readL");
+        assert_ne!(
+            definition,
+            json!(null),
+            "prelude method goto should resolve"
+        );
+        let uri = definition["uri"].as_str().expect("stdlib definition uri");
+        let path = file_uri_to_path(uri).expect("stdlib definition should be a file URI");
+        assert!(
+            path.starts_with(&cache),
+            "unexpected target: {}",
+            path.display()
+        );
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("lookup.onda")
+        );
 
         drop(_guard);
         clear_readonly_recursive(&dir);

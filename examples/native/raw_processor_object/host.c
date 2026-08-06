@@ -203,14 +203,15 @@ int main(void) {
     const int32_t frames = PROCESSOR_BLOCK_SIZE;
     const int32_t channels = PROCESSOR_BUFFER_CHANNELS[index];
     const size_t elements = (size_t)frames * (size_t)channels;
-    buffers[index] = calloc(elements, scalar_size(kind));
-    if (buffers[index] == NULL) {
+    void* storage = calloc(elements, scalar_size(kind));
+    if (storage == NULL) {
       goto cleanup;
     }
+    buffers[index] = storage;
     buffer_frames[index] = frames;
     buffer_channels[index] = channels;
     buffer_sample_rates[index] = PROCESSOR_SAMPLE_RATE;
-    fill_buffer(buffers[index], kind, frames, channels);
+    fill_buffer(storage, kind, frames, channels);
     printf(
       "bound buffer[%d] '%s': %d frames, %d channels, %.0f Hz\n",
       index,

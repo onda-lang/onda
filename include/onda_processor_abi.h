@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 2u
+#define ONDA_PROCESSOR_ABI_VERSION 3u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
@@ -20,6 +20,9 @@ enum {
 
 typedef uint32_t (*onda_processor_init_fn)(const void* params, void* state);
 
+/* Buffer descriptor tables remain immutable during each call and do not
+ * overlap parameter, state, audio, or external-buffer sample storage. A NULL
+ * buffer entry is unbound: reads return zero and writes are discarded. */
 typedef uint32_t (*onda_processor_process_fn)(
   void* state,
   const void* params,

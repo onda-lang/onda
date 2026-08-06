@@ -6,16 +6,15 @@ use onda_codegen_llvm::{
     DeclaredEvent, DeclaredEventParam, JitProgram, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
+use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, prepare_unchecked_process,
     process_unchecked_segment, set_param_by_index, trigger_event_by_index, Instance,
     InstanceConfig,
 };
-use onda_semantics::{lower_program_to_optimized_mir, AnalysisOptions, TypedProgram};
+use onda_semantics::{AnalysisOptions, TypedProgram};
 
 use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
-
-pub const UNBOUND_BUFFERS_MESSAGE: &str = "Bind all buffers to start processing";
 
 #[derive(Debug, Clone, Copy)]
 pub struct RunOptions {
@@ -135,11 +134,16 @@ pub struct RunSession {
 
 #[derive(Debug)]
 struct RunBufferBinding {
-    _samples: Vec<f32>,
+    samples: BufferSamples,
     frames: usize,
     channels: usize,
     sample_rate_hz: f32,
     loaded_path: Option<PathBuf>,
+}
+
+struct BufferBindingReplacement<'a> {
+    index: usize,
+    binding: Option<&'a mut RunBufferBinding>,
 }
 
 impl RunSession {
@@ -154,15 +158,11 @@ impl RunSession {
         let Some(typed) = snapshot.typed else {
             return Err(RunBuildError::Diagnostics(snapshot.diagnostics));
         };
-
-        let mir = lower_program_to_optimized_mir(&typed).map_err(|errors| {
-            RunBuildError::Diagnostics(
-                errors
-                    .into_iter()
-                    .map(|error| Diagnostic::internal(format!("MIR lowering failed: {error}")))
-                    .collect(),
-            )
-        })?;
+        let Some(mir) = snapshot.mir else {
+            return Err(RunBuildError::Diagnostics(vec![Diagnostic::internal(
+                "analysis succeeded without producing executable MIR",
+            )]));
+        };
         let jit = jit_program_from_optimized_mir_with_options(mir, options.mir_compile_options())
             .map_err(RunBuildError::Diagnostics)?;
 
@@ -208,13 +208,10 @@ impl RunSession {
             .map_err(RunBuildError::Runtime)?;
         }
 
-        validate_run_buffers(&jit).map_err(RunBuildError::Runtime)?;
         let buffer_bindings = std::iter::repeat_with(|| None)
             .take(jit.buffer_count())
             .collect::<Vec<_>>();
-        if buffer_bindings.is_empty() {
-            prepare_unchecked_process(&mut instance).map_err(RunBuildError::Runtime)?;
-        }
+        prepare_unchecked_process(&mut instance).map_err(RunBuildError::Runtime)?;
 
         Ok(Self {
             path,
@@ -315,18 +312,6 @@ impl RunSession {
             .collect()
     }
 
-    pub fn buffers_ready(&self) -> bool {
-        self.buffer_bindings.iter().all(Option::is_some)
-    }
-
-    fn ensure_buffers_ready(&self) -> Result<(), Diagnostic> {
-        if self.buffers_ready() {
-            Ok(())
-        } else {
-            Err(Diagnostic::runtime(UNBOUND_BUFFERS_MESSAGE, 0, 0))
-        }
-    }
-
     pub fn event_info(&self) -> Vec<RunEventInfo> {
         (0..self.jit.event_count())
             .filter_map(|index| {
@@ -405,7 +390,6 @@ impl RunSession {
         name: &str,
         values: &[RunEventValue],
     ) -> Result<(), Diagnostic> {
-        self.ensure_buffers_ready()?;
         let Some(index) = self.jit.event_index(name) else {
             return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
         };
@@ -468,7 +452,6 @@ impl RunSession {
         rendered: &mut [f32],
         segments: &[(usize, usize, u32)],
     ) -> Result<(), Diagnostic> {
-        self.ensure_buffers_ready()?;
         let output_channels = self.jit.required_out_channels();
         let expected_samples = self.options.block_size.saturating_mul(output_channels);
         if rendered.len() != expected_samples {
@@ -517,9 +500,7 @@ impl RunSession {
 
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         self.instance.restore_state_bytes(bytes)?;
-        if self.buffers_ready() {
-            prepare_unchecked_process(&mut self.instance)?;
-        }
+        prepare_unchecked_process(&mut self.instance)?;
         Ok(())
     }
 
@@ -579,15 +560,24 @@ impl RunSession {
         name: &str,
         path: impl AsRef<Path>,
     ) -> Result<(), Diagnostic> {
+        self.bind_buffer_file_path(name, path)
+    }
+
+    pub fn bind_buffer_file_path(
+        &mut self,
+        name: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<(), Diagnostic> {
         let path = path.as_ref();
-        let (samples, channels, sample_rate_hz) = read_wav_interleaved_f32(path)?;
-        self.bind_buffer_samples_with_path(
-            name,
-            samples,
-            channels,
-            sample_rate_hz as f32,
-            Some(path.to_path_buf()),
-        )
+        let asset =
+            onda_project::load_buffer_file(path, ProjectLimits::default()).map_err(|error| {
+                Diagnostic::runtime(
+                    format!("failed to load buffer asset '{}': {error}", path.display()),
+                    0,
+                    0,
+                )
+            })?;
+        self.bind_buffer_asset_with_path(name, asset, Some(path.to_path_buf()))
     }
 
     pub fn bind_buffer_samples(
@@ -597,7 +587,33 @@ impl RunSession {
         channels: usize,
         sample_rate_hz: f32,
     ) -> Result<(), Diagnostic> {
-        self.bind_buffer_samples_with_path(name, samples, channels, sample_rate_hz, None)
+        let frames = samples.len().checked_div(channels).unwrap_or(0);
+        let frames = u32::try_from(frames).map_err(|_| {
+            Diagnostic::runtime(format!("buffer '{name}' frame count exceeds u32"), 0, 0)
+        })?;
+        let channels = u32::try_from(channels).map_err(|_| {
+            Diagnostic::runtime(format!("buffer '{name}' channel count exceeds u32"), 0, 0)
+        })?;
+        let asset = BufferAsset {
+            frames,
+            channels,
+            sample_rate: sample_rate_hz,
+            samples: BufferSamples::F32(samples),
+        };
+        self.bind_buffer_asset_with_path(name, asset, None)
+    }
+
+    pub fn bind_buffer_asset(&mut self, name: &str, asset: BufferAsset) -> Result<(), Diagnostic> {
+        self.bind_buffer_asset_with_path(name, asset, None)
+    }
+
+    pub fn bind_buffer_asset_at_path(
+        &mut self,
+        name: &str,
+        asset: BufferAsset,
+        loaded_path: impl Into<PathBuf>,
+    ) -> Result<(), Diagnostic> {
+        self.bind_buffer_asset_with_path(name, asset, Some(loaded_path.into()))
     }
 
     pub fn clear_buffer(&mut self, name: &str) -> Result<(), Diagnostic> {
@@ -608,16 +624,19 @@ impl RunSession {
                 0,
             ));
         };
+        let instance = self.build_instance(Some(BufferBindingReplacement {
+            index,
+            binding: None,
+        }))?;
+        self.instance = instance;
         self.buffer_bindings[index] = None;
-        self.rebuild_instance()
+        Ok(())
     }
 
-    fn bind_buffer_samples_with_path(
+    fn bind_buffer_asset_with_path(
         &mut self,
         name: &str,
-        samples: Vec<f32>,
-        channels: usize,
-        sample_rate_hz: f32,
+        asset: BufferAsset,
         loaded_path: Option<PathBuf>,
     ) -> Result<(), Diagnostic> {
         let Some(index) = self.jit.buffer_index(name) else {
@@ -632,40 +651,48 @@ impl RunSession {
             .buffers()
             .get(index)
             .ok_or_else(|| Diagnostic::runtime(format!("unknown buffer '{name}'"), 0, 0))?;
-        if desc.elem_ty() != PrimitiveType::F32 {
+        asset.validate(&ProjectLimits::default()).map_err(|error| {
+            Diagnostic::runtime(format!("invalid asset for buffer '{name}': {error}"), 0, 0)
+        })?;
+        let elem_ty = primitive_type_for_buffer_element(asset.element());
+        if desc.elem_ty() != elem_ty {
             return Err(Diagnostic::runtime(
                 format!(
-                    "run only supports f32-typed buffer bindings, but '{}' is {}",
+                    "buffer '{}' expects {}, but its asset contains {}",
                     name,
-                    desc.type_repr()
+                    desc.type_repr(),
+                    elem_ty.name()
                 ),
                 0,
                 0,
             ));
         }
-        if channels == 0 || samples.is_empty() || !samples.len().is_multiple_of(channels) {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "buffer '{}' data is not a valid interleaved f32 audio buffer",
-                    name
-                ),
-                0,
-                0,
-            ));
-        }
-        let frames = samples.len() / channels;
-        self.buffer_bindings[index] = Some(RunBufferBinding {
-            _samples: samples,
-            frames,
-            channels,
-            sample_rate_hz,
+        let mut binding = RunBufferBinding {
+            samples: asset.samples,
+            frames: asset.frames as usize,
+            channels: asset.channels as usize,
+            sample_rate_hz: asset.sample_rate,
             loaded_path,
-        });
-        self.rebuild_instance()?;
+        };
+        let instance = self.build_instance(Some(BufferBindingReplacement {
+            index,
+            binding: Some(&mut binding),
+        }))?;
+        self.instance = instance;
+        self.buffer_bindings[index] = Some(binding);
         Ok(())
     }
 
     fn rebuild_instance(&mut self) -> Result<(), Diagnostic> {
+        let instance = self.build_instance(None)?;
+        self.instance = instance;
+        Ok(())
+    }
+
+    fn build_instance(
+        &mut self,
+        mut replacement: Option<BufferBindingReplacement<'_>>,
+    ) -> Result<Instance, Diagnostic> {
         let config = InstanceConfig {
             sample_rate: self.options.sample_rate,
             frames_per_block: self.options.block_size,
@@ -694,19 +721,25 @@ impl RunSession {
                 )?;
             }
         }
-        for (index, binding) in self.buffer_bindings.iter_mut().enumerate() {
-            let Some(binding) = binding.as_mut() else {
+        for index in 0..self.buffer_bindings.len() {
+            let binding = match replacement.as_mut() {
+                Some(replacement) if replacement.index == index => {
+                    replacement.binding.as_deref_mut()
+                }
+                _ => self.buffer_bindings[index].as_mut(),
+            };
+            let Some(binding) = binding else {
                 continue;
             };
             unsafe {
                 bind_buffer(
                     &mut instance,
                     index,
-                    binding._samples.as_mut_ptr().cast::<u8>(),
+                    binding.samples.as_mut_ptr(),
                     binding.frames,
                     binding.channels,
                     binding.sample_rate_hz,
-                    PrimitiveType::F32,
+                    primitive_type_for_buffer_element(binding.samples.element()),
                 )?;
             }
         }
@@ -725,11 +758,8 @@ impl RunSession {
             let bytes = scalar_param_bytes(desc.elem_ty(), runtime_value)?;
             set_param_by_index(&mut instance, index, bytes.as_slice())?;
         }
-        if self.buffers_ready() {
-            prepare_unchecked_process(&mut instance)?;
-        }
-        self.instance = instance;
-        Ok(())
+        prepare_unchecked_process(&mut instance)?;
+        Ok(instance)
     }
 
     fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
@@ -792,23 +822,6 @@ impl RunSession {
         }
         Ok(())
     }
-}
-
-fn validate_run_buffers(jit: &JitProgram) -> Result<(), Diagnostic> {
-    for desc in jit.buffers() {
-        if desc.elem_ty() != PrimitiveType::F32 {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "run only supports f32-typed buffer declarations, but '{}' is {}",
-                    desc.name(),
-                    desc.type_repr()
-                ),
-                0,
-                0,
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn should_smooth_run_param(ty: PrimitiveType) -> bool {
@@ -1038,102 +1051,14 @@ fn default_run_param_value(desc: &onda_codegen_llvm::DeclaredIo) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn read_wav_interleaved_f32(path: &Path) -> Result<(Vec<f32>, usize, u32), Diagnostic> {
-    let mut reader = hound::WavReader::open(path).map_err(|err| {
-        Diagnostic::runtime(
-            format!("failed to open wav '{}': {err}", path.display()),
-            0,
-            0,
-        )
-    })?;
-    let spec = reader.spec();
-    let channels = usize::from(spec.channels);
-    if channels == 0 {
-        return Err(Diagnostic::runtime(
-            format!("wav '{}' has zero channels", path.display()),
-            0,
-            0,
-        ));
+fn primitive_type_for_buffer_element(element: BufferElement) -> PrimitiveType {
+    match element {
+        BufferElement::Bool => PrimitiveType::Bool,
+        BufferElement::I32 => PrimitiveType::I32,
+        BufferElement::I64 => PrimitiveType::I64,
+        BufferElement::F32 => PrimitiveType::F32,
+        BufferElement::F64 => PrimitiveType::F64,
     }
-
-    let samples = match (spec.sample_format, spec.bits_per_sample) {
-        (hound::SampleFormat::Float, 32) => reader
-            .samples::<f32>()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| {
-                Diagnostic::runtime(
-                    format!("failed to read wav samples '{}': {err}", path.display()),
-                    0,
-                    0,
-                )
-            })?,
-        (hound::SampleFormat::Int, 8) => reader
-            .samples::<i8>()
-            .map(|sample| sample.map(|value| value as f32 / i8::MAX as f32))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| {
-                Diagnostic::runtime(
-                    format!("failed to read wav samples '{}': {err}", path.display()),
-                    0,
-                    0,
-                )
-            })?,
-        (hound::SampleFormat::Int, 16) => reader
-            .samples::<i16>()
-            .map(|sample| sample.map(|value| value as f32 / i16::MAX as f32))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| {
-                Diagnostic::runtime(
-                    format!("failed to read wav samples '{}': {err}", path.display()),
-                    0,
-                    0,
-                )
-            })?,
-        (hound::SampleFormat::Int, 24) => reader
-            .samples::<i32>()
-            .map(|sample| sample.map(|value| value as f32 / 8_388_608.0))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| {
-                Diagnostic::runtime(
-                    format!("failed to read wav samples '{}': {err}", path.display()),
-                    0,
-                    0,
-                )
-            })?,
-        (hound::SampleFormat::Int, 32) => reader
-            .samples::<i32>()
-            .map(|sample| sample.map(|value| value as f32 / i32::MAX as f32))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| {
-                Diagnostic::runtime(
-                    format!("failed to read wav samples '{}': {err}", path.display()),
-                    0,
-                    0,
-                )
-            })?,
-        _ => {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "unsupported wav format for '{}': {:?} {} bits",
-                    path.display(),
-                    spec.sample_format,
-                    spec.bits_per_sample
-                ),
-                0,
-                0,
-            ))
-        }
-    };
-
-    if samples.is_empty() {
-        return Err(Diagnostic::runtime(
-            format!("wav '{}' contains no samples", path.display()),
-            0,
-            0,
-        ));
-    }
-
-    Ok((samples, channels, spec.sample_rate))
 }
 
 struct ScalarParamBytes {

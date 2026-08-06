@@ -27,7 +27,7 @@ on the selected editor font. Programs with top-level audio inputs request microp
 stream across recompiles; projects without those inputs never request media-device access.
 Play reuses the compiled Wasm artifact when the project and compile options are unchanged, but always
 creates a fresh AudioWorklet processor so stopped runtime state is never resumed.
-**New patch** stops execution and replaces the browser project with one empty `main.onda` file.
+**New project** stops execution and replaces the browser project with one empty `main.onda` file.
 
 The **Share** action writes a versioned, compressed snapshot to the URL fragment. The snapshot
 contains every project source, the main and active files, sample rate, and block size. URL fragments

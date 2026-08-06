@@ -206,12 +206,15 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
         Expr::Index { index, .. } => {
             rewrite_generic_array_ctor_expr_types(index, type_bindings, errors);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                rewrite_generic_array_ctor_expr_types(start, type_bindings, errors);
-            }
-            if let Some(end) = end {
-                rewrite_generic_array_ctor_expr_types(end, type_bindings, errors);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_generic_array_ctor_expr_types(coordinate, type_bindings, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -670,6 +673,7 @@ pub(crate) fn specialize_generic_proc_template(
                 )
             }),
             ty_loc: decl.ty_loc,
+            array_size: decl.array_size.clone(),
         })
         .collect::<Vec<_>>();
     let mut init = template.init.clone();
@@ -834,6 +838,23 @@ pub(crate) fn specialize_generic_proc_template(
                             channels: buffer_ty.channels.clone(),
                         })
                     }
+                    FnParamType::BufferArray { buffer, len } => {
+                        let elem = match &buffer.elem {
+                            BufferElemType::Primitive(prim) => BufferElemType::Primitive(*prim),
+                            BufferElemType::Generic(param) => type_bindings
+                                .get(param)
+                                .copied()
+                                .map(BufferElemType::Primitive)
+                                .unwrap_or_else(|| BufferElemType::Generic(param.clone())),
+                        };
+                        FnParamType::BufferArray {
+                            buffer: BufferType {
+                                elem,
+                                channels: buffer.channels.clone(),
+                            },
+                            len: *len,
+                        }
+                    }
                     FnParamType::Array(elem) => FnParamType::Array(*elem),
                     FnParamType::ArrayGeneric(name) => match type_bindings.get(name).copied() {
                         Some(bound) => FnParamType::Array(Some(bound)),
@@ -966,15 +987,16 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
         Expr::Index { index, .. } => {
             rewrite_generic_proc_ctor_expr(index, templates, generated, errors, locals, current_ns);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 rewrite_generic_proc_ctor_expr(
-                    start, templates, generated, errors, locals, current_ns,
-                );
-            }
-            if let Some(end) = end {
-                rewrite_generic_proc_ctor_expr(
-                    end, templates, generated, errors, locals, current_ns,
+                    coordinate, templates, generated, errors, locals, current_ns,
                 );
             }
         }

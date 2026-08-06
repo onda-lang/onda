@@ -604,7 +604,12 @@ pub(super) fn validate_graph_source_expr(
             );
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             validate_graph_source_base(
                 base,
@@ -618,6 +623,20 @@ pub(super) fn validate_graph_source_expr(
                 owner_context,
                 errors,
             );
+            for coordinate in [selector, channel].into_iter().flatten() {
+                validate_graph_source_expr(
+                    coordinate,
+                    owner,
+                    nodes,
+                    proc_surfaces,
+                    block_safe_only,
+                    inferred_param_rate,
+                    deps,
+                    owner_context,
+                    options,
+                    errors,
+                );
+            }
             if let Some(GraphValueType::Array { len, .. }) =
                 infer_graph_source_base_value_type(base, owner, nodes, proc_surfaces)
             {
@@ -816,8 +835,21 @@ pub(super) fn infer_graph_source_value_type(
             }
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
+            if selector.is_some() || channel.is_some() {
+                push_graph_error(
+                    errors,
+                    expr.loc(),
+                    format!("{owner_context} graph arrays do not support buffer coordinates"),
+                );
+                return None;
+            }
             let base_ty = infer_graph_source_base_value_type(base, owner, nodes, proc_surfaces)?;
             match base_ty {
                 GraphValueType::Array { elem_ty, len } => {
@@ -1284,8 +1316,21 @@ pub(super) fn expand_graph_expr_to_slots(
         })
         .collect(),
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
+            if selector.is_some() || channel.is_some() {
+                push_graph_error(
+                    errors,
+                    expr.loc(),
+                    format!("{context}: graph arrays do not support buffer coordinates"),
+                );
+                return vec![expr.clone(); slot_count];
+            }
             let Some(GraphValueType::Array { len, .. }) =
                 infer_graph_source_base_value_type(base, owner, nodes, proc_surfaces)
             else {

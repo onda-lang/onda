@@ -71,6 +71,8 @@ pub(crate) struct ProcBufferSpec {
     pub(crate) name: String,
     pub(crate) elem_ty: PrimitiveType,
     pub(crate) channels: TypedBufferChannels,
+    pub(crate) array_len: usize,
+    pub(crate) is_array: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -310,7 +312,12 @@ pub(crate) fn validate_proc_expr_decl_order(
             );
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             if let Some((root, _field)) = split_field_path(base, errors) {
                 if !is_declared_proc_symbol(
@@ -343,20 +350,9 @@ pub(crate) fn validate_proc_expr_decl_order(
                 );
                 ok = false;
             }
-            if let Some(start) = start {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 ok &= validate_proc_expr_decl_order(
-                    start,
-                    reserved,
-                    locals,
-                    local_aliases,
-                    local_array_aliases,
-                    out,
-                    errors,
-                );
-            }
-            if let Some(end) = end {
-                ok &= validate_proc_expr_decl_order(
-                    end,
+                    coordinate,
                     reserved,
                     locals,
                     local_aliases,
@@ -597,21 +593,16 @@ pub(crate) fn rewrite_proc_expr_symbols(
             }
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
-            if let Some(start) = start {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 rewrite_proc_expr_symbols(
-                    start,
-                    owner_proc,
-                    field_names,
-                    field_array_slots,
-                    in_array_slots,
-                    errors,
-                );
-            }
-            if let Some(end) = end {
-                rewrite_proc_expr_symbols(
-                    end,
+                    coordinate,
                     owner_proc,
                     field_names,
                     field_array_slots,
@@ -692,7 +683,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                     errors,
                 );
             }
-            if let Expr::UserCall { name, args, .. } = expr {
+            if let Expr::UserCall { name, .. } = expr {
                 if let Some(base) = parse_array_len_instance_base(name) {
                     if field_names.contains(base) && is_plain_symbol(base) {
                         *name = format!("self.{base}.len");
@@ -715,185 +706,6 @@ pub(crate) fn rewrite_proc_expr_symbols(
                     } else if let Some((root, field)) = split_field_path(base, errors) {
                         if field_names.contains(root) && is_plain_symbol(root) {
                             *name = format!("self.{root}.{field}.samplerate");
-                        }
-                    }
-                }
-                let method_name = name.clone();
-                if let Some(base) = parse_unsafe_read_instance_base(&method_name) {
-                    let receiver = if field_array_slots.contains_key(base)
-                        || in_array_slots.contains_key(base)
-                    {
-                        Some(base.to_owned())
-                    } else if let Some((root, field)) = split_field_path(base, errors) {
-                        if field_names.contains(root) && is_plain_symbol(root) {
-                            Some(format!("self.{root}.{field}"))
-                        } else {
-                            None
-                        }
-                    } else if field_names.contains(base) && is_plain_symbol(base) {
-                        Some(format!("self.{base}"))
-                    } else {
-                        None
-                    };
-                    if let Some(receiver) = receiver {
-                        let mut rewritten_args = Vec::<CallArg>::with_capacity(args.len() + 1);
-                        rewritten_args.push(CallArg {
-                            name: None,
-                            expr: Expr::var(receiver),
-                        });
-                        rewritten_args.extend(args.clone());
-                        *name = UNSAFE_READ_FN.to_owned();
-                        *args = rewritten_args;
-                    }
-                }
-                let method_name = name.clone();
-                if let Some(base) = parse_unsafe_write_instance_base(&method_name) {
-                    let receiver = if field_array_slots.contains_key(base)
-                        || in_array_slots.contains_key(base)
-                    {
-                        Some(base.to_owned())
-                    } else if let Some((root, field)) = split_field_path(base, errors) {
-                        if field_names.contains(root) && is_plain_symbol(root) {
-                            Some(format!("self.{root}.{field}"))
-                        } else {
-                            None
-                        }
-                    } else if field_names.contains(base) && is_plain_symbol(base) {
-                        Some(format!("self.{base}"))
-                    } else {
-                        None
-                    };
-                    if let Some(receiver) = receiver {
-                        let mut rewritten_args = Vec::<CallArg>::with_capacity(args.len() + 1);
-                        rewritten_args.push(CallArg {
-                            name: None,
-                            expr: Expr::var(receiver),
-                        });
-                        rewritten_args.extend(args.clone());
-                        *name = UNSAFE_WRITE_FN.to_owned();
-                        *args = rewritten_args;
-                    }
-                }
-                if name == UNSAFE_READ_FN && args.len() == 2 {
-                    if let Expr::Var { name: base, .. } = &args[0].expr {
-                        if let Some(slots) = field_array_slots.get(base.as_str()) {
-                            if slots.is_empty() {
-                                push_semantic(
-                                    expr_diag,
-                                    errors,
-                                    format!("processor array field '{base}' has zero slots"),
-                                );
-                                return;
-                            }
-                            let idx_expr = args[1].expr.clone();
-                            if let Some(raw_idx) = try_constant_index_i64(&idx_expr) {
-                                if raw_idx >= 0 && raw_idx < slots.len() as i64 {
-                                    let slot_idx = raw_idx as usize;
-                                    if let Some(slot_name) = slots.get(slot_idx) {
-                                        *expr = Expr::var(format!("self.{slot_name}"));
-                                    }
-                                } else {
-                                    let mut call_args = Vec::<CallArg>::new();
-                                    call_args.push(CallArg {
-                                        name: None,
-                                        expr: idx_expr,
-                                    });
-                                    for slot in slots {
-                                        call_args.push(CallArg {
-                                            name: None,
-                                            expr: Expr::var(format!("self.{slot}")),
-                                        });
-                                    }
-                                    *expr = Expr::UserCall {
-                                        loc: Default::default(),
-                                        name: proc_read_helper_name(owner_proc, slots.len(), true),
-                                        type_args: Vec::new(),
-                                        args: call_args,
-                                    };
-                                }
-                            } else if slots.len() == 1 {
-                                if let Some(slot_name) = slots.first() {
-                                    *expr = Expr::var(format!("self.{slot_name}"));
-                                }
-                            } else {
-                                let mut call_args = Vec::<CallArg>::new();
-                                call_args.push(CallArg {
-                                    name: None,
-                                    expr: idx_expr,
-                                });
-                                for slot in slots {
-                                    call_args.push(CallArg {
-                                        name: None,
-                                        expr: Expr::var(format!("self.{slot}")),
-                                    });
-                                }
-                                *expr = Expr::UserCall {
-                                    loc: Default::default(),
-                                    name: proc_read_helper_name(owner_proc, slots.len(), true),
-                                    type_args: Vec::new(),
-                                    args: call_args,
-                                };
-                            }
-                            return;
-                        }
-                        if let Some(slots) = in_array_slots.get(base.as_str()) {
-                            if slots.is_empty() {
-                                push_semantic(
-                                    expr_diag,
-                                    errors,
-                                    format!("processor input array '{base}' has zero slots"),
-                                );
-                                return;
-                            }
-                            let idx_expr = args[1].expr.clone();
-                            if let Some(raw_idx) = try_constant_index_i64(&idx_expr) {
-                                if raw_idx >= 0 && raw_idx < slots.len() as i64 {
-                                    let slot_idx = raw_idx as usize;
-                                    if let Some(slot_name) = slots.get(slot_idx) {
-                                        *expr = Expr::var(slot_name.clone());
-                                    }
-                                } else {
-                                    let mut call_args = Vec::<CallArg>::new();
-                                    call_args.push(CallArg {
-                                        name: None,
-                                        expr: idx_expr,
-                                    });
-                                    for slot in slots {
-                                        call_args.push(CallArg {
-                                            name: None,
-                                            expr: Expr::var(slot.clone()),
-                                        });
-                                    }
-                                    *expr = Expr::UserCall {
-                                        loc: Default::default(),
-                                        name: proc_read_helper_name(owner_proc, slots.len(), true),
-                                        type_args: Vec::new(),
-                                        args: call_args,
-                                    };
-                                }
-                            } else if slots.len() == 1 {
-                                if let Some(slot_name) = slots.first() {
-                                    *expr = Expr::var(slot_name.clone());
-                                }
-                            } else {
-                                let mut call_args = Vec::<CallArg>::new();
-                                call_args.push(CallArg {
-                                    name: None,
-                                    expr: idx_expr,
-                                });
-                                for slot in slots {
-                                    call_args.push(CallArg {
-                                        name: None,
-                                        expr: Expr::var(slot.clone()),
-                                    });
-                                }
-                                *expr = Expr::UserCall {
-                                    loc: Default::default(),
-                                    name: proc_read_helper_name(owner_proc, slots.len(), true),
-                                    type_args: Vec::new(),
-                                    args: call_args,
-                                };
-                            }
                         }
                     }
                 }
@@ -1140,22 +952,28 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             expr: expr_rewritten,
                         })
                     }
-                    AssignTarget::Slice { base, start, end } => {
+                    AssignTarget::Slice {
+                        base,
+                        selector,
+                        channel,
+                        start,
+                        end,
+                    } => {
+                        let mut selector_rewritten = selector.clone();
+                        let mut channel_rewritten = channel.clone();
                         let mut start_rewritten = start.clone();
                         let mut end_rewritten = end.clone();
-                        if let Some(start) = &mut start_rewritten {
+                        for coordinate in [
+                            selector_rewritten.as_mut(),
+                            channel_rewritten.as_mut(),
+                            start_rewritten.as_mut(),
+                            end_rewritten.as_mut(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
                             rewrite_proc_expr_symbols(
-                                start,
-                                owner_proc,
-                                field_names,
-                                field_array_slots,
-                                in_array_slots,
-                                errors,
-                            );
-                        }
-                        if let Some(end) = &mut end_rewritten {
-                            rewrite_proc_expr_symbols(
-                                end,
+                                coordinate,
                                 owner_proc,
                                 field_names,
                                 field_array_slots,
@@ -1186,6 +1004,8 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             target_loc: Default::default(),
                             target: AssignTarget::Slice {
                                 base: target_base,
+                                selector: selector_rewritten,
+                                channel: channel_rewritten,
                                 start: start_rewritten,
                                 end: end_rewritten,
                             },
@@ -1218,79 +1038,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     in_array_slots,
                     errors,
                 );
-                if let Expr::UserCall { name, args, .. } = &expr_rewritten {
-                    if name == UNSAFE_WRITE_FN && args.len() == 3 {
-                        if let Expr::Var { name: base, .. } = &args[0].expr {
-                            if let Some(slots) = in_array_slots.get(base) {
-                                push_semantic(
-                                    diag,
-                                    errors,
-                                    format!("cannot assign to processor input '{base}'"),
-                                );
-                                if let Some(raw_idx) = try_constant_index_i64(&args[1].expr) {
-                                    if raw_idx >= 0 && raw_idx < slots.len() as i64 {
-                                        let slot_idx = raw_idx as usize;
-                                        if let Some(slot_name) = slots.get(slot_idx) {
-                                            return Some(Stmt::Assign {
-                                                loc: source_loc.into(),
-                                                target_loc: Default::default(),
-                                                target: AssignTarget::Var(slot_name.clone()),
-                                                decl_ty: None,
-                                                generic_decl_ty: None,
-                                                is_typed_decl: false,
-                                                typed_decl_ty_loc: Default::default(),
-                                                expr: args[2].expr.clone(),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(slots) = field_array_slots.get(base) {
-                                if let Some(raw_idx) = try_constant_index_i64(&args[1].expr) {
-                                    if raw_idx >= 0 && raw_idx < slots.len() as i64 {
-                                        let slot_idx = raw_idx as usize;
-                                        if let Some(slot_name) = slots.get(slot_idx) {
-                                            return Some(Stmt::Assign {
-                                                loc: source_loc.into(),
-                                                target_loc: Default::default(),
-                                                target: AssignTarget::Var(format!(
-                                                    "self.{slot_name}"
-                                                )),
-                                                decl_ty: None,
-                                                generic_decl_ty: None,
-                                                is_typed_decl: false,
-                                                typed_decl_ty_loc: Default::default(),
-                                                expr: args[2].expr.clone(),
-                                            });
-                                        }
-                                    }
-                                }
-                                return Some(Stmt::Expr {
-                                    loc: source_loc.into(),
-                                    expr: Expr::UserCall {
-                                        loc: Default::default(),
-                                        name: proc_write_helper_name(owner_proc, slots, true),
-                                        type_args: Vec::new(),
-                                        args: vec![
-                                            CallArg {
-                                                name: None,
-                                                expr: Expr::var("self"),
-                                            },
-                                            CallArg {
-                                                name: None,
-                                                expr: args[1].expr.clone(),
-                                            },
-                                            CallArg {
-                                                name: None,
-                                                expr: args[2].expr.clone(),
-                                            },
-                                        ],
-                                    },
-                                });
-                            }
-                        }
-                    }
-                }
                 Some(Stmt::Expr {
                     loc: source_loc.into(),
                     expr: expr_rewritten,

@@ -50,15 +50,90 @@ export interface OndaCompileOptions {
   codegen?: OndaCodegenOptions;
 }
 
-export interface OndaProject {
+export interface OndaSourceWorkspace {
   entry: string;
   sources: Record<string, string>;
+}
+
+export type OndaSourceReferenceKind = "include" | "import";
+
+export interface OndaSourceDocument {
+  path: string;
+  contents: string;
+}
+
+export interface OndaSourceResolution {
+  source: string;
+  kind: OndaSourceReferenceKind;
+  specifier: string;
+  target: string;
+}
+
+export interface OndaSourceGraph {
+  entry: string;
+  stdlibDigest: string;
+  documents: OndaSourceDocument[];
+  resolutions: OndaSourceResolution[];
+}
+
+export type OndaBufferElement = "bool" | "i32" | "i64" | "f32" | "f64";
+export type OndaBufferData =
+  | Uint8Array
+  | Int32Array
+  | BigInt64Array
+  | Float32Array
+  | Float64Array;
+
+export interface OndaBufferAssetBinding {
+  element: OndaBufferElement;
+  frames: number;
+  channels: number;
+  sampleRate: number;
+  data: OndaBufferData;
+}
+
+export interface OndaProjectBufferInfo {
+  name: string;
+  assetId: string;
+  element: OndaBufferElement;
+  frames: number;
+  channels: number;
+  sampleRate: number;
+}
+
+export interface OndaProjectImageInfo {
+  formatVersion: number;
+  contentDigest: string;
+  sourceGraph: OndaSourceGraph;
+  buffers: OndaProjectBufferInfo[];
+}
+
+export interface OndaSerializedProjectImage extends OndaProjectImageInfo {
+  bytes: Uint8Array;
+}
+
+export interface OndaMaterializedProjectFile {
+  path: string;
+  bytes: Uint8Array;
+}
+
+export interface OndaProjectMaterialization {
+  directories: string[];
+  files: OndaMaterializedProjectFile[];
+}
+
+export interface OndaProjectCapabilities {
+  imageFormatVersion: number;
+  bufferAssetFormatVersion: number;
+  stdlibDigest: string;
 }
 
 export interface OndaCompilationResult {
   artifact: OndaProcessorArtifact;
   /** Entry first, then transitive non-stdlib imports/includes in discovery order. */
   sourceFiles: string[];
+  /** Exact resolved graph for successful multi-file/project-image compilation. */
+  sourceGraph: OndaSourceGraph | null;
 }
 
 export interface OndaCompilerInstance {
@@ -66,10 +141,38 @@ export interface OndaCompilerInstance {
     source: string,
     options?: OndaCompileOptions,
   ): Promise<OndaCompilationResult>;
-  compileProject(
-    project: OndaProject,
+  compileWorkspace(
+    workspace: OndaSourceWorkspace,
     options?: OndaCompileOptions,
   ): Promise<OndaCompilationResult>;
+  compileProjectImage(
+    imageBytes: ArrayBuffer | ArrayBufferView,
+    options?: OndaCompileOptions,
+  ): Promise<OndaCompilationResult>;
+  createProjectImage(
+    sourceGraph: OndaSourceGraph,
+    buffers?: Map<string, ArrayBuffer | ArrayBufferView>
+      | Record<string, ArrayBuffer | ArrayBufferView>,
+  ): Promise<OndaSerializedProjectImage>;
+  inspectProjectImage(
+    imageBytes: ArrayBuffer | ArrayBufferView,
+  ): Promise<OndaProjectImageInfo>;
+  loadProjectFiles(
+    files: Map<string, ArrayBuffer | ArrayBufferView>
+      | Record<string, ArrayBuffer | ArrayBufferView>,
+    projectFilePath?: string | null,
+  ): Promise<OndaSerializedProjectImage>;
+  materializeProjectImage(
+    imageBytes: ArrayBuffer | ArrayBufferView,
+    assetFileNames?: Map<string, string> | Record<string, string>,
+  ): Promise<OndaProjectMaterialization>;
+  encodeBufferAsset(binding: OndaBufferAssetBinding): Promise<Uint8Array>;
+  decodeBufferAsset(bytes: ArrayBuffer | ArrayBufferView): Promise<OndaBufferAssetBinding>;
+  decodeBufferFile(
+    bytes: ArrayBuffer | ArrayBufferView,
+    path?: string,
+  ): Promise<OndaBufferAssetBinding>;
+  projectCapabilities(): Promise<OndaProjectCapabilities>;
   sendLspMessage(message: OndaLspMessage): Promise<OndaLspMessage[]>;
   setLspAnalysisOptions(options?: OndaCompileOptions): Promise<void>;
   dispose(): Promise<void>;

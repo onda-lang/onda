@@ -3,7 +3,7 @@ use super::loading_support::{
     is_builtin_std_module_path, split_top_level_items, validate_file_mode_transition, FileLoadMode,
     TopLevelItem, ONDA_SOURCE_EXTENSIONS,
 };
-use super::preprocess::preprocess_indentation_blocks;
+use super::preprocess::{preprocess_indentation_blocks, split_comment};
 use super::*;
 use std::path::Component;
 
@@ -20,6 +20,12 @@ struct LoadState {
     source_file_set: HashSet<PathBuf>,
     unresolved_source_files: Vec<PathBuf>,
     unresolved_source_file_set: HashSet<PathBuf>,
+    unresolved_resolutions: Vec<UnresolvedSourceResolution>,
+    unresolved_resolution_set: HashSet<UnresolvedSourceResolution>,
+    source_documents: Vec<SourceDocument>,
+    source_document_set: HashSet<PathBuf>,
+    resolutions: Vec<SourceResolution>,
+    resolution_set: HashSet<SourceResolution>,
     stack: Vec<PathBuf>,
     builtin_stack: Vec<String>,
     top_level_const_names: HashSet<String>,
@@ -33,9 +39,28 @@ impl LoadState {
         }
     }
 
-    fn record_unresolved_source_file(&mut self, path: PathBuf) {
-        if self.unresolved_source_file_set.insert(path.clone()) {
-            self.unresolved_source_files.push(path);
+    fn record_unresolved_resolution(&mut self, resolution: UnresolvedSourceResolution) {
+        for candidate in &resolution.candidates {
+            if self.unresolved_source_file_set.insert(candidate.clone()) {
+                self.unresolved_source_files.push(candidate.clone());
+            }
+        }
+        if self.unresolved_resolution_set.insert(resolution.clone()) {
+            self.unresolved_resolutions.push(resolution);
+        }
+    }
+
+    fn record_source_document(&mut self, path: &Path, contents: String) {
+        let path = path.to_path_buf();
+        if self.source_document_set.insert(path.clone()) {
+            self.source_documents
+                .push(SourceDocument { path, contents });
+        }
+    }
+
+    fn record_resolution(&mut self, resolution: SourceResolution) {
+        if self.resolution_set.insert(resolution.clone()) {
+            self.resolutions.push(resolution);
         }
     }
 
@@ -43,8 +68,51 @@ impl LoadState {
         SourceManifest {
             files: self.source_files.clone(),
             unresolved_files: self.unresolved_source_files.clone(),
+            unresolved_resolutions: self.unresolved_resolutions.clone().into_boxed_slice(),
+            documents: self.source_documents.clone().into_boxed_slice(),
+            resolutions: self.resolutions.clone().into_boxed_slice(),
         }
     }
+}
+
+/// One exact non-standard-library source read during project loading.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SourceDocument {
+    pub path: PathBuf,
+    pub contents: String,
+}
+
+/// The directive kind which caused one source to resolve another.
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+pub enum SourceReferenceKind {
+    Include,
+    Import,
+}
+
+/// One successful non-standard-library include/import resolution.
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub struct SourceResolution {
+    pub source: PathBuf,
+    pub kind: SourceReferenceKind,
+    pub specifier: String,
+    pub target: PathBuf,
+}
+
+/// One syntax-aware replacement for a non-standard-library source reference.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SourceReferenceRewrite {
+    pub kind: SourceReferenceKind,
+    pub specifier: String,
+    pub replacement: String,
+}
+
+/// One non-standard-library include/import which did not resolve.
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub struct UnresolvedSourceResolution {
+    pub source: PathBuf,
+    pub kind: SourceReferenceKind,
+    pub specifier: String,
+    pub candidates: Vec<PathBuf>,
 }
 
 /// The non-standard-library source files reached while loading one program.
@@ -60,6 +128,17 @@ pub struct SourceManifest {
     /// exposed separately so filesystem hosts can watch for their creation
     /// while a project is temporarily incomplete.
     pub unresolved_files: Vec<PathBuf>,
+    /// Unresolved non-standard-library references, in source discovery order.
+    ///
+    /// `unresolved_files` is the unique, flattened projection of the candidate
+    /// paths in this collection for hosts which only need a watch set.
+    pub unresolved_resolutions: Box<[UnresolvedSourceResolution]>,
+    /// Exact UTF-8 contents read for resolved sources, in discovery order.
+    ///
+    /// On a read failure this can be a strict subset of `files`.
+    pub documents: Box<[SourceDocument]>,
+    /// Successful non-standard-library resolutions, in source discovery order.
+    pub resolutions: Box<[SourceResolution]>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +154,170 @@ pub struct LoadError {
 }
 
 pub type LoadResult = Result<LoadedProgram, LoadError>;
+
+/// Rewrites top-level non-standard-library include/import specifiers while
+/// preserving every other source byte.
+pub fn rewrite_source_references(
+    path: &Path,
+    source: &str,
+    rewrites: &[SourceReferenceRewrite],
+) -> Result<String, Vec<Diagnostic>> {
+    #[derive(Debug, Clone, Eq, Hash, PartialEq)]
+    struct RewriteKey {
+        kind: SourceReferenceKind,
+        specifier: String,
+    }
+
+    fn line_start(source: &str, line: usize) -> Option<usize> {
+        if line == 0 {
+            return None;
+        }
+        if line == 1 {
+            return Some(0);
+        }
+        let mut current = 1usize;
+        for (index, byte) in source.bytes().enumerate() {
+            if byte == b'\n' {
+                current += 1;
+                if current == line {
+                    return Some(index + 1);
+                }
+            }
+        }
+        None
+    }
+
+    fn specifier_range(
+        line: &str,
+        kind: SourceReferenceKind,
+        expected: &str,
+    ) -> Option<std::ops::Range<usize>> {
+        let line = line.strip_suffix('\n').unwrap_or(line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let (code, _) = split_comment(line);
+        let leading = code.len().saturating_sub(code.trim_start().len());
+        let trimmed = code.trim();
+        match kind {
+            SourceReferenceKind::Include => {
+                let rest = trimmed.strip_prefix("include")?.trim();
+                if !rest.starts_with('"') || !rest.ends_with('"') || rest.len() < 2 {
+                    return None;
+                }
+                let value = &rest[1..rest.len() - 1];
+                if value != expected {
+                    return None;
+                }
+                let quote = trimmed.find('"')?;
+                Some((leading + quote + 1)..(leading + quote + 1 + value.len()))
+            }
+            SourceReferenceKind::Import => {
+                let rest = trimmed.strip_prefix("import")?;
+                let whitespace = rest.len().saturating_sub(rest.trim_start().len());
+                let value = rest.trim();
+                if value != expected {
+                    return None;
+                }
+                let start = leading + "import".len() + whitespace;
+                Some(start..(start + value.len()))
+            }
+        }
+    }
+
+    let mut replacements = HashMap::<RewriteKey, &str>::with_capacity(rewrites.len());
+    for rewrite in rewrites {
+        if rewrite.specifier.is_empty() || rewrite.replacement.is_empty() {
+            return Err(vec![Diagnostic::syntax(
+                "source reference rewrite paths must not be empty",
+                0,
+                0,
+            )]);
+        }
+        let key = RewriteKey {
+            kind: rewrite.kind,
+            specifier: rewrite.specifier.clone(),
+        };
+        if let Some(previous) = replacements.insert(key, &rewrite.replacement) {
+            if previous != rewrite.replacement {
+                return Err(vec![Diagnostic::syntax(
+                    "source reference rewrites contain conflicting replacements",
+                    0,
+                    0,
+                )]);
+            }
+        }
+    }
+
+    let (preprocessed, line_map) = preprocess_indentation_blocks(source)
+        .map_err(|diagnostics| annotate_diagnostics_with_file(diagnostics, path, 0))?;
+    let items = split_top_level_items(&preprocessed, &line_map, path)?;
+    let mut used = HashSet::<RewriteKey>::new();
+    let mut edits = Vec::<(std::ops::Range<usize>, &str)>::new();
+    for item in items {
+        let (kind, specifier, line) = match item {
+            TopLevelItem::Include { path, line } => (SourceReferenceKind::Include, path, line),
+            TopLevelItem::Import { module, line } if !is_builtin_std_module_path(&module) => {
+                (SourceReferenceKind::Import, module, line)
+            }
+            _ => continue,
+        };
+        let key = RewriteKey { kind, specifier };
+        let Some(replacement) = replacements.get(&key).copied() else {
+            return Err(annotate_diagnostics_with_file(
+                vec![Diagnostic::syntax(
+                    format!(
+                        "no replacement was provided for {} '{}'",
+                        match kind {
+                            SourceReferenceKind::Include => "include",
+                            SourceReferenceKind::Import => "import",
+                        },
+                        key.specifier
+                    ),
+                    line,
+                    1,
+                )],
+                path,
+                0,
+            ));
+        };
+        let Some(start) = line_start(source, line) else {
+            return Err(annotate_diagnostics_with_file(
+                vec![Diagnostic::internal("source reference line is invalid")],
+                path,
+                0,
+            ));
+        };
+        let line_text = &source[start..]
+            .split_inclusive('\n')
+            .next()
+            .unwrap_or_default();
+        let Some(range) = specifier_range(line_text, kind, &key.specifier) else {
+            return Err(annotate_diagnostics_with_file(
+                vec![Diagnostic::internal(
+                    "source reference could not be located in the original source",
+                )],
+                path,
+                0,
+            ));
+        };
+        edits.push(((start + range.start)..(start + range.end), replacement));
+        used.insert(key);
+    }
+
+    if used.len() != replacements.len() {
+        return Err(vec![Diagnostic::syntax(
+            "source reference rewrites contain a reference not present in the source",
+            0,
+            0,
+        )]);
+    }
+
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
+    let mut rewritten = source.to_owned();
+    for (range, replacement) in edits {
+        rewritten.replace_range(range, replacement);
+    }
+    Ok(rewritten)
+}
 
 #[derive(Debug)]
 struct SourceResolutionError {
@@ -312,6 +555,20 @@ pub fn load_program_file_from_virtual_sources(
     load_program_file_with_loader(path, &loader)
 }
 
+/// Parses an exact previously resolved source graph without consulting the
+/// host filesystem or reinterpreting source identifiers as local paths.
+pub fn load_program_file_from_snapshot(
+    path: &Path,
+    sources: &HashMap<PathBuf, String>,
+    resolutions: &[SourceResolution],
+) -> LoadResult {
+    let loader = SourceLoader::snapshot(sources, resolutions).map_err(|message| LoadError {
+        diagnostics: vec![Diagnostic::syntax(message, 0, 0)],
+        sources: SourceManifest::default(),
+    })?;
+    load_program_file_with_loader(path, &loader)
+}
+
 fn load_program_file_with_loader(path: &Path, loader: &SourceLoader) -> LoadResult {
     let canonical = loader.resolve(path).map_err(|err| LoadError {
         diagnostics: vec![Diagnostic::syntax(
@@ -476,6 +733,7 @@ fn load_program_blocks_from_file(
                 0,
             )
         })?;
+        state.record_source_document(&canonical, source.clone());
         let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(&source)
             .map_err(|diags| annotate_diagnostics_with_file(diags, &canonical, 0))?;
         let items = split_top_level_items(&preprocessed, &preprocessed_line_map, &canonical)?;
@@ -512,9 +770,12 @@ fn load_program_blocks_from_file(
                     let include_path = match loader.resolve_include(&canonical, &path) {
                         Ok(path) => path,
                         Err(error) => {
-                            for candidate in error.candidates {
-                                state.record_unresolved_source_file(candidate);
-                            }
+                            state.record_unresolved_resolution(UnresolvedSourceResolution {
+                                source: canonical.clone(),
+                                kind: SourceReferenceKind::Include,
+                                specifier: path.clone(),
+                                candidates: error.candidates,
+                            });
                             return Err(annotate_diagnostics_with_file(
                                 vec![Diagnostic::syntax(error.message, line, 1)],
                                 &canonical,
@@ -522,6 +783,12 @@ fn load_program_blocks_from_file(
                             ));
                         }
                     };
+                    state.record_resolution(SourceResolution {
+                        source: canonical.clone(),
+                        kind: SourceReferenceKind::Include,
+                        specifier: path.clone(),
+                        target: include_path.clone(),
+                    });
                     validate_file_mode_transition(
                         &include_path,
                         FileLoadMode::Include,
@@ -562,9 +829,12 @@ fn load_program_blocks_from_file(
                     let import_path = match loader.resolve_import(&canonical, &module) {
                         Ok(path) => path,
                         Err(error) => {
-                            for candidate in error.candidates {
-                                state.record_unresolved_source_file(candidate);
-                            }
+                            state.record_unresolved_resolution(UnresolvedSourceResolution {
+                                source: canonical.clone(),
+                                kind: SourceReferenceKind::Import,
+                                specifier: module.clone(),
+                                candidates: error.candidates,
+                            });
                             return Err(annotate_diagnostics_with_file(
                                 vec![Diagnostic::syntax(error.message, line, 1)],
                                 &canonical,
@@ -572,6 +842,12 @@ fn load_program_blocks_from_file(
                             ));
                         }
                     };
+                    state.record_resolution(SourceResolution {
+                        source: canonical.clone(),
+                        kind: SourceReferenceKind::Import,
+                        specifier: module.clone(),
+                        target: import_path.clone(),
+                    });
                     validate_file_mode_transition(
                         &import_path,
                         FileLoadMode::Import,
@@ -646,7 +922,19 @@ fn normalize_overlay_paths(overlays: &HashMap<PathBuf, String>) -> HashMap<PathB
 #[derive(Debug, Clone)]
 enum SourcePolicy {
     Filesystem,
-    Virtual { root: PathBuf },
+    Virtual {
+        root: PathBuf,
+    },
+    Snapshot {
+        resolutions: HashMap<SourceResolutionKey, PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+struct SourceResolutionKey {
+    source: PathBuf,
+    kind: SourceReferenceKind,
+    specifier: String,
 }
 
 #[derive(Debug, Clone)]
@@ -670,8 +958,7 @@ impl SourceLoader {
         }
         let mut overlays = HashMap::with_capacity(sources.len());
         for (path, source) in sources {
-            let path = normalize_path_lexically(path);
-            ensure_virtual_root(&root, &path)?;
+            let path = normalize_virtual_path(&root, path)?;
             if overlays.insert(path.clone(), source.clone()).is_some() {
                 return Err(format!(
                     "duplicate normalized virtual source path '{}'",
@@ -685,18 +972,67 @@ impl SourceLoader {
         })
     }
 
+    fn snapshot(
+        sources: &HashMap<PathBuf, String>,
+        resolutions: &[SourceResolution],
+    ) -> Result<Self, String> {
+        let mut resolved = HashMap::with_capacity(resolutions.len());
+        for resolution in resolutions {
+            if !sources.contains_key(&resolution.source) {
+                return Err(format!(
+                    "snapshot resolution source '{}' is not present",
+                    resolution.source.display()
+                ));
+            }
+            if !sources.contains_key(&resolution.target) {
+                return Err(format!(
+                    "snapshot resolution target '{}' is not present",
+                    resolution.target.display()
+                ));
+            }
+            let key = SourceResolutionKey {
+                source: resolution.source.clone(),
+                kind: resolution.kind,
+                specifier: resolution.specifier.clone(),
+            };
+            if let Some(previous) = resolved.insert(key, resolution.target.clone()) {
+                if previous != resolution.target {
+                    return Err(format!(
+                        "snapshot contains conflicting resolutions from '{}'",
+                        resolution.source.display()
+                    ));
+                }
+            }
+        }
+        Ok(Self {
+            overlays: sources.clone(),
+            policy: SourcePolicy::Snapshot {
+                resolutions: resolved,
+            },
+        })
+    }
+
     fn resolve(&self, path: &Path) -> Result<PathBuf, String> {
         match &self.policy {
             SourcePolicy::Filesystem => resolve_file_or_overlay_path(path, &self.overlays)
                 .map_err(|error| error.to_string()),
             SourcePolicy::Virtual { root } => {
-                let path = normalize_path_lexically(path);
-                ensure_virtual_root(root, &path)?;
+                let path = normalize_virtual_path(root, path)?;
                 if self.overlays.contains_key(&path) {
                     Ok(path)
                 } else {
                     Err(format!(
                         "virtual source '{}' is not present in the source map",
+                        path.display()
+                    ))
+                }
+            }
+            SourcePolicy::Snapshot { .. } => {
+                if self.overlays.contains_key(path) {
+                    Ok(path.to_path_buf())
+                } else {
+                    Err(format!(
+                        "snapshot source '{}' is not present",
                         path.display()
                     ))
                 }
@@ -710,7 +1046,7 @@ impl SourceLoader {
         }
         match self.policy {
             SourcePolicy::Filesystem => fs::read_to_string(path).map_err(|error| error.to_string()),
-            SourcePolicy::Virtual { .. } => Err(format!(
+            SourcePolicy::Virtual { .. } | SourcePolicy::Snapshot { .. } => Err(format!(
                 "virtual source '{}' is not present in the source map",
                 path.display()
             )),
@@ -722,6 +1058,13 @@ impl SourceLoader {
         current_file: &Path,
         include_path: &str,
     ) -> Result<PathBuf, SourceResolutionError> {
+        if matches!(&self.policy, SourcePolicy::Snapshot { .. }) {
+            return self.resolve_snapshot_reference(
+                current_file,
+                SourceReferenceKind::Include,
+                include_path,
+            );
+        }
         if let SourcePolicy::Virtual { root } = &self.policy {
             if is_portable_absolute_virtual_path(include_path) {
                 return Err(SourceResolutionError::without_candidates(format!(
@@ -750,7 +1093,7 @@ impl SourceLoader {
                         candidate.display()
                     )
                 }
-                SourcePolicy::Virtual { .. } => message,
+                SourcePolicy::Virtual { .. } | SourcePolicy::Snapshot { .. } => message,
             };
             SourceResolutionError {
                 message,
@@ -764,6 +1107,13 @@ impl SourceLoader {
         current_file: &Path,
         module_path: &str,
     ) -> Result<PathBuf, SourceResolutionError> {
+        if matches!(&self.policy, SourcePolicy::Snapshot { .. }) {
+            return self.resolve_snapshot_reference(
+                current_file,
+                SourceReferenceKind::Import,
+                module_path,
+            );
+        }
         if let SourcePolicy::Virtual { root } = &self.policy {
             if is_portable_absolute_virtual_path(module_path) {
                 return Err(SourceResolutionError::without_candidates(format!(
@@ -798,7 +1148,7 @@ impl SourceLoader {
                 base.display(),
                 ONDA_SOURCE_EXTENSIONS.join(",")
             ),
-            SourcePolicy::Virtual { .. } => format!(
+            SourcePolicy::Virtual { .. } | SourcePolicy::Snapshot { .. } => format!(
                 "failed to resolve imported module '{module_path}' from '{}'",
                 display_path(current_file)
             ),
@@ -812,12 +1162,32 @@ impl SourceLoader {
     fn normalize_candidate(&self, path: PathBuf) -> Result<PathBuf, String> {
         match &self.policy {
             SourcePolicy::Filesystem => Ok(normalize_overlay_path(&path)),
-            SourcePolicy::Virtual { root } => {
-                let path = normalize_path_lexically(&path);
-                ensure_virtual_root(root, &path)?;
-                Ok(path)
-            }
+            SourcePolicy::Virtual { root } => normalize_virtual_path(root, &path),
+            SourcePolicy::Snapshot { .. } => Ok(path),
         }
+    }
+
+    fn resolve_snapshot_reference(
+        &self,
+        source: &Path,
+        kind: SourceReferenceKind,
+        specifier: &str,
+    ) -> Result<PathBuf, SourceResolutionError> {
+        let SourcePolicy::Snapshot { resolutions } = &self.policy else {
+            unreachable!("snapshot resolution requires snapshot policy");
+        };
+        let key = SourceResolutionKey {
+            source: source.to_path_buf(),
+            kind,
+            specifier: specifier.to_owned(),
+        };
+        resolutions.get(&key).cloned().ok_or_else(|| {
+            SourceResolutionError::without_candidates(format!(
+                "snapshot has no recorded resolution for '{}' from '{}'",
+                specifier,
+                display_path(source)
+            ))
+        })
     }
 }
 
@@ -828,16 +1198,32 @@ fn is_portable_absolute_virtual_path(path: &str) -> bool {
         || matches!(bytes, [drive, b':', ..] if drive.is_ascii_alphabetic())
 }
 
-fn ensure_virtual_root(root: &Path, path: &Path) -> Result<(), String> {
-    if path.starts_with(root) {
-        Ok(())
-    } else {
-        Err(format!(
+fn normalize_virtual_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        format!(
             "virtual source path '{}' escapes project root '{}'",
             path.display(),
             root.display()
-        ))
+        )
+    })?;
+    let mut normalized = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir if normalized != root => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err(format!(
+                    "virtual source path '{}' escapes project root '{}'",
+                    path.display(),
+                    root.display()
+                ));
+            }
+        }
     }
+    Ok(normalized)
 }
 
 fn normalize_path_lexically(path: &Path) -> PathBuf {

@@ -17,4 +17,6 @@ Run an example from the repository root:
 onda run examples/foundations/sine.onda
 ```
 
-Some examples require a host-bound buffer or another setup step; their source or local README describes the requirement.
+Buffer-oriented examples can run without an asset: omitted buffers use neutral one-frame storage,
+so reads return zero and writes are discarded. Bind a WAV or `.ondabuffer` when the example needs
+meaningful source data; its source or local README describes any other setup.

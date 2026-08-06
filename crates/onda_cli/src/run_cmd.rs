@@ -6,7 +6,7 @@ use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{DaemonConfig, DaemonSession, RunOptions};
 use onda_run::{
     append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
-    RunHostOptions,
+    ProjectBufferBinding, RunHostOptions,
 };
 use onda_semantics::AnalysisOptions;
 
@@ -39,20 +39,32 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             control_json,
             param_sets,
             buffer_bindings,
-        } => play_run_realtime(PlaybackLaunch {
-            input,
-            dur_seconds,
-            sample_rate_hz,
-            block_frames,
-            opt_level,
-            input_device,
-            output_device,
-            fast_math,
-            show_meta,
-            control_json,
-            param_sets,
-            buffer_bindings,
-        }),
+        } => {
+            let project = crate::project_cmd::resolve_run_project(&input, &buffer_bindings)?;
+            play_run_realtime(PlaybackLaunch {
+                input: project.entry,
+                dur_seconds,
+                sample_rate_hz,
+                block_frames,
+                opt_level,
+                input_device,
+                output_device,
+                fast_math,
+                show_meta,
+                control_json,
+                param_sets,
+                buffer_bindings,
+                project_buffer_bindings: project
+                    .buffers
+                    .into_iter()
+                    .map(|(name, asset, loaded_path)| ProjectBufferBinding {
+                        name,
+                        asset,
+                        loaded_path,
+                    })
+                    .collect(),
+            })
+        }
         RunCommand::Render {
             input,
             output,
@@ -64,18 +76,22 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             show_meta,
             param_sets,
             buffer_bindings,
-        } => run_daemon_run(DaemonRenderRequest {
-            input: &input,
-            output: &output,
-            dur_seconds,
-            sample_rate_hz,
-            block_frames,
-            opt_level,
-            fast_math,
-            show_meta,
-            param_sets: &param_sets,
-            buffer_bindings: &buffer_bindings,
-        }),
+        } => {
+            let project = crate::project_cmd::resolve_run_project(&input, &buffer_bindings)?;
+            run_daemon_run(DaemonRenderRequest {
+                input: &project.entry,
+                output: &output,
+                dur_seconds,
+                sample_rate_hz,
+                block_frames,
+                opt_level,
+                fast_math,
+                show_meta,
+                param_sets: &param_sets,
+                buffer_bindings: &buffer_bindings,
+                project_buffer_bindings: &project.buffers,
+            })
+        }
         RunCommand::Window {
             input,
             sample_rate_hz,
@@ -148,6 +164,8 @@ fn run_daemon_diagnose(
     sample_rate_hz: u32,
     block_frames: usize,
 ) -> Result<(), String> {
+    let project_input = crate::project_cmd::resolve_entry(input)?;
+    let input = project_input.entry_path();
     let session = DaemonSession::new(DaemonConfig {
         analysis: AnalysisOptions {
             sample_rate: sample_rate_hz as f32,
@@ -181,6 +199,7 @@ struct DaemonRenderRequest<'a> {
     show_meta: bool,
     param_sets: &'a [(String, f64)],
     buffer_bindings: &'a [(String, PathBuf)],
+    project_buffer_bindings: &'a [(String, onda_project::BufferAsset, Option<PathBuf>)],
 }
 
 fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
@@ -195,6 +214,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         show_meta,
         param_sets,
         buffer_bindings,
+        project_buffer_bindings,
     } = request;
     let mut session = DaemonSession::new(DaemonConfig {
         analysis: AnalysisOptions {
@@ -232,11 +252,24 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
             .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
     }
 
+    for (name, asset, loaded_path) in project_buffer_bindings {
+        let run = session
+            .run_mut(input)
+            .expect("run should be active while binding project buffers");
+        let result = if let Some(path) = loaded_path {
+            run.bind_buffer_asset_at_path(name, asset.clone(), path.clone())
+        } else {
+            run.bind_buffer_asset(name, asset.clone())
+        };
+        result
+            .map_err(|diag| format_single_diagnostic("daemon run project buffer failed", &diag))?;
+    }
+
     for (name, path) in buffer_bindings {
         session
             .run_mut(input)
             .expect("run should be active while binding buffers")
-            .bind_buffer_wav_path(name, path)
+            .bind_buffer_file_path(name, path)
             .map_err(|diag| format_single_diagnostic("daemon run buffer failed", &diag))?;
     }
 

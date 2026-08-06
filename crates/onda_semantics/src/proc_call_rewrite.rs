@@ -1,4 +1,5 @@
 use super::*;
+use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 use crate::processor_lowering::{
     proc_local_bind_hidden_def_name, proc_local_nested_bind_hidden_def_name,
@@ -489,6 +490,16 @@ pub(super) fn resolve_proc_index_target_mut(
     })
 }
 
+pub(super) fn proc_index_base_name(args: &[CallArg]) -> Option<&str> {
+    args.iter()
+        .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG))
+        .or_else(|| args.first().filter(|arg| arg.name.is_none()))
+        .and_then(|arg| match &arg.expr {
+            Expr::Var { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+}
+
 type ProcArrayDispatchContext = (String, ProcApi, Vec<(String, ProcCallInstance)>);
 
 pub(super) fn resolve_proc_array_dispatch_context(
@@ -594,6 +605,50 @@ fn resolve_proc_array_base_key(
         return matches.pop();
     }
     None
+}
+
+fn canonicalize_indexed_proc_receiver_call(
+    name: &mut String,
+    args: &mut Vec<CallArg>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+) {
+    if name.starts_with(PROC_INDEX_CALL_SENTINEL) {
+        return;
+    }
+    if name.contains('.') || name.contains("::") {
+        return;
+    }
+    let Some(CallArg {
+        name: Some(receiver_marker),
+        expr: Expr::Index { base, index, .. },
+    }) = args.first()
+    else {
+        return;
+    };
+    if receiver_marker != METHOD_RECEIVER_ARG {
+        return;
+    }
+    if resolve_proc_array_base_key(base, proc_array_slots).is_none() {
+        return;
+    }
+    let base = base.clone();
+    let index = index.as_ref().clone();
+    args.remove(0);
+    args.insert(
+        0,
+        CallArg {
+            name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+            expr: index,
+        },
+    );
+    args.insert(
+        0,
+        CallArg {
+            name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+            expr: Expr::var(base),
+        },
+    );
+    *name = format!("{PROC_INDEX_CALL_SENTINEL}.{name}");
 }
 
 fn can_resolve_proc_index_base(
@@ -1127,6 +1182,9 @@ fn proc_call_arg_kind(api: &ProcApi, arg_name: Option<&str>) -> ProcCallArgKind 
 fn proc_named_arg_internal_indices(name: &str, args: &[CallArg]) -> HashSet<usize> {
     let is_indexed_call = name == PROC_INDEX_CALL_SENTINEL
         || name
+            .strip_prefix(PROC_INDEX_CALL_SENTINEL)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+        || name
             .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
             .is_some_and(|raw| raw == PROC_INDEX_CALL_SENTINEL);
     if !is_indexed_call {
@@ -1362,23 +1420,16 @@ fn lower_named_proc_param_calls_in_expr(
             true,
             errors,
         ),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 lower_named_proc_param_calls_in_expr(
-                    start,
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    aliases,
-                    prelude,
-                    temp_counter,
-                    true,
-                    errors,
-                );
-            }
-            if let Some(end) = end {
-                lower_named_proc_param_calls_in_expr(
-                    end,
+                    coordinate,
                     proc_vars,
                     proc_array_slots,
                     proc_api,
@@ -1527,6 +1578,9 @@ fn lower_named_proc_param_call_expr(
     let Expr::UserCall { name, args, .. } = expr else {
         return;
     };
+    // Proc-array slots are known here, so classify receiver syntax before the
+    // named-argument pass can interpret the internal receiver marker.
+    canonicalize_indexed_proc_receiver_call(name, args, proc_array_slots);
 
     let Some(mut target) = proc_named_arg_call_target_from_parts(
         name,
@@ -1810,20 +1864,16 @@ fn reject_named_proc_param_calls_in_expr(
             context,
             errors,
         ),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 reject_named_proc_param_calls_in_expr(
-                    start,
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    context,
-                    errors,
-                );
-            }
-            if let Some(end) = end {
-                reject_named_proc_param_calls_in_expr(
-                    end,
+                    coordinate,
                     proc_vars,
                     proc_array_slots,
                     proc_api,
@@ -2084,19 +2134,25 @@ fn update_proc_array_aliases_from_assignment(
     let AssignTarget::Var(name) = target else {
         return;
     };
-    if let Expr::Index { base, index, .. } = expr {
-        let resolved_base =
-            resolve_proc_array_base_key(base, proc_array_slots).unwrap_or_else(|| base.clone());
-        aliases.insert(
-            name.clone(),
-            ProcArrayAliasInfo {
-                array_base: resolved_base,
-                index_expr: index.as_ref().clone(),
-            },
-        );
+    if let Some(alias) = proc_array_alias_from_index_expr(expr, proc_array_slots) {
+        aliases.insert(name.clone(), alias);
     } else {
         aliases.remove(name);
     }
+}
+
+fn proc_array_alias_from_index_expr(
+    expr: &Expr,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+) -> Option<ProcArrayAliasInfo> {
+    let Expr::Index { base, index, .. } = expr else {
+        return None;
+    };
+    let array_base = resolve_proc_array_base_key(base, proc_array_slots)?;
+    Some(ProcArrayAliasInfo {
+        array_base,
+        index_expr: index.as_ref().clone(),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2603,10 +2659,18 @@ pub(super) fn proc_buffer_fn_param_type(spec: &ProcBufferSpec) -> FnParamType {
         TypedBufferChannels::Dynamic => BufferChannels::Dynamic,
         TypedBufferChannels::Static(ch) => BufferChannels::Static(Expr::int(ch as i64)),
     };
-    FnParamType::Buffer(onda_frontend::BufferType {
+    let buffer = onda_frontend::BufferType {
         elem: BufferElemType::Primitive(spec.elem_ty),
         channels,
-    })
+    };
+    if spec.is_array {
+        FnParamType::BufferArray {
+            buffer,
+            len: spec.array_len,
+        }
+    } else {
+        FnParamType::Buffer(buffer)
+    }
 }
 
 pub(super) fn rewrite_proc_calls_in_expr(
@@ -2634,13 +2698,21 @@ pub(super) fn rewrite_proc_calls_in_expr(
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
-            if let Some(start) = start {
-                rewrite_proc_calls_in_expr(start, proc_vars, proc_array_slots, proc_api, errors);
-            }
-            if let Some(end) = end {
-                rewrite_proc_calls_in_expr(end, proc_vars, proc_array_slots, proc_api, errors);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_proc_calls_in_expr(
+                    coordinate,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
             }
             if reject_pinned_proc_param_read_path(
                 base,
@@ -2696,6 +2768,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
         }
         Expr::UserCall { name, args, .. } => {
+            canonicalize_indexed_proc_receiver_call(name, args, proc_array_slots);
             for arg in args.iter_mut() {
                 rewrite_proc_calls_in_expr(
                     &mut arg.expr,
@@ -3240,14 +3313,16 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
             normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
-            if let Some(start) = start {
-                normalize_proc_output_aliases_in_expr(start, proc_vars, proc_api);
-            }
-            if let Some(end) = end {
-                normalize_proc_output_aliases_in_expr(end, proc_vars, proc_api);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                normalize_proc_output_aliases_in_expr(coordinate, proc_vars, proc_api);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -3299,13 +3374,16 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
             normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
         }
-        AssignTarget::Slice { base, start, end } => {
+        AssignTarget::Slice {
+            base,
+            selector,
+            channel,
+            start,
+            end,
+        } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
-            if let Some(start) = start {
-                normalize_proc_output_aliases_in_expr(start, proc_vars, proc_api);
-            }
-            if let Some(end) = end {
-                normalize_proc_output_aliases_in_expr(end, proc_vars, proc_api);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                normalize_proc_output_aliases_in_expr(coordinate, proc_vars, proc_api);
             }
         }
         AssignTarget::Tuple(names) => {
@@ -4322,16 +4400,8 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Var(name) = target {
-                if let Expr::Index { base, index, .. } = expr {
-                    let resolved_base = resolve_proc_array_base_key(base, proc_array_slots)
-                        .unwrap_or_else(|| base.clone());
-                    aliases.insert(
-                        name.clone(),
-                        ProcArrayAliasInfo {
-                            array_base: resolved_base,
-                            index_expr: index.as_ref().clone(),
-                        },
-                    );
+                if let Some(alias) = proc_array_alias_from_index_expr(expr, proc_array_slots) {
+                    aliases.insert(name.clone(), alias);
                 } else {
                     aliases.remove(name);
                 }
@@ -4353,6 +4423,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             rewrite_proc_alias_calls_in_expr(expr, aliases);
             let mut handled_proc_stmt_call = false;
             if let Expr::UserCall { name, args, .. } = expr {
+                canonicalize_indexed_proc_receiver_call(name, args, proc_array_slots);
                 for arg in args.iter_mut() {
                     rewrite_proc_calls_in_expr(
                         &mut arg.expr,
@@ -4714,12 +4785,15 @@ pub(super) fn collect_called_proc_instances_in_expr(
         Expr::Index { index, .. } => {
             collect_called_proc_instances_in_expr(index, proc_vars, proc_array_slots, out)
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                collect_called_proc_instances_in_expr(start, proc_vars, proc_array_slots, out);
-            }
-            if let Some(end) = end {
-                collect_called_proc_instances_in_expr(end, proc_vars, proc_array_slots, out);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                collect_called_proc_instances_in_expr(coordinate, proc_vars, proc_array_slots, out);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -4790,16 +4864,8 @@ fn collect_called_proc_instances_in_stmt(
                 out,
             );
             if let AssignTarget::Var(name) = target {
-                if let Expr::Index { base, index, .. } = expr {
-                    let resolved_base = resolve_proc_array_base_key(base, proc_array_slots)
-                        .unwrap_or_else(|| base.clone());
-                    aliases.insert(
-                        name.clone(),
-                        ProcArrayAliasInfo {
-                            array_base: resolved_base,
-                            index_expr: index.as_ref().clone(),
-                        },
-                    );
+                if let Some(alias) = proc_array_alias_from_index_expr(expr, proc_array_slots) {
+                    aliases.insert(name.clone(), alias);
                 } else {
                     aliases.remove(name);
                 }
@@ -4977,19 +5043,16 @@ pub(super) fn desugar_expr_instance_method_calls(
             current_ns,
             callable_symbols,
         ),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 desugar_expr_instance_method_calls(
-                    start,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-            if let Some(end) = end {
-                desugar_expr_instance_method_calls(
-                    end,
+                    coordinate,
                     struct_instances,
                     struct_array_roots,
                     current_ns,
@@ -5075,6 +5138,65 @@ pub(super) fn desugar_expr_instance_method_calls(
                     current_ns,
                     callable_symbols,
                 );
+            }
+            if let Some(CallArg {
+                name: receiver_name,
+                expr: Expr::Index { base, .. },
+            }) = args.first()
+            {
+                if receiver_name.as_deref() == Some(METHOD_RECEIVER_ARG) {
+                    if let Some(struct_name) = struct_array_roots.get(base) {
+                        let resolved_method = format!("{struct_name}.{name}");
+                        if callable_symbols.contains(&resolved_method) {
+                            args[0].name = None;
+                            *name = resolved_method;
+                            return;
+                        }
+                    }
+                }
+            }
+            if is_builtin_instance_method_name(name) {
+                let indexed_receiver = args.first().and_then(|arg| match &arg.expr {
+                    Expr::Index { base, index, .. }
+                        if arg.name.as_deref() == Some(METHOD_RECEIVER_ARG) =>
+                    {
+                        Some((base.clone(), index.as_ref().clone()))
+                    }
+                    _ => None,
+                });
+                if let Some((base, index)) = indexed_receiver {
+                    args.remove(0);
+                    args.insert(
+                        0,
+                        CallArg {
+                            name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                            expr: index,
+                        },
+                    );
+                    args.insert(
+                        0,
+                        CallArg {
+                            name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                            expr: Expr::var(base),
+                        },
+                    );
+                    *name = format!("{PROC_INDEX_CALL_SENTINEL}.{name}");
+                    return;
+                }
+            }
+            if let Some(receiver) = args
+                .first_mut()
+                .filter(|arg| arg.name.as_deref() == Some(METHOD_RECEIVER_ARG))
+            {
+                let resolved_name = if callable_symbols.contains(name) {
+                    Some(name.clone())
+                } else {
+                    resolve_unqualified_symbol_name(name, current_ns, callable_symbols)
+                };
+                if let Some(resolved_name) = resolved_name {
+                    receiver.name = None;
+                    *name = resolved_name;
+                }
             }
             if let Some(method) = name.strip_prefix(&format!("{PROC_INDEX_CALL_SENTINEL}.")) {
                 if let Some((base, index_expr)) = extract_indexed_receiver(args) {

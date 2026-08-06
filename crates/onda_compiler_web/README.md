@@ -15,16 +15,25 @@ The package build runs `wasm-pack --release` and then the workspace-pinned Binar
 optimizer so every local, CI, website, and npm build uses the same Binaryen release.
 
 The production exports `compile_to_mir_messagepack(source, sampleRate, blockSize)` and
-`compile_project_to_mir_messagepack(entryPath, sourcesJson, sampleRate, blockSize)` return a
+`compile_source_workspace_to_mir_messagepack(entryPath, sourcesJson, sampleRate, blockSize)` return a
 `FrontendMessagePackCompilation` containing compact schema-versioned bytes plus the ordered
 contributing project paths. JSON variants return the equivalent `FrontendJsonCompilation` for
-inspection and tooling. Both result types expose `take_mir()` and `source_files_json()`. Project
+inspection and tooling. Both result types expose the source list and exact portable source image.
+Workspace
 compilation accepts a JSON object of project-relative paths to source strings, resolving imports and
 includes entirely in memory. Paths cannot escape the virtual project root. Embedded
 standard-library modules are omitted from the source manifest. `mir_schema_version()` exposes the
 producer version for integration checks. Compilation failures reject with a JSON-encoded object
 containing structured diagnostics, the partially resolved source list, and unresolved
 non-standard-library candidates which a host may watch for creation.
+
+The Wasm surface also builds, loads, inspects, compiles, and materializes canonical `ProjectImage`
+values, encodes/decodes every `.ondabuffer` primitive type, and decodes WAV files through the same
+canonical buffer path as native hosts. These operations directly use `onda_project`, matching the
+C API's bytes, digests, validation, and format capability values. Materialization publishes
+`code/main.onda`, preserves meaningful source paths below `code/`, and writes typed assets below
+`assets/`. Input file sets may contain `.ondaproject` manifests in any directory when the host
+explicitly selects the one to load.
 
 The current producer and `packages/onda_binaryen_web` both use the current MIR schema. The browser playground
 under `examples/web/onda_wasm_playground` passes the generated MessagePack directly to the explicitly
@@ -56,4 +65,4 @@ compile/render measurements are documented in
 Application consumers should normally install
 [`@onda-lang/wasm-compiler`](../../packages/onda_wasm_compiler/README.md), which packages this
 frontend Wasm with the compatible Binaryen backend, verifies their MIR schema handshake, and
-provides typed source/project APIs plus the `onda-wasm` CLI.
+provides typed source-workspace and project-image APIs plus the `onda-wasm` CLI.

@@ -239,12 +239,15 @@ fn fold_host_sr_assign_target(
 ) {
     match target {
         AssignTarget::Index { index, .. } => fold_local_scalar_const_expr(index, consts),
-        AssignTarget::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                fold_local_scalar_const_expr(start, consts);
-            }
-            if let Some(end) = end {
-                fold_local_scalar_const_expr(end, consts);
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                fold_local_scalar_const_expr(coordinate, consts);
             }
         }
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
@@ -783,12 +786,15 @@ fn fold_const_array_expr(
                 *expr = Expr::int(*len as i64).with_loc(loc);
             }
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                fold_const_array_expr(start, const_values, options, errors, false);
-            }
-            if let Some(end) = end {
-                fold_const_array_expr(end, const_values, options, errors, false);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                fold_const_array_expr(coordinate, const_values, options, errors, false);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -2192,8 +2198,20 @@ fn eval_const_array_expr_with_defs(
             ConstEvalArray { elem_ty, values }
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
+            if selector.is_some() || channel.is_some() {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context}: const arrays do not support buffer coordinates"),
+                    loc,
+                ));
+                return None;
+            }
             let Some(array) = const_eval_array_by_name(base, local_arrays, const_values) else {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: unknown const array '{base}'"),
@@ -2983,7 +3001,10 @@ fn fold_fn_param_type_const_arrays(
         Some(FnParamType::SizedArray { size, .. }) => {
             fold_const_array_expr(size, const_values, options, errors, false);
         }
-        Some(FnParamType::Buffer(buffer_ty)) => {
+        Some(FnParamType::Buffer(buffer_ty))
+        | Some(FnParamType::BufferArray {
+            buffer: buffer_ty, ..
+        }) => {
             if let BufferChannels::Static(expr) = &mut buffer_ty.channels {
                 fold_const_array_expr(expr, const_values, options, errors, false);
             }
@@ -3043,12 +3064,15 @@ fn fold_stmt_const_arrays(
                 AssignTarget::Index { index, .. } => {
                     fold_const_array_expr(index, const_values, options, errors, false);
                 }
-                AssignTarget::Slice { start, end, .. } => {
-                    if let Some(start) = start {
-                        fold_const_array_expr(start, const_values, options, errors, false);
-                    }
-                    if let Some(end) = end {
-                        fold_const_array_expr(end, const_values, options, errors, false);
+                AssignTarget::Slice {
+                    selector,
+                    channel,
+                    start,
+                    end,
+                    ..
+                } => {
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        fold_const_array_expr(coordinate, const_values, options, errors, false);
                     }
                 }
                 AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
@@ -3187,14 +3211,16 @@ fn reject_forward_const_refs_expr(
             reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             reject_forward_const_ref_name(base, expr.loc(), visible_consts, future_consts, errors);
-            if let Some(start) = start {
-                reject_forward_const_refs_expr(start, visible_consts, future_consts, errors);
-            }
-            if let Some(end) = end {
-                reject_forward_const_refs_expr(end, visible_consts, future_consts, errors);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                reject_forward_const_refs_expr(coordinate, visible_consts, future_consts, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -3338,7 +3364,10 @@ fn reject_forward_const_refs_fn_param_type(
         Some(FnParamType::SizedArray { size, .. }) => {
             reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
         }
-        Some(FnParamType::Buffer(buffer_ty)) => {
+        Some(FnParamType::Buffer(buffer_ty))
+        | Some(FnParamType::BufferArray {
+            buffer: buffer_ty, ..
+        }) => {
             if let BufferChannels::Static(expr) = &buffer_ty.channels {
                 reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
             }
@@ -3406,13 +3435,16 @@ fn reject_forward_const_refs_assign_target(
             reject_forward_const_ref_name(base, target_loc, visible_consts, future_consts, errors);
             reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
         }
-        AssignTarget::Slice { base, start, end } => {
+        AssignTarget::Slice {
+            base,
+            selector,
+            channel,
+            start,
+            end,
+        } => {
             reject_forward_const_ref_name(base, target_loc, visible_consts, future_consts, errors);
-            if let Some(start) = start {
-                reject_forward_const_refs_expr(start, visible_consts, future_consts, errors);
-            }
-            if let Some(end) = end {
-                reject_forward_const_refs_expr(end, visible_consts, future_consts, errors);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                reject_forward_const_refs_expr(coordinate, visible_consts, future_consts, errors);
             }
         }
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
@@ -4375,12 +4407,15 @@ fn fold_direct_const_def_call_expr(
         Expr::Index { index, .. } => {
             fold_direct_const_def_call_expr(index, artifacts, options, context, errors);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                fold_direct_const_def_call_expr(start, artifacts, options, context, errors);
-            }
-            if let Some(end) = end {
-                fold_direct_const_def_call_expr(end, artifacts, options, context, errors);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                fold_direct_const_def_call_expr(coordinate, artifacts, options, context, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -4461,7 +4496,10 @@ fn fold_direct_const_def_fn_param_type(
         Some(FnParamType::SizedArray { size, .. }) => {
             fold_direct_const_def_call_expr(size, artifacts, options, context, errors);
         }
-        Some(FnParamType::Buffer(buffer_ty)) => {
+        Some(FnParamType::Buffer(buffer_ty))
+        | Some(FnParamType::BufferArray {
+            buffer: buffer_ty, ..
+        }) => {
             if let BufferChannels::Static(expr) = &mut buffer_ty.channels {
                 fold_direct_const_def_call_expr(expr, artifacts, options, context, errors);
             }
@@ -4605,22 +4643,19 @@ fn fold_direct_const_def_stmt(
                         errors,
                     );
                 }
-                AssignTarget::Slice { start, end, .. } => {
-                    if let Some(start) = start {
+                AssignTarget::Slice {
+                    selector,
+                    channel,
+                    start,
+                    end,
+                    ..
+                } => {
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
                         fold_direct_const_def_call_expr(
-                            start,
+                            coordinate,
                             artifacts,
                             options,
-                            "assignment target slice start",
-                            errors,
-                        );
-                    }
-                    if let Some(end) = end {
-                        fold_direct_const_def_call_expr(
-                            end,
-                            artifacts,
-                            options,
-                            "assignment target slice end",
+                            "assignment target slice coordinate",
                             errors,
                         );
                     }
@@ -5080,12 +5115,15 @@ fn fold_local_scalar_const_expr(expr: &mut Expr, local_consts: &HashMap<String, 
         Expr::Index { index, .. } => {
             fold_local_scalar_const_expr(index, local_consts);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                fold_local_scalar_const_expr(start, local_consts);
-            }
-            if let Some(end) = end {
-                fold_local_scalar_const_expr(end, local_consts);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                fold_local_scalar_const_expr(coordinate, local_consts);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -5157,7 +5195,10 @@ fn fold_local_scalar_const_fn_param_type(
         Some(FnParamType::SizedArray { size, .. }) => {
             fold_local_scalar_const_expr(size, local_consts);
         }
-        Some(FnParamType::Buffer(buffer_ty)) => {
+        Some(FnParamType::Buffer(buffer_ty))
+        | Some(FnParamType::BufferArray {
+            buffer: buffer_ty, ..
+        }) => {
             if let BufferChannels::Static(expr) = &mut buffer_ty.channels {
                 fold_local_scalar_const_expr(expr, local_consts);
             }
@@ -5375,12 +5416,15 @@ fn preprocess_local_const_stmt(
                 AssignTarget::Index { index, .. } => {
                     fold_local_scalar_const_expr(index, local_consts);
                 }
-                AssignTarget::Slice { start, end, .. } => {
-                    if let Some(start) = start {
-                        fold_local_scalar_const_expr(start, local_consts);
-                    }
-                    if let Some(end) = end {
-                        fold_local_scalar_const_expr(end, local_consts);
+                AssignTarget::Slice {
+                    selector,
+                    channel,
+                    start,
+                    end,
+                    ..
+                } => {
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        fold_local_scalar_const_expr(coordinate, local_consts);
                     }
                 }
                 AssignTarget::Tuple(names) => {
@@ -6122,6 +6166,7 @@ fn expand_buffer_count_shorthand(
                 name: format!("buf{idx}"),
                 ty: default_ty.clone(),
                 ty_loc: Span::ZERO,
+                array_size: None,
             });
         }
     } else if decls.len() != count {
@@ -7850,6 +7895,12 @@ pub fn analyze_with_options(
             .iter()
             .map(|b| (b.name.clone(), (b.elem_ty, b.channels.clone()))),
     );
+    top_level_env.buffer_arrays.extend(
+        typed_buffers
+            .iter()
+            .filter(|buffer| buffer.is_array)
+            .map(|buffer| buffer.name.clone()),
+    );
     top_level_env
         .struct_instances
         .extend(desugar_struct_instances.clone());
@@ -7914,7 +7965,10 @@ pub fn analyze_with_options(
                             .insert(param.name.clone(), struct_name.clone());
                     }
                 }
-                Some(FnParamType::Buffer(buffer_ty)) => {
+                Some(FnParamType::Buffer(buffer_ty))
+                | Some(FnParamType::BufferArray {
+                    buffer: buffer_ty, ..
+                }) => {
                     let channels = match &buffer_ty.channels {
                         BufferChannels::Mono => TypedBufferChannels::Mono,
                         BufferChannels::Dynamic => TypedBufferChannels::Dynamic,
@@ -8535,6 +8589,8 @@ pub fn analyze_with_options(
             DeclaredSymbolInfo::Buffer {
                 elem_ty: buffer.elem_ty,
                 channels,
+                array_len: buffer.array_len,
+                is_array: buffer.is_array,
             },
         );
     }
@@ -8861,10 +8917,13 @@ pub fn analyze_with_options(
             .map(|b| {
                 (
                     b.name.clone(),
-                    vec![InferredBufferParam {
-                        elem_ty: b.elem_ty,
-                        channels: b.channels.clone(),
-                    }],
+                    InferredBufferBinding {
+                        candidates: vec![InferredBufferParam {
+                            elem_ty: b.elem_ty,
+                            channels: b.channels.clone(),
+                        }],
+                        is_array: b.is_array,
+                    },
                 )
             })
             .collect::<HashMap<_, _>>(),
@@ -8890,6 +8949,7 @@ pub fn analyze_with_options(
         reachable_def_names.contains(&def.name)
             || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs)
     }) {
+        let def_error_start = errors.len();
         let def_param_names = def
             .params
             .iter()
@@ -8925,6 +8985,7 @@ pub fn analyze_with_options(
                     FnParamType::Primitive(prim) => Some(*prim),
                     FnParamType::Struct(_)
                     | FnParamType::Buffer(_)
+                    | FnParamType::BufferArray { .. }
                     | FnParamType::Array(_)
                     | FnParamType::ArrayGeneric(_)
                     | FnParamType::SizedArray { .. }
@@ -9045,7 +9106,7 @@ pub fn analyze_with_options(
                 &mut errors,
             );
         }
-        for (param_name, (elem_ty, channels)) in &param_buffers {
+        for (param_name, (elem_ty, channels, array_len, is_array)) in &param_buffers {
             let channel_info = match channels {
                 TypedBufferChannels::Mono => BufferChannelInfo::Mono,
                 TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(*ch),
@@ -9058,6 +9119,8 @@ pub fn analyze_with_options(
                 DeclaredSymbolInfo::Buffer {
                     elem_ty: *elem_ty,
                     channels: channel_info,
+                    array_len: *array_len,
+                    is_array: *is_array,
                 },
             );
         }
@@ -9226,6 +9289,14 @@ pub fn analyze_with_options(
         }
         for stmt in &def.body {
             analyze_def_stmt(stmt, def_ctx, &mut def_state, 0, &mut errors);
+        }
+        if let Some((source_name, _)) = def.name.split_once(".__mono") {
+            for diagnostic in &mut errors[def_error_start..] {
+                diagnostic.message = format!(
+                    "while checking specialization of '{source_name}': {}",
+                    diagnostic.message
+                );
+            }
         }
         def_scalar_local_types.insert(def.name.clone(), resolved_scalar_locals.into_inner());
     }
@@ -9815,21 +9886,16 @@ fn collect_def_proc_arg_oversample_factors_from_expr(
             out,
             errors,
         ),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 collect_def_proc_arg_oversample_factors_from_expr(
-                    start,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-            }
-            if let Some(end) = end {
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    end,
+                    coordinate,
                     sample_oversample_factor,
                     defs_by_name,
                     top_level_proc_rewrite,
@@ -10150,12 +10216,15 @@ fn validate_generic_def_type_args_in_expr(
         Expr::Index { index, .. } => {
             validate_generic_def_type_args_in_expr(index, fn_signatures, errors);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(s) = start {
-                validate_generic_def_type_args_in_expr(s, fn_signatures, errors);
-            }
-            if let Some(e) = end {
-                validate_generic_def_type_args_in_expr(e, fn_signatures, errors);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                validate_generic_def_type_args_in_expr(coordinate, fn_signatures, errors);
             }
         }
         _ => {}
@@ -10408,12 +10477,20 @@ fn collect_proc_call_diags_from_expr(
         Expr::Index { index, .. } => {
             collect_proc_call_diags_from_expr(index, proc_api, generated_proc_call_timing, out)
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                collect_proc_call_diags_from_expr(start, proc_api, generated_proc_call_timing, out);
-            }
-            if let Some(end) = end {
-                collect_proc_call_diags_from_expr(end, proc_api, generated_proc_call_timing, out);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                collect_proc_call_diags_from_expr(
+                    coordinate,
+                    proc_api,
+                    generated_proc_call_timing,
+                    out,
+                );
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -10771,21 +10848,6 @@ fn mark_readonly_param_expr_uses_as_mutable(
 ) {
     match expr {
         Expr::UserCall { name, args, .. } => {
-            if name == UNSAFE_WRITE_FN {
-                if let Some(source_param) = args
-                    .first()
-                    .and_then(|arg| readonly_alias_source(&arg.expr, aliases))
-                {
-                    mutable_params.insert(source_param.to_owned());
-                }
-            } else if let Some((base, method)) = name.rsplit_once('.') {
-                if method == UNSAFE_WRITE_FN {
-                    if let Some(source_param) = aliases.get(base) {
-                        mutable_params.insert(source_param.clone());
-                    }
-                }
-            }
-
             if let Some(sig) = fn_signatures.get(name) {
                 let mut ignored = Vec::new();
                 let resolved = resolve_call_args_at(
@@ -10880,19 +10942,16 @@ fn mark_readonly_param_expr_uses_as_mutable(
                 mutable_params,
             );
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 mark_readonly_param_expr_uses_as_mutable(
-                    start,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-            if let Some(end) = end {
-                mark_readonly_param_expr_uses_as_mutable(
-                    end,
+                    coordinate,
                     aliases,
                     fn_signatures,
                     readonly_params,
@@ -10966,22 +11025,19 @@ fn mark_readonly_param_stmt_uses_as_mutable(
                     mutable_params,
                 );
             }
-            AssignTarget::Slice { base, start, end } => {
+            AssignTarget::Slice {
+                base,
+                selector,
+                channel,
+                start,
+                end,
+            } => {
                 if let Some(source_param) = aliases.get(base) {
                     mutable_params.insert(source_param.clone());
                 }
-                if let Some(start) = start {
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     mark_readonly_param_expr_uses_as_mutable(
-                        start,
-                        aliases,
-                        fn_signatures,
-                        readonly_params,
-                        mutable_params,
-                    );
-                }
-                if let Some(end) = end {
-                    mark_readonly_param_expr_uses_as_mutable(
-                        end,
+                        coordinate,
                         aliases,
                         fn_signatures,
                         readonly_params,
@@ -11209,6 +11265,9 @@ fn def_has_concrete_param_contract(
             Some(FnParamType::Buffer(buffer_ty)) => {
                 matches!(buffer_ty.elem, BufferElemType::Primitive(_))
             }
+            Some(FnParamType::BufferArray { buffer, .. }) => {
+                matches!(buffer.elem, BufferElemType::Primitive(_))
+            }
             Some(FnParamType::Array(Some(_))) => true,
             Some(FnParamType::SizedArray { elem: Some(_), .. }) => true,
             Some(FnParamType::ArrayGeneric(struct_name)) => {
@@ -11270,12 +11329,15 @@ fn rewrite_stmt_for_def_proc_block_guards(
             Expr::Index { index, .. } => {
                 collect_guards(index, proc_api, proc_block_active_symbols, guards)
             }
-            Expr::Slice { start, end, .. } => {
-                if let Some(start) = start {
-                    collect_guards(start, proc_api, proc_block_active_symbols, guards);
-                }
-                if let Some(end) = end {
-                    collect_guards(end, proc_api, proc_block_active_symbols, guards);
+            Expr::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    collect_guards(coordinate, proc_api, proc_block_active_symbols, guards);
                 }
             }
             Expr::ArrayCtor { spec, init, .. } => {
@@ -11612,20 +11674,16 @@ fn collect_typed_def_owner_proc_hook_params_from_expr(
                 out,
             );
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 collect_typed_def_owner_proc_hook_params_from_expr(
-                    start,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
-            if let Some(end) = end {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    end,
+                    coordinate,
                     def,
                     def_map,
                     known_requirements,
@@ -11978,19 +12036,16 @@ fn collect_sample_owner_proc_hook_instances_from_expr(
                 out,
             );
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 collect_sample_owner_proc_hook_instances_from_expr(
-                    start,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
-            if let Some(end) = end {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    end,
+                    coordinate,
                     def_map,
                     requirements,
                     global_proc_instances,
@@ -12405,12 +12460,15 @@ fn collect_called_typed_defs_in_expr(
         Expr::Index { index, .. } => {
             collect_called_typed_defs_in_expr(index, def_names, pending, seen_pending);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                collect_called_typed_defs_in_expr(start, def_names, pending, seen_pending);
-            }
-            if let Some(end) = end {
-                collect_called_typed_defs_in_expr(end, def_names, pending, seen_pending);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                collect_called_typed_defs_in_expr(coordinate, def_names, pending, seen_pending);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {

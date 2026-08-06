@@ -250,23 +250,16 @@ pub(super) fn qualify_expr_namespaced_symbols(
             context,
             None,
         ),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 qualify_expr_namespaced_symbols(
-                    start,
-                    current_ns,
-                    callable_symbols,
-                    callable_namespaces,
-                    nominal_symbols,
-                    nominal_namespaces,
-                    errors,
-                    context,
-                    None,
-                );
-            }
-            if let Some(end) = end {
-                qualify_expr_namespaced_symbols(
-                    end,
+                    coordinate,
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
@@ -400,23 +393,16 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                         None,
                     );
                 }
-                AssignTarget::Slice { start, end, .. } => {
-                    if let Some(start) = start {
+                AssignTarget::Slice {
+                    selector,
+                    channel,
+                    start,
+                    end,
+                    ..
+                } => {
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
                         qualify_expr_namespaced_symbols(
-                            start,
-                            current_ns,
-                            callable_symbols,
-                            callable_namespaces,
-                            nominal_symbols,
-                            nominal_namespaces,
-                            errors,
-                            context,
-                            None,
-                        );
-                    }
-                    if let Some(end) = end {
-                        qualify_expr_namespaced_symbols(
-                            end,
+                            coordinate,
                             current_ns,
                             callable_symbols,
                             callable_namespaces,

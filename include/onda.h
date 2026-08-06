@@ -11,6 +11,8 @@ extern "C" {
 typedef struct onda_program onda_program_t;
 typedef struct onda_instance onda_instance_t;
 typedef struct onda_source_manifest onda_source_manifest_t;
+typedef struct onda_project_image onda_project_image_t;
+typedef struct onda_project_materialization_plan onda_project_materialization_plan_t;
 
 /* Primitive element type identifiers used by metadata and buffer binding APIs. */
 enum {
@@ -58,6 +60,55 @@ typedef struct {
   int block_size;
 } onda_compile_options_t;
 
+typedef struct {
+  /* NUL-terminated opaque source identity. */
+  const char* path_utf8;
+  /* Exact UTF-8 source bytes; source_bytes determines the length.
+     May be NULL when source_bytes is zero. */
+  const char* source_utf8;
+  size_t source_bytes;
+} onda_source_graph_document_t;
+
+enum {
+  ONDA_SOURCE_REFERENCE_INCLUDE = 0,
+  ONDA_SOURCE_REFERENCE_IMPORT = 1
+};
+
+typedef struct {
+  const char* source_path_utf8;
+  int kind;
+  const char* specifier_utf8;
+  const char* target_path_utf8;
+} onda_source_graph_resolution_t;
+
+typedef struct {
+  int kind;
+  const char* specifier_utf8;
+  const char* replacement_utf8;
+} onda_source_rewrite_t;
+
+/* One logical buffer binding supplied while capturing a project image.
+   ondabuffer_bytes must contain one canonical .ondabuffer asset. */
+typedef struct {
+  const char* name_utf8;
+  const void* ondabuffer_bytes;
+  size_t ondabuffer_byte_count;
+} onda_project_buffer_asset_t;
+
+typedef struct {
+  const char* path_utf8;
+  const void* bytes;
+  size_t byte_count;
+} onda_project_file_t;
+
+typedef struct {
+  int element_type;
+  uint32_t frames;
+  uint32_t channels;
+  float sample_rate;
+  size_t sample_bytes;
+} onda_buffer_asset_info_t;
+
 typedef void* (*onda_alloc_fn)(void* context, size_t size, size_t align);
 typedef void (*onda_free_fn)(void* context, void* ptr, size_t size, size_t align);
 
@@ -93,10 +144,42 @@ onda_program_t* onda_compile_file(
   onda_source_manifest_t** out_sources,
   onda_diag_t* out_diag
 );
+/* Compiles the reachable portion of an exact in-memory source graph without
+   consulting the filesystem. Source paths are NUL-terminated opaque UTF-8
+   identities. Each non-stdlib import/include encountered while parsing must
+   have one matching resolution. Unreferenced sources and resolutions are
+   permitted and are not included in the returned manifest. */
+onda_program_t* onda_compile_source_graph(
+  const char* entry_path_utf8,
+  const onda_source_graph_document_t* sources,
+  size_t source_count,
+  const onda_source_graph_resolution_t* resolutions,
+  size_t resolution_count,
+  const onda_compile_options_t* options,
+  onda_source_manifest_t** out_sources,
+  onda_diag_t* out_diag
+);
+/* Rewrites parsed top-level non-stdlib include/import specifiers in one exact
+   UTF-8 source document. All such references in the source must have a
+   matching rewrite; built-in std imports are preserved. Returns the required
+   byte count, or -1 on failure. If out_utf8 is NULL or out_capacity is too
+   small, no bytes are copied. Output is exact UTF-8 and is not NUL-terminated. */
+int onda_rewrite_source_references(
+  const char* source_path_utf8,
+  const char* source_utf8,
+  size_t source_bytes,
+  const onda_source_rewrite_t* rewrites,
+  size_t rewrite_count,
+  char* out_utf8,
+  int out_capacity,
+  onda_diag_t* out_diag
+);
 /* Returns the number of contributing source files, or -1 for an invalid handle. */
 int onda_source_manifest_count(const onda_source_manifest_t* manifest);
-/* Returns one absolute canonical UTF-8 source path, or NULL for an invalid index/handle.
-   The pointer remains valid until onda_source_manifest_destroy. */
+/* Returns one NUL-terminated UTF-8 source identity, or NULL for an invalid
+   index/handle. onda_compile_file returns absolute canonical filesystem paths;
+   onda_compile_source_graph preserves the supplied opaque identities. The pointer
+   remains valid until onda_source_manifest_destroy. */
 const char* onda_source_manifest_path(
   const onda_source_manifest_t* manifest,
   int index
@@ -110,15 +193,237 @@ const char* onda_source_manifest_unresolved_path(
   const onda_source_manifest_t* manifest,
   int index
 );
-/* Destroys a source manifest returned by onda_compile_file. NULL is accepted. */
+/* Returns the number of resolved source documents with captured contents.
+   Document paths and contents remain valid until manifest destruction. */
+int onda_source_manifest_document_count(const onda_source_manifest_t* manifest);
+const char* onda_source_manifest_document_path(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+/* Returns a pointer to exact source bytes and writes their length to out_bytes,
+   or NULL for an invalid index/handle. out_bytes may be NULL. The contents need
+   not be NUL-terminated and remain valid until manifest destruction. */
+const char* onda_source_manifest_document_contents(
+  const onda_source_manifest_t* manifest,
+  int index,
+  size_t* out_bytes
+);
+/* Returns the successful non-stdlib import/include resolution count.
+   String results remain valid until manifest destruction. */
+int onda_source_manifest_resolution_count(const onda_source_manifest_t* manifest);
+const char* onda_source_manifest_resolution_source_path(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+int onda_source_manifest_resolution_kind(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+const char* onda_source_manifest_resolution_specifier(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+const char* onda_source_manifest_resolution_target_path(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+/* Returns unresolved non-stdlib references with their source identity,
+   directive kind, original specifier, and candidate target identities.
+   String results remain valid until manifest destruction. */
+int onda_source_manifest_unresolved_resolution_count(
+  const onda_source_manifest_t* manifest
+);
+const char* onda_source_manifest_unresolved_resolution_source_path(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+int onda_source_manifest_unresolved_resolution_kind(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+const char* onda_source_manifest_unresolved_resolution_specifier(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+int onda_source_manifest_unresolved_resolution_candidate_count(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+const char* onda_source_manifest_unresolved_resolution_candidate_path(
+  const onda_source_manifest_t* manifest,
+  int index,
+  int candidate_index
+);
+/* Destroys a source manifest returned by onda_compile_file or
+   onda_compile_source_graph. NULL is accepted. */
 void onda_source_manifest_destroy(onda_source_manifest_t* manifest);
-/* Destroys a program handle created by onda_compile or onda_compile_file.
+
+/* Canonical binary project format capabilities. */
+int onda_project_image_format_version(void);
+int onda_buffer_asset_format_version(void);
+/* Stable until process exit. */
+const char* onda_current_stdlib_digest(void);
+
+/* Encodes host-native primitive samples as one canonical .ondabuffer asset.
+   Returns the required byte count, or -1 on failure. Passing NULL output or
+   insufficient capacity performs a size query without copying. */
+int64_t onda_buffer_asset_encode(
+  int element_type,
+  uint32_t frames,
+  uint32_t channels,
+  float sample_rate,
+  const void* samples,
+  size_t sample_bytes,
+  void* out_bytes,
+  size_t out_capacity,
+  onda_diag_t* out_diag
+);
+/* Validates and decodes one canonical .ondabuffer asset into host-native samples.
+   out_info may be NULL. Return and output sizing follow onda_buffer_asset_encode. */
+int64_t onda_buffer_asset_decode(
+  const void* bytes,
+  size_t byte_count,
+  onda_buffer_asset_info_t* out_info,
+  void* out_samples,
+  size_t out_capacity,
+  onda_diag_t* out_diag
+);
+
+/* Captures an exact successful source manifest, relocates it below source_root,
+   and associates canonical typed buffer assets. The returned image owns all
+   source and asset bytes and does not consult the filesystem when replayed. */
+onda_project_image_t* onda_project_image_capture(
+  const char* entry_path_utf8,
+  const char* source_root_utf8,
+  const onda_source_manifest_t* manifest,
+  const onda_project_buffer_asset_t* buffers,
+  size_t buffer_count,
+  onda_diag_t* out_diag
+);
+onda_project_image_t* onda_project_image_deserialize(
+  const void* bytes,
+  size_t byte_count,
+  onda_diag_t* out_diag
+);
+/* Loads an editable project from a complete set of relative files, validating
+   and decoding every referenced .ondabuffer, WAV, and inline buffer into
+   image-owned typed storage. Pass the selected .ondaproject path when the set
+   contains multiple projects, or NULL to require an unambiguous manifest. */
+onda_project_image_t* onda_project_image_load_files(
+  const onda_project_file_t* files,
+  size_t file_count,
+  const char* project_file_path_utf8,
+  onda_diag_t* out_diag
+);
+int64_t onda_project_image_serialize(
+  const onda_project_image_t* image,
+  void* out_bytes,
+  size_t out_capacity,
+  onda_diag_t* out_diag
+);
+/* Pointer remains valid until image destruction. */
+const char* onda_project_image_content_digest(const onda_project_image_t* image);
+/* Read-only inspection of the exact portable source graph. Returned strings
+   remain valid until image destruction. Document contents are exact UTF-8,
+   need not be NUL-terminated, and write their length to out_bytes when non-NULL. */
+const char* onda_project_image_entry(const onda_project_image_t* image);
+const char* onda_project_image_stdlib_digest(const onda_project_image_t* image);
+int onda_project_image_document_count(const onda_project_image_t* image);
+const char* onda_project_image_document_path(
+  const onda_project_image_t* image,
+  int index
+);
+const char* onda_project_image_document_contents(
+  const onda_project_image_t* image,
+  int index,
+  size_t* out_bytes
+);
+int onda_project_image_resolution_count(const onda_project_image_t* image);
+const char* onda_project_image_resolution_source(
+  const onda_project_image_t* image,
+  int index
+);
+int onda_project_image_resolution_kind(
+  const onda_project_image_t* image,
+  int index
+);
+const char* onda_project_image_resolution_specifier(
+  const onda_project_image_t* image,
+  int index
+);
+const char* onda_project_image_resolution_target(
+  const onda_project_image_t* image,
+  int index
+);
+/* Read-only logical buffer bindings and canonical asset metadata. Buffer names
+   and asset IDs remain valid until image destruction. Invalid indices return
+   NULL, -1, or NaN as appropriate. */
+int onda_project_image_buffer_count(const onda_project_image_t* image);
+const char* onda_project_image_buffer_name(
+  const onda_project_image_t* image,
+  int index
+);
+const char* onda_project_image_buffer_asset_id(
+  const onda_project_image_t* image,
+  int index
+);
+int onda_project_image_buffer_element_type(
+  const onda_project_image_t* image,
+  int index
+);
+int64_t onda_project_image_buffer_frames(
+  const onda_project_image_t* image,
+  int index
+);
+int64_t onda_project_image_buffer_channels(
+  const onda_project_image_t* image,
+  int index
+);
+float onda_project_image_buffer_sample_rate(
+  const onda_project_image_t* image,
+  int index
+);
+/* Compiles the image and retains its decoded buffer assets as immutable program
+   defaults. Compilation fails if reachable Onda code may write a project-bound
+   buffer. Instances automatically use these defaults until the host replaces
+   or unbinds them. */
+onda_program_t* onda_project_image_compile(
+  const onda_project_image_t* image,
+  const onda_compile_options_t* options,
+  onda_diag_t* out_diag
+);
+onda_project_materialization_plan_t* onda_project_image_materialize(
+  const onda_project_image_t* image,
+  onda_diag_t* out_diag
+);
+int onda_project_materialization_file_count(
+  const onda_project_materialization_plan_t* plan
+);
+/* Pointer remains valid until plan destruction. */
+const char* onda_project_materialization_file_path(
+  const onda_project_materialization_plan_t* plan,
+  int index
+);
+int64_t onda_project_materialization_file_bytes(
+  const onda_project_materialization_plan_t* plan,
+  int index,
+  void* out_bytes,
+  size_t out_capacity
+);
+void onda_project_materialization_destroy(onda_project_materialization_plan_t* plan);
+void onda_project_image_destroy(onda_project_image_t* image);
+
+/* Destroys a program handle created by onda_compile, onda_compile_file,
+   onda_compile_source_graph, or onda_project_image_compile.
    Programs are immutable and may be queried or used to create instances concurrently.
    Destruction is not realtime-safe. */
 void onda_program_destroy(onda_program_t* program);
 
 /* Creates a runtime instance for a compiled program, or NULL on failure.
-   Uses compile-time sample_rate and block_size captured in the program handle. */
+   Uses compile-time sample_rate and block_size captured in the program handle.
+   Programs compiled from project images automatically bind their shared,
+   immutable project buffer defaults. The instance retains the compiled program,
+   so the program and source project-image handles may be destroyed afterward. */
 onda_instance_t* onda_instance_create(
   const onda_program_t* program,
   int in_channels,
@@ -203,9 +508,10 @@ int onda_bind_output(
 /* Binds one buffer entry; elem_type must be an ONDA_PRIMITIVE_* value.
    Zero-copy contract: runtime stores ptr and accesses it directly (no internal copy).
    sample_rate == 0 unbinds the slot regardless of ptr and shape. Null + 0 frames + 0 channels also
-   unbinds the slot, regardless of sample_rate. Otherwise, ptr must be non-null and remain valid,
-   correctly sized for positive frame/channel counts, and at a stable address until this slot is
-   rebound/unbound or the instance is destroyed.
+   unbinds the slot, regardless of sample_rate. An unbound slot remains processable through neutral
+   one-frame storage: reads return zero and writes are discarded. Otherwise, ptr must be non-null and
+   remain valid, correctly sized for positive frame/channel counts, and at a stable address until
+   this slot is rebound/unbound or the instance is destroyed.
    ptr memory must be writable during processing and naturally aligned for elem_type;
    misaligned bindings are rejected.
    Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
@@ -217,6 +523,14 @@ int onda_bind_buffer(
   int channels,
   float sample_rate,
   int elem_type
+);
+
+/* Restores the immutable project asset associated with a buffer slot. Returns
+   0 on success, -1 for an invalid instance/index, or -2 when the program was
+   not compiled from a project image or the slot has no project default. */
+int onda_reset_buffer_to_project_default(
+  onda_instance_t* instance,
+  int index
 );
 
 enum {
@@ -275,15 +589,16 @@ int onda_control_output_read_bytes(
   void* out_bytes,
   int out_capacity
 );
-/* Validates all required domains (buffers, inputs, outputs); returns 0 on success. */
+/* Prepares current buffer descriptors, including neutral unbound slots, and validates required
+   input/output bindings; returns 0 on success. */
 int onda_validate_bindings(onda_instance_t* instance);
 /* Validates input bindings only; returns 0 on success. */
 int onda_validate_inputs(onda_instance_t* instance);
 /* Validates output bindings only; returns 0 on success. */
 int onda_validate_outputs(onda_instance_t* instance);
-/* Validates buffer bindings only; returns 0 on success. */
+/* Prepares buffer descriptors, including neutral unbound slots; returns 0 on success. */
 int onda_validate_buffers(onda_instance_t* instance);
-/* Validates all bindings and refreshes proc-slot buffer refs before unchecked processing. */
+/* Validates all bindings before unchecked processing. */
 int onda_prepare_unchecked_process(onda_instance_t* instance);
 /* Processes a full logical block without revalidation (unsafe if bindings are stale);
    returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
@@ -306,8 +621,10 @@ int onda_output_count(const onda_program_t* program);
 int onda_control_output_count(const onda_program_t* program);
 /* Returns declared parameter entry count, or -1 on invalid program handle. */
 int onda_param_count(const onda_program_t* program);
-/* Returns declared buffer entry count, or -1 on invalid program handle. */
+/* Returns physical bindable buffer-slot count, or -1 on invalid program handle. */
 int onda_buffer_count(const onda_program_t* program);
+/* Returns declared buffer-array group count, or -1 on invalid program handle. */
+int onda_buffer_array_count(const onda_program_t* program);
 /* Returns declared event entry count, or -1 on invalid program handle. */
 int onda_event_count(const onda_program_t* program);
 /* Returns declared state entry count, or -1 on invalid program handle. */
@@ -321,8 +638,12 @@ const char* onda_output_name(const onda_program_t* program, int index);
 const char* onda_control_output_name(const onda_program_t* program, int index);
 /* Returns parameter name by index, or NULL if index/program is invalid. */
 const char* onda_param_name(const onda_program_t* program, int index);
-/* Returns buffer name by index, or NULL if index/program is invalid. */
+/* Returns physical buffer-slot name by index, or NULL if index/program is invalid. */
 const char* onda_buffer_name(const onda_program_t* program, int index);
+/* Returns buffer-array group metadata, or NULL/-1 if index/program is invalid. */
+const char* onda_buffer_array_name(const onda_program_t* program, int index);
+int onda_buffer_array_first(const onda_program_t* program, int index);
+int onda_buffer_array_len(const onda_program_t* program, int index);
 /* Returns event name by index, or NULL if index/program is invalid. */
 const char* onda_event_name(const onda_program_t* program, int index);
 /* Returns state entry name by index, or NULL if index/program is invalid. */
@@ -353,7 +674,7 @@ const char* onda_output_type(const onda_program_t* program, int index);
 const char* onda_control_output_type(const onda_program_t* program, int index);
 /* Returns parameter type text, or NULL if invalid. */
 const char* onda_param_type(const onda_program_t* program, int index);
-/* Returns buffer type text (for example "buffer[f32[2]]"), or NULL if invalid. */
+/* Returns buffer type text (for example "buffer<f32[2]>"), or NULL if invalid. */
 const char* onda_buffer_type(const onda_program_t* program, int index);
 /* Returns state entry type text, or NULL if invalid. */
 const char* onda_state_type(const onda_program_t* program, int index);
@@ -400,9 +721,9 @@ int onda_buffer_elem_type_bytes(const onda_program_t* program, int index);
 int onda_buffer_channels_kind(const onda_program_t* program, int index);
 /* Returns static channel count (mono=1), or -1 for dynamic/invalid. */
 int onda_buffer_channels_static(const onda_program_t* program, int index);
-/* Returns 1 for a declared read-write buffer, 0 for a declared read-only buffer,
-   or -1 if program/index is invalid. This reports host-facing access capability,
-   not whether the current program body contains a reachable write. */
+/* Returns 1 if reachable program code may write the physical buffer slot,
+   including when a collection selector cannot be resolved statically. Returns
+   0 only when no reachable write is possible, or -1 for an invalid program/index. */
 int onda_buffer_may_write(const onda_program_t* program, int index);
 
 /* Returns input element primitive type id, or -1 if invalid. */

@@ -90,9 +90,29 @@ After construction, the normal f32 render callback reuses cached Wasm-memory vie
 host-side allocation or memory growth. Full-block f32 inputs and outputs use typed-array bulk copies;
 segmented callbacks and other ABI scalar widths use preallocated typed views with conversion loops
 (i64 input conversion necessarily creates JavaScript `BigInt` values). External buffers are copied
-into Wasm with typed-array bulk operations during construction. Every declared external buffer must
-be supplied with nonempty data; the adapter rejects missing or empty bindings before creating the
-rendering node.
+into Wasm with typed-array bulk operations during construction. Missing or `null` bindings install
+neutral one-frame descriptors: reads return zero, writes are discarded, exact channel counts are
+retained, and dynamic-channel buffers report one channel. Supplied bindings must still contain
+nonempty, correctly shaped data.
+
+Fixed buffer arrays may be supplied under their logical group name. Each slot is independent:
+
+```js
+const processor = await createOndaAudioProcessor(context, artifact, {
+  buffers: {
+    impulse: { data: impulseSamples, channels: 1, sampleRate: 48_000 },
+    bank: [
+      null,
+      { data: secondSamples, channels: 1, sampleRate: 48_000 },
+      // Remaining slots are neutral.
+    ],
+  },
+});
+```
+
+Hosts may instead pass a flat array in physical descriptor order or key individual physical names
+such as `"bank[1]"`. Logical group metadata determines the contiguous slot range; no sample data is
+copied when Onda selects a slot while processing.
 
 Artifact descriptors and module exports are validated by the shared, compiler-free
 `@onda-lang/processor-abi` package before anything reaches the rendering thread.

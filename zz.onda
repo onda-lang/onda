@@ -1,0 +1,17 @@
+
+buffers:
+  src: f32
+  bus: f32[2]
+  piano: f32 {88}
+  stereo_layers: f32[2] {4}
+
+sample:
+  mono0 = src[0]
+  left0 = bus[0, 0]
+  n = src.len()
+  c = bus.chans()
+  sr = src.samplerate()
+  sample_count = piano.len()
+  middle_c_frames = piano[39].len()
+  middle_c = piano[39][i]
+  right = stereo_layers[layer][1, i]

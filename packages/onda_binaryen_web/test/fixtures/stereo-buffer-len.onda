@@ -4,7 +4,7 @@ outs:
 buffers:
   bus: f32[2]
 
-def inspect(buf: buffer[f32[2]]):
+def inspect(buf: buffer<f32[2]>):
   return f32(buf.len())
 
 sample:

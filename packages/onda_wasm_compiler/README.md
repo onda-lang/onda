@@ -25,13 +25,13 @@ Release builds post-optimize the Rust frontend Wasm with the package's pinned Bi
 `dist/build.json`, and fails if the pass does not reduce the shipped module. Generated DSP modules
 are already optimized independently by the runtime Binaryen O4 pipeline.
 
-## Projects
+## Source workspaces
 
 Project compilation resolves imports and includes entirely from the supplied source map and the
 embedded standard library:
 
 ```js
-const { artifact, sourceFiles } = await compiler.compileProject({
+const { artifact, sourceFiles } = await compiler.compileWorkspace({
   entry: "main.onda",
   sources: {
     "main.onda": mainSource,
@@ -52,6 +52,55 @@ contains every project source resolved before compilation stopped, allowing host
 watch registrations while the project is temporarily invalid. `unresolvedSourceFiles` contains
 referenced non-standard-library candidates which were not present, allowing hosts to watch for their
 creation without treating them as contributing compilation inputs.
+
+## Portable project images
+
+Successful workspace compilation also returns `sourceGraph`, the exact documents and resolved
+import/include edges used for that build. Combine it with canonical typed buffers to create a
+portable project image:
+
+```js
+const compiled = await compiler.compileWorkspace(workspace, options);
+const sample = await compiler.encodeBufferAsset({
+  element: "f32",
+  frames: samples.length,
+  channels: 1,
+  sampleRate: 48_000,
+  data: new Float32Array(samples),
+});
+const image = await compiler.createProjectImage(
+  compiled.sourceGraph,
+  new Map([["sample", sample]]),
+);
+
+const replayed = await compiler.compileProjectImage(image.bytes, options);
+const exported = await compiler.materializeProjectImage(
+  image.bytes,
+  new Map([["sample", "recording.wav"]]),
+);
+
+// WAV and .ondabuffer inputs share the same canonical Rust decoder.
+const decoded = await compiler.decodeBufferFile(fileBytes, "sample.wav");
+```
+
+Project-image buffer maps use physical slot names. A scalar declaration uses its source name;
+fixed arrays use names such as `bank[0]` and `bank[1]`. Omitted slots remain unbound and neutral at
+runtime, so an image contains only the assets the project actually supplies.
+
+`materializeProjectImage` emits Onda's canonical publication layout: `code/main.onda`, meaningful
+source subdirectories below `code/`, and typed assets below `assets/`.
+`loadProjectFiles(files, projectFilePath?)` performs the reverse operation from a complete map of
+extracted project-relative files. Pass the `.ondaproject` path when the map contains multiple
+projects; manifests may occur in any directory and resolve their paths relative to that directory.
+Omitting it requires an unambiguous manifest. Loading rejects a reachable source graph
+that cannot be loaded and parsed. Portable project exports must be created from a successful
+compilation, as in the example above. `inspectProjectImage` validates an image and returns its
+source graph, logical buffer bindings, asset metadata, and content digest. `projectCapabilities`
+reports the immutable image, buffer-container, and embedded-standard-library versions. The worker
+client exposes the same methods and transfers binary payloads rather than cloning them.
+
+All canonical project and `.ondabuffer` serialization is implemented by the same Rust `onda_project`
+crate used by the native C API. JavaScript only adapts maps, typed arrays, and worker messages.
 
 ## Browser workers
 
@@ -106,7 +155,7 @@ await compiler.sendLspMessage({
 Open every virtual project file with `didOpen`; imports and includes resolve from those overlays and
 the embedded standard library. Diagnostics, semantic tokens, completion, hover, definitions, and
 document symbols use the native server implementation. The browser transport does not run MIR or a
-backend until the host explicitly calls `compileSource` or `compileProject`.
+backend until the host explicitly calls `compileSource` or `compileWorkspace`.
 
 ## CLI
 

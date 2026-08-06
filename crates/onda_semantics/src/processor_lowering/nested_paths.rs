@@ -57,7 +57,12 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
             rewrite_nested_field_paths_in_expr(index, nested_fields);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(fields) = nested_fields.get(root) {
@@ -66,11 +71,8 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
                     }
                 }
             }
-            if let Some(start) = start {
-                rewrite_nested_field_paths_in_expr(start, nested_fields);
-            }
-            if let Some(end) = end {
-                rewrite_nested_field_paths_in_expr(end, nested_fields);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_nested_field_paths_in_expr(coordinate, nested_fields);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -142,7 +144,13 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
                     }
                     rewrite_nested_field_paths_in_expr(index, nested_fields);
                 }
-                AssignTarget::Slice { base, start, end } => {
+                AssignTarget::Slice {
+                    base,
+                    selector,
+                    channel,
+                    start,
+                    end,
+                } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(fields) = nested_fields.get(root) {
                             if fields.contains(field) {
@@ -150,11 +158,8 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
                             }
                         }
                     }
-                    if let Some(start) = start {
-                        rewrite_nested_field_paths_in_expr(start, nested_fields);
-                    }
-                    if let Some(end) = end {
-                        rewrite_nested_field_paths_in_expr(end, nested_fields);
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        rewrite_nested_field_paths_in_expr(coordinate, nested_fields);
                     }
                 }
                 AssignTarget::Tuple(_) => {}
@@ -226,7 +231,12 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
             remap_nested_symbols_in_expr(index, remap);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(mapped) = remap.get(root) {
@@ -235,11 +245,8 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
             } else if let Some(mapped) = remap.get(base) {
                 *base = mapped.clone();
             }
-            if let Some(start) = start {
-                remap_nested_symbols_in_expr(start, remap);
-            }
-            if let Some(end) = end {
-                remap_nested_symbols_in_expr(end, remap);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                remap_nested_symbols_in_expr(coordinate, remap);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -313,7 +320,13 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
                     }
                     remap_nested_symbols_in_expr(index, remap);
                 }
-                AssignTarget::Slice { base, start, end } => {
+                AssignTarget::Slice {
+                    base,
+                    selector,
+                    channel,
+                    start,
+                    end,
+                } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(mapped) = remap.get(root) {
                             *base = format!("{mapped}.{field}");
@@ -321,11 +334,8 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
                     } else if let Some(mapped) = remap.get(base) {
                         *base = mapped.clone();
                     }
-                    if let Some(start) = start {
-                        remap_nested_symbols_in_expr(start, remap);
-                    }
-                    if let Some(end) = end {
-                        remap_nested_symbols_in_expr(end, remap);
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        remap_nested_symbols_in_expr(coordinate, remap);
                     }
                 }
                 AssignTarget::Tuple(_) => {}
@@ -397,18 +407,20 @@ pub(super) fn prefix_self_fields_in_expr(
             prefix_self_fields_in_expr(index, prefix, nested_field_names);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if root == "self" && nested_field_names.contains(field) {
                     *base = format!("self.{}", nested_field_name(prefix, field));
                 }
             }
-            if let Some(start) = start {
-                prefix_self_fields_in_expr(start, prefix, nested_field_names);
-            }
-            if let Some(end) = end {
-                prefix_self_fields_in_expr(end, prefix, nested_field_names);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                prefix_self_fields_in_expr(coordinate, prefix, nested_field_names);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -473,17 +485,20 @@ pub(super) fn prefix_self_fields_in_stmt(
                     }
                     prefix_self_fields_in_expr(index, prefix, nested_field_names);
                 }
-                AssignTarget::Slice { base, start, end } => {
+                AssignTarget::Slice {
+                    base,
+                    selector,
+                    channel,
+                    start,
+                    end,
+                } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if root == "self" && nested_field_names.contains(field) {
                             *base = format!("self.{}", nested_field_name(prefix, field));
                         }
                     }
-                    if let Some(start) = start {
-                        prefix_self_fields_in_expr(start, prefix, nested_field_names);
-                    }
-                    if let Some(end) = end {
-                        prefix_self_fields_in_expr(end, prefix, nested_field_names);
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        prefix_self_fields_in_expr(coordinate, prefix, nested_field_names);
                     }
                 }
                 AssignTarget::Tuple(_) => {}

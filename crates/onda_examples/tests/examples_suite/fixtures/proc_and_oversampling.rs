@@ -374,9 +374,9 @@ sample {
 "#;
 
 const PROC_BUFFER_MONO_EXAMPLE: &str = r#"
-buffers { buf1: buffer[f32] }
+buffers { buf1: buffer<f32> }
 proc ReadBufProc {
-  buffers { line: buffer[f32] }
+  buffers { line: buffer<f32> }
   outs { out1 }
   init {
     idx = 0.0
@@ -456,9 +456,9 @@ sample {
 "#;
 
 const PROC_BUFFER_MISSING_CTOR_ARG_ERROR_EXAMPLE: &str = r#"
-buffers { buf1: buffer[f32] }
+buffers { buf1: buffer<f32> }
 proc ReadBufProc {
-  buffers { line: buffer[f32] }
+  buffers { line: buffer<f32> }
   outs { out1 }
   sample {
     out1 = line[0]
@@ -602,60 +602,6 @@ proc ClampReadProc {
 outs { out1 }
 init {
   p = ClampReadProc()
-}
-sample {
-  out1 = p([0.25, 0.75])
-}
-"#;
-
-const PROC_ARRAY_DYNAMIC_UNSAFE_READ_EXAMPLE: &str = r#"
-proc UnsafeReadProc {
-  ins { in1: f32[2] }
-  outs { out1 }
-  sample {
-    idx: i32 = 1
-    out1 = unsafe_read(in1, idx)
-  }
-}
-outs { out1 }
-init {
-  p = UnsafeReadProc()
-}
-sample {
-  out1 = p([0.25, 0.75])
-}
-"#;
-
-const PROC_ARRAY_DYNAMIC_UNSAFE_WRITE_EXAMPLE: &str = r#"
-proc UnsafeWriteProc {
-  outs { out1: f32[2] }
-  sample {
-    idx: i32 = 1
-    unsafe_write(out1, idx, 2.0)
-  }
-}
-outs { out1 }
-init {
-  p = UnsafeWriteProc()
-}
-sample {
-  p()
-  out1 = p.out2
-}
-"#;
-
-const PROC_ARRAY_DYNAMIC_UNSAFE_OOB_COMPILES_EXAMPLE: &str = r#"
-proc UnsafeOobProc {
-  ins { in1: f32[2] }
-  outs { out1 }
-  sample {
-    idx: i32 = 99
-    out1 = unsafe_read(in1, idx)
-  }
-}
-outs { out1 }
-init {
-  p = UnsafeOobProc()
 }
 sample {
   out1 = p([0.25, 0.75])
@@ -1226,9 +1172,9 @@ sample {
 "#;
 
 const PROC_DEEP_NESTED_BUFFER_BIND_EXAMPLE: &str = r#"
-buffers { buf1: buffer[f32] }
+buffers { buf1: buffer<f32> }
 proc InnerBuf {
-  buffers { line: buffer[f32] }
+  buffers { line: buffer<f32> }
   outs { out1 }
   init {
     idx: i32 = 0
@@ -1239,7 +1185,7 @@ proc InnerBuf {
   }
 }
 proc MidBuf {
-  buffers { line: buffer[f32] }
+  buffers { line: buffer<f32> }
   outs { out1 }
   init {
     inner = InnerBuf(line = line)
@@ -1249,7 +1195,7 @@ proc MidBuf {
   }
 }
 proc OuterBuf {
-  buffers { line: buffer[f32] }
+  buffers { line: buffer<f32> }
   outs { out1 }
   init {
     mid = MidBuf(line = line)
@@ -1598,4 +1544,3 @@ outs { out1 }
 init { c = Counter() }
 sample { out1 = c() }
 "#;
-

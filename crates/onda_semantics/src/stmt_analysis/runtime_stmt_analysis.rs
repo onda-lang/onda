@@ -347,11 +347,12 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
     runtime_known_scalars: HashSet<String>,
     runtime_local_aliases: LocalAliasTypes,
     runtime_local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    runtime_local_buffer_aliases: LocalBufferAliases,
     runtime_forbidden_assign_names: &HashSet<String>,
     runtime_forbidden_assign_array_names: &HashSet<String>,
     state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> LocalBufferAliases {
     let ctx = build_runtime_stmt_analysis_ctx(
         common,
         registration_mode,
@@ -374,6 +375,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         runtime_local_aliases,
         runtime_local_array_aliases,
     );
+    state.local_buffer_aliases = runtime_local_buffer_aliases;
     analyze_runtime_stmts(
         stmts,
         runtime_locals,
@@ -382,6 +384,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         &mut state,
         errors,
     );
+    state.local_buffer_aliases
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -551,6 +554,7 @@ fn analyze_runtime_scope<'a>(
             ctx.registration_param_names,
             ctx.common.struct_defs,
             ctx.registration_mode,
+            &state.local_buffer_aliases,
         );
     }
     state.known_scalars.extend(state_scalars.keys().cloned());
@@ -584,7 +588,10 @@ fn analyze_runtime_stmt_inner(
     errors: &mut Vec<Diagnostic>,
 ) {
     let common = ctx.common;
-    let declared_symbols = ctx.declared_symbols;
+    let buffer_alias_snapshot = state.local_buffer_aliases.clone();
+    let visible_declared_symbols =
+        with_local_buffer_aliases(ctx.declared_symbols, &buffer_alias_snapshot);
+    let declared_symbols = visible_declared_symbols.as_ref();
     let state_arrays = ctx.state_arrays;
     let state_array_struct_roots = ctx.state_array_struct_roots;
     let nested_proc_instances = ctx.nested_proc_instances;
@@ -652,6 +659,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.local_buffer_aliases,
                     &mut state.tuple_vars,
                     locals,
                     state_scalars,
@@ -726,6 +734,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_aliases,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
+                    &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
                 analyze_runtime_scope(
@@ -743,6 +752,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_aliases,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
+                    &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
                 analyze_runtime_scope(
@@ -760,6 +770,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.local_buffer_aliases,
                     &mut state.tuple_vars,
                     then_state,
                     else_state,
@@ -803,6 +814,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_aliases,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
+                    &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
                 analyze_runtime_scope(
@@ -820,6 +832,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.local_buffer_aliases,
                     &mut state.tuple_vars,
                     loop_state,
                 );
@@ -837,6 +850,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_aliases,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
+                    &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
                 analyze_runtime_scope(
@@ -854,6 +868,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.local_buffer_aliases,
                     &mut state.tuple_vars,
                     loop_state,
                 );
@@ -876,6 +891,7 @@ fn analyze_assign_sample(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    local_buffer_aliases: &mut LocalBufferAliases,
     tuple_vars: &mut HashMap<String, usize>,
     locals: &HashSet<String>,
     state_scalars: &HashMap<String, PrimitiveType>,
@@ -1145,7 +1161,13 @@ fn analyze_assign_sample(
                 .unwrap_or(PrimitiveType::F32);
             require_expr_assignable_type(expr, expr_ty, expected_ty, "array/buffer write", errors);
         }
-        AssignTarget::Slice { base, start, end } => {
+        AssignTarget::Slice {
+            base,
+            selector,
+            channel,
+            start,
+            end,
+        } => {
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
@@ -1163,11 +1185,8 @@ fn analyze_assign_sample(
             if let Some(name) = io_surface_name(base, scope_expr_env!()) {
                 if !scope_expr_env!().io_surface_access_allowed {
                     push_io_surface_scope_error(errors, target_loc, name);
-                    if let Some(start) = start {
-                        validate_expr(start, scope_expr_env!(), errors);
-                    }
-                    if let Some(end) = end {
-                        validate_expr(end, scope_expr_env!(), errors);
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        validate_expr(coordinate, scope_expr_env!(), errors);
                     }
                     validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                     return;
@@ -1178,11 +1197,8 @@ fn analyze_assign_sample(
                     "cannot assign to output array symbol '{base}' in {}",
                     runtime_scope_label(scope)
                 ));
-                if let Some(start) = start {
-                    validate_expr(start, scope_expr_env!(), errors);
-                }
-                if let Some(end) = end {
-                    validate_expr(end, scope_expr_env!(), errors);
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    validate_expr(coordinate, scope_expr_env!(), errors);
                 }
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                 return;
@@ -1215,8 +1231,8 @@ fn analyze_assign_sample(
             }
             let Some(target_info) = infer_runtime_slice_alias_info(
                 base,
-                start.as_ref(),
-                end.as_ref(),
+                start.as_deref(),
+                end.as_deref(),
                 declared_symbols,
                 state_arrays,
                 local_array_aliases,
@@ -1342,6 +1358,68 @@ fn analyze_assign_sample(
                     runtime_scope_label(scope)
                 ));
                 validate_expr(expr, scope_expr_env!(), errors);
+                return;
+            }
+            if local_buffer_aliases.contains_key(name) {
+                target_error!(format!(
+                    "buffer-reference alias '{name}' is immutable and cannot be rebound"
+                ));
+                return;
+            }
+            if let Some(alias) = buffer_reference_expr_info(expr, declared_symbols) {
+                if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
+                    target_error!(format!(
+                        "typed declaration for '{name}' is not supported for buffer-reference aliases"
+                    ));
+                    return;
+                }
+                if split_field_path(name, errors).is_some() {
+                    target_error!("buffer-reference alias target must be a plain variable name");
+                    return;
+                }
+                if known_scalars.contains(name)
+                    || local_aliases.contains_key(name)
+                    || local_array_aliases.contains_key(name)
+                    || state_scalars.contains_key(name)
+                    || state_arrays.contains_key(name)
+                    || state_array_struct_roots.contains_key(name)
+                    || struct_instances.contains_key(name)
+                    || input_names.contains(name)
+                    || output_names.contains(name)
+                    || param_names.contains(name)
+                    || declared_symbols.contains_key(name)
+                {
+                    target_error!(format!(
+                        "buffer-reference alias declaration for '{name}' conflicts with existing symbol"
+                    ));
+                    return;
+                }
+                if let Expr::Index { index, .. } = expr {
+                    validate_expr(index, scope_expr_env!(), errors);
+                    let index_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                        index,
+                        state_scalars,
+                        declared_symbols,
+                        None,
+                        local_aliases,
+                        local_array_aliases,
+                        locals,
+                        input_names,
+                        output_names,
+                        param_names,
+                        struct_instances,
+                        struct_defs,
+                        proc_array_roots,
+                        errors,
+                    );
+                    require_expr_numeric_type(
+                        index,
+                        index_ty,
+                        "buffer collection selector",
+                        errors,
+                    );
+                }
+                local_buffer_aliases.insert(name.clone(), alias);
                 return;
             }
             if let Expr::ArrayCtor { spec, init, .. } = expr {
@@ -1548,18 +1626,20 @@ fn analyze_assign_sample(
                 return;
             }
             if let Expr::Slice {
-                base, start, end, ..
+                base,
+                selector,
+                channel,
+                start,
+                end,
+                ..
             } = expr
             {
                 if let Some(name) = dynamic_param_surface_name(base, scope_expr_env!()) {
                     target_error!(format!(
                         "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
                     ),);
-                    if let Some(start) = start {
-                        validate_expr(start, scope_expr_env!(), errors);
-                    }
-                    if let Some(end) = end {
-                        validate_expr(end, scope_expr_env!(), errors);
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        validate_expr(coordinate, scope_expr_env!(), errors);
                     }
                     return;
                 }

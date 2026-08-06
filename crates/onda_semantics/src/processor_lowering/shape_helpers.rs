@@ -81,19 +81,16 @@ fn collect_proc_operator_helper_diags_from_expr(
             proc_api,
             out,
         ),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 collect_proc_operator_helper_diags_from_expr(
-                    start,
-                    owner_proc,
-                    nested_instances,
-                    proc_api,
-                    out,
-                );
-            }
-            if let Some(end) = end {
-                collect_proc_operator_helper_diags_from_expr(
-                    end,
+                    coordinate,
                     owner_proc,
                     nested_instances,
                     proc_api,
@@ -388,21 +385,16 @@ fn collect_non_sample_proc_operator_diags_from_target(
             aliases,
             out,
         ),
-        AssignTarget::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 collect_non_sample_proc_operator_diags_from_expr(
-                    start,
-                    owner_proc,
-                    nested_instances,
-                    proc_array_slots,
-                    proc_api,
-                    aliases,
-                    out,
-                );
-            }
-            if let Some(end) = end {
-                collect_non_sample_proc_operator_diags_from_expr(
-                    end,
+                    coordinate,
                     owner_proc,
                     nested_instances,
                     proc_array_slots,
@@ -665,12 +657,15 @@ fn seed_called_proc_local_defs_from_expr(
         Expr::Index { index, .. } => {
             seed_called_proc_local_defs_from_expr(index, def_names, pending, seen_pending);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                seed_called_proc_local_defs_from_expr(start, def_names, pending, seen_pending);
-            }
-            if let Some(end) = end {
-                seed_called_proc_local_defs_from_expr(end, def_names, pending, seen_pending);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                seed_called_proc_local_defs_from_expr(coordinate, def_names, pending, seen_pending);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -717,12 +712,15 @@ fn seed_called_proc_local_defs_from_target(
         AssignTarget::Index { index, .. } => {
             seed_called_proc_local_defs_from_expr(index, def_names, pending, seen_pending);
         }
-        AssignTarget::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                seed_called_proc_local_defs_from_expr(start, def_names, pending, seen_pending);
-            }
-            if let Some(end) = end {
-                seed_called_proc_local_defs_from_expr(end, def_names, pending, seen_pending);
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                seed_called_proc_local_defs_from_expr(coordinate, def_names, pending, seen_pending);
             }
         }
     }
@@ -1705,6 +1703,7 @@ fn hook_param_may_alias(
         Some(
             FnParamType::Struct(_)
             | FnParamType::Buffer(_)
+            | FnParamType::BufferArray { .. }
             | FnParamType::Array(_)
             | FnParamType::ArrayGeneric(_)
             | FnParamType::SizedArray { .. }
@@ -1935,6 +1934,8 @@ fn validate_hook_safe_expr(
         }
         Expr::Slice {
             base,
+            selector,
+            channel,
             start,
             end,
             loc,
@@ -1942,11 +1943,8 @@ fn validate_hook_safe_expr(
             if let Some(place) = hook_dynamic_param_surface_place(base, ctx, frame) {
                 reject_hook_dynamic_param_surface_use(&place, (*loc).into(), ctx, errors);
             }
-            if let Some(start) = start {
-                validate_hook_safe_expr(start, ctx, frame, visiting, validated, errors);
-            }
-            if let Some(end) = end {
-                validate_hook_safe_expr(end, ctx, frame, visiting, validated, errors);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                validate_hook_safe_expr(coordinate, ctx, frame, visiting, validated, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -2070,12 +2068,17 @@ fn validate_hook_safe_stmts(
                     AssignTarget::Index { index, .. } => {
                         validate_hook_safe_expr(index, ctx, frame, visiting, validated, errors);
                     }
-                    AssignTarget::Slice { start, end, .. } => {
-                        if let Some(start) = start {
-                            validate_hook_safe_expr(start, ctx, frame, visiting, validated, errors);
-                        }
-                        if let Some(end) = end {
-                            validate_hook_safe_expr(end, ctx, frame, visiting, validated, errors);
+                    AssignTarget::Slice {
+                        selector,
+                        channel,
+                        start,
+                        end,
+                        ..
+                    } => {
+                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                            validate_hook_safe_expr(
+                                coordinate, ctx, frame, visiting, validated, errors,
+                            );
                         }
                     }
                     AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
@@ -2635,6 +2638,8 @@ pub(super) fn compute_proc_shape(
             name: b.name,
             elem_ty: b.elem_ty,
             channels: b.channels,
+            array_len: b.array_len,
+            is_array: b.is_array,
         })
         .collect::<Vec<_>>();
     for (name, slots) in out_array_slots {
@@ -2928,6 +2933,8 @@ pub(super) fn compute_proc_shape(
             DeclaredSymbolInfo::Buffer {
                 elem_ty: buffer.elem_ty,
                 channels,
+                array_len: buffer.array_len,
+                is_array: buffer.is_array,
             },
         );
     }

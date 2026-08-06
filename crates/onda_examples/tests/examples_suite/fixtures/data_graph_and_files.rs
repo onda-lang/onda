@@ -844,45 +844,45 @@ init {
 }
 "#;
 
-const UNSAFE_TOP_LEVEL_ARRAY_EXAMPLE: &str = r#"
+const INDEXED_TOP_LEVEL_ARRAY_EXAMPLE: &str = r#"
 outs { out1: f32[2] }
 params { p: f32[2] = [1.0, 2.0] }
 sample {
-  unsafe_write(out1, 0.0, unsafe_read(p, 1.0))
-  unsafe_write(out1, 1.0, unsafe_read(out1, 0.0) + unsafe_read(p, 0.0))
+  out1[0.0] = p[1.0]
+  out1[1.0] = p[1.0] + p[0.0]
 }
 "#;
 
-const UNSAFE_DATA_BUILTINS_EXAMPLE: &str = r#"
+const INDEXED_DATA_EXAMPLE: &str = r#"
 outs { out1 }
 init {
   buf: f32[4]
 }
 sample {
-  unsafe_write(buf, 0.0, 1.5)
-  unsafe_write(buf, 1.9, unsafe_read(buf, 0.0) + 2.0)
-  out1 = unsafe_read(buf, 1.9)
+  buf[0.0] = 1.5
+  buf[1.9] = buf[0.0] + 2.0
+  out1 = buf[1.9]
 }
 "#;
 
-const UNSAFE_DATA_BUILTINS_STRUCT_FIELD_EXAMPLE: &str = r#"
+const INDEXED_STRUCT_FIELD_DATA_EXAMPLE: &str = r#"
 outs { out1 }
 struct Voice { delay: f32[4] }
 init {
   v = Voice()
 }
 sample {
-  unsafe_write(v.delay, 2.2, 4.0)
-  out1 = unsafe_read(v.delay, 2.2)
+  v.delay[2.2] = 4.0
+  out1 = v.delay[2.2]
 }
 "#;
 
-const UNSAFE_DATA_BUILTINS_TYPED_LOCAL_ARRAY_DEF_EXAMPLE: &str = r#"
+const INDEXED_TYPED_LOCAL_ARRAY_DEF_EXAMPLE: &str = r#"
 outs { out1 }
 def run() {
   xs: i32[4]
-  unsafe_write(xs, 1.8, 7)
-  return unsafe_read(xs, 1.8)
+  xs[1.8] = 7
+  return xs[1.8]
 }
 sample {
   out1 = run()

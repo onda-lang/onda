@@ -585,21 +585,16 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 usage,
             );
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 rewrite_top_level_range_clamps_in_expr(
-                    start,
-                    input_aliases,
-                    param_aliases,
-                    shadowed,
-                    clamp_inputs,
-                    clamp_params,
-                    usage,
-                );
-            }
-            if let Some(end) = end {
-                rewrite_top_level_range_clamps_in_expr(
-                    end,
+                    coordinate,
                     input_aliases,
                     param_aliases,
                     shadowed,

@@ -63,6 +63,7 @@ pub struct JitProgram {
     params: Arc<Vec<DeclaredIo>>,
     events: Arc<Vec<DeclaredEvent>>,
     buffers: Arc<Vec<DeclaredBuffer>>,
+    buffer_arrays: Arc<Vec<DeclaredBufferArray>>,
     input_index: Arc<HashMap<String, usize>>,
     output_index: Arc<HashMap<String, usize>>,
     control_output_index: Arc<HashMap<String, usize>>,
@@ -404,6 +405,14 @@ pub struct DeclaredBuffer {
     elem_ty: PrimitiveType,
     channels: DeclaredBufferChannels,
     access: onda_mir::AccessMode,
+    may_write: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeclaredBufferArray {
+    name: String,
+    first: usize,
+    len: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -517,6 +526,7 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
         params: Arc::new(metadata.params),
         events: Arc::new(metadata.events),
         buffers: Arc::new(metadata.buffers),
+        buffer_arrays: Arc::new(metadata.buffer_arrays),
         state_entries: Arc::new(metadata.state_entries),
         snapshot_segments: Arc::new(snapshot_segments),
         snapshot_size_bytes,

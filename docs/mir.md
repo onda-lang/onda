@@ -235,9 +235,8 @@ codegen.
 
 Unchecked bounds are a separate producer proof, not an assertion source code or a serialized
 program may make about itself. The safe `validate`, `validate_owned`, `from_json`, and
-`from_messagepack` entry points reject every reachable `BoundsMode::Unchecked` operation. Public
-source-level `unsafe_read`/`unsafe_write` operations use `BoundsMode::Checked`: they skip clamping but
-remain memory-safe when their index is invalid. Onda's semantic lowerer may use the explicit unsafe
+`from_messagepack` entry points reject every reachable `BoundsMode::Unchecked` operation. Source
+buffer access is always clamped. Onda's semantic lowerer may use the explicit unsafe
 trusted-producer constructors only for accesses whose bounds it established while constructing
 MIR. That provenance is retained by `ValidatedProgram` and revalidated without being downgraded
 after every shared pass. Raw LLVM and Binaryen APIs therefore cannot accidentally turn untrusted
@@ -274,19 +273,21 @@ unknown aliases. `canonicalize` performs one validated structural round. `optimi
 monotonic cleanup to a fixed point, validates the completed pipeline once, and returns `PassStats`
 with an opaque `OptimizedProgram`.
 
-`analysis.rs` exposes call-transitive logical effect summaries and conservative integer ranges.
-Effects distinguish state, interface parameters, audio I/O, external buffers, constant data, event
-payloads, indirect descriptors, and per-reference reads/writes without encoding a target ABI. Range
-facts include the segmented-process contract, interface declarations, constants, and operations
-that cannot overflow. Failure effects distinguish checked fixed-range access from clamped access,
-which is non-failing for nonempty fixed arrays, ports, constant data, and validated external
-buffers. Clamped dynamic-slice element access may still fail on an empty slice, and slice windows
-may fail their dynamic shape requirement. Only integer division and remainder can fail; floating
-division and remainder follow IEEE semantics. These analyses are backend inputs: they let LLVM
-attach memory and range attributes today and give future Wasm/native passes one shared place for
-alias, failure, and vectorization legality. Aggregate read-write references remain conservative
-when converted to descriptors, so LLVM never receives a `readonly` promise that descriptor
-provenance has not proved.
+`analysis.rs` exposes call-transitive logical effect summaries, per-interface-buffer reachable-write
+effects, and conservative integer ranges. Buffer-write effects trace direct stores, buffer
+parameters, slice aliases, calls, and all init/process/event roots; they are distinct from the
+buffer's declared read-only/read-write access capability. General effects distinguish state,
+interface parameters, audio I/O, external buffers, constant data, event payloads, indirect
+descriptors, and per-reference reads/writes without encoding a target ABI. Range facts include the
+segmented-process contract, interface declarations, constants, and operations that cannot overflow.
+Failure effects distinguish checked fixed-range access from clamped access, which is non-failing for
+nonempty fixed arrays, ports, constant data, and validated external buffers. Clamped dynamic-slice
+element access may still fail on an empty slice, and slice windows may fail their dynamic shape
+requirement. Only integer division and remainder can fail; floating division and remainder follow
+IEEE semantics. These analyses are backend inputs: they let LLVM attach memory and range attributes
+today and give future Wasm/native passes one shared place for alias, failure, and vectorization
+legality. Aggregate read-write references remain conservative when converted to descriptors, so
+LLVM never receives a `readonly` promise that descriptor provenance has not proved.
 
 These passes do not replace LLVM or Binaryen optimization. They keep portable MIR deterministic,
 remove producer artifacts before backend legalization, and prevent basic code quality from depending
@@ -321,6 +322,9 @@ The lowering owns:
 - immutable primitive constant arrays with typed, bounds-explicit loads
 - symbolic external buffers with clamping/non-clamping reads and writes plus length/channel/sample-rate metadata
 - logical buffer-reference function parameters, including forwarding, metadata, mutation, and slicing
+- fixed processor buffer collections lowered to one value-mode `BufferSpan` containing the five
+  parallel descriptor-table bases; subspans adjust those bases in constant space and
+  `BufferParamRef` selection performs constant-time table lookups without copying sample storage
 - scalar, fixed primitive-array, and dynamic primitive-slice event interfaces with direct handler IDs
 - top-level parameter/input clamp rewrites already produced by semantic analysis
 - BEGIN-gated block-pre, a guarded `0..frames` sample loop with checked `process_frame` audio

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -14,16 +14,23 @@ use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
-    RunEventValue, RunParamInfo, UNBOUND_BUFFERS_MESSAGE,
+    RunEventValue, RunParamInfo,
 };
 use onda_frontend::{load_program_file, Diagnostic};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 mod playback;
+mod project_io;
 
 pub use playback::{
     append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
+    ProjectBufferBinding,
+};
+pub use project_io::{
+    create_empty_project, package_project_from_files, package_project_plan,
+    project_buffer_declarations, publish_project_plan,
 };
 
 const SCOPE_MAX_FRAMES: usize = 1024;
@@ -144,6 +151,34 @@ enum PendingCommand {
     ResetParams,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum PreservedBufferBinding {
+    File(String),
+    Cleared,
+}
+
+impl PreservedBufferBinding {
+    fn replay_request(&self, name: &str) -> (&'static str, Value, PendingCommand) {
+        match self {
+            Self::File(path) => (
+                "bindBufferWav",
+                json!({ "name": name, "path": path }),
+                PendingCommand::BindBuffer {
+                    name: name.to_owned(),
+                    path: path.clone(),
+                },
+            ),
+            Self::Cleared => (
+                "clearBuffer",
+                json!({ "name": name }),
+                PendingCommand::ClearBuffer {
+                    name: name.to_owned(),
+                },
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ReadyEvent {
     path: String,
@@ -198,7 +233,9 @@ struct RunParamWire {
 }
 
 pub struct RunController {
+    launch_path: PathBuf,
     onda_path: PathBuf,
+    project_watch_paths: Option<onda_project::ProjectWatchPaths>,
     options: RunHostOptions,
     state: RunState,
     events_rx: Receiver<ControllerEvent>,
@@ -209,7 +246,7 @@ pub struct RunController {
     _watcher: Option<FileWatcher>,
     watched_sources: Vec<PathBuf>,
     preserved_params: Vec<(String, Value)>,
-    preserved_buffers: Vec<(String, String)>,
+    preserved_buffers: BTreeMap<String, PreservedBufferBinding>,
     preserved_events: Vec<(String, Vec<Value>)>,
     pending_commands: HashMap<u64, PendingCommand>,
     processing_requested: bool,
@@ -227,20 +264,41 @@ pub struct PollResult {
 
 impl RunController {
     pub fn new(onda_path: &Path, options: RunHostOptions) -> Result<Self, String> {
-        let onda_path = std::fs::canonicalize(onda_path)
+        let launch_path = std::fs::canonicalize(onda_path)
             .map_err(|e| format!("cannot resolve path {}: {e}", onda_path.display()))?;
+        let project_input = onda_project::resolve_project_input(
+            &launch_path,
+            onda_project::ProjectLimits::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        let project_file = project_input.project().cloned();
+        let onda_path = std::fs::canonicalize(project_input.entry_path()).map_err(|e| {
+            format!(
+                "cannot resolve project entry {}: {e}",
+                project_input.entry_path().display()
+            )
+        })?;
         let (events_tx, events_rx) = mpsc::channel();
         let bridge = IpcBridge::new();
-        let state = RunState::new(&onda_path, &options);
-        let pending_sources = source_snapshot(&onda_path, &[]);
+        let state = RunState::new(&launch_path, &options);
+        let pending_sources = source_snapshot_from_paths(&onda_path, &[]);
+        let project_watch_paths = project_file
+            .as_ref()
+            .map(onda_project::ProjectFile::watch_paths)
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let pending_sources = pending_sources.with_project(project_watch_paths.as_ref());
         let watched_sources = pending_sources.paths();
-        let watcher = start_source_watcher(&watched_sources, events_tx.clone());
+        let watcher = start_source_watcher(&pending_sources.watch_paths(), events_tx.clone());
         let child_generation = 1;
-        let child = ChildSession::spawn(&onda_path, &options, child_generation, events_tx.clone())
-            .map_err(|e| format!("failed to start run subprocess: {e}"))?;
+        let child =
+            ChildSession::spawn(&launch_path, &options, child_generation, events_tx.clone())
+                .map_err(|e| format!("failed to start run subprocess: {e}"))?;
 
         let mut controller = Self {
+            launch_path,
             onda_path,
+            project_watch_paths,
             options,
             state,
             events_rx,
@@ -251,7 +309,7 @@ impl RunController {
             _watcher: watcher,
             watched_sources,
             preserved_params: Vec::new(),
-            preserved_buffers: Vec::new(),
+            preserved_buffers: BTreeMap::new(),
             preserved_events: Vec::new(),
             pending_commands: HashMap::new(),
             processing_requested: true,
@@ -274,7 +332,68 @@ impl RunController {
     }
 
     pub fn path(&self) -> &Path {
-        &self.onda_path
+        &self.launch_path
+    }
+
+    pub fn save_as_project(&self, destination: &Path) -> Result<(), String> {
+        let input = onda_project::resolve_project_input(
+            &self.launch_path,
+            onda_project::ProjectLimits::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        let source_root = input.project().map(|project| project.root.as_path());
+        let mut assets = std::collections::BTreeMap::new();
+        let mut asset_file_names = std::collections::BTreeMap::new();
+        if let Some(project) = input.project() {
+            for (name, (asset, path)) in project
+                .load_buffer_assets(onda_project::ProjectLimits::default())
+                .map_err(|error| error.to_string())?
+            {
+                if let Some(file_name) = path
+                    .as_deref()
+                    .and_then(Path::file_name)
+                    .and_then(|file_name| file_name.to_str())
+                {
+                    asset_file_names.insert(name.clone(), file_name.to_owned());
+                }
+                assets.insert(name, asset);
+            }
+        }
+
+        for buffer in &self.state.buffers {
+            let Some(name) = buffer.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if buffer.get("loadedFrames").and_then(Value::as_u64).is_none() {
+                assets.remove(name);
+                asset_file_names.remove(name);
+                continue;
+            }
+            if let Some(path) = buffer.get("loadedPath").and_then(Value::as_str) {
+                let asset =
+                    onda_project::load_buffer_file(path, onda_project::ProjectLimits::default())
+                        .map_err(|error| {
+                            format!("failed to capture buffer '{name}' from '{path}': {error}")
+                        })?;
+                assets.insert(name.to_owned(), asset);
+                if let Some(file_name) = Path::new(path)
+                    .file_name()
+                    .and_then(|file_name| file_name.to_str())
+                {
+                    asset_file_names.insert(name.to_owned(), file_name.to_owned());
+                }
+            }
+        }
+
+        let project_file_name = project_io::project_file_name_from_target(destination)?;
+        let plan = project_io::package_project_plan(
+            &self.onda_path,
+            source_root,
+            assets,
+            &project_file_name,
+            &asset_file_names,
+        )?;
+        project_io::publish_project_plan(destination, &plan)
     }
 
     pub fn poll(&mut self) -> PollResult {
@@ -334,15 +453,6 @@ impl RunController {
 
     pub fn start(&mut self) -> Result<(), String> {
         self.processing_requested = true;
-        if !all_buffers_bound(&self.state.buffers) {
-            if self.can_reuse_compiled_child() {
-                if let Some(id) = self.bridge.send_command("play", &json!({})) {
-                    self.pending_commands.insert(id, PendingCommand::Play);
-                }
-            }
-            self.refresh_processing_state();
-            return Err(UNBOUND_BUFFERS_MESSAGE.to_owned());
-        }
         if self.can_reuse_compiled_child() {
             if let Some(id) = self.bridge.send_command("play", &json!({})) {
                 self.pending_commands.insert(id, PendingCommand::Play);
@@ -510,7 +620,7 @@ impl RunController {
         self.state.scope_samples.clear();
 
         match ChildSession::spawn(
-            &self.onda_path,
+            &self.launch_path,
             &self.options,
             self.child_generation,
             self.events_tx.clone(),
@@ -534,12 +644,21 @@ impl RunController {
         self.bridge.is_connected()
             && self.child.is_active()
             && self.source_compilation.ready().is_some_and(|compiled| {
-                *compiled == source_snapshot(&self.onda_path, &self.watched_sources)
+                *compiled
+                    == source_snapshot_with_project(
+                        &self.onda_path,
+                        &self.watched_sources,
+                        self.project_watch_paths.as_ref(),
+                    )
             })
     }
 
     fn sources_require_recompile(&self) -> bool {
-        let current = source_snapshot(&self.onda_path, &self.watched_sources);
+        let current = source_snapshot_with_project(
+            &self.onda_path,
+            &self.watched_sources,
+            self.project_watch_paths.as_ref(),
+        );
         !self.source_compilation.matches(&current)
     }
 
@@ -565,7 +684,11 @@ impl RunController {
     }
 
     fn handle_child_ready(&mut self, ready: ReadyEvent) {
-        let current_sources = source_snapshot(&self.onda_path, &self.watched_sources);
+        let current_sources = source_snapshot_with_project(
+            &self.onda_path,
+            &self.watched_sources,
+            self.project_watch_paths.as_ref(),
+        );
         if !matches!(
             &self.source_compilation,
             SourceCompilationState::Compiling(pending) if pending == &current_sources
@@ -620,13 +743,10 @@ impl RunController {
             self.bridge
                 .send_command_notification("setParam", &json!({ "name": name, "value": value }));
         }
-        for (name, path) in self.preserved_buffers.clone() {
-            if let Some(id) = self
-                .bridge
-                .send_command("bindBufferWav", &json!({ "name": name, "path": path }))
-            {
-                self.pending_commands
-                    .insert(id, PendingCommand::BindBuffer { name, path });
+        for (name, binding) in &self.preserved_buffers {
+            let (command, payload, pending) = binding.replay_request(name);
+            if let Some(id) = self.bridge.send_command(command, &payload) {
+                self.pending_commands.insert(id, pending);
             }
         }
 
@@ -637,9 +757,29 @@ impl RunController {
     }
 
     fn refresh_source_watcher(&mut self) -> SourceSnapshot {
-        let snapshot = source_snapshot(&self.onda_path, &self.watched_sources);
+        let mut input_resolved = false;
+        let mut project_file = None;
+        if let Ok(project_input) = onda_project::resolve_project_input(
+            &self.launch_path,
+            onda_project::ProjectLimits::default(),
+        ) {
+            input_resolved = true;
+            project_file = project_input.project().cloned();
+            if let Ok(entry) = std::fs::canonicalize(project_input.entry_path()) {
+                self.onda_path = entry;
+            }
+        }
+        let snapshot = source_snapshot_from_paths(&self.onda_path, &self.watched_sources);
+        if let Some(project) = project_file {
+            if let Ok(paths) = project.watch_paths() {
+                self.project_watch_paths = Some(paths);
+            }
+        } else if input_resolved {
+            self.project_watch_paths = None;
+        }
+        let snapshot = snapshot.with_project(self.project_watch_paths.as_ref());
         self.watched_sources = snapshot.paths();
-        self._watcher = start_source_watcher(&self.watched_sources, self.events_tx.clone());
+        self._watcher = start_source_watcher(&snapshot.watch_paths(), self.events_tx.clone());
         snapshot
     }
 
@@ -674,13 +814,15 @@ impl RunController {
                 if succeeded {
                     match command {
                         PendingCommand::BindBuffer { name, path } => {
-                            set_preserved_buffer(&mut self.preserved_buffers, &name, &path);
+                            self.preserved_buffers
+                                .insert(name.clone(), PreservedBufferBinding::File(path.clone()));
                             update_buffer_loaded_path(&mut self.state.buffers, &name, Some(&path));
                             let _ = self.bridge.send_command("getBuffers", &json!({}));
                             self.refresh_processing_state();
                         }
                         PendingCommand::ClearBuffer { name } => {
-                            self.preserved_buffers.retain(|(n, _)| n != &name);
+                            self.preserved_buffers
+                                .insert(name.clone(), PreservedBufferBinding::Cleared);
                             update_buffer_loaded_path(&mut self.state.buffers, &name, None);
                             let _ = self.bridge.send_command("getBuffers", &json!({}));
                             self.refresh_processing_state();
@@ -700,11 +842,7 @@ impl RunController {
                             self.state.running = false;
                             self.scope_polling_active = false;
                             self.scope_polling_in_flight = false;
-                            self.state.status = if all_buffers_bound(&self.state.buffers) {
-                                "Runtime error".to_owned()
-                            } else {
-                                UNBOUND_BUFFERS_MESSAGE.to_owned()
-                            };
+                            self.state.status = "Runtime error".to_owned();
                         }
                         PendingCommand::ResetParams => {}
                     }
@@ -741,11 +879,8 @@ impl RunController {
     }
 
     fn refresh_processing_state(&mut self) {
-        let buffers_ready = all_buffers_bound(&self.state.buffers);
-        self.state.running = self.processing_requested && buffers_ready && self.state.connected;
-        self.state.status = if !buffers_ready {
-            UNBOUND_BUFFERS_MESSAGE.to_owned()
-        } else if self.state.running {
+        self.state.running = self.processing_requested && self.state.connected;
+        self.state.status = if self.state.running {
             "Running".to_owned()
         } else {
             "Stopped".to_owned()
@@ -1317,6 +1452,8 @@ fn source_watch_root(path: &Path) -> (PathBuf, notify::RecursiveMode) {
 struct SourceSnapshot {
     load_succeeded: bool,
     sources: Vec<SourceFileSnapshot>,
+    project_manifest: Option<SourceFileSnapshot>,
+    assets: Vec<AssetFileSnapshot>,
 }
 
 impl SourceSnapshot {
@@ -1326,12 +1463,47 @@ impl SourceSnapshot {
             .map(|source| source.path.clone())
             .collect()
     }
+
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        self.sources
+            .iter()
+            .map(|source| source.path.clone())
+            .chain(
+                self.project_manifest
+                    .iter()
+                    .map(|manifest| manifest.path.clone()),
+            )
+            .chain(self.assets.iter().map(|asset| asset.path.clone()))
+            .collect()
+    }
+
+    fn with_project(mut self, project: Option<&onda_project::ProjectWatchPaths>) -> Self {
+        self.project_manifest = project.map(|project| SourceFileSnapshot {
+            contents: fs::read(&project.manifest).ok(),
+            path: project.manifest.clone(),
+        });
+        self.assets = project
+            .into_iter()
+            .flat_map(|project| &project.assets)
+            .map(|path| AssetFileSnapshot {
+                digest: digest_file(path),
+                path: path.clone(),
+            })
+            .collect();
+        self
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SourceFileSnapshot {
     path: PathBuf,
     contents: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AssetFileSnapshot {
+    path: PathBuf,
+    digest: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1375,7 +1547,22 @@ impl SourceCompilationState {
     }
 }
 
+#[cfg(test)]
 fn source_snapshot(entry: &Path, previous: &[PathBuf]) -> SourceSnapshot {
+    source_snapshot_with_project(entry, previous, None)
+}
+
+fn source_snapshot_with_project(
+    entry: &Path,
+    previous: &[PathBuf],
+    project: Option<&onda_project::ProjectWatchPaths>,
+) -> SourceSnapshot {
+    source_snapshot_from_paths(entry, previous).with_project(project)
+}
+
+fn source_snapshot_from_paths(entry: &Path, previous: &[PathBuf]) -> SourceSnapshot {
+    // Resolve the exact source graph first. Project metadata and assets must
+    // never participate in source loading or failed-load source retention.
     let loaded = load_program_file(entry);
     let (manifest, load_succeeded) = match loaded {
         Ok(loaded) => (loaded.sources, true),
@@ -1397,16 +1584,33 @@ fn source_snapshot(entry: &Path, previous: &[PathBuf]) -> SourceSnapshot {
             }
         }
     }
+    let sources = paths
+        .into_iter()
+        .map(|path| SourceFileSnapshot {
+            contents: fs::read(&path).ok(),
+            path,
+        })
+        .collect();
     SourceSnapshot {
         load_succeeded,
-        sources: paths
-            .into_iter()
-            .map(|path| SourceFileSnapshot {
-                contents: fs::read(&path).ok(),
-                path,
-            })
-            .collect(),
+        sources,
+        project_manifest: None,
+        assets: Vec::new(),
     }
+}
+
+fn digest_file(path: &Path) -> Option<[u8; 32]> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let bytes = file.read(&mut chunk).ok()?;
+        if bytes == 0 {
+            break;
+        }
+        hasher.update(&chunk[..bytes]);
+    }
+    Some(hasher.finalize().into())
 }
 
 fn start_source_watcher(
@@ -1434,23 +1638,6 @@ fn validated_device(name: Option<&str>, devices: &[String]) -> Result<Option<Str
         Ok(Some(name.to_owned()))
     } else {
         Err(format!("unknown device '{name}'"))
-    }
-}
-
-fn all_buffers_bound(buffers: &[Value]) -> bool {
-    buffers
-        .iter()
-        .all(|buffer| buffer.get("loadedPath").and_then(Value::as_str).is_some())
-}
-
-fn set_preserved_buffer(buffers: &mut Vec<(String, String)>, name: &str, path: &str) {
-    if let Some((_, existing_path)) = buffers
-        .iter_mut()
-        .find(|(buffer_name, _)| buffer_name == name)
-    {
-        *existing_path = path.to_owned();
-    } else {
-        buffers.push((name.to_owned(), path.to_owned()));
     }
 }
 
@@ -1691,8 +1878,9 @@ mod tests {
     use super::{
         events_are_compatible_for_preservation, params_are_compatible_for_preservation,
         reconcile_preserved_events, reconcile_preserved_params, run_param_json, source_snapshot,
-        ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, RunHostOptions,
-        RunParamInfo, RunParamWire, SourceCompilationState,
+        source_snapshot_with_project, ControllerEvent, FileWatcher, ParamDomain, ParamScalarType,
+        ParamScale, PendingCommand, PreservedBufferBinding, RunHostOptions, RunParamInfo,
+        RunParamWire, SourceCompilationState,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -1973,6 +2161,52 @@ mod tests {
     }
 
     #[test]
+    fn project_assets_are_fingerprinted_without_joining_the_source_graph() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_project_asset_snapshot_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let manifest = temp_root.join("project.ondaproject");
+        let asset = temp_root.join("sample.ondabuffer");
+        fs::write(&entry, "outs 1\nsample:\n  out1 = 0.0\n").expect("write entry");
+        fs::write(&manifest, "{\"entry\":\"main.onda\"}\n").expect("write manifest");
+        fs::write(&asset, [1_u8, 2, 3]).expect("write asset");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+        let project = onda_project::ProjectWatchPaths {
+            manifest: fs::canonicalize(manifest).expect("canonical manifest"),
+            assets: vec![fs::canonicalize(&asset).expect("canonical asset")],
+        };
+
+        let initial = source_snapshot_with_project(&entry, &[], Some(&project));
+        assert_eq!(initial.paths(), vec![entry.clone()]);
+        assert_eq!(
+            initial.watch_paths(),
+            vec![
+                entry.clone(),
+                project.manifest.clone(),
+                project.assets[0].clone()
+            ]
+        );
+        assert_eq!(initial.assets.len(), 1);
+        assert!(initial.assets[0].digest.is_some());
+
+        fs::write(&asset, [3_u8, 2, 1]).expect("change asset without changing its length");
+        let changed = source_snapshot_with_project(&entry, &initial.paths(), Some(&project));
+        assert_ne!(
+            changed, initial,
+            "asset content changes must invalidate the run"
+        );
+        assert_eq!(changed.paths(), vec![entry]);
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
     fn missing_nested_dependency_creation_invalidates_the_snapshot() {
         let temp_root = std::env::temp_dir().join(format!(
             "onda_run_missing_dependency_test_{}",
@@ -2035,6 +2269,19 @@ mod tests {
             preserved.is_empty(),
             "changed default should reset preserved param"
         );
+    }
+
+    #[test]
+    fn cleared_buffers_replay_as_clear_commands_after_restart() {
+        let binding = PreservedBufferBinding::Cleared;
+        let (command, payload, pending) = binding.replay_request("sample");
+
+        assert_eq!(command, "clearBuffer");
+        assert_eq!(payload, json!({ "name": "sample" }));
+        assert!(matches!(
+            pending,
+            PendingCommand::ClearBuffer { name } if name == "sample"
+        ));
     }
 
     #[test]

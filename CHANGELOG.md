@@ -7,6 +7,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.7.0]
+
+### Added
+
+- Added host-neutral editable `.ondaproject` files and immutable project images with exact source graphs,
+  content-addressed typed buffer assets, version-1 project-image and `.ondabuffer` serialization,
+  integrity fingerprints, and filesystem-free materialization plans. The CLI, native run GUIs,
+  browser playground, C API, and WebAssembly compiler now share the same project model.
+- Added `onda project` for creating an empty project or packaging an existing source with optional
+  `--buffer name=path` bindings, plus project open/save workflows in the egui and webview hosts and
+  ZIP import/export in the browser playground.
+- Added fixed buffer resource arrays such as `f32 {88}`, with clamped constant-time
+  selection, contiguous host descriptors, logical group metadata, nullable project bindings,
+  first-class selected slots, and exact compile-time subspans for forwarding collections to procs.
+
+### Changed
+
+- Renamed exact in-memory source compilation to `onda_compile_source_graph` in C and
+  `compileWorkspace` in `@onda-lang/wasm-compiler`, reserving “project” for portable project images.
+- Buffer types now use `buffer<T>` (for example `buffer<f32[2]>`) instead of `buffer[T]`, and
+  multichannel sample/slice access now uses one `[channel, frame-or-range]` coordinate pair instead
+  of chained channel indexing. Buffer parameters with dynamic channels accept mono and exact-channel
+  declarations, while exact-channel parameters reject dynamic-channel declarations.
+- Unbound buffers now process through neutral one-frame descriptors: reads return zero, writes are
+  discarded, exact channel declarations are retained, and dynamic channel declarations report one
+  channel. Source-level unsafe buffer operations were removed in favor of uniformly clamped
+  indexing; unchecked access remains compiler-internal MIR only.
+- Advanced the MIR schema to version 4 and the processor artifact and ABI formats to version 3 for
+  buffer-array references and nullable buffer pointer entries with processor-owned neutral storage.
+
+### Fixed
+
+- Restored `onda_buffer_may_write` and processor-descriptor `may_write` metadata to report
+  call-transitive writes reachable from init, process, or event entry points. Declared buffer access
+  capability remains available separately as `access`.
+
 ## [0.6.0]
 
 ### Added
@@ -268,7 +304,8 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
-[0.6.0]: https://github.com/onda-lang/onda/compare/0.5.4...HEAD
+[0.7.0]: https://github.com/onda-lang/onda/compare/0.6.0...0.7.0
+[0.6.0]: https://github.com/onda-lang/onda/compare/0.5.4...0.6.0
 [0.5.4]: https://github.com/onda-lang/onda/compare/0.5.3...0.5.4
 [0.5.3]: https://github.com/onda-lang/onda/compare/0.5.2...0.5.3
 [0.5.2]: https://github.com/onda-lang/onda/compare/0.5.1...0.5.2

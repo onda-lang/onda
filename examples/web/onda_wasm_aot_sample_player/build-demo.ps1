@@ -26,6 +26,7 @@ cargo run --quiet --release `
 node (Join-Path $demoDir "build-artifact.mjs") $mirFile $demoDir
 
 Copy-Item (Join-Path $abiDir "src\index.js") (Join-Path $demoDir "artifact.js") -Force
+Copy-Item (Join-Path $abiDir "src\param-control.js") (Join-Path $demoDir "param-control.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\index.js") (Join-Path $demoDir "onda-webaudio.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\worklet.js") (Join-Path $demoDir "onda-wasm-processor.js") -Force
 Copy-Item `

@@ -242,6 +242,20 @@ impl Diagnostic {
         }
     }
 
+    pub fn internal_at(message: impl Into<String>, loc: &SourceLoc) -> Self {
+        Self {
+            code: DiagCode::Internal,
+            message: message.into(),
+            line: loc.line,
+            column: loc.column,
+            end_line: loc.end_line,
+            end_column: loc.end_column,
+            file: loc.file(),
+            trace: loc.trace(),
+            editor_visible: true,
+        }
+    }
+
     pub fn compiler_only(mut self) -> Self {
         self.editor_visible = false;
         self

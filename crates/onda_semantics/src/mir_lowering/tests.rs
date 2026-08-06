@@ -2129,7 +2129,7 @@ init:
 
 sample 2:
   pair_out[selected] = pair[selected]
-  pair_out.unsafe_write(0, pair.unsafe_read(0))
+  pair_out[0] = pair[0]
   outs[selected] = ins[selected]
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -2316,7 +2316,7 @@ def local_total(seed: f32):
   inferred = [seed, 2.0]
   scratch: f32[2]
   inferred[1] = inferred[0] + 1.0
-  unsafe_write(scratch, 0, unsafe_read(inferred, 1))
+  scratch[0] = inferred[1]
   scratch[:] = inferred[:]
   return scratch[0] + scratch[1] + f32(scratch.len())
 
@@ -2411,13 +2411,13 @@ outs:
 buffers:
   table: f32
 
-def touch(buf: buffer[f32], index: i32):
+def touch(buf: buffer<f32>, index: i32):
   view = buf[:]
   value = buf[index] + view[index] - view[index]
-  unsafe_write(buf, index, value + 1.0)
+  buf[index] = value + 1.0
   return value + f32(buf.len()) + f32(buf.chans()) + buf.samplerate()
 
-def forward(buf: buffer[f32], index: i32):
+def forward(buf: buffer<f32>, index: i32):
   return touch(buf, index)
 
 sample:
@@ -2455,6 +2455,93 @@ sample:
     assert!(dump.contains("make_slice @param0"));
     assert!(dump.contains("(place @p0,"));
     assert!(dump.contains("(@buffer0,"));
+}
+
+#[test]
+fn dynamic_buffer_parameters_accept_any_declared_channel_count() {
+    let source = r#"
+buffers:
+  mono: f32
+  stereo: f32[2]
+
+outs:
+  out1
+
+def first(buf: buffer<f32[]>):
+  return buf[0, 0]
+
+sample:
+  out1 = first(mono) + first(stereo)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("dynamic buffer parameter should accept exact buffers");
+    let mir = lower_test_program(&typed).expect("dynamic buffer calls should lower");
+    validate(&mir).expect("dynamic buffer call MIR should validate");
+}
+
+#[test]
+fn exact_buffer_parameters_reject_dynamic_channel_counts() {
+    let source = r#"
+buffers:
+  any: f32[]
+
+def first(buf: buffer<f32[2]>):
+  return buf[0, 0]
+
+sample:
+  out1 = first(any)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let errors = analyze(parsed).expect_err("exact buffer parameter must reject dynamic buffers");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("expects static 2 channels")),
+        "unexpected diagnostics: {errors:?}"
+    );
+}
+
+#[test]
+fn lowers_buffer_collection_slices_after_selecting_a_buffer() {
+    let source = r#"
+buffers:
+  bank: f32 {2}
+  layers: f32[2] {3}
+
+def select() -> i32:
+  return 1
+
+def right_channel() -> i32:
+  return 1
+
+def first_frame() -> i32:
+  return 0
+
+sample:
+  mono = bank[1][0:8]
+  right = layers[2][1, 0:8]
+  dynamic = layers[select()][right_channel(), first_frame():8]
+  bank[0][0:4] = 0.0
+  layers[1][0, 0:4] = 0.0
+  layers[select()][right_channel(), first_frame():4] = 0.0
+  out1 = mono[0] + right[0] + dynamic[0]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("buffer collection slices should analyze");
+    let mir = lower_test_program(&typed).expect("buffer collection slices should lower");
+    validate(&mir).expect("buffer collection slice MIR should validate");
+    let dump = format_program(&mir);
+    assert!(dump.contains("make_slice @buffer_array(first=0, len=2)[i32(1)] clamp"));
+    assert!(dump.contains("make_slice @buffer_array(first=2, len=3)[i32(2)] clamp"));
+    assert!(dump.contains("slice_fill"));
+    for name in ["select", "right_channel", "first_frame"] {
+        assert!(
+            mir.functions
+                .iter()
+                .any(|function| function.name.starts_with(name)),
+            "slice-coordinate def '{name}' should remain reachable"
+        );
+    }
 }
 
 #[test]
@@ -2877,17 +2964,11 @@ init:
 sample:
   value = delay[0]
   delay[1] = value * 0.5
-  raw = delay.unsafe_read(2)
-  delay.unsafe_write(3, raw)
-  free = unsafe_read(delay, 4)
-  unsafe_write(delay, 5, free)
-  two_d = bus[1][2]
-  bus[0][3] = two_d
-  free_2d = unsafe_read2(bus, 1, 6)
-  unsafe_write2(bus, 0, 7, free_2d)
-  from_state = values.unsafe_read(0)
-  unsafe_write(values, 1, from_state)
-  out1 = value + raw + free + two_d + free_2d + from_state + f32(delay.len()) + f32(delay.chans()) + delay.samplerate()
+  two_d = bus[1, 2]
+  bus[0, 3] = two_d
+  from_state = values[0]
+  values[1] = from_state
+  out1 = value + two_d + from_state + f32(delay.len()) + f32(delay.chans()) + delay.samplerate()
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
@@ -2907,10 +2988,6 @@ sample:
     assert!(dump.contains("buffer_len @buffer0"));
     assert!(dump.contains("buffer_channels @buffer0"));
     assert!(dump.contains("buffer_sample_rate @buffer0"));
-    assert!(dump.contains("load_buffer @buffer0[i32(2)] checked"));
-    assert!(dump.contains("store_buffer @buffer0[i32(3)] checked"));
-    assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(6)] checked"));
-    assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(7)] checked"));
     assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(2)] clamp"));
     assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(3)] clamp"));
     assert!(dump.contains("] clamp"));
@@ -3065,4 +3142,338 @@ sample:
         })
         .count();
     assert_eq!(explicit_stores, 2);
+}
+
+#[test]
+fn lowers_block_scoped_buffer_aliases_with_persistent_dynamic_selectors() {
+    let source = r#"
+buffers:
+  bank: f32 {2}
+params:
+  slot: i32 = 0 {0, 1}
+block:
+  selected = bank[slot]
+  frames = selected.len()
+sample:
+  value = selected[0]
+  selected[frames - 1] = value
+  out1 = value
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("buffer-reference alias should analyze");
+    let mir = lower_test_program(&typed).expect("buffer-reference alias should lower");
+    validate(&mir).expect("buffer-reference alias MIR should validate");
+
+    assert!(mir
+        .state
+        .iter()
+        .any(|state| state.name == "__onda_buffer_alias_selector_selected"));
+    let dump = format_program(&mir);
+    assert!(dump.contains("buffer_len @buffer_array(first=0, len=2)"));
+    assert!(dump.contains("load_buffer @buffer_array(first=0, len=2)"));
+    assert!(dump.contains("store_buffer @buffer_array(first=0, len=2)"));
+}
+
+#[test]
+fn lowers_processor_block_buffer_aliases_across_generated_runtime_functions() {
+    let source = r#"
+buffers:
+  bank: f32[] {2}
+
+proc Reader:
+  params:
+    slot: i32 = 0 {0, 1}
+  buffers:
+    clips: f32[] {2}
+  outs:
+    out1
+  block:
+    selected = clips[slot]
+    frames = selected.len()
+    sample:
+      out1 = selected[0, frames - 1]
+
+init:
+  reader = Reader(clips = bank)
+sample:
+  out1 = reader()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("processor buffer-reference alias should analyze");
+    let mir = lower_test_program(&typed).expect("processor buffer-reference alias should lower");
+    validate(&mir).expect("processor buffer-reference alias MIR should validate");
+
+    assert!(mir.state.iter().any(|state| state
+        .name
+        .ends_with(".__onda_buffer_alias_selector_selected")));
+    let dump = format_program(&mir);
+    let step = formatted_function(&dump, "Reader.__proc_step");
+    assert!(step.contains("load_buffer_param @buffer_param_span"));
+    let block_pre = formatted_function(&dump, "Reader.__proc_block_pre");
+    assert!(block_pre.contains("buffer_len @buffer_param_span"));
+}
+
+#[test]
+fn lowers_indexed_buffer_receivers_for_lookup_methods() {
+    let source = r#"
+import std/lookup
+buffers:
+  bank: f32[2] {2}
+sample:
+  out1 = bank[1].readL(0, 0.5)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed buffer receiver should analyze");
+    let mir = lower_test_program(&typed).expect("indexed buffer receiver should lower");
+    validate(&mir).expect("indexed buffer receiver MIR should validate");
+    assert!(format_program(&mir).contains("@buffer_array(first=0, len=2)[i32(1)] clamp"));
+}
+
+#[test]
+fn rejects_integer_lookup_specializations_that_call_float_only_builtins() {
+    let source = r#"
+params:
+  layer: i32
+  position: i32
+
+buffers:
+  layers: f32[] {4}
+
+block:
+  source = layers[layer]
+
+  sample:
+    from_i32 = source.readL(0, position)
+    from_i64 = source.readL(0, i64(position))
+    out1 = from_i32 + from_i64
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let errors = analyze(parsed).expect_err("integer lookup positions should fail semantically");
+    for (expected, call_line) in [("got I32", 13), ("got I64", 14)] {
+        let error = errors
+            .iter()
+            .find(|error| error.message.contains(expected))
+            .unwrap_or_else(|| panic!("missing '{expected}' diagnostic: {errors:?}"));
+        assert_eq!(error.line, call_line, "diagnostic should point at its call");
+        assert_ne!(
+            error.file.as_deref(),
+            Some("<std/lookup.onda>"),
+            "diagnostic should not point into generated stdlib code"
+        );
+    }
+}
+
+#[test]
+fn lowers_floating_positions_through_nested_lookup_specializations() {
+    let source = r#"
+buffers:
+  source: f32[]
+
+sample:
+  from_f32 = source.readL(0, f32(1))
+  from_f64 = source.readL(0, f64(1))
+  out1 = from_f32 + f32(from_f64)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("floating lookup positions should analyze");
+    let mir = lower_test_program(&typed).expect("floating lookup positions should lower");
+    validate(&mir).expect("floating lookup position MIR should validate");
+}
+
+#[test]
+fn proc_buffer_collections_lower_static_subspans_and_dynamic_access() {
+    let source = r#"
+buffers:
+  bank: f32 {8}
+outs:
+  out1
+
+def first(buf: buffer<f32>):
+  return buf[0]
+
+def first_slice(xs: f32[]):
+  return xs[0]
+
+proc Reader:
+  params:
+    slot: i32 = 0
+  buffers:
+    clips: f32 {6}
+  outs:
+    out1
+  sample:
+    out1 = clips[slot][0] + first(clips[slot]) + first_slice(clips[slot][0:1]) + f32(clips.len()) + f32(clips[slot].len())
+
+init:
+  reader = Reader(slot = 2, clips = bank[1:7])
+sample:
+  out1 = reader()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("buffer collection subspan should analyze");
+    let mir = lower_test_program(&typed).expect("buffer collection subspan should lower");
+    validate(&mir).expect("buffer collection MIR should validate");
+
+    let step = mir
+        .functions
+        .iter()
+        .find(|function| function.name == "Reader.__proc_step")
+        .expect("missing reader step function");
+    assert_eq!(
+        step.params
+            .iter()
+            .filter(|parameter| {
+                matches!(
+                    mir.types[parameter.ty.index()],
+                    onda_mir::Type::BufferSpan { len: 6, .. }
+                )
+            })
+            .count(),
+        1,
+        "fixed collection must lower to one constant-size descriptor span"
+    );
+    assert!(
+        format_program(&mir).contains("@buffer_param_span"),
+        "dynamic proc-local selection should remain explicit in MIR"
+    );
+}
+
+#[test]
+fn proc_scalar_buffer_accepts_selected_top_level_collection_slot() {
+    let source = r#"
+buffers:
+  bank: f32 {8}
+outs:
+  out1
+proc Reader:
+  buffers:
+    clip: f32
+  outs:
+    out1
+  sample:
+    out1 = clip[0]
+init:
+  reader = Reader(clip = bank[2])
+sample:
+  out1 = reader()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("selected buffer slot should analyze");
+    let mir = lower_test_program(&typed).expect("selected buffer slot should lower");
+    validate(&mir).expect("selected buffer slot MIR should validate");
+}
+
+#[test]
+fn proc_buffer_collection_count_mismatch_is_rejected() {
+    let source = r#"
+buffers:
+  bank: f32 {8}
+outs:
+  out1
+proc Reader:
+  buffers:
+    clips: f32 {6}
+  outs:
+    out1
+  sample:
+    out1 = clips[0][0]
+init:
+  reader = Reader(clips = bank)
+sample:
+  out1 = reader()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let errors = analyze(parsed).expect_err("mismatched collection counts must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("expects 6 buffers, got 8")),
+        "missing precise collection-count diagnostic: {errors:?}"
+    );
+}
+
+#[test]
+fn proc_buffer_collection_subspan_requires_static_in_bounds_exact_range() {
+    let cases = [
+        ("bank[4:10]", "is outside 0..8"),
+        ("bank[1:6]", "expects 6 buffers, got 5"),
+        ("bank[offset:offset + 6]", "compile-time slice start bound"),
+    ];
+    for (binding, expected) in cases {
+        let source = format!(
+            r#"
+buffers:
+  bank: f32 {{8}}
+params:
+  offset: i32 = 0
+outs:
+  out1
+proc Reader:
+  buffers:
+    clips: f32 {{6}}
+  outs:
+    out1
+  sample:
+    out1 = clips[0][0]
+init:
+  reader = Reader(clips = {binding})
+sample:
+  out1 = reader()
+"#
+        );
+        let parsed = parse_program(&source).expect("source should parse");
+        let errors = analyze(parsed).expect_err("invalid collection subspan must fail");
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "missing '{expected}' diagnostic for {binding}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn proc_buffer_collections_forward_through_nested_procs_without_copying() {
+    let source = r#"
+buffers:
+  bank: f32 {8}
+outs:
+  out1
+proc Child:
+  buffers:
+    clips: f32 {4}
+  outs:
+    out1
+  sample:
+    out1 = clips[2][0]
+proc Parent:
+  buffers:
+    clips: f32 {6}
+  init:
+    child = Child(clips = clips[1:5])
+  outs:
+    out1
+  sample:
+    out1 = child()
+init:
+  parent = Parent(clips = bank[1:7])
+sample:
+  out1 = parent()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("nested buffer subspans should analyze");
+    let mir = lower_test_program(&typed).expect("nested buffer subspans should lower");
+    validate(&mir).expect("nested buffer subspan MIR should validate");
+    assert!(mir.functions.iter().any(|function| {
+        function.name == "Parent.__proc_step"
+            && function
+                .params
+                .iter()
+                .filter(|parameter| {
+                    matches!(
+                        mir.types[parameter.ty.index()],
+                        onda_mir::Type::BufferSpan { len: 6, .. }
+                    )
+                })
+                .count()
+                == 1
+    }));
 }

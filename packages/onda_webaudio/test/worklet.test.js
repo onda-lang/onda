@@ -105,6 +105,80 @@ test("worklet rejects empty external-buffer bindings", () => {
   );
 });
 
+test("worklet publishes initial buffer descriptors after Wasm memory growth", () => {
+  const pageBytes = 64 * 1024;
+  const data = new Float32Array(pageBytes / Float32Array.BYTES_PER_ELEMENT);
+  data[0] = 0.25;
+  data[data.length - 1] = 0.75;
+
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: metadata(),
+      buffers: { samples: { data } },
+    },
+  });
+  const binding = processor.bufferBindings[0];
+  const view = new DataView(processor.memory.buffer);
+  const samples = new Float32Array(
+    processor.memory.buffer,
+    binding.pointer,
+    data.length,
+  );
+
+  assert.ok(processor.memory.buffer.byteLength > pageBytes);
+  assert.equal(
+    view.getUint32(processor.bufferPointersPtr, true),
+    binding.pointer,
+  );
+  assert.equal(view.getInt32(processor.bufferFramesPtr, true), data.length);
+  assert.equal(view.getInt32(processor.bufferChannelsPtr, true), 1);
+  assert.equal(view.getFloat32(processor.bufferSampleRatesPtr, true), 48_000);
+  assert.equal(samples[0], 0.25);
+  assert.equal(samples[samples.length - 1], 0.75);
+});
+
+test("worklet prepares neutral unbound descriptors with a null buffer entry", () => {
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: metadata(),
+    },
+  });
+  const buffer = processor.readBuffer("samples");
+
+  assert.equal(buffer.frames, 1);
+  assert.equal(buffer.channels, 1);
+  assert.equal(buffer.sampleRate, 48_000);
+  assert.deepEqual(buffer.data, [0]);
+  assert.equal(
+    new DataView(processor.memory.buffer).getUint32(processor.bufferPointersPtr, true),
+    0,
+  );
+  assert.equal(processor.bufferBindings[0].bound, false);
+});
+
+test("worklet accepts nullable logical buffer-array bindings", () => {
+  const descriptor = metadata();
+  descriptor.metadata.buffers = [
+    { name: "bank[0]", scalar: "f32", static_channels: 1 },
+    { name: "bank[1]", scalar: "f32", static_channels: 1 },
+  ];
+  descriptor.metadata.buffer_arrays = [{ name: "bank", first_buffer: 0, len: 2 }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      buffers: { bank: [null, { data: [0.25, 0.5] }] },
+    },
+  });
+
+  assert.equal(processor.bufferBindings[0].bound, false);
+  assert.equal(processor.bufferBindings[1].bound, true);
+  assert.deepEqual(processor.readBuffer("bank[0]").data, [0]);
+  assert.deepEqual(processor.readBuffer("bank[1]").data, [0.25, 0.5]);
+});
+
 test("worklet validates and reports the f32 buffer sample rate seen by Wasm", () => {
   for (const sampleRate of [Number.MIN_VALUE, Number.MAX_VALUE]) {
     assert.throws(

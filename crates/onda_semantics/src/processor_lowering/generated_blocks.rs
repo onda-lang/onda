@@ -1,4 +1,5 @@
 use super::*;
+use crate::internal_names::runtime_buffer_alias_selector_symbol;
 use crate::proc_call_rewrite::lower_named_proc_param_calls_in_stmts;
 
 #[derive(Debug, Clone)]
@@ -8,6 +9,142 @@ struct ManagedDynamicProcArray {
     raw_slots: Vec<String>,
     slots: Vec<String>,
     active_field: String,
+}
+
+#[derive(Debug, Clone)]
+enum PersistentBufferAliasSource {
+    Direct(String),
+    Collection {
+        base: String,
+        selector_state: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct PersistentBufferAlias {
+    name: String,
+    source: PersistentBufferAliasSource,
+}
+
+fn persistent_proc_buffer_aliases(
+    stmts: &[Stmt],
+    buffer_specs: &[ProcBufferSpec],
+) -> Vec<PersistentBufferAlias> {
+    let direct_buffers = buffer_specs
+        .iter()
+        .filter(|buffer| !buffer.is_array)
+        .map(|buffer| buffer.name.as_str())
+        .collect::<HashSet<_>>();
+    let buffer_collections = buffer_specs
+        .iter()
+        .filter(|buffer| buffer.is_array)
+        .map(|buffer| buffer.name.as_str())
+        .collect::<HashSet<_>>();
+    let mut aliases = HashSet::<String>::new();
+    let mut captures = Vec::<PersistentBufferAlias>::new();
+
+    for stmt in stmts {
+        let Stmt::Assign {
+            target: AssignTarget::Var(name),
+            expr,
+            ..
+        } = stmt
+        else {
+            continue;
+        };
+        let source = match expr {
+            Expr::Var { name: source, .. }
+                if direct_buffers.contains(source.as_str()) || aliases.contains(source) =>
+            {
+                PersistentBufferAliasSource::Direct(source.clone())
+            }
+            Expr::Index { base, .. } if buffer_collections.contains(base.as_str()) => {
+                PersistentBufferAliasSource::Collection {
+                    base: base.clone(),
+                    selector_state: runtime_buffer_alias_selector_symbol(name),
+                }
+            }
+            _ => continue,
+        };
+        aliases.insert(name.clone());
+        captures.push(PersistentBufferAlias {
+            name: name.clone(),
+            source,
+        });
+    }
+    captures
+}
+
+fn capture_persistent_buffer_alias_selectors(
+    stmts: Vec<Stmt>,
+    aliases: &[PersistentBufferAlias],
+) -> Vec<Stmt> {
+    let selector_states = aliases
+        .iter()
+        .filter_map(|alias| match &alias.source {
+            PersistentBufferAliasSource::Collection { selector_state, .. } => {
+                Some((alias.name.as_str(), selector_state.as_str()))
+            }
+            PersistentBufferAliasSource::Direct(_) => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut rewritten = Vec::with_capacity(stmts.len() + selector_states.len());
+
+    for mut stmt in stmts {
+        if let Stmt::Assign {
+            loc,
+            target: AssignTarget::Var(name),
+            expr: Expr::Index { index, .. },
+            ..
+        } = &mut stmt
+        {
+            if let Some(selector_state) = selector_states.get(name.as_str()) {
+                let selector = std::mem::replace(index.as_mut(), Expr::int(0));
+                rewritten.push(Stmt::Assign {
+                    loc: *loc,
+                    target_loc: selector.loc().into(),
+                    target: AssignTarget::Var((*selector_state).to_owned()),
+                    decl_ty: None,
+                    generic_decl_ty: None,
+                    is_typed_decl: false,
+                    typed_decl_ty_loc: Default::default(),
+                    expr: selector,
+                });
+                **index = Expr::var((*selector_state).to_owned());
+            }
+        }
+        rewritten.push(stmt);
+    }
+    rewritten
+}
+
+fn rebind_persistent_buffer_aliases(aliases: &[PersistentBufferAlias]) -> Vec<Stmt> {
+    aliases
+        .iter()
+        .map(|alias| {
+            let expr = match &alias.source {
+                PersistentBufferAliasSource::Direct(source) => Expr::var(source.clone()),
+                PersistentBufferAliasSource::Collection {
+                    base,
+                    selector_state,
+                } => Expr::Index {
+                    loc: Default::default(),
+                    base: base.clone(),
+                    index: Box::new(Expr::var(selector_state.clone())),
+                },
+            };
+            Stmt::Assign {
+                loc: Default::default(),
+                target_loc: Default::default(),
+                target: AssignTarget::Var(alias.name.clone()),
+                decl_ty: None,
+                generic_decl_ty: None,
+                is_typed_decl: false,
+                typed_decl_ty_loc: Default::default(),
+                expr,
+            }
+        })
+        .collect()
 }
 
 fn proc_event_array_param_fn_ty(param_ty: ProcEventParamTypeSpec) -> Option<FnParamType> {
@@ -213,12 +350,21 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
             Expr::Index { index, .. } => {
                 collect_guards_from_expr(index, managed_arrays, proc_api, used_arrays, guards);
             }
-            Expr::Slice { start, end, .. } => {
-                if let Some(start) = start {
-                    collect_guards_from_expr(start, managed_arrays, proc_api, used_arrays, guards);
-                }
-                if let Some(end) = end {
-                    collect_guards_from_expr(end, managed_arrays, proc_api, used_arrays, guards);
+            Expr::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    collect_guards_from_expr(
+                        coordinate,
+                        managed_arrays,
+                        proc_api,
+                        used_arrays,
+                        guards,
+                    );
                 }
             }
             Expr::ArrayCtor { spec, init, .. } => {
@@ -2495,10 +2641,14 @@ pub(super) fn generate_lowered_proc_blocks(
                 &proc.name, &local_def, body,
             )));
         }
+        let persistent_buffer_aliases =
+            persistent_proc_buffer_aliases(&proc.block_pre, &shape.buffer_specs);
         let proc_step_source = if proc.outs_timing == OutputTiming::Block {
             proc.block_pre.clone()
         } else {
-            proc.sample.clone()
+            let mut body = rebind_persistent_buffer_aliases(&persistent_buffer_aliases);
+            body.extend(proc.sample.clone());
+            body
         };
         for rewritten in rewrite_owner_proc_stmts(
             proc_step_source,
@@ -2554,7 +2704,10 @@ pub(super) fn generate_lowered_proc_blocks(
             }
             let mut block_pre_body = Vec::<Stmt>::new();
             block_pre_body.extend(rewrite_owner_proc_stmts(
-                proc.block_pre.clone(),
+                capture_persistent_buffer_alias_selectors(
+                    proc.block_pre.clone(),
+                    &persistent_buffer_aliases,
+                ),
                 &proc.name,
                 &shape.field_names,
                 &shape.array_field_names,
@@ -2683,8 +2836,11 @@ pub(super) fn generate_lowered_proc_blocks(
                     },
                 });
             }
+            let mut block_post_source =
+                rebind_persistent_buffer_aliases(&persistent_buffer_aliases);
+            block_post_source.extend(proc.block_post.clone());
             block_post_body.extend(rewrite_owner_proc_stmts(
-                proc.block_post.clone(),
+                block_post_source,
                 &proc.name,
                 &shape.field_names,
                 &shape.array_field_names,

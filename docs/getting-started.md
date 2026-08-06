@@ -120,6 +120,12 @@ Programs with declared buffers can bind WAV files by name:
 onda run play buffer_looper.onda --buffer src=sample.wav
 ```
 
+Bindings are optional resources, not a prerequisite for starting the processor. An unbound buffer
+acts as a neutral one-frame buffer whose reads return zero and whose writes are discarded. Fixed
+buffer arrays bind by slot name, for example `--buffer 'bank[0]=kick.wav'`; other slots may remain
+unbound. The [language guide]({{ '/docs/language/' | relative_url }}#external-buffers) covers buffer
+declarations, selection, and indexing.
+
 ## Render a WAV file
 
 Offline rendering uses the same run pipeline without opening an audio device:
@@ -128,4 +134,4 @@ Offline rendering uses the same run pipeline without opening an audio device:
 onda run render sine.onda --output first.wav --dur 5 --set freq=330
 ```
 
-The same `--buffer name=path` option is available for offline rendering.
+The same optional `--buffer name=path` option is available for offline rendering.

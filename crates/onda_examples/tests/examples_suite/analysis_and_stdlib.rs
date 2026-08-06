@@ -1109,7 +1109,7 @@ outs { out1 }
 
 buffers { buf }
 
-def read_buf(b: buffer[f32], idx: i32) {
+def read_buf(b: buffer<f32>, idx: i32) {
 
   return b[idx]
 
@@ -2179,7 +2179,7 @@ outs { out1 }
 
 buffers { buf }
 
-def write_first(b: buffer[f32], x: f32) {
+def write_first(b: buffer<f32>, x: f32) {
 
   b[0] = x
 
@@ -2540,9 +2540,9 @@ ins { in1 }
 
 outs { out1 }
 
-buffers { buf: buffer[f32] }
+buffers { buf: buffer<f32> }
 
-def write_first(b: buffer[f32], x: f32) {
+def write_first(b: buffer<f32>, x: f32) {
 
     b[0] = x
 

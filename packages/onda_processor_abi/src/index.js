@@ -4,8 +4,8 @@ const PARAM_CONTROL = globalThis.__ONDA_PARAM_CONTROL_V2__;
 
 export const PROCESSOR_ARTIFACT_FORMAT = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 2;
-export const PROCESSOR_ABI_VERSION = 2;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 3;
+export const PROCESSOR_ABI_VERSION = 3;
 export const PROCESSOR_EXECUTION_OK = 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
@@ -223,6 +223,41 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
   metadata.metadata.buffers.forEach((entry, index) =>
     validateBufferMetadata(entry, `metadata.buffers[${index}]`)
   );
+  const bufferArrays = metadata.metadata.buffer_arrays ?? [];
+  if (!Array.isArray(bufferArrays)) {
+    throw new OndaArtifactError("metadata.buffer_arrays must be an array");
+  }
+  const bufferArrayNames = new Set();
+  const groupedBuffers = new Set();
+  bufferArrays.forEach((entry, index) => {
+    const path = `metadata.buffer_arrays[${index}]`;
+    requireString(entry?.name, `${path}.name`);
+    requireInteger(entry?.first_buffer, `${path}.first_buffer`, 0);
+    requireInteger(entry?.len, `${path}.len`, 1);
+    if (bufferArrayNames.has(entry.name)) {
+      throw new OndaArtifactError(`${path}.name duplicates buffer array '${entry.name}'`);
+    }
+    bufferArrayNames.add(entry.name);
+    if (entry.first_buffer + entry.len > metadata.metadata.buffers.length) {
+      throw new OndaArtifactError(`${path} exceeds metadata.buffers`);
+    }
+    const first = metadata.metadata.buffers[entry.first_buffer];
+    for (let slot = entry.first_buffer; slot < entry.first_buffer + entry.len; slot += 1) {
+      if (groupedBuffers.has(slot)) {
+        throw new OndaArtifactError(`${path} overlaps another buffer array at slot ${slot}`);
+      }
+      groupedBuffers.add(slot);
+      const buffer = metadata.metadata.buffers[slot];
+      if (
+        buffer.scalar !== first.scalar ||
+        buffer.channels !== first.channels ||
+        buffer.static_channels !== first.static_channels ||
+        buffer.access !== first.access
+      ) {
+        throw new OndaArtifactError(`${path} contains incompatible buffer descriptors`);
+      }
+    }
+  });
   metadata.metadata.events.forEach((entry, index) =>
     validateEventMetadata(entry, `metadata.events[${index}]`)
   );
@@ -363,8 +398,8 @@ function validateBufferMetadata(value, path) {
     throw new OndaArtifactError(`${path}.access has an unsupported value`);
   }
   requireBoolean(value?.may_write, `${path}.may_write`);
-  if (value.may_write !== (value.access === "read_write")) {
-    throw new OndaArtifactError(`${path}.may_write must reflect the declared access capability`);
+  if (value.may_write && value.access !== "read_write") {
+    throw new OndaArtifactError(`${path}.may_write requires read_write access`);
   }
 }
 

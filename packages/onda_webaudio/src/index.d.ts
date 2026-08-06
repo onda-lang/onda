@@ -22,6 +22,10 @@ export interface OndaAudioProcessorOptions {
   workletUrl?: string | URL;
   /** Initial plain Onda parameter values, keyed or ordered by descriptor parameter. */
   params?: Record<string, unknown> | unknown[];
+  /**
+   * Initial external-buffer bindings keyed by physical name, grouped by logical array name, or
+   * ordered by physical descriptor slot. Missing and null slots use neutral one-frame storage.
+   */
   buffers?: Record<string, unknown> | unknown[];
   /** Preallocated capacity for dynamic event payloads. Defaults to 64 KiB. */
   eventPayloadCapacityBytes?: number;

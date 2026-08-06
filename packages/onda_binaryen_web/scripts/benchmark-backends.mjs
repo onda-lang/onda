@@ -70,6 +70,42 @@ const scenarios = [
     name: "math-intrinsics",
     source: join(packageDir, "test/fixtures/math-intrinsics-parity.onda"),
   },
+  {
+    name: "buffer-sequential",
+    source: join(packageDir, "test/fixtures/benchmark-buffer-sequential.onda"),
+  },
+  {
+    name: "buffer-interpolation",
+    source: join(packageDir, "test/fixtures/benchmark-buffer-interpolation.onda"),
+  },
+  {
+    name: "buffer-collection-constant",
+    source: join(
+      packageDir,
+      "test/fixtures/benchmark-buffer-collection-constant.onda",
+    ),
+  },
+  {
+    name: "buffer-collection-invariant",
+    source: join(
+      packageDir,
+      "test/fixtures/benchmark-buffer-collection-invariant.onda",
+    ),
+  },
+  {
+    name: "buffer-collection-forwarded-invariant",
+    source: join(
+      packageDir,
+      "test/fixtures/benchmark-buffer-collection-forwarded-invariant.onda",
+    ),
+  },
+  {
+    name: "buffer-collection-varying",
+    source: join(
+      packageDir,
+      "test/fixtures/benchmark-buffer-collection-varying.onda",
+    ),
+  },
 ];
 
 validatePositiveInteger(blockSize, "block size");
@@ -338,13 +374,47 @@ async function prepareWasmBenchmark(artifact) {
   );
 
   const buffers = metadata.metadata.buffers;
-  if (buffers.length) {
-    throw new Error("benchmark scenarios must not require external buffers");
-  }
+  const bufferPointers = buffers.length ? allocate(buffers.length * 4, 4) : 0;
+  const bufferFrames = buffers.length ? allocate(buffers.length * 4, 4) : 0;
+  const bufferChannels = buffers.length ? allocate(buffers.length * 4, 4) : 0;
+  const bufferSampleRates = buffers.length
+    ? allocate(buffers.length * 4, 4)
+    : 0;
+  const bufferDataPointers = buffers.map((buffer) =>
+    allocate(
+      blockSize
+        * benchmarkBufferChannelCount(buffer)
+        * scalarSize(buffer.scalar),
+      scalarSize(buffer.scalar),
+    ),
+  );
   writeParameterDefaults(memory, params, metadata.metadata.params);
+  view = new DataView(memory.buffer);
+  bufferDataPointers.forEach((pointer, index) => {
+    view.setUint32(bufferPointers + index * 4, pointer, true);
+    view.setInt32(bufferFrames + index * 4, blockSize, true);
+    view.setInt32(
+      bufferChannels + index * 4,
+      benchmarkBufferChannelCount(buffers[index]),
+      true,
+    );
+    view.setFloat32(bufferSampleRates + index * 4, sampleRate, true);
+  });
   requireExecutionSuccess(onda_init(params, state), "processor init");
   const process = () => requireExecutionSuccess(
-    onda_process(state, params, 0, outputTable, 0, blockSize, 3, 0, 0, 0, 0),
+    onda_process(
+      state,
+      params,
+      0,
+      outputTable,
+      0,
+      blockSize,
+      3,
+      bufferPointers,
+      bufferFrames,
+      bufferChannels,
+      bufferSampleRates,
+    ),
     "processor process",
   );
 
@@ -495,6 +565,15 @@ function scalarSize(scalar) {
   if (scalar === "i32" || scalar === "f32") return 4;
   if (scalar === "i64" || scalar === "f64") return 8;
   throw new Error(`unsupported scalar type '${String(scalar)}'`);
+}
+
+function benchmarkBufferChannelCount(buffer) {
+  if (buffer.channels === "mono") return 1;
+  if (buffer.channels === "dynamic") return 2;
+  if (buffer.channels === "static") return Math.max(buffer.static_channels, 1);
+  throw new Error(
+    `unsupported buffer channel shape '${String(buffer.channels)}'`,
+  );
 }
 
 function parseLastJsonLine(output) {

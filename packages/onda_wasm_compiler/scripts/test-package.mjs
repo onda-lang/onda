@@ -30,14 +30,14 @@ try {
   ) {
     throw new Error("compiler build does not record an effective wasm-opt O4 frontend pass");
   }
-  const compilerPack = runJson("npm", [
+  const compilerPack = firstPackRecord(runJson("npm", [
     "pack",
     packageRoot,
     "--json",
     "--ignore-scripts",
     "--pack-destination",
     temporary,
-  ])[0];
+  ]));
   const packedPaths = new Set(compilerPack.files.map((file) => file.path));
   for (const required of [
     "bin/onda-wasm.js",
@@ -62,13 +62,13 @@ try {
     );
   }
 
-  const binaryenPack = runJson("npm", [
+  const binaryenPack = firstPackRecord(runJson("npm", [
     "pack",
     binaryenRoot,
     "--json",
     "--pack-destination",
     temporary,
-  ])[0];
+  ]));
   const abiPack = packWorkspacePackage(abiRoot);
   const backendPack = packWorkspacePackage(backendRoot);
   const webAudioPack = packWorkspacePackage(webAudioRoot);
@@ -121,14 +121,22 @@ process.stdout.write(String(artifact.wasm.byteLength));
 }
 
 function packWorkspacePackage(root) {
-  return runJson("npm", [
+  return firstPackRecord(runJson("npm", [
     "pack",
     root,
     "--json",
     "--ignore-scripts",
     "--pack-destination",
     temporary,
-  ])[0];
+  ]));
+}
+
+function firstPackRecord(result) {
+  const records = Array.isArray(result) ? result : Object.values(result ?? {});
+  if (records.length !== 1 || !records[0]?.filename || !Array.isArray(records[0].files)) {
+    throw new Error(`npm pack returned an unexpected result: ${JSON.stringify(result)}`);
+  }
+  return records[0];
 }
 
 function runJson(command, args, cwd = packageRoot) {

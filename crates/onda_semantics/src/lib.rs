@@ -15,7 +15,8 @@ use onda_frontend::{
     NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock,
     ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
     SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
 };
 
 pub mod aggregate_layout;
@@ -222,6 +223,10 @@ pub struct TypedBufferDecl {
     pub name: String,
     pub elem_ty: PrimitiveType,
     pub channels: TypedBufferChannels,
+    /// Number of individually bindable resources in this declaration.
+    pub array_len: usize,
+    /// Whether the declaration used the fixed resource-array form, including `[1]`.
+    pub is_array: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +323,11 @@ pub enum TypedFnParam {
     Buffer {
         elem_ty: PrimitiveType,
         channels: TypedBufferChannels,
+    },
+    BufferArray {
+        elem_ty: PrimitiveType,
+        channels: TypedBufferChannels,
+        len: usize,
     },
     Tuple {
         elem_tys: Vec<PrimitiveType>,
@@ -591,6 +601,67 @@ mod tests {
             errors.iter().any(|diag| diag.message.contains(expected)),
             "expected diagnostic containing '{expected}', got {errors:?}"
         );
+    }
+
+    #[test]
+    fn rejects_static_buffer_channels_beyond_signed_byte_extent() {
+        assert_analyze_error_contains(
+            r#"
+buffers:
+  huge: f32[536870912]
+sample:
+  out1 = 0
+"#,
+            "signed i32 buffer byte-extent limit",
+        );
+    }
+
+    #[test]
+    fn accepts_scoped_buffer_element_aliases_semantically() {
+        let program = parse_program(
+            r#"
+buffers:
+  bank: f32 {2}
+sample:
+  selected = bank[0]
+  out1 = selected[0] + f32(selected.len())
+"#,
+        )
+        .expect("parse should succeed");
+        analyze(program).expect("buffer element aliases should analyze");
+    }
+
+    #[test]
+    fn rejects_standalone_buffer_collection_spans_semantically() {
+        assert_analyze_error_contains(
+            r#"
+buffers:
+  bank: f32 {2}
+sample:
+  value = bank[:]
+  out1 = 0
+"#,
+            "buffer collection slice",
+        );
+    }
+
+    #[test]
+    fn rejects_buffer_reference_alias_rebinding() {
+        for replacement in ["bank[1]", "0.0"] {
+            assert_analyze_error_contains(
+                &format!(
+                    r#"
+buffers:
+  bank: f32 {{2}}
+sample:
+  selected = bank[0]
+  selected = {replacement}
+  out1 = selected[0]
+"#
+                ),
+                "is immutable and cannot be rebound",
+            );
+        }
     }
 
     #[test]
@@ -3228,45 +3299,6 @@ sample:
             "diagnostics: {errors:?}"
         );
     }
-
-    #[test]
-    fn const_array_unsafe_write_is_rejected() {
-        let src = r#"
-const Table = [1, 2, 3]
-
-outs:
-  out1
-
-sample:
-  unsafe_write(Table, 0, 4)
-  out1 = 0.0
-"#;
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("const array unsafe_write should fail");
-        assert!(errors.iter().any(|diag| diag
-            .message
-            .contains("builtin 'unsafe_write' cannot write immutable array alias 'Table'")));
-    }
-
-    #[test]
-    fn const_array_method_unsafe_write_is_rejected() {
-        let src = r#"
-const Table = [1, 2, 3]
-
-outs:
-  out1
-
-sample:
-  Table.unsafe_write(0, 4)
-  out1 = 0.0
-"#;
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("const array method unsafe_write should fail");
-        assert!(errors.iter().any(|diag| diag
-            .message
-            .contains("builtin 'unsafe_write' cannot write immutable array alias 'Table'")));
-    }
-
     #[test]
     fn const_arrays_can_be_passed_to_readonly_array_params() {
         let src = r#"
@@ -3352,52 +3384,6 @@ sample:
             "diagnostics: {errors:?}"
         );
     }
-
-    #[test]
-    fn const_arrays_cannot_be_passed_to_unsafe_write_array_params() {
-        let src = r#"
-const Table: f32[3] = [1.0, 2.0, 3.0]
-
-def write_first(arr: f32[]):
-  unsafe_write(arr, 0, 0.0)
-  return arr[0]
-
-outs:
-  out1
-
-sample:
-  out1 = write_first(Table)
-"#;
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("const array unsafe_write def arg should fail");
-        assert!(errors.iter().any(|diag| diag.message.contains(
-            "cannot pass immutable array alias 'Table' to mutable array parameter 'arr'"
-        )));
-    }
-
-    #[test]
-    fn const_arrays_cannot_be_passed_to_method_unsafe_write_array_params() {
-        let src = r#"
-const Table: f32[3] = [1.0, 2.0, 3.0]
-
-def write_first(arr: f32[]):
-  arr.unsafe_write(0, 0.0)
-  return arr[0]
-
-outs:
-  out1
-
-sample:
-  out1 = write_first(Table)
-"#;
-        let program = parse_program(src).expect("parse should succeed");
-        let errors =
-            analyze(program).expect_err("const array method unsafe_write def arg should fail");
-        assert!(errors.iter().any(|diag| diag.message.contains(
-            "cannot pass immutable array alias 'Table' to mutable array parameter 'arr'"
-        )));
-    }
-
     #[test]
     fn const_arrays_cannot_be_passed_through_mutating_array_alias_params() {
         let src = r#"
@@ -5536,7 +5522,7 @@ sample:
 
     #[test]
     fn init_buffer_len_is_rejected_semantically() {
-        let src = "buffers:\n  src: buffer[f32]\nouts:\n  out1\ninit:\n  n = src.len()\nsample:\n  out1 = 0.0\n";
+        let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  n = src.len()\nsample:\n  out1 = 0.0\n";
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("buffer len in init should fail");
         let diag = errors
@@ -5551,7 +5537,7 @@ sample:
 
     #[test]
     fn init_buffer_index_is_rejected_semantically() {
-        let src = "buffers:\n  src: buffer[f32]\nouts:\n  out1\ninit:\n  first = src[0]\nsample:\n  out1 = 0.0\n";
+        let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  first = src[0]\nsample:\n  out1 = 0.0\n";
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("buffer indexing in init should fail");
         let diag = errors
@@ -5565,15 +5551,62 @@ sample:
     }
 
     #[test]
+    fn buffer_collection_metadata_requires_a_selected_slot() {
+        let src = r#"
+buffers:
+  bank: f32[] {2}
+
+block:
+  channels = bank.chans()
+  rate = bank.samplerate()
+  sample:
+    out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("collection metadata should require a slot");
+
+        for method in [".chans()", ".samplerate()"] {
+            let diagnostic = errors
+                .iter()
+                .find(|diagnostic| diagnostic.message.contains(method))
+                .unwrap_or_else(|| panic!("missing {method} diagnostic: {errors:?}"));
+            assert!(diagnostic.message.contains("select a slot"));
+            assert!(diagnostic.editor_visible);
+        }
+    }
+
+    #[test]
+    fn buffer_collection_argument_requires_a_selected_slot() {
+        let src = r#"
+buffers:
+  bank: f32 {2}
+
+def first(buf: buffer<f32>):
+  return buf[0]
+
+sample:
+  out1 = first(bank)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("collection arguments should require a slot");
+        let diagnostic = errors
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("select a slot"))
+            .unwrap_or_else(|| panic!("missing collection argument diagnostic: {errors:?}"));
+        assert!(diagnostic.message.contains("collection 'bank'"));
+        assert!(diagnostic.editor_visible);
+    }
+
+    #[test]
     fn def_param_shadows_same_named_top_level_buffer_during_monomorphization() {
         let src = r#"
 buffers:
-  buf: buffer[f32]
+  buf: buffer<f32>
 
 outs:
   out1
 
-def read_first(buf: buffer[f32], index: i32):
+def read_first(buf: buffer<f32>, index: i32):
   return buf[index]
 
 sample:
@@ -7022,14 +7055,16 @@ sample:
             Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
                 .iter()
                 .any(|expr| expr_contains_index_base(expr, expected_base)),
-            Expr::Slice { start, end, .. } => {
-                start
-                    .as_ref()
-                    .is_some_and(|expr| expr_contains_index_base(expr, expected_base))
-                    || end
-                        .as_ref()
-                        .is_some_and(|expr| expr_contains_index_base(expr, expected_base))
-            }
+            Expr::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => [selector, channel, start, end]
+                .into_iter()
+                .flatten()
+                .any(|expr| expr_contains_index_base(expr, expected_base)),
             Expr::ArrayCtor { spec, init, .. } => {
                 expr_contains_index_base(&spec.size, expected_base)
                     || init.as_ref().is_some_and(|values| {
@@ -7066,14 +7101,16 @@ sample:
                 values.iter().any(expr_contains_proc_index_sentinel)
             }
             Expr::Index { index, .. } => expr_contains_proc_index_sentinel(index),
-            Expr::Slice { start, end, .. } => {
-                start
-                    .as_ref()
-                    .is_some_and(|expr| expr_contains_proc_index_sentinel(expr))
-                    || end
-                        .as_ref()
-                        .is_some_and(|expr| expr_contains_proc_index_sentinel(expr))
-            }
+            Expr::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => [selector, channel, start, end]
+                .into_iter()
+                .flatten()
+                .any(|expr| expr_contains_proc_index_sentinel(expr)),
             Expr::ArrayCtor { spec, init, .. } => {
                 expr_contains_proc_index_sentinel(&spec.size)
                     || init
