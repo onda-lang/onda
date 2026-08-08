@@ -842,6 +842,12 @@ impl WebMaterializedProjectBuilder {
             )));
         }
         let limits = web_project_limits();
+        let max_files = limits.max_materialized_file_count();
+        if self.files.len() >= max_files {
+            return Err(project_js_error(format!(
+                "project contains more than {max_files} files"
+            )));
+        }
         let max_file_bytes = limits.max_materialized_file_bytes();
         if bytes.len() > max_file_bytes {
             return Err(project_js_error(format!(

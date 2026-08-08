@@ -267,6 +267,24 @@ sample:
   await compiler.dispose();
 });
 
+test("project file builder rejects excess files before retaining them", async () => {
+  const compiler = await createCompiler();
+  const builder = new compiler.frontend.WebMaterializedProjectBuilder();
+  const maxFiles = 4096 + 4096 + 1;
+  try {
+    for (let index = 0; index < maxFiles; index += 1) {
+      builder.add_file(`empty/${index}`, new Uint8Array());
+    }
+    assert.throws(
+      () => builder.add_file("empty/overflow", new Uint8Array()),
+      /more than 8193 files/,
+    );
+  } finally {
+    builder.free();
+    await compiler.dispose();
+  }
+});
+
 test("confines in-memory projects inside the browser virtual namespace", async () => {
   const compiler = await createCompiler();
   for (const source of [
