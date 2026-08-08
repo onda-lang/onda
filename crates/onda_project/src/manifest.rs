@@ -67,6 +67,7 @@ pub struct ProjectFile {
 pub struct ProjectWatchPaths {
     pub manifest: PathBuf,
     pub assets: Vec<PathBuf>,
+    pub asset_aliases: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +299,7 @@ impl ProjectFile {
             ))
         })?;
         let mut assets = BTreeSet::new();
+        let mut asset_aliases = BTreeSet::new();
         for binding in self.manifest.buffers.values() {
             let files: Vec<&ManifestBufferFile> = match binding {
                 ManifestBufferBinding::File(file) => vec![file],
@@ -312,13 +314,15 @@ impl ProjectFile {
                     .collect(),
             };
             for file in files {
-                let path = resolve_contained_path(&self.root, &file.file)?;
-                assets.insert(path);
+                let (asset, alias) = resolve_contained_watch_path(&self.root, &file.file)?;
+                assets.insert(asset);
+                asset_aliases.extend(alias);
             }
         }
         Ok(ProjectWatchPaths {
             manifest,
             assets: assets.into_iter().collect(),
+            asset_aliases: asset_aliases.into_iter().collect(),
         })
     }
 
@@ -699,6 +703,52 @@ fn resolve_contained_path(root: &Path, relative: &str) -> Result<PathBuf, Projec
         )));
     }
     Ok(canonical)
+}
+
+fn resolve_contained_watch_path(
+    root: &Path,
+    relative: &str,
+) -> Result<(PathBuf, Option<PathBuf>), ProjectError> {
+    validate_relative_project_path(relative, &ProjectLimits::default())?;
+    let candidate = root.join(relative);
+    let mut existing_ancestor = candidate.as_path();
+
+    let canonical_ancestor = loop {
+        match fs::canonicalize(existing_ancestor) {
+            Ok(path) => break path,
+            Err(error)
+                if existing_ancestor != root
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+            {
+                existing_ancestor = existing_ancestor
+                    .parent()
+                    .expect("a project path below its root has a parent");
+            }
+            Err(error) => {
+                return Err(ProjectError::new(format!(
+                    "failed to resolve project file '{}': {error}",
+                    candidate.display()
+                )));
+            }
+        }
+    };
+
+    if !canonical_ancestor.starts_with(root) {
+        return Err(ProjectError::new(format!(
+            "project file '{}' resolves outside the project root",
+            candidate.display()
+        )));
+    }
+
+    let unresolved_suffix = candidate
+        .strip_prefix(existing_ancestor)
+        .expect("the nearest existing ancestor belongs to the project path");
+    let resolved = canonical_ancestor.join(unresolved_suffix);
+    let alias = (candidate != resolved).then_some(candidate);
+    Ok((resolved, alias))
 }
 
 fn parse_i32(value: &Value) -> Result<i32, ProjectError> {

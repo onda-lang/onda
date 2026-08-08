@@ -1246,6 +1246,139 @@ fn ondaproject_file_resolves_entry_and_typed_inline_buffers() {
     fs::remove_dir_all(directory).expect("remove test directory");
 }
 
+#[test]
+fn project_watch_paths_preserve_missing_assets() {
+    let directory = temporary_directory("missing-watch-asset");
+    fs::create_dir_all(directory.join("assets")).expect("create asset directory");
+    fs::write(
+        directory.join("main.onda"),
+        "outs 1\nsample:\n  out1 = 0.0\n",
+    )
+    .expect("write source");
+    let mut manifest = ProjectManifest::empty("main.onda");
+    manifest.buffers.insert(
+        "sample".to_owned(),
+        serde_json::from_value(json!({ "file": "assets/missing.ondabuffer" }))
+            .expect("file binding"),
+    );
+    let project_path = directory.join("project.ondaproject");
+    fs::write(
+        &project_path,
+        manifest.to_pretty_json().expect("manifest JSON"),
+    )
+    .expect("write manifest");
+
+    let ProjectInput::Project(project) =
+        resolve_project_input(&project_path, ProjectLimits::default()).expect("resolve project")
+    else {
+        panic!("expected project input");
+    };
+    let watch_paths = project
+        .watch_paths()
+        .expect("missing assets must remain watchable");
+    assert_eq!(
+        watch_paths.assets,
+        vec![project.root.join("assets/missing.ondabuffer")]
+    );
+    assert!(watch_paths.asset_aliases.is_empty());
+
+    fs::remove_dir_all(directory).expect("remove test directory");
+}
+
+#[cfg(unix)]
+#[test]
+fn project_watch_paths_include_symlinks_and_their_resolved_targets() {
+    use std::os::unix::fs::symlink;
+
+    let directory = temporary_directory("symlink-watch-asset");
+    fs::create_dir_all(directory.join("assets")).expect("create asset directory");
+    fs::create_dir_all(directory.join("media")).expect("create media directory");
+    fs::write(
+        directory.join("main.onda"),
+        "outs 1\nsample:\n  out1 = 0.0\n",
+    )
+    .expect("write source");
+    let target = directory.join("media/sample.ondabuffer");
+    fs::write(&target, [1_u8, 2, 3]).expect("write asset");
+    symlink(
+        "../media/sample.ondabuffer",
+        directory.join("assets/sample.ondabuffer"),
+    )
+    .expect("create asset symlink");
+    let mut manifest = ProjectManifest::empty("main.onda");
+    manifest.buffers.insert(
+        "sample".to_owned(),
+        serde_json::from_value(json!({ "file": "assets/sample.ondabuffer" }))
+            .expect("file binding"),
+    );
+    let project_path = directory.join("project.ondaproject");
+    fs::write(
+        &project_path,
+        manifest.to_pretty_json().expect("manifest JSON"),
+    )
+    .expect("write manifest");
+
+    let ProjectInput::Project(project) =
+        resolve_project_input(&project_path, ProjectLimits::default()).expect("resolve project")
+    else {
+        panic!("expected project input");
+    };
+    let watch_paths = project.watch_paths().expect("resolve watch paths");
+    assert_eq!(
+        watch_paths.assets,
+        vec![fs::canonicalize(target).expect("canonical target")]
+    );
+    assert_eq!(
+        watch_paths.asset_aliases,
+        vec![project.root.join("assets/sample.ondabuffer")]
+    );
+
+    fs::remove_dir_all(directory).expect("remove test directory");
+}
+
+#[cfg(unix)]
+#[test]
+fn project_watch_paths_reject_missing_assets_below_external_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let directory = temporary_directory("external-symlink-watch-asset");
+    let project_directory = directory.join("project");
+    let external_directory = directory.join("external");
+    fs::create_dir_all(&project_directory).expect("create project directory");
+    fs::create_dir_all(&external_directory).expect("create external directory");
+    fs::write(
+        project_directory.join("main.onda"),
+        "outs 1\nsample:\n  out1 = 0.0\n",
+    )
+    .expect("write source");
+    symlink(&external_directory, project_directory.join("assets"))
+        .expect("create external asset symlink");
+    let mut manifest = ProjectManifest::empty("main.onda");
+    manifest.buffers.insert(
+        "sample".to_owned(),
+        serde_json::from_value(json!({ "file": "assets/missing.ondabuffer" }))
+            .expect("file binding"),
+    );
+    let project_path = project_directory.join("project.ondaproject");
+    fs::write(
+        &project_path,
+        manifest.to_pretty_json().expect("manifest JSON"),
+    )
+    .expect("write manifest");
+
+    let ProjectInput::Project(project) =
+        resolve_project_input(&project_path, ProjectLimits::default()).expect("resolve project")
+    else {
+        panic!("expected project input");
+    };
+    let error = project
+        .watch_paths()
+        .expect_err("external symlinks must remain confined");
+    assert!(error.to_string().contains("outside the project root"));
+
+    fs::remove_dir_all(directory).expect("remove test directory");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn filesystem_projects_reject_manifest_name_portability_collisions() {

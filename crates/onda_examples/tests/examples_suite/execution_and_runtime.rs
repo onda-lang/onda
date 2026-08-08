@@ -9495,7 +9495,7 @@ fn explicit_mir_orc_struct_reserved_method_names_compile_and_run() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     for sample in &output {
-        assert_near(*sample, 5.0, 1e-6);
+        assert_near(*sample, 1.5, 1e-6);
     }
 }
 

@@ -1454,6 +1454,7 @@ struct SourceSnapshot {
     sources: Vec<SourceFileSnapshot>,
     project_manifest: Option<SourceFileSnapshot>,
     assets: Vec<AssetFileSnapshot>,
+    asset_aliases: Vec<PathBuf>,
 }
 
 impl SourceSnapshot {
@@ -1474,6 +1475,7 @@ impl SourceSnapshot {
                     .map(|manifest| manifest.path.clone()),
             )
             .chain(self.assets.iter().map(|asset| asset.path.clone()))
+            .chain(self.asset_aliases.iter().cloned())
             .collect()
     }
 
@@ -1489,6 +1491,11 @@ impl SourceSnapshot {
                 digest: digest_file(path),
                 path: path.clone(),
             })
+            .collect();
+        self.asset_aliases = project
+            .into_iter()
+            .flat_map(|project| &project.asset_aliases)
+            .cloned()
             .collect();
         self
     }
@@ -1596,6 +1603,7 @@ fn source_snapshot_from_paths(entry: &Path, previous: &[PathBuf]) -> SourceSnaps
         sources,
         project_manifest: None,
         assets: Vec::new(),
+        asset_aliases: Vec::new(),
     }
 }
 
@@ -2173,6 +2181,7 @@ mod tests {
         let entry = temp_root.join("main.onda");
         let manifest = temp_root.join("project.ondaproject");
         let asset = temp_root.join("sample.ondabuffer");
+        let asset_alias = temp_root.join("linked-sample.ondabuffer");
         fs::write(&entry, "outs 1\nsample:\n  out1 = 0.0\n").expect("write entry");
         fs::write(&manifest, "{\"entry\":\"main.onda\"}\n").expect("write manifest");
         fs::write(&asset, [1_u8, 2, 3]).expect("write asset");
@@ -2180,6 +2189,7 @@ mod tests {
         let project = onda_project::ProjectWatchPaths {
             manifest: fs::canonicalize(manifest).expect("canonical manifest"),
             assets: vec![fs::canonicalize(&asset).expect("canonical asset")],
+            asset_aliases: vec![asset_alias.clone()],
         };
 
         let initial = source_snapshot_with_project(&entry, &[], Some(&project));
@@ -2189,7 +2199,8 @@ mod tests {
             vec![
                 entry.clone(),
                 project.manifest.clone(),
-                project.assets[0].clone()
+                project.assets[0].clone(),
+                asset_alias,
             ]
         );
         assert_eq!(initial.assets.len(), 1);
