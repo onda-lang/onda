@@ -594,7 +594,7 @@ fn semantic_tokens_keep_proc_runtime_scope_but_not_proc_local_def_locals() {
         "  params:\n",
         "    gain = 1.0\n",
         "  buffers:\n",
-        "    line: buffer[f32]\n",
+        "    line: buffer<f32>\n",
         "  init:\n",
         "    state = 0.0\n",
         "\n",
@@ -974,13 +974,13 @@ fn semantic_tokens_mark_top_level_block_locals_in_nested_sample_for_buffer_loope
     assert!(
         frames_tokens
             .iter()
-            .any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            .any(|t| t.line == 10 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
         "top-level block local 'frames' should be highlighted in block: {frames_tokens:?}"
     );
     assert!(
         frames_tokens
             .iter()
-            .any(|t| t.line == 23 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            .any(|t| t.line == 20 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
         "top-level block local 'frames' should carry into nested sample: {frames_tokens:?}"
     );
 
@@ -988,7 +988,7 @@ fn semantic_tokens_mark_top_level_block_locals_in_nested_sample_for_buffer_loope
     assert!(
         chans_tokens
             .iter()
-            .any(|t| t.line == 17 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            .any(|t| t.line == 15 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
         "top-level block local 'chans' should carry into nested sample: {chans_tokens:?}"
     );
 
@@ -996,7 +996,7 @@ fn semantic_tokens_mark_top_level_block_locals_in_nested_sample_for_buffer_loope
     assert!(
         speed_tokens
             .iter()
-            .any(|t| t.line == 22 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            .any(|t| t.line == 20 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
         "top-level block local 'speed' should carry into nested sample: {speed_tokens:?}"
     );
 }

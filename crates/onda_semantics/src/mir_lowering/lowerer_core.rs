@@ -337,8 +337,7 @@ impl<'a> FunctionLowerer<'a> {
                     }
                     let slice = self.lower_named_slice(
                         &flat_name,
-                        None,
-                        None,
+                        SliceSelection::default(),
                         Some(onda_mir::AccessMode::ReadWrite),
                         block,
                         function_location(self.function),
@@ -452,6 +451,48 @@ impl<'a> FunctionLowerer<'a> {
                     self.bindings
                         .insert(name.clone(), Binding::BufferParameter(parameter, *elem_ty));
                     next_parameter_id += 1;
+                }
+                TypedFnParam::BufferArray {
+                    elem_ty,
+                    channels,
+                    len,
+                } => {
+                    let channels = mir_buffer_channels(channels).ok_or_else(|| {
+                        self.error(
+                            format!("buffer collection parameter '{name}' channel count does not fit u32"),
+                            function_location(self.function),
+                        )
+                    })?;
+                    let len = u32::try_from(*len).map_err(|_| {
+                        self.error(
+                            format!("buffer collection parameter '{name}' count does not fit u32"),
+                            function_location(self.function),
+                        )
+                    })?;
+                    if len == 0 {
+                        return Err(self.error(
+                            format!("buffer collection parameter '{name}' cannot be empty"),
+                            function_location(self.function),
+                        ));
+                    }
+                    let type_id = intern_buffer_span_type(
+                        self.types,
+                        *elem_ty,
+                        channels,
+                        onda_mir::AccessMode::ReadWrite,
+                        len,
+                    );
+                    let span = ParameterId::new(next_parameter_id);
+                    self.params.push(onda_mir::FunctionParam {
+                        name: name.clone(),
+                        ty: type_id,
+                        mode: onda_mir::PassingMode::Value,
+                    });
+                    next_parameter_id += 1;
+                    self.bindings.insert(
+                        name.clone(),
+                        Binding::BufferParameterArray(span, *elem_ty, len),
+                    );
                 }
                 TypedFnParam::Struct { struct_name } => {
                     let shapes =

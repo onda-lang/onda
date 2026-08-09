@@ -1,0 +1,18 @@
+import std/lookup
+
+buffers:
+  clip: f32[]
+
+init:
+  position = 0.0
+
+block:
+  frames = clip.len()
+
+  sample:
+    out1 = std::lookup::readL(clip, 0, position)
+    out2 = std::lookup::readC(clip, 1, position)
+    position = position + 0.75
+    if position >= f32(frames):
+      position = position - f32(frames)
+

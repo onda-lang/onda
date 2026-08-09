@@ -1811,19 +1811,19 @@ fn proc_local_def_owner_generic_slice_param() {
 
 const PROC_LOCAL_DEF_GENERIC_BUFFER_PARAM_EXAMPLE: &str = r#"
 
-buffers { src: buffer[f32] }
+buffers { src: buffer<f32> }
 
 
 
 proc Reader<T> {
 
-  buffers { line: buffer[T] }
+  buffers { line: buffer<T> }
 
   outs 1
 
 
 
-  def first_plus(buf: buffer[T], add: T) {
+  def first_plus(buf: buffer<T>, add: T) {
 
     return buf[0] + add
 

@@ -17,8 +17,9 @@ use crate::ast::{
     GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, LogicalOp, OutputTiming,
     ParamBlock, ParamControl, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType,
     ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef, StructField,
-    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN, PARAM_DOMAIN_POSITIONAL_FIELDS,
-    PARAM_SCALES,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    METHOD_RECEIVER_ARG, PARAM_DOMAIN_POSITIONAL_FIELDS, PARAM_SCALES,
 };
 use crate::diagnostics::Diagnostic;
 
@@ -94,11 +95,12 @@ use module_loading::{parse_loc_from_raw, stmt_loc_from_pair};
 mod type_helpers;
 pub use module_loading::{
     inject_auto_std_math, inject_auto_std_prelude, load_program_file,
-    load_program_file_from_virtual_sources, load_program_file_with_overlays,
-    parse_namespace_ref_text_ast, parse_program, parse_program_file,
-    parse_program_file_from_virtual_sources, parse_program_file_with_overlays,
-    parse_program_with_path, parse_stdlib_module, LoadError, LoadResult, LoadedProgram,
-    SourceManifest,
+    load_program_file_from_snapshot, load_program_file_from_virtual_sources,
+    load_program_file_with_overlays, parse_namespace_ref_text_ast, parse_program,
+    parse_program_file, parse_program_file_from_virtual_sources, parse_program_file_with_overlays,
+    parse_program_with_path, parse_stdlib_module, rewrite_source_references, LoadError, LoadResult,
+    LoadedProgram, SourceDocument, SourceManifest, SourceReferenceKind, SourceReferenceRewrite,
+    SourceResolution, UnresolvedSourceResolution,
 };
 use type_helpers::*;
 

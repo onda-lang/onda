@@ -1,6 +1,5 @@
 // Shared browser adapter for the transport-neutral Onda run view.
 import { flattenedAudioChannelCount } from "@onda-lang/webaudio";
-import { UNBOUND_BUFFERS_MESSAGE } from "./browser-buffers.js";
 
 export class BrowserRunViewHost {
   constructor(iframe, handlers = {}) {
@@ -90,26 +89,7 @@ export class BrowserRunViewHost {
     }
     this.state.error = "";
     this.state.sourceDirty = false;
-    if (!this.buffersReady()) {
-      this.state.running = false;
-      this.state.connected = false;
-      this.state.status = UNBOUND_BUFFERS_MESSAGE;
-    }
     this.postState();
-  }
-
-  buffersReady() {
-    return this.state.buffers.every((buffer) => Boolean(buffer.loadedPath));
-  }
-
-  setWaitingForBuffers() {
-    this.setState({
-      running: false,
-      connected: false,
-      status: UNBOUND_BUFFERS_MESSAGE,
-      error: "",
-    });
-    this.postScope(0, []);
   }
 
   clearArtifact(path = this.state.path) {
@@ -146,7 +126,7 @@ export class BrowserRunViewHost {
     this.setState({
       running: false,
       connected: false,
-      status: this.buffersReady() ? status : UNBOUND_BUFFERS_MESSAGE,
+      status,
     });
     this.postScope(0, []);
   }
@@ -193,13 +173,6 @@ export class BrowserRunViewHost {
         : buffer
     );
     this.state.error = "";
-    if (!this.buffersReady()) {
-      this.state.running = false;
-      this.state.connected = false;
-      this.state.status = UNBOUND_BUFFERS_MESSAGE;
-    } else if (this.state.status === UNBOUND_BUFFERS_MESSAGE) {
-      this.state.status = "Stopped";
-    }
     this.postState();
   }
 
@@ -227,8 +200,7 @@ export class BrowserRunViewHost {
           this.postState();
           break;
         case "start":
-          if (this.state.sourceDirty || this.buffersReady()) await this.handlers.start?.();
-          else this.setWaitingForBuffers();
+          await this.handlers.start?.();
           break;
         case "stop":
           await this.handlers.stop?.();

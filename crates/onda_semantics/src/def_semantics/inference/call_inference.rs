@@ -8,7 +8,7 @@ pub(super) fn infer_stmt_calls(
     struct_array_roots: &HashMap<String, String>,
     proc_array_roots: &HashMap<String, InferredProcArrayParam>,
     array_bindings: &mut HashMap<String, InferredArrayParam>,
-    buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
+    buffer_bindings: &mut HashMap<String, InferredBufferBinding>,
     fn_signatures: &HashMap<String, FnSignature>,
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
     errors: &mut Vec<Diagnostic>,
@@ -43,6 +43,9 @@ pub(super) fn infer_stmt_calls(
             if let AssignTarget::Var(name) = target {
                 if let Some(info) = infer_array_binding_from_assignment(expr) {
                     array_bindings.insert(name.clone(), info);
+                }
+                if let Some(info) = infer_buffer_binding_from_assignment(expr, buffer_bindings) {
+                    buffer_bindings.insert(name.clone(), info);
                 }
             }
         }
@@ -86,6 +89,7 @@ pub(super) fn infer_stmt_calls(
                 errors,
             );
             let mut then_arrays = array_bindings.clone();
+            let mut then_buffers = buffer_bindings.clone();
             for nested in then_branch {
                 infer_stmt_calls(
                     nested,
@@ -93,13 +97,14 @@ pub(super) fn infer_stmt_calls(
                     struct_array_roots,
                     proc_array_roots,
                     &mut then_arrays,
-                    buffer_bindings,
+                    &mut then_buffers,
                     fn_signatures,
                     kinds,
                     errors,
                 );
             }
             let mut else_arrays = array_bindings.clone();
+            let mut else_buffers = buffer_bindings.clone();
             for nested in else_branch {
                 infer_stmt_calls(
                     nested,
@@ -107,7 +112,7 @@ pub(super) fn infer_stmt_calls(
                     struct_array_roots,
                     proc_array_roots,
                     &mut else_arrays,
-                    buffer_bindings,
+                    &mut else_buffers,
                     fn_signatures,
                     kinds,
                     errors,
@@ -159,6 +164,7 @@ pub(super) fn infer_stmt_calls(
                 );
             }
             let mut loop_arrays = array_bindings.clone();
+            let mut loop_buffers = buffer_bindings.clone();
             for nested in body {
                 infer_stmt_calls(
                     nested,
@@ -166,7 +172,7 @@ pub(super) fn infer_stmt_calls(
                     struct_array_roots,
                     proc_array_roots,
                     &mut loop_arrays,
-                    buffer_bindings,
+                    &mut loop_buffers,
                     fn_signatures,
                     kinds,
                     errors,
@@ -187,6 +193,7 @@ pub(super) fn infer_stmt_calls(
                 errors,
             );
             let mut loop_arrays = array_bindings.clone();
+            let mut loop_buffers = buffer_bindings.clone();
             for nested in body {
                 infer_stmt_calls(
                     nested,
@@ -194,7 +201,7 @@ pub(super) fn infer_stmt_calls(
                     struct_array_roots,
                     proc_array_roots,
                     &mut loop_arrays,
-                    buffer_bindings,
+                    &mut loop_buffers,
                     fn_signatures,
                     kinds,
                     errors,
@@ -206,13 +213,32 @@ pub(super) fn infer_stmt_calls(
     });
 }
 
+fn infer_buffer_binding_from_assignment(
+    expr: &Expr,
+    bindings: &HashMap<String, InferredBufferBinding>,
+) -> Option<InferredBufferBinding> {
+    match expr {
+        Expr::Var { name, .. } => bindings.get(name).filter(|info| !info.is_array).cloned(),
+        Expr::Index { base, .. } => {
+            bindings
+                .get(base)
+                .filter(|info| info.is_array)
+                .map(|info| InferredBufferBinding {
+                    candidates: info.candidates.clone(),
+                    is_array: false,
+                })
+        }
+        _ => None,
+    }
+}
+
 fn infer_expr_calls(
     expr: &Expr,
     struct_instances: &HashMap<String, String>,
     struct_array_roots: &HashMap<String, String>,
     proc_array_roots: &HashMap<String, InferredProcArrayParam>,
     array_bindings: &HashMap<String, InferredArrayParam>,
-    buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
+    buffer_bindings: &HashMap<String, InferredBufferBinding>,
     fn_signatures: &HashMap<String, FnSignature>,
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
     errors: &mut Vec<Diagnostic>,
@@ -251,23 +277,16 @@ fn infer_expr_calls(
                 errors,
             );
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 infer_expr_calls(
-                    start,
-                    struct_instances,
-                    struct_array_roots,
-                    proc_array_roots,
-                    array_bindings,
-                    buffer_bindings,
-                    fn_signatures,
-                    kinds,
-                    errors,
-                );
-            }
-            if let Some(end) = end {
-                infer_expr_calls(
-                    end,
+                    coordinate,
                     struct_instances,
                     struct_array_roots,
                     proc_array_roots,
@@ -412,8 +431,8 @@ fn infer_expr_calls(
                                             }) {
                                                 slot.saw_arrays.push(array_info.clone());
                                             }
-                                        } else if let Some(buffer_infos) = buffer_bindings.get(v) {
-                                            for buffer_info in buffer_infos {
+                                        } else if let Some(binding) = buffer_bindings.get(v) {
+                                            for buffer_info in &binding.candidates {
                                                 push_buffer_observation(
                                                     slot,
                                                     buffer_info.clone(),
@@ -437,6 +456,17 @@ fn infer_expr_calls(
                                     Expr::Index { base, .. } => {
                                         if let Some(struct_name) = struct_array_roots.get(base) {
                                             slot.saw_structs.insert(struct_name.clone());
+                                        } else if let Some(binding) = buffer_bindings
+                                            .get(base)
+                                            .filter(|binding| binding.is_array)
+                                        {
+                                            for buffer_info in &binding.candidates {
+                                                push_buffer_observation(
+                                                    slot,
+                                                    buffer_info.clone(),
+                                                    true,
+                                                );
+                                            }
                                         } else if let Some(struct_name) = sig
                                             .param_types
                                             .get(idx)
@@ -471,9 +501,9 @@ fn infer_expr_calls(
                                                 saw_invalid_slot = true;
                                                 continue;
                                             };
-                                            if let Some(buffer_infos) = buffer_bindings.get(v) {
+                                            if let Some(binding) = buffer_bindings.get(v) {
                                                 saw_any_buffer = true;
-                                                for buffer_info in buffer_infos {
+                                                for buffer_info in &binding.candidates {
                                                     push_buffer_observation(
                                                         slot,
                                                         buffer_info.clone(),

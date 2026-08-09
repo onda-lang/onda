@@ -68,8 +68,11 @@ The `std` modules provide oscillators, filters, envelopes, delay, FFT, convoluti
 
 These examples are more host- and data-oriented:
 
-- [`buffer_looper_read.onda`]({{ '/playground/?example=buffers-fft-convolution/buffer_looper_read.onda' | relative_url }}) reads a host-bound buffer.
-- [`sample_player.onda`]({{ '/playground/?example=buffers-fft-convolution/sample_player.onda' | relative_url }}) plays a host-bound clip under event, speed, and audio-rate amplitude control.
+- [`buffer_looper_read.onda`]({{ '/playground/?example=buffers-fft-convolution/buffer_looper_read.onda' | relative_url }})
+  reads an external buffer; without a selected file it reads the neutral zero-valued binding.
+- [`sample_player.onda`]({{ '/playground/?example=buffers-fft-convolution/sample_player.onda' | relative_url }})
+  plays an external clip under event, speed, and audio-rate amplitude control; the processor can
+  start before a clip is selected.
 - [`fft_bin_shift.onda`]({{ '/playground/?example=buffers-fft-convolution/fft_bin_shift.onda' | relative_url }}) transforms frequency bins.
 - [`convolution_impulse.onda`]({{ '/playground/?example=buffers-fft-convolution/convolution_impulse.onda' | relative_url }}) performs convolution with generated impulse data.
 - [`convolution_wav_impulse.onda`]({{ '/playground/?example=buffers-fft-convolution/convolution_wav_impulse.onda' | relative_url }}) uses a WAV impulse response.

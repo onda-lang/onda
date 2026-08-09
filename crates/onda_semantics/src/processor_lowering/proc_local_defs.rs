@@ -286,12 +286,15 @@ fn collect_local_def_calls_in_target(
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
         AssignTarget::Index { index, .. } => collect_local_def_calls_in_expr(index, def_map, calls),
-        AssignTarget::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                collect_local_def_calls_in_expr(start, def_map, calls);
-            }
-            if let Some(end) = end {
-                collect_local_def_calls_in_expr(end, def_map, calls);
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                collect_local_def_calls_in_expr(coordinate, def_map, calls);
             }
         }
     }
@@ -326,12 +329,15 @@ fn collect_local_def_calls_in_expr(
             collect_local_def_calls_in_expr(expr, def_map, calls);
         }
         Expr::Index { index, .. } => collect_local_def_calls_in_expr(index, def_map, calls),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                collect_local_def_calls_in_expr(start, def_map, calls);
-            }
-            if let Some(end) = end {
-                collect_local_def_calls_in_expr(end, def_map, calls);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                collect_local_def_calls_in_expr(coordinate, def_map, calls);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -412,12 +418,15 @@ fn rewrite_target_local_calls(
         AssignTarget::Index { index, .. } => {
             rewrite_expr_local_calls(index, local_names, owner_proc)
         }
-        AssignTarget::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                rewrite_expr_local_calls(start, local_names, owner_proc);
-            }
-            if let Some(end) = end {
-                rewrite_expr_local_calls(end, local_names, owner_proc);
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_expr_local_calls(coordinate, local_names, owner_proc);
             }
         }
     }
@@ -453,12 +462,15 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
             rewrite_expr_local_calls(expr, local_names, owner_proc);
         }
         Expr::Index { index, .. } => rewrite_expr_local_calls(index, local_names, owner_proc),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                rewrite_expr_local_calls(start, local_names, owner_proc);
-            }
-            if let Some(end) = end {
-                rewrite_expr_local_calls(end, local_names, owner_proc);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_expr_local_calls(coordinate, local_names, owner_proc);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -541,12 +553,15 @@ fn inject_owner_self_into_hidden_local_calls_in_target(
         AssignTarget::Index { index, .. } => {
             inject_owner_self_into_hidden_local_calls_in_expr(index, owner_proc, receiver);
         }
-        AssignTarget::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                inject_owner_self_into_hidden_local_calls_in_expr(start, owner_proc, receiver);
-            }
-            if let Some(end) = end {
-                inject_owner_self_into_hidden_local_calls_in_expr(end, owner_proc, receiver);
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                inject_owner_self_into_hidden_local_calls_in_expr(coordinate, owner_proc, receiver);
             }
         }
     }
@@ -594,12 +609,15 @@ fn inject_owner_self_into_hidden_local_calls_in_expr(
         Expr::Index { index, .. } => {
             inject_owner_self_into_hidden_local_calls_in_expr(index, owner_proc, receiver);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                inject_owner_self_into_hidden_local_calls_in_expr(start, owner_proc, receiver);
-            }
-            if let Some(end) = end {
-                inject_owner_self_into_hidden_local_calls_in_expr(end, owner_proc, receiver);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                inject_owner_self_into_hidden_local_calls_in_expr(coordinate, owner_proc, receiver);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -714,18 +732,16 @@ fn rewrite_nested_wrapper_local_calls_in_target(
         AssignTarget::Index { index, .. } => {
             rewrite_nested_wrapper_local_calls_in_expr(index, callee_proc, owner_proc, nested_path);
         }
-        AssignTarget::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 rewrite_nested_wrapper_local_calls_in_expr(
-                    start,
-                    callee_proc,
-                    owner_proc,
-                    nested_path,
-                );
-            }
-            if let Some(end) = end {
-                rewrite_nested_wrapper_local_calls_in_expr(
-                    end,
+                    coordinate,
                     callee_proc,
                     owner_proc,
                     nested_path,
@@ -785,18 +801,16 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
         Expr::Index { index, .. } => {
             rewrite_nested_wrapper_local_calls_in_expr(index, callee_proc, owner_proc, nested_path);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 rewrite_nested_wrapper_local_calls_in_expr(
-                    start,
-                    callee_proc,
-                    owner_proc,
-                    nested_path,
-                );
-            }
-            if let Some(end) = end {
-                rewrite_nested_wrapper_local_calls_in_expr(
-                    end,
+                    coordinate,
                     callee_proc,
                     owner_proc,
                     nested_path,

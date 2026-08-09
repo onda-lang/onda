@@ -402,10 +402,37 @@ pub(super) fn rewrite_graph_source_expr(
             )),
         },
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => Expr::Slice {
             loc: expr_loc.into(),
             base: base.clone(),
+            selector: selector.as_ref().map(|expr| {
+                Box::new(rewrite_graph_source_expr(
+                    expr,
+                    owner,
+                    nodes,
+                    proc_surfaces,
+                    owner_context,
+                    options,
+                    errors,
+                ))
+            }),
+            channel: channel.as_ref().map(|expr| {
+                Box::new(rewrite_graph_source_expr(
+                    expr,
+                    owner,
+                    nodes,
+                    proc_surfaces,
+                    owner_context,
+                    options,
+                    errors,
+                ))
+            }),
             start: start.as_ref().map(|expr| {
                 Box::new(rewrite_graph_source_expr(
                     expr,

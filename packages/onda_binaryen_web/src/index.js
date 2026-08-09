@@ -64,10 +64,38 @@ const POINTER_GLOBALS = Object.freeze({
   state: "$onda.state",
   eventPayload: "$onda.event_payload",
   buffers: "$onda.buffers",
+  bufferWrites: "$onda.buffer_writes",
   bufferFrames: "$onda.buffer_frames",
   bufferChannels: "$onda.buffer_channels",
   bufferSampleRates: "$onda.buffer_sample_rates",
 });
+const BUFFER_DESCRIPTOR_POINTER_GLOBALS = new Set([
+  POINTER_GLOBALS.buffers,
+  POINTER_GLOBALS.bufferWrites,
+  POINTER_GLOBALS.bufferFrames,
+  POINTER_GLOBALS.bufferChannels,
+  POINTER_GLOBALS.bufferSampleRates,
+]);
+const TRAPPING_DESCRIPTOR_UNARY_OPS = new Set([
+  binaryen.TruncSFloat32ToInt32,
+  binaryen.TruncSFloat32ToInt64,
+  binaryen.TruncSFloat64ToInt32,
+  binaryen.TruncSFloat64ToInt64,
+  binaryen.TruncUFloat32ToInt32,
+  binaryen.TruncUFloat32ToInt64,
+  binaryen.TruncUFloat64ToInt32,
+  binaryen.TruncUFloat64ToInt64,
+]);
+const TRAPPING_DESCRIPTOR_BINARY_OPS = new Set([
+  binaryen.DivSInt32,
+  binaryen.DivSInt64,
+  binaryen.DivUInt32,
+  binaryen.DivUInt64,
+  binaryen.RemSInt32,
+  binaryen.RemSInt64,
+  binaryen.RemUInt32,
+  binaryen.RemUInt64,
+]);
 
 // Compiles MIR emitted by Onda's semantic producer. The producer owns proofs
 // for operations marked `bounds: "unchecked"` and all other validated MIR
@@ -185,6 +213,10 @@ class MirCompiler {
       : STATIC_BASE;
     this.internalHelpers = new Set();
     this.functionMayFail = [];
+    this.bufferMayWrite = [];
+    this.fallbackBufferReadAddress = 0;
+    this.fallbackBufferWriteAddress = 0;
+    this.scalarParameterByValue = [];
     this.nextLabel = 0;
   }
 
@@ -214,6 +246,21 @@ class MirCompiler {
             this.options.allowInliningFunctionsWithLoops,
           );
           this.module.optimize();
+          if (this.hoistInvariantBufferDescriptorLoads()) {
+            // The first rewrite makes descriptor provenance explicit in
+            // locals. A small cleanup is enough to expose aliases that were
+            // shared by Binaryen's original loop body; one final rewrite then
+            // catches those without paying for a second full O4 pipeline.
+            this.module.runPasses([
+              "simplify-locals",
+              "optimize-instructions",
+              "coalesce-locals",
+              "vacuum",
+            ]);
+            if (this.hoistInvariantBufferDescriptorLoads()) {
+              this.module.runPasses(["vacuum"]);
+            }
+          }
         } finally {
           binaryen.setOptimizeLevel(previousOptimizeLevel);
           binaryen.setShrinkLevel(previousShrinkLevel);
@@ -242,6 +289,509 @@ class MirCompiler {
     } finally {
       this.module.dispose();
     }
+  }
+
+  hoistInvariantBufferDescriptorLoads() {
+    // Binaryen must conservatively assume that arbitrary linear-memory stores
+    // can rewrite host descriptor tables. After inlining, recover the stronger
+    // processor ABI contract explicitly: descriptor bindings are immutable for
+    // one entry-point invocation, so address-invariant loads belong in the loop
+    // preheader. Sample-varying addresses remain untouched.
+    this.descriptorLoadsHoisted = 0;
+    for (let index = 0; index < this.module.getNumFunctions(); index += 1) {
+      const func = this.module.getFunctionByIndex(index);
+      const body = binaryen.Function.getBody(func);
+      // The local-write scan below is part of the safety proof. If Binaryen
+      // adds an expression kind that this backend does not know how to walk,
+      // leave the whole function untouched rather than silently overlooking
+      // a nested local.tee.
+      if (!this.visitExpression(body, () => {})) continue;
+      const rewritten = this.rewriteDescriptorLoops(body, func);
+      if (rewritten !== body) binaryen.Function.setBody(func, rewritten);
+    }
+    return this.descriptorLoadsHoisted > 0;
+  }
+
+  rewriteDescriptorLoops(expression, func) {
+    this.rewriteExpressionChildren(expression, (child) =>
+      this.rewriteDescriptorLoops(child, func)
+    );
+    if (binaryen.getExpressionInfo(expression).id !== binaryen.LoopId) {
+      return expression;
+    }
+
+    const body = binaryen.Loop.getBody(expression);
+    const controlPaths = this.descriptorControlPaths(body);
+    const definitions = new Map();
+    const writtenLocals = new Set();
+    this.visitExpression(body, (candidate) => {
+      const info = binaryen.getExpressionInfo(candidate);
+      if (info.id !== binaryen.LocalSetId) return;
+      writtenLocals.add(info.index);
+      const entries = definitions.get(info.index) ?? [];
+      entries.push(info.value);
+      definitions.set(info.index, entries);
+    });
+    const initializers = [];
+    // A pointer-local tee can expose the same invariant address to later
+    // descriptor loads. Cache its value in a fresh local: assigning the
+    // original local in the preheader would change loop-entry semantics.
+    const loopLocalCaches = new Map();
+
+    const rewriteLoad = (candidate) => {
+      this.rewriteExpressionChildren(candidate, rewriteLoad);
+      const info = binaryen.getExpressionInfo(candidate);
+      if (info.id !== binaryen.LoadId || info.isAtomic) return candidate;
+      const candidatePath = controlPaths.get(candidate) ?? [];
+      const localCache = (local) => {
+        const cache = loopLocalCaches.get(local);
+        return cache && this.descriptorPathDominates(cache.path, candidatePath)
+          ? cache
+          : null;
+      };
+      if (!this.descriptorPointerExpression(
+        info.ptr,
+        definitions,
+        (local) => !writtenLocals.has(local) || localCache(local) !== null,
+      )) {
+        return candidate;
+      }
+      this.cacheDescriptorPointerSideEffects(
+        info.ptr,
+        func,
+        initializers,
+        loopLocalCaches,
+        controlPaths,
+        candidatePath,
+      );
+      // Binaryen exposes FunctionAddVar through its generated C-API surface,
+      // but not through the small Function convenience wrapper.
+      const cache = binaryen._BinaryenFunctionAddVar(func, info.type);
+      this.descriptorLoadsHoisted += 1;
+      const hoistedLoad = this.module.copyExpression(candidate);
+      const hoistedInfo = binaryen.getExpressionInfo(hoistedLoad);
+      binaryen.Load.setPtr(
+        hoistedLoad,
+        this.descriptorPointerForPreheader(
+          hoistedInfo.ptr,
+          loopLocalCaches,
+          candidatePath,
+        ),
+      );
+      initializers.push(this.module.local.set(cache, hoistedLoad));
+      const sideEffects = this.descriptorPointerSideEffects(info.ptr);
+      const value = this.module.local.get(cache, info.type);
+      return sideEffects.length === 0
+        ? value
+        : this.module.block(null, [...sideEffects, value], info.type);
+    };
+    const rewrittenBody = rewriteLoad(body);
+    if (rewrittenBody !== body) binaryen.Loop.setBody(expression, rewrittenBody);
+    return initializers.length === 0
+      ? expression
+      : this.module.block(null, [...initializers, expression]);
+  }
+
+  descriptorControlPaths(expression) {
+    const paths = new Map();
+    const visit = (candidate, path) => {
+      paths.set(candidate, path);
+      const info = binaryen.getExpressionInfo(candidate);
+      if (info.id === binaryen.IfId) {
+        visit(info.condition, path);
+        visit(info.ifTrue, [...path, `if:${candidate}:true`]);
+        if (info.ifFalse) {
+          visit(info.ifFalse, [...path, `if:${candidate}:false`]);
+        }
+        return;
+      }
+      if (info.id === binaryen.LoopId) {
+        visit(info.body, [...path, `loop:${candidate}`]);
+        return;
+      }
+      this.rewriteExpressionChildren(candidate, (child) => {
+        visit(child, path);
+        return child;
+      });
+    };
+    visit(expression, []);
+    return paths;
+  }
+
+  descriptorPathDominates(dominator, candidate) {
+    // Rewrite traversal is in evaluation order, so an available cache is
+    // earlier than the candidate. The path prefix additionally proves that
+    // it was not produced only in a sibling branch or nested loop.
+    return dominator.length <= candidate.length
+      && dominator.every((entry, index) => entry === candidate[index]);
+  }
+
+  cacheDescriptorPointerSideEffects(
+    expression,
+    func,
+    initializers,
+    loopLocalCaches,
+    controlPaths,
+    candidatePath,
+  ) {
+    const info = binaryen.getExpressionInfo(expression);
+    if (info.id === binaryen.LocalSetId && info.isTee) {
+      this.cacheDescriptorPointerSideEffects(
+        info.value,
+        func,
+        initializers,
+        loopLocalCaches,
+        controlPaths,
+        candidatePath,
+      );
+      const cache = binaryen._BinaryenFunctionAddVar(func, info.type);
+      const value = this.descriptorPointerForPreheader(
+        this.module.copyExpression(info.value),
+        loopLocalCaches,
+        candidatePath,
+      );
+      initializers.push(this.module.local.set(cache, value));
+      loopLocalCaches.set(info.index, {
+        index: cache,
+        type: info.type,
+        path: controlPaths.get(expression) ?? candidatePath,
+      });
+      return;
+    }
+    if (info.id === binaryen.UnaryId) {
+      this.cacheDescriptorPointerSideEffects(
+        info.value,
+        func,
+        initializers,
+        loopLocalCaches,
+        controlPaths,
+        candidatePath,
+      );
+      return;
+    }
+    if (info.id === binaryen.BinaryId) {
+      for (const child of [info.left, info.right]) {
+        this.cacheDescriptorPointerSideEffects(
+          child,
+          func,
+          initializers,
+          loopLocalCaches,
+          controlPaths,
+          candidatePath,
+        );
+      }
+    }
+  }
+
+  descriptorPointerForPreheader(expression, loopLocalCaches, candidatePath) {
+    this.rewriteExpressionChildren(expression, (child) =>
+      this.descriptorPointerForPreheader(
+        child,
+        loopLocalCaches,
+        candidatePath,
+      )
+    );
+    const info = binaryen.getExpressionInfo(expression);
+    if (info.id === binaryen.LocalGetId) {
+      const cache = loopLocalCaches.get(info.index);
+      if (cache && this.descriptorPathDominates(cache.path, candidatePath)) {
+        return this.module.local.get(cache.index, cache.type);
+      }
+    }
+    if (info.id === binaryen.LocalSetId && info.isTee) {
+      const cache = loopLocalCaches.get(info.index);
+      if (cache && this.descriptorPathDominates(cache.path, candidatePath)) {
+        return this.module.local.get(cache.index, cache.type);
+      }
+      return info.value;
+    }
+    return expression;
+  }
+
+  descriptorPointerExpression(expression, definitions, localIsInvariant) {
+    if (!this.expressionUsesDescriptorTable(expression, definitions, new Set())) {
+      return false;
+    }
+    const visit = (candidate) => {
+      const info = binaryen.getExpressionInfo(candidate);
+      if (info.id === binaryen.ConstId) return true;
+      if (info.id === binaryen.LocalGetId) return localIsInvariant(info.index);
+      if (info.id === binaryen.GlobalGetId) {
+        if (BUFFER_DESCRIPTOR_POINTER_GLOBALS.has(info.name)) {
+          return true;
+        }
+        return false;
+      }
+      if (info.id === binaryen.LocalSetId && info.isTee) {
+        return visit(info.value);
+      }
+      if (info.id === binaryen.UnaryId) {
+        return !TRAPPING_DESCRIPTOR_UNARY_OPS.has(info.op)
+          && visit(info.value);
+      }
+      if (info.id === binaryen.BinaryId) {
+        return !TRAPPING_DESCRIPTOR_BINARY_OPS.has(info.op)
+          && visit(info.left)
+          && visit(info.right);
+      }
+      if (info.id === binaryen.SelectId) {
+        if (
+          this.expressionContainsTee(info.condition)
+          || this.expressionContainsTee(info.ifTrue)
+          || this.expressionContainsTee(info.ifFalse)
+        ) {
+          return false;
+        }
+        return visit(info.condition) && visit(info.ifTrue) && visit(info.ifFalse);
+      }
+      return false;
+    };
+    return visit(expression);
+  }
+
+  expressionUsesDescriptorTable(expression, definitions, visitingLocals) {
+    const info = binaryen.getExpressionInfo(expression);
+    if (info.id === binaryen.GlobalGetId) {
+      return BUFFER_DESCRIPTOR_POINTER_GLOBALS.has(info.name);
+    }
+    if (info.id === binaryen.LocalGetId) {
+      const values = definitions.get(info.index);
+      if (
+        !values
+        || values.length !== 1
+        || visitingLocals.has(info.index)
+      ) {
+        return false;
+      }
+      visitingLocals.add(info.index);
+      const result = this.expressionUsesDescriptorTable(
+        values[0],
+        definitions,
+        visitingLocals,
+      );
+      visitingLocals.delete(info.index);
+      return result;
+    }
+    if (info.id === binaryen.LocalSetId && info.isTee) {
+      return this.expressionUsesDescriptorTable(
+        info.value,
+        definitions,
+        visitingLocals,
+      );
+    }
+    if (info.id === binaryen.UnaryId) {
+      return this.expressionUsesDescriptorTable(
+        info.value,
+        definitions,
+        visitingLocals,
+      );
+    }
+    if (info.id === binaryen.BinaryId) {
+      return this.expressionUsesDescriptorTable(
+        info.left,
+        definitions,
+        visitingLocals,
+      ) || this.expressionUsesDescriptorTable(
+        info.right,
+        definitions,
+        visitingLocals,
+      );
+    }
+    if (info.id === binaryen.SelectId) {
+      return this.expressionUsesDescriptorTable(
+        info.condition,
+        definitions,
+        visitingLocals,
+      ) || this.expressionUsesDescriptorTable(
+        info.ifTrue,
+        definitions,
+        visitingLocals,
+      ) || this.expressionUsesDescriptorTable(
+        info.ifFalse,
+        definitions,
+        visitingLocals,
+      );
+    }
+    return false;
+  }
+
+  descriptorPointerSideEffects(expression) {
+    const result = [];
+    const visit = (candidate) => {
+      const info = binaryen.getExpressionInfo(candidate);
+      if (info.id === binaryen.LocalSetId && info.isTee) {
+        result.push(
+          this.module.local.set(info.index, this.module.copyExpression(info.value)),
+        );
+      } else if (info.id === binaryen.UnaryId) {
+        visit(info.value);
+      } else if (info.id === binaryen.BinaryId) {
+        visit(info.left);
+        visit(info.right);
+      } else if (info.id === binaryen.SelectId) {
+        // Pointer selectors generated by this backend are side-effect free.
+        // A nested tee would need conditional reconstruction, so leave it to
+        // the conservative invariance check instead of moving it here.
+      }
+    };
+    visit(expression);
+    return result;
+  }
+
+  expressionContainsTee(expression) {
+    const info = binaryen.getExpressionInfo(expression);
+    if (info.id === binaryen.LocalSetId) return info.isTee;
+    if (info.id === binaryen.UnaryId) {
+      return this.expressionContainsTee(info.value);
+    }
+    if (info.id === binaryen.BinaryId) {
+      return this.expressionContainsTee(info.left)
+        || this.expressionContainsTee(info.right);
+    }
+    if (info.id === binaryen.SelectId) {
+      return this.expressionContainsTee(info.condition)
+        || this.expressionContainsTee(info.ifTrue)
+        || this.expressionContainsTee(info.ifFalse);
+    }
+    return false;
+  }
+
+  visitExpression(expression, visitor) {
+    visitor(expression);
+    let complete = true;
+    const supported = this.rewriteExpressionChildren(expression, (child) => {
+      if (!this.visitExpression(child, visitor)) complete = false;
+      return child;
+    });
+    return complete && supported;
+  }
+
+  rewriteExpressionChildren(expression, rewrite) {
+    const info = binaryen.getExpressionInfo(expression);
+    const replace = (child, setter) => {
+      if (child) setter(rewrite(child));
+    };
+    switch (info.id) {
+      case binaryen.BlockId:
+        info.children.forEach((child, index) =>
+          replace(child, (value) => binaryen.Block.setChildAt(expression, index, value))
+        );
+        break;
+      case binaryen.IfId:
+        replace(info.condition, (value) => binaryen.If.setCondition(expression, value));
+        replace(info.ifTrue, (value) => binaryen.If.setIfTrue(expression, value));
+        replace(info.ifFalse, (value) => binaryen.If.setIfFalse(expression, value));
+        break;
+      case binaryen.LoopId:
+        replace(info.body, (value) => binaryen.Loop.setBody(expression, value));
+        break;
+      case binaryen.BreakId:
+        replace(info.condition, (value) => binaryen.Break.setCondition(expression, value));
+        replace(info.value, (value) => binaryen.Break.setValue(expression, value));
+        break;
+      case binaryen.SwitchId:
+        replace(info.condition, (value) => binaryen.Switch.setCondition(expression, value));
+        replace(info.value, (value) => binaryen.Switch.setValue(expression, value));
+        break;
+      case binaryen.CallId:
+        info.operands.forEach((child, index) =>
+          replace(child, (value) => binaryen.Call.setOperandAt(expression, index, value))
+        );
+        break;
+      case binaryen.CallIndirectId:
+        replace(info.target, (value) => binaryen.CallIndirect.setTarget(expression, value));
+        info.operands.forEach((child, index) =>
+          replace(child, (value) => binaryen.CallIndirect.setOperandAt(expression, index, value))
+        );
+        break;
+      case binaryen.LocalSetId:
+        replace(info.value, (value) => binaryen.LocalSet.setValue(expression, value));
+        break;
+      case binaryen.GlobalSetId:
+        replace(info.value, (value) => binaryen.GlobalSet.setValue(expression, value));
+        break;
+      case binaryen.LoadId:
+        replace(info.ptr, (value) => binaryen.Load.setPtr(expression, value));
+        break;
+      case binaryen.StoreId:
+        replace(info.ptr, (value) => binaryen.Store.setPtr(expression, value));
+        replace(info.value, (value) => binaryen.Store.setValue(expression, value));
+        break;
+      case binaryen.UnaryId:
+        replace(info.value, (value) => binaryen.Unary.setValue(expression, value));
+        break;
+      case binaryen.BinaryId:
+        replace(info.left, (value) => binaryen.Binary.setLeft(expression, value));
+        replace(info.right, (value) => binaryen.Binary.setRight(expression, value));
+        break;
+      case binaryen.SelectId:
+        replace(info.ifTrue, (value) => binaryen.Select.setIfTrue(expression, value));
+        replace(info.ifFalse, (value) => binaryen.Select.setIfFalse(expression, value));
+        replace(info.condition, (value) => binaryen.Select.setCondition(expression, value));
+        break;
+      case binaryen.DropId:
+        replace(info.value, (value) => binaryen.Drop.setValue(expression, value));
+        break;
+      case binaryen.ReturnId:
+        replace(info.value, (value) => binaryen.Return.setValue(expression, value));
+        break;
+      case binaryen.MemoryCopyId:
+        replace(info.dest, (value) => binaryen.MemoryCopy.setDest(expression, value));
+        replace(info.source, (value) => binaryen.MemoryCopy.setSource(expression, value));
+        replace(info.size, (value) => binaryen.MemoryCopy.setSize(expression, value));
+        break;
+      case binaryen.MemoryFillId:
+        replace(info.dest, (value) => binaryen.MemoryFill.setDest(expression, value));
+        replace(info.value, (value) => binaryen.MemoryFill.setValue(expression, value));
+        replace(info.size, (value) => binaryen.MemoryFill.setSize(expression, value));
+        break;
+      case binaryen.SIMDExtractId:
+        replace(info.vec, (value) => binaryen.SIMDExtract.setVec(expression, value));
+        break;
+      case binaryen.SIMDReplaceId:
+        replace(info.vec, (value) => binaryen.SIMDReplace.setVec(expression, value));
+        replace(info.value, (value) => binaryen.SIMDReplace.setValue(expression, value));
+        break;
+      case binaryen.SIMDShuffleId:
+        replace(info.left, (value) => binaryen.SIMDShuffle.setLeft(expression, value));
+        replace(info.right, (value) => binaryen.SIMDShuffle.setRight(expression, value));
+        break;
+      case binaryen.SIMDTernaryId:
+        replace(info.a, (value) => binaryen.SIMDTernary.setA(expression, value));
+        replace(info.b, (value) => binaryen.SIMDTernary.setB(expression, value));
+        replace(info.c, (value) => binaryen.SIMDTernary.setC(expression, value));
+        break;
+      case binaryen.SIMDShiftId:
+        replace(info.vec, (value) => binaryen.SIMDShift.setVec(expression, value));
+        replace(info.shift, (value) => binaryen.SIMDShift.setShift(expression, value));
+        break;
+      case binaryen.SIMDLoadId:
+        replace(info.ptr, (value) => binaryen.SIMDLoad.setPtr(expression, value));
+        break;
+      case binaryen.SIMDLoadStoreLaneId:
+        replace(info.ptr, (value) => binaryen.SIMDLoadStoreLane.setPtr(expression, value));
+        replace(info.vec, (value) => binaryen.SIMDLoadStoreLane.setVec(expression, value));
+        break;
+      case binaryen.TupleMakeId:
+        info.operands.forEach((child, index) =>
+          replace(child, (value) => binaryen.TupleMake.setOperandAt(expression, index, value))
+        );
+        break;
+      case binaryen.TupleExtractId:
+        replace(info.tuple, (value) => binaryen.TupleExtract.setTuple(expression, value));
+        break;
+      case binaryen.ConstId:
+      case binaryen.LocalGetId:
+      case binaryen.GlobalGetId:
+      case binaryen.NopId:
+      case binaryen.UnreachableId:
+      case binaryen.MemorySizeId:
+      case binaryen.DataDropId:
+        break;
+      default:
+        return false;
+    }
+    return true;
   }
 
   validateEnvelope() {
@@ -303,7 +853,127 @@ class MirCompiler {
     this.validateCurrentSchemaEnvelope();
     this.validateProcessEntrySignature();
     this.validateAcyclicCallGraph();
+    this.analyzeBufferWrites();
     this.analyzeRecoverableFailures();
+    this.analyzeScalarReferenceParameters();
+  }
+
+  analyzeScalarReferenceParameters() {
+    // MIR reference modes are conservative. Internal scalar references that
+    // are never written, never escape to a writable reference, and never alias
+    // a writable argument can safely use a value ABI. This removes scratch
+    // memory traffic and exposes their values to post-inlining loop analysis.
+    const candidates = this.mir.functions.map((func) =>
+      func.params.map((parameter) => {
+        const type = this.type(parameter.ty);
+        return type.kind === "scalar" && parameter.mode !== "value";
+      })
+    );
+    const callSites = this.mir.functions.map(() => []);
+
+    const visitBlock = (functionId, block) => {
+      for (const statement of block.statements) {
+        const kind = statement.kind?.kind;
+        const data = statement.kind?.data;
+        if (
+          kind === "assign"
+          && data.destination?.base?.kind === "parameter"
+          && data.destination.projections.length === 0
+        ) {
+          candidates[functionId][data.destination.base.data] = false;
+        } else if (kind === "call") {
+          callSites[data.function].push({ caller: functionId, call: data });
+        } else if (kind === "if") {
+          visitBlock(functionId, data.then_block);
+          visitBlock(functionId, data.else_block);
+        } else if (kind === "loop") {
+          visitBlock(functionId, data.body);
+        }
+      }
+    };
+    for (const [functionId, func] of this.mir.functions.entries()) {
+      visitBlock(functionId, func.body);
+    }
+
+    const unprojectedScalarPlace = (argument, functionId) => {
+      if (
+        argument?.kind !== "place"
+        || argument.data.projections.length !== 0
+        || !["local", "parameter"].includes(argument.data.base.kind)
+      ) {
+        return null;
+      }
+      const typeId = argument.data.base.kind === "local"
+        ? this.mir.functions[functionId].locals[argument.data.base.data]?.ty
+        : this.mir.functions[functionId].params[argument.data.base.data]?.ty;
+      return Number.isInteger(typeId) && this.type(typeId).kind === "scalar"
+        ? argument.data.base
+        : null;
+    };
+    const sameBase = (lhs, rhs) =>
+      lhs?.kind === rhs?.kind && lhs?.data === rhs?.data;
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [calleeId, sites] of callSites.entries()) {
+        for (const { caller: callerId, call } of sites) {
+          for (let parameterId = 0; parameterId < candidates[calleeId].length; parameterId += 1) {
+            if (!candidates[calleeId][parameterId]) continue;
+            const base = unprojectedScalarPlace(call.args[parameterId], callerId);
+            const forwardedCandidate =
+              base?.kind !== "parameter"
+              || candidates[callerId][base.data];
+            const aliasesWritableArgument = call.args.some((argument, index) => {
+              if (index === parameterId || candidates[calleeId][index]) return false;
+              return sameBase(
+                base,
+                unprojectedScalarPlace(argument, callerId),
+              );
+            });
+            if (!base || !forwardedCandidate || aliasesWritableArgument) {
+              candidates[calleeId][parameterId] = false;
+              changed = true;
+            }
+          }
+        }
+      }
+
+      for (const [callerId, func] of this.mir.functions.entries()) {
+        const visitCalls = (block) => {
+          for (const statement of block.statements) {
+            const kind = statement.kind?.kind;
+            const data = statement.kind?.data;
+            if (kind === "call") {
+              data.args.forEach((argument, parameterId) => {
+                const base = unprojectedScalarPlace(argument, callerId);
+                if (
+                  base?.kind === "parameter"
+                  && candidates[callerId][base.data]
+                  && !candidates[data.function][parameterId]
+                ) {
+                  candidates[callerId][base.data] = false;
+                  changed = true;
+                }
+              });
+            } else if (kind === "if") {
+              visitCalls(data.then_block);
+              visitCalls(data.else_block);
+            } else if (kind === "loop") {
+              visitCalls(data.body);
+            }
+          }
+        };
+        visitCalls(func.body);
+      }
+    }
+    this.scalarParameterByValue = candidates;
+  }
+
+  parameterPassingMode(functionId, parameterId) {
+    return this.scalarParameterByValue[functionId]?.[parameterId]
+      ? "value"
+      : this.mir.functions[functionId].params[parameterId].mode;
   }
 
   validateCurrentSchemaEnvelope() {
@@ -451,6 +1121,386 @@ class MirCompiler {
     }
   }
 
+  analyzeBufferWrites() {
+    const bufferOrigin = (id) => `buffer:${id}`;
+    const parameterOrigin = (id, slot = 0) => `parameter:${id}:${slot}`;
+    const selectedSlots = (selector, len, bounds) => {
+      if (!Number.isInteger(len) || len <= 0) return [];
+      if (
+        selector?.kind === "constant"
+        && selector.data?.type === "i32"
+        && Number.isInteger(selector.data.value)
+      ) {
+        let slot = selector.data.value;
+        if (bounds === "clamp") {
+          slot = Math.min(len - 1, Math.max(0, slot));
+          return [slot];
+        }
+        if (slot >= 0 && slot < len) return [slot];
+      }
+      return Array.from({ length: len }, (_, slot) => slot);
+    };
+    const bufferIds = (bufferRef) => {
+      if (Number.isInteger(bufferRef)) return [bufferRef];
+      if (bufferRef?.kind === "direct" && Number.isInteger(bufferRef.data)) {
+        return [bufferRef.data];
+      }
+      if (
+        bufferRef?.kind === "array_element"
+        && Number.isInteger(bufferRef.data?.first)
+        && Number.isInteger(bufferRef.data?.len)
+        && bufferRef.data.len > 0
+      ) {
+        return selectedSlots(
+          bufferRef.data.selector,
+          bufferRef.data.len,
+          bufferRef.data.bounds,
+        ).map(
+          (slot) => bufferRef.data.first + slot,
+        );
+      }
+      return [];
+    };
+    const bufferOrigins = (bufferRef) =>
+      new Set(bufferIds(bufferRef).map(bufferOrigin));
+    const bufferParamSlots = (parameterRef, func) => {
+      if (Number.isInteger(parameterRef)) {
+        return [{ parameter: parameterRef, slot: 0 }];
+      }
+      if (
+        parameterRef?.kind === "direct"
+        && Number.isInteger(parameterRef.data)
+      ) {
+        return [{ parameter: parameterRef.data, slot: 0 }];
+      }
+      if (
+        parameterRef?.kind === "array_element"
+        && Number.isInteger(parameterRef.data?.span)
+      ) {
+        const parameter = func.params?.[parameterRef.data.span];
+        const type = parameter && this.type(parameter.ty);
+        const len = type?.kind === "buffer_span" ? type.data.len : 1;
+        return selectedSlots(
+          parameterRef.data.selector,
+          len,
+          parameterRef.data.bounds,
+        ).map((slot) => ({ parameter: parameterRef.data.span, slot }));
+      }
+      return [];
+    };
+    const bufferParamOrigins = (parameterRef, func) => new Set(
+      bufferParamSlots(parameterRef, func).map(({ parameter, slot }) =>
+        parameterOrigin(parameter, slot)
+      ),
+    );
+    const localId = (value) =>
+      value?.kind === "local" && Number.isInteger(value.data)
+        ? value.data
+        : null;
+    const setEquals = (lhs, rhs) =>
+      lhs.size === rhs.size && [...lhs].every((entry) => rhs.has(entry));
+    const summaryEquals = (lhs, rhs) =>
+      setEquals(lhs.buffers, rhs.buffers)
+      && setEquals(lhs.parameters, rhs.parameters);
+
+    const valueOrigins = (value, aliases) => {
+      const id = localId(value);
+      return id === null ? new Set() : new Set(aliases[id] ?? []);
+    };
+    const placeOrigins = (place, aliases) => {
+      const base = place?.base;
+      if (base?.kind === "parameter" && Number.isInteger(base.data)) {
+        return new Set([parameterOrigin(base.data, 0)]);
+      }
+      if (base?.kind === "local" && Number.isInteger(base.data)) {
+        return new Set(aliases[base.data] ?? []);
+      }
+      return new Set();
+    };
+    const rvalueOrigins = (value, aliases, func) => {
+      if (value?.kind === "use") {
+        return valueOrigins(value.data, aliases);
+      }
+      if (value?.kind === "load") {
+        return placeOrigins(value.data, aliases);
+      }
+      if (value?.kind !== "make_slice") {
+        return new Set();
+      }
+      const source = value.data?.source;
+      if (source?.kind === "buffer") {
+        return bufferOrigins(source.data?.buffer);
+      }
+      if (source?.kind === "buffer_param") {
+        return bufferParamOrigins(source.data?.parameter, func);
+      }
+      if (source?.kind === "place") {
+        return placeOrigins(source.data, aliases);
+      }
+      return new Set();
+    };
+    const collectAliases = (func) => {
+      const aliases = (func.locals ?? []).map(() => new Set());
+      let changed = true;
+      const visitBlock = (block) => {
+        for (const statement of block?.statements ?? []) {
+          const kind = statement.kind?.kind;
+          const data = statement.kind?.data;
+          if (
+            kind === "assign"
+            && data?.destination?.projections?.length === 0
+            && data.destination.base?.kind === "local"
+          ) {
+            const destination = data.destination.base.data;
+            const origins = rvalueOrigins(data.value, aliases, func);
+            for (const origin of origins) {
+              if (!aliases[destination].has(origin)) {
+                aliases[destination].add(origin);
+                changed = true;
+              }
+            }
+          } else if (kind === "if") {
+            visitBlock(data?.then_block);
+            visitBlock(data?.else_block);
+          } else if (kind === "loop") {
+            visitBlock(data?.body);
+          }
+        }
+      };
+      while (changed) {
+        changed = false;
+        visitBlock(func.body);
+      }
+      return aliases;
+    };
+    const collectUnsupportedResults = (func) => {
+      const results = new Set();
+      const visitBlock = (block) => {
+        for (const statement of block?.statements ?? []) {
+          const kind = statement.kind?.kind;
+          const data = statement.kind?.data;
+          if (kind === "call") {
+            for (const result of data?.results ?? []) {
+              const type = this.mir.types[func.locals?.[result]?.ty];
+              if (type?.kind === "slice" || type?.kind === "buffer") {
+                results.add(result);
+              }
+            }
+          } else if (kind === "if") {
+            visitBlock(data?.then_block);
+            visitBlock(data?.else_block);
+          } else if (kind === "loop") {
+            visitBlock(data?.body);
+          }
+        }
+      };
+      visitBlock(func.body);
+      return results;
+    };
+    const argumentValue = (argument) => {
+      switch (argument?.kind) {
+        case "value": return argument.data;
+        case "slice_element":
+        case "slice_window": return argument.data?.slice;
+        default: return null;
+      }
+    };
+    const argumentUsesUnsupportedResult = (argument, unsupported) => {
+      const value = argumentValue(argument);
+      const valueLocal = localId(value);
+      if (valueLocal !== null) {
+        return unsupported.has(valueLocal);
+      }
+      if (argument?.kind === "place") {
+        const base = argument.data?.base;
+        return base?.kind === "local" && unsupported.has(base.data);
+      }
+      if (argument?.kind === "array_window") {
+        const base = argument.data?.array?.base;
+        return base?.kind === "local" && unsupported.has(base.data);
+      }
+      return false;
+    };
+    const argumentOrigins = (argument, aliases, func, slot) => {
+      switch (argument?.kind) {
+        case "buffer":
+          return bufferOrigins(argument.data);
+        case "buffer_param":
+          return bufferParamOrigins(argument.data, func);
+        case "buffer_span": {
+          const span = argument.data;
+          if (span?.kind === "interface") {
+            const len = span.data?.len ?? 0;
+            if (Number.isInteger(slot) && slot >= 0 && slot < len) {
+              return new Set([bufferOrigin(span.data.first + slot)]);
+            }
+            return new Set(Array.from({ length: len }, (_, index) =>
+              bufferOrigin(span.data.first + index)
+            ));
+          }
+          if (span?.kind === "parameter") {
+            const start = span.data?.start ?? 0;
+            const len = span.data?.len ?? 0;
+            if (Number.isInteger(slot) && slot >= 0 && slot < len) {
+              return new Set([parameterOrigin(span.data.span, start + slot)]);
+            }
+            return new Set(Array.from({ length: len }, (_, index) =>
+              parameterOrigin(span.data.span, start + index)
+            ));
+          }
+          return new Set();
+        }
+        case "place":
+          return placeOrigins(argument.data, aliases);
+        case "array_window":
+          return placeOrigins(argument.data?.array, aliases);
+        case "value":
+          return valueOrigins(argument.data, aliases);
+        case "slice_element":
+        case "slice_window":
+          return valueOrigins(argument.data?.slice, aliases);
+        default:
+          return new Set();
+      }
+    };
+    const markOrigins = (origins, summary) => {
+      for (const origin of origins) {
+        const [kind, idText] = origin.split(":");
+        const id = Number(idText);
+        if (kind === "buffer") {
+          summary.buffers.add(id);
+        } else if (kind === "parameter") {
+          summary.parameters.add(origin);
+        }
+      }
+    };
+
+    const aliases = this.mir.functions.map(collectAliases);
+    const unsupported = this.mir.functions.map(collectUnsupportedResults);
+    let summaries = this.mir.functions.map(() => ({
+      buffers: new Set(),
+      parameters: new Set(),
+    }));
+    while (true) {
+      const next = this.mir.functions.map((func, functionId) => {
+        const summary = { buffers: new Set(), parameters: new Set() };
+        const markValueWrite = (value, description) => {
+          const id = localId(value);
+          if (id !== null && unsupported[functionId].has(id)) {
+            this.fail(
+              `cannot infer interface-buffer writes for ${description} through a slice returned by a MIR call`,
+            );
+          }
+          markOrigins(valueOrigins(value, aliases[functionId]), summary);
+        };
+        const visitBlock = (block) => {
+          for (const statement of block?.statements ?? []) {
+            const kind = statement.kind?.kind;
+            const data = statement.kind?.data;
+            if (
+              kind === "assign"
+              && data?.destination?.base?.kind === "parameter"
+            ) {
+              summary.parameters.add(parameterOrigin(data.destination.base.data, 0));
+            } else if (kind === "buffer_store") {
+              for (const buffer of bufferIds(data?.buffer)) {
+                summary.buffers.add(buffer);
+              }
+            } else if (kind === "buffer_param_store") {
+              markOrigins(
+                bufferParamOrigins(data?.parameter, func),
+                summary,
+              );
+            } else if (kind === "slice_store") {
+              markValueWrite(data?.slice, "slice store");
+            } else if (kind === "slice_fill" || kind === "slice_copy") {
+              markValueWrite(data?.destination, "slice write");
+            } else if (kind === "call") {
+              const callee = summaries[data?.function];
+              if (!callee) {
+                this.fail(
+                  `MIR call references missing function ${String(data?.function)}`,
+                );
+              }
+              for (const buffer of callee.buffers) {
+                summary.buffers.add(buffer);
+              }
+              for (const parameterOriginValue of callee.parameters) {
+                const [, parameterText, slotText] = parameterOriginValue.split(":");
+                const parameter = Number(parameterText);
+                const slot = Number(slotText);
+                const argument = data?.args?.[parameter];
+                if (!argument) {
+                  this.fail(
+                    `MIR call to function ${data.function} has no argument for writable parameter ${parameter}`,
+                  );
+                }
+                if (
+                  argumentUsesUnsupportedResult(
+                    argument,
+                    unsupported[functionId],
+                  )
+                ) {
+                  this.fail(
+                    "cannot infer interface-buffer writes through a slice or buffer returned by a MIR call",
+                  );
+                }
+                markOrigins(
+                  argumentOrigins(argument, aliases[functionId], func, slot),
+                  summary,
+                );
+              }
+            } else if (kind === "if") {
+              visitBlock(data?.then_block);
+              visitBlock(data?.else_block);
+            } else if (kind === "loop") {
+              visitBlock(data?.body);
+            }
+          }
+        };
+        visitBlock(func.body);
+        return summary;
+      });
+      if (next.every((summary, index) => summaryEquals(summary, summaries[index]))) {
+        summaries = next;
+        break;
+      }
+      summaries = next;
+    }
+
+    const roots = [
+      this.mir.entry_points.init,
+      this.mir.entry_points.process,
+      ...this.mir.interface.events.map((event) => event.handler),
+    ];
+    this.bufferMayWrite = this.mir.interface.buffers.map(() => false);
+    for (const root of roots) {
+      const summary = summaries[root];
+      if (!summary) {
+        this.fail(`MIR buffer-write root function ${String(root)} is missing`);
+      }
+      for (const bufferId of summary.buffers) {
+        if (
+          !Number.isInteger(bufferId)
+          || bufferId < 0
+          || bufferId >= this.bufferMayWrite.length
+        ) {
+          this.fail(
+            `MIR buffer-write analysis references missing buffer ${String(bufferId)}`,
+          );
+        }
+        this.bufferMayWrite[bufferId] = true;
+      }
+    }
+    for (const [bufferId, mayWrite] of this.bufferMayWrite.entries()) {
+      if (mayWrite && this.mir.interface.buffers[bufferId].access !== "read_write") {
+        this.fail(
+          `MIR writes read-only interface buffer '${this.mir.interface.buffers[bufferId].name}'`,
+        );
+      }
+    }
+  }
+
   analyzeRecoverableFailures() {
     const callees = this.mir.functions.map(() => new Set());
     const direct = this.mir.functions.map(() => false);
@@ -594,6 +1644,18 @@ class MirCompiler {
         return { address, scalar: type.data, size };
       });
     });
+    if (this.mir.interface.buffers.length > 0) {
+      const fallbackBytes = Math.max(
+        ...this.mir.interface.buffers.map((buffer) =>
+          this.scalarSize(buffer.element)),
+      );
+      this.nextStaticAddress = alignUp(this.nextStaticAddress, 8);
+      this.fallbackBufferReadAddress = this.nextStaticAddress;
+      this.nextStaticAddress += fallbackBytes;
+      this.nextStaticAddress = alignUp(this.nextStaticAddress, 8);
+      this.fallbackBufferWriteAddress = this.nextStaticAddress;
+      this.nextStaticAddress += fallbackBytes;
+    }
     this.nextStaticAddress = alignUp(this.nextStaticAddress, 16);
     this.requireWasm32Extent(this.nextStaticAddress, "MIR static storage");
     this.requireWasm32Extent(
@@ -616,7 +1678,7 @@ class MirCompiler {
             const parameter = target?.params[index];
             const type = parameter && this.type(parameter.ty);
             if (
-              parameter?.mode !== "value"
+              this.parameterPassingMode(data.function, index) !== "value"
               && type?.kind === "scalar"
               && argument.kind === "place"
               && argument.data.base.kind === "local"
@@ -845,13 +1907,13 @@ class MirCompiler {
 
   addMirFunction(id, func) {
     let nextIndex = 0;
-    const paramLayouts = func.params.map((param) => {
+    const paramLayouts = func.params.map((param, parameterId) => {
       const layout = this.functionValueLayout(
         param.ty,
         nextIndex,
         `parameter '${param.name}'`,
         false,
-        param.mode,
+        this.parameterPassingMode(id, parameterId),
       );
       nextIndex += layout.components.length;
       return layout;
@@ -878,6 +1940,11 @@ class MirCompiler {
     const callResultLocals = this.collectCallResultLocals(func);
     const sliceScratch = this.collectSliceScratchLocals(func);
     const processFrameLocals = this.collectProcessFrameLocals(func);
+    const generatedLocalBase =
+      paramScalars.length +
+      flatLocalScalars.length +
+      callResultLocals.length +
+      sliceScratch.count;
     if (
       resultScalars.length > 1
       || callResultLocals.some((entry) => entry.resultCount > 1)
@@ -918,10 +1985,21 @@ class MirCompiler {
       ),
       eventId: func.kind?.kind === "event" ? func.kind.data : null,
       processFrameLocals,
+      generatedLocalBase,
+      generatedLocals: [],
+      entryInitializers: [],
+      bufferDescriptorCache: new Map(),
+      audioChannelPointerCache: new Map(),
       breakLabels: [],
       continueLabels: [],
     };
-    const body = this.compileBlock(func.body, context);
+    const compiledBody = this.compileBlock(func.body, context);
+    const body = context.entryInitializers.length === 0
+      ? compiledBody
+      : this.module.block(null, [
+          ...context.entryInitializers,
+          compiledBody,
+        ]);
     const functionRef = this.module.addFunction(
       this.functionNames[id],
       binaryen.createType(paramScalars.map((type) => this.wasmType(type))),
@@ -930,6 +2008,7 @@ class MirCompiler {
         ...flatLocalScalars.map((type) => this.wasmType(type)),
         ...callResultLocals.map((entry) => entry.type),
         ...Array.from({ length: sliceScratch.count }, () => binaryen.i32),
+        ...context.generatedLocals.map((entry) => this.wasmType(entry.scalar)),
       ],
       body,
     );
@@ -953,6 +2032,9 @@ class MirCompiler {
           `${name}.local${localId}`,
         );
       }
+    }
+    for (const local of context.generatedLocals) {
+      binaryen.Function.setLocalName(functionRef, local.index, local.name);
     }
   }
 
@@ -981,15 +2063,28 @@ class MirCompiler {
         index,
         typeId,
         kind: "slice",
-        components: ["i32", "i32", "i32"],
+        components: ["i32", "i32", "i32", "i32"],
       };
     }
     if (type.kind === "buffer") {
+      this.bufferChannelMetadata(type.data.channels, type.data.element);
       return {
         index,
         typeId,
         kind: "buffer",
-        components: ["i32", "i32", "i32", "f32"],
+        components: ["i32", "i32", "i32", "i32", "f32"],
+      };
+    }
+    if (type.kind === "buffer_span") {
+      this.bufferChannelMetadata(type.data.channels, type.data.element);
+      if (passingMode !== "value") {
+        this.fail(`${description} buffer span must use value passing mode`);
+      }
+      return {
+        index,
+        typeId,
+        kind: "buffer_span",
+        components: ["i32", "i32", "i32", "i32", "i32"],
       };
     }
     if (type.kind === "array") {
@@ -1018,8 +2113,10 @@ class MirCompiler {
     }
     if (layout.kind === "array") return;
     const suffixes = layout.kind === "buffer"
-      ? ["address", "frames", "channels", "sample_rate"]
-      : ["address", "length", "stride"];
+      ? ["read_address", "write_address", "frames", "channels", "sample_rate"]
+      : layout.kind === "buffer_span"
+        ? ["read_table", "write_table", "frames_table", "channels_table", "sample_rates_table"]
+        : ["read_address", "write_address", "length", "stride"];
     for (const [offset, suffix] of suffixes.entries()) {
       binaryen.Function.setLocalName(
         functionRef,
@@ -1039,7 +2136,7 @@ class MirCompiler {
           this.requireFunctionId(data.function, "call target");
           const target = this.mir.functions[data.function];
           const aliasesResult = data.args.some((argument, index) =>
-            target.params[index]?.mode !== "value"
+            this.parameterPassingMode(data.function, index) !== "value"
               && argument.kind === "place"
               && argument.data.base.kind === "local"
               && argument.data.projections.length === 0
@@ -1300,6 +2397,10 @@ class MirCompiler {
         this.module.local.get(7, binaryen.i32),
       ),
       this.module.global.set(
+        POINTER_GLOBALS.bufferWrites,
+        this.module.local.get(7, binaryen.i32),
+      ),
+      this.module.global.set(
         POINTER_GLOBALS.bufferFrames,
         this.module.local.get(8, binaryen.i32),
       ),
@@ -1355,6 +2456,10 @@ class MirCompiler {
         ),
         this.module.global.set(
           POINTER_GLOBALS.buffers,
+          this.module.local.get(3, binaryen.i32),
+        ),
+        this.module.global.set(
+          POINTER_GLOBALS.bufferWrites,
           this.module.local.get(3, binaryen.i32),
         ),
         this.module.global.set(
@@ -1486,7 +2591,16 @@ class MirCompiler {
     const args = data.args.flatMap((argument, index) => {
       const parameterType = this.type(target.params[index].ty);
       if (parameterType.kind === "scalar") {
-        if (target.params[index].mode === "value") {
+        const passingMode = this.parameterPassingMode(data.function, index);
+        if (passingMode === "value") {
+          if (target.params[index].mode !== "value") {
+            if (argument.kind !== "place") {
+              this.fail(
+                `promoted scalar reference argument ${index} of '${target.name}' is not a place`,
+              );
+            }
+            return [this.loadPlace(argument.data, context)];
+          }
           if (argument.kind !== "value") {
             this.fail(`scalar call argument ${index} of '${target.name}' is not a value`);
           }
@@ -1505,6 +2619,7 @@ class MirCompiler {
                 argument.data.index,
                 argument.data.bounds,
                 context,
+                target.params[index].mode === "read_write_reference",
               ),
         ];
       }
@@ -1534,21 +2649,31 @@ class MirCompiler {
           ];
         }
         return [
-          this.compileSliceWindowAddress(
-            argument.data,
-            parameterType,
-            context,
-          ),
+            this.compileSliceWindowAddress(
+              argument.data,
+              parameterType,
+              context,
+              target.params[index].mode === "read_write_reference",
+            ),
         ];
       }
       if (parameterType.kind === "buffer") {
         if (argument.kind === "buffer") {
-          return this.compileInterfaceBufferValue(argument.data);
+          return this.compileInterfaceBufferValue(argument.data, context);
+        }
+        if (argument.kind === "buffer_param") {
+          return this.loadBufferParamValue(argument.data, context);
         }
         if (argument.kind === "place") {
           return this.loadBufferPlace(argument.data, context);
         }
         this.fail(`buffer call argument ${index} of '${target.name}' is invalid`);
+      }
+      if (parameterType.kind === "buffer_span") {
+        if (argument.kind !== "buffer_span") {
+          this.fail(`buffer span call argument ${index} of '${target.name}' is invalid`);
+        }
+        return this.compileBufferSpanValue(argument.data, parameterType, context);
       }
       this.fail(
         `call argument ${index} of '${target.name}' has unsupported type '${parameterType.kind}'`,
@@ -1565,7 +2690,7 @@ class MirCompiler {
     const localReferenceSync = data.args.flatMap((argument, index) => {
       const parameter = target.params[index];
       if (
-        parameter.mode === "value"
+        this.parameterPassingMode(data.function, index) === "value"
         || argument.kind !== "place"
         || argument.data.base.kind !== "local"
         || argument.data.projections.length !== 0
@@ -1673,12 +2798,13 @@ class MirCompiler {
     if (!port) {
       this.fail(`output id ${data.output} is out of range`);
     }
-    const channel = this.compilePortChannel(port, data.element, data.bounds, context);
-    const tableAddress = this.module.i32.add(
-      this.module.global.get(POINTER_GLOBALS.outputs, binaryen.i32),
-      this.module.i32.mul(channel, this.module.i32.const(4)),
+    const channelPointer = this.audioChannelPointer(
+      POINTER_GLOBALS.outputs,
+      port,
+      data.element,
+      data.bounds,
+      context,
     );
-    const channelPointer = this.module.i32.load(0, 4, tableAddress);
     const sampleAddress = this.module.i32.add(
       channelPointer,
       this.module.i32.mul(
@@ -1735,13 +2861,13 @@ class MirCompiler {
   }
 
   compileBufferStore(data, context) {
-    const buffer = this.requireBuffer(data.buffer);
+    const buffer = this.requireBufferRef(data.buffer);
     if (buffer.access !== "read_write") {
       this.fail(`buffer '${buffer.name}' is read-only`);
     }
     return this.storeScalar(
       buffer.element,
-      this.compileBufferAddress(data, context),
+      this.compileBufferAddress(data, context, true),
       this.compileValue(data.value, context),
     );
   }
@@ -1753,7 +2879,7 @@ class MirCompiler {
     }
     return this.storeScalar(
       type.data.element,
-      this.compileBufferParamAddress(data, context),
+      this.compileBufferParamAddress(data, context, true),
       this.compileValue(data.value, context),
     );
   }
@@ -1812,27 +2938,24 @@ class MirCompiler {
       case "buffer_param_load":
         return this.compileBufferParamLoad(data, context);
       case "buffer_len":
-        return this.compileBufferLen(data);
+        return this.compileBufferLen(data, context);
       case "buffer_param_len":
         return this.compileBufferParamLen(data, context);
       case "buffer_channels":
-        return this.loadBufferTableValue(
-          POINTER_GLOBALS.bufferChannels,
-          data,
-          "i32",
-        );
+        return this.compileBufferChannels(data, context);
       case "buffer_param_channels":
-        return this.loadBufferParamComponent(data, 2, "i32", context);
+        return this.compileBufferParamChannels(data, context);
       case "buffer_sample_rate":
         return this.loadBufferTableValue(
           POINTER_GLOBALS.bufferSampleRates,
           data,
           "f32",
+          context,
         );
       case "buffer_param_sample_rate":
-        return this.loadBufferParamComponent(data, 3, "f32", context);
+        return this.loadBufferParamComponent(data, 4, "f32", context);
       case "slice_len":
-        return this.compileSliceValue(data, context)[1];
+        return this.compileSliceValue(data, context)[2];
       case "slice_load":
         return this.compileSliceLoad(data, context);
       case "make_slice":
@@ -1862,12 +2985,13 @@ class MirCompiler {
     if (!port) {
       this.fail(`input id ${data.input} is out of range`);
     }
-    const channel = this.compilePortChannel(port, data.element, data.bounds, context);
-    const tableAddress = this.module.i32.add(
-      this.module.global.get(POINTER_GLOBALS.inputs, binaryen.i32),
-      this.module.i32.mul(channel, this.module.i32.const(4)),
+    const channelPointer = this.audioChannelPointer(
+      POINTER_GLOBALS.inputs,
+      port,
+      data.element,
+      data.bounds,
+      context,
     );
-    const channelPointer = this.module.i32.load(0, 4, tableAddress);
     const sampleAddress = this.module.i32.add(
       channelPointer,
       this.module.i32.mul(
@@ -1911,12 +3035,13 @@ class MirCompiler {
     if (!port) {
       this.fail(`output id ${data.output} is out of range`);
     }
-    const channel = this.compilePortChannel(port, data.element, data.bounds, context);
-    const tableAddress = this.module.i32.add(
-      this.module.global.get(POINTER_GLOBALS.outputs, binaryen.i32),
-      this.module.i32.mul(channel, this.module.i32.const(4)),
+    const channelPointer = this.audioChannelPointer(
+      POINTER_GLOBALS.outputs,
+      port,
+      data.element,
+      data.bounds,
+      context,
     );
-    const channelPointer = this.module.i32.load(0, 4, tableAddress);
     const sampleAddress = this.module.i32.add(
       channelPointer,
       this.module.i32.mul(
@@ -1941,6 +3066,62 @@ class MirCompiler {
     return this.module.i32.add(this.module.i32.const(port.channel), index);
   }
 
+  audioChannelPointer(globalName, port, element, bounds, context) {
+    const staticChannel = this.staticPortChannel(port, element, bounds);
+    if (staticChannel === null) {
+      return this.loadAudioChannelPointer(
+        globalName,
+        this.compilePortChannel(port, element, bounds, context),
+      );
+    }
+    const key = `${globalName}:${staticChannel}`;
+    let local = context.audioChannelPointerCache.get(key);
+    if (local === undefined) {
+      local = this.allocateGeneratedLocal(
+        context,
+        "i32",
+        `audio.${globalName.slice(6)}.${staticChannel}`,
+      );
+      context.audioChannelPointerCache.set(key, local);
+      context.entryInitializers.push(
+        this.module.local.set(
+          local,
+          this.loadAudioChannelPointer(
+            globalName,
+            this.module.i32.const(staticChannel),
+          ),
+        ),
+      );
+    }
+    return this.module.local.get(local, binaryen.i32);
+  }
+
+  loadAudioChannelPointer(globalName, channel) {
+    const tableAddress = this.module.i32.add(
+      this.module.global.get(globalName, binaryen.i32),
+      this.module.i32.mul(channel, this.module.i32.const(4)),
+    );
+    return this.module.i32.load(0, 4, tableAddress);
+  }
+
+  staticPortChannel(port, element, bounds) {
+    if (!port.isArray) return port.channel;
+    if (
+      element?.kind !== "constant"
+      || element.data?.type !== "i32"
+      || !Number.isInteger(element.data.value)
+    ) {
+      return null;
+    }
+    let index = element.data.value;
+    if (bounds === "clamp") {
+      index = Math.min(port.channels - 1, Math.max(0, index));
+    } else if (index < 0 || index >= port.channels) {
+      return null;
+    }
+    return port.channel + index;
+  }
+
   compileConstDataLoad(data, context) {
     const item = this.constLayout[data.data];
     if (!item) {
@@ -1955,10 +3136,10 @@ class MirCompiler {
   }
 
   compileBufferLoad(data, context) {
-    const buffer = this.requireBuffer(data.buffer);
+    const buffer = this.requireBufferRef(data.buffer);
     return this.loadScalar(
       buffer.element,
-      this.compileBufferAddress(data, context),
+      this.compileBufferAddress(data, context, false),
     );
   }
 
@@ -1966,133 +3147,515 @@ class MirCompiler {
     const type = this.bufferParamType(data.parameter, context);
     return this.loadScalar(
       type.data.element,
-      this.compileBufferParamAddress(data, context),
+      this.compileBufferParamAddress(data, context, false),
     );
   }
 
-  compileBufferParamAddress(data, context) {
+  compileBufferParamAddress(data, context, write) {
     const type = this.bufferParamType(data.parameter, context);
-    const component = (offset, scalar) => () =>
-      this.loadBufferParamComponent(data.parameter, offset, scalar, context);
-    const channels = component(2, "i32");
-    const rawIndex = () => {
-      if (data.channel === null) {
-        return this.compileValue(data.index, context);
-      }
-      return this.module.i32.add(
-        this.module.i32.mul(this.compileValue(data.index, context), channels()),
-        this.compileValue(data.channel, context),
-      );
-    };
-    const index = this.compileDynamicBoundedIndex(
-      rawIndex,
-      () => this.compileBufferParamTotalScalarLen(data.parameter, context),
-      data.bounds,
+    return this.withBufferParamSelector(
+      data.parameter,
       context,
-      true,
-    );
-    return this.module.i32.add(
-      this.loadBufferParamComponent(data.parameter, 0, "i32", context),
-      this.module.i32.mul(
-        index,
-        this.module.i32.const(this.scalarSize(type.data.element)),
-      ),
+      binaryen.i32,
+      (selector, staticSelector, prelude) => {
+        let frames = this.bufferParamComponentFactory(
+          data.parameter,
+          2,
+          "i32",
+          selector,
+          staticSelector,
+          context,
+        );
+        let channels = this.bufferParamChannelsFactory(
+          data.parameter,
+          selector,
+          staticSelector,
+          context,
+        );
+        if (data.parameter?.kind === "array_element" && staticSelector === null) {
+          frames = this.snapshotOperationValue(
+            frames,
+            "i32",
+            "buffer_param.frames",
+            prelude,
+            context,
+          );
+          if (this.bufferChannelMetadata(
+            type.data.channels,
+            type.data.element,
+          ).kind === "dynamic") {
+            channels = this.snapshotOperationValue(
+              channels,
+              "i32",
+              "buffer_param.channels",
+              prelude,
+              context,
+            );
+          }
+        }
+        const frame = this.compileDynamicBoundedIndex(
+          () => this.compileValue(data.index, context),
+          frames,
+          data.bounds,
+          context,
+          true,
+        );
+        const index = data.channel === null
+          ? frame
+          : this.module.i32.add(
+            this.module.i32.mul(frame, channels()),
+            this.compileDynamicBoundedIndex(
+              () => this.compileValue(data.channel, context),
+              channels,
+              data.bounds,
+              context,
+              true,
+            ),
+          );
+        const pointer = this.bufferParamComponentFactory(
+          data.parameter,
+          write ? 1 : 0,
+          "i32",
+          selector,
+          staticSelector,
+          context,
+        );
+        return this.bufferPointerWithOffset(
+          pointer,
+          this.module.i32.mul(
+            index,
+            this.module.i32.const(this.scalarSize(type.data.element)),
+          ),
+          write,
+          context,
+        );
+      },
     );
   }
 
-  compileBufferAddress(data, context) {
-    const buffer = this.requireBuffer(data.buffer);
-    const rawIndex = () => {
-      if (data.channel === null) {
-        return this.compileValue(data.index, context);
-      }
-      return this.module.i32.add(
-        this.module.i32.mul(
-          this.compileValue(data.index, context),
-          this.loadBufferTableValue(
-            POINTER_GLOBALS.bufferChannels,
-            data.buffer,
+  compileBufferAddress(data, context, write) {
+    const buffer = this.requireBufferRef(data.buffer);
+    return this.withBufferRefIndex(
+      data.buffer,
+      context,
+      binaryen.i32,
+      (descriptorIndex, staticIndex, prelude) => {
+        let frames = this.bufferTableValueFactory(
+          POINTER_GLOBALS.bufferFrames,
+          descriptorIndex,
+          staticIndex,
+          "i32",
+          context,
+        );
+        let channels = this.bufferChannelsFactory(
+          data.buffer,
+          descriptorIndex,
+          staticIndex,
+          context,
+        );
+        if (staticIndex === null) {
+          frames = this.snapshotOperationValue(
+            frames,
             "i32",
+            "buffer.frames",
+            prelude,
+            context,
+          );
+          if (this.bufferRefChannelMetadata(data.buffer).kind === "dynamic") {
+            channels = this.snapshotOperationValue(
+              channels,
+              "i32",
+              "buffer.channels",
+              prelude,
+              context,
+            );
+          }
+        }
+        const frame = this.compileDynamicBoundedIndex(
+          () => this.compileValue(data.index, context),
+          frames,
+          data.bounds,
+          context,
+          true,
+        );
+        const index = data.channel === null
+          ? frame
+          : this.module.i32.add(
+            this.module.i32.mul(frame, channels()),
+            this.compileDynamicBoundedIndex(
+              () => this.compileValue(data.channel, context),
+              channels,
+              data.bounds,
+              context,
+              true,
+            ),
+          );
+        const pointer = this.bufferTableValueFactory(
+          write ? POINTER_GLOBALS.bufferWrites : POINTER_GLOBALS.buffers,
+          descriptorIndex,
+          staticIndex,
+          "i32",
+          context,
+        );
+        return this.bufferPointerWithOffset(
+          pointer,
+          this.module.i32.mul(
+            index,
+            this.module.i32.const(this.scalarSize(buffer.element)),
+          ),
+          write,
+          context,
+        );
+      },
+    );
+  }
+
+  bufferPointerWithOffset(pointer, byteOffset, write, context) {
+    const local = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      write ? "buffer.write_pointer" : "buffer.read_pointer",
+    );
+    const stablePointer = () => this.module.local.get(local, binaryen.i32);
+    const fallback = write
+      ? this.fallbackBufferWriteAddress
+      : this.fallbackBufferReadAddress;
+    return this.module.block(
+      null,
+      [
+        this.module.local.set(local, pointer()),
+        this.module.i32.add(
+          stablePointer(),
+          this.module.select(
+            this.module.i32.eq(
+              stablePointer(),
+              this.module.i32.const(fallback),
+            ),
+            this.module.i32.const(0),
+            byteOffset,
           ),
         ),
-        this.compileValue(data.channel, context),
-      );
-    };
-    const index = this.compileDynamicBoundedIndex(
-      rawIndex,
-      () => this.compileBufferTotalScalarLen(data.buffer),
-      data.bounds,
+      ],
+      binaryen.i32,
+    );
+  }
+
+  compileBufferLen(bufferRef, context) {
+    this.requireBufferRef(bufferRef);
+    return this.withBufferRefIndex(
+      bufferRef,
       context,
-      true,
-    );
-    const pointer = this.loadBufferTableValue(
-      POINTER_GLOBALS.buffers,
-      data.buffer,
-      "i32",
-    );
-    return this.module.i32.add(
-      pointer,
-      this.module.i32.mul(
+      binaryen.i32,
+      (index, staticIndex) => this.bufferTableValueFactory(
+        POINTER_GLOBALS.bufferFrames,
         index,
-        this.module.i32.const(this.scalarSize(buffer.element)),
-      ),
-    );
-  }
-
-  compileBufferLen(bufferId) {
-    this.requireBuffer(bufferId);
-    return this.loadBufferTableValue(
-      POINTER_GLOBALS.bufferFrames,
-      bufferId,
-      "i32",
-    );
-  }
-
-  compileBufferTotalScalarLen(bufferId) {
-    this.requireBuffer(bufferId);
-    return this.module.i32.mul(
-      this.compileBufferLen(bufferId),
-      this.loadBufferTableValue(
-        POINTER_GLOBALS.bufferChannels,
-        bufferId,
+        staticIndex,
         "i32",
-      ),
+        context,
+      )(),
+    );
+  }
+
+  compileBufferChannels(bufferRef, context) {
+    const channels = this.bufferRefChannelMetadata(bufferRef);
+    if (channels.kind === "mono") return this.module.i32.const(1);
+    if (channels.kind === "static") return this.module.i32.const(channels.count);
+    return this.withBufferRefIndex(
+      bufferRef,
+      context,
+      binaryen.i32,
+      (index, staticIndex) => this.bufferTableValueFactory(
+        POINTER_GLOBALS.bufferChannels,
+        index,
+        staticIndex,
+        "i32",
+        context,
+      )(),
     );
   }
 
   compileBufferParamLen(parameterId, context) {
     this.bufferParamType(parameterId, context);
-    return this.loadBufferParamComponent(parameterId, 1, "i32", context);
+    return this.withBufferParamSelector(
+      parameterId,
+      context,
+      binaryen.i32,
+      (selector, staticSelector) => this.bufferParamComponentFactory(
+        parameterId,
+        2,
+        "i32",
+        selector,
+        staticSelector,
+        context,
+      )(),
+    );
   }
 
-  compileBufferParamTotalScalarLen(parameterId, context) {
-    this.bufferParamType(parameterId, context);
-    return this.module.i32.mul(
-      this.compileBufferParamLen(parameterId, context),
-      this.loadBufferParamComponent(parameterId, 2, "i32", context),
+  compileBufferParamChannels(parameterId, context) {
+    const type = this.bufferParamType(parameterId, context);
+    const channels = this.bufferChannelMetadata(
+      type.data.channels,
+      type.data.element,
+    );
+    if (channels.kind === "mono") return this.module.i32.const(1);
+    if (channels.kind === "static") return this.module.i32.const(channels.count);
+    return this.withBufferParamSelector(
+      parameterId,
+      context,
+      binaryen.i32,
+      (selector, staticSelector) => this.bufferParamComponentFactory(
+        parameterId,
+        3,
+        "i32",
+        selector,
+        staticSelector,
+        context,
+      )(),
     );
   }
 
   bufferParamType(parameterId, context) {
-    const parameter = context.function.params[parameterId];
+    const parameter = context.function.params[this.bufferParamIds(parameterId, context)[0]];
     const type = parameter && this.type(parameter.ty);
-    if (!type || type.kind !== "buffer") {
+    const expectedKind = parameterId?.kind === "array_element"
+      ? "buffer_span"
+      : "buffer";
+    if (!type || type.kind !== expectedKind) {
       this.fail(`parameter id ${parameterId} is not a buffer`);
     }
     return type;
   }
 
+  bufferParamIds(parameterRef, context) {
+    if (Number.isInteger(parameterRef)) return [parameterRef];
+    if (
+      parameterRef?.kind === "direct"
+      && Number.isInteger(parameterRef.data)
+    ) {
+      return [parameterRef.data];
+    }
+    if (
+      parameterRef?.kind === "array_element"
+      && Number.isInteger(parameterRef.data?.span)
+      && parameterRef.data.span >= 0
+      && parameterRef.data.span < context.function.params.length
+    ) {
+      return [parameterRef.data.span];
+    }
+    this.fail("invalid buffer parameter reference");
+  }
+
   bufferParamLayout(parameterId, context) {
     const layout = context.paramLayouts[parameterId];
-    if (!layout || layout.kind !== "buffer") {
+    if (!layout || !["buffer", "buffer_span"].includes(layout.kind)) {
       this.fail(`parameter id ${parameterId} has no buffer descriptor`);
     }
     return layout;
   }
 
-  loadBufferParamComponent(parameterId, offset, scalar, context) {
+  staticBufferParamSelector(parameterRef, context) {
+    if (parameterRef?.kind !== "array_element") return null;
+    const reference = parameterRef.data;
+    const type = this.bufferParamType(parameterRef, context);
+    const selector = reference.selector;
+    if (
+      selector?.kind !== "constant"
+      || selector.data?.type !== "i32"
+      || !Number.isInteger(selector.data.value)
+    ) {
+      return null;
+    }
+    let index = selector.data.value;
+    if (reference.bounds === "clamp") {
+      index = Math.min(type.data.len - 1, Math.max(0, index));
+    } else if (index < 0 || index >= type.data.len) {
+      return null;
+    }
+    return index;
+  }
+
+  compileBufferParamSelector(parameterRef, context) {
+    const reference = parameterRef.data;
+    const type = this.bufferParamType(parameterRef, context);
+    return this.compileDynamicBoundedIndex(
+      () => this.compileValue(reference.selector, context),
+      () => this.module.i32.const(type.data.len),
+      reference.bounds,
+      context,
+      true,
+    );
+  }
+
+  withBufferParamSelector(parameterRef, context, resultType, build) {
+    if (parameterRef?.kind !== "array_element") {
+      return build(null, null, []);
+    }
+    const staticSelector = this.staticBufferParamSelector(parameterRef, context);
+    if (staticSelector !== null) {
+      return build(
+        () => this.module.i32.const(staticSelector),
+        staticSelector,
+        [],
+      );
+    }
+    const selectorLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      "buffer_param.selector",
+    );
+    const prelude = [
+      this.module.local.set(
+        selectorLocal,
+        this.compileBufferParamSelector(parameterRef, context),
+      ),
+    ];
+    const result = build(
+      () => this.module.local.get(selectorLocal, binaryen.i32),
+      null,
+      prelude,
+    );
+    return this.module.block(null, [...prelude, result], resultType);
+  }
+
+  bufferParamComponentFactory(
+    parameterRef,
+    offset,
+    scalar,
+    selector,
+    staticSelector,
+    context,
+  ) {
+    const parameterId = this.bufferParamIds(parameterRef, context)[0];
     const layout = this.bufferParamLayout(parameterId, context);
-    return this.module.local.get(layout.index + offset, this.wasmType(scalar));
+    if (parameterRef?.kind !== "array_element") {
+      return () =>
+        this.module.local.get(layout.index + offset, this.wasmType(scalar));
+    }
+    const rawLoad = (index) => {
+      const table = this.module.local.get(layout.index + offset, binaryen.i32);
+      const address = this.module.i32.add(
+        table,
+        this.module.i32.mul(
+          index,
+          this.module.i32.const(this.scalarSize(scalar)),
+        ),
+      );
+      return this.loadScalar(scalar, address);
+    };
+    const load = (index) => {
+      if (scalar !== "i32" || (offset !== 0 && offset !== 1)) {
+        return rawLoad(index);
+      }
+      return this.resolveBufferPointer(
+        () => rawLoad(index),
+        offset === 1,
+        context,
+      );
+    };
+    if (staticSelector === null) return () => load(selector());
+
+    const key = `buffer_param:${parameterId}:${staticSelector}:${offset}:${scalar}`;
+    let local = context.bufferDescriptorCache.get(key);
+    if (local === undefined) {
+      local = this.allocateGeneratedLocal(
+        context,
+        scalar,
+        `buffer_param.component${offset}.${parameterId}.${staticSelector}`,
+      );
+      context.bufferDescriptorCache.set(key, local);
+      context.entryInitializers.push(
+        this.module.local.set(
+          local,
+          load(this.module.i32.const(staticSelector)),
+        ),
+      );
+    }
+    return () => this.module.local.get(local, this.wasmType(scalar));
+  }
+
+  bufferParamChannelsFactory(
+    parameterRef,
+    selector,
+    staticSelector,
+    context,
+  ) {
+    const type = this.bufferParamType(parameterRef, context);
+    const channels = this.bufferChannelMetadata(
+      type.data.channels,
+      type.data.element,
+    );
+    if (channels.kind === "mono") return () => this.module.i32.const(1);
+    if (channels.kind === "static") {
+      return () => this.module.i32.const(channels.count);
+    }
+    return this.bufferParamComponentFactory(
+      parameterRef,
+      3,
+      "i32",
+      selector,
+      staticSelector,
+      context,
+    );
+  }
+
+  loadBufferParamComponent(parameterId, offset, scalar, context) {
+    return this.withBufferParamSelector(
+      parameterId,
+      context,
+      this.wasmType(scalar),
+      (selector, staticSelector) => this.bufferParamComponentFactory(
+        parameterId,
+        offset,
+        scalar,
+        selector,
+        staticSelector,
+        context,
+      )(),
+    );
+  }
+
+  loadBufferParamValue(parameterId, context) {
+    const components = ["i32", "i32", "i32", "i32", "f32"];
+    if (parameterId?.kind !== "array_element") {
+      return components.map((scalar, offset) =>
+        this.loadBufferParamComponent(parameterId, offset, scalar, context),
+      );
+    }
+    const staticSelector = this.staticBufferParamSelector(parameterId, context);
+    let selector;
+    let initializeSelector = null;
+    if (staticSelector === null) {
+      const selectorLocal = this.allocateGeneratedLocal(
+        context,
+        "i32",
+        "buffer_param.selector",
+      );
+      selector = () => this.module.local.get(selectorLocal, binaryen.i32);
+      initializeSelector = this.module.local.set(
+        selectorLocal,
+        this.compileBufferParamSelector(parameterId, context),
+      );
+    } else {
+      selector = () => this.module.i32.const(staticSelector);
+    }
+    const values = components.map((scalar, offset) =>
+      this.bufferParamComponentFactory(
+        parameterId,
+        offset,
+        scalar,
+        selector,
+        staticSelector,
+        context,
+      )(),
+    );
+    if (initializeSelector !== null) {
+      values[0] = this.module.block(
+        null,
+        [initializeSelector, values[0]],
+        binaryen.i32,
+      );
+    }
+    return values;
   }
 
   loadBufferPlace(place, context) {
@@ -2105,24 +3668,277 @@ class MirCompiler {
     );
   }
 
-  compileInterfaceBufferValue(bufferId) {
-    this.requireBuffer(bufferId);
-    return [
-      this.loadBufferTableValue(POINTER_GLOBALS.buffers, bufferId, "i32"),
-      this.loadBufferTableValue(POINTER_GLOBALS.bufferFrames, bufferId, "i32"),
-      this.loadBufferTableValue(POINTER_GLOBALS.bufferChannels, bufferId, "i32"),
-      this.loadBufferTableValue(POINTER_GLOBALS.bufferSampleRates, bufferId, "f32"),
+  compileInterfaceBufferValue(bufferRef, context) {
+    this.requireBufferRef(bufferRef);
+    const staticIndex = this.staticBufferRefIndex(bufferRef);
+    let descriptorIndex;
+    let initializeIndex = null;
+    if (staticIndex === null) {
+      const indexLocal = this.allocateGeneratedLocal(
+        context,
+        "i32",
+        "buffer.descriptor_index",
+      );
+      descriptorIndex = () =>
+        this.module.local.get(indexLocal, binaryen.i32);
+      initializeIndex = this.module.local.set(
+        indexLocal,
+        this.compileBufferRefIndex(bufferRef, context),
+      );
+    } else {
+      descriptorIndex = () => this.module.i32.const(staticIndex);
+    }
+    const component = (globalName, scalar) => this.bufferTableValueFactory(
+      globalName,
+      descriptorIndex,
+      staticIndex,
+      scalar,
+      context,
+    )();
+    const channels = this.bufferRefChannelMetadata(bufferRef);
+    const values = [
+      component(POINTER_GLOBALS.buffers, "i32"),
+      component(POINTER_GLOBALS.bufferWrites, "i32"),
+      component(POINTER_GLOBALS.bufferFrames, "i32"),
+      channels.kind === "mono"
+        ? this.module.i32.const(1)
+        : channels.kind === "static"
+          ? this.module.i32.const(channels.count)
+          : component(POINTER_GLOBALS.bufferChannels, "i32"),
+      component(POINTER_GLOBALS.bufferSampleRates, "f32"),
     ];
+    if (initializeIndex !== null) {
+      values[0] = this.module.block(
+        null,
+        [initializeIndex, values[0]],
+        binaryen.i32,
+      );
+    }
+    return values;
   }
 
-  loadBufferTableValue(globalName, bufferId, scalar) {
-    this.requireBuffer(bufferId);
-    const size = this.scalarSize(scalar);
-    const address = this.module.i32.add(
-      this.module.global.get(globalName, binaryen.i32),
-      this.module.i32.const(bufferId * size),
+  compileBufferSpanValue(spanRef, expectedType, context) {
+    const data = spanRef?.data;
+    if (!data || data.len !== expectedType.data.len) {
+      this.fail("buffer span argument length does not match parameter type");
+    }
+    const tableGlobals = [
+      POINTER_GLOBALS.buffers,
+      POINTER_GLOBALS.bufferWrites,
+      POINTER_GLOBALS.bufferFrames,
+      POINTER_GLOBALS.bufferChannels,
+      POINTER_GLOBALS.bufferSampleRates,
+    ];
+    const tableScalars = ["i32", "i32", "i32", "i32", "f32"];
+    let tables;
+    let start;
+    if (spanRef.kind === "interface") {
+      if (
+        !Number.isInteger(data.first)
+        || data.first < 0
+        || data.first + data.len > this.mir.interface.buffers.length
+      ) {
+        this.fail("interface buffer span is out of range");
+      }
+      tables = tableGlobals.map((name) => this.module.global.get(name, binaryen.i32));
+      start = data.first;
+    } else if (spanRef.kind === "parameter") {
+      const parameter = context.function.params[data.span];
+      const sourceType = parameter && this.type(parameter.ty);
+      const layout = context.paramLayouts[data.span];
+      if (
+        !sourceType
+        || sourceType.kind !== "buffer_span"
+        || !layout
+        || layout.kind !== "buffer_span"
+        || !Number.isInteger(data.start)
+        || data.start < 0
+        || data.start + data.len > sourceType.data.len
+      ) {
+        this.fail("buffer span parameter window is out of range");
+      }
+      tables = layout.components.map((_, offset) =>
+        this.module.local.get(layout.index + offset, binaryen.i32));
+      start = data.start;
+    } else {
+      this.fail("invalid buffer span reference");
+    }
+    return tables.map((table, offset) => this.module.i32.add(
+      table,
+      this.module.i32.const(start * this.scalarSize(tableScalars[offset])),
+    ));
+  }
+
+  loadBufferTableValue(globalName, bufferRef, scalar, context) {
+    this.requireBufferRef(bufferRef);
+    return this.withBufferRefIndex(
+      bufferRef,
+      context,
+      this.wasmType(scalar),
+      (index, staticIndex) => this.bufferTableValueFactory(
+        globalName,
+        index,
+        staticIndex,
+        scalar,
+        context,
+      )(),
     );
-    return this.loadScalar(scalar, address);
+  }
+
+  bufferTableValueFactory(
+    globalName,
+    descriptorIndex,
+    staticIndex,
+    scalar,
+    context,
+  ) {
+    const load = () => {
+      const raw = () => this.loadBufferTableValueAt(
+        globalName,
+        descriptorIndex(),
+        scalar,
+      );
+      if (
+        scalar === "i32"
+        && (globalName === POINTER_GLOBALS.buffers
+          || globalName === POINTER_GLOBALS.bufferWrites)
+      ) {
+        return this.resolveBufferPointer(
+          raw,
+          globalName === POINTER_GLOBALS.bufferWrites,
+          context,
+        );
+      }
+      return raw();
+    };
+    if (staticIndex === null) {
+      return load;
+    }
+    const key = `${globalName}:${staticIndex}:${scalar}`;
+    let local = context.bufferDescriptorCache.get(key);
+    if (local === undefined) {
+      local = this.allocateGeneratedLocal(
+        context,
+        scalar,
+        `buffer.${globalName.slice(6)}.${staticIndex}`,
+      );
+      context.bufferDescriptorCache.set(key, local);
+      context.entryInitializers.push(
+        this.module.local.set(
+          local,
+          load(),
+        ),
+      );
+    }
+    return () => this.module.local.get(local, this.wasmType(scalar));
+  }
+
+  bufferChannelsFactory(
+    bufferRef,
+    descriptorIndex,
+    staticIndex,
+    context,
+  ) {
+    const channels = this.bufferRefChannelMetadata(bufferRef);
+    if (channels.kind === "mono") {
+      return () => this.module.i32.const(1);
+    }
+    if (channels.kind === "static") {
+      return () => this.module.i32.const(channels.count);
+    }
+    return this.bufferTableValueFactory(
+      POINTER_GLOBALS.bufferChannels,
+      descriptorIndex,
+      staticIndex,
+      "i32",
+      context,
+    );
+  }
+
+  loadBufferTableValueAt(globalName, descriptorIndex, scalar) {
+    const size = this.scalarSize(scalar);
+    const load = () => this.loadScalar(
+      scalar,
+      this.module.i32.add(
+        this.module.global.get(globalName, binaryen.i32),
+        this.module.i32.mul(
+          descriptorIndex,
+          this.module.i32.const(size),
+        ),
+      ),
+    );
+    return load();
+  }
+
+  resolveBufferPointer(load, write, context) {
+    const local = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      write ? "buffer.write_or_discard" : "buffer.read_or_zero",
+    );
+    const pointer = () => this.module.local.get(local, binaryen.i32);
+    return this.module.block(
+      null,
+      [
+        this.module.local.set(local, load()),
+        this.module.select(
+          this.module.i32.ne(pointer(), this.module.i32.const(0)),
+          pointer(),
+          this.module.i32.const(
+            write
+              ? this.fallbackBufferWriteAddress
+              : this.fallbackBufferReadAddress,
+          ),
+        ),
+      ],
+      binaryen.i32,
+    );
+  }
+
+  withBufferRefIndex(bufferRef, context, resultType, build) {
+    const staticIndex = this.staticBufferRefIndex(bufferRef);
+    if (staticIndex !== null) {
+      return build(
+        () => this.module.i32.const(staticIndex),
+        staticIndex,
+        [],
+      );
+    }
+    const indexLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      "buffer.descriptor_index",
+    );
+    const prelude = [
+      this.module.local.set(
+        indexLocal,
+        this.compileBufferRefIndex(bufferRef, context),
+      ),
+    ];
+    const result = build(
+      () => this.module.local.get(indexLocal, binaryen.i32),
+      null,
+      prelude,
+    );
+    return this.module.block(null, [...prelude, result], resultType);
+  }
+
+  snapshotOperationValue(factory, scalar, name, prelude, context) {
+    const local = this.allocateGeneratedLocal(context, scalar, name);
+    prelude.push(
+      this.module.local.set(local, factory()),
+    );
+    return () => this.module.local.get(local, this.wasmType(scalar));
+  }
+
+  allocateGeneratedLocal(context, scalar, name) {
+    const index = context.generatedLocalBase + context.generatedLocals.length;
+    context.generatedLocals.push({
+      index,
+      scalar,
+      name: `${name}.generated${context.generatedLocals.length}`,
+    });
+    return index;
   }
 
   compileSliceValue(value, context) {
@@ -2156,8 +3972,11 @@ class MirCompiler {
       }
       const header = () =>
         this.compileEventParamAddress(context.eventId, place.base.data);
+      const address = () =>
+        this.module.i32.add(header(), this.module.i32.const(4));
       return [
-        this.module.i32.add(header(), this.module.i32.const(4)),
+        address(),
+        address(),
         this.module.i32.load(0, 4, header()),
         this.module.i32.const(this.scalarSize(type.data.element)),
       ];
@@ -2217,7 +4036,7 @@ class MirCompiler {
       this.fail("slice assignment destination must be an unprojected local");
     }
     const layout = context.localLayouts[place.base.data];
-    if (!layout || layout.kind !== "slice" || components.length !== 3) {
+    if (!layout || layout.kind !== "slice" || components.length !== 4) {
       this.fail(`local id ${place.base.data} is not a valid slice destination`);
     }
     return this.module.block(
@@ -2229,25 +4048,50 @@ class MirCompiler {
   }
 
   compileMakeSlice(data, context) {
-    const source = () => this.compileSliceSource(data.source, context);
+    const sourceValues = this.compileSliceSource(data.source, context);
+    const sourceLocals = sourceValues.map((_, offset) =>
+      this.allocateGeneratedLocal(
+        context,
+        "i32",
+        `slice.source_component${offset}`,
+      ),
+    );
+    const initializeSource = sourceValues.map((value, offset) =>
+      this.module.local.set(sourceLocals[offset], value),
+    );
+    const source = (offset) => () =>
+      this.module.local.get(sourceLocals[offset], binaryen.i32);
     const range = this.compileSliceRange(
       () => this.compileValue(data.start, context),
       () => this.compileValue(data.len, context),
-      () => source()[1],
+      source(2),
       data.bounds,
       context,
     );
-    return [
+    const result = [
       this.module.i32.add(
-        source()[0],
+        source(0)(),
         this.module.i32.mul(
           range.start(),
-          source()[2],
+          source(3)(),
+        ),
+      ),
+      this.module.i32.add(
+        source(1)(),
+        this.module.i32.mul(
+          range.start(),
+          source(3)(),
         ),
       ),
       range.len(),
-      source()[2],
+      source(3)(),
     ];
+    result[0] = this.module.block(
+      null,
+      [...initializeSource, result[0]],
+      binaryen.i32,
+    );
+    return result;
   }
 
   compileSliceRange(start, len, sourceLen, bounds, context) {
@@ -2325,6 +4169,7 @@ class MirCompiler {
       }
       return [
         this.placeAddress(source.data, context),
+        this.placeAddress(source.data, context),
         this.module.i32.const(type.data.len),
         this.module.i32.const(this.scalarSize(element.data)),
       ];
@@ -2334,80 +4179,228 @@ class MirCompiler {
       if (!item) this.fail(`const data id ${source.data} is out of range`);
       return [
         this.module.i32.const(item.address),
+        this.module.i32.const(item.address),
         this.module.i32.const(item.len),
         this.module.i32.const(this.scalarSize(item.scalar)),
       ];
     }
     if (source.kind === "buffer") {
-      const buffer = this.requireBuffer(source.data.buffer);
+      const buffer = this.requireBufferRef(source.data.buffer);
       const elementSize = this.scalarSize(buffer.element);
-      const address = this.loadBufferTableValue(
-        POINTER_GLOBALS.buffers,
-        source.data.buffer,
-        "i32",
-      );
-      if (source.data.channel === null) {
-        return [
-          address,
-          this.compileBufferLen(source.data.buffer),
-          this.module.i32.const(elementSize),
-        ];
-      }
-      const channels = () =>
-        this.loadBufferTableValue(
-          POINTER_GLOBALS.bufferChannels,
-          source.data.buffer,
+      const staticIndex = this.staticBufferRefIndex(source.data.buffer);
+      const prelude = [];
+      let descriptorIndex;
+      if (staticIndex === null) {
+        const indexLocal = this.allocateGeneratedLocal(
+          context,
           "i32",
+          "buffer.descriptor_index",
         );
-      const channel = this.compileDynamicBoundedIndex(
-        () => this.compileValue(source.data.channel, context),
-        channels,
-        "clamp",
+        prelude.push(
+          this.module.local.set(
+            indexLocal,
+            this.compileBufferRefIndex(source.data.buffer, context),
+          ),
+        );
+        descriptorIndex = () =>
+          this.module.local.get(indexLocal, binaryen.i32);
+      } else {
+        descriptorIndex = () => this.module.i32.const(staticIndex);
+      }
+      const component = (globalName, scalar) => this.bufferTableValueFactory(
+        globalName,
+        descriptorIndex,
+        staticIndex,
+        scalar,
         context,
-        true,
       );
-      return [
-        this.module.i32.add(
-          address,
-          this.module.i32.mul(channel, this.module.i32.const(elementSize)),
-        ),
-        this.loadBufferTableValue(
-          POINTER_GLOBALS.bufferFrames,
-          source.data.buffer,
+      let channels = this.bufferChannelsFactory(
+        source.data.buffer,
+        descriptorIndex,
+        staticIndex,
+        context,
+      );
+      if (
+        staticIndex === null
+        && this.bufferRefChannelMetadata(source.data.buffer).kind === "dynamic"
+      ) {
+        channels = this.snapshotOperationValue(
+          channels,
           "i32",
-        ),
-        this.module.i32.mul(channels(), this.module.i32.const(elementSize)),
+          "buffer.channels",
+          prelude,
+          context,
+        );
+      }
+      const readAddress = component(POINTER_GLOBALS.buffers, "i32");
+      const writeAddress = component(POINTER_GLOBALS.bufferWrites, "i32");
+      let read = readAddress();
+      let write = writeAddress();
+      if (source.data.channel !== null) {
+        const channelLocal = this.allocateGeneratedLocal(
+          context,
+          "i32",
+          "buffer.slice_channel",
+        );
+        prelude.push(
+          this.module.local.set(
+            channelLocal,
+            this.compileDynamicBoundedIndex(
+              () => this.compileValue(source.data.channel, context),
+              channels,
+              "clamp",
+              context,
+              true,
+            ),
+          ),
+        );
+        const channelOffset = () => this.module.i32.mul(
+          this.module.local.get(channelLocal, binaryen.i32),
+          this.module.i32.const(elementSize),
+        );
+        read = this.bufferPointerWithOffset(
+          readAddress,
+          channelOffset(),
+          false,
+          context,
+        );
+        write = this.bufferPointerWithOffset(
+          writeAddress,
+          channelOffset(),
+          true,
+          context,
+        );
+      }
+      const result = [
+        read,
+        write,
+        component(POINTER_GLOBALS.bufferFrames, "i32")(),
+        source.data.channel === null
+          ? this.module.i32.const(elementSize)
+          : this.module.i32.mul(channels(), this.module.i32.const(elementSize)),
       ];
+      if (prelude.length > 0) {
+        result[0] = this.module.block(
+          null,
+          [...prelude, result[0]],
+          binaryen.i32,
+        );
+      }
+      return result;
     }
     if (source.kind === "buffer_param") {
       const type = this.bufferParamType(source.data.parameter, context);
       const elementSize = this.scalarSize(type.data.element);
-      const address = () =>
-        this.loadBufferParamComponent(source.data.parameter, 0, "i32", context);
-      if (source.data.channel === null) {
-        return [
-          address(),
-          this.compileBufferParamLen(source.data.parameter, context),
-          this.module.i32.const(elementSize),
-        ];
-      }
-      const channels = () =>
-        this.loadBufferParamComponent(source.data.parameter, 2, "i32", context);
-      const channel = this.compileDynamicBoundedIndex(
-        () => this.compileValue(source.data.channel, context),
-        channels,
-        "clamp",
+      const staticSelector = this.staticBufferParamSelector(
+        source.data.parameter,
         context,
-        true,
       );
-      return [
-        this.module.i32.add(
-          address(),
-          this.module.i32.mul(channel, this.module.i32.const(elementSize)),
-        ),
-        this.loadBufferParamComponent(source.data.parameter, 1, "i32", context),
-        this.module.i32.mul(channels(), this.module.i32.const(elementSize)),
+      const prelude = [];
+      let selector = null;
+      if (
+        source.data.parameter?.kind === "array_element"
+        && staticSelector === null
+      ) {
+        const selectorLocal = this.allocateGeneratedLocal(
+          context,
+          "i32",
+          "buffer_param.selector",
+        );
+        prelude.push(
+          this.module.local.set(
+            selectorLocal,
+            this.compileBufferParamSelector(source.data.parameter, context),
+          ),
+        );
+        selector = () => this.module.local.get(selectorLocal, binaryen.i32);
+      } else if (staticSelector !== null) {
+        selector = () => this.module.i32.const(staticSelector);
+      }
+      const component = (offset, scalar) => this.bufferParamComponentFactory(
+        source.data.parameter,
+        offset,
+        scalar,
+        selector,
+        staticSelector,
+        context,
+      );
+      let channels = this.bufferParamChannelsFactory(
+        source.data.parameter,
+        selector,
+        staticSelector,
+        context,
+      );
+      if (
+        source.data.parameter?.kind === "array_element"
+        && staticSelector === null
+        && this.bufferChannelMetadata(
+          type.data.channels,
+          type.data.element,
+        ).kind === "dynamic"
+      ) {
+        channels = this.snapshotOperationValue(
+          channels,
+          "i32",
+          "buffer_param.channels",
+          prelude,
+          context,
+        );
+      }
+      const readAddress = component(0, "i32");
+      const writeAddress = component(1, "i32");
+      let read = readAddress();
+      let write = writeAddress();
+      if (source.data.channel !== null) {
+        const channelLocal = this.allocateGeneratedLocal(
+          context,
+          "i32",
+          "buffer_param.slice_channel",
+        );
+        prelude.push(
+          this.module.local.set(
+            channelLocal,
+            this.compileDynamicBoundedIndex(
+              () => this.compileValue(source.data.channel, context),
+              channels,
+              "clamp",
+              context,
+              true,
+            ),
+          ),
+        );
+        const channelOffset = () => this.module.i32.mul(
+          this.module.local.get(channelLocal, binaryen.i32),
+          this.module.i32.const(elementSize),
+        );
+        read = this.bufferPointerWithOffset(
+          readAddress,
+          channelOffset(),
+          false,
+          context,
+        );
+        write = this.bufferPointerWithOffset(
+          writeAddress,
+          channelOffset(),
+          true,
+          context,
+        );
+      }
+      const result = [
+        read,
+        write,
+        component(2, "i32")(),
+        source.data.channel === null
+          ? this.module.i32.const(elementSize)
+          : this.module.i32.mul(channels(), this.module.i32.const(elementSize)),
       ];
+      if (prelude.length > 0) {
+        result[0] = this.module.block(
+          null,
+          [...prelude, result[0]],
+          binaryen.i32,
+        );
+      }
+      return result;
     }
     this.fail(`unsupported slice source '${String(source.kind)}'`);
   }
@@ -2432,25 +4425,26 @@ class MirCompiler {
     return type.data.access;
   }
 
-  compileSliceAddress(slice, index, bounds, context) {
+  compileSliceAddress(slice, index, bounds, context, write) {
     return this.compileSliceAddressWithFactories(
       () => this.compileSliceValue(slice, context),
       () => this.compileValue(index, context),
       bounds,
       context,
+      write,
     );
   }
 
-  compileSliceAddressWithFactories(slice, index, bounds, context) {
+  compileSliceAddressWithFactories(slice, index, bounds, context, write) {
     const bounded = this.compileDynamicBoundedIndex(
       index,
-      () => slice()[1],
+      () => slice()[2],
       bounds,
       context,
     );
     return this.module.i32.add(
-      slice()[0],
-      this.module.i32.mul(bounded, slice()[2]),
+      slice()[write ? 1 : 0],
+      this.module.i32.mul(bounded, slice()[3]),
     );
   }
 
@@ -2482,7 +4476,7 @@ class MirCompiler {
     );
   }
 
-  compileSliceWindowAddress(data, parameterType, context) {
+  compileSliceWindowAddress(data, parameterType, context, write) {
     const elementType = this.type(parameterType.data.element);
     if (elementType.kind !== "scalar") {
       this.fail("slice-window fixed-array parameter element is not scalar");
@@ -2494,7 +4488,7 @@ class MirCompiler {
       () => this.compileValue(data.start, context),
       () =>
         this.module.i32.sub(
-          slice()[1],
+          slice()[2],
           this.module.i32.const(requiredLen),
         ),
       data.bounds,
@@ -2502,8 +4496,8 @@ class MirCompiler {
     );
     const address = () =>
       this.module.i32.add(
-        slice()[0],
-        this.module.i32.mul(start(), slice()[2]),
+        slice()[write ? 1 : 0],
+        this.module.i32.mul(start(), slice()[3]),
       );
     if (data.bounds === "unchecked") {
       return address();
@@ -2511,11 +4505,11 @@ class MirCompiler {
     const invalidShape = () =>
       this.module.i32.or(
         this.module.i32.ne(
-          slice()[2],
+          slice()[3],
           this.module.i32.const(elementSize),
         ),
         this.module.i32.lt_s(
-          slice()[1],
+          slice()[2],
           this.module.i32.const(requiredLen),
         ),
       );
@@ -2564,7 +4558,7 @@ class MirCompiler {
     const scalar = this.sliceElementScalar(data.slice, context);
     return this.loadScalar(
       scalar,
-      this.compileSliceAddress(data.slice, data.index, data.bounds, context),
+      this.compileSliceAddress(data.slice, data.index, data.bounds, context, false),
     );
   }
 
@@ -2575,7 +4569,7 @@ class MirCompiler {
     const scalar = this.sliceElementScalar(data.slice, context);
     return this.storeScalar(
       scalar,
-      this.compileSliceAddress(data.slice, data.index, data.bounds, context),
+      this.compileSliceAddress(data.slice, data.index, data.bounds, context, true),
       this.compileValue(data.value, context),
     );
   }
@@ -2598,14 +4592,14 @@ class MirCompiler {
     const scalarSize = this.scalarSize(scalar);
     const address = () =>
       this.module.i32.add(
-        destination()[0],
-        this.module.i32.mul(counterValue(), destination()[2]),
+        destination()[1],
+        this.module.i32.mul(counterValue(), destination()[3]),
       );
     const scalarLoop = () =>
       this.module.loop(
         scalarLoopLabel,
         this.module.if(
-          this.module.i32.lt_s(counterValue(), destination()[1]),
+          this.module.i32.lt_s(counterValue(), destination()[2]),
           this.module.block(null, [
             this.storeScalar(
               scalar,
@@ -2625,18 +4619,18 @@ class MirCompiler {
       const lanes = 16 / scalarSize;
       const vectorCondition = this.module.i32.and(
         this.module.i32.eq(
-          destination()[2],
+          destination()[3],
           this.module.i32.const(scalarSize),
         ),
         this.module.i32.and(
           this.module.i32.ge_u(
-            destination()[1],
+            destination()[2],
             this.module.i32.const(lanes),
           ),
           this.module.i32.le_u(
             counterValue(),
             this.module.i32.sub(
-              destination()[1],
+              destination()[2],
               this.module.i32.const(lanes),
             ),
           ),
@@ -2696,8 +4690,8 @@ class MirCompiler {
     const copyIndex = () =>
       this.module.select(
         this.module.i32.and(
-          this.module.i32.eq(destination()[2], source()[2]),
-          this.module.i32.gt_u(destination()[0], source()[0]),
+          this.module.i32.eq(destination()[3], source()[3]),
+          this.module.i32.gt_u(destination()[1], source()[0]),
         ),
         this.module.i32.sub(
           this.module.i32.sub(countValue(), this.module.i32.const(1)),
@@ -2708,12 +4702,12 @@ class MirCompiler {
     const sourceAddress = () =>
       this.module.i32.add(
         source()[0],
-        this.module.i32.mul(copyIndex(), source()[2]),
+        this.module.i32.mul(copyIndex(), source()[3]),
       );
     const destinationAddress = () =>
       this.module.i32.add(
-        destination()[0],
-        this.module.i32.mul(copyIndex(), destination()[2]),
+        destination()[1],
+        this.module.i32.mul(copyIndex(), destination()[3]),
       );
     const sourceScalar = this.sliceElementScalar(data.source, context);
     const destinationScalar = this.sliceElementScalar(data.destination, context);
@@ -2731,7 +4725,7 @@ class MirCompiler {
           source()[0],
           this.module.i32.mul(
             this.module.i32.sub(countValue(), this.module.i32.const(1)),
-            source()[2],
+            source()[3],
           ),
         ),
         this.module.i32.const(this.scalarSize(sourceScalar)),
@@ -2739,10 +4733,10 @@ class MirCompiler {
     const destinationEnd = () =>
       this.module.i32.add(
         this.module.i32.add(
-          destination()[0],
+          destination()[1],
           this.module.i32.mul(
             this.module.i32.sub(countValue(), this.module.i32.const(1)),
-            destination()[2],
+            destination()[3],
           ),
         ),
         this.module.i32.const(this.scalarSize(destinationScalar)),
@@ -2751,13 +4745,13 @@ class MirCompiler {
       this.module.i32.and(
         nonEmpty(),
         this.module.i32.and(
-          this.module.i32.lt_u(destination()[0], sourceEnd()),
+          this.module.i32.lt_u(destination()[1], sourceEnd()),
           this.module.i32.lt_u(source()[0], destinationEnd()),
         ),
       );
     const invalidOverlap = () =>
       this.module.i32.and(
-        this.module.i32.ne(destination()[2], source()[2]),
+        this.module.i32.ne(destination()[3], source()[3]),
         overlaps(),
       );
     const scalarCopy = () =>
@@ -2780,18 +4774,18 @@ class MirCompiler {
       ? this.module.if(
           this.module.i32.and(
             this.module.i32.eq(
-              destination()[2],
+              destination()[3],
               this.module.i32.const(this.scalarSize(destinationScalar)),
             ),
             this.module.i32.eq(
-              source()[2],
+              source()[3],
               this.module.i32.const(this.scalarSize(sourceScalar)),
             ),
           ),
           // memory.copy has memmove overlap semantics and lets engines use
           // their tuned bulk-memory implementation for contiguous slices.
           this.module.memory.copy(
-            destination()[0],
+            destination()[1],
             source()[0],
             this.module.i32.mul(
               countValue(),
@@ -2805,9 +4799,9 @@ class MirCompiler {
       this.module.local.set(
         count,
         this.module.select(
-          this.module.i32.lt_s(destination()[1], source()[1]),
-          destination()[1],
-          source()[1],
+          this.module.i32.lt_s(destination()[2], source()[2]),
+          destination()[2],
+          source()[2],
         ),
       ),
       this.module.if(invalidOverlap(), this.raiseRuntimeFailure(context)),
@@ -3431,6 +5425,12 @@ class MirCompiler {
         lhs.data.element === rhs.data.element &&
         JSON.stringify(lhs.data.channels) === JSON.stringify(rhs.data.channels) &&
         lhs.data.access === rhs.data.access;
+    } else if (lhs.kind === "buffer_span") {
+      equivalent =
+        lhs.data.element === rhs.data.element &&
+        JSON.stringify(lhs.data.channels) === JSON.stringify(rhs.data.channels) &&
+        lhs.data.access === rhs.data.access &&
+        lhs.data.len === rhs.data.len;
     } else if (lhs.kind === "tuple") {
       equivalent =
         lhs.data.length === rhs.data.length &&
@@ -3535,6 +5535,85 @@ class MirCompiler {
       this.fail(`buffer id ${id} is out of range`);
     }
     return this.mir.interface.buffers[id];
+  }
+
+  bufferRefFirst(bufferRef) {
+    if (Number.isInteger(bufferRef)) return bufferRef;
+    if (bufferRef?.kind === "direct" && Number.isInteger(bufferRef.data)) {
+      return bufferRef.data;
+    }
+    if (
+      bufferRef?.kind === "array_element"
+      && Number.isInteger(bufferRef.data?.first)
+      && Number.isInteger(bufferRef.data?.len)
+      && bufferRef.data.len > 0
+    ) {
+      return bufferRef.data.first;
+    }
+    this.fail("invalid MIR buffer reference");
+  }
+
+  requireBufferRef(bufferRef) {
+    const first = this.bufferRefFirst(bufferRef);
+    const buffer = this.requireBuffer(first);
+    if (bufferRef?.kind === "array_element") {
+      const last = first + bufferRef.data.len - 1;
+      this.requireBuffer(last);
+      for (let id = first + 1; id <= last; id += 1) {
+        const candidate = this.requireBuffer(id);
+        if (
+          candidate.element !== buffer.element
+          || JSON.stringify(candidate.channels) !== JSON.stringify(buffer.channels)
+          || candidate.access !== buffer.access
+        ) {
+          this.fail("buffer-array elements must have one descriptor type");
+        }
+      }
+    }
+    return buffer;
+  }
+
+  bufferRefChannelMetadata(bufferRef) {
+    const buffer = this.requireBufferRef(bufferRef);
+    return this.bufferChannelMetadata(buffer.channels, buffer.element);
+  }
+
+  compileBufferRefIndex(bufferRef, context) {
+    const staticIndex = this.staticBufferRefIndex(bufferRef);
+    if (staticIndex !== null) return this.module.i32.const(staticIndex);
+    const first = this.bufferRefFirst(bufferRef);
+    const data = bufferRef.data;
+    const selector = this.compileDynamicBoundedIndex(
+      () => this.compileValue(data.selector, context),
+      () => this.module.i32.const(data.len),
+      data.bounds,
+      context,
+      true,
+    );
+    return this.module.i32.add(this.module.i32.const(first), selector);
+  }
+
+  staticBufferRefIndex(bufferRef) {
+    const first = this.bufferRefFirst(bufferRef);
+    if (Number.isInteger(bufferRef) || bufferRef.kind === "direct") return first;
+    const data = bufferRef.data;
+    const selector = data.selector;
+    if (
+      selector?.kind !== "constant"
+      || selector.data?.type !== "i32"
+      || !Number.isInteger(selector.data.value)
+    ) {
+      return null;
+    }
+    let index = selector.data.value;
+    if (data.bounds === "clamp") {
+      index = Math.min(data.len - 1, Math.max(0, index));
+    } else if (index < 0 || index >= data.len) {
+      // Preserve checked failure behavior and leave invalid unchecked MIR to
+      // the normal validated lowering path.
+      return null;
+    }
+    return first + index;
   }
 
   currentLabel(labels, statement) {
@@ -3669,8 +5748,8 @@ class MirCompiler {
               }
             : null,
         })),
-        buffers: this.mir.interface.buffers.map((buffer) => {
-          const channels = this.bufferChannelMetadata(buffer.channels);
+        buffers: this.mir.interface.buffers.map((buffer, bufferId) => {
+          const channels = this.bufferChannelMetadata(buffer.channels, buffer.element);
           return {
             name: buffer.name,
             type_repr: this.bufferTypeRepr(buffer, channels),
@@ -3679,9 +5758,14 @@ class MirCompiler {
             channels: channels.kind,
             static_channels: channels.count,
             access: buffer.access,
-            may_write: buffer.access === "read_write",
+            may_write: this.bufferMayWrite[bufferId],
           };
         }),
+        buffer_arrays: (this.mir.interface.buffer_arrays ?? []).map((array) => ({
+          name: array.name,
+          first_buffer: array.first,
+          len: array.len,
+        })),
         events: this.mir.interface.events.map((event, eventId) => ({
           name: event.name,
           export: `onda_event_${eventId}`,
@@ -3773,11 +5857,11 @@ class MirCompiler {
   }
 
   bufferTypeRepr(buffer, channels) {
-    if (channels.kind === "mono") return `buffer[${buffer.element}]`;
+    if (channels.kind === "mono") return `buffer<${buffer.element}>`;
     if (channels.kind === "static") {
-      return `buffer[${buffer.element}[${channels.count}]]`;
+      return `buffer<${buffer.element}[${channels.count}]>`;
     }
-    return `buffer[${buffer.element}[]]`;
+    return `buffer<${buffer.element}[]>`;
   }
 
   storageShape(typeId) {
@@ -3803,7 +5887,7 @@ class MirCompiler {
     this.fail(`storage metadata for MIR type '${type.kind}' is not supported yet`);
   }
 
-  bufferChannelMetadata(channels) {
+  bufferChannelMetadata(channels, element) {
     if (channels === "mono") {
       return { kind: "mono", count: 1 };
     }
@@ -3814,7 +5898,8 @@ class MirCompiler {
       channels &&
       typeof channels === "object" &&
       Number.isInteger(channels.static) &&
-      channels.static > 0
+      channels.static > 0 &&
+      channels.static <= Math.floor(0x7fffffff / this.scalarSize(element))
     ) {
       return { kind: "static", count: channels.static };
     }

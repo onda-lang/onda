@@ -69,6 +69,16 @@ pub enum Type {
         channels: BufferChannels,
         access: AccessMode,
     },
+    /// A fixed-length view over parallel runtime buffer-descriptor tables.
+    ///
+    /// Unlike `Buffer`, this is a value handle: forwarding a collection copies
+    /// a constant number of table pointers, independent of `len`.
+    BufferSpan {
+        element: ScalarType,
+        channels: BufferChannels,
+        access: AccessMode,
+        len: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

@@ -1,3 +1,4 @@
+use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::*;
 
 fn push_expr_error(errors: &mut Vec<Diagnostic>, expr: &Expr, message: impl Into<String>) {
@@ -196,7 +197,12 @@ pub(crate) fn validate_block_bound_surface_expr(
             ok &= validate_block_bound_surface_expr(index, env, errors);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             if let Some(surface) = io_surface_name(base, env) {
                 if !env.io_surface_access_allowed {
@@ -210,11 +216,8 @@ pub(crate) fn validate_block_bound_surface_expr(
                 push_dynamic_param_surface_value_error(errors, expr.loc(), surface);
                 ok = false;
             }
-            if let Some(start) = start {
-                ok &= validate_block_bound_surface_expr(start, env, errors);
-            }
-            if let Some(end) = end {
-                ok &= validate_block_bound_surface_expr(end, env, errors);
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                ok &= validate_block_bound_surface_expr(coordinate, env, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -286,7 +289,13 @@ pub(crate) fn validate_block_bound_surface_assign_target(
             }
             ok &= validate_block_bound_surface_expr(index, env, errors);
         }
-        AssignTarget::Slice { base, start, end } => {
+        AssignTarget::Slice {
+            base,
+            selector,
+            channel,
+            start,
+            end,
+        } => {
             if let Some(surface) = io_surface_name(base, env) {
                 if !env.io_surface_access_allowed {
                     push_io_surface_scope_error(errors, loc, surface);
@@ -299,11 +308,16 @@ pub(crate) fn validate_block_bound_surface_assign_target(
                 push_dynamic_param_surface_value_error(errors, loc, surface);
                 ok = false;
             }
-            if let Some(start) = start {
-                ok &= validate_block_bound_surface_expr(start, env, errors);
-            }
-            if let Some(end) = end {
-                ok &= validate_block_bound_surface_expr(end, env, errors);
+            for coordinate in [
+                selector.as_ref(),
+                channel.as_ref(),
+                start.as_ref(),
+                end.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                ok &= validate_block_bound_surface_expr(coordinate, env, errors);
             }
         }
         AssignTarget::Tuple(names) => {
@@ -677,6 +691,17 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     init_buffer_runtime_message(&format!("buffer indexing '{}[...]'", base)),
                 );
             }
+            if is_declared_buffer_array_info(env.declared_symbols, base) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!(
+                        "buffer collection element '{base}[...]' is a reference and is only valid as a buffer argument or method receiver"
+                    ),
+                );
+                validate_expr(index, env, errors);
+                return;
+            }
             if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
@@ -706,19 +731,26 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     }
                 }
                 return;
-            } else if is_declared_multichannel_buffer_info(env.declared_symbols, base) {
+            } else if is_declared_multichannel_buffer_info(env.declared_symbols, base)
+                && !is_declared_buffer_array_info(env.declared_symbols, base)
+            {
                 push_expr_error(
                     errors,
                     expr,
                     format!(
-                        "indexed expression '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
+                        "indexed expression '{base}[...]' uses mono form on a multichannel buffer; use '{base}[channel, frame]'"
                     ),
                 );
             }
             validate_expr(index, env, errors);
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             if let Some((root, field)) = split_field_path(base, errors) {
                 if let Some((struct_name, owner_kind)) = env
@@ -781,6 +813,9 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 push_io_surface_scope_error(errors, expr.loc(), name);
             } else if env.scope == ScopeKind::Init
                 && has_declared_buffer_symbol_info(env.declared_symbols, base)
+                && !(is_declared_buffer_array_info(env.declared_symbols, base)
+                    && selector.is_none()
+                    && channel.is_none())
             {
                 push_expr_error(
                     errors,
@@ -808,20 +843,61 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     expr,
                     format!("slice expression '{base}[...]' is not an array/buffer symbol"),
                 );
-            } else if is_declared_multichannel_buffer_info(env.declared_symbols, base) {
+            } else if has_declared_buffer_symbol_info(env.declared_symbols, base) {
+                let is_array = is_declared_buffer_array_info(env.declared_symbols, base);
+                let is_multichannel =
+                    is_declared_multichannel_buffer_info(env.declared_symbols, base);
+                let is_collection_span = is_array && selector.is_none() && channel.is_none();
+                if is_collection_span {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!(
+                            "buffer collection slice '{base}[...]' is a reference and is only valid as a buffer-collection argument"
+                        ),
+                    );
+                }
+                if !is_collection_span && selector.is_some() != is_array {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        if is_array {
+                            format!("buffer collection '{base}' must select a slot before slicing")
+                        } else {
+                            format!("buffer '{base}' is not a buffer collection")
+                        },
+                    );
+                }
+                if !is_collection_span && channel.is_some() != is_multichannel {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        if is_multichannel {
+                            format!(
+                                "multichannel buffer slice '{base}[...]' requires '[channel, start:end]'"
+                            )
+                        } else {
+                            format!("mono buffer slice '{base}[...]' does not take a channel")
+                        },
+                    );
+                }
+            } else if selector.is_some() || channel.is_some() {
                 push_expr_error(
                     errors,
                     expr,
-                    format!(
-                        "slice expression '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
-                    ),
+                    format!("array slice '{base}[...]' does not support buffer coordinates"),
                 );
             }
-            if let Some(start) = start {
-                validate_expr(start, env, errors);
-            }
-            if let Some(end) = end {
-                validate_expr(end, env, errors);
+            for coordinate in [
+                selector.as_deref(),
+                channel.as_deref(),
+                start.as_deref(),
+                end.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                validate_expr(coordinate, env, errors);
             }
         }
         Expr::ArrayCtor { init, .. } => {
@@ -872,12 +948,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             args,
             ..
         } => {
-            if is_builtin_unsafe_data_fn(name) {
-                validate_unsafe_data_builtin_call(name, args, env, expr.loc(), errors);
+            if is_internal_buffer_2d_fn(name) {
+                validate_internal_buffer_index_call(name, args, env, expr.loc(), errors);
                 return;
             }
-            if is_builtin_buffer_2d_unsafe_fn(name) {
-                validate_buffer_2d_unsafe_call(name, args, env, expr.loc(), errors);
+            if validate_indexed_buffer_metadata_call(name, args, env, expr.loc(), errors) {
                 return;
             }
             if name == PROC_INDEX_CALL_SENTINEL
@@ -920,10 +995,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
                 if let Some(base) = parse_buffer_chans_instance_base(name) {
                     if is_builtin_buffer_receiver(base, env) {
-                        validate_buffer_chans_builtin_call(
+                        validate_buffer_metadata_builtin_call(
                             name,
                             base,
                             args,
+                            "chans",
                             env,
                             expr.loc(),
                             errors,
@@ -933,82 +1009,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
                 if let Some(base) = parse_buffer_samplerate_instance_base(name) {
                     if is_builtin_buffer_receiver(base, env) {
-                        validate_buffer_samplerate_builtin_call(
+                        validate_buffer_metadata_builtin_call(
                             name,
                             base,
                             args,
-                            env,
-                            expr.loc(),
-                            errors,
-                        );
-                        return;
-                    }
-                }
-                if let Some(base) = parse_unsafe_read_instance_base(name) {
-                    if is_builtin_unsafe_data_receiver(base, env) {
-                        let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                        method_args.push(CallArg {
-                            name: None,
-                            expr: Expr::var(base.to_owned()),
-                        });
-                        method_args.extend(args.iter().cloned());
-                        validate_unsafe_data_builtin_call(
-                            UNSAFE_READ_FN,
-                            &method_args,
-                            env,
-                            expr.loc(),
-                            errors,
-                        );
-                        return;
-                    }
-                }
-                if let Some(base) = parse_unsafe_write_instance_base(name) {
-                    if is_builtin_unsafe_data_receiver(base, env) {
-                        let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                        method_args.push(CallArg {
-                            name: None,
-                            expr: Expr::var(base.to_owned()),
-                        });
-                        method_args.extend(args.iter().cloned());
-                        validate_unsafe_data_builtin_call(
-                            UNSAFE_WRITE_FN,
-                            &method_args,
-                            env,
-                            expr.loc(),
-                            errors,
-                        );
-                        return;
-                    }
-                }
-                if let Some(base) = parse_unsafe_read2_instance_base(name) {
-                    if is_builtin_buffer_receiver(base, env) {
-                        let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                        method_args.push(CallArg {
-                            name: None,
-                            expr: Expr::var(base.to_owned()),
-                        });
-                        method_args.extend(args.iter().cloned());
-                        validate_buffer_2d_unsafe_call(
-                            UNSAFE_READ2_FN,
-                            &method_args,
-                            env,
-                            expr.loc(),
-                            errors,
-                        );
-                        return;
-                    }
-                }
-                if let Some(base) = parse_unsafe_write2_instance_base(name) {
-                    if is_builtin_buffer_receiver(base, env) {
-                        let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                        method_args.push(CallArg {
-                            name: None,
-                            expr: Expr::var(base.to_owned()),
-                        });
-                        method_args.extend(args.iter().cloned());
-                        validate_buffer_2d_unsafe_call(
-                            UNSAFE_WRITE2_FN,
-                            &method_args,
+                            "samplerate",
                             env,
                             expr.loc(),
                             errors,
@@ -1083,6 +1088,20 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             .params
                             .get(idx)
                             .is_some_and(|param| sig.readonly_array_params.contains(param));
+                        if let Some(FnParamType::BufferArray { buffer, len }) = param_ty {
+                            validate_buffer_array_param_call_arg(
+                                name,
+                                idx,
+                                &sig.params,
+                                buffer,
+                                *len,
+                                arg,
+                                env,
+                                expr.loc(),
+                                errors,
+                            );
+                            continue;
+                        }
                         if let Some(FnParamType::Buffer(buffer_ty)) = param_ty {
                             validate_buffer_param_call_arg(
                                 name,
@@ -1223,6 +1242,18 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             }
 
             if env.proc_event_names.contains(name) {
+                let has_indexed_proc_receiver = args.first().is_some_and(|arg| {
+                    matches!(
+                        &arg.expr,
+                        Expr::Index { base, .. } if env.proc_array_roots.contains_key(base)
+                    ) && matches!(arg.name.as_deref(), None | Some(METHOD_RECEIVER_ARG))
+                });
+                if has_indexed_proc_receiver {
+                    for arg in args {
+                        validate_expr(&arg.expr, env, errors);
+                    }
+                    return;
+                }
                 push_expr_error(
                     errors,
                     expr,
@@ -1244,6 +1275,55 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             validate_expr(rhs, env, errors);
         }
     }
+}
+
+fn validate_indexed_buffer_metadata_call(
+    name: &str,
+    args: &[CallArg],
+    env: ExprEnv<'_>,
+    loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Some(method) = name
+        .strip_prefix(PROC_INDEX_CALL_SENTINEL)
+        .and_then(|suffix| suffix.strip_prefix('.'))
+    else {
+        return false;
+    };
+    if !matches!(
+        method,
+        ARRAY_LEN_METHOD | BUFFER_CHANS_METHOD | BUFFER_SAMPLERATE_METHOD
+    ) {
+        return false;
+    }
+    let base = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG));
+    let selector = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG));
+    let valid_base = base.is_some_and(|arg| {
+        matches!(&arg.expr, Expr::Var { name, .. } if is_declared_buffer_array_info(env.declared_symbols, name))
+    });
+    if !valid_base || selector.is_none() || args.len() != 2 {
+        push_loc_error(
+            errors,
+            loc,
+            format!("indexed buffer method '{method}' requires one buffer-array element"),
+        );
+        return true;
+    }
+    if env.scope == ScopeKind::Init {
+        push_loc_error(
+            errors,
+            loc,
+            init_buffer_runtime_message("indexed buffer metadata query"),
+        );
+    }
+    if let Some(selector) = selector {
+        validate_expr(&selector.expr, env, errors);
+    }
+    true
 }
 
 fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
@@ -1454,28 +1534,6 @@ fn reject_immutable_array_call_arg(
     true
 }
 
-fn is_builtin_unsafe_data_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    if env.array_vars.contains_key(base)
-        || has_declared_buffer_symbol_info(env.declared_symbols, base)
-    {
-        return true;
-    }
-    if let Some((root, field)) = split_simple_field_path(base) {
-        let struct_name = env
-            .param_structs
-            .get(root)
-            .or_else(|| env.struct_instances.get(root));
-        if let Some(struct_name) = struct_name {
-            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, env.struct_defs)
-            {
-                return matches!(field_decl.ty, TypedFieldType::Array(_))
-                    && field_decl.array_elem_struct.is_none();
-            }
-        }
-    }
-    false
-}
-
 fn validate_data_len_builtin_call(
     name: &str,
     base: &str,
@@ -1599,10 +1657,11 @@ fn validate_data_len_builtin_call(
     }
 }
 
-fn validate_buffer_chans_builtin_call(
+fn validate_buffer_metadata_builtin_call(
     name: &str,
     base: &str,
     args: &[CallArg],
+    method: &str,
     env: ExprEnv<'_>,
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
@@ -1611,7 +1670,7 @@ fn validate_buffer_chans_builtin_call(
         push_loc_error(
             errors,
             loc,
-            init_buffer_runtime_message(&format!("buffer method '{}.chans()'", base)),
+            init_buffer_runtime_message(&format!("buffer method '{base}.{method}()'")),
         );
     }
     if !args.is_empty() {
@@ -1642,53 +1701,119 @@ fn validate_buffer_chans_builtin_call(
                 "builtin method '{}' requires a buffer symbol receiver, got '{}'",
                 name, base
             ),
+        );
+    } else if is_declared_buffer_array_info(env.declared_symbols, base) {
+        push_loc_error(
+            errors,
+            loc,
+            format!("buffer collection '{base}' must select a slot before calling '.{method}()'"),
         );
     }
 }
 
-fn validate_buffer_samplerate_builtin_call(
-    name: &str,
-    base: &str,
-    args: &[CallArg],
+#[allow(clippy::too_many_arguments)]
+fn validate_buffer_array_param_call_arg(
+    fn_name: &str,
+    param_idx: usize,
+    param_names: &[String],
+    expected: &BufferType,
+    expected_len: usize,
+    arg: &Expr,
     env: ExprEnv<'_>,
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if env.scope == ScopeKind::Init && has_declared_buffer_symbol_info(env.declared_symbols, base) {
-        push_loc_error(
-            errors,
-            loc,
-            init_buffer_runtime_message(&format!("buffer method '{}.samplerate()'", base)),
-        );
-    }
-    if !args.is_empty() {
-        push_loc_error(
-            errors,
-            loc,
-            format!(
-                "builtin method '{}' expects 0 arguments, got {}",
-                name,
-                args.len()
-            ),
-        );
-    }
-    for arg in args {
-        if arg.name.is_some() {
-            push_loc_error(
-                errors,
-                loc,
-                format!("builtin method '{}' does not support named arguments", name),
-            );
+    let context = if let Some(param_name) = param_names.get(param_idx) {
+        format!("function '{fn_name}' parameter '{param_name}'")
+    } else {
+        format!("function '{fn_name}' parameter #{param_idx}")
+    };
+    if let Expr::UserCall { name, args, .. } = arg {
+        if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+            for choice in args.iter().filter(|arg| arg.name.is_none()) {
+                validate_buffer_array_param_call_arg(
+                    fn_name,
+                    param_idx,
+                    param_names,
+                    expected,
+                    expected_len,
+                    &choice.expr,
+                    env,
+                    loc,
+                    errors,
+                );
+            }
+            return;
         }
     }
-    if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
+    let (base, start, end) = match arg {
+        Expr::Var { name, .. } => (name.as_str(), None, None),
+        Expr::Slice {
+            base,
+            selector: None,
+            channel: None,
+            start,
+            end,
+            ..
+        } => (base.as_str(), start.as_deref(), end.as_deref()),
+        _ => {
+            push_loc_error(
+                errors,
+                arg.loc().or(loc),
+                format!("{context} expects a buffer collection or static collection slice"),
+            );
+            validate_expr(arg, env, errors);
+            return;
+        }
+    };
+    let Some(DeclaredSymbolInfo::Buffer {
+        array_len,
+        is_array: true,
+        ..
+    }) = env.declared_symbols.get(base)
+    else {
         push_loc_error(
             errors,
-            loc,
-            format!(
-                "builtin method '{}' requires a buffer symbol receiver, got '{}'",
-                name, base
-            ),
+            arg.loc().or(loc),
+            format!("{context} expects a buffer collection, got '{base}'"),
+        );
+        return;
+    };
+    validate_buffer_symbol_for_param(&context, expected, base, env, arg.loc().or(loc), errors);
+
+    let bound = |expr: Option<&Expr>, default: i64, label: &str, errors: &mut Vec<Diagnostic>| {
+        expr.map_or(Some(default), |expr| {
+            let value = crate::try_constant_index_i64(expr);
+            if value.is_none() {
+                push_loc_error(
+                    errors,
+                    expr.loc().or(loc),
+                    format!("{context} requires a compile-time {label} bound"),
+                );
+            }
+            value
+        })
+    };
+    let Some(start) = bound(start, 0, "slice start", errors) else {
+        return;
+    };
+    let Some(end) = bound(end, *array_len as i64, "slice end", errors) else {
+        return;
+    };
+    if start < 0 || end < start || end > *array_len as i64 {
+        push_loc_error(
+            errors,
+            arg.loc().or(loc),
+            format!("buffer collection slice '{base}[{start}:{end}]' is outside 0..{array_len}"),
+        );
+        return;
+    }
+    let actual_len = usize::try_from(end - start).unwrap_or(usize::MAX);
+    if actual_len != expected_len {
+        push_loc_error(
+            errors,
+            arg.loc().or(loc),
+            format!("{context} expects {expected_len} buffers, got {actual_len}"),
         );
     }
 }
@@ -1726,6 +1851,30 @@ fn validate_buffer_param_call_arg(
             return;
         }
     }
+    if let Expr::Index { base, index, .. } = arg {
+        if is_declared_buffer_array_info(env.declared_symbols, base) {
+            if env.scope == ScopeKind::Init {
+                push_loc_error(
+                    errors,
+                    arg.loc().or(loc),
+                    init_buffer_runtime_message(&format!(
+                        "buffer-array element '{}' in {}",
+                        base, context
+                    )),
+                );
+            }
+            validate_expr(index, env, errors);
+            validate_buffer_symbol_for_param(
+                &context,
+                expected,
+                base,
+                env,
+                arg.loc().or(loc),
+                errors,
+            );
+            return;
+        }
+    }
     let Expr::Var { name: symbol, .. } = arg else {
         push_loc_error(
             errors,
@@ -1735,6 +1884,14 @@ fn validate_buffer_param_call_arg(
         validate_expr(arg, env, errors);
         return;
     };
+    if is_declared_buffer_array_info(env.declared_symbols, symbol) {
+        push_loc_error(
+            errors,
+            arg.loc().or(loc),
+            format!("{context} requires one buffer; select a slot from collection '{symbol}'"),
+        );
+        return;
+    }
     if env.scope == ScopeKind::Init {
         push_loc_error(
             errors,
@@ -1854,18 +2011,9 @@ fn validate_buffer_symbol_for_param(
                 }
             }
         }
-        BufferChannels::Dynamic => {
-            if !is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
-                push_loc_error(
-                    errors,
-                    loc,
-                    format!(
-                        "{context} expects multichannel dynamic buffer, but '{}' is mono",
-                        symbol
-                    ),
-                );
-            }
-        }
+        // `f32[]` means an unspecified positive channel count. Mono and exact
+        // multichannel buffers are therefore both valid arguments.
+        BufferChannels::Dynamic => {}
     }
 }
 
@@ -1879,21 +2027,20 @@ fn const_positive_usize(expr: &Expr) -> Option<usize> {
     }
 }
 
-fn validate_buffer_2d_unsafe_call(
+fn validate_internal_buffer_index_call(
     name: &str,
     args: &[CallArg],
     env: ExprEnv<'_>,
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let is_read = matches!(name, INTERNAL_BUFFER_READ2_FN) || name == UNSAFE_READ2_FN;
-    let is_write = matches!(name, INTERNAL_BUFFER_WRITE2_FN) || name == UNSAFE_WRITE2_FN;
-    let expected_arity = if is_read { 3 } else { 4 };
-    let label = if is_internal_buffer_2d_fn(name) {
-        "internal builtin"
-    } else {
-        "builtin"
-    };
+    let is_write = matches!(
+        name,
+        INTERNAL_BUFFER_WRITE2_FN | INTERNAL_BUFFER_WRITE3_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
+    );
+    let is_three_dimensional = matches!(name, INTERNAL_BUFFER_READ3_FN | INTERNAL_BUFFER_WRITE3_FN);
+    let expected_arity = 3 + usize::from(is_three_dimensional) + usize::from(is_write);
+    let label = "internal builtin";
     if args.len() != expected_arity {
         push_loc_error(
             errors,
@@ -1940,15 +2087,41 @@ fn validate_buffer_2d_unsafe_call(
                             label, name, base
                         ),
                     );
-                } else if !is_declared_multichannel_buffer_info(env.declared_symbols, base) {
-                    push_loc_error(
-                        errors,
-                        first.expr.loc().or(loc),
-                        format!(
-                            "{} '{}' requires multichannel buffer indexing form, but '{}' is mono",
-                            label, name, base
-                        ),
+                } else {
+                    let is_array = is_declared_buffer_array_info(env.declared_symbols, base);
+                    let is_multichannel =
+                        is_declared_multichannel_buffer_info(env.declared_symbols, base);
+                    let is_channel_access = matches!(
+                        name,
+                        INTERNAL_BUFFER_READ_CHANNEL_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
                     );
+                    let is_collection_access =
+                        matches!(name, INTERNAL_BUFFER_READ2_FN | INTERNAL_BUFFER_WRITE2_FN);
+                    if is_three_dimensional && (!is_array || !is_multichannel) {
+                        push_loc_error(
+                            errors,
+                            first.expr.loc().or(loc),
+                            format!("{} '{}' requires a multichannel buffer array", label, name),
+                        );
+                    } else if is_collection_access && (!is_array || is_multichannel) {
+                        push_loc_error(
+                            errors,
+                            first.expr.loc().or(loc),
+                            format!(
+                                "buffer access '{}' requires a mono buffer collection and the form '{}[slot][frame]'",
+                                base, base
+                            ),
+                        );
+                    } else if is_channel_access && (is_array || !is_multichannel) {
+                        push_loc_error(
+                            errors,
+                            first.expr.loc().or(loc),
+                            format!(
+                                "multichannel buffer access '{}' requires the form '{}[channel, frame]'",
+                                base, base
+                            ),
+                        );
+                    }
                 }
             }
             other => {
@@ -1964,16 +2137,8 @@ fn validate_buffer_2d_unsafe_call(
             }
         }
     }
-    if let Some(ch_arg) = args.get(1) {
-        validate_expr(&ch_arg.expr, env, errors);
-    }
-    if let Some(sample_arg) = args.get(2) {
-        validate_expr(&sample_arg.expr, env, errors);
-    }
-    if is_write {
-        if let Some(value_arg) = args.get(3) {
-            validate_expr(&value_arg.expr, env, errors);
-        }
+    for argument in args.iter().skip(1) {
+        validate_expr(&argument.expr, env, errors);
     }
 }
 
@@ -2176,181 +2341,6 @@ fn validate_internal_proc_index_buffer_select_call(
                     ),
                 );
             }
-        }
-    }
-}
-
-fn validate_unsafe_data_builtin_call(
-    name: &str,
-    args: &[CallArg],
-    env: ExprEnv<'_>,
-    loc: SourceLoc,
-    errors: &mut Vec<Diagnostic>,
-) {
-    let expected_arity = if name == UNSAFE_READ_FN { 2 } else { 3 };
-    if args.len() != expected_arity {
-        push_loc_error(
-            errors,
-            loc,
-            format!(
-                "builtin '{}' expects {} positional arguments, got {}",
-                name,
-                expected_arity,
-                args.len()
-            ),
-        );
-    }
-
-    for arg in args {
-        if arg.name.is_some() {
-            push_loc_error(
-                errors,
-                arg.expr.loc().or(loc),
-                format!("builtin '{}' does not support named arguments", name),
-            );
-        }
-    }
-
-    if let Some(first_arg) = args.first() {
-        match &first_arg.expr {
-            Expr::Var { name: base, .. } => {
-                if env.scope == ScopeKind::Init
-                    && has_declared_buffer_symbol_info(env.declared_symbols, base)
-                {
-                    push_loc_error(
-                        errors,
-                        first_arg.expr.loc().or(loc),
-                        init_buffer_runtime_message(&format!(
-                            "buffer access '{}' in builtin '{}'",
-                            base, name
-                        )),
-                    );
-                }
-                if name == UNSAFE_WRITE_FN
-                    && env
-                        .local_array_aliases
-                        .get(base)
-                        .is_some_and(|alias| !alias.writable)
-                {
-                    push_loc_error(
-                        errors,
-                        first_arg.expr.loc().or(loc),
-                        format!(
-                            "builtin 'unsafe_write' cannot write immutable array alias '{base}'"
-                        ),
-                    );
-                }
-                let mut is_valid_primitive_data = false;
-
-                if let Some((root, field)) = split_field_path(base, errors) {
-                    if let Some(struct_name) = env.param_structs.get(root) {
-                        let Some(_fields) = env.struct_defs.get(struct_name) else {
-                            push_loc_error(
-                                errors,
-                                first_arg.expr.loc().or(loc),
-                                format!("unknown struct type '{}'", struct_name),
-                            );
-                            return;
-                        };
-                        let Some(field_decl) =
-                            resolve_struct_field_decl(struct_name, field, env.struct_defs)
-                        else {
-                            push_loc_error(
-                                errors,
-                                first_arg.expr.loc().or(loc),
-                                format!(
-                                    "struct parameter '{}' (type '{}') has no field '{}'",
-                                    root, struct_name, field
-                                ),
-                            );
-                            return;
-                        };
-                        match field_decl.ty {
-                            TypedFieldType::Array(_) => {
-                                if field_decl.array_elem_struct.is_some() {
-                                    push_loc_error(
-                                        errors,
-                                        first_arg.expr.loc().or(loc),
-                                        format!(
-                                            "builtin '{}' does not support array[Struct, N] symbol '{}'",
-                                            name, base
-                                        ),
-                                    );
-                                } else {
-                                    is_valid_primitive_data = true;
-                                }
-                            }
-                            TypedFieldType::Scalar(_) => {
-                                push_loc_error(
-                                    errors,
-                                    first_arg.expr.loc().or(loc),
-                                    format!(
-                                        "builtin '{}' expects a array symbol as first argument, but '{}.{}' is scalar",
-                                        name, root, field
-                                    ),
-                                );
-                            }
-                            TypedFieldType::Struct => {
-                                push_loc_error(
-                                    errors,
-                                    first_arg.expr.loc().or(loc),
-                                    format!(
-                                        "builtin '{}' expects a array symbol as first argument, but '{}.{}' is a nested struct",
-                                        name, root, field
-                                    ),
-                                );
-                            }
-                            TypedFieldType::Tuple(_) => {
-                                push_loc_error(
-                                    errors,
-                                    first_arg.expr.loc().or(loc),
-                                    format!(
-                                        "builtin '{}' expects a array symbol as first argument, but '{}.{}' is a tuple",
-                                        name, root, field
-                                    ),
-                                );
-                            }
-                        }
-                    } else if env.array_vars.contains_key(base) {
-                        is_valid_primitive_data = true;
-                    }
-                } else if env.array_vars.contains_key(base)
-                    || has_declared_buffer_symbol_info(env.declared_symbols, base)
-                {
-                    is_valid_primitive_data = true;
-                }
-
-                if !is_valid_primitive_data {
-                    push_loc_error(
-                        errors,
-                        first_arg.expr.loc().or(loc),
-                        format!(
-                            "builtin '{}' expects a primitive array or buffer symbol as first argument, got '{}'",
-                            name, base
-                        ),
-                    );
-                }
-            }
-            other => {
-                validate_expr(other, env, errors);
-                push_loc_error(
-                    errors,
-                    other.loc().or(loc),
-                    format!(
-                        "builtin '{}' first argument must be a array symbol variable",
-                        name
-                    ),
-                );
-            }
-        }
-    }
-
-    if let Some(index_arg) = args.get(1) {
-        validate_expr(&index_arg.expr, env, errors);
-    }
-    if name == UNSAFE_WRITE_FN {
-        if let Some(value_arg) = args.get(2) {
-            validate_expr(&value_arg.expr, env, errors);
         }
     }
 }

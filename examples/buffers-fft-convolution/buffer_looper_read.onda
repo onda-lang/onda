@@ -1,5 +1,3 @@
-import std/lookup
-
 buffers:
   src: f32[]
 
@@ -16,10 +14,8 @@ block:
 
   sample:
     if chans > 0:
-      out1 = src.readL(0, pos)
+      out1 = src.readLW(0, pos)
     if chans > 1:
-      out2 = src.readL(1, pos)
+      out2 = src.readLW(1, pos)
 
-    pos = pos + speed
-    if pos >= frames:
-      pos = pos - frames
+    pos = wrap(pos + speed, 0.0, f32(frames))

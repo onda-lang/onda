@@ -1,11 +1,22 @@
 #![deny(clippy::all)]
 
+#[cfg(target_arch = "wasm32")]
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use onda_frontend::{
     load_program_file_from_virtual_sources, parse_program, DiagCode, Diagnostic, Program,
     SourceManifest,
+};
+#[cfg(target_arch = "wasm32")]
+use onda_project::{
+    decode_buffer_bytes, decode_ondabuffer, encode_ondabuffer, validate_ondabuffer, AssetId,
+    BufferAsset, BufferSamples, MaterializationPlan,
+};
+use onda_project::{
+    BufferElement, ProjectBufferChannels, ProjectBufferDeclaration, ProjectImage, ProjectLimits,
+    SourceImage,
 };
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 use serde::Serialize;
@@ -36,6 +47,7 @@ pub struct CompilerFailure {
 pub struct CompilationOutput<T> {
     pub output: T,
     pub source_files: Vec<String>,
+    pub source_image: Option<SourceImage>,
 }
 
 impl CompilerFailure {
@@ -154,6 +166,111 @@ pub fn compile_project_sources_to_mir_messagepack(
     .map_err(|failure| failure.diagnostics)
 }
 
+/// Compiles an immutable, integrity-checked Onda project image without
+/// consulting the host filesystem.
+pub fn compile_project_image_to_mir_messagepack_with_manifest(
+    image_bytes: &[u8],
+    sample_rate: f32,
+    block_size: u32,
+) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
+    compile_project_image_to_mir_messagepack_with_manifest_and_limits(
+        image_bytes,
+        sample_rate,
+        block_size,
+        ProjectLimits::default(),
+    )
+}
+
+fn compile_project_image_to_mir_messagepack_with_manifest_and_limits(
+    image_bytes: &[u8],
+    sample_rate: f32,
+    block_size: u32,
+    limits: ProjectLimits,
+) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
+    let config =
+        compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
+    let image = ProjectImage::deserialize(image_bytes, limits).map_err(|error| {
+        CompilerFailure::without_sources(vec![CompilerDiagnostic::configuration(error.to_string())])
+    })?;
+    let source_image = image.sources().clone();
+    let image_source_files = source_image
+        .documents
+        .iter()
+        .map(|document| document.path.clone())
+        .collect::<Vec<_>>();
+    let loaded = source_image.replay(limits).map_err(|error| {
+        CompilerFailure::with_sources(
+            vec![CompilerDiagnostic::configuration(error.to_string())],
+            image_source_files,
+        )
+    })?;
+    let source_files = virtual_paths(Path::new(""), &loaded.sources.files);
+    let lowered = lower_parsed_program(loaded.program, config)
+        .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
+    let mut declarations = Vec::new();
+    let grouped_ids = lowered
+        .interface
+        .buffer_arrays
+        .iter()
+        .flat_map(|array| array.first.index()..array.first.index() + array.len as usize)
+        .collect::<std::collections::HashSet<_>>();
+    let declaration =
+        |name: String, buffer: &onda_mir::Buffer, array_len: usize, is_array: bool| {
+            ProjectBufferDeclaration {
+                name,
+                element: match buffer.element {
+                    onda_mir::ScalarType::F32 => BufferElement::F32,
+                    onda_mir::ScalarType::F64 => BufferElement::F64,
+                    onda_mir::ScalarType::I32 => BufferElement::I32,
+                    onda_mir::ScalarType::I64 => BufferElement::I64,
+                    onda_mir::ScalarType::Bool => BufferElement::Bool,
+                },
+                channels: match buffer.channels {
+                    onda_mir::BufferChannels::Mono => ProjectBufferChannels::Mono,
+                    onda_mir::BufferChannels::Static(channels) => {
+                        ProjectBufferChannels::Static(channels)
+                    }
+                    onda_mir::BufferChannels::Dynamic => ProjectBufferChannels::Dynamic,
+                },
+                array_len,
+                is_array,
+            }
+        };
+    for (index, buffer) in lowered.interface.buffers.iter().enumerate() {
+        if !grouped_ids.contains(&index) {
+            declarations.push(declaration(buffer.name.clone(), buffer, 1, false));
+        }
+    }
+    for array in &lowered.interface.buffer_arrays {
+        let buffer = &lowered.interface.buffers[array.first.index()];
+        declarations.push(declaration(
+            array.name.clone(),
+            buffer,
+            array.len as usize,
+            true,
+        ));
+    }
+    image
+        .validate_buffer_declarations(&declarations)
+        .map_err(|error| {
+            CompilerFailure::with_sources(
+                vec![CompilerDiagnostic::configuration(error.to_string())],
+                source_files.clone(),
+            )
+        })?;
+    let output = onda_mir::to_messagepack_optimized(&lowered).map_err(|error| {
+        CompilerFailure::with_sources(
+            mir_encoding_error("mir-messagepack", error),
+            source_files.clone(),
+        )
+    })?;
+    Ok(CompilationOutput {
+        output,
+        source_files,
+        source_image: Some(source_image),
+    })
+}
+
 pub fn compile_source_to_mir_json_with_manifest(
     source: &str,
     sample_rate: f32,
@@ -219,6 +336,7 @@ where
     Ok(CompilationOutput {
         output,
         source_files: compiled.source_files,
+        source_image: compiled.source_image,
     })
 }
 
@@ -241,6 +359,7 @@ fn lower_source_to_mir_with_manifest(
     Ok(CompilationOutput {
         output,
         source_files: Vec::new(),
+        source_image: None,
     })
 }
 
@@ -295,11 +414,24 @@ fn lower_project_sources_to_mir_with_manifest(
             )
         })?;
     let source_files = virtual_source_files(&root, &loaded.sources);
+    let source_image = SourceImage::from_portable_manifest(
+        &entry_path,
+        &root,
+        &loaded.sources,
+        ProjectLimits::default(),
+    )
+    .map_err(|error| {
+        CompilerFailure::with_sources(
+            vec![CompilerDiagnostic::configuration(error.to_string())],
+            source_files.clone(),
+        )
+    })?;
     let output = lower_parsed_program(loaded.program, config)
         .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
     Ok(CompilationOutput {
         output,
         source_files,
+        source_image: Some(source_image),
     })
 }
 
@@ -461,6 +593,7 @@ impl Default for OndaLsp {
 pub struct FrontendMessagePackCompilation {
     mir: Vec<u8>,
     source_files_json: String,
+    source_image_json: String,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -473,6 +606,10 @@ impl FrontendMessagePackCompilation {
     pub fn source_files_json(&self) -> String {
         self.source_files_json.clone()
     }
+
+    pub fn source_image_json(&self) -> String {
+        self.source_image_json.clone()
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -482,6 +619,7 @@ fn frontend_messagepack_compilation(
     FrontendMessagePackCompilation {
         mir: compiled.output,
         source_files_json: encode_source_files(&compiled.source_files),
+        source_image_json: encode_source_image(compiled.source_image.as_ref()),
     }
 }
 
@@ -490,6 +628,7 @@ fn frontend_messagepack_compilation(
 pub struct FrontendJsonCompilation {
     mir: String,
     source_files_json: String,
+    source_image_json: String,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -502,6 +641,10 @@ impl FrontendJsonCompilation {
     pub fn source_files_json(&self) -> String {
         self.source_files_json.clone()
     }
+
+    pub fn source_image_json(&self) -> String {
+        self.source_image_json.clone()
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -509,12 +652,442 @@ fn frontend_json_compilation(compiled: CompilationOutput<String>) -> FrontendJso
     FrontendJsonCompilation {
         mir: compiled.output,
         source_files_json: encode_source_files(&compiled.source_files),
+        source_image_json: encode_source_image(compiled.source_image.as_ref()),
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn encode_source_files(source_files: &[String]) -> String {
     serde_json::to_string(source_files).unwrap_or_else(|_| "[]".to_owned())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn encode_source_image(source_image: Option<&SourceImage>) -> String {
+    serde_json::to_string(&source_image).unwrap_or_else(|_| "null".to_owned())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn project_js_error(error: impl ToString) -> wasm_bindgen::JsValue {
+    wasm_bindgen::JsValue::from_str(&error.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_buffer_element(value: &str) -> Result<BufferElement, wasm_bindgen::JsValue> {
+    match value {
+        "bool" => Ok(BufferElement::Bool),
+        "i32" => Ok(BufferElement::I32),
+        "i64" => Ok(BufferElement::I64),
+        "f32" => Ok(BufferElement::F32),
+        "f64" => Ok(BufferElement::F64),
+        _ => Err(project_js_error(format!(
+            "unsupported Onda buffer element '{value}'"
+        ))),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn project_image_format_version() -> u32 {
+    onda_project::ONDA_PROJECT_IMAGE_FORMAT_VERSION
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn buffer_asset_format_version() -> u32 {
+    onda_project::ONDA_BUFFER_FORMAT_VERSION
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn current_stdlib_digest() -> String {
+    onda_project::current_stdlib_digest()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub struct WebProjectImageBuilder {
+    sources: Option<SourceImage>,
+    buffer_bindings: BTreeMap<String, AssetId>,
+    assets: BTreeMap<AssetId, BufferAsset>,
+    total_buffer_bytes: usize,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+impl WebProjectImageBuilder {
+    #[wasm_bindgen::prelude::wasm_bindgen(constructor)]
+    pub fn new(source_image_json: &str) -> Result<Self, wasm_bindgen::JsValue> {
+        let sources: SourceImage =
+            serde_json::from_str(source_image_json).map_err(project_js_error)?;
+        sources
+            .replay(web_project_limits())
+            .map_err(project_js_error)?;
+        Ok(Self {
+            sources: Some(sources),
+            buffer_bindings: BTreeMap::new(),
+            assets: BTreeMap::new(),
+            total_buffer_bytes: 0,
+        })
+    }
+
+    pub fn add_buffer(
+        &mut self,
+        name: &str,
+        ondabuffer_bytes: &[u8],
+    ) -> Result<(), wasm_bindgen::JsValue> {
+        if self.sources.is_none() {
+            return Err(project_js_error(
+                "project image builder has already been serialized",
+            ));
+        }
+        if name.is_empty() {
+            return Err(project_js_error("project buffer name must not be empty"));
+        }
+        if self.buffer_bindings.contains_key(name) {
+            return Err(project_js_error(format!(
+                "project buffer '{name}' was added more than once"
+            )));
+        }
+        let limits = web_project_limits();
+        if self.buffer_bindings.len() >= limits.max_buffer_bindings {
+            return Err(project_js_error(format!(
+                "project exceeds the {} buffer binding limit",
+                limits.max_buffer_bindings
+            )));
+        }
+        let validated = validate_ondabuffer(ondabuffer_bytes, limits).map_err(project_js_error)?;
+        let id = AssetId::from_buffer_digest(validated.content_digest());
+        if !self.assets.contains_key(&id) {
+            let asset = validated
+                .decode_with_remaining_asset_budget(limits, self.total_buffer_bytes)
+                .map_err(project_js_error)?;
+            let total_buffer_bytes = self
+                .total_buffer_bytes
+                .checked_add(asset.payload_bytes())
+                .ok_or_else(|| project_js_error("project buffer byte total overflows"))?;
+            if total_buffer_bytes > limits.max_total_asset_bytes {
+                return Err(project_js_error(format!(
+                    "project buffer payloads exceed the {} byte limit",
+                    limits.max_total_asset_bytes
+                )));
+            }
+            self.assets.insert(id.clone(), asset);
+            self.total_buffer_bytes = total_buffer_bytes;
+        }
+        self.buffer_bindings.insert(name.to_owned(), id);
+        Ok(())
+    }
+
+    pub fn serialize(&mut self) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
+        let sources = self
+            .sources
+            .take()
+            .ok_or_else(|| project_js_error("project image builder may only be serialized once"))?;
+        ProjectImage::new(
+            sources,
+            std::mem::take(&mut self.buffer_bindings),
+            std::mem::take(&mut self.assets),
+        )
+        .and_then(serialize_web_project_image)
+        .map_err(project_js_error)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub struct WebMaterializedProjectBuilder {
+    files: BTreeMap<String, Vec<u8>>,
+    manifest_path: Option<String>,
+    total_bytes: usize,
+    serialized: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+impl WebMaterializedProjectBuilder {
+    #[wasm_bindgen::prelude::wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            files: BTreeMap::new(),
+            manifest_path: None,
+            total_bytes: 0,
+            serialized: false,
+        }
+    }
+
+    pub fn select_project(&mut self, manifest_path: &str) -> Result<(), wasm_bindgen::JsValue> {
+        if self.serialized {
+            return Err(project_js_error(
+                "materialized project builder has already been serialized",
+            ));
+        }
+        if self.manifest_path.is_some() {
+            return Err(project_js_error(
+                "materialized project builder already has a selected manifest",
+            ));
+        }
+        self.manifest_path = Some(manifest_path.to_owned());
+        Ok(())
+    }
+
+    pub fn add_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
+        if self.serialized {
+            return Err(project_js_error(
+                "materialized project builder has already been serialized",
+            ));
+        }
+        if self.files.contains_key(path) {
+            return Err(project_js_error(format!(
+                "project file '{path}' was added more than once"
+            )));
+        }
+        let limits = web_project_limits();
+        let max_files = limits.max_materialized_file_count();
+        if self.files.len() >= max_files {
+            return Err(project_js_error(format!(
+                "project contains more than {max_files} files"
+            )));
+        }
+        let max_file_bytes = limits.max_materialized_file_bytes();
+        if bytes.len() > max_file_bytes {
+            return Err(project_js_error(format!(
+                "project file '{path}' exceeds the {max_file_bytes} byte browser limit"
+            )));
+        }
+        let total_limit = limits.max_materialized_total_bytes();
+        let total_bytes = self
+            .total_bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| project_js_error("project file byte total overflows"))?;
+        if total_bytes > total_limit {
+            return Err(project_js_error(format!(
+                "project files exceed the {total_limit} byte browser limit"
+            )));
+        }
+        self.files.insert(path.to_owned(), bytes.to_vec());
+        self.total_bytes = total_bytes;
+        Ok(())
+    }
+
+    pub fn serialize(&mut self) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
+        if std::mem::replace(&mut self.serialized, true) {
+            return Err(project_js_error(
+                "materialized project builder may only be serialized once",
+            ));
+        }
+        let files = std::mem::take(&mut self.files);
+        let image = match self.manifest_path.as_deref() {
+            Some(manifest_path) => ProjectImage::from_materialized_files_with_manifest(
+                &files,
+                manifest_path,
+                web_project_limits(),
+            ),
+            None => ProjectImage::from_materialized_files(&files, web_project_limits()),
+        };
+        drop(files);
+        image
+            .and_then(serialize_web_project_image)
+            .map_err(project_js_error)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Default for WebMaterializedProjectBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Serialize)]
+struct WebProjectBufferInfo<'a> {
+    name: &'a str,
+    asset_id: &'a str,
+    element: BufferElement,
+    frames: u32,
+    channels: u32,
+    sample_rate: f32,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Serialize)]
+struct WebProjectImageInfo<'a> {
+    format_version: u32,
+    content_digest: String,
+    sources: &'a SourceImage,
+    buffers: Vec<WebProjectBufferInfo<'a>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn inspect_project_image(image_bytes: &[u8]) -> Result<String, wasm_bindgen::JsValue> {
+    let image =
+        ProjectImage::deserialize(image_bytes, web_project_limits()).map_err(project_js_error)?;
+    let buffers = image
+        .buffer_bindings()
+        .iter()
+        .map(|(name, id)| {
+            let asset = image
+                .assets()
+                .get(id)
+                .expect("validated project binding must resolve");
+            WebProjectBufferInfo {
+                name,
+                asset_id: id.as_str(),
+                element: asset.element(),
+                frames: asset.frames,
+                channels: asset.channels,
+                sample_rate: asset.sample_rate,
+            }
+        })
+        .collect();
+    serde_json::to_string(&WebProjectImageInfo {
+        format_version: onda_project::ONDA_PROJECT_IMAGE_FORMAT_VERSION,
+        content_digest: image.content_digest_string(),
+        sources: image.sources(),
+        buffers,
+    })
+    .map_err(project_js_error)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub struct WebProjectMaterializationPlan {
+    plan: MaterializationPlan,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+impl WebProjectMaterializationPlan {
+    pub fn directories_json(&self) -> String {
+        serde_json::to_string(&self.plan.directories).unwrap_or_else(|_| "[]".to_owned())
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.plan.files.len()
+    }
+
+    pub fn file_path(&self, index: usize) -> Option<String> {
+        self.plan
+            .files
+            .get(index)
+            .map(|file| file.relative_path.clone())
+    }
+
+    pub fn file_bytes(&self, index: usize) -> Option<Vec<u8>> {
+        self.plan.files.get(index).map(|file| file.bytes.clone())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn materialize_project_image(
+    image_bytes: &[u8],
+    asset_file_names_json: &str,
+) -> Result<WebProjectMaterializationPlan, wasm_bindgen::JsValue> {
+    let asset_file_names: BTreeMap<String, String> =
+        serde_json::from_str(asset_file_names_json).map_err(project_js_error)?;
+    ProjectImage::deserialize(image_bytes, web_project_limits())
+        .and_then(|image| image.materialization_plan_with_asset_file_names(&asset_file_names))
+        .map(|plan| WebProjectMaterializationPlan { plan })
+        .map_err(project_js_error)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn encode_buffer_asset(
+    element: &str,
+    frames: u32,
+    channels: u32,
+    sample_rate: f32,
+    canonical_payload: &[u8],
+) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
+    let element = web_buffer_element(element)?;
+    let limits = web_project_limits();
+    if canonical_payload.len() > limits.max_asset_bytes {
+        return Err(project_js_error(format!(
+            "Onda buffer payload exceeds the {} byte browser limit",
+            limits.max_asset_bytes
+        )));
+    }
+    let samples = BufferSamples::from_canonical_le_bytes(element, canonical_payload)
+        .map_err(project_js_error)?;
+    let asset = BufferAsset {
+        frames,
+        channels,
+        sample_rate,
+        samples,
+    };
+    asset
+        .validate(&limits)
+        .and_then(|()| encode_ondabuffer(&asset))
+        .map_err(project_js_error)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub struct WebDecodedBufferAsset {
+    asset: BufferAsset,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+impl WebDecodedBufferAsset {
+    pub fn element(&self) -> String {
+        self.asset.element().to_string()
+    }
+
+    pub fn frames(&self) -> u32 {
+        self.asset.frames
+    }
+
+    pub fn channels(&self) -> u32 {
+        self.asset.channels
+    }
+
+    pub fn sample_rate(&self) -> f32 {
+        self.asset.sample_rate
+    }
+
+    pub fn canonical_payload(&self) -> Vec<u8> {
+        self.asset.canonical_payload()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn decode_buffer_asset(
+    ondabuffer_bytes: &[u8],
+) -> Result<WebDecodedBufferAsset, wasm_bindgen::JsValue> {
+    decode_ondabuffer(ondabuffer_bytes, web_project_limits())
+        .map(|asset| WebDecodedBufferAsset { asset })
+        .map_err(project_js_error)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn decode_buffer_file(
+    bytes: &[u8],
+    path: &str,
+) -> Result<WebDecodedBufferAsset, wasm_bindgen::JsValue> {
+    decode_buffer_bytes(bytes, Path::new(path), web_project_limits())
+        .map(|asset| WebDecodedBufferAsset { asset })
+        .map_err(project_js_error)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_project_limits() -> ProjectLimits {
+    const MAX_DECODED_BUFFER_BYTES: usize = 16 * 1024 * 1024 * std::mem::size_of::<f32>();
+    ProjectLimits {
+        max_asset_bytes: MAX_DECODED_BUFFER_BYTES,
+        max_total_asset_bytes: MAX_DECODED_BUFFER_BYTES,
+        ..ProjectLimits::default()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn serialize_web_project_image(image: ProjectImage) -> Result<Vec<u8>, onda_project::ProjectError> {
+    image.serialize_with_limits(web_project_limits())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -543,7 +1116,7 @@ pub fn compile_to_mir_messagepack(
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
-pub fn compile_project_to_mir_json(
+pub fn compile_source_workspace_to_mir_json(
     entry_path: &str,
     sources_json: &str,
     sample_rate: f32,
@@ -557,7 +1130,7 @@ pub fn compile_project_to_mir_json(
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
-pub fn compile_project_to_mir_messagepack(
+pub fn compile_source_workspace_to_mir_messagepack(
     entry_path: &str,
     sources_json: &str,
     sample_rate: f32,
@@ -569,6 +1142,23 @@ pub fn compile_project_to_mir_messagepack(
         &sources,
         sample_rate,
         block_size,
+    )
+    .map(frontend_messagepack_compilation)
+    .map_err(compiler_failure_js)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn compile_project_image_to_mir_messagepack(
+    image_bytes: &[u8],
+    sample_rate: f32,
+    block_size: u32,
+) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
+    compile_project_image_to_mir_messagepack_with_manifest_and_limits(
+        image_bytes,
+        sample_rate,
+        block_size,
+        web_project_limits(),
     )
     .map(frontend_messagepack_compilation)
     .map_err(compiler_failure_js)
@@ -788,6 +1378,58 @@ sample:
             assert_eq!(errors[0].stage, "parse");
             assert!(errors[0].message.contains("escapes project root"));
         }
+    }
+
+    #[test]
+    fn rejects_virtual_paths_that_escape_and_reenter_the_project_root() {
+        let sources = HashMap::from([
+            (
+                "main.onda".to_owned(),
+                "include \"../onda-project/lib.onda\"\n".to_owned(),
+            ),
+            ("lib.onda".to_owned(), "const captured = 1.0\n".to_owned()),
+        ]);
+        let errors = compile_project_sources_to_mir_json("main.onda", &sources, 48_000.0, 128)
+            .expect_err("a virtual path must never cross the project root");
+        assert_eq!(errors[0].stage, "parse");
+        assert!(errors[0].message.contains("escapes project root"));
+    }
+
+    #[test]
+    fn project_image_compilation_honors_host_asset_limits() {
+        let sources = SourceImage {
+            entry: "main.onda".to_owned(),
+            stdlib_digest: onda_project::current_stdlib_digest(),
+            documents: vec![onda_project::SourceDocument {
+                path: "main.onda".to_owned(),
+                contents: "outs 1\nsample:\n  out1 = 0.0\n".to_owned(),
+            }],
+            resolutions: Vec::new(),
+        };
+        let asset = onda_project::BufferAsset::new(
+            2,
+            1,
+            48_000.0,
+            onda_project::BufferSamples::F32(vec![0.0, 1.0]),
+        )
+        .expect("valid test asset");
+        let image = ProjectImage::from_buffer_assets(
+            sources,
+            std::collections::BTreeMap::from([("sample".to_owned(), asset)]),
+        )
+        .and_then(|image| image.serialize())
+        .expect("serialize test image");
+        let limits = ProjectLimits {
+            max_asset_bytes: 4,
+            max_total_asset_bytes: 4,
+            ..ProjectLimits::default()
+        };
+
+        let failure = compile_project_image_to_mir_messagepack_with_manifest_and_limits(
+            &image, 48_000.0, 128, limits,
+        )
+        .expect_err("host asset limits must be enforced before compilation");
+        assert!(failure.diagnostics[0].message.contains("byte limit"));
     }
 
     #[test]

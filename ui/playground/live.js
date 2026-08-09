@@ -8,6 +8,7 @@ import {
 } from "@onda-lang/webaudio";
 
 import {
+  encodeOndaBuffer,
   prepareBufferBinding,
   prepareBufferBindings,
 } from "./browser-buffers.js";
@@ -22,15 +23,20 @@ import {
   encodeSharedSession,
   sharedSessionHash,
 } from "./share.js";
+import {
+  createProjectArchive,
+  decodeProjectArchive,
+  sourceGraphWithWorkspaceDocuments,
+} from "./project-archive.js";
 import defaultSource from "./default.onda";
 
 const statusEl = document.querySelector("[data-status]");
 const editorEl = document.querySelector("[data-editor]");
 const fileTabsEl = document.querySelector("[data-file-tabs]");
-const newPatchButton = document.querySelector("[data-new-patch]");
+const newProjectButton = document.querySelector("[data-new-project]");
+const openProjectButton = document.querySelector("[data-open-project]");
+const downloadProjectButton = document.querySelector("[data-download-project]");
 const newFileButton = document.querySelector("[data-new-file]");
-const renameFileButton = document.querySelector("[data-rename-file]");
-const mainFileButton = document.querySelector("[data-main-file]");
 const shareProjectButton = document.querySelector("[data-share-project]");
 const sampleRateEl = document.querySelector("[data-sample-rate]");
 const blockSizeEl = document.querySelector("[data-block-size]");
@@ -46,7 +52,6 @@ const compileOptionsStorageKey = "onda.browser-ide.compile-options.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
 const supportedBlockSizes = new Set([128, 256, 512, 1024, 2048]);
-const UNBOUND_STATUS = "Unbound";
 
 let compiler = null;
 let languageServer = null;
@@ -209,7 +214,7 @@ async function runProject() {
     if (needsCompilation) {
       await languageServer.syncProject(project);
       if (generation !== runGeneration) return;
-      const { artifact: compiledArtifact } = await compiler.compileProject(project, options);
+      const { artifact: compiledArtifact } = await compiler.compileWorkspace(project, options);
       if (generation !== runGeneration) return;
       const nextCompiledModule = await compileOndaProcessorModule(compiledArtifact);
       if (generation !== runGeneration) return;
@@ -219,12 +224,6 @@ async function runProject() {
     }
     localStorage.setItem(projectStorageKey, JSON.stringify(projectEditor.project()));
     runView.setArtifact(artifact, bufferFiles);
-    if (!runView.buffersReady()) {
-      await closeAudioContext();
-      runView.setWaitingForBuffers();
-      setStatus(UNBOUND_STATUS);
-      return;
-    }
     await startAudio();
     setStatus("Playing", "playing");
     const runViewDocument = runViewFrame.contentDocument;
@@ -260,9 +259,11 @@ async function runProject() {
           === getComputedStyle(runViewDocument.documentElement).scrollbarColor,
       hasMainFileTab: Boolean(fileTabsEl.querySelector(".project-file-main")),
       hasEntryFileLabel: fileTabsEl.textContent.toLowerCase().includes("entry"),
-      hasTabCloseButton: Boolean(fileTabsEl.querySelector(".project-file-close")),
+      hasTabFileMenu: Boolean(fileTabsEl.querySelector(".project-file-menu-trigger")),
       hasDeleteFileButton: Boolean(document.querySelector("[data-delete-file]")),
       hasShareButton: Boolean(shareProjectButton),
+      hasOpenProjectButton: Boolean(openProjectButton),
+      hasDownloadProjectButton: Boolean(downloadProjectButton),
       microphonePermissionRequested: microphoneInput.permissionRequested,
       tabStripFits: fileTabsEl.scrollWidth <= fileTabsEl.clientWidth,
       sampleRateLabels: [...sampleRateEl.options].map((option) => option.textContent),
@@ -450,7 +451,8 @@ async function smokeEditorBindings() {
   projectEditor.add(smokePath, "# Browser close-tab smoke test\n");
   const projectTab = [...fileTabsEl.querySelectorAll(".project-file")]
     .find((tab) => tab.dataset.path === smokePath);
-  projectTab?.querySelector(".project-file-close")?.click();
+    projectTab?.querySelector(".project-file-menu-trigger")?.click();
+    document.querySelector(".project-file-menu-delete")?.click();
   const projectTabCloseHandled = !projectEditor.states.has(smokePath)
     && projectEditor.paths().length === projectFileCount;
 
@@ -595,7 +597,7 @@ async function startAudio() {
       };
       await languageServer.setAnalysisOptions(options);
       const project = projectEditor.compilerProject();
-      const { artifact: compiledArtifact } = await compiler.compileProject(project, options);
+      const { artifact: compiledArtifact } = await compiler.compileWorkspace(project, options);
       const nextCompiledModule = await compileOndaProcessorModule(compiledArtifact);
       artifact = compiledArtifact;
       compiledModule = nextCompiledModule;
@@ -603,7 +605,7 @@ async function startAudio() {
       metadata = artifact.metadata;
       runView.setArtifact(artifact, bufferFiles);
     }
-    const buffers = await prepareBufferBindings(metadata, bufferFiles);
+    const buffers = await prepareBufferBindings(metadata, bufferFiles, compiler);
     const params = Object.fromEntries(
       runView.state.params.map((param) => [param.name, param.value]),
     );
@@ -642,7 +644,7 @@ async function startAudio() {
 async function stopAudio() {
   if (!context) {
     runView.setStopped();
-    setStatus(runView.buffersReady() ? "Stopped" : UNBOUND_STATUS);
+    setStatus("Stopped");
     return;
   }
   scopeSource.stop();
@@ -652,7 +654,7 @@ async function stopAudio() {
   audioProcessor = null;
   await closeAudioContext();
   runView.setStopped();
-  setStatus(runView.buffersReady() ? "Stopped" : UNBOUND_STATUS);
+  setStatus("Stopped");
 }
 
 async function stopExecution() {
@@ -696,7 +698,7 @@ async function bindBufferFile(name, file) {
   if (!buffer) throw new Error(`unknown buffer '${name}'`);
   let binding;
   try {
-    binding = await prepareBufferBinding(buffer, file);
+    binding = await prepareBufferBinding(buffer, file, compiler);
   } catch (error) {
     runView.showError(error);
     setErrorStatus();
@@ -710,7 +712,7 @@ async function bindBufferFile(name, file) {
   });
   if (context) {
     await restartAudioForBuffers();
-  } else if (processingRequested && runView.buffersReady()) {
+  } else if (processingRequested) {
     await runProject();
   }
 }
@@ -718,7 +720,7 @@ async function bindBufferFile(name, file) {
 async function clearBuffer(name) {
   bufferFiles.delete(name);
   runView.updateBufferFile(name, null);
-  if (context) await stopAudio();
+  if (context) await restartAudioForBuffers();
 }
 
 async function restartAudioForBuffers() {
@@ -745,7 +747,7 @@ async function loadToolchain() {
       smokeMode ? `include "./smoke-buffer.onda"\n\n${defaultSource}` : defaultSource,
     );
     if (smokeMode) {
-      projectEditor.add("smoke-buffer.onda", "buffers:\n  clip: buffer[f32]\n");
+      projectEditor.add("smoke-buffer.onda", "buffers:\n  clip: buffer<f32>\n");
       bufferFiles.set("clip", smokeBufferFile());
       projectEditor.select("main.onda");
     }
@@ -796,11 +798,13 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
     onError: () => setErrorStatus(),
     onChange: (project) => {
       if (!smokeMode) scheduleProjectSave(project);
-      updateFileActions();
       runView.markSourceDirty(project.entry);
       languageServer?.syncProject({ entry: project.entry, sources: project.sources });
     },
-    onActiveFile: () => updateFileActions(),
+    onRenameFile: (path) => {
+      const nextPath = prompt("Rename project file", path)?.trim();
+      if (nextPath) editProject(() => projectEditor.rename(nextPath));
+    },
     initialProject: storedProject ?? {
       entry: "main.onda",
       active: "main.onda",
@@ -808,27 +812,18 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
     },
   });
   projectEditor.setFontSize(editorFontSize);
-  updateFileActions();
-}
-
-function updateFileActions() {
-  if (!projectEditor) return;
-  const projectDocument = projectEditor.isProjectDocument();
-  renameFileButton.disabled = !projectDocument;
-  mainFileButton.disabled = !projectDocument || projectEditor.active === projectEditor.entry;
 }
 
 function editProject(action) {
   try {
     action();
-    updateFileActions();
   } catch (error) {
     setErrorStatus();
   }
 }
 
-async function createNewPatch() {
-  if (!window.confirm("Create a new patch? This will delete your current project.")) return;
+async function createNewProject() {
+  if (!window.confirm("Create a new project? This will delete your current project.")) return;
   await stopExecution();
   bufferFiles.clear();
   projectEditor.replaceProject({
@@ -842,6 +837,143 @@ async function createNewPatch() {
   url.hash = "";
   history.replaceState(null, "", url);
   setStatus("Ready", "ready");
+}
+
+async function openProjectFile(file) {
+  if (!(file instanceof File)) return;
+  try {
+    await stopExecution();
+    let project;
+    let importedBuffers = new Map();
+    if (/\.(?:onda|on)$/i.test(file.name)) {
+      const path = file.name.replaceAll("\\", "/");
+      project = {
+        entry: path,
+        active: path,
+        sources: { [path]: await file.text() },
+      };
+    } else {
+      const decoded = await decodeProjectArchive(
+        await file.arrayBuffer(),
+        compiler,
+        chooseArchivedProject,
+      );
+      project = decoded.project;
+      importedBuffers = new Map(
+        [...decoded.buffers].map(([name, asset]) => [
+          name,
+          new File(
+            [asset.bytes],
+            asset.path.split("/").at(-1) ?? `${name}.ondabuffer`,
+            { type: "application/vnd.onda.buffer" },
+          ),
+        ]),
+      );
+    }
+    bufferFiles.clear();
+    for (const [name, asset] of importedBuffers) bufferFiles.set(name, asset);
+    projectEditor.replaceProject(project);
+    artifact = null;
+    compiledModule = null;
+    artifactCompilationKey = null;
+    runView.clearArtifact(project.entry);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("example");
+    url.hash = "";
+    history.replaceState(null, "", url);
+    setStatus("Project loaded", "ready");
+  } catch (error) {
+    runView.setError(error);
+    setErrorStatus();
+  }
+}
+
+function chooseArchivedProject(projectFilePaths) {
+  const visiblePaths = projectFilePaths.slice(0, 20);
+  const omitted = projectFilePaths.length - visiblePaths.length;
+  const choices = visiblePaths
+    .map((path, index) => `${index + 1}. ${path}`)
+    .join("\n");
+  const suffix = omitted > 0
+    ? `\n…and ${omitted} more. Enter an exact manifest path to select an omitted project.`
+    : "";
+  const selection = window.prompt(
+    `This archive contains multiple Onda projects. Enter a number or manifest path:\n\n${choices}${suffix}`,
+    "1",
+  );
+  if (selection === null) throw new Error("project selection was cancelled");
+  const value = selection.trim();
+  const numbered = /^(?:0|[1-9][0-9]*)$/.test(value) ? Number(value) : 0;
+  const selected = numbered >= 1 && numbered <= projectFilePaths.length
+    ? projectFilePaths[numbered - 1]
+    : value;
+  if (!projectFilePaths.includes(selected)) {
+    throw new Error(`'${value}' is not a project manifest in this archive`);
+  }
+  return selected;
+}
+
+async function downloadProject() {
+  if (!compiler || downloadProjectButton.disabled) return;
+  downloadProjectButton.disabled = true;
+  try {
+    const project = projectEditor.compilerProject();
+    const options = compileOptions();
+    const exportCompilation = await compiler.compileWorkspace(project, options);
+    const exportArtifact = exportCompilation.artifact;
+    const descriptors = new Map(
+      exportArtifact.metadata.metadata.buffers.map((buffer) => [buffer.name, buffer]),
+    );
+    const encodedBuffers = new Map();
+    for (const [name, file] of bufferFiles) {
+      const descriptor = descriptors.get(name);
+      if (!descriptor) {
+        throw new Error(`bound buffer '${name}' is not declared by the current project`);
+      }
+      const binding = await prepareBufferBinding(descriptor, file, compiler);
+      encodedBuffers.set(
+        name,
+        await encodeOndaBuffer(binding, descriptor.scalar, compiler),
+      );
+    }
+    const image = await compiler.createProjectImage(
+      sourceGraphWithWorkspaceDocuments(exportCompilation.sourceGraph, project.sources),
+      encodedBuffers,
+    );
+    const assetFileNames = new Map(
+      [...bufferFiles].map(([name, file]) => [name, file.name]),
+    );
+    const archive = await createProjectArchive(image.bytes, compiler, assetFileNames);
+    const stem = project.entry.split("/").at(-1)?.replace(/\.(?:onda|on)$/i, "")
+      || "onda-project";
+    downloadBytes(archive, `${stem}-project.zip`, "application/zip");
+    setStatus("Project downloaded", "ready");
+  } catch (error) {
+    runView.setError(error);
+    setErrorStatus();
+  } finally {
+    downloadProjectButton.disabled = false;
+  }
+}
+
+function chooseProjectFile() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".zip,.onda,.on,application/zip";
+  input.addEventListener("change", () => {
+    const [file] = input.files ?? [];
+    if (file) void openProjectFile(file);
+  }, { once: true });
+  input.click();
+}
+
+function downloadBytes(bytes, filename, type) {
+  const url = URL.createObjectURL(new Blob([bytes], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function shareProject() {
@@ -877,16 +1009,13 @@ async function shareProject() {
   }
 }
 
-newPatchButton.addEventListener("click", () => void createNewPatch());
+newProjectButton.addEventListener("click", () => void createNewProject());
+openProjectButton.addEventListener("click", chooseProjectFile);
+downloadProjectButton.addEventListener("click", () => void downloadProject());
 newFileButton.addEventListener("click", () => {
   const path = prompt("New project-relative Onda file", "module.onda")?.trim();
   if (path) editProject(() => projectEditor.add(path));
 });
-renameFileButton.addEventListener("click", () => {
-  const path = prompt("Rename project file", projectEditor.active)?.trim();
-  if (path) editProject(() => projectEditor.rename(path));
-});
-mainFileButton.addEventListener("click", () => editProject(() => projectEditor.setMain()));
 shareProjectButton.addEventListener("click", () => void shareProject());
 
 for (const select of [sampleRateEl, blockSizeEl]) {

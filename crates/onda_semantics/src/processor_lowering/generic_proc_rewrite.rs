@@ -465,9 +465,22 @@ fn validate_expr_type_args(
         Expr::Index { index, .. } => {
             validate_expr_type_args(index, allowed, proc, context, errors);
         }
-        Expr::Slice { start, end, .. } => {
-            validate_optional_expr_type_args(start.as_deref(), allowed, proc, context, errors);
-            validate_optional_expr_type_args(end.as_deref(), allowed, proc, context, errors);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end] {
+                validate_optional_expr_type_args(
+                    coordinate.as_deref(),
+                    allowed,
+                    proc,
+                    context,
+                    errors,
+                );
+            }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }

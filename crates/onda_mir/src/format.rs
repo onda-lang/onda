@@ -302,8 +302,8 @@ impl<'a> Formatter<'a> {
                 value,
                 bounds,
             } => self.line(format_args!(
-                "{pad}store_buffer @buffer{}{}[{}] {}, {}{source}",
-                buffer.raw(),
+                "{pad}store_buffer {}{}[{}] {}, {}{source}",
+                format_buffer_ref(*buffer),
                 channel
                     .map(|value| format!("[{}]", format_value(value)))
                     .unwrap_or_default(),
@@ -318,8 +318,8 @@ impl<'a> Formatter<'a> {
                 value,
                 bounds,
             } => self.line(format_args!(
-                "{pad}store_buffer_param @param{}{}[{}] {}, {}{source}",
-                parameter.raw(),
+                "{pad}store_buffer_param {}{}[{}] {}, {}{source}",
+                format_buffer_param_ref(*parameter),
                 channel
                     .map(|value| format!("[{}]", format_value(value)))
                     .unwrap_or_default(),
@@ -408,6 +408,17 @@ impl<'a> Formatter<'a> {
                 access,
             } => format!(
                 "buffer<{}, {}, {}>",
+                element.name(),
+                format_channels(*channels),
+                format_access(*access)
+            ),
+            Type::BufferSpan {
+                element,
+                channels,
+                access,
+                len,
+            } => format!(
+                "buffer_span<{}, {}, {}, {len}>",
                 element.name(),
                 format_channels(*channels),
                 format_access(*access)
@@ -551,8 +562,8 @@ fn format_rvalue(value: &Rvalue) -> String {
             index,
             bounds,
         } => format!(
-            "load_buffer @buffer{}{}[{}] {}",
-            buffer.raw(),
+            "load_buffer {}{}[{}] {}",
+            format_buffer_ref(*buffer),
             channel
                 .map(|value| format!("[{}]", format_value(value)))
                 .unwrap_or_default(),
@@ -565,21 +576,27 @@ fn format_rvalue(value: &Rvalue) -> String {
             index,
             bounds,
         } => format!(
-            "load_buffer_param @param{}{}[{}] {}",
-            parameter.raw(),
+            "load_buffer_param {}{}[{}] {}",
+            format_buffer_param_ref(*parameter),
             channel
                 .map(|value| format!("[{}]", format_value(value)))
                 .unwrap_or_default(),
             format_value(*index),
             format_bounds(*bounds)
         ),
-        Rvalue::BufferLen(id) => format!("buffer_len @buffer{}", id.raw()),
-        Rvalue::BufferChannels(id) => format!("buffer_channels @buffer{}", id.raw()),
-        Rvalue::BufferSampleRate(id) => format!("buffer_sample_rate @buffer{}", id.raw()),
-        Rvalue::BufferParamLen(id) => format!("buffer_len @param{}", id.raw()),
-        Rvalue::BufferParamChannels(id) => format!("buffer_channels @param{}", id.raw()),
+        Rvalue::BufferLen(buffer) => format!("buffer_len {}", format_buffer_ref(*buffer)),
+        Rvalue::BufferChannels(buffer) => {
+            format!("buffer_channels {}", format_buffer_ref(*buffer))
+        }
+        Rvalue::BufferSampleRate(buffer) => {
+            format!("buffer_sample_rate {}", format_buffer_ref(*buffer))
+        }
+        Rvalue::BufferParamLen(id) => format!("buffer_len {}", format_buffer_param_ref(*id)),
+        Rvalue::BufferParamChannels(id) => {
+            format!("buffer_channels {}", format_buffer_param_ref(*id))
+        }
         Rvalue::BufferParamSampleRate(id) => {
-            format!("buffer_sample_rate @param{}", id.raw())
+            format!("buffer_sample_rate {}", format_buffer_param_ref(*id))
         }
         Rvalue::ConstDataLoad {
             data,
@@ -623,15 +640,15 @@ fn format_slice_source(source: &SliceSource) -> String {
     match source {
         SliceSource::Place(place) => format_place(place),
         SliceSource::Buffer { buffer, channel } => format!(
-            "@buffer{}{}",
-            buffer.raw(),
+            "{}{}",
+            format_buffer_ref(*buffer),
             channel
                 .map(|value| format!("[{}]", format_value(value)))
                 .unwrap_or_default()
         ),
         SliceSource::BufferParam { parameter, channel } => format!(
-            "@param{}{}",
-            parameter.raw(),
+            "{}{}",
+            format_buffer_param_ref(*parameter),
             channel
                 .map(|value| format!("[{}]", format_value(value)))
                 .unwrap_or_default()
@@ -674,7 +691,17 @@ fn format_call_argument(argument: &CallArgument) -> String {
             format_value(*start),
             format_bounds(*bounds)
         ),
-        CallArgument::Buffer(id) => format!("@buffer{}", id.raw()),
+        CallArgument::Buffer(buffer) => format_buffer_ref(*buffer),
+        CallArgument::BufferParam(parameter) => format_buffer_param_ref(*parameter),
+        CallArgument::BufferSpan(span) => match span {
+            crate::BufferSpanRef::Interface { first, len } => {
+                format!("@buffer_span(first={}, len={len})", first.raw())
+            }
+            crate::BufferSpanRef::Parameter { span, start, len } => format!(
+                "@buffer_param_span(param={}, start={start}, len={len})",
+                span.raw()
+            ),
+        },
     }
 }
 
@@ -682,6 +709,40 @@ fn format_optional_index(value: Option<&Value>, bounds: BoundsMode) -> String {
     value
         .map(|value| format!("[{}] {}", format_value(*value), format_bounds(bounds)))
         .unwrap_or_default()
+}
+
+fn format_buffer_ref(buffer: BufferRef) -> String {
+    match buffer {
+        BufferRef::Direct(id) => format!("@buffer{}", id.raw()),
+        BufferRef::ArrayElement {
+            first,
+            len,
+            selector,
+            bounds,
+        } => format!(
+            "@buffer_array(first={}, len={})[{}] {}",
+            first.raw(),
+            len,
+            format_value(selector),
+            format_bounds(bounds)
+        ),
+    }
+}
+
+fn format_buffer_param_ref(buffer: crate::BufferParamRef) -> String {
+    match buffer {
+        crate::BufferParamRef::Direct(parameter) => format!("@param{}", parameter.raw()),
+        crate::BufferParamRef::ArrayElement {
+            span,
+            selector,
+            bounds,
+        } => format!(
+            "@buffer_param_span(param={})[{}] {}",
+            span.raw(),
+            format_value(selector),
+            format_bounds(bounds)
+        ),
+    }
 }
 
 fn format_access(access: AccessMode) -> &'static str {

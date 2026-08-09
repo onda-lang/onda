@@ -6,6 +6,7 @@ import {
   MIR_SCHEMA_VERSION,
   ONDA_VERSION,
   OndaCompileError,
+  OndaCompilerError,
   createCompiler,
   createProcessorArtifactFiles,
 } from "../src/index.js";
@@ -16,6 +17,31 @@ const SOURCE = `params:
 sample:
   out1 = gain
 `;
+
+function pcm16Wav(samples) {
+  const dataLength = samples.length * 2;
+  const bytes = new Uint8Array(44 + dataLength);
+  const view = new DataView(bytes.buffer);
+  const text = (offset, value) => {
+    for (let index = 0; index < value.length; index += 1) {
+      bytes[offset + index] = value.charCodeAt(index);
+    }
+  };
+  text(0, "RIFF");
+  view.setUint32(4, 36 + dataLength, true);
+  text(8, "WAVEfmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 48_000, true);
+  view.setUint32(28, 96_000, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, "data");
+  view.setUint32(40, dataLength, true);
+  samples.forEach((sample, index) => view.setInt16(44 + index * 2, sample, true));
+  return bytes;
+}
 
 test("retries direct frontend initialization after a failure", async () => {
   await assert.rejects(
@@ -54,15 +80,37 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.match(files.metadata.text, /"integrity"/);
 });
 
+test("compiles fixed buffer arrays with explicit contiguous group metadata", async () => {
+  const compiler = await createCompiler();
+  const { artifact } = await compiler.compileSource(`buffers:
+  bank: f32 {3}
+  single: f32 {1}
+
+sample:
+  out1 = bank[99][0] + single[0][0]
+`);
+
+  assert.deepEqual(
+    artifact.metadata.metadata.buffers.map((buffer) => buffer.name),
+    ["bank[0]", "bank[1]", "bank[2]", "single[0]"],
+  );
+  assert.deepEqual(artifact.metadata.metadata.buffer_arrays, [
+    { name: "bank", first_buffer: 0, len: 3 },
+    { name: "single", first_buffer: 3, len: 1 },
+  ]);
+  assert.equal(WebAssembly.validate(artifact.wasm), true);
+  await compiler.dispose();
+});
+
 test("compiles an in-memory project through the same product API", async () => {
   const compiler = await createCompiler();
-  const { artifact, sourceFiles } = await compiler.compileProject({
+  const { artifact, sourceFiles, sourceGraph } = await compiler.compileWorkspace({
     entry: "main.onda",
     sources: {
       "main.onda": `include "./level.onda"
 
 buffers:
-  clip: buffer[f32]
+  clip: buffer<f32>
 
 sample:
   out1 = level()
@@ -82,6 +130,159 @@ sample:
     artifact.metadata.metadata.buffers.map((buffer) => buffer.name),
     ["clip"],
   );
+  assert.equal(sourceGraph.entry, "main.onda");
+  assert.match(sourceGraph.stdlibDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(
+    sourceGraph.documents.map((document) => document.path),
+    ["level.onda", "main.onda"],
+  );
+  assert.deepEqual(sourceGraph.resolutions, [{
+    source: "main.onda",
+    kind: "include",
+    specifier: "./level.onda",
+    target: "level.onda",
+  }]);
+});
+
+test("decodes WAV files through the canonical project decoder", async () => {
+  const compiler = await createCompiler();
+  const decoded = await compiler.decodeBufferFile(
+    pcm16Wav([-32_768, 32_767]),
+    "clip.wav",
+  );
+  assert.equal(decoded.element, "f32");
+  assert.equal(decoded.frames, 2);
+  assert.equal(decoded.channels, 1);
+  assert.equal(decoded.sampleRate, 48_000);
+  assert.deepEqual([...decoded.data], [-1, 32_767 / 32_768]);
+  await compiler.dispose();
+});
+
+test("project images and typed assets round-trip through the public compiler API", async () => {
+  const compiler = await createCompiler();
+const source = `buffers:
+  sequence: buffer<i64>
+  sequence_copy: buffer<i64>
+
+sample:
+  out1 = 0.0
+`;
+  const compiled = await compiler.compileWorkspace({
+    entry: "main.onda",
+    sources: { "main.onda": source },
+  });
+  const asset = await compiler.encodeBufferAsset({
+    element: "i64",
+    frames: 2,
+    channels: 1,
+    sampleRate: 48_000,
+    data: new BigInt64Array([-7n, 9223372036854775807n]),
+  });
+  const decoded = await compiler.decodeBufferAsset(asset);
+  assert.equal(decoded.element, "i64");
+  assert.deepEqual([...decoded.data], [-7n, 9223372036854775807n]);
+
+  const imageSourceGraph = {
+    ...compiled.sourceGraph,
+    documents: [
+      ...compiled.sourceGraph.documents,
+      { path: "scratch.onda", contents: "incomplete work in progress\n" },
+    ],
+  };
+  const image = await compiler.createProjectImage(
+    imageSourceGraph,
+    new Map([["sequence", asset], ["sequence_copy", asset]]),
+  );
+  assert.match(image.contentDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(image.buffers[0].element, "i64");
+  assert.equal(image.buffers[0].assetId, image.buffers[1].assetId);
+  assert.equal(image.sourceGraph.stdlibDigest, compiled.sourceGraph.stdlibDigest);
+
+  const replayed = await compiler.compileProjectImage(image.bytes, { blockSize: 256 });
+  assert.equal(WebAssembly.validate(replayed.artifact.wasm), true);
+  assert.deepEqual(replayed.sourceFiles, ["main.onda"]);
+  assert.deepEqual(replayed.sourceGraph, imageSourceGraph);
+
+  const wrongAsset = await compiler.encodeBufferAsset({
+    element: "f32",
+    frames: 2,
+    channels: 1,
+    sampleRate: 48_000,
+    data: new Float32Array([1, 2]),
+  });
+  const invalidImage = await compiler.createProjectImage(
+    compiled.sourceGraph,
+    new Map([["sequence", wrongAsset]]),
+  );
+  await assert.rejects(
+    compiler.compileProjectImage(invalidImage.bytes),
+    /requires i64, but its asset contains f32/,
+  );
+
+  const materialized = await compiler.materializeProjectImage(
+    image.bytes,
+    new Map([["sequence", "Original Sequence.wav"]]),
+  );
+  assert.deepEqual(materialized.directories, ["assets", "code"]);
+  assert.deepEqual(
+    materialized.files.map((file) => file.path),
+    [
+      "assets/Original Sequence.ondabuffer",
+      "code/main.onda",
+      "code/scratch.onda",
+      "project.ondaproject",
+    ],
+  );
+  const loadedFiles = await compiler.loadProjectFiles(new Map(
+    materialized.files.map((file) => [file.path, file.bytes]),
+  ));
+  assert.equal(loadedFiles.sourceGraph.entry, "code/main.onda");
+  assert.deepEqual(loadedFiles.sourceGraph.documents, [
+    { path: "code/main.onda", contents: source },
+    { path: "code/scratch.onda", contents: "incomplete work in progress\n" },
+  ]);
+  const multiProjectFiles = new Map(
+    materialized.files.map((file) => [file.path, file.bytes]),
+  );
+  multiProjectFiles.set(
+    "alternate.ondaproject",
+    new TextEncoder().encode(JSON.stringify({ entry: "code/main.onda" })),
+  );
+  await assert.rejects(
+    compiler.loadProjectFiles(multiProjectFiles),
+    (error) => {
+      assert.equal(error instanceof OndaCompilerError, true);
+      assert.match(String(error.cause), /more than one .ondaproject file/);
+      return true;
+    },
+  );
+  const selectedFiles = await compiler.loadProjectFiles(
+    multiProjectFiles,
+    "alternate.ondaproject",
+  );
+  assert.equal(selectedFiles.sourceGraph.entry, "code/main.onda");
+  const capabilities = await compiler.projectCapabilities();
+  assert.equal(capabilities.imageFormatVersion, image.formatVersion);
+  assert.equal(capabilities.stdlibDigest, compiled.sourceGraph.stdlibDigest);
+  await compiler.dispose();
+});
+
+test("project file builder rejects excess files before retaining them", async () => {
+  const compiler = await createCompiler();
+  const builder = new compiler.frontend.WebMaterializedProjectBuilder();
+  const maxFiles = 4096 + 4096 + 1;
+  try {
+    for (let index = 0; index < maxFiles; index += 1) {
+      builder.add_file(`empty/${index}`, new Uint8Array());
+    }
+    assert.throws(
+      () => builder.add_file("empty/overflow", new Uint8Array()),
+      /more than 8193 files/,
+    );
+  } finally {
+    builder.free();
+    await compiler.dispose();
+  }
 });
 
 test("confines in-memory projects inside the browser virtual namespace", async () => {
@@ -91,7 +292,7 @@ test("confines in-memory projects inside the browser virtual namespace", async (
     `include "/tmp/outside.onda"\n`,
   ]) {
     await assert.rejects(
-      compiler.compileProject({
+      compiler.compileWorkspace({
         entry: "main.onda",
         sources: { "main.onda": source },
       }),
@@ -124,7 +325,7 @@ test("returns structured frontend diagnostics", async () => {
 test("returns contributing project sources with semantic failures", async () => {
   const compiler = await createCompiler();
   await assert.rejects(
-    compiler.compileProject({
+    compiler.compileWorkspace({
       entry: "main.onda",
       sources: {
         "main.onda": "import dsp\nsample:\n  out1 = DSP::missing()\n",
@@ -145,7 +346,7 @@ test("returns contributing project sources with semantic failures", async () => 
 test("returns unresolved project source candidates with parse failures", async () => {
   const compiler = await createCompiler();
   await assert.rejects(
-    compiler.compileProject({
+    compiler.compileWorkspace({
       entry: "main.onda",
       sources: {
         "main.onda": "import dsp/filter\n",

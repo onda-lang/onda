@@ -32,18 +32,31 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<LoweredSlice, MirLoweringError> {
         match expression {
             Expr::Slice {
-                base, start, end, ..
+                base,
+                selector,
+                channel,
+                start,
+                end,
+                ..
             } => self.lower_named_slice(
                 base,
-                start.as_deref(),
-                end.as_deref(),
+                SliceSelection {
+                    selector: selector.as_deref(),
+                    channel: channel.as_deref(),
+                    start: start.as_deref(),
+                    end: end.as_deref(),
+                },
                 requested_access,
                 block,
                 expression.loc(),
             ),
-            Expr::Var { name, .. } => {
-                self.lower_named_slice(name, None, None, requested_access, block, expression.loc())
-            }
+            Expr::Var { name, .. } => self.lower_named_slice(
+                name,
+                SliceSelection::default(),
+                requested_access,
+                block,
+                expression.loc(),
+            ),
             _ => Err(self.error(
                 "primitive slice value requires an array, buffer, or slice expression",
                 expression.loc(),
@@ -164,17 +177,22 @@ impl<'a> FunctionLowerer<'a> {
         )))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn lower_named_slice(
         &mut self,
         base: &str,
-        start: Option<&Expr>,
-        end: Option<&Expr>,
+        selection: SliceSelection<'_>,
         requested_access: Option<onda_mir::AccessMode>,
         block: &mut MirBlock,
         location: SourceLoc,
     ) -> Result<LoweredSlice, MirLoweringError> {
-        let (source, length, element, source_access) = self.slice_base(base, block, location)?;
+        let SliceSelection {
+            selector,
+            channel,
+            start,
+            end,
+        } = selection;
+        let (source, length, element, source_access) =
+            self.slice_base(base, selector, channel, block, location)?;
         let access = requested_access.unwrap_or(source_access);
         if source_access == onda_mir::AccessMode::ReadOnly
             && access == onda_mir::AccessMode::ReadWrite
@@ -236,6 +254,8 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn slice_base(
         &mut self,
         base: &str,
+        selector: Option<&Expr>,
+        channel: Option<&Expr>,
         block: &mut MirBlock,
         location: SourceLoc,
     ) -> Result<
@@ -264,6 +284,103 @@ impl<'a> FunctionLowerer<'a> {
                     ));
                 }
                 Binding::BufferParameter(parameter, element) => {
+                    if selector.is_some() {
+                        return Err(self.error(
+                            format!("buffer parameter '{base}' is not a buffer collection"),
+                            location,
+                        ));
+                    }
+                    let channel = channel
+                        .map(|channel| self.lower_expr(channel, block))
+                        .transpose()?
+                        .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                        .transpose()?
+                        .map(|value| value.value);
+                    let length = self.emit_temp(
+                        block,
+                        PrimitiveType::I32,
+                        Rvalue::BufferParamLen(onda_mir::BufferParamRef::Direct(parameter)),
+                        location,
+                    );
+                    return Ok((
+                        onda_mir::SliceSource::BufferParam {
+                            parameter: onda_mir::BufferParamRef::Direct(parameter),
+                            channel,
+                        },
+                        length,
+                        element,
+                        onda_mir::AccessMode::ReadWrite,
+                    ));
+                }
+                Binding::BufferAlias(reference, element) => {
+                    if selector.is_some() {
+                        return Err(self.error(
+                            format!("buffer-reference alias '{base}' is not a buffer collection"),
+                            location,
+                        ));
+                    }
+                    let channel = channel
+                        .map(|channel| self.lower_expr(channel, block))
+                        .transpose()?
+                        .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                        .transpose()?
+                        .map(|value| value.value);
+                    let reference = self.materialize_buffer_reference(reference, block, location);
+                    return match reference {
+                        MaterializedBufferReference::Interface(buffer) => {
+                            let length = self.emit_temp(
+                                block,
+                                PrimitiveType::I32,
+                                Rvalue::BufferLen(buffer),
+                                location,
+                            );
+                            Ok((
+                                onda_mir::SliceSource::Buffer { buffer, channel },
+                                length,
+                                element,
+                                onda_mir::AccessMode::ReadWrite,
+                            ))
+                        }
+                        MaterializedBufferReference::Parameter(parameter) => {
+                            let length = self.emit_temp(
+                                block,
+                                PrimitiveType::I32,
+                                Rvalue::BufferParamLen(parameter),
+                                location,
+                            );
+                            Ok((
+                                onda_mir::SliceSource::BufferParam { parameter, channel },
+                                length,
+                                element,
+                                onda_mir::AccessMode::ReadWrite,
+                            ))
+                        }
+                    };
+                }
+                Binding::BufferParameterArray(span, element, _len) => {
+                    let selector = selector.ok_or_else(|| {
+                        self.error(
+                            format!(
+                                "buffer collection parameter '{base}' requires a slot selector"
+                            ),
+                            location,
+                        )
+                    })?;
+                    let selector = self.lower_expr(selector, block)?;
+                    let selector = self
+                        .coerce(selector, PrimitiveType::I32, block, location)?
+                        .value;
+                    let channel = channel
+                        .map(|channel| self.lower_expr(channel, block))
+                        .transpose()?
+                        .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                        .transpose()?
+                        .map(|value| value.value);
+                    let parameter = onda_mir::BufferParamRef::ArrayElement {
+                        span,
+                        selector,
+                        bounds: BoundsMode::Clamp,
+                    };
                     let length = self.emit_temp(
                         block,
                         PrimitiveType::I32,
@@ -271,16 +388,19 @@ impl<'a> FunctionLowerer<'a> {
                         location,
                     );
                     return Ok((
-                        onda_mir::SliceSource::BufferParam {
-                            parameter,
-                            channel: None,
-                        },
+                        onda_mir::SliceSource::BufferParam { parameter, channel },
                         length,
                         element,
                         onda_mir::AccessMode::ReadWrite,
                     ));
                 }
                 Binding::Array(local, element, len) => {
+                    if selector.is_some() || channel.is_some() {
+                        return Err(self.error(
+                            format!("array '{base}' does not support buffer coordinates"),
+                            location,
+                        ));
+                    }
                     return Ok((
                         onda_mir::SliceSource::Place(Place::local(local)),
                         LoweredValue {
@@ -327,6 +447,12 @@ impl<'a> FunctionLowerer<'a> {
             .runtime_globals
             .and_then(|globals| globals.state_arrays.get(base).copied())
         {
+            if selector.is_some() || channel.is_some() {
+                return Err(self.error(
+                    format!("array '{base}' does not support buffer coordinates"),
+                    location,
+                ));
+            }
             return Ok((
                 onda_mir::SliceSource::Place(Place {
                     base: PlaceBase::State(state),
@@ -341,6 +467,12 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
         if let Some((data, element, len)) = self.const_arrays.get(base).copied() {
+            if selector.is_some() || channel.is_some() {
+                return Err(self.error(
+                    format!("constant array '{base}' does not support buffer coordinates"),
+                    location,
+                ));
+            }
             return Ok((
                 onda_mir::SliceSource::ConstData(data),
                 LoweredValue {
@@ -351,10 +483,64 @@ impl<'a> FunctionLowerer<'a> {
                 onda_mir::AccessMode::ReadOnly,
             ));
         }
-        if let Some((buffer, element)) = self
+        let buffer_array = self
             .runtime_globals
-            .and_then(|globals| globals.buffers.get(base).copied())
-        {
+            .and_then(|globals| globals.buffer_arrays.get(base).copied());
+        let direct_buffer = self
+            .runtime_globals
+            .and_then(|globals| globals.buffers.get(base).copied());
+        if let Some((buffer, element)) = direct_buffer {
+            if selector.is_some() {
+                return Err(self.error(
+                    format!("buffer '{base}' is not a buffer collection"),
+                    location,
+                ));
+            }
+            let channel = channel
+                .map(|channel| self.lower_expr(channel, block))
+                .transpose()?
+                .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                .transpose()?
+                .map(|value| value.value);
+            let length = self.emit_temp(
+                block,
+                PrimitiveType::I32,
+                Rvalue::BufferLen(onda_mir::BufferRef::Direct(buffer)),
+                location,
+            );
+            return Ok((
+                onda_mir::SliceSource::Buffer {
+                    buffer: onda_mir::BufferRef::Direct(buffer),
+                    channel,
+                },
+                length,
+                element,
+                onda_mir::AccessMode::ReadWrite,
+            ));
+        }
+        if let Some((first, element, len)) = buffer_array {
+            let selector = selector.ok_or_else(|| {
+                self.error(
+                    format!("buffer collection '{base}' requires a slot selector"),
+                    location,
+                )
+            })?;
+            let selector = self.lower_expr(selector, block)?;
+            let selector = self
+                .coerce(selector, PrimitiveType::I32, block, location)?
+                .value;
+            let channel = channel
+                .map(|channel| self.lower_expr(channel, block))
+                .transpose()?
+                .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                .transpose()?
+                .map(|value| value.value);
+            let buffer = onda_mir::BufferRef::ArrayElement {
+                first,
+                len,
+                selector,
+                bounds: BoundsMode::Clamp,
+            };
             let length = self.emit_temp(
                 block,
                 PrimitiveType::I32,
@@ -362,10 +548,7 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             );
             return Ok((
-                onda_mir::SliceSource::Buffer {
-                    buffer,
-                    channel: None,
-                },
+                onda_mir::SliceSource::Buffer { buffer, channel },
                 length,
                 element,
                 onda_mir::AccessMode::ReadWrite,
@@ -517,16 +700,14 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_slice_assignment(
         &mut self,
         base: &str,
-        start: Option<&Expr>,
-        end: Option<&Expr>,
+        selection: SliceSelection<'_>,
         expression: &Expr,
         block: &mut MirBlock,
         location: SourceLoc,
     ) -> Result<(), MirLoweringError> {
         let destination = self.lower_named_slice(
             base,
-            start,
-            end,
+            selection,
             Some(onda_mir::AccessMode::ReadWrite),
             block,
             location,
@@ -638,7 +819,7 @@ impl<'a> FunctionLowerer<'a> {
             self.push_statement(
                 block,
                 StatementKind::BufferParamStore {
-                    parameter,
+                    parameter: onda_mir::BufferParamRef::Direct(parameter),
                     channel: None,
                     index: index_value.value,
                     value: value.value,
@@ -646,6 +827,33 @@ impl<'a> FunctionLowerer<'a> {
                 },
                 statement_location,
             );
+            return Ok(());
+        }
+        if let Some(Binding::BufferAlias(reference, element)) = self.bindings.get(base).cloned() {
+            let reference = self.materialize_buffer_reference(reference, block, statement_location);
+            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.coerce(value, element, block, value_location)?;
+            let index_value = self.lower_expr(index, block)?;
+            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
+            let statement = match reference {
+                MaterializedBufferReference::Interface(buffer) => StatementKind::BufferStore {
+                    buffer,
+                    channel: None,
+                    index: index_value.value,
+                    value: value.value,
+                    bounds: BoundsMode::Clamp,
+                },
+                MaterializedBufferReference::Parameter(parameter) => {
+                    StatementKind::BufferParamStore {
+                        parameter,
+                        channel: None,
+                        index: index_value.value,
+                        value: value.value,
+                        bounds: BoundsMode::Clamp,
+                    }
+                }
+            };
+            self.push_statement(block, statement, statement_location);
             return Ok(());
         }
         if let Some(Binding::Array(local, element, _)) = self.bindings.get(base).cloned() {
@@ -851,7 +1059,7 @@ impl<'a> FunctionLowerer<'a> {
         self.push_statement(
             block,
             StatementKind::BufferStore {
-                buffer,
+                buffer: onda_mir::BufferRef::Direct(buffer),
                 channel: None,
                 index: index_value.value,
                 value: value.value,

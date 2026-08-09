@@ -97,11 +97,11 @@
       .status.ready { --status-color: var(--syntax-keyword); }
       .status.playing { --status-color: var(--syntax-string); }
       .status.fail { --status-color: #f0a3ad; color: #f0a3ad; }
-      .project-files { flex-wrap: nowrap; align-items: end; min-width: 0; margin-top: 12px; border-bottom: 1px solid var(--line); }
-      .project-file-tabs { flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
-      .project-file-add { display: grid; place-items: center; align-self: flex-start; flex: 0 0 30px; width: 30px; min-height: 30px; margin-bottom: -1px; padding: 0; border-color: transparent transparent var(--line); border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font: 16px/1 system-ui, sans-serif; }
+      .project-files { display: grid; grid-template-columns: minmax(0, 1fr) 30px; gap: 6px 0; align-items: end; min-width: 0; margin-top: 12px; border-bottom: 1px solid var(--line); }
+      .project-file-tabs { grid-column: 1; grid-row: 2; flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
+      .project-file-add { display: grid; grid-column: 2; grid-row: 2; place-items: center; align-self: flex-start; flex: 0 0 30px; width: 30px; min-height: 30px; margin-bottom: -1px; padding: 0; border-color: transparent transparent var(--line); border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font: 16px/1 system-ui, sans-serif; }
       .project-file-add:hover, .project-file-add:focus-visible { background: var(--soft); color: var(--ink); }
-      .project-file-actions { align-self: flex-start; flex: 0 0 auto; flex-wrap: nowrap; gap: 4px; padding: 0 0 5px 8px; }
+      .project-file-actions { grid-column: 1 / -1; grid-row: 1; align-self: flex-start; flex: 0 0 auto; flex-wrap: wrap; gap: 4px; padding: 0 0 5px; }
       .project-file-actions button { padding: 5px 7px; border-radius: 6px; font-size: 11px; }
       .project-file {
         display: flex;
@@ -143,7 +143,7 @@
         cursor: grab;
       }
       .project-file-tabs[data-dragging="true"] .project-file-select { cursor: grabbing; }
-      .project-file-close {
+      .project-file-menu-trigger, .project-file-close {
         display: grid;
         place-items: center;
         flex: 0 0 22px;
@@ -158,6 +158,19 @@
       }
       .project-file-close:hover:not(:disabled), .project-file-close:focus-visible { background: var(--soft); color: var(--ink); }
       .project-file-close:disabled { cursor: default; opacity: .28; }
+      .project-file-menu-trigger:hover, .project-file-menu-trigger:focus-visible { background: var(--soft); color: var(--ink); }
+      .project-file-menu {
+        position: fixed;
+        z-index: 1000;
+        min-width: 132px;
+        padding: 4px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface);
+        box-shadow: 0 10px 30px rgb(0 0 0 / 35%);
+      }
+      .project-file-menu button { display: block; width: 100%; padding: 6px 7px; border: 0; background: transparent; font-size: 11px; text-align: left; }
+      .project-file-menu button:hover:not(:disabled), .project-file-menu button:focus-visible { background: var(--soft); outline: none; }
       .project-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
       .project-file-main, .project-file-library, .project-file-errors { flex: 0 0 auto; padding: 1px 4px; border-radius: 999px; font: 650 8px/1.25 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
       .project-file-main { background: var(--soft); color: #9de2be; }
@@ -209,7 +222,7 @@
         .project-file-add { grid-column: 2; grid-row: 2; width: 44px; min-height: 44px; font-size: 20px; }
         .project-file { flex-basis: 176px; width: 176px; min-width: 176px; max-width: 176px; min-height: 44px; font-size: 12px; }
         .project-file-select { padding-left: 11px; }
-        .project-file-close { flex-basis: 40px; width: 40px; font-size: 16px; }
+        .project-file-menu-trigger, .project-file-close { flex-basis: 40px; width: 40px; font-size: 16px; }
         .source-editor { height: min(62svh, 540px); min-height: 360px; }
       }
       @media (max-width: 390px) {
@@ -268,9 +281,9 @@
             <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
             <button class="project-file-add" type="button" data-new-file aria-label="New file" title="New file">+</button>
             <div class="project-file-actions">
-              <button type="button" data-new-patch>New patch</button>
-              <button type="button" data-rename-file>Rename</button>
-              <button type="button" data-main-file>Set as main</button>
+              <button type="button" data-new-project>New project</button>
+              <button type="button" data-open-project>Open project</button>
+              <button type="button" data-download-project>Download project</button>
               <button type="button" data-share-project>Share</button>
             </div>
           </div>

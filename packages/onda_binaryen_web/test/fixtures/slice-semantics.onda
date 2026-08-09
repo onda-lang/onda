@@ -41,8 +41,6 @@ def pair_total(values: (f32, i32)):
 
 def sum(values: f32[]):
   edges = [values[0], values[values.len() - 1]]
-  edges[0] = edges[0] + 1.0
-  unsafe_write(edges, 0, unsafe_read(edges, 0) - 1.0)
   edge_view = edges[:]
   total = 0.0
   for i in 0..(values.len()):

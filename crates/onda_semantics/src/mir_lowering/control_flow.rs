@@ -28,6 +28,9 @@ impl<'a> FunctionLowerer<'a> {
                             self.assign_slice_alias(name, slice, block, (*loc).into())?;
                             continue;
                         }
+                        if self.lower_buffer_alias_assignment(name, expr, block, (*loc).into())? {
+                            continue;
+                        }
                     }
                     if let AssignTarget::Var(name) = target {
                         if self.lower_struct_array_element_alias(
@@ -56,11 +59,22 @@ impl<'a> FunctionLowerer<'a> {
                             continue;
                         }
                     }
-                    if let AssignTarget::Slice { base, start, end } = target {
+                    if let AssignTarget::Slice {
+                        base,
+                        selector,
+                        channel,
+                        start,
+                        end,
+                    } = target
+                    {
                         self.lower_slice_assignment(
                             base,
-                            start.as_ref(),
-                            end.as_ref(),
+                            SliceSelection {
+                                selector: selector.as_deref(),
+                                channel: channel.as_deref(),
+                                start: start.as_deref(),
+                                end: end.as_deref(),
+                            },
                             expr,
                             block,
                             (*loc).into(),

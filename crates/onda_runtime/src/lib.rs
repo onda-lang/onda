@@ -95,6 +95,10 @@ impl Instance {
         self.program.buffer_count()
     }
 
+    pub fn buffer_array_count(&self) -> usize {
+        self.program.buffer_arrays().len()
+    }
+
     pub fn event_count(&self) -> usize {
         self.program.event_count()
     }
@@ -125,6 +129,10 @@ impl Instance {
 
     pub fn buffer_name(&self, index: usize) -> Option<&str> {
         self.program.buffer_name(index)
+    }
+
+    pub fn buffer_array(&self, index: usize) -> Option<&onda_codegen_llvm::DeclaredBufferArray> {
+        self.program.buffer_arrays().get(index)
     }
 
     pub fn event_name(&self, index: usize) -> Option<&str> {
@@ -242,7 +250,6 @@ impl Instance {
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         self.program
             .restore_state_snapshot(&mut self.state, &self.initial_state, bytes)?;
-        self.buffers_validated = false;
         Ok(())
     }
 }
@@ -345,6 +352,21 @@ fn create_instance_inner(
     let input_count = program.input_count();
     let output_count = program.output_count();
     let buffer_count = program.buffer_count();
+    let mut buffer_ptrs =
+        RuntimeBuffer::try_from_elem_in(buffer_count, std::ptr::null_mut(), allocator)?;
+    let mut buffer_frames = RuntimeBuffer::try_from_elem_in(buffer_count, 1_i32, allocator)?;
+    let mut buffer_channels = RuntimeBuffer::try_from_elem_in(buffer_count, 1_i32, allocator)?;
+    let mut buffer_sample_rates =
+        RuntimeBuffer::try_from_elem_in(buffer_count, config.sample_rate, allocator)?;
+    prepare_unbound_buffer_descriptors(
+        program.buffers(),
+        config.sample_rate,
+        &mut buffer_ptrs,
+        &mut buffer_frames,
+        &mut buffer_channels,
+        &mut buffer_sample_rates,
+    )?;
+
     Ok(Instance {
         program,
         config,
@@ -364,17 +386,13 @@ fn create_instance_inner(
             std::ptr::null_mut(),
             allocator,
         )?,
-        buffer_ptrs: RuntimeBuffer::try_from_elem_in(
-            buffer_count,
-            std::ptr::null_mut(),
-            allocator,
-        )?,
-        buffer_frames: RuntimeBuffer::try_from_elem_in(buffer_count, 0_i32, allocator)?,
-        buffer_channels: RuntimeBuffer::try_from_elem_in(buffer_count, 0_i32, allocator)?,
-        buffer_sample_rates: RuntimeBuffer::try_from_elem_in(buffer_count, 0.0_f32, allocator)?,
+        buffer_ptrs,
+        buffer_frames,
+        buffer_channels,
+        buffer_sample_rates,
         inputs_validated: required_in_channels == 0,
         outputs_validated: required_out_channels == 0,
-        buffers_validated: buffer_count == 0,
+        buffers_validated: true,
     })
 }
 
@@ -383,7 +401,6 @@ pub fn reset_instance_state(instance: &mut Instance) {
         .state
         .bytes_mut()
         .copy_from_slice(instance.initial_state.bytes());
-    instance.buffers_validated = false;
 }
 
 pub fn set_param_by_index(
@@ -684,8 +701,9 @@ pub unsafe fn bind_output(
 /// Binds borrowed external-buffer memory without copying it.
 ///
 /// A zero `sample_rate_hz` unbinds the slot regardless of pointer and shape. A null pointer with
-/// zero frames and channels also unbinds the slot. Otherwise the binding must be nonempty and
-/// `sample_rate_hz` must be finite and positive.
+/// zero frames and channels also unbinds the slot. Unbound slots remain processable through their
+/// prepared neutral descriptor. Otherwise the binding must be nonempty and `sample_rate_hz` must
+/// be finite and positive.
 ///
 /// # Safety
 ///
@@ -873,13 +891,14 @@ pub fn process_checked_segment(
     configure_current_thread_audio_fp_mode();
     validate_process_request(instance, start_frame, frames, flags)?;
     validate_bindings_for_process(instance)?;
-    sync_proc_buffer_refs_for_process(instance)?;
-    unsafe {
-        instance.program.process_checked(
+    let status = unsafe {
+        instance.program.process_unchecked(
             &mut instance.state,
             &instance.params,
-            start_frame,
-            frames,
+            u32::try_from(start_frame)
+                .map_err(|_| Diagnostic::runtime("process start frame does not fit u32", 0, 0))?,
+            u32::try_from(frames)
+                .map_err(|_| Diagnostic::runtime("process frame count does not fit u32", 0, 0))?,
             flags,
             &instance.input_ptrs,
             &instance.output_ptrs,
@@ -887,19 +906,17 @@ pub fn process_checked_segment(
             &instance.buffer_frames,
             &instance.buffer_channels,
             &instance.buffer_sample_rates,
-        )?;
-    }
-    Ok(())
+        )?
+    };
+    onda_codegen_llvm::check_execution_status(status)
 }
 
-/// Validates the current host bindings and completes backend-specific preparation for unchecked
-/// processing.
+/// Validates the current host bindings for unchecked processing.
 ///
 /// This is not a stale-binding snapshot operation. Call it again after rebinding before entering
 /// an unchecked processing loop; MIR backends consume the current validated buffer table directly.
 pub fn prepare_unchecked_process(instance: &mut Instance) -> Result<(), Diagnostic> {
-    validate_bindings_for_process(instance)?;
-    sync_proc_buffer_refs_for_process(instance)
+    validate_bindings_for_process(instance)
 }
 
 /// Processes one complete block without revalidating host bindings.
@@ -1016,18 +1033,6 @@ fn validate_bindings_for_process(instance: &mut Instance) -> Result<(), Diagnost
     Ok(())
 }
 
-fn sync_proc_buffer_refs_for_process(instance: &mut Instance) -> Result<(), Diagnostic> {
-    unsafe {
-        instance.program.sync_proc_buffer_refs_for_process_checked(
-            &mut instance.state,
-            &instance.buffer_ptrs,
-            &instance.buffer_frames,
-            &instance.buffer_channels,
-            &instance.buffer_sample_rates,
-        )
-    }
-}
-
 pub fn trigger_event_by_index(
     instance: &mut Instance,
     event_index: usize,
@@ -1066,7 +1071,7 @@ pub unsafe fn trigger_event_by_index_unchecked(
     configure_current_thread_audio_fp_mode();
     debug_assert!(
         instance.buffers_validated,
-        "trigger_event_by_index_unchecked called without validating required buffer bindings"
+        "trigger_event_by_index_unchecked called without preparing buffer descriptors"
     );
     instance.program.trigger_event_by_index_unchecked(
         &mut instance.state,
@@ -1082,19 +1087,52 @@ pub unsafe fn trigger_event_by_index_unchecked(
 
 fn prepare_buffer_ptrs_from_bindings(instance: &mut Instance) -> Result<(), Diagnostic> {
     for (idx, desc) in instance.program.buffers().iter().enumerate() {
-        let Some(bound) = instance.buffer_bindings.get(idx).and_then(|v| *v) else {
-            return Err(Diagnostic::runtime(
-                format!("required buffer '{}' is not bound", desc.name()),
-                0,
-                0,
-            ));
-        };
-        instance.buffer_ptrs[idx] = bound.ptr;
-        instance.buffer_frames[idx] = bound.frames_i32;
-        instance.buffer_channels[idx] = bound.channels_i32;
-        instance.buffer_sample_rates[idx] = bound.sample_rate_hz;
+        if let Some(bound) = instance.buffer_bindings.get(idx).and_then(|v| *v) {
+            instance.buffer_ptrs[idx] = bound.ptr;
+            instance.buffer_frames[idx] = bound.frames_i32;
+            instance.buffer_channels[idx] = bound.channels_i32;
+            instance.buffer_sample_rates[idx] = bound.sample_rate_hz;
+        } else {
+            instance.buffer_ptrs[idx] = std::ptr::null_mut();
+            instance.buffer_frames[idx] = 1;
+            instance.buffer_channels[idx] = fallback_channels(desc)?;
+            instance.buffer_sample_rates[idx] = instance.config.sample_rate;
+        }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_unbound_buffer_descriptors(
+    buffers: &[onda_codegen_llvm::DeclaredBuffer],
+    sample_rate: f32,
+    pointers: &mut [*mut u8],
+    frames: &mut [i32],
+    channels: &mut [i32],
+    sample_rates: &mut [f32],
+) -> Result<(), Diagnostic> {
+    for (index, buffer) in buffers.iter().enumerate() {
+        pointers[index] = std::ptr::null_mut();
+        frames[index] = 1;
+        channels[index] = fallback_channels(buffer)?;
+        sample_rates[index] = sample_rate;
+    }
+    Ok(())
+}
+
+fn fallback_channels(buffer: &onda_codegen_llvm::DeclaredBuffer) -> Result<i32, Diagnostic> {
+    let channels = match buffer.channels() {
+        DeclaredBufferChannels::Mono => 1,
+        DeclaredBufferChannels::Static(channels) => channels,
+        DeclaredBufferChannels::Dynamic => 1,
+    };
+    i32::try_from(channels).map_err(|_| {
+        Diagnostic::runtime(
+            format!("buffer '{}' channel count does not fit i32", buffer.name()),
+            0,
+            0,
+        )
+    })
 }
 
 fn primitive_type_bytes(ty: PrimitiveType) -> usize {
@@ -1266,6 +1304,89 @@ mod tests {
     #[test]
     fn instance_is_send() {
         assert_send::<Instance>();
+    }
+
+    #[test]
+    fn bufferless_instances_have_no_fallback_storage() {
+        let parsed = parse_program("sample:\n  out1 = 0.0\n").expect("source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: 64,
+            },
+        )
+        .expect("source should analyze");
+        let mir =
+            lower_program_to_optimized_mir(&typed).expect("typed program should lower to MIR");
+        let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
+        let instance = create_instance(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: 64,
+                in_channels: 0,
+                out_channels: 1,
+            },
+        )
+        .expect("instance should initialize");
+
+        assert!(instance.buffer_ptrs.is_empty());
+    }
+
+    #[test]
+    fn state_reset_and_restore_preserve_validated_buffer_tables() {
+        let parsed = parse_program(
+            "buffers:\n  data: f32\ninit:\n  counter = 0.0\nsample:\n  counter = counter + 1.0\n",
+        )
+        .expect("source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: 64,
+            },
+        )
+        .expect("source should analyze");
+        let mir =
+            lower_program_to_optimized_mir(&typed).expect("typed program should lower to MIR");
+        let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
+        let mut instance = create_instance(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: 64,
+                in_channels: 0,
+                out_channels: 0,
+            },
+        )
+        .expect("instance should initialize");
+        let mut samples = [1.0_f32, 2.0];
+        unsafe {
+            bind_buffer(
+                &mut instance,
+                0,
+                samples.as_mut_ptr().cast(),
+                samples.len(),
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .expect("buffer should bind");
+        }
+        validate_buffers(&mut instance).expect("buffer should validate");
+        let bound_ptr = instance.buffer_ptrs[0];
+        let snapshot = instance.snapshot_state_bytes();
+
+        reset_instance_state(&mut instance);
+        assert!(instance.buffers_validated);
+        assert_eq!(instance.buffer_ptrs[0], bound_ptr);
+
+        instance
+            .restore_state_bytes(&snapshot)
+            .expect("state should restore");
+        assert!(instance.buffers_validated);
+        assert_eq!(instance.buffer_ptrs[0], bound_ptr);
     }
 
     #[test]

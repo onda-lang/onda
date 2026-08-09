@@ -70,6 +70,16 @@ pub(crate) fn build_mir_program_metadata(
     let params = build_params(program, layout.param_offsets)?;
     let events = build_events(program, layout.event_fixed_sizes)?;
     let buffers = build_buffers(program)?;
+    let buffer_arrays = program
+        .interface
+        .buffer_arrays
+        .iter()
+        .map(|array| crate::DeclaredBufferArray {
+            name: array.name.clone(),
+            first: array.first.index(),
+            len: array.len as usize,
+        })
+        .collect();
     let state_entries =
         build_state_entries(program, layout.state_offsets, layout.control_output_offsets)?;
 
@@ -88,6 +98,7 @@ pub(crate) fn build_mir_program_metadata(
             .enumerate()
             .map(|(index, buffer)| (buffer.name().to_owned(), index))
             .collect(),
+        buffer_arrays,
         inputs,
         outputs,
         control_outputs,
@@ -489,11 +500,21 @@ fn build_events(
 }
 
 fn build_buffers(program: &Program) -> Result<Vec<DeclaredBuffer>, MirMetadataError> {
+    let write_analysis = onda_mir::analyze_buffer_writes(program)
+        .map_err(|error| MirMetadataError::new(error.to_string()))?;
     program
         .interface
         .buffers
         .iter()
-        .map(|buffer| {
+        .enumerate()
+        .map(|(index, buffer)| {
+            let may_write = write_analysis.buffers()[index];
+            if may_write && buffer.access != onda_mir::AccessMode::ReadWrite {
+                return Err(MirMetadataError::new(format!(
+                    "MIR writes read-only interface buffer '{}'",
+                    buffer.name
+                )));
+            }
             let channels = match buffer.channels {
                 BufferChannels::Mono => DeclaredBufferChannels::Mono,
                 BufferChannels::Static(channels) => {
@@ -508,6 +529,7 @@ fn build_buffers(program: &Program) -> Result<Vec<DeclaredBuffer>, MirMetadataEr
                 elem_ty: primitive_type(buffer.element),
                 channels,
                 access: buffer.access,
+                may_write,
             })
         })
         .collect()
@@ -818,6 +840,7 @@ mod tests {
                         access: AccessMode::ReadOnly,
                     },
                 ],
+                buffer_arrays: Vec::new(),
                 events: vec![
                     Event {
                         name: "note".to_owned(),
@@ -967,8 +990,8 @@ mod tests {
             metadata.buffers[2].channels(),
             DeclaredBufferChannels::Dynamic
         );
-        assert!(metadata.buffers[0].may_write());
-        assert!(metadata.buffers[1].may_write());
+        assert!(!metadata.buffers[0].may_write());
+        assert!(!metadata.buffers[1].may_write());
         assert!(!metadata.buffers[2].may_write());
 
         let note = &metadata.events[0];

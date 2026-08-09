@@ -133,22 +133,29 @@ const semanticTokenField = StateField.define({
   provide: (field) => EditorView.decorations.from(field),
 });
 
-function visibleEditorMargins(view) {
-  const viewport = window.visualViewport;
-  if (!viewport) return null;
-  const editor = view.scrollDOM.getBoundingClientRect();
+export function editorViewportMargins(editor, viewport, gutterWidth, padding = 16) {
   const viewportTop = viewport.offsetTop;
   const viewportBottom = viewportTop + viewport.height;
   const viewportLeft = viewport.offsetLeft;
   const viewportRight = viewportLeft + viewport.width;
-  const padding = 16;
   return {
     top: Math.max(0, viewportTop - editor.top + padding),
     bottom: Math.max(0, editor.bottom - viewportBottom + padding),
-    // CodeMirror's gutter plugin already contributes its own left margin.
-    left: Math.max(0, viewportLeft - editor.left + padding),
+    // The visual viewport occlusion and sticky gutter cover adjacent areas.
+    // CodeMirror combines scroll-margin providers with Math.max, so include
+    // both here instead of letting one hide the other on a panned viewport.
+    left: Math.max(0, viewportLeft - editor.left) + gutterWidth + padding,
     right: Math.max(0, editor.right - viewportRight + padding),
   };
+}
+
+function visibleEditorMargins(view) {
+  const viewport = window.visualViewport;
+  if (!viewport) return null;
+  const editor = view.scrollDOM.getBoundingClientRect();
+  const gutterWidth =
+    view.dom.querySelector(".cm-gutters")?.getBoundingClientRect().width ?? 0;
+  return editorViewportMargins(editor, viewport, gutterWidth);
 }
 
 function hasCompactEditingViewport() {
@@ -242,10 +249,11 @@ export function validProjectPath(value) {
   return typeof value === "string"
     && value.length > 0
     && value.length <= 160
+    && value.normalize("NFC") === value
     && !value.startsWith("/")
     && !value.includes("\\")
     && !value.split("/").some((segment) => !segment || segment === "." || segment === "..")
-    && /\.(?:onda|on)$/.test(value);
+    && /\.(?:onda|on)$/i.test(value);
 }
 
 export function normalizeStoredProject(value) {
@@ -263,11 +271,12 @@ export function normalizeStoredProject(value) {
 }
 
 export class OndaProjectEditor {
-  constructor({ parent, tabs, onChange, onActiveFile, onError, initialProject }) {
+  constructor({ parent, tabs, onChange, onActiveFile, onRenameFile, onError, initialProject }) {
     this.parent = parent;
     this.tabs = tabs;
     this.onChange = onChange;
     this.onActiveFile = onActiveFile;
+    this.onRenameFile = onRenameFile;
     this.onError = onError;
     this.entry = initialProject.entry;
     this.active = initialProject.active;
@@ -278,6 +287,7 @@ export class OndaProjectEditor {
     this.states = new Map();
     this.documentInfo = new Map();
     this.draggedTabPath = null;
+    this.fileMenu = null;
     this.pendingDefinitionNavigation = Promise.resolve(false);
     for (const [path, source] of Object.entries(initialProject.sources)) {
       this.documentInfo.set(path, { kind: "project", label: path, readOnly: false });
@@ -761,9 +771,90 @@ export class OndaProjectEditor {
     this.renderFiles();
   }
 
+  closeFileMenu({ restoreFocus = false } = {}) {
+    if (!this.fileMenu) return;
+    const { element, trigger, listeners } = this.fileMenu;
+    this.fileMenu = null;
+    listeners.abort();
+    element.remove();
+    trigger.setAttribute("aria-expanded", "false");
+    if (restoreFocus && trigger.isConnected) trigger.focus();
+  }
+
+  openFileMenu(path, label, trigger) {
+    if (this.fileMenu?.trigger === trigger) {
+      this.closeFileMenu({ restoreFocus: true });
+      return;
+    }
+    this.closeFileMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "project-file-menu";
+    menu.setAttribute("role", "menu");
+
+    const action = (text, className, callback, disabled = false) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = className;
+      button.setAttribute("role", "menuitem");
+      button.textContent = text;
+      button.disabled = disabled;
+      button.addEventListener("click", () => {
+        this.closeFileMenu();
+        try {
+          this.select(path);
+          callback();
+        } catch (error) {
+          this.onError?.(error);
+        }
+      });
+      menu.append(button);
+    };
+
+    action("Rename", "project-file-menu-rename", () => this.onRenameFile?.(path));
+    action("Set as main", "project-file-menu-main", () => this.setMain(), path === this.entry);
+    action(
+      "Delete",
+      "project-file-menu-delete",
+      () => this.close(path),
+      this.paths().length <= 1,
+    );
+    document.body.append(menu);
+
+    const triggerBounds = trigger.getBoundingClientRect();
+    const menuBounds = menu.getBoundingClientRect();
+    const margin = 8;
+    const left = Math.min(
+      Math.max(margin, triggerBounds.right - menuBounds.width),
+      window.innerWidth - menuBounds.width - margin,
+    );
+    const below = triggerBounds.bottom + 4;
+    const top = below + menuBounds.height <= window.innerHeight - margin
+      ? below
+      : triggerBounds.top - menuBounds.height - 4;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${Math.max(margin, top)}px`;
+
+    const listeners = new AbortController();
+    const options = { signal: listeners.signal };
+    document.addEventListener("pointerdown", (event) => {
+      if (!menu.contains(event.target) && event.target !== trigger) this.closeFileMenu();
+    }, { ...options, capture: true });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      this.closeFileMenu({ restoreFocus: true });
+    }, options);
+    window.addEventListener("resize", () => this.closeFileMenu(), options);
+    window.addEventListener("scroll", () => this.closeFileMenu(), { ...options, capture: true });
+    this.fileMenu = { element: menu, trigger, listeners };
+    trigger.setAttribute("aria-expanded", "true");
+    menu.querySelector("button:not(:disabled)")?.focus();
+  }
+
   renderFiles() {
+    this.closeFileMenu();
     this.tabs.replaceChildren();
-    const projectFileCount = this.paths().length;
     let activeTab = null;
     for (const path of this.allPaths()) {
       const info = this.documentInfo.get(path);
@@ -809,28 +900,38 @@ export class OndaProjectEditor {
       }
       selectButton.addEventListener("click", () => this.select(path));
 
-      const closeButton = document.createElement("button");
-      const isLastProjectFile = info?.kind === "project" && projectFileCount <= 1;
-      closeButton.type = "button";
-      closeButton.className = "project-file-close";
-      closeButton.textContent = "×";
-      closeButton.disabled = isLastProjectFile;
-      closeButton.setAttribute(
-        "aria-label",
-        info?.kind === "library" ? `Close ${label}` : `Delete ${label}`,
-      );
-      closeButton.title = isLastProjectFile
-        ? "A project must contain at least one file"
-        : info?.kind === "library" ? `Close ${label}` : `Delete ${label}`;
-      closeButton.addEventListener("click", () => {
-        try {
-          this.close(path);
-        } catch (error) {
-          this.onError?.(error);
-        }
-      });
+      let menuButton = null;
+      if (info?.kind === "project" && path === this.active) {
+        menuButton = document.createElement("button");
+        menuButton.type = "button";
+        menuButton.className = "project-file-menu-trigger";
+        menuButton.textContent = "⋯";
+        menuButton.draggable = false;
+        menuButton.setAttribute("aria-label", `Actions for ${label}`);
+        menuButton.setAttribute("aria-haspopup", "menu");
+        menuButton.setAttribute("aria-expanded", "false");
+        menuButton.title = `Actions for ${label}`;
+        menuButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+        menuButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          this.openFileMenu(path, label, menuButton);
+        });
+      }
 
-      tab.append(selectButton, closeButton);
+      let closeButton = null;
+      if (info?.kind === "library") {
+        closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "project-file-close";
+        closeButton.textContent = "×";
+        closeButton.setAttribute("aria-label", `Close ${label}`);
+        closeButton.title = `Close ${label}`;
+        closeButton.addEventListener("click", () => this.close(path));
+      }
+
+      tab.append(selectButton);
+      if (menuButton) tab.append(menuButton);
+      if (closeButton) tab.append(closeButton);
       this.tabs.append(tab);
       if (path === this.active) activeTab = tab;
     }

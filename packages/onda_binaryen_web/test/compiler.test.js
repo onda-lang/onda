@@ -46,6 +46,24 @@ const attributes = (origin = "source", inline = "auto") => ({
 const assign = (destination, rvalue) =>
   statement("assign", { destination, value: rvalue });
 
+function emittedFunction(wat, name) {
+  const start = wat.indexOf(`(func $${name}`);
+  assert.notEqual(start, -1, `missing emitted function '${name}'`);
+  const next = wat.indexOf("\n (func ", start + 1);
+  return wat.slice(start, next === -1 ? wat.length : next);
+}
+
+function emittedParameterizedFunction(wat, name) {
+  const start = wat.indexOf(`(func $${name} (param`);
+  assert.notEqual(start, -1, `missing emitted function '${name}'`);
+  const next = wat.indexOf("\n (func ", start + 1);
+  return wat.slice(start, next === -1 ? wat.length : next);
+}
+
+function matchCount(text, pattern) {
+  return text.match(pattern)?.length ?? 0;
+}
+
 function callProcess(
   process,
   inputs,
@@ -218,6 +236,117 @@ function executableMir() {
     ],
     entry_points: { init: 0, process: 1 },
   };
+}
+
+function forwardedBufferCollectionMir(varyingSelector = false) {
+  const mir = executableMir();
+  mir.config.block_size = 128;
+  const spanType = mir.types.length;
+  mir.types.push(type("buffer_span", {
+    element: "f32",
+    channels: "dynamic",
+    access: "read_write",
+    len: 2,
+  }));
+  mir.interface.buffers.push(
+    {
+      name: "bank[0]",
+      element: "f32",
+      channels: "dynamic",
+      access: "read_write",
+    },
+    {
+      name: "bank[1]",
+      element: "f32",
+      channels: "dynamic",
+      access: "read_write",
+    },
+  );
+  const process = mir.functions[1];
+  const selectorLocal = process.locals.length;
+  const resultLocal = selectorLocal + 1;
+  process.locals.push(
+    { name: "$slot", ty: 2 },
+    { name: "$buffer_sample", ty: 0 },
+  );
+  process.body.statements.splice(
+    3,
+    0,
+    assign(place("local", selectorLocal), {
+      kind: "use",
+      data: constant("i32", 1),
+    }),
+  );
+  const thenBlock =
+    process.body.statements[4].kind.data.body.statements[1].kind.data.then_block;
+  thenBlock.statements.unshift(
+    statement("call", {
+      results: [resultLocal],
+      function: 2,
+      args: [
+        {
+          kind: "place",
+          data: place("local", varyingSelector ? 0 : selectorLocal),
+        },
+        {
+          kind: "buffer_span",
+          data: { kind: "interface", data: { first: 0, len: 2 } },
+        },
+        { kind: "value", data: local(0) },
+      ],
+    }),
+  );
+  const outputStore = thenBlock.statements.find(
+    (entry) => entry.kind.kind === "output_store",
+  );
+  outputStore.kind.data.value = local(resultLocal);
+  mir.functions.push({
+    name: "read_forwarded_buffer",
+    kind: { kind: "user" },
+    attributes: attributes("compiler_generated", "always"),
+    params: [
+      { name: "slot", ty: 2, mode: "read_write_reference" },
+      { name: "clips", ty: spanType, mode: "value" },
+      { name: "frame", ty: 2, mode: "value" },
+    ],
+    results: [0],
+    locals: [
+      { name: null, ty: 2 },
+      { name: null, ty: 2 },
+      { name: null, ty: 0 },
+    ],
+    body: {
+      statements: [
+        assign(place("local", 0), {
+          kind: "load",
+          data: place("parameter", 0),
+        }),
+        assign(place("local", 1), {
+          kind: "load",
+          data: place("parameter", 2),
+        }),
+        assign(place("local", 2), {
+          kind: "buffer_param_load",
+          data: {
+            parameter: {
+              kind: "array_element",
+              data: {
+                span: 1,
+                selector: local(0),
+                bounds: "clamp",
+              },
+            },
+            channel: constant("i32", 0),
+            index: local(1),
+            bounds: "clamp",
+          },
+        }),
+        statement("return", { values: [local(2)] }),
+      ],
+    },
+    source: unknownSource,
+  });
+  return mir;
 }
 
 test("does not expose a partial validator for arbitrary MIR", () => {
@@ -506,6 +635,121 @@ test("spills an address-taken scalar local around reference calls", async () => 
   instance.exports.onda_init(params, state);
   callProcess(instance.exports.onda_process, 0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
   assert.equal(new DataView(instance.exports.memory.buffer).getFloat32(state, true), 9);
+});
+
+test("does not promote a scalar reference that aliases a writable argument", async () => {
+  const mir = executableMir();
+  mir.functions[1].locals.push({ name: "aliased_value", ty: 0 });
+  mir.functions[1].body.statements.unshift(
+    assign(place("local", 6), {
+      kind: "use",
+      data: constant("f32", 1),
+    }),
+    statement("call", {
+      results: [6],
+      function: 2,
+      args: [
+        { kind: "place", data: place("local", 6) },
+        { kind: "place", data: place("local", 6) },
+      ],
+    }),
+    assign(place("state", 0), { kind: "use", data: local(6) }),
+  );
+  mir.functions.push({
+    name: "write_then_read_alias",
+    kind: { kind: "user" },
+    attributes: attributes(),
+    params: [
+      { name: "read", ty: 0, mode: "read_only_reference" },
+      { name: "write", ty: 0, mode: "read_write_reference" },
+    ],
+    results: [0],
+    locals: [{ name: "result", ty: 0 }],
+    body: {
+      statements: [
+        assign(place("parameter", 1), {
+          kind: "use",
+          data: constant("f32", 7),
+        }),
+        assign(place("local", 0), {
+          kind: "load",
+          data: place("parameter", 0),
+        }),
+        statement("return", { values: [local(0)] }),
+      ],
+    },
+    source: unknownSource,
+  });
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const params = Number(instance.exports.__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  instance.exports.onda_init(params, state);
+  callProcess(instance.exports.onda_process, 0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
+  assert.equal(new DataView(instance.exports.memory.buffer).getFloat32(state, true), 7);
+});
+
+test("does not promote a scalar reference written through a transitive call", async () => {
+  const mir = executableMir();
+  mir.functions[1].locals.push({ name: "forwarded_value", ty: 0 });
+  mir.functions[1].body.statements.unshift(
+    assign(place("local", 6), {
+      kind: "use",
+      data: constant("f32", 1),
+    }),
+    statement("call", {
+      results: [],
+      function: 2,
+      args: [{ kind: "place", data: place("local", 6) }],
+    }),
+    assign(place("state", 0), { kind: "use", data: local(6) }),
+  );
+  mir.functions.push(
+    {
+      name: "forward_write",
+      kind: { kind: "user" },
+      attributes: attributes(),
+      params: [{ name: "value", ty: 0, mode: "read_write_reference" }],
+      results: [],
+      locals: [],
+      body: {
+        statements: [
+          statement("call", {
+            results: [],
+            function: 3,
+            args: [{ kind: "place", data: place("parameter", 0) }],
+          }),
+        ],
+      },
+      source: unknownSource,
+    },
+    {
+      name: "write_forwarded_value",
+      kind: { kind: "user" },
+      attributes: attributes(),
+      params: [{ name: "value", ty: 0, mode: "read_write_reference" }],
+      results: [],
+      locals: [],
+      body: {
+        statements: [
+          assign(place("parameter", 0), {
+            kind: "use",
+            data: constant("f32", 7),
+          }),
+        ],
+      },
+      source: unknownSource,
+    },
+  );
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const params = Number(instance.exports.__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  instance.exports.onda_init(params, state);
+  callProcess(instance.exports.onda_process, 0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
+  assert.equal(new DataView(instance.exports.memory.buffer).getFloat32(state, true), 7);
 });
 
 test("vectorizes contiguous slice fills with a scalar tail", async () => {
@@ -1955,6 +2199,594 @@ test("loads the current audio output frame through explicit MIR", async () => {
   );
 });
 
+test("reports reachable buffer writes separately from declared access", () => {
+  const mir = executableMir();
+  mir.interface.buffers.push(
+    {
+      name: "written",
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    },
+    {
+      name: "read_only_use",
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    },
+  );
+  const thenBlock =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block;
+  thenBlock.statements.unshift(
+    assign(place("local", 2), {
+      kind: "buffer_load",
+      data: {
+        buffer: 1,
+        channel: null,
+        index: local(0),
+        bounds: "clamp",
+      },
+    }),
+    statement("buffer_store", {
+      buffer: 0,
+      channel: null,
+      index: local(0),
+      value: local(2),
+      bounds: "clamp",
+    }),
+  );
+
+  const artifact = compileMir(mir);
+  assert.deepEqual(
+    artifact.metadata.metadata.buffers.map((buffer) => buffer.may_write),
+    [true, false],
+  );
+});
+
+test("reports writes to a constant-selected buffer collection slot precisely", () => {
+  const mir = executableMir();
+  for (let slot = 0; slot < 4; slot += 1) {
+    mir.interface.buffers.push({
+      name: `bank[${slot}]`,
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    });
+  }
+  const thenBlock =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block;
+  thenBlock.statements.unshift(
+    statement("buffer_store", {
+      buffer: {
+        kind: "array_element",
+        data: {
+          first: 0,
+          len: 4,
+          selector: constant("i32", 2),
+          bounds: "clamp",
+        },
+      },
+      channel: null,
+      index: local(0),
+      value: constant("f32", 1),
+      bounds: "clamp",
+    }),
+  );
+
+  const artifact = compileMir(mir);
+  assert.deepEqual(
+    artifact.metadata.metadata.buffers.map((buffer) => buffer.may_write),
+    [false, false, true, false],
+  );
+});
+
+test("translates writable slots through nested buffer collection subspans", () => {
+  const mir = executableMir();
+  const bankType = mir.types.length;
+  mir.types.push(type("buffer_span", {
+    element: "f32",
+    channels: "mono",
+    access: "read_write",
+    len: 4,
+  }));
+  const subspanType = mir.types.length;
+  mir.types.push(type("buffer_span", {
+    element: "f32",
+    channels: "mono",
+    access: "read_write",
+    len: 2,
+  }));
+  for (let slot = 0; slot < 4; slot += 1) {
+    mir.interface.buffers.push({
+      name: `bank[${slot}]`,
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    });
+  }
+  mir.functions[1].body.statements.splice(
+    3,
+    0,
+    statement("call", {
+      results: [],
+      function: 2,
+      args: [{
+        kind: "buffer_span",
+        data: { kind: "interface", data: { first: 0, len: 4 } },
+      }],
+    }),
+  );
+  mir.functions.push(
+    {
+      name: "forward_subspan",
+      kind: { kind: "user" },
+      attributes: attributes("compiler_generated", "always"),
+      params: [{ name: "bank", ty: bankType, mode: "value" }],
+      results: [],
+      locals: [],
+      body: {
+        statements: [
+          statement("call", {
+            results: [],
+            function: 3,
+            args: [{
+              kind: "buffer_span",
+              data: {
+                kind: "parameter",
+                data: { span: 0, start: 1, len: 2 },
+              },
+            }],
+          }),
+        ],
+      },
+      source: unknownSource,
+    },
+    {
+      name: "write_subspan_slot",
+      kind: { kind: "user" },
+      attributes: attributes("compiler_generated", "always"),
+      params: [{ name: "bank", ty: subspanType, mode: "value" }],
+      results: [],
+      locals: [],
+      body: {
+        statements: [
+          statement("buffer_param_store", {
+            parameter: {
+              kind: "array_element",
+              data: {
+                span: 0,
+                selector: constant("i32", 1),
+                bounds: "clamp",
+              },
+            },
+            channel: null,
+            index: constant("i32", 0),
+            value: constant("f32", 1),
+            bounds: "clamp",
+          }),
+        ],
+      },
+      source: unknownSource,
+    },
+  );
+
+  const artifact = compileMir(mir);
+  assert.deepEqual(
+    artifact.metadata.metadata.buffers.map((buffer) => buffer.may_write),
+    [false, false, true, false],
+  );
+});
+
+test("caches direct and constant-selected buffer descriptors before sample loops", () => {
+  const mir = executableMir();
+  mir.interface.buffers.push(
+    {
+      name: "bank[0]",
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    },
+    {
+      name: "bank[1]",
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    },
+  );
+  const thenBlock =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block;
+  thenBlock.statements.unshift(
+    assign(place("local", 2), {
+      kind: "buffer_load",
+      data: {
+        buffer: 0,
+        channel: null,
+        index: local(0),
+        bounds: "clamp",
+      },
+    }),
+    assign(place("local", 3), {
+      kind: "buffer_load",
+      data: {
+        buffer: {
+          kind: "array_element",
+          data: {
+            first: 0,
+            len: 2,
+            selector: constant("i32", 1),
+            bounds: "clamp",
+          },
+        },
+        channel: null,
+        index: local(0),
+        bounds: "clamp",
+      },
+    }),
+  );
+
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  const process = emittedFunction(artifact.wat, "$onda.fn.1");
+  const loop = process.indexOf("(loop $$onda.loop");
+  assert.notEqual(loop, -1);
+  const entry = process.slice(0, loop);
+  const sampleLoop = process.slice(loop);
+  assert.equal(matchCount(entry, /global\.get \$\$onda\.buffers/g), 2);
+  assert.equal(matchCount(entry, /global\.get \$\$onda\.buffer_frames/g), 2);
+  assert.doesNotMatch(sampleLoop, /global\.get \$\$onda\.(buffers|buffer_frames)/);
+  assert.match(process, /buffer\.buffers\.0\.generated/);
+  assert.match(process, /buffer\.buffers\.1\.generated/);
+});
+
+test("hoists forwarded invariant buffer descriptors before sample loops", () => {
+  const artifact = compileMir(forwardedBufferCollectionMir(), {
+    emitText: true,
+  });
+  const process = emittedParameterizedFunction(artifact.wat, "$onda.abi.process");
+  const loop = process.indexOf("(loop $$onda.loop");
+  assert.notEqual(loop, -1);
+  const entry = process.slice(0, loop);
+  const sampleLoop = process.slice(loop);
+  assert.match(
+    entry,
+    /global\.get \$\$onda\.(buffers|buffer_frames|buffer_channels)/,
+  );
+  assert.doesNotMatch(
+    sampleLoop,
+    /global\.get \$\$onda\.(buffers|buffer_frames|buffer_channels)/,
+  );
+});
+
+test("refreshes hoisted forwarded descriptors for every process call", async () => {
+  const artifact = compileMir(forwardedBufferCollectionMir());
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const params = heap;
+  heap += 16;
+  const state = heap;
+  heap += artifact.metadata.runtime.state_size_bytes;
+  const outputTable = heap;
+  heap += 4;
+  const bufferPointers = heap;
+  heap += 8;
+  const bufferFrames = heap;
+  heap += 8;
+  const bufferChannels = heap;
+  heap += 8;
+  const bufferSampleRates = heap;
+  heap += 8;
+  const firstBinding = heap;
+  heap += 4;
+  const secondBinding = heap;
+  heap += 4;
+  const output = heap;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, output, true);
+  view.setUint32(bufferPointers, firstBinding, true);
+  view.setUint32(bufferPointers + 4, firstBinding, true);
+  view.setInt32(bufferFrames, 1, true);
+  view.setInt32(bufferFrames + 4, 1, true);
+  view.setInt32(bufferChannels, 1, true);
+  view.setInt32(bufferChannels + 4, 1, true);
+  view.setFloat32(bufferSampleRates, 48_000, true);
+  view.setFloat32(bufferSampleRates + 4, 48_000, true);
+  view.setFloat32(firstBinding, 21, true);
+  view.setFloat32(secondBinding, 43, true);
+  onda_init(params, state);
+
+  callProcess(
+    onda_process,
+    0,
+    outputTable,
+    0,
+    1,
+    0,
+    params,
+    state,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+  );
+  assert.equal(view.getFloat32(output, true), 21);
+
+  view.setUint32(bufferPointers + 4, secondBinding, true);
+  callProcess(
+    onda_process,
+    0,
+    outputTable,
+    0,
+    1,
+    0,
+    params,
+    state,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+  );
+  assert.equal(view.getFloat32(output, true), 43);
+});
+
+test("keeps forwarded varying buffer descriptors inside sample loops", () => {
+  const artifact = compileMir(forwardedBufferCollectionMir(true), {
+    emitText: true,
+  });
+  const process = emittedParameterizedFunction(artifact.wat, "$onda.abi.process");
+  const loop = process.slice(process.indexOf("(loop $$onda.loop"));
+  assert.match(
+    loop,
+    /global\.get \$\$onda\.(buffers|buffer_frames|buffer_channels)/,
+  );
+});
+
+test("preserves the loop-entry value of a loop-carried buffer selector", async () => {
+  const mir = executableMir();
+  mir.interface.buffers.push(
+    {
+      name: "bank[0]",
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    },
+    {
+      name: "bank[1]",
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    },
+  );
+  mir.state.push({ name: "slot", ty: 2, persistence: "snapshot" });
+  mir.functions[0].body.statements.push(
+    assign(place("state", 1), {
+      kind: "use",
+      data: constant("i32", 0),
+    }),
+  );
+
+  const process = mir.functions[1];
+  const selector = process.locals.length;
+  process.locals.push({ name: "$slot", ty: 2 });
+  process.body.statements.splice(
+    3,
+    0,
+    assign(place("local", selector), {
+      kind: "load",
+      data: place("state", 1),
+    }),
+  );
+  const thenBlock =
+    process.body.statements[4].kind.data.body.statements[1].kind.data.then_block;
+  thenBlock.statements = [
+    assign(place("local", 2), {
+      kind: "buffer_sample_rate",
+      data: {
+        kind: "array_element",
+        data: {
+          first: 0,
+          len: 2,
+          selector: local(selector),
+          bounds: "clamp",
+        },
+      },
+    }),
+    assign(place("local", 5), {
+      kind: "process_frame",
+      data: { offset: local(0) },
+    }),
+    statement("output_store", {
+      output: 0,
+      element: null,
+      bounds: "unchecked",
+      frame: local(5),
+      value: local(2),
+    }),
+    assign(place("local", selector), {
+      kind: "use",
+      data: constant("i32", 1),
+    }),
+    assign(place("local", 0), {
+      kind: "binary",
+      data: { op: "add", lhs: local(0), rhs: constant("i32", 1) },
+    }),
+  ];
+  process.body.statements.push(
+    assign(place("state", 1), {
+      kind: "use",
+      data: local(selector),
+    }),
+  );
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const params = heap;
+  heap += 16;
+  const state = heap;
+  heap += artifact.metadata.runtime.state_size_bytes;
+  const outputs = heap;
+  heap += 4;
+  const bufferPointers = heap;
+  heap += 8;
+  const bufferFrames = heap;
+  heap += 8;
+  const bufferChannels = heap;
+  heap += 8;
+  const bufferSampleRates = heap;
+  heap += 8;
+  const bufferData = heap;
+  heap += 8;
+  const output = heap;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputs, output, true);
+  view.setUint32(bufferPointers, bufferData, true);
+  view.setUint32(bufferPointers + 4, bufferData + 4, true);
+  for (let index = 0; index < 2; index += 1) {
+    view.setInt32(bufferFrames + index * 4, 1, true);
+    view.setInt32(bufferChannels + index * 4, 1, true);
+  }
+  view.setFloat32(bufferSampleRates, 10_000, true);
+  view.setFloat32(bufferSampleRates + 4, 20_000, true);
+  onda_init(params, state);
+
+  assert.equal(
+    callProcess(
+      onda_process,
+      0,
+      outputs,
+      0,
+      0,
+      0,
+      params,
+      state,
+      bufferPointers,
+      bufferFrames,
+      bufferChannels,
+      bufferSampleRates,
+    ),
+    0,
+  );
+  assert.equal(
+    view.getInt32(state + 4, true),
+    0,
+    "a zero-frame call must not execute the loop-carried selector assignment",
+  );
+
+  const status = callProcess(
+    onda_process,
+    0,
+    outputs,
+    0,
+    4,
+    3,
+    params,
+    state,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+  );
+  assert.equal(status, 0);
+  assert.deepEqual(
+    [...new Float32Array(memory.buffer, output, 4)],
+    [10_000, 20_000, 20_000, 20_000],
+  );
+});
+
+test("caches static audio channel pointers before sample loops", () => {
+  const artifact = compileMir(executableMir(), {
+    emitText: true,
+    optimize: false,
+  });
+  const process = emittedFunction(artifact.wat, "$onda.fn.1");
+  const loop = process.indexOf("(loop $$onda.loop");
+  assert.notEqual(loop, -1);
+  const entry = process.slice(0, loop);
+  const sampleLoop = process.slice(loop);
+  assert.equal(matchCount(entry, /global\.get \$\$onda\.outputs/g), 1);
+  assert.doesNotMatch(sampleLoop, /global\.get \$\$onda\.outputs/);
+  assert.match(process, /audio\.outputs\.0\.generated/);
+});
+
+test("keeps dynamic audio array channel selection inside sample loops", () => {
+  const mir = executableMir();
+  const outputArray = mir.types.length;
+  mir.types.push(type("array", { element: 0, len: 2 }));
+  mir.interface.outputs[0].ty = outputArray;
+  const thenBlock =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block;
+  const outputStore = thenBlock.statements.find(
+    (entry) => entry.kind.kind === "output_store",
+  );
+  outputStore.kind.data.element = local(0);
+  outputStore.kind.data.bounds = "clamp";
+
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  const process = emittedFunction(artifact.wat, "$onda.fn.1");
+  const loop = process.indexOf("(loop $$onda.loop");
+  assert.notEqual(loop, -1);
+  const entry = process.slice(0, loop);
+  const sampleLoop = process.slice(loop);
+  assert.doesNotMatch(entry, /audio\.outputs\.[01]\.generated/);
+  assert.match(sampleLoop, /global\.get \$\$onda\.outputs/);
+});
+
+test("resolves a varying collection selector once per buffer operation", () => {
+  const mir = executableMir();
+  mir.interface.buffers.push(
+    {
+      name: "bank[0]",
+      element: "f32",
+      channels: "dynamic",
+      access: "read_write",
+    },
+    {
+      name: "bank[1]",
+      element: "f32",
+      channels: "dynamic",
+      access: "read_write",
+    },
+  );
+  const thenBlock =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block;
+  thenBlock.statements.unshift(
+    assign(place("local", 2), {
+      kind: "buffer_load",
+      data: {
+        buffer: {
+          kind: "array_element",
+          data: {
+            first: 0,
+            len: 2,
+            selector: local(0),
+            bounds: "clamp",
+          },
+        },
+        channel: constant("i32", 1),
+        index: local(0),
+        bounds: "clamp",
+      },
+    }),
+  );
+
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  const process = emittedFunction(artifact.wat, "$onda.fn.1");
+  const loop = process.slice(process.indexOf("(loop $$onda.loop"));
+  assert.equal(
+    matchCount(loop, /local\.set \$buffer\.descriptor_index\.generated/g),
+    1,
+  );
+  assert.equal(matchCount(loop, /global\.get \$\$onda\.buffers/g), 1);
+  assert.equal(matchCount(loop, /global\.get \$\$onda\.buffer_frames/g), 1);
+  assert.equal(matchCount(loop, /global\.get \$\$onda\.buffer_channels/g), 1);
+});
+
 test("loads, stores, and queries externally bound buffers", async () => {
   const mir = executableMir();
   mir.interface.buffers.push({
@@ -2035,7 +2867,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
   assert.deepEqual(artifact.metadata.metadata.buffers, [
     {
       name: "table",
-      type_repr: "buffer[f32]",
+      type_repr: "buffer<f32>",
       scalar: "f32",
       element_size_bytes: 4,
       channels: "mono",
@@ -2093,6 +2925,326 @@ test("loads, stores, and queries externally bound buffers", async () => {
     [...new Float32Array(memory.buffer, bufferData, 4)],
     [16, 17, 18, 19],
   );
+
+  view.setUint32(bufferPointers, 0, true);
+  view.setInt32(bufferFrames, 1, true);
+  new Float32Array(memory.buffer, output, 4).fill(0);
+  for (let invocation = 0; invocation < 2; invocation += 1) {
+    callProcess(
+      onda_process,
+      0,
+      outputTable,
+      0,
+      4,
+      3,
+      params,
+      state,
+      bufferPointers,
+      bufferFrames,
+      bufferChannels,
+      bufferSampleRates,
+    );
+    assert.deepEqual(
+      [...new Float32Array(memory.buffer, output, 4)],
+      [12, 12, 12, 12],
+    );
+  }
+});
+
+test("forwards dynamically selected proc buffer parameters without copying", async () => {
+  const mir = executableMir();
+  const bufferType = mir.types.length;
+  mir.types.push(
+    type("buffer", {
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    }),
+  );
+  const bufferSpanType = mir.types.length;
+  mir.types.push(
+    type("buffer_span", {
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+      len: 2,
+    }),
+  );
+  mir.interface.buffers.push(
+    {
+      name: "bank[0]",
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    },
+    {
+      name: "bank[1]",
+      element: "f32",
+      channels: "mono",
+      access: "read_write",
+    },
+  );
+
+  const processBody =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block.statements;
+  processBody.splice(
+    0,
+    3,
+    statement("call", {
+      results: [2],
+      function: 2,
+      args: [
+        { kind: "value", data: local(0) },
+        {
+          kind: "buffer_span",
+          data: { kind: "interface", data: { first: 0, len: 2 } },
+        },
+      ],
+    }),
+  );
+
+  const selectedParameter = {
+    kind: "array_element",
+    data: {
+      span: 1,
+      selector: local(0),
+      bounds: "clamp",
+    },
+  };
+  mir.functions.push(
+    {
+      name: "select_buffer",
+      kind: { kind: "user" },
+      attributes: attributes("compiler_generated", "always"),
+      params: [
+        { name: "slot", ty: 2, mode: "value" },
+        { name: "bank", ty: bufferSpanType, mode: "value" },
+      ],
+      results: [0],
+      locals: [
+        { name: "$slot", ty: 2 },
+        { name: "$sample", ty: 0 },
+      ],
+      body: {
+        statements: [
+          assign(place("local", 0), {
+            kind: "load",
+            data: place("parameter", 0),
+          }),
+          statement("call", {
+            results: [1],
+            function: 3,
+            args: [{ kind: "buffer_param", data: selectedParameter }],
+          }),
+          statement("return", { values: [local(1)] }),
+        ],
+      },
+      source: unknownSource,
+    },
+    {
+      name: "increment_buffer",
+      kind: { kind: "user" },
+      attributes: attributes(),
+      params: [
+        { name: "buffer", ty: bufferType, mode: "read_write_reference" },
+      ],
+      results: [0],
+      locals: [
+        { name: "$sample", ty: 0 },
+        { name: "$incremented", ty: 0 },
+      ],
+      body: {
+        statements: [
+          assign(place("local", 0), {
+            kind: "buffer_param_load",
+            data: {
+              parameter: { kind: "direct", data: 0 },
+              channel: null,
+              index: constant("i32", 0),
+              bounds: "clamp",
+            },
+          }),
+          assign(place("local", 1), {
+            kind: "binary",
+            data: {
+              op: "add",
+              lhs: local(0),
+              rhs: constant("f32", 1),
+            },
+          }),
+          statement("buffer_param_store", {
+            parameter: { kind: "direct", data: 0 },
+            channel: null,
+            index: constant("i32", 0),
+            value: local(1),
+            bounds: "clamp",
+          }),
+          statement("return", { values: [local(0)] }),
+        ],
+      },
+      source: unknownSource,
+    },
+  );
+
+  const artifact = compileMir(mir);
+  assert.deepEqual(
+    artifact.metadata.metadata.buffers.map((buffer) => buffer.may_write),
+    [true, true],
+  );
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const params = heap;
+  heap += artifact.metadata.runtime.param_size_bytes;
+  const state = heap;
+  heap += artifact.metadata.runtime.state_size_bytes;
+  const bufferPointers = heap;
+  heap += 8;
+  const bufferFrames = heap;
+  heap += 8;
+  const bufferChannels = heap;
+  heap += 8;
+  const bufferSampleRates = heap;
+  heap += 8;
+  const firstBuffer = heap;
+  heap += 4;
+  const secondBuffer = heap;
+  heap += 4;
+  const outputTable = heap;
+  heap += 4;
+  const output = heap;
+  const view = new DataView(memory.buffer);
+  view.setUint32(bufferPointers, firstBuffer, true);
+  view.setUint32(bufferPointers + 4, secondBuffer, true);
+  view.setInt32(bufferFrames, 1, true);
+  view.setInt32(bufferFrames + 4, 1, true);
+  view.setInt32(bufferChannels, 1, true);
+  view.setInt32(bufferChannels + 4, 1, true);
+  view.setFloat32(bufferSampleRates, 48_000, true);
+  view.setFloat32(bufferSampleRates + 4, 48_000, true);
+  view.setFloat32(firstBuffer, 10, true);
+  view.setFloat32(secondBuffer, 20, true);
+  view.setUint32(outputTable, output, true);
+  onda_init(params, state);
+
+  callProcess(
+    onda_process,
+    0,
+    outputTable,
+    0,
+    4,
+    3,
+    params,
+    state,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+  );
+  assert.deepEqual(
+    [...new Float32Array(memory.buffer, output, 4)],
+    [10, 20, 21, 22],
+  );
+  assert.equal(view.getFloat32(firstBuffer, true), 11);
+  assert.equal(view.getFloat32(secondBuffer, true), 23);
+});
+
+test("clamps multichannel buffer coordinates independently", async () => {
+  const mir = executableMir();
+  mir.interface.buffers.push({
+    name: "stereo",
+    element: "f32",
+    channels: { static: 2 },
+    access: "read_write",
+  });
+  const thenBlock =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block;
+  thenBlock.statements = [
+    assign(place("local", 2), {
+      kind: "buffer_load",
+      data: {
+        buffer: 0,
+        channel: constant("i32", -1),
+        index: constant("i32", 99),
+        bounds: "clamp",
+      },
+    }),
+    assign(place("local", 3), {
+      kind: "buffer_load",
+      data: {
+        buffer: 0,
+        channel: constant("i32", 99),
+        index: constant("i32", -1),
+        bounds: "clamp",
+      },
+    }),
+    assign(place("local", 2), {
+      kind: "binary",
+      data: { op: "add", lhs: local(2), rhs: local(3) },
+    }),
+    assign(place("local", 5), {
+      kind: "process_frame",
+      data: { offset: local(0) },
+    }),
+    statement("output_store", {
+      output: 0,
+      element: null,
+      bounds: "unchecked",
+      frame: local(5),
+      value: local(2),
+    }),
+    assign(place("local", 0), {
+      kind: "binary",
+      data: { op: "add", lhs: local(0), rhs: constant("i32", 1) },
+    }),
+  ];
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const params = heap;
+  heap += artifact.metadata.runtime.param_size_bytes;
+  const state = heap;
+  heap += artifact.metadata.runtime.state_size_bytes;
+  const bufferPointers = heap;
+  heap += 4;
+  const bufferFrames = heap;
+  heap += 4;
+  const bufferChannels = heap;
+  heap += 4;
+  const bufferSampleRates = heap;
+  heap += 4;
+  const bufferData = heap;
+  heap += 16;
+  const outputTable = heap;
+  heap += 4;
+  const output = heap;
+  const view = new DataView(memory.buffer);
+  view.setUint32(bufferPointers, bufferData, true);
+  view.setInt32(bufferFrames, 2, true);
+  view.setInt32(bufferChannels, 2, true);
+  view.setFloat32(bufferSampleRates, 48_000, true);
+  new Float32Array(memory.buffer, bufferData, 4).set([10, 20, 30, 40]);
+  view.setUint32(outputTable, output, true);
+  onda_init(params, state);
+
+  callProcess(onda_process,
+    0,
+    outputTable,
+    0,
+    1,
+    3,
+    params,
+    state,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+  );
+  assert.equal(new Float32Array(memory.buffer, output, 1)[0], 50);
 });
 
 test("returns a failure for overlapping slice copies with unequal strides", async () => {

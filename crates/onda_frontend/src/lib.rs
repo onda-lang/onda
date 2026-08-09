@@ -12,16 +12,19 @@ pub use ast::{
     NamespaceRefSegment, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamControl, ParamDecl,
     ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc,
     Span, Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_WRITE2_FN, PARAM_DOMAIN_FIELDS, PARAM_DOMAIN_POSITIONAL_FIELDS, PARAM_SCALES,
+    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, METHOD_RECEIVER_ARG,
+    PARAM_DOMAIN_FIELDS, PARAM_DOMAIN_POSITIONAL_FIELDS, PARAM_SCALES,
 };
 pub use diagnostics::{DiagCode, DiagCtx, Diagnostic};
 pub use parser::{
     inject_auto_std_math, inject_auto_std_prelude, is_language_keyword, is_language_type_name,
     is_reserved_identifier, is_reserved_word, language_type_names, load_program_file,
-    load_program_file_from_virtual_sources, load_program_file_with_overlays,
-    parse_namespace_ref_text_ast, parse_program, parse_program_file,
-    parse_program_file_from_virtual_sources, parse_program_file_with_overlays,
-    parse_program_with_path, parse_stdlib_module, stdlib_module_names, stdlib_module_source,
-    LoadError, LoadResult, LoadedProgram, SourceManifest, LANGUAGE_KEYWORDS,
-    RESERVED_IDENTIFIER_WORDS,
+    load_program_file_from_snapshot, load_program_file_from_virtual_sources,
+    load_program_file_with_overlays, parse_namespace_ref_text_ast, parse_program,
+    parse_program_file, parse_program_file_from_virtual_sources, parse_program_file_with_overlays,
+    parse_program_with_path, parse_stdlib_module, rewrite_source_references, stdlib_module_names,
+    stdlib_module_source, LoadError, LoadResult, LoadedProgram, SourceDocument, SourceManifest,
+    SourceReferenceKind, SourceReferenceRewrite, SourceResolution, UnresolvedSourceResolution,
+    LANGUAGE_KEYWORDS, RESERVED_IDENTIFIER_WORDS,
 };

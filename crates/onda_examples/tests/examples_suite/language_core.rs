@@ -3825,11 +3825,10 @@ fn data_read_write_clamps_and_truncates() {
 
 #[test]
 
-fn unsafe_data_builtins_read_write_compiles_and_runs() {
+fn indexed_data_read_write_compiles_and_runs() {
     let frames = 4;
 
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(UNSAFE_DATA_BUILTINS_EXAMPLE, frames);
+    let (mut instance, in_channels, out_channels) = compile_instance(INDEXED_DATA_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 
@@ -3846,11 +3845,11 @@ fn unsafe_data_builtins_read_write_compiles_and_runs() {
 
 #[test]
 
-fn unsafe_data_builtins_support_struct_field_data() {
+fn indexed_access_supports_struct_field_data() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(UNSAFE_DATA_BUILTINS_STRUCT_FIELD_EXAMPLE, frames);
+        compile_instance(INDEXED_STRUCT_FIELD_DATA_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 
@@ -3867,11 +3866,11 @@ fn unsafe_data_builtins_support_struct_field_data() {
 
 #[test]
 
-fn unsafe_data_builtins_support_typed_local_array_in_def() {
+fn indexed_access_supports_typed_local_array_in_def() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(UNSAFE_DATA_BUILTINS_TYPED_LOCAL_ARRAY_DEF_EXAMPLE, frames);
+        compile_instance(INDEXED_TYPED_LOCAL_ARRAY_DEF_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 

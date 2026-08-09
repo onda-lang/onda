@@ -4,7 +4,9 @@ use onda_frontend::{
     ConstType, DeclType, EventDef, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp,
     ParamBlock, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program,
-    SampleBlock, Stmt, StructDef,
+    SampleBlock, Stmt, StructDef, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN,
+    INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN,
+    INTERNAL_BUFFER_WRITE_CHANNEL_FN,
 };
 
 pub fn primitive_type_name(ty: PrimitiveType) -> &'static str {
@@ -288,11 +290,7 @@ fn format_param_section(
 }
 
 fn format_buffer_section_default_type(ty: &BufferType) -> String {
-    let elem = match &ty.elem {
-        BufferElemType::Primitive(prim) => primitive_type_name(*prim).to_owned(),
-        BufferElemType::Generic(name) => name.clone(),
-    };
-    format!("[{elem}]")
+    format!("<{}>", format_buffer_inner(ty))
 }
 
 fn format_buffer_block(label: &str, buffers: &BufferBlock, indent: usize, out: &mut String) {
@@ -326,7 +324,12 @@ fn format_buffer_section(
         let mut text = buffer.name.clone();
         if let Some(ty) = &buffer.ty {
             text.push_str(": ");
-            text.push_str(&format_buffer_type(ty));
+            text.push_str(&format_buffer_inner(ty));
+        }
+        if let Some(count) = &buffer.array_size {
+            text.push_str(" {");
+            text.push_str(&format_expr(count));
+            text.push('}');
         }
         push_line(out, indent + 1, &text);
     }
@@ -639,10 +642,18 @@ fn format_assign_target(target: &AssignTarget) -> String {
     match target {
         AssignTarget::Var(name) => name.clone(),
         AssignTarget::Index { base, index } => format!("{base}[{}]", format_expr(index)),
-        AssignTarget::Slice { base, start, end } => format!(
-            "{base}[{}:{}]",
-            start.as_ref().map(format_expr).unwrap_or_default(),
-            end.as_ref().map(format_expr).unwrap_or_default()
+        AssignTarget::Slice {
+            base,
+            selector,
+            channel,
+            start,
+            end,
+        } => format_slice_access(
+            base,
+            selector.as_deref(),
+            channel.as_deref(),
+            start.as_deref(),
+            end.as_deref(),
         ),
         AssignTarget::Tuple(names) => format!("({})", names.join(", ")),
     }
@@ -692,16 +703,18 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::Var { name, .. } => name.clone(),
         Expr::Index { base, index, .. } => format!("{base}[{}]", format_expr(index)),
         Expr::Slice {
-            base, start, end, ..
-        } => format!(
-            "{base}[{}:{}]",
-            start
-                .as_ref()
-                .map(|expr| format_expr(expr))
-                .unwrap_or_default(),
-            end.as_ref()
-                .map(|expr| format_expr(expr))
-                .unwrap_or_default()
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => format_slice_access(
+            base,
+            selector.as_deref(),
+            channel.as_deref(),
+            start.as_deref(),
+            end.as_deref(),
         ),
         Expr::ArrayCtor { spec, init, .. } => {
             let mut text = format!("{}(", format_array_type_spec(spec));
@@ -732,6 +745,9 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             args,
             ..
         } => {
+            if let Some(access) = format_internal_buffer_access(name, args) {
+                return access;
+            }
             let mut text = name.clone();
             if !type_args.is_empty() {
                 text.push('<');
@@ -847,6 +863,54 @@ fn wrap_if_needed(text: String, my_prec: u8, parent_prec: u8) -> String {
     }
 }
 
+fn format_internal_buffer_access(name: &str, args: &[CallArg]) -> Option<String> {
+    let base = match &args.first()?.expr {
+        Expr::Var { name, .. } => name,
+        _ => return None,
+    };
+    let is_write = matches!(
+        name,
+        INTERNAL_BUFFER_WRITE2_FN | INTERNAL_BUFFER_WRITE3_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
+    );
+    let coordinates = if is_write {
+        args.get(1..args.len().checked_sub(1)?)?
+    } else {
+        args.get(1..)?
+    };
+    let target = match name {
+        INTERNAL_BUFFER_READ2_FN | INTERNAL_BUFFER_WRITE2_FN if coordinates.len() == 2 => {
+            format!(
+                "{base}[{}][{}]",
+                format_expr(&coordinates[0].expr),
+                format_expr(&coordinates[1].expr)
+            )
+        }
+        INTERNAL_BUFFER_READ_CHANNEL_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
+            if coordinates.len() == 2 =>
+        {
+            format!(
+                "{base}[{}, {}]",
+                format_expr(&coordinates[0].expr),
+                format_expr(&coordinates[1].expr)
+            )
+        }
+        INTERNAL_BUFFER_READ3_FN | INTERNAL_BUFFER_WRITE3_FN if coordinates.len() == 3 => {
+            format!(
+                "{base}[{}][{}, {}]",
+                format_expr(&coordinates[0].expr),
+                format_expr(&coordinates[1].expr),
+                format_expr(&coordinates[2].expr)
+            )
+        }
+        _ => return None,
+    };
+    Some(if is_write {
+        format!("{target} = {}", format_expr(&args.last()?.expr))
+    } else {
+        target
+    })
+}
+
 fn format_call_arg(arg: &CallArg) -> String {
     match &arg.name {
         Some(name) => format!("{name} = {}", format_expr(&arg.expr)),
@@ -918,6 +982,9 @@ pub fn format_fn_param_type(ty: &FnParamType) -> String {
         FnParamType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
         FnParamType::Struct(name) => name.clone(),
         FnParamType::Buffer(ty) => format_buffer_type(ty),
+        FnParamType::BufferArray { buffer, len } => {
+            format!("{} {{{len}}}", format_buffer_type(buffer))
+        }
         FnParamType::Array(Some(ty)) => format!("{}[]", primitive_type_name(*ty)),
         FnParamType::Array(None) => "[]".to_owned(),
         FnParamType::ArrayGeneric(name) => format!("{name}[]"),
@@ -972,6 +1039,10 @@ fn format_fn_return_type(ty: &FnReturnType) -> String {
 }
 
 pub fn format_buffer_type(ty: &BufferType) -> String {
+    format!("buffer<{}>", format_buffer_inner(ty))
+}
+
+fn format_buffer_inner(ty: &BufferType) -> String {
     let elem = match &ty.elem {
         BufferElemType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
         BufferElemType::Generic(name) => name.clone(),
@@ -981,7 +1052,28 @@ pub fn format_buffer_type(ty: &BufferType) -> String {
         BufferChannels::Static(expr) => format!("[{}]", format_expr(expr)),
         BufferChannels::Dynamic => "[]".to_owned(),
     };
-    format!("buffer[{elem}{channels}]")
+    format!("{elem}{channels}")
+}
+
+fn format_slice_access(
+    base: &str,
+    selector: Option<&Expr>,
+    channel: Option<&Expr>,
+    start: Option<&Expr>,
+    end: Option<&Expr>,
+) -> String {
+    let selected = selector
+        .map(|selector| format!("{base}[{}]", format_expr(selector)))
+        .unwrap_or_else(|| base.to_owned());
+    let range = format!(
+        "{}:{}",
+        start.map(format_expr).unwrap_or_default(),
+        end.map(format_expr).unwrap_or_default()
+    );
+    channel.map_or_else(
+        || format!("{selected}[{range}]"),
+        |channel| format!("{selected}[{}, {range}]", format_expr(channel)),
+    )
 }
 
 pub fn format_event_param_type(ty: &EventParamType) -> String {
@@ -1170,5 +1262,38 @@ sample:
             "formatted curved stepped domain was {formatted:?}"
         );
         parse_program(&formatted).expect("formatted parameter domains should remain parseable");
+    }
+
+    #[test]
+    fn formatting_uses_canonical_buffer_declarations_and_access() {
+        let source = r#"
+buffers:
+  mono: f32
+  stereo: f32[2]
+  any: f32[]
+  bank: f32 {count = 4}
+  layers: f32[2] {4}
+
+sample:
+  a = mono[0]
+  b = stereo[1, 2]
+  c = bank[3][4]
+  d = layers[2][1, 0]
+  view = layers[2][1, 0:8]
+  out1 = a + b + c + d + view[0]
+"#;
+        let program = parse_program(source).expect("buffer syntax should parse");
+        let formatted = format_program(&program);
+
+        assert!(formatted.contains("mono: f32\n"));
+        assert!(formatted.contains("stereo: f32[2]\n"));
+        assert!(formatted.contains("any: f32[]\n"));
+        assert!(formatted.contains("bank: f32 {4}\n"));
+        assert!(formatted.contains("layers: f32[2] {4}\n"));
+        assert!(formatted.contains("stereo[1, 2]"));
+        assert!(formatted.contains("bank[3][4]"));
+        assert!(formatted.contains("layers[2][1, 0]"));
+        assert!(formatted.contains("layers[2][1, 0:8]"));
+        parse_program(&formatted).expect("formatted buffer syntax should remain parseable");
     }
 }

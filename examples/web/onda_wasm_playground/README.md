@@ -16,7 +16,7 @@ editable Onda source
 The shared UI consumes the public `@onda-lang/wasm-compiler`, `@onda-lang/processor-abi`, and
 `@onda-lang/webaudio` APIs. It contains a CodeMirror project editor with line numbers and multiple
 in-memory files, backed by the same Onda LSP implementation as `onda-vscode`. The existing shared
-`ui/run/run.html` view provides scope, parameter, event, WAV-buffer, reset, stop, and play controls.
+`ui/run/run.html` view provides scope, parameter, event, typed-buffer, reset, stop, and play controls.
 Rust analysis, semantic compilation, and Binaryen O4 optimization run through the compiler package's
 module worker, so neither LSP requests nor compilation block editor interaction.
 The source is compiled in the browser; there is no compiler service, native Onda CLI, LLVM, or
@@ -62,7 +62,13 @@ audible.
 
 Use **Share** to copy a URL-fragment snapshot containing every project source file, the main and active
 files, sample rate, and block size. The fragment stays in the browser and is compressed when supported.
-Selected WAV files remain local and are not embedded in the URL.
+Selected buffer files remain local and are not embedded in the URL.
+
+Use **Open project** to replace the editor contents with a single `.onda` file or a project ZIP.
+A project ZIP has one `.ondaproject` file at its root and may include all supported typed buffer assets.
+Use **Download project** to package the current in-memory sources and bound buffers into the same
+portable ZIP. After extraction, its `.ondaproject` file can be passed directly to `onda compile`,
+`onda run`, or either native run GUI.
 
 Without `-Serve`/`--serve`, the scripts only prepare the static assets:
 
@@ -126,7 +132,8 @@ Rust/LLVM Onda build.
 
 For a manual browser smoke test, edit the default program and confirm LSP diagnostics/completion,
 add an included project file, run it, inspect the shared output scope, move a generated parameter
-control, load a PCM/float WAV for any declared f32 buffer, trigger an event, and reset the DSP.
+control, load a PCM/float WAV or `.ondabuffer` for a declared buffer, trigger an event, export and
+reopen the project ZIP, and reset the DSP.
 
 ## Host behavior
 
@@ -153,18 +160,22 @@ than terminating the processor. Portable packed state can be requested and resto
 
 Declared external buffers are supplied in `processorOptions.buffers`, keyed by Onda name. Each
 binding has `{ data, frames, channels, sampleRate }`; `data` uses the native interleaved frame
-layout. Mono/static channel constraints are checked against compiler metadata.
+layout. Mono/static channel constraints are checked against compiler metadata. A fixed array can be
+supplied under its logical name as an array of bindings, with `null` or omitted entries leaving
+individual slots unbound. Missing bindings use the neutral one-frame descriptor and do not prevent
+the processor from starting.
 `{ type: "read-buffer", buffer: "name" }` returns current contents, including writes from Onda.
 
 ## Current limitations
 
 - Recompiling while audio is active stops and recreates the AudioContext/processor, so DSP state is
   initialized rather than migrated or crossfaded.
-- Browser projects persist in local storage, but selected WAV files do not; every declared buffer
-  must be bound to a valid WAV before processing can start. Loading or clearing a WAV while audio
-  is active recreates or stops the processor so its fixed startup bindings stay coherent.
-- The playground loads little-endian PCM or IEEE-float WAV files into f32 buffers. Other Onda buffer
-  scalar types still require a host application to provide typed data through `processorOptions`.
+- Browser projects persist in local storage, but selected buffer files do not. Playback may start
+  with any scalar buffer or fixed-array slot unbound; the run view labels those slots as unbound and
+  the processor uses neutral storage. Loading or clearing a file while audio is active recreates the
+  processor with the new binding set.
+- The playground loads little-endian PCM or IEEE-float WAV files into `f32` buffers and canonical
+  `.ondabuffer` files into `bool`, `i32`, `i64`, `f32`, or `f64` buffers.
 - The worklet can return control-output values, but the page does not yet render them.
 - Top-level audio inputs connect to one shared microphone stream. The page requests permission only
   when the compiled processor exposes those inputs and reuses the stream across recompiles.

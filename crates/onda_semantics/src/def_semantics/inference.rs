@@ -12,9 +12,9 @@ use call_inference::infer_stmt_calls;
 pub(crate) use call_inference::{resolve_call_args, resolve_call_args_at};
 
 use crate::builtins::{
-    builtin_constant_type, eval_data_size_expr, is_builtin_buffer_2d_unsafe_fn,
-    is_builtin_constant_name, parse_array_len_instance_base, parse_buffer_chans_instance_base,
-    parse_buffer_samplerate_instance_base,
+    builtin_constant_type, eval_data_size_expr, is_builtin_constant_name, is_internal_buffer_2d_fn,
+    parse_array_len_instance_base, parse_buffer_chans_instance_base,
+    parse_buffer_samplerate_instance_base, validate_buffer_static_channels,
 };
 use crate::{
     push_semantic, resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context,
@@ -48,6 +48,12 @@ pub(crate) struct InferredBufferParam {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InferredBufferBinding {
+    pub(crate) candidates: Vec<InferredBufferParam>,
+    pub(crate) is_array: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InferredArrayParam {
     pub(crate) elem_ty: PrimitiveType,
     pub(crate) len: usize,
@@ -73,7 +79,7 @@ pub(crate) fn infer_def_param_kinds(
     struct_array_roots: &HashMap<String, String>,
     proc_array_roots: &HashMap<String, InferredProcArrayParam>,
     array_bindings: &HashMap<String, InferredArrayParam>,
-    buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
+    buffer_bindings: &HashMap<String, InferredBufferBinding>,
     fn_signatures: &HashMap<String, FnSignature>,
     method_self_struct: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
@@ -118,6 +124,7 @@ pub(crate) fn infer_def_param_kinds(
     }
 
     let mut init_array_bindings = array_bindings.clone();
+    let mut init_buffer_bindings = buffer_bindings.clone();
     for stmt in init {
         infer_stmt_calls(
             stmt,
@@ -125,13 +132,14 @@ pub(crate) fn infer_def_param_kinds(
             struct_array_roots,
             proc_array_roots,
             &mut init_array_bindings,
-            buffer_bindings,
+            &mut init_buffer_bindings,
             fn_signatures,
             &mut kinds,
             errors,
         );
     }
     let mut block_array_bindings = array_bindings.clone();
+    let mut block_buffer_bindings = buffer_bindings.clone();
     for stmt in block_stmts {
         infer_stmt_calls(
             stmt,
@@ -139,13 +147,14 @@ pub(crate) fn infer_def_param_kinds(
             struct_array_roots,
             proc_array_roots,
             &mut block_array_bindings,
-            buffer_bindings,
+            &mut block_buffer_bindings,
             fn_signatures,
             &mut kinds,
             errors,
         );
     }
     let mut sample_array_bindings = array_bindings.clone();
+    let mut sample_buffer_bindings = block_buffer_bindings.clone();
     for stmt in sample {
         infer_stmt_calls(
             stmt,
@@ -153,7 +162,7 @@ pub(crate) fn infer_def_param_kinds(
             struct_array_roots,
             proc_array_roots,
             &mut sample_array_bindings,
-            buffer_bindings,
+            &mut sample_buffer_bindings,
             fn_signatures,
             &mut kinds,
             errors,
@@ -186,7 +195,7 @@ pub(crate) fn infer_def_param_kinds(
             let mut local_struct_array_roots = HashMap::<String, String>::new();
             let mut local_proc_array_roots = HashMap::<String, InferredProcArrayParam>::new();
             let mut local_array_bindings = HashMap::<String, InferredArrayParam>::new();
-            let mut local_buffer_bindings = HashMap::<String, Vec<InferredBufferParam>>::new();
+            let mut local_buffer_bindings = HashMap::<String, InferredBufferBinding>::new();
 
             if let Some(explicit_structs) = declared_struct_params.get(&def.name) {
                 for (idx, explicit) in explicit_structs.iter().enumerate() {
@@ -211,10 +220,13 @@ pub(crate) fn infer_def_param_kinds(
                     {
                         local_buffer_bindings.insert(
                             param.name.clone(),
-                            vec![InferredBufferParam {
-                                elem_ty: *elem_ty,
-                                channels: channels.clone(),
-                            }],
+                            InferredBufferBinding {
+                                candidates: vec![InferredBufferParam {
+                                    elem_ty: *elem_ty,
+                                    channels: channels.clone(),
+                                }],
+                                is_array: matches!(param.ty, Some(FnParamType::BufferArray { .. })),
+                            },
                         );
                     }
                 }
@@ -269,7 +281,13 @@ pub(crate) fn infer_def_param_kinds(
                         if let Some(inferred_buffer) =
                             infer_buffer_observation_from_param_slot(inferred_kind)
                         {
-                            local_buffer_bindings.insert(param.name.clone(), vec![inferred_buffer]);
+                            local_buffer_bindings.insert(
+                                param.name.clone(),
+                                InferredBufferBinding {
+                                    candidates: vec![inferred_buffer],
+                                    is_array: false,
+                                },
+                            );
                         }
                     }
                 }
@@ -286,7 +304,7 @@ pub(crate) fn infer_def_param_kinds(
                     &merged_struct_array_roots,
                     &merged_proc_array_roots,
                     &mut local_array_bindings,
-                    &local_buffer_bindings,
+                    &mut local_buffer_bindings,
                     fn_signatures,
                     &mut kinds,
                     errors,
@@ -356,6 +374,20 @@ pub(crate) fn infer_def_param_kinds(
                 param_name,
                 errors,
             );
+
+            if let Some(FnParamType::BufferArray { len, .. }) =
+                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                let (elem_ty, channels) = explicit_buffer
+                    .cloned()
+                    .unwrap_or((PrimitiveType::F32, TypedBufferChannels::Mono));
+                typed.push(TypedFnParam::BufferArray {
+                    elem_ty,
+                    channels,
+                    len: *len,
+                });
+                continue;
+            }
 
             // Handle explicitly typed tuple params (e.g. `(f32, i32)`)
             if let Some(FnParamType::Tuple(elem_tys)) =
@@ -998,21 +1030,16 @@ fn propagate_expr_callee_buffer_requirements_to_params(
                 kinds,
             );
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 propagate_expr_callee_buffer_requirements_to_params(
-                    start,
-                    caller_name,
-                    caller_param_index,
-                    fn_signatures,
-                    declared_buffer_params,
-                    snapshot,
-                    kinds,
-                );
-            }
-            if let Some(end) = end {
-                propagate_expr_callee_buffer_requirements_to_params(
-                    end,
+                    coordinate,
                     caller_name,
                     caller_param_index,
                     fn_signatures,
@@ -1177,7 +1204,13 @@ fn collect_declared_buffer_param_types(
     for def in defs {
         let mut param_buffers = vec![None; def.params.len()];
         for (idx, param) in def.params.iter().enumerate() {
-            if let Some(FnParamType::Buffer(buffer_ty)) = &param.ty {
+            if let Some(buffer_ty) = match &param.ty {
+                Some(FnParamType::Buffer(buffer_ty))
+                | Some(FnParamType::BufferArray {
+                    buffer: buffer_ty, ..
+                }) => Some(buffer_ty),
+                _ => None,
+            } {
                 let channels = match &buffer_ty.channels {
                     BufferChannels::Mono => TypedBufferChannels::Mono,
                     BufferChannels::Dynamic => TypedBufferChannels::Dynamic,
@@ -1190,6 +1223,19 @@ fn collect_declared_buffer_param_types(
                         else {
                             continue;
                         };
+                        let elem_ty = match buffer_ty.elem {
+                            BufferElemType::Primitive(ty) => ty,
+                            BufferElemType::Generic(_) => PrimitiveType::F32,
+                        };
+                        if !validate_buffer_static_channels(
+                            channels,
+                            elem_ty,
+                            &context,
+                            param.ty_loc.or(param.loc).into(),
+                            errors,
+                        ) {
+                            continue;
+                        }
                         if channels == 1 {
                             TypedBufferChannels::Mono
                         } else {
@@ -1227,9 +1273,9 @@ fn format_buffer_type_name(elem_ty: PrimitiveType, channels: &TypedBufferChannel
         PrimitiveType::Bool => "bool",
     };
     match channels {
-        TypedBufferChannels::Mono => format!("buffer[{elem}]"),
-        TypedBufferChannels::Static(ch) => format!("buffer[{elem}[{ch}]]"),
-        TypedBufferChannels::Dynamic => format!("buffer[{elem}[]]"),
+        TypedBufferChannels::Mono => format!("buffer<{elem}>"),
+        TypedBufferChannels::Static(ch) => format!("buffer<{elem}[{ch}]>"),
+        TypedBufferChannels::Dynamic => format!("buffer<{elem}[]>"),
     }
 }
 
@@ -1320,7 +1366,13 @@ fn collect_stmt_field_usage(
                         errors,
                     );
                 }
-                AssignTarget::Slice { base, start, end } => {
+                AssignTarget::Slice {
+                    base,
+                    selector,
+                    channel,
+                    start,
+                    end,
+                } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(param_idx) = param_index.get(root).copied() {
                             mark_param_field_usage(
@@ -1334,20 +1386,9 @@ fn collect_stmt_field_usage(
                             );
                         }
                     }
-                    if let Some(start) = start {
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
                         collect_expr_field_usage(
-                            start,
-                            fn_name,
-                            param_index,
-                            param_structs,
-                            struct_defs,
-                            usage,
-                            errors,
-                        );
-                    }
-                    if let Some(end) = end {
-                        collect_expr_field_usage(
-                            end,
+                            coordinate,
                             fn_name,
                             param_index,
                             param_structs,
@@ -1578,7 +1619,12 @@ fn collect_expr_field_usage(
             );
         }
         Expr::Slice {
-            base, start, end, ..
+            base,
+            selector,
+            channel,
+            start,
+            end,
+            ..
         } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(param_idx) = param_index.get(root).copied() {
@@ -1593,20 +1639,9 @@ fn collect_expr_field_usage(
                     );
                 }
             }
-            if let Some(start) = start {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 collect_expr_field_usage(
-                    start,
-                    fn_name,
-                    param_index,
-                    param_structs,
-                    struct_defs,
-                    usage,
-                    errors,
-                );
-            }
-            if let Some(end) = end {
-                collect_expr_field_usage(
-                    end,
+                    coordinate,
                     fn_name,
                     param_index,
                     param_structs,
@@ -1920,11 +1955,18 @@ pub(crate) fn param_proc_array_map_from_kinds(
 pub(crate) fn param_buffer_map_from_kinds(
     param_names: &[String],
     kinds: &[TypedFnParam],
-) -> HashMap<String, (PrimitiveType, TypedBufferChannels)> {
+) -> HashMap<String, (PrimitiveType, TypedBufferChannels, usize, bool)> {
     let mut out = HashMap::new();
     for (name, kind) in param_names.iter().zip(kinds.iter()) {
         if let TypedFnParam::Buffer { elem_ty, channels } = kind {
-            out.insert(name.clone(), (*elem_ty, channels.clone()));
+            out.insert(name.clone(), (*elem_ty, channels.clone(), 1, false));
+        } else if let TypedFnParam::BufferArray {
+            elem_ty,
+            channels,
+            len,
+        } = kind
+        {
+            out.insert(name.clone(), (*elem_ty, channels.clone(), *len, true));
         }
     }
     out

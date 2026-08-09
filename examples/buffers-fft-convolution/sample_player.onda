@@ -28,10 +28,10 @@ block:
       else:
         clip_frame = i32(playhead)
         if clip_channels > 0:
-          left = clip[0][clip_frame]
+          left = clip[0, clip_frame]
           right = left
         if clip_channels > 1:
-          right = clip[1][clip_frame]
+          right = clip[1, clip_frame]
         playhead = playhead + clip_step
 
     out1 = left

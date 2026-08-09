@@ -1,0 +1,15 @@
+buffers:
+  source: f32
+
+init:
+  index = 0
+
+block:
+  frames = source.len()
+
+  sample:
+    out1 = source[index]
+    index = index + 1
+    if index >= frames:
+      index = 0
+

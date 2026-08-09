@@ -269,6 +269,14 @@ impl<'a> FunctionLowerer<'a> {
                     format!("buffer parameter '{name}' used where a scalar value is required"),
                     location,
                 )),
+                Binding::BufferAlias(_, _) => Err(self.error(
+                    format!("buffer-reference alias '{name}' used where a scalar value is required"),
+                    location,
+                )),
+                Binding::BufferParameterArray(_, _, _) => Err(self.error(
+                    format!("buffer collection parameter '{name}' used where a scalar value is required"),
+                    location,
+                )),
                 Binding::Array(_, _, _) => Err(self.error(
                     format!("array local '{name}' used where a scalar value is required"),
                     location,
@@ -548,13 +556,33 @@ impl<'a> FunctionLowerer<'a> {
                 block,
                 element,
                 Rvalue::BufferParamLoad {
-                    parameter,
+                    parameter: onda_mir::BufferParamRef::Direct(parameter),
                     channel: None,
                     index: index_value.value,
                     bounds: BoundsMode::Clamp,
                 },
                 location,
             ));
+        }
+        if let Some(Binding::BufferAlias(reference, element)) = self.bindings.get(base).cloned() {
+            let reference = self.materialize_buffer_reference(reference, block, location);
+            let index_value = self.lower_expr(index, block)?;
+            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
+            let rvalue = match reference {
+                MaterializedBufferReference::Interface(buffer) => Rvalue::BufferLoad {
+                    buffer,
+                    channel: None,
+                    index: index_value.value,
+                    bounds: BoundsMode::Clamp,
+                },
+                MaterializedBufferReference::Parameter(parameter) => Rvalue::BufferParamLoad {
+                    parameter,
+                    channel: None,
+                    index: index_value.value,
+                    bounds: BoundsMode::Clamp,
+                },
+            };
+            return Ok(self.emit_temp(block, element, rvalue, location));
         }
         if let Some(Binding::Array(local, element, _)) = self.bindings.get(base).cloned() {
             let index_value = self.lower_expr(index, block)?;
@@ -739,7 +767,7 @@ impl<'a> FunctionLowerer<'a> {
                 block,
                 ty,
                 Rvalue::BufferLoad {
-                    buffer,
+                    buffer: onda_mir::BufferRef::Direct(buffer),
                     channel: None,
                     index: index_value.value,
                     bounds: BoundsMode::Clamp,

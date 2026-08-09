@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn unbound_buffer_arrays_use_neutral_descriptors_and_discard_writes() {
+    let source = r#"
+buffers:
+  bank: f32[2] {3}
+
+outs:
+  out1
+
+sample:
+  bank[1][1, 99] = 42.0
+  out1 = bank[1][1, 0] + f32(bank.len()) + f32(bank[1].len()) + f32(bank[1].chans()) + bank[1].samplerate() / 48000.0
+"#;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 3);
+    assert_eq!(instance.buffer_array_count(), 1);
+    let group = instance.buffer_array(0).expect("buffer array metadata");
+    assert_eq!(group.name(), "bank");
+    assert_eq!(group.first(), 0);
+    assert_eq!(group.len(), 3);
+
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process unbound bank");
+    assert_near(output[0], 7.0, 1e-6);
+}
+
+#[test]
 fn mixed_width_stdlib_clamp_and_lerp_preserve_f64_distinctions() {
     let frames = 4;
     let src = r#"
@@ -1848,9 +1876,9 @@ fn top_level_buffers_respect_f64_and_i64_declared_types() {
 
 buffers {
 
-  buf1: buffer[f64]
+  buf1: buffer<f64>
 
-  buf2: buffer[i64]
+  buf2: buffer<i64>
 
 }
 
@@ -1886,9 +1914,9 @@ sample {
 
     assert_eq!(out_channels, 2);
 
-    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[f64]"));
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer<f64>"));
 
-    assert_eq!(instance.buffer_type(1).as_deref(), Some("buffer[i64]"));
+    assert_eq!(instance.buffer_type(1).as_deref(), Some("buffer<i64>"));
 
     assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
 
@@ -2253,9 +2281,9 @@ fn proc_buffers_and_outputs_respect_f64_and_i64_declared_types() {
 
 buffers {
 
-  buf1: buffer[f64]
+  buf1: buffer<f64>
 
-  buf2: buffer[i64]
+  buf2: buffer<i64>
 
 }
 
@@ -2263,9 +2291,9 @@ proc Reader {
 
   buffers {
 
-    line1: buffer[f64]
+    line1: buffer<f64>
 
-    line2: buffer[i64]
+    line2: buffer<i64>
 
   }
 
@@ -2327,9 +2355,9 @@ sample {
 
     assert_eq!(out_channels, 2);
 
-    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[f64]"));
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer<f64>"));
 
-    assert_eq!(instance.buffer_type(1).as_deref(), Some("buffer[i64]"));
+    assert_eq!(instance.buffer_type(1).as_deref(), Some("buffer<i64>"));
 
     assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
 
@@ -2417,7 +2445,7 @@ fn buffer_mono_read_uses_clamped_index_path() {
 
     assert_eq!(instance.buffer_name(0), Some("buf1"));
 
-    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[f32]"));
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer<f32>"));
 
     assert_eq!(instance.buffer_index("buf1"), Some(0));
 
@@ -2461,7 +2489,7 @@ fn buffer_i32_mono_read_uses_clamped_index_path() {
 
     assert_eq!(out_channels, 1);
 
-    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[i32]"));
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer<i32>"));
 
     let mut buf = vec![10_i32, 20_i32];
 
@@ -2499,7 +2527,7 @@ fn buffer_i64_mono_read_uses_clamped_index_path() {
 
     assert_eq!(out_channels, 1);
 
-    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[i64]"));
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer<i64>"));
 
     let mut buf = vec![10_i64, 20_i64];
 
@@ -2537,7 +2565,7 @@ fn buffer_bool_mono_read_uses_clamped_index_path() {
 
     assert_eq!(out_channels, 1);
 
-    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[bool]"));
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer<bool>"));
 
     let mut buf = vec![1_u8, 0_u8];
 
@@ -2565,11 +2593,11 @@ fn buffer_bool_mono_read_uses_clamped_index_path() {
 
 #[test]
 
-fn unsafe_builtins_support_mono_buffers() {
+fn indexed_access_supports_mono_buffers() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(BUFFER_MONO_UNSAFE_RW_EXAMPLE, frames);
+        compile_instance(BUFFER_MONO_RW_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 
@@ -2845,11 +2873,11 @@ fn buffer_stereo_two_dim_write_works() {
 
 #[test]
 
-fn unsafe_2d_builtins_support_multichannel_buffers() {
+fn indexed_access_supports_multichannel_buffers() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(BUFFER_STEREO_UNSAFE_2D_RW_EXAMPLE, frames);
+        compile_instance(BUFFER_STEREO_2D_RW_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 
@@ -3168,11 +3196,11 @@ fn def_buffer_typed_param_rejects_element_type_mismatch() {
 
 #[test]
 
-fn unsafe_builtins_support_top_level_arrays() {
+fn indexed_access_supports_top_level_arrays() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(UNSAFE_TOP_LEVEL_ARRAY_EXAMPLE, frames);
+        compile_instance(INDEXED_TOP_LEVEL_ARRAY_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 
@@ -3208,8 +3236,8 @@ init {
 
 sample {
   idx: i32 = 1
-  unsafe_write(buf, idx, level)
-  out1 = half(unsafe_read(buf, idx))
+  buf[idx] = level
+  out1 = half(buf[idx])
 }
 "#;
 
@@ -3806,7 +3834,7 @@ fn stdlib_buffer_read_linear_and_cubic_with_channel_compiles_and_runs() {
     let out = decode_planar_f32(&out_bytes);
 
     for sample in &out {
-        assert_near(*sample, 37.0, 1e-6);
+        assert_near(*sample, 42.0, 1e-6);
     }
 }
 
@@ -3846,7 +3874,7 @@ fn stdlib_buffer_is_auto_imported_for_arrays_and_buffers() {
     let out = decode_planar_f32(&out_bytes);
 
     for sample in &out {
-        assert_near(*sample, 34.5, 1e-6);
+        assert_near(*sample, 62.0, 1e-6);
     }
 }
 
@@ -8064,7 +8092,6 @@ fn proc_array_param_constructor_args_compiles_and_runs() {
 }
 
 #[test]
-
 fn proc_array_dynamic_index_reads_use_clamped_path() {
     let frames = 4;
 
@@ -8085,62 +8112,6 @@ fn proc_array_dynamic_index_reads_use_clamped_path() {
 }
 
 #[test]
-
-fn proc_array_dynamic_unsafe_read_bypasses_clamp_path() {
-    let frames = 4;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(PROC_ARRAY_DYNAMIC_UNSAFE_READ_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    for sample in &output {
-        assert_near(*sample, 0.75, 1e-6);
-    }
-}
-
-#[test]
-
-fn proc_array_dynamic_unsafe_write_bypasses_clamp_path() {
-    let frames = 4;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(PROC_ARRAY_DYNAMIC_UNSAFE_WRITE_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    for sample in &output {
-        assert_near(*sample, 2.0, 1e-6);
-    }
-}
-
-#[test]
-
-fn proc_array_dynamic_unsafe_oob_compiles() {
-    let frames = 4;
-
-    let (_instance, in_channels, out_channels) =
-        compile_instance(PROC_ARRAY_DYNAMIC_UNSAFE_OOB_COMPILES_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-}
-
-#[test]
-
 fn proc_array_constant_index_out_of_range_is_rejected() {
     let parsed = parse_program(PROC_ARRAY_CONSTANT_INDEX_OOB_REJECTED_EXAMPLE)
         .expect("parse should succeed");
@@ -9524,7 +9495,7 @@ fn explicit_mir_orc_struct_reserved_method_names_compile_and_run() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     for sample in &output {
-        assert_near(*sample, 5.0, 1e-6);
+        assert_near(*sample, 1.5, 1e-6);
     }
 }
 

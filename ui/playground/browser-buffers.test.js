@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  decodeWav,
+  decodeOndaBuffer,
+  encodeOndaBuffer,
   prepareBufferBindings,
-  UNBOUND_BUFFERS_MESSAGE,
 } from "./browser-buffers.js";
 
 function pcm16Wav({ channels = 2, sampleRate = 44_100, samples }) {
@@ -34,49 +34,7 @@ function pcm16Wav({ channels = 2, sampleRate = 44_100, samples }) {
   return bytes;
 }
 
-function float32Wav(samples) {
-  const dataLength = samples.length * 4;
-  const bytes = new Uint8Array(44 + dataLength);
-  const view = new DataView(bytes.buffer);
-  const text = (offset, value) => {
-    for (let index = 0; index < value.length; index += 1) {
-      bytes[offset + index] = value.charCodeAt(index);
-    }
-  };
-  text(0, "RIFF");
-  view.setUint32(4, 36 + dataLength, true);
-  text(8, "WAVE");
-  text(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 3, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, 48_000, true);
-  view.setUint32(28, 48_000 * 4, true);
-  view.setUint16(32, 4, true);
-  view.setUint16(34, 32, true);
-  text(36, "data");
-  view.setUint32(40, dataLength, true);
-  samples.forEach((sample, index) => view.setFloat32(44 + index * 4, sample, true));
-  return bytes;
-}
-
-test("decodes WAV frames into Onda's native interleaved f32 layout", () => {
-  const wav = pcm16Wav({ samples: [16_384, -16_384, 32_767, -32_768] });
-  const decoded = decodeWav(wav);
-
-  assert.equal(decoded.frames, 2);
-  assert.equal(decoded.channels, 2);
-  assert.equal(decoded.sampleRate, 44_100);
-  assert.deepEqual([...decoded.data], [0.5, -0.5, 32_767 / 32_768, -1]);
-});
-
-test("decodes IEEE-float WAV data without resampling", () => {
-  const decoded = decodeWav(float32Wav([0.125, -0.75]));
-  assert.equal(decoded.sampleRate, 48_000);
-  assert.deepEqual([...decoded.data], [0.125, -0.75]);
-});
-
-test("refuses to prepare bindings while any declared buffer is unbound", async () => {
+test("omits unbound buffers so the worklet can install neutral descriptors", async () => {
   const wav = pcm16Wav({ channels: 1, sampleRate: 48_000, samples: [8_192, -8_192] });
   const metadata = {
     compile: { sample_rate: 48_000, block_size: 256 },
@@ -91,10 +49,21 @@ test("refuses to prepare bindings while any declared buffer is unbound", async (
     "clip",
     { name: "clip.wav", arrayBuffer: async () => wav.buffer },
   ]]);
-  await assert.rejects(
-    prepareBufferBindings(metadata, files),
-    new RegExp(UNBOUND_BUFFERS_MESSAGE),
-  );
+  const projectApi = {
+    async decodeBufferFile(bytes) {
+      assert.deepEqual(bytes, wav);
+      return {
+        element: "f32",
+        data: new Float32Array([0.25, -0.25]),
+        frames: 2,
+        channels: 1,
+        sampleRate: 48_000,
+      };
+    },
+  };
+  const bindings = await prepareBufferBindings(metadata, files, projectApi);
+  assert.deepEqual(Object.keys(bindings), ["clip"]);
+  assert.equal(bindings.scratch, undefined);
 });
 
 test("prepares bindings from validated WAV files", async () => {
@@ -109,8 +78,53 @@ test("prepares bindings from validated WAV files", async () => {
     "clip",
     { name: "clip.wav", arrayBuffer: async () => wav.buffer },
   ]]);
-  const bindings = await prepareBufferBindings(metadata, files);
+  const projectApi = {
+    async decodeBufferFile(bytes, path) {
+      assert.deepEqual(bytes, wav);
+      assert.equal(path, "clip.wav");
+      return {
+        element: "f32",
+        data: new Float32Array([0.25, -0.25]),
+        frames: 2,
+        channels: 1,
+        sampleRate: 48_000,
+      };
+    },
+  };
+  const bindings = await prepareBufferBindings(metadata, files, projectApi);
 
   assert.deepEqual([...bindings.clip.data], [0.25, -0.25]);
   assert.equal(bindings.clip.frames, 2);
+});
+
+test("canonical Onda buffers round-trip every typed payload byte", async () => {
+  const encodedBindings = new Map();
+  const projectApi = {
+    async encodeBufferAsset(binding) {
+      const encoded = new Uint8Array([encodedBindings.size]);
+      encodedBindings.set(encoded, binding);
+      return encoded;
+    },
+    async decodeBufferAsset(encoded) {
+      return encodedBindings.get(encoded);
+    },
+  };
+  const cases = [
+    ["bool", new Uint8Array([0, 1])],
+    ["i32", new Int32Array([-2, 7])],
+    ["i64", new BigInt64Array([-2n, 9n])],
+    ["f32", new Float32Array([0.25, -0.5])],
+    ["f64", new Float64Array([0.25, -0.5])],
+  ];
+  for (const [scalar, data] of cases) {
+    const encoded = await encodeOndaBuffer({
+      data,
+      frames: 2,
+      channels: 1,
+      sampleRate: 48_000,
+    }, scalar, projectApi);
+    const decoded = await decodeOndaBuffer(encoded, projectApi);
+    assert.equal(decoded.scalar, scalar);
+    assert.deepEqual([...decoded.data], [...data]);
+  }
 });

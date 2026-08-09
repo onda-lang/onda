@@ -189,11 +189,17 @@ descriptor count or storage size is zero:
 - all four buffer-table arguments when `metadata.buffers` is empty;
 - an event payload when that event's `payload_size_bytes == 0`.
 
+Within a present `buffers` table, an individual null entry denotes an unbound buffer. Supply its
+neutral one-frame shape metadata as described by the processor ABI; reads return zero and writes
+are discarded by processor-owned storage. Fixed buffer arrays occupy contiguous physical entries;
+use `metadata.buffer_arrays` to map each logical group to its first entry and length instead of
+parsing generated names.
+
 When a surface is declared, its table is required even if the application considers it unused. In
-particular, a non-empty `metadata.buffers` list requires all four parallel tables and every entry
-must identify nonempty bound storage with a non-null pointer, positive frame/channel counts, and a
-finite positive sample rate. Every declared input and output channel must likewise have valid
-compile-block storage.
+particular, a non-empty `metadata.buffers` list requires all four parallel tables. Every entry has
+positive frame/channel counts and a finite positive sample rate, but its sample pointer may be null
+to select neutral storage. Every non-null sample pointer identifies nonempty bound storage. Every
+declared input and output channel must likewise have valid compile-block storage.
 
 The calling application also owns ordinary final-link dependencies and any thread-local
 floating-point policy required by its audio environment.

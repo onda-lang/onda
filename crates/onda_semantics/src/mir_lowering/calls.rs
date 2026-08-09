@@ -1,6 +1,183 @@
 use super::*;
 
 impl<'a> FunctionLowerer<'a> {
+    pub(super) fn materialize_buffer_reference(
+        &mut self,
+        reference: BufferBindingReference,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> MaterializedBufferReference {
+        match reference {
+            BufferBindingReference::Interface(buffer) => {
+                MaterializedBufferReference::Interface(buffer)
+            }
+            BufferBindingReference::Parameter(parameter) => {
+                MaterializedBufferReference::Parameter(parameter)
+            }
+            BufferBindingReference::InterfaceStateArray {
+                first,
+                len,
+                selector,
+            } => {
+                let selector = self.emit_temp(
+                    block,
+                    PrimitiveType::I32,
+                    Rvalue::Load(Place {
+                        base: PlaceBase::State(selector),
+                        projections: Vec::new(),
+                    }),
+                    location,
+                );
+                MaterializedBufferReference::Interface(onda_mir::BufferRef::ArrayElement {
+                    first,
+                    len,
+                    selector: selector.value,
+                    bounds: BoundsMode::Clamp,
+                })
+            }
+            BufferBindingReference::ParameterStateArray { span, selector } => {
+                let selector = self.emit_temp(
+                    block,
+                    PrimitiveType::I32,
+                    Rvalue::Load(Place {
+                        base: PlaceBase::State(selector),
+                        projections: Vec::new(),
+                    }),
+                    location,
+                );
+                MaterializedBufferReference::Parameter(onda_mir::BufferParamRef::ArrayElement {
+                    span,
+                    selector: selector.value,
+                    bounds: BoundsMode::Clamp,
+                })
+            }
+        }
+    }
+
+    pub(super) fn direct_buffer_reference(
+        &self,
+        name: &str,
+    ) -> Option<(BufferBindingReference, PrimitiveType)> {
+        match self.bindings.get(name).cloned() {
+            Some(Binding::BufferAlias(reference, element)) => Some((reference, element)),
+            Some(Binding::BufferParameter(parameter, element)) => Some((
+                BufferBindingReference::Parameter(onda_mir::BufferParamRef::Direct(parameter)),
+                element,
+            )),
+            _ => self
+                .runtime_globals
+                .and_then(|globals| globals.buffers.get(name).copied())
+                .map(|(buffer, element)| {
+                    (
+                        BufferBindingReference::Interface(onda_mir::BufferRef::Direct(buffer)),
+                        element,
+                    )
+                }),
+        }
+    }
+
+    pub(super) fn lower_buffer_alias_assignment(
+        &mut self,
+        name: &str,
+        expression: &Expr,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> Result<bool, MirLoweringError> {
+        let resolved = match expression {
+            Expr::Var { name: source, .. } => self.direct_buffer_reference(source),
+            Expr::Index { base, index, .. } => {
+                let parameter_array = match self.bindings.get(base).cloned() {
+                    Some(Binding::BufferParameterArray(span, element, len)) => {
+                        Some((span, element, len))
+                    }
+                    _ => None,
+                };
+                let interface_array = self
+                    .runtime_globals
+                    .and_then(|globals| globals.buffer_arrays.get(base).copied());
+                if parameter_array.is_none() && interface_array.is_none() {
+                    return Ok(false);
+                }
+                let selector = self.lower_expr(index, block)?;
+                let selector = self.coerce(selector, PrimitiveType::I32, block, index.loc())?;
+                let selector_state = self.runtime_globals.and_then(|globals| {
+                    globals
+                        .states
+                        .get(&runtime_buffer_alias_selector_symbol(name))
+                        .copied()
+                });
+                let selector = if let Some((state, state_ty)) = selector_state {
+                    debug_assert_eq!(state_ty, PrimitiveType::I32);
+                    self.push_statement(
+                        block,
+                        StatementKind::Assign {
+                            destination: Place {
+                                base: PlaceBase::State(state),
+                                projections: Vec::new(),
+                            },
+                            value: Rvalue::Use(selector.value),
+                        },
+                        location,
+                    );
+                    Err(state)
+                } else {
+                    Ok(self.snapshot(selector, block, index.loc()).value)
+                };
+                if let Some((span, element, _len)) = parameter_array {
+                    Some((
+                        match selector {
+                            Ok(selector) => BufferBindingReference::Parameter(
+                                onda_mir::BufferParamRef::ArrayElement {
+                                    span,
+                                    selector,
+                                    bounds: BoundsMode::Clamp,
+                                },
+                            ),
+                            Err(selector) => {
+                                BufferBindingReference::ParameterStateArray { span, selector }
+                            }
+                        },
+                        element,
+                    ))
+                } else {
+                    interface_array.map(|(first, element, len)| {
+                        (
+                            match selector {
+                                Ok(selector) => BufferBindingReference::Interface(
+                                    onda_mir::BufferRef::ArrayElement {
+                                        first,
+                                        len,
+                                        selector,
+                                        bounds: BoundsMode::Clamp,
+                                    },
+                                ),
+                                Err(selector) => BufferBindingReference::InterfaceStateArray {
+                                    first,
+                                    len,
+                                    selector,
+                                },
+                            },
+                            element,
+                        )
+                    })
+                }
+            }
+            _ => None,
+        };
+        let Some((reference, element)) = resolved else {
+            return Ok(false);
+        };
+        if self.bindings.contains_key(name) {
+            return Err(self.error(
+                format!("buffer-reference alias '{name}' conflicts with an existing binding"),
+                location,
+            ));
+        }
+        self.bindings
+            .insert(name.to_owned(), Binding::BufferAlias(reference, element));
+        Ok(true)
+    }
+
     pub(super) fn owner_struct_name(&self, root: &str) -> Option<&str> {
         match self.bindings.get(root) {
             Some(Binding::StructParameter { struct_name, .. })
@@ -708,8 +885,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         let active = self.lower_named_slice(
             &active_name,
-            None,
-            None,
+            SliceSelection::default(),
             Some(onda_mir::AccessMode::ReadWrite),
             block,
             expression.loc(),
@@ -746,8 +922,7 @@ impl<'a> FunctionLowerer<'a> {
             }
             let slice = self.lower_named_slice(
                 &flat,
-                None,
-                None,
+                SliceSelection::default(),
                 Some(onda_mir::AccessMode::ReadWrite),
                 block,
                 expression.loc(),
@@ -825,6 +1000,12 @@ impl<'a> FunctionLowerer<'a> {
                 let side_effect_free = matches!(expression, Expr::Var { .. })
                     || matches!(
                         expression,
+                        Expr::Index { base, .. }
+                            if self.runtime_globals.is_some_and(|globals| globals.buffer_arrays.contains_key(base))
+                                || matches!(self.bindings.get(base), Some(Binding::BufferParameterArray(..)))
+                    )
+                    || matches!(
+                        expression,
                         Expr::UserCall { name, .. }
                             if name == PROC_INDEX_BUFFER_SELECT_SENTINEL
                     );
@@ -842,6 +1023,31 @@ impl<'a> FunctionLowerer<'a> {
                 // evaluates them. Slot alternatives are direct resources.
                 Ok(PreparedCallArgument::DirectReference(expression.clone()))
             }
+            TypedFnParam::BufferArray { .. } => {
+                let valid_shape = matches!(expression, Expr::Var { .. })
+                    || matches!(
+                        expression,
+                        Expr::Slice {
+                            selector: None,
+                            channel: None,
+                            ..
+                        }
+                    )
+                    || matches!(
+                        expression,
+                        Expr::UserCall { name, .. }
+                            if name == PROC_INDEX_BUFFER_SELECT_SENTINEL
+                    );
+                if !valid_shape {
+                    return Err(self.error(
+                        format!(
+                            "call to '{callee_name}' buffer collection parameter '{param_name}' requires a buffer collection or static collection slice"
+                        ),
+                        expression.loc(),
+                    ));
+                }
+                Ok(PreparedCallArgument::DirectReference(expression.clone()))
+            }
             TypedFnParam::ProcArray { .. } | TypedFnParam::StructArray { .. } => {
                 if !matches!(expression, Expr::Var { .. }) {
                     return Err(self.error(
@@ -854,6 +1060,118 @@ impl<'a> FunctionLowerer<'a> {
                 Ok(PreparedCallArgument::DirectReference(expression.clone()))
             }
         }
+    }
+
+    fn lower_buffer_array_call_arguments(
+        &self,
+        callee_name: &str,
+        param_name: &str,
+        expected_elem: PrimitiveType,
+        expected_len: usize,
+        expression: &Expr,
+        out: &mut Vec<CallArgument>,
+    ) -> Result<(), MirLoweringError> {
+        let (base, requested_start, requested_end) = match expression {
+            Expr::Var { name, .. } => (name.as_str(), None, None),
+            Expr::Slice {
+                base,
+                selector: None,
+                channel: None,
+                start,
+                end,
+                ..
+            } => (base.as_str(), start.as_deref(), end.as_deref()),
+            _ => {
+                return Err(self.error(
+                    format!(
+                        "call to '{callee_name}' buffer collection parameter '{param_name}' requires a buffer collection or static collection slice"
+                    ),
+                    expression.loc(),
+                ));
+            }
+        };
+
+        let (source, actual_elem, source_len) = if let Some(Binding::BufferParameterArray(
+            span,
+            elem,
+            len,
+        )) = self.bindings.get(base).cloned()
+        {
+            (BufferArrayCallSource::Parameters(span), elem, len)
+        } else if let Some((first, elem, len)) = self
+            .runtime_globals
+            .and_then(|globals| globals.buffer_arrays.get(base).copied())
+        {
+            (BufferArrayCallSource::Interface(first), elem, len)
+        } else {
+            return Err(self.error(
+                    format!(
+                        "call to '{callee_name}' buffer collection parameter '{param_name}' references non-collection buffer '{base}'"
+                    ),
+                    expression.loc(),
+                ));
+        };
+        if actual_elem != expected_elem {
+            return Err(self.error(
+                format!(
+                    "call to '{callee_name}' buffer collection parameter '{param_name}' expected {} elements, got {}",
+                    expected_elem.name(),
+                    actual_elem.name()
+                ),
+                expression.loc(),
+            ));
+        }
+
+        let static_bound = |bound: Option<&Expr>, default: i64, label: &str| {
+            bound.map_or(Ok(default), |bound| {
+                crate::try_constant_index_i64(bound).ok_or_else(|| {
+                    self.error(
+                        format!(
+                            "call to '{callee_name}' buffer collection parameter '{param_name}' requires a compile-time {label} bound"
+                        ),
+                        bound.loc(),
+                    )
+                })
+            })
+        };
+        let start = static_bound(requested_start, 0, "slice start")?;
+        let end = static_bound(requested_end, i64::from(source_len), "slice end")?;
+        if start < 0 || end < start || end > i64::from(source_len) {
+            return Err(self.error(
+                format!(
+                    "buffer collection slice '{base}[{start}:{end}]' is outside 0..{source_len}"
+                ),
+                expression.loc(),
+            ));
+        }
+        let actual_len = usize::try_from(end - start).unwrap_or(usize::MAX);
+        if actual_len != expected_len {
+            return Err(self.error(
+                format!(
+                    "call to '{callee_name}' buffer collection parameter '{param_name}' expects {expected_len} buffers, got {actual_len}"
+                ),
+                expression.loc(),
+            ));
+        }
+        let start = u32::try_from(start).expect("nonnegative collection slice start fits u32");
+        let len = u32::try_from(expected_len).map_err(|_| {
+            self.error(
+                format!(
+                    "call to '{callee_name}' buffer collection parameter '{param_name}' count does not fit u32"
+                ),
+                expression.loc(),
+            )
+        })?;
+        out.push(CallArgument::BufferSpan(match source {
+            BufferArrayCallSource::Interface(first) => onda_mir::BufferSpanRef::Interface {
+                first: onda_mir::BufferId::new(first.raw() + start),
+                len,
+            },
+            BufferArrayCallSource::Parameters(span) => {
+                onda_mir::BufferSpanRef::Parameter { span, start, len }
+            }
+        }));
+        Ok(())
     }
 
     pub(super) fn lower_user_call(
@@ -1178,7 +1496,7 @@ impl<'a> FunctionLowerer<'a> {
                                             choice.expr.loc(),
                                         ));
                                     }
-                                    CallArgument::Buffer(buffer)
+                                    CallArgument::Buffer(onda_mir::BufferRef::Direct(buffer))
                                 } else {
                                     return Err(self.error(
                                         format!(
@@ -1225,6 +1543,66 @@ impl<'a> FunctionLowerer<'a> {
                             continue;
                         }
                     }
+                    if let Expr::Index { base, index, .. } = expression {
+                        if let Some(Binding::BufferParameterArray(span, actual, _len)) =
+                            self.bindings.get(base).cloned()
+                        {
+                            if actual != *elem_ty {
+                                return Err(self.error(
+                                    format!(
+                                        "call to '{name}' buffer parameter '{param_name}' expected {} elements, got {}",
+                                        elem_ty.name(),
+                                        actual.name()
+                                    ),
+                                    expression.loc(),
+                                ));
+                            }
+                            let lowered = self.lower_expr(index, block)?;
+                            let selector = self
+                                .coerce(lowered, PrimitiveType::I32, block, index.loc())?
+                                .value;
+                            call_args.push(CallArgument::BufferParam(
+                                onda_mir::BufferParamRef::ArrayElement {
+                                    span,
+                                    selector,
+                                    bounds: BoundsMode::Clamp,
+                                },
+                            ));
+                            continue;
+                        }
+                        let Some((first, actual, len)) = self
+                            .runtime_globals
+                            .and_then(|globals| globals.buffer_arrays.get(base).copied())
+                        else {
+                            return Err(self.error(
+                                format!(
+                                    "call to '{name}' buffer parameter '{param_name}' references unsupported buffer array '{base}'"
+                                ),
+                                expression.loc(),
+                            ));
+                        };
+                        if actual != *elem_ty {
+                            return Err(self.error(
+                                format!(
+                                    "call to '{name}' buffer parameter '{param_name}' expected {} elements, got {}",
+                                    elem_ty.name(),
+                                    actual.name()
+                                ),
+                                expression.loc(),
+                            ));
+                        }
+                        let lowered = self.lower_expr(index, block)?;
+                        let selector = self
+                            .coerce(lowered, PrimitiveType::I32, block, index.loc())?
+                            .value;
+                        call_args.push(CallArgument::Buffer(onda_mir::BufferRef::ArrayElement {
+                            first,
+                            len,
+                            selector,
+                            bounds: BoundsMode::Clamp,
+                        }));
+                        continue;
+                    }
                     let Expr::Var {
                         name: buffer_name, ..
                     } = expression
@@ -1236,7 +1614,30 @@ impl<'a> FunctionLowerer<'a> {
                             expression.loc(),
                         ));
                     };
-                    if let Some(Binding::BufferParameter(parameter, actual)) =
+                    if let Some(Binding::BufferAlias(reference, actual)) =
+                        self.bindings.get(buffer_name).cloned()
+                    {
+                        if actual != *elem_ty {
+                            return Err(self.error(
+                                format!(
+                                    "call to '{name}' buffer parameter '{param_name}' expected {} elements, got {}",
+                                    elem_ty.name(),
+                                    actual.name()
+                                ),
+                                expression.loc(),
+                            ));
+                        }
+                        let reference =
+                            self.materialize_buffer_reference(reference, block, expression.loc());
+                        call_args.push(match reference {
+                            MaterializedBufferReference::Interface(buffer) => {
+                                CallArgument::Buffer(buffer)
+                            }
+                            MaterializedBufferReference::Parameter(parameter) => {
+                                CallArgument::BufferParam(parameter)
+                            }
+                        });
+                    } else if let Some(Binding::BufferParameter(parameter, actual)) =
                         self.bindings.get(buffer_name).cloned()
                     {
                         if actual != *elem_ty {
@@ -1267,7 +1668,7 @@ impl<'a> FunctionLowerer<'a> {
                                 expression.loc(),
                             ));
                         }
-                        call_args.push(CallArgument::Buffer(buffer));
+                        call_args.push(CallArgument::Buffer(onda_mir::BufferRef::Direct(buffer)));
                     } else {
                         return Err(self.error(
                             format!(
@@ -1276,6 +1677,80 @@ impl<'a> FunctionLowerer<'a> {
                             expression.loc(),
                         ));
                     }
+                }
+                TypedFnParam::BufferArray { elem_ty, len, .. } => {
+                    let PreparedCallArgument::DirectReference(prepared_expression) = prepared
+                    else {
+                        return Err(self.error(
+                            format!(
+                                "call to '{name}' buffer collection parameter '{param_name}' has a non-reference prepared argument"
+                            ),
+                            expression.loc(),
+                        ));
+                    };
+                    if let Expr::UserCall {
+                        name: selector,
+                        args: selector_args,
+                        ..
+                    } = &prepared_expression
+                    {
+                        if selector == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+                            let Some(dispatch) = pending_dispatch.as_mut() else {
+                                return Err(self.error(
+                                    format!(
+                                        "call to '{name}' has a processor-indexed buffer collection selector without a matching processor dispatch"
+                                    ),
+                                    prepared_expression.loc(),
+                                ));
+                            };
+                            let mut alternatives = Vec::<Vec<CallArgument>>::new();
+                            for choice in selector_args.iter().filter(|argument| {
+                                !matches!(
+                                    argument.name.as_deref(),
+                                    Some(PROC_INDEX_BASE_ARG | PROC_INDEX_EXPR_ARG)
+                                )
+                            }) {
+                                let mut expanded = Vec::with_capacity(*len);
+                                self.lower_buffer_array_call_arguments(
+                                    name,
+                                    param_name,
+                                    *elem_ty,
+                                    *len,
+                                    &choice.expr,
+                                    &mut expanded,
+                                )?;
+                                alternatives.push(expanded);
+                            }
+                            if alternatives.len() != dispatch.alternatives.len() {
+                                return Err(self.error(
+                                    format!(
+                                        "call to '{name}' processor-indexed buffer collection selector has {} alternatives, expected {}",
+                                        alternatives.len(),
+                                        dispatch.alternatives.len()
+                                    ),
+                                    prepared_expression.loc(),
+                                ));
+                            }
+                            for physical_slot in 0..*len {
+                                let choices = alternatives
+                                    .iter()
+                                    .map(|alternative| alternative[physical_slot].clone())
+                                    .collect::<Vec<_>>();
+                                let argument_index = call_args.len();
+                                call_args.push(choices[0].clone());
+                                dispatch.slot_arguments.push((argument_index, choices));
+                            }
+                            continue;
+                        }
+                    }
+                    self.lower_buffer_array_call_arguments(
+                        name,
+                        param_name,
+                        *elem_ty,
+                        *len,
+                        &prepared_expression,
+                        &mut call_args,
+                    )?;
                 }
                 TypedFnParam::Struct { struct_name } => {
                     let (prepared_expression, indexed_argument) = match prepared {
@@ -1763,8 +2238,7 @@ impl<'a> FunctionLowerer<'a> {
                             }
                             let slice = self.lower_named_slice(
                                 &flat,
-                                None,
-                                None,
+                                SliceSelection::default(),
                                 Some(onda_mir::AccessMode::ReadWrite),
                                 block,
                                 expression.loc(),
@@ -1968,6 +2442,71 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<Option<LoweredValue>, MirLoweringError> {
+        if let Some(method) = name
+            .strip_prefix(PROC_INDEX_CALL_SENTINEL)
+            .and_then(|suffix| suffix.strip_prefix('.'))
+        {
+            let operation = match method {
+                crate::builtins::ARRAY_LEN_METHOD => Some((PrimitiveType::I32, 0_u8)),
+                crate::builtins::BUFFER_CHANS_METHOD => Some((PrimitiveType::I32, 1_u8)),
+                crate::builtins::BUFFER_SAMPLERATE_METHOD => Some((PrimitiveType::F32, 2_u8)),
+                _ => None,
+            };
+            if let Some((ty, operation)) = operation {
+                let base = args
+                    .iter()
+                    .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG))
+                    .and_then(|arg| match &arg.expr {
+                        Expr::Var { name, .. } => Some(name.as_str()),
+                        _ => None,
+                    });
+                let selector = args
+                    .iter()
+                    .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG));
+                if let (Some(base), Some(selector)) = (base, selector) {
+                    if let Some(Binding::BufferParameterArray(span, _, _len)) =
+                        self.bindings.get(base).cloned()
+                    {
+                        let lowered = self.lower_expr(&selector.expr, block)?;
+                        let selector = self
+                            .coerce(lowered, PrimitiveType::I32, block, selector.expr.loc())?
+                            .value;
+                        let buffer = onda_mir::BufferParamRef::ArrayElement {
+                            span,
+                            selector,
+                            bounds: BoundsMode::Clamp,
+                        };
+                        let rvalue = match operation {
+                            0 => Rvalue::BufferParamLen(buffer),
+                            1 => Rvalue::BufferParamChannels(buffer),
+                            _ => Rvalue::BufferParamSampleRate(buffer),
+                        };
+                        return Ok(Some(self.emit_temp(block, ty, rvalue, location)));
+                    }
+                    if let Some((first, _, len)) = self
+                        .runtime_globals
+                        .and_then(|globals| globals.buffer_arrays.get(base).copied())
+                    {
+                        let lowered = self.lower_expr(&selector.expr, block)?;
+                        let selector = self
+                            .coerce(lowered, PrimitiveType::I32, block, selector.expr.loc())?
+                            .value;
+                        let buffer = onda_mir::BufferRef::ArrayElement {
+                            first,
+                            len,
+                            selector,
+                            bounds: BoundsMode::Clamp,
+                        };
+                        let rvalue = match operation {
+                            0 => Rvalue::BufferLen(buffer),
+                            1 => Rvalue::BufferChannels(buffer),
+                            _ => Rvalue::BufferSampleRate(buffer),
+                        };
+                        return Ok(Some(self.emit_temp(block, ty, rvalue, location)));
+                    }
+                }
+            }
+        }
         if let Some(base) = parse_array_len_instance_base(name) {
             if let Some(Binding::StructArrayParameter { length, .. }) =
                 self.bindings.get(base).cloned()
@@ -2018,6 +2557,20 @@ impl<'a> FunctionLowerer<'a> {
                 if !args.is_empty() {
                     return Err(self.error(
                         format!("array length call '{name}' unexpectedly has arguments"),
+                        location,
+                    ));
+                }
+                return Ok(Some(LoweredValue {
+                    value: Value::Constant(ScalarValue::I32(*len as i32)),
+                    ty: PrimitiveType::I32,
+                }));
+            }
+            if let Some(Binding::BufferParameterArray(_, _, len)) = self.bindings.get(base) {
+                if !args.is_empty() {
+                    return Err(self.error(
+                        format!(
+                            "buffer collection length call '{name}' unexpectedly has arguments"
+                        ),
                         location,
                     ));
                 }
@@ -2084,6 +2637,7 @@ impl<'a> FunctionLowerer<'a> {
                                     .map(|(_, _, len)| *len)
                             })
                             .or_else(|| globals.param_arrays.get(base).map(|(_, _, len)| *len))
+                            .or_else(|| globals.buffer_arrays.get(base).map(|(_, _, len)| *len))
                     })
                 });
             if let Some(len) = array_len {
@@ -2109,36 +2663,29 @@ impl<'a> FunctionLowerer<'a> {
         let Some((base, ty, operation)) = metadata else {
             return Ok(None);
         };
-        if let Some(Binding::BufferParameter(parameter, _)) = self.bindings.get(base).cloned() {
-            if !args.is_empty() {
-                return Err(self.error(
-                    format!("buffer metadata call '{name}' unexpectedly has arguments"),
-                    location,
-                ));
-            }
-            let rvalue = match operation {
-                0 => Rvalue::BufferParamLen(parameter),
-                1 => Rvalue::BufferParamChannels(parameter),
-                _ => Rvalue::BufferParamSampleRate(parameter),
-            };
-            return Ok(Some(self.emit_temp(block, ty, rvalue, location)));
-        }
-        let buffer = self
-            .runtime_globals
-            .and_then(|globals| globals.buffers.get(base).copied());
-        let Some((buffer, _)) = buffer else {
+        let Some((reference, _)) = self.direct_buffer_reference(base) else {
             return Ok(None);
         };
+        let reference = self.materialize_buffer_reference(reference, block, location);
         if !args.is_empty() {
             return Err(self.error(
                 format!("buffer metadata call '{name}' unexpectedly has arguments"),
                 location,
             ));
         }
-        let rvalue = match operation {
-            0 => Rvalue::BufferLen(buffer),
-            1 => Rvalue::BufferChannels(buffer),
-            _ => Rvalue::BufferSampleRate(buffer),
+        let rvalue = match (reference, operation) {
+            (MaterializedBufferReference::Interface(buffer), 0) => Rvalue::BufferLen(buffer),
+            (MaterializedBufferReference::Interface(buffer), 1) => Rvalue::BufferChannels(buffer),
+            (MaterializedBufferReference::Interface(buffer), _) => Rvalue::BufferSampleRate(buffer),
+            (MaterializedBufferReference::Parameter(parameter), 0) => {
+                Rvalue::BufferParamLen(parameter)
+            }
+            (MaterializedBufferReference::Parameter(parameter), 1) => {
+                Rvalue::BufferParamChannels(parameter)
+            }
+            (MaterializedBufferReference::Parameter(parameter), _) => {
+                Rvalue::BufferParamSampleRate(parameter)
+            }
         };
         Ok(Some(self.emit_temp(block, ty, rvalue, location)))
     }
@@ -2150,25 +2697,33 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<Option<LoweredValue>, MirLoweringError> {
-        let (base, operands, has_channel, bounds) = if name == INTERNAL_BUFFER_READ2_FN {
-            let base = call_resource_base(name, args, location)?;
-            (base, &args[1..], true, BoundsMode::Clamp)
-        } else if name == UNSAFE_READ_FN || name == UNSAFE_READ2_FN {
+        let (base, operands, syntax_channels, bounds) = if matches!(
+            name,
+            INTERNAL_BUFFER_READ2_FN | INTERNAL_BUFFER_READ3_FN | INTERNAL_BUFFER_READ_CHANNEL_FN
+        ) {
             let base = call_resource_base(name, args, location)?;
             (
                 base,
                 &args[1..],
-                name == UNSAFE_READ2_FN,
-                BoundsMode::Checked,
+                matches!(
+                    name,
+                    INTERNAL_BUFFER_READ3_FN | INTERNAL_BUFFER_READ_CHANNEL_FN
+                ),
+                BoundsMode::Clamp,
             )
-        } else if let Some(base) = parse_unsafe_read_instance_base(name) {
-            (base.to_owned(), args, false, BoundsMode::Checked)
-        } else if let Some(base) = parse_unsafe_read2_instance_base(name) {
-            (base.to_owned(), args, true, BoundsMode::Checked)
         } else {
             return Ok(None);
         };
-        let expected = if has_channel { 2 } else { 1 };
+        let buffer_array = self
+            .runtime_globals
+            .and_then(|globals| globals.buffer_arrays.get(&base).copied());
+        let buffer_param_array = match self.bindings.get(&base).cloned() {
+            Some(Binding::BufferParameterArray(span, ty, len)) => Some((span, ty, len)),
+            _ => None,
+        };
+        let has_selector = buffer_array.is_some() || buffer_param_array.is_some();
+        let has_channel = syntax_channels;
+        let expected = usize::from(has_selector) + usize::from(has_channel) + 1;
         if operands.len() != expected {
             return Err(self.error(
                 format!("resource read '{name}' expected {expected} index arguments"),
@@ -2180,10 +2735,15 @@ impl<'a> FunctionLowerer<'a> {
             let value = self.lower_expr(&arg.expr, block)?;
             lowered.push(self.coerce(value, PrimitiveType::I32, block, arg.expr.loc())?);
         }
+        let selector = has_selector.then_some(lowered[0].value);
+        let first_operand = usize::from(has_selector);
         let (channel, index) = if has_channel {
-            (Some(lowered[0].value), lowered[1].value)
+            (
+                Some(lowered[first_operand].value),
+                lowered[first_operand + 1].value,
+            )
         } else {
-            (None, lowered[0].value)
+            (None, lowered[first_operand].value)
         };
 
         if !has_channel {
@@ -2349,12 +2909,16 @@ impl<'a> FunctionLowerer<'a> {
                 )));
             }
         }
-        if let Some(Binding::BufferParameter(parameter, ty)) = self.bindings.get(&base).cloned() {
+        if let Some((span, ty, _len)) = buffer_param_array {
             return Ok(Some(self.emit_temp(
                 block,
                 ty,
                 Rvalue::BufferParamLoad {
-                    parameter,
+                    parameter: onda_mir::BufferParamRef::ArrayElement {
+                        span,
+                        selector: selector.expect("buffer parameter array selector was lowered"),
+                        bounds,
+                    },
                     channel,
                     index,
                     bounds,
@@ -2362,26 +2926,46 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             )));
         }
-        let buffer = self
-            .runtime_globals
-            .and_then(|globals| globals.buffers.get(&base).copied());
-        let Some((buffer, ty)) = buffer else {
+        if let Some((first, ty, len)) = buffer_array {
+            return Ok(Some(self.emit_temp(
+                block,
+                ty,
+                Rvalue::BufferLoad {
+                    buffer: onda_mir::BufferRef::ArrayElement {
+                        first,
+                        len,
+                        selector: selector.expect("buffer array selector was lowered"),
+                        bounds,
+                    },
+                    channel,
+                    index,
+                    bounds,
+                },
+                location,
+            )));
+        }
+        let Some((reference, ty)) = self.direct_buffer_reference(&base) else {
             return Err(self.error(
                 format!("resource read '{name}' references unsupported base '{base}'"),
                 location,
             ));
         };
-        Ok(Some(self.emit_temp(
-            block,
-            ty,
-            Rvalue::BufferLoad {
+        let reference = self.materialize_buffer_reference(reference, block, location);
+        let rvalue = match reference {
+            MaterializedBufferReference::Interface(buffer) => Rvalue::BufferLoad {
                 buffer,
                 channel,
                 index,
                 bounds,
             },
-            location,
-        )))
+            MaterializedBufferReference::Parameter(parameter) => Rvalue::BufferParamLoad {
+                parameter,
+                channel,
+                index,
+                bounds,
+            },
+        };
+        Ok(Some(self.emit_temp(block, ty, rvalue, location)))
     }
 
     pub(super) fn lower_buffer_write_call(
@@ -2391,25 +2975,35 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<bool, MirLoweringError> {
-        let (base, operands, has_channel, bounds) = if name == INTERNAL_BUFFER_WRITE2_FN {
-            let base = call_resource_base(name, args, location)?;
-            (base, &args[1..], true, BoundsMode::Clamp)
-        } else if name == UNSAFE_WRITE_FN || name == UNSAFE_WRITE2_FN {
+        let (base, operands, syntax_channels, bounds) = if matches!(
+            name,
+            INTERNAL_BUFFER_WRITE2_FN
+                | INTERNAL_BUFFER_WRITE3_FN
+                | INTERNAL_BUFFER_WRITE_CHANNEL_FN
+        ) {
             let base = call_resource_base(name, args, location)?;
             (
                 base,
                 &args[1..],
-                name == UNSAFE_WRITE2_FN,
-                BoundsMode::Checked,
+                matches!(
+                    name,
+                    INTERNAL_BUFFER_WRITE3_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
+                ),
+                BoundsMode::Clamp,
             )
-        } else if let Some(base) = parse_unsafe_write_instance_base(name) {
-            (base.to_owned(), args, false, BoundsMode::Checked)
-        } else if let Some(base) = parse_unsafe_write2_instance_base(name) {
-            (base.to_owned(), args, true, BoundsMode::Checked)
         } else {
             return Ok(false);
         };
-        let expected = if has_channel { 3 } else { 2 };
+        let buffer_array = self
+            .runtime_globals
+            .and_then(|globals| globals.buffer_arrays.get(&base).copied());
+        let buffer_param_array = match self.bindings.get(&base).cloned() {
+            Some(Binding::BufferParameterArray(span, ty, len)) => Some((span, ty, len)),
+            _ => None,
+        };
+        let has_selector = buffer_array.is_some() || buffer_param_array.is_some();
+        let has_channel = syntax_channels;
+        let expected = usize::from(has_selector) + usize::from(has_channel) + 2;
         if operands.len() != expected {
             return Err(self.error(
                 format!(
@@ -2428,10 +3022,12 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
         let value_arg = &operands[expected - 1].expr;
+        let selector = has_selector.then_some(indices[0]);
+        let first_operand = usize::from(has_selector);
         let (channel, index) = if has_channel {
-            (Some(indices[0]), indices[1])
+            (Some(indices[first_operand]), indices[first_operand + 1])
         } else {
-            (None, indices[0])
+            (None, indices[first_operand])
         };
 
         if !has_channel {
@@ -2549,13 +3145,17 @@ impl<'a> FunctionLowerer<'a> {
                 return Ok(true);
             }
         }
-        if let Some(Binding::BufferParameter(parameter, ty)) = self.bindings.get(&base).cloned() {
+        if let Some((span, ty, _len)) = buffer_param_array {
             let value = self.lower_expr(value_arg, block)?;
             let value = self.coerce(value, ty, block, value_arg.loc())?;
             self.push_statement(
                 block,
                 StatementKind::BufferParamStore {
-                    parameter,
+                    parameter: onda_mir::BufferParamRef::ArrayElement {
+                        span,
+                        selector: selector.expect("buffer parameter array selector was lowered"),
+                        bounds,
+                    },
                     channel,
                     index,
                     value: value.value,
@@ -2565,28 +3165,54 @@ impl<'a> FunctionLowerer<'a> {
             );
             return Ok(true);
         }
-        let buffer = self
-            .runtime_globals
-            .and_then(|globals| globals.buffers.get(&base).copied());
-        let Some((buffer, ty)) = buffer else {
+        if let Some((first, ty, len)) = buffer_array {
+            let buffer = onda_mir::BufferRef::ArrayElement {
+                first,
+                len,
+                selector: selector.expect("buffer array selector was lowered"),
+                bounds,
+            };
+            let value = self.lower_expr(value_arg, block)?;
+            let value = self.coerce(value, ty, block, value_arg.loc())?;
+            self.push_statement(
+                block,
+                StatementKind::BufferStore {
+                    buffer,
+                    channel,
+                    index,
+                    value: value.value,
+                    bounds,
+                },
+                location,
+            );
+            return Ok(true);
+        }
+        let Some((reference, ty)) = self.direct_buffer_reference(&base) else {
             return Err(self.error(
                 format!("resource write '{name}' references unsupported base '{base}'"),
                 location,
             ));
         };
+        let reference = self.materialize_buffer_reference(reference, block, location);
         let value = self.lower_expr(value_arg, block)?;
         let value = self.coerce(value, ty, block, value_arg.loc())?;
-        self.push_statement(
-            block,
-            StatementKind::BufferStore {
+        let statement = match reference {
+            MaterializedBufferReference::Interface(buffer) => StatementKind::BufferStore {
                 buffer,
                 channel,
                 index,
                 value: value.value,
                 bounds,
             },
-            location,
-        );
+            MaterializedBufferReference::Parameter(parameter) => StatementKind::BufferParamStore {
+                parameter,
+                channel,
+                index,
+                value: value.value,
+                bounds,
+            },
+        };
+        self.push_statement(block, statement, location);
         Ok(true)
     }
 }

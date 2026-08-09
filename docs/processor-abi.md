@@ -179,10 +179,12 @@ host passes null exactly when the corresponding surface is absent:
 
 A declared surface is not absent merely because the application does not use it. Every declared
 input/output slot requires valid compile-block storage. A non-empty buffer declaration list
-requires all four parallel tables, and every individual entry must have a non-null data pointer,
-positive frame/channel counts, and a finite positive sample rate. An unbound buffer is a host state
-and must not be passed to generated code. This rule lets generated code omit redundant binding and
-empty-range branches while keeping zero-surface processors minimal.
+requires all four parallel tables. Each descriptor has positive frame/channel counts and a finite
+positive sample rate. A null sample pointer denotes an unbound buffer; generated code redirects
+reads to processor-private zero storage and writes to distinct discard storage. Hosts give unbound buffers
+one frame, retain the declared channel count for exact-channel buffers, and use one channel for
+dynamic-channel buffers. This keeps omitted resource bindings neutral without exposing the
+implementation's separate read/write pointers to hosts.
 
 ## Segmented processing
 
@@ -249,16 +251,28 @@ parameters written through their typed/raw storage representation.
 
 External buffers use four parallel tables in declaration order:
 
-- `buffers`: data pointers.
+- `buffers`: writable sample pointers, with null entries denoting unbound buffers.
 - `buffer_frames`: i32 frame counts.
 - `buffer_channels`: i32 channel counts.
 - `buffer_sample_rates`: f32 sample rates.
 
+All four descriptor tables remain immutable for an entry-point call and do not overlap parameter,
+state, audio, or external-buffer sample storage. The non-overlap rule is between descriptor-table
+storage and the regions reached through non-null host storage pointers.
+
+Fixed resource arrays occupy contiguous physical slots. `metadata.buffer_arrays` records each
+logical group name, its first physical slot, and its length, so hosts can bind a whole bank without
+parsing generated slot names. Selection clamps once and computes `first + selector` in constant
+time. Each physical slot has its own `metadata.buffers[first + slot].may_write` value. A false value
+proves that reachable processor code does not write that slot; selectors that cannot be resolved
+statically conservatively mark every slot they may select.
+
 Samples use interleaved frame-major storage. Metadata declares scalar width, read/write access, and
 mono, static, or dynamic channel constraints. Every sample-rate entry is finite and positive,
-and every data pointer, frame count, and channel count denotes nonempty bound storage. Control
-outputs are state-backed values at declared physical offsets and may be observed between processor
-calls.
+and every non-null pointer, frame count, and channel count denotes nonempty prepared storage. Null
+buffer entries use processor-owned zero and discard storage.
+Control outputs are state-backed values at declared physical offsets and may be observed between
+processor calls.
 
 ## Numerical and failure behavior
 

@@ -1236,12 +1236,12 @@ sample {
     }
 }
 
-// ── Generic Def: buffer[T] param ────────────────────────────────────────────
+// ── Generic Def: buffer<T> param ────────────────────────────────────────────
 
 #[test]
 
 fn generic_def_buffer_t_param_compile_and_run() {
-    // Test that def with buffer[T] param compiles and monomorphizes correctly.
+    // Test that def with buffer<T> param compiles and monomorphizes correctly.
 
     // We only test compilation, not runtime, since buffer binding in tests is complex.
 
@@ -1251,11 +1251,11 @@ outs { out1 }
 
 buffers {
 
-  ext: buffer[f32]
+  ext: buffer<f32>
 
 }
 
-def read_first<T>(buf: buffer[T]) {
+def read_first<T>(buf: buffer<T>) {
 
   return buf[0]
 
@@ -1286,11 +1286,11 @@ outs { out1 }
 
 buffers {
 
-  ext: buffer[f32]
+  ext: buffer<f32>
 
 }
 
-def read_first<T>(buf: buffer[T]) {
+def read_first<T>(buf: buffer<T>) {
 
   return buf[0]
 
@@ -1310,12 +1310,12 @@ sample {
         .expect("semantic analysis should succeed");
 }
 
-// ── Generic Def: buffer[T[N]] param ─────────────────────────────────────────
+// ── Generic Def: buffer<T[N]> param ─────────────────────────────────────────
 
 #[test]
 
 fn generic_def_buffer_t_stereo_compile_and_run() {
-    // buffer[T[2]] — generic element type with explicit stereo channels.
+    // buffer<T[2]> — generic element type with explicit stereo channels.
 
     // Mirrors DEF_BUFFER_STEREO_PARAM_EXAMPLE but with generic T.
 
@@ -1323,7 +1323,7 @@ fn generic_def_buffer_t_stereo_compile_and_run() {
 
 buffers {
 
-  buf1: buffer[f32[2]]
+  buf1: buffer<f32[2]>
 
 }
 
@@ -1333,9 +1333,9 @@ outs {
 
 }
 
-def read_r<T>(b: buffer[T[2]], i: i32) {
+def read_r<T>(b: buffer<T[2]>, i: i32) {
 
-  return b[1][i]
+  return b[1, i]
 
 }
 
@@ -1395,13 +1395,13 @@ sample {
 #[test]
 
 fn generic_def_buffer_t_mono_inferred_compile_and_run() {
-    // buffer[T] with mono buffer — T inferred from argument.
+    // buffer<T> with mono buffer — T inferred from argument.
 
     let src = r#"
 
 buffers {
 
-  buf1: buffer[f32]
+  buf1: buffer<f32>
 
 }
 
@@ -1411,7 +1411,7 @@ outs {
 
 }
 
-def read_first<T>(b: buffer[T]) {
+def read_first<T>(b: buffer<T>) {
 
   return b[0]
 
@@ -1682,7 +1682,7 @@ sample {
 #[test]
 
 fn generic_def_buffer_f64_compile_and_run() {
-    // buffer[T] with f64 buffer — verifies non-f32 buffer element type inference.
+    // buffer<T> with f64 buffer — verifies non-f32 buffer element type inference.
 
     let src = r#"
 
@@ -1690,11 +1690,11 @@ outs { out1 }
 
 buffers {
 
-  ext: buffer[f64]
+  ext: buffer<f64>
 
 }
 
-def read_first<T>(buf: buffer[T]) {
+def read_first<T>(buf: buffer<T>) {
 
   return buf[0]
 
@@ -1741,7 +1741,7 @@ sample {
 #[test]
 
 fn generic_def_buffer_i32_compile_and_run() {
-    // buffer[T] with i32 buffer.
+    // buffer<T> with i32 buffer.
 
     let src = r#"
 
@@ -1749,11 +1749,11 @@ outs { out1 }
 
 buffers {
 
-  ext: buffer[i32]
+  ext: buffer<i32>
 
 }
 
-def read_first<T>(buf: buffer[T]) {
+def read_first<T>(buf: buffer<T>) {
 
   return f32(buf[0])
 
@@ -1860,7 +1860,7 @@ sample {
 #[test]
 
 fn generic_def_scalar_t_and_buffer_t_compile_and_run() {
-    // T used as both scalar param and buffer[T] in same def.
+    // T used as both scalar param and buffer<T> in same def.
 
     let src = r#"
 
@@ -1868,11 +1868,11 @@ outs { out1 }
 
 buffers {
 
-  ext: buffer[f32]
+  ext: buffer<f32>
 
 }
 
-def weighted_read<T>(scale: T, buf: buffer[T]) {
+def weighted_read<T>(scale: T, buf: buffer<T>) {
 
   return buf[0] * scale
 
@@ -1919,7 +1919,7 @@ sample {
 #[test]
 
 fn generic_def_multiple_buffers_compile_and_run() {
-    // Two buffer[T] params in the same generic def.
+    // Two buffer<T> params in the same generic def.
 
     let src = r#"
 
@@ -1927,13 +1927,13 @@ outs { out1 }
 
 buffers {
 
-  a: buffer[f32]
+  a: buffer<f32>
 
-  b: buffer[f32]
+  b: buffer<f32>
 
 }
 
-def add_bufs<T>(b1: buffer[T], b2: buffer[T]) {
+def add_bufs<T>(b1: buffer<T>, b2: buffer<T>) {
 
   return b1[0] + b2[0]
 
@@ -2056,7 +2056,7 @@ sample {
     }
 }
 
-// ── Generic Def: T[N] / buffer[T[N]] with namespace params and consts ───────
+// ── Generic Def: T[N] / buffer<T[N]> with namespace params and consts ───────
 
 #[test]
 
@@ -2309,15 +2309,15 @@ sample {
 #[test]
 
 fn generic_def_buffer_t_namespace_channels_compile_and_run() {
-    // buffer[T[N]] where N is a namespace generic parameter for channel count.
+    // buffer<T[N]> where N is a namespace generic parameter for channel count.
 
     let src = r#"
 
 namespace IO<Channels = 2> {
 
-  def read_ch<T>(buf: buffer[T[Channels]], ch: i32) {
+  def read_ch<T>(buf: buffer<T[Channels]>, ch: i32) {
 
-    return buf[ch][0]
+    return buf[ch, 0]
 
   }
 
@@ -2327,7 +2327,7 @@ outs { out1 }
 
 buffers {
 
-  ext: buffer[f32[2]]
+  ext: buffer<f32[2]>
 
 }
 
@@ -2369,7 +2369,7 @@ sample {
 
     let out = decode_planar_f32(&out_bytes);
 
-    // buf[0][1] = right channel of frame 0 = 10.0 for every sample
+    // buf[1, 0] = right channel of frame 0 = 10.0 for every sample
 
     for sample in &out {
         assert_near(*sample, 10.0, 1e-6);
@@ -2379,7 +2379,7 @@ sample {
 #[test]
 
 fn generic_def_buffer_t_const_channels_compile_and_run() {
-    // buffer[T[CH]] where CH is a const.
+    // buffer<T[CH]> where CH is a const.
 
     let src = r#"
 
@@ -2389,13 +2389,13 @@ outs { out1 }
 
 buffers {
 
-  ext: buffer[f32[CH]]
+  ext: buffer<f32[CH]>
 
 }
 
-def sum_channels<T>(buf: buffer[T[CH]]) {
+def sum_channels<T>(buf: buffer<T[CH]>) {
 
-  return buf[0][0] + buf[1][0]
+  return buf[0, 0] + buf[1, 0]
 
 }
 
@@ -2437,7 +2437,7 @@ sample {
 
     let out = decode_planar_f32(&out_bytes);
 
-    // buf[0][0] + buf[1][0] = left ch + right ch of frame 0 = 3.0 + 7.0 = 10.0 for every sample
+    // buf[0, 0] + buf[1, 0] = left ch + right ch of frame 0 = 3.0 + 7.0 = 10.0 for every sample
 
     for sample in &out {
         assert_near(*sample, 10.0, 1e-6);

@@ -142,7 +142,7 @@ fn build_halfspeed_program(channels: usize) -> String {
         reads.push_str("  out1 = src[read_pos]\n");
     } else {
         for ch in 0..channels {
-            reads.push_str(&format!("  out{} = src[{ch}][read_pos]\n", ch + 1));
+            reads.push_str(&format!("  out{} = src[{ch}, read_pos]\n", ch + 1));
         }
     }
 

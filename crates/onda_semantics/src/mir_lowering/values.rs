@@ -80,6 +80,8 @@ impl<'a> FunctionLowerer<'a> {
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
                 | Binding::BufferParameter(_, _)
+                | Binding::BufferParameterArray(_, _, _)
+                | Binding::BufferAlias(_, _)
                 | Binding::Array(_, _, _)
                 | Binding::ArrayParameter(_, _, _)
                 | Binding::Slice(_, _, _)
@@ -128,6 +130,8 @@ impl<'a> FunctionLowerer<'a> {
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
                 | Binding::BufferParameter(_, _)
+                | Binding::BufferParameterArray(_, _, _)
+                | Binding::BufferAlias(_, _)
                 | Binding::Array(_, _, _)
                 | Binding::ArrayParameter(_, _, _)
                 | Binding::Slice(_, _, _)
@@ -181,6 +185,8 @@ impl<'a> FunctionLowerer<'a> {
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
                 | Binding::BufferParameter(_, _)
+                | Binding::BufferParameterArray(_, _, _)
+                | Binding::BufferAlias(_, _)
                 | Binding::Array(_, _, _)
                 | Binding::ArrayParameter(_, _, _)
                 | Binding::Slice(_, _, _)
@@ -1040,7 +1046,9 @@ impl<'a> FunctionLowerer<'a> {
                 CallArgument::SliceElement { .. } | CallArgument::SliceWindow { .. } => {
                     return None;
                 }
-                CallArgument::Buffer(_) => {}
+                CallArgument::Buffer(_)
+                | CallArgument::BufferParam(_)
+                | CallArgument::BufferSpan(_) => {}
             }
         }
         Some(regions)

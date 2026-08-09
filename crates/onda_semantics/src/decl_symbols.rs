@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use onda_frontend::PrimitiveType;
 
@@ -26,6 +29,8 @@ pub(crate) enum DeclaredSymbolInfo {
     Buffer {
         elem_ty: PrimitiveType,
         channels: BufferChannelInfo,
+        array_len: usize,
+        is_array: bool,
     },
     FunctionReturn {
         ty: PrimitiveType,
@@ -34,6 +39,36 @@ pub(crate) enum DeclaredSymbolInfo {
 }
 
 pub(crate) type DeclaredSymbolMap = HashMap<String, DeclaredSymbolInfo>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalBufferAliasInfo {
+    pub(crate) elem_ty: PrimitiveType,
+    pub(crate) channels: BufferChannelInfo,
+}
+
+pub(crate) type LocalBufferAliases = HashMap<String, LocalBufferAliasInfo>;
+
+pub(crate) fn with_local_buffer_aliases<'a>(
+    declared_symbols: &'a DeclaredSymbolMap,
+    aliases: &LocalBufferAliases,
+) -> Cow<'a, DeclaredSymbolMap> {
+    if aliases.is_empty() {
+        return Cow::Borrowed(declared_symbols);
+    }
+    let mut visible = declared_symbols.clone();
+    visible.extend(aliases.iter().map(|(name, alias)| {
+        (
+            name.clone(),
+            DeclaredSymbolInfo::Buffer {
+                elem_ty: alias.elem_ty,
+                channels: alias.channels,
+                array_len: 1,
+                is_array: false,
+            },
+        )
+    }));
+    Cow::Owned(visible)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeclaredScalarSymbolKind {
@@ -95,9 +130,21 @@ pub(crate) fn declared_buffer_info(
     name: &str,
 ) -> Option<(PrimitiveType, BufferChannelInfo)> {
     match declared_symbols.get(name) {
-        Some(DeclaredSymbolInfo::Buffer { elem_ty, channels }) => Some((*elem_ty, *channels)),
+        Some(DeclaredSymbolInfo::Buffer {
+            elem_ty, channels, ..
+        }) => Some((*elem_ty, *channels)),
         _ => None,
     }
+}
+
+pub(crate) fn is_declared_buffer_array_info(
+    declared_symbols: &DeclaredSymbolMap,
+    name: &str,
+) -> bool {
+    matches!(
+        declared_symbols.get(name),
+        Some(DeclaredSymbolInfo::Buffer { is_array: true, .. })
+    )
 }
 
 pub(crate) fn has_declared_buffer_symbol_info(
@@ -187,6 +234,8 @@ mod tests {
             DeclaredSymbolInfo::Buffer {
                 elem_ty: PrimitiveType::F64,
                 channels: BufferChannelInfo::Static(2),
+                array_len: 1,
+                is_array: false,
             },
         );
 
@@ -196,6 +245,8 @@ mod tests {
             Some(&DeclaredSymbolInfo::Buffer {
                 elem_ty: PrimitiveType::F64,
                 channels: BufferChannelInfo::Static(2),
+                array_len: 1,
+                is_array: false,
             })
         );
         assert!(has_declared_buffer_symbol_info(&declared_symbols, "buf"));
@@ -246,6 +297,8 @@ mod tests {
                 DeclaredSymbolInfo::Buffer {
                     elem_ty: PrimitiveType::F32,
                     channels: BufferChannelInfo::Mono,
+                    array_len: 1,
+                    is_array: false,
                 },
             ),
             (
@@ -253,6 +306,8 @@ mod tests {
                 DeclaredSymbolInfo::Buffer {
                     elem_ty: PrimitiveType::I32,
                     channels: BufferChannelInfo::Dynamic,
+                    array_len: 1,
+                    is_array: false,
                 },
             ),
         ]);

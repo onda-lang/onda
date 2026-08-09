@@ -180,6 +180,15 @@ fn build_aot_metadata_from_descriptors(
                 .collect(),
             params: metadata.params.iter().map(map_io_metadata).collect(),
             buffers: metadata.buffers.iter().map(map_buffer_metadata).collect(),
+            buffer_arrays: metadata
+                .buffer_arrays
+                .iter()
+                .map(|array| onda_processor_abi::BufferArrayMetadata {
+                    name: array.name().to_owned(),
+                    first_buffer: array.first(),
+                    len: array.len(),
+                })
+                .collect(),
             events: metadata
                 .events
                 .iter()

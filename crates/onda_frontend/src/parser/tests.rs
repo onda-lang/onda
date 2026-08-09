@@ -3,18 +3,19 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
-    ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg,
+    ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallArg, CallTypeArg,
     ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
-    FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, NamespaceItem, OutputTiming,
-    ParamScale, PrimitiveType, Stmt,
+    FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, LogicalOp, NamespaceItem,
+    OutputTiming, ParamScale, PrimitiveType, Stmt,
 };
 
 use super::{
-    load_program_file, load_program_file_from_virtual_sources, parse_program, parse_program_file,
-    parse_program_file_with_overlays, parse_program_with_path,
-    GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL, GRAPH_PROC_FIELD_INDEX_EXPR_ARG,
-    PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG,
-    PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
+    load_program_file, load_program_file_from_snapshot, load_program_file_from_virtual_sources,
+    parse_program, parse_program_file, parse_program_file_with_overlays, parse_program_with_path,
+    rewrite_source_references, SourceReferenceKind, SourceReferenceRewrite, SourceResolution,
+    UnresolvedSourceResolution, GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL,
+    GRAPH_PROC_FIELD_INDEX_EXPR_ARG, METHOD_RECEIVER_ARG, PROC_FIELD_SENTINEL_ARG,
+    PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
 
 fn mk_temp_dir(prefix: &str) -> PathBuf {
@@ -143,6 +144,44 @@ fn source_manifest_tracks_entry_and_transitive_user_sources() {
             fs::canonicalize(&imported).expect("canonical import"),
         ]
     );
+    assert_eq!(
+        loaded
+            .sources
+            .documents
+            .iter()
+            .map(|document| document.contents.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "include \"./shared.onda\"\nimport dsp\nimport std/math\nouts 1\nsample:\n  out1 = value\n",
+            "import nested\nconst shared = 1.0\n",
+            "const nested = 2.0\n",
+            "const value = 3.0\n",
+        ]
+    );
+    assert_eq!(
+        loaded.sources.resolutions,
+        vec![
+            SourceResolution {
+                source: fs::canonicalize(&main).expect("canonical entry"),
+                kind: SourceReferenceKind::Include,
+                specifier: "./shared.onda".to_owned(),
+                target: fs::canonicalize(&included).expect("canonical include"),
+            },
+            SourceResolution {
+                source: fs::canonicalize(&included).expect("canonical include"),
+                kind: SourceReferenceKind::Import,
+                specifier: "nested".to_owned(),
+                target: fs::canonicalize(&nested).expect("canonical nested import"),
+            },
+            SourceResolution {
+                source: fs::canonicalize(&main).expect("canonical entry"),
+                kind: SourceReferenceKind::Import,
+                specifier: "dsp".to_owned(),
+                target: fs::canonicalize(&imported).expect("canonical import"),
+            },
+        ]
+        .into_boxed_slice()
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -190,6 +229,19 @@ fn source_manifest_tracks_unresolved_user_source_candidates_separately() {
             dir.join("missing/module.on"),
         ]
     );
+    assert_eq!(
+        error.sources.unresolved_resolutions,
+        vec![UnresolvedSourceResolution {
+            source: fs::canonicalize(&main).expect("canonical entry"),
+            kind: SourceReferenceKind::Import,
+            specifier: "missing/module".to_owned(),
+            candidates: vec![
+                dir.join("missing/module.onda"),
+                dir.join("missing/module.on"),
+            ],
+        }]
+        .into_boxed_slice()
+    );
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -204,6 +256,16 @@ fn source_manifest_reports_the_exact_unresolved_include_candidate() {
     assert_eq!(
         error.sources.unresolved_files,
         vec![dir.join("missing/shared.onda")]
+    );
+    assert_eq!(
+        error.sources.unresolved_resolutions,
+        vec![UnresolvedSourceResolution {
+            source: fs::canonicalize(&main).expect("canonical entry"),
+            kind: SourceReferenceKind::Include,
+            specifier: "missing/shared.onda".to_owned(),
+            candidates: vec![dir.join("missing/shared.onda")],
+        }]
+        .into_boxed_slice()
     );
 
     fs::remove_dir_all(&dir).ok();
@@ -235,6 +297,82 @@ fn virtual_source_manifest_uses_normalized_project_paths() {
             root.join("dsp/filter.onda"),
         ]
     );
+}
+
+#[test]
+fn snapshot_replays_recorded_resolutions_without_filesystem_paths() {
+    let entry = PathBuf::from("C:/original/project/main.onda");
+    let dependency = PathBuf::from("/another-machine/shared/filter.onda");
+    let sources = std::collections::HashMap::from([
+        (
+            entry.clone(),
+            "include \"/absolute/shared/filter.onda\"\nouts 1\nsample:\n  out1 = value\n"
+                .to_owned(),
+        ),
+        (dependency.clone(), "const value = 0.25\n".to_owned()),
+    ]);
+    let resolutions = [SourceResolution {
+        source: entry.clone(),
+        kind: SourceReferenceKind::Include,
+        specifier: "/absolute/shared/filter.onda".to_owned(),
+        target: dependency.clone(),
+    }];
+
+    let loaded = load_program_file_from_snapshot(&entry, &sources, &resolutions)
+        .expect("recorded source graph should replay");
+    assert_eq!(loaded.sources.files, vec![entry, dependency]);
+    assert_eq!(loaded.sources.resolutions.as_ref(), resolutions.as_slice());
+}
+
+#[test]
+fn rewrites_only_parsed_source_reference_specifiers() {
+    let source = concat!(
+        "# include \"leave-this.onda\"\r\n",
+        "sample:\r\n",
+        "  out1 = 0.0\r\n",
+        "include \"old/shared.onda\" # preserve this comment\r\n",
+        "import old/module\r\n",
+        "import std/math\r\n",
+    );
+    let rewritten = rewrite_source_references(
+        Path::new("C:/saved/main.onda"),
+        source,
+        &[
+            SourceReferenceRewrite {
+                kind: SourceReferenceKind::Include,
+                specifier: "old/shared.onda".to_owned(),
+                replacement: "external/shared.onda".to_owned(),
+            },
+            SourceReferenceRewrite {
+                kind: SourceReferenceKind::Import,
+                specifier: "old/module".to_owned(),
+                replacement: "sources/module".to_owned(),
+            },
+        ],
+    )
+    .expect("rewrite source references");
+
+    assert_eq!(
+        rewritten,
+        concat!(
+            "# include \"leave-this.onda\"\r\n",
+            "sample:\r\n",
+            "  out1 = 0.0\r\n",
+            "include \"external/shared.onda\" # preserve this comment\r\n",
+            "import sources/module\r\n",
+            "import std/math\r\n",
+        )
+    );
+}
+
+#[test]
+fn source_reference_rewrite_rejects_an_incomplete_graph() {
+    let error =
+        rewrite_source_references(Path::new("main.onda"), "include \"dependency.onda\"\n", &[])
+            .expect_err("missing replacement should fail");
+    assert!(error[0]
+        .message
+        .contains("no replacement was provided for include"));
 }
 
 #[test]
@@ -364,6 +502,120 @@ sample {
         },
         _ => panic!("top-level should be addition"),
     }
+}
+
+#[test]
+fn prefix_operators_bind_tighter_than_every_infix_tier() {
+    let src = r#"
+outs 8
+sample {
+  out1 = -a + b
+  out2 = -a * b
+  out3 = !flag && other
+  out4 = ~bits & mask
+  out5 = -(a + b) * c
+  out6 = !-a
+  out7 = -f(a) * b
+  out8 = ~values[i] & mask
+}
+"#;
+    let program = parse_program(src).expect("prefix precedence program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+    let assigned_expr = |index: usize| match &sample[index] {
+        Stmt::Assign { expr, .. } => expr,
+        _ => panic!("statement {index} should be an assignment"),
+    };
+    let is_negated_var = |expr: &Expr, expected: &str| {
+        matches!(
+            expr,
+            Expr::Binary {
+                op: BinaryOp::Sub,
+                lhs,
+                rhs,
+                ..
+            } if matches!(lhs.as_ref(), Expr::Number { value, .. } if *value == 0.0)
+                && matches!(rhs.as_ref(), Expr::Var { name, .. } if name == expected)
+        )
+    };
+
+    assert!(matches!(
+        assigned_expr(0),
+        Expr::Binary {
+            op: BinaryOp::Add,
+            lhs,
+            ..
+        } if is_negated_var(lhs, "a")
+    ));
+    assert!(matches!(
+        assigned_expr(1),
+        Expr::Binary {
+            op: BinaryOp::Mul,
+            lhs,
+            ..
+        } if is_negated_var(lhs, "a")
+    ));
+    assert!(matches!(
+        assigned_expr(2),
+        Expr::Logical {
+            op: LogicalOp::And,
+            lhs,
+            ..
+        } if matches!(lhs.as_ref(), Expr::UnaryNot { expr, .. }
+            if matches!(expr.as_ref(), Expr::Var { name, .. } if name == "flag"))
+    ));
+    assert!(matches!(
+        assigned_expr(3),
+        Expr::Binary {
+            op: BinaryOp::BitAnd,
+            lhs,
+            ..
+        } if matches!(lhs.as_ref(), Expr::UnaryBitNot { expr, .. }
+            if matches!(expr.as_ref(), Expr::Var { name, .. } if name == "bits"))
+    ));
+    assert!(matches!(
+        assigned_expr(4),
+        Expr::Binary {
+            op: BinaryOp::Mul,
+            lhs,
+            ..
+        } if matches!(lhs.as_ref(), Expr::Binary {
+            op: BinaryOp::Sub,
+            rhs,
+            ..
+        } if matches!(rhs.as_ref(), Expr::Binary { op: BinaryOp::Add, .. }))
+    ));
+    assert!(matches!(
+        assigned_expr(5),
+        Expr::UnaryNot { expr, .. } if is_negated_var(expr, "a")
+    ));
+    assert!(matches!(
+        assigned_expr(6),
+        Expr::Binary {
+            op: BinaryOp::Mul,
+            lhs,
+            ..
+        } if matches!(lhs.as_ref(), Expr::Binary {
+            op: BinaryOp::Sub,
+            rhs,
+            ..
+        } if matches!(rhs.as_ref(), Expr::UserCall { name, .. } if name == "f"))
+    ));
+    assert!(matches!(
+        assigned_expr(7),
+        Expr::Binary {
+            op: BinaryOp::BitAnd,
+            lhs,
+            ..
+        } if matches!(lhs.as_ref(), Expr::UnaryBitNot { expr, .. }
+            if matches!(expr.as_ref(), Expr::Index { base, .. } if base == "values"))
+    ));
 }
 
 #[test]
@@ -1363,7 +1615,9 @@ sample {
             assert_eq!((target_loc.line, target_loc.column), (7, 3));
             assert_eq!(target_loc.end_line(), 7);
             match target {
-                AssignTarget::Slice { base, start, end } => {
+                AssignTarget::Slice {
+                    base, start, end, ..
+                } => {
                     assert_eq!(base, "buf");
                     assert!(start.is_some());
                     assert!(end.is_some());
@@ -2084,7 +2338,7 @@ fn parses_top_level_count_shorthand_with_section_default_types() {
 ins<f64> 2
 outs<i32> 1
 params<bool> 3
-buffers[f32] 2
+buffers<f32> 2
 sample { out1 = 0.0 }
 "#;
     let program = parse_program(src).expect("parse_program should succeed");
@@ -2191,11 +2445,13 @@ fn parses_top_level_buffers_block_and_count_shorthand() {
     let src_explicit = r#"
 buffers {
   buf1
-  buf2: buffer[f64]
-  buf3: buffer[f32[2]]
-  buf4: buffer[f32[]]
+  buf2: buffer<f64>
+  buf3: buffer<f32[2]>
+  buf4: buffer<f32[]>
   buf5: f32
   buf6: f64[2]
+  buf7: f32 {4}
+  buf8: f32[2] {count = 3}
 }
 sample { out1 = 0.0 }
 "#;
@@ -2208,7 +2464,7 @@ sample { out1 = 0.0 }
             _ => None,
         })
         .expect("buffers block");
-    assert_eq!(buffers.len(), 6);
+    assert_eq!(buffers.len(), 8);
     assert_eq!(buffers[0].name, "buf1");
     assert!(buffers[0].ty.is_none());
     assert_eq!(buffers[1].name, "buf2");
@@ -2238,6 +2494,12 @@ sample { out1 = 0.0 }
     ));
     assert!(matches!(
         buffers[5].ty.as_ref().map(|t| &t.channels),
+        Some(crate::ast::BufferChannels::Static(_))
+    ));
+    assert_deferred_int_count(&buffers[6].array_size, 4);
+    assert_deferred_int_count(&buffers[7].array_size, 3);
+    assert!(matches!(
+        buffers[7].ty.as_ref().map(|t| &t.channels),
         Some(crate::ast::BufferChannels::Static(_))
     ));
 
@@ -2286,7 +2548,7 @@ fn parses_proc_buffers_count_shorthand_from_namespace_param() {
     let src = r#"
 namespace DSP<N = 2>:
   proc Delay:
-    buffers[f32] N
+    buffers<f32> N
     outs 1
     sample:
       out1 = 0.0
@@ -2332,7 +2594,7 @@ fn parses_proc_buffers_block() {
     let src = r#"
 proc Delay {
   buffers {
-    line: buffer[f32[2]]
+    line: buffer<f32[2]>
   }
   outs { out1 }
   sample { out1 = 0.0 }
@@ -2353,12 +2615,12 @@ sample { out1 = 0.0 }
 }
 
 #[test]
-fn parses_two_dim_buffer_indexing_as_internal_calls() {
+fn parses_multichannel_buffer_indexing_as_internal_calls() {
     let src = r#"
-buffers { buf1: buffer[f32[2]] }
+buffers { buf1: buffer<f32[2]> }
 sample {
-  out1 = buf1[0][3]
-  buf1[1][2] = 0.5
+  out1 = buf1[0, 3]
+  buf1[1, 2] = 0.5
 }
 "#;
     let program = parse_program(src).expect("parse_program should succeed");
@@ -2374,20 +2636,20 @@ sample {
     match &sample[0] {
         Stmt::Assign { expr, .. } => match expr {
             Expr::UserCall { name, args, .. } => {
-                assert_eq!(name, "__onda_buffer_read2");
+                assert_eq!(name, "__onda_buffer_read_channel");
                 assert_eq!(args.len(), 3);
             }
-            _ => panic!("expected read2 user call"),
+            _ => panic!("expected channel-read user call"),
         },
         _ => panic!("expected assignment statement"),
     }
     match &sample[1] {
         Stmt::Expr { expr, .. } => match expr {
             Expr::UserCall { name, args, .. } => {
-                assert_eq!(name, "__onda_buffer_write2");
+                assert_eq!(name, "__onda_buffer_write_channel");
                 assert_eq!(args.len(), 4);
             }
-            _ => panic!("expected write2 user call"),
+            _ => panic!("expected channel-write user call"),
         },
         _ => panic!("expected expression statement"),
     }
@@ -2396,13 +2658,13 @@ sample {
 #[test]
 fn parses_def_buffer_typed_params() {
     let src = r#"
-def read_mono(b: buffer[f32]) {
+def read_mono(b: buffer<f32>) {
   return 0.0
 }
-def read_stereo(b: buffer[f32[2]]) {
+def read_stereo(b: buffer<f32[2]>) {
   return 0.0
 }
-def read_dyn(b: buffer[f32[]]) {
+def read_dyn(b: buffer<f32[]>) {
   return 0.0
 }
 sample { out1 = 0.0 }
@@ -2438,7 +2700,7 @@ proc Gain<T> {
   ins { in1: T, in2: T[2] }
   outs { out1: T }
   params { g: T = 1.0, coeffs: T[2] = [1.0, 0.5] }
-  buffers { b: buffer[T], m: buffer[T[2]], d: buffer[T[]] }
+  buffers { b: buffer<T>, m: buffer<T[2]>, d: buffer<T[]> }
   sample { out1 = in1 * g }
 }
 sample { out1 = 0.0 }
@@ -2495,7 +2757,7 @@ proc Fx<T> {
   ins<T> { in1, trig: bool }
   outs<T> { out1, meter: f32 }
   params<T> { gain = 1.0, mode: i32 = 0 }
-  buffers[T] { line, flags: i32 }
+  buffers<T> { line, flags: i32 }
   sample { out1 = in1 * gain; meter = f32(mode) }
 }
 sample { out1 = 0.0 }
@@ -2955,7 +3217,7 @@ proc Gain<T>:
     out1
   params<T>:
     g = 1.0
-  buffers[T]:
+  buffers<T>:
     line
   sample:
     out1 = in1 * g
@@ -3629,28 +3891,55 @@ sample {
     };
     match expr {
         Expr::UserCall { name, args, .. } => {
-            assert_eq!(name, &format!("{PROC_INDEX_CALL_SENTINEL}.note_on"));
-            assert!(
-                args.iter().any(|a| {
-                    a.name
-                        .as_ref()
-                        .map(|n| n == PROC_INDEX_BASE_ARG)
-                        .unwrap_or(false)
-                }),
-                "expected encoded index base argument"
-            );
-            assert!(
-                args.iter().any(|a| {
-                    a.name
-                        .as_ref()
-                        .map(|n| n == PROC_INDEX_EXPR_ARG)
-                        .unwrap_or(false)
-                }),
-                "expected encoded index expression argument"
-            );
+            assert_eq!(name, "note_on");
+            assert!(matches!(
+                args.first(),
+                Some(CallArg {
+                    name: Some(receiver_marker),
+                    expr: Expr::Index { base, .. },
+                }) if receiver_marker == METHOD_RECEIVER_ARG && base == "voices"
+            ));
         }
-        _ => panic!("expected encoded proc indexed event call expression"),
+        _ => panic!("expected receiver-desugared indexed method call"),
     }
+}
+
+#[test]
+fn indexed_method_syntax_preserves_a_neutral_receiver_argument() {
+    let src = r#"
+sample:
+  out1 = sources[slot].readCW(0, position)
+"#;
+    let program = parse_program(src).expect("indexed receiver method should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign {
+        expr: Expr::UserCall { name, args, .. },
+        ..
+    } = &sample[0]
+    else {
+        panic!("expected receiver-marked call");
+    };
+    assert_eq!(name, "readCW");
+    assert!(matches!(
+        args.first(),
+        Some(CallArg {
+            name: Some(receiver_marker),
+            expr: Expr::Index { base, .. },
+        }) if receiver_marker == METHOD_RECEIVER_ARG && base == "sources"
+    ));
+    assert!(args.iter().all(|arg| {
+        !matches!(
+            arg.name.as_deref(),
+            Some(PROC_INDEX_BASE_ARG | PROC_INDEX_EXPR_ARG)
+        )
+    }));
 }
 
 #[test]
@@ -4868,7 +5157,7 @@ init {
 fn parse_program_in_memory_supports_std_lookup_module() {
     let src = r#"
 import std/lookup
-buffers { b: buffer[f32[2]] }
+buffers { b: buffer<f32[2]> }
 outs { out1 }
 sample {
   out1 = std::lookup::read(b, 0, 1) + std::lookup::readL(b, 1, 0.5)
@@ -5826,14 +6115,14 @@ outs<
 >:
   out1
 
-buffers[
+buffers<
   f32
-]:
-  line: buffer[
+>:
+  line: buffer<
     f32[
       2
     ]
-  ]
+  >
   taps: f32[
     4
   ]

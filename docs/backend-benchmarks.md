@@ -61,11 +61,16 @@ The benchmark is a development diagnostic, with these safeguards:
    rather than a surprising table cell. Workloads may set a larger margin, but
    the default does not misclassify a narrow LLVM win as a failure.
 
-The checked-in scenarios have no audio inputs or external buffers and expose
-scalar f32 outputs. This keeps the measured ABI identical without claiming to
-cover browser scheduling, AudioWorklet copying, or host-buffer traffic. The Web Audio adapter has a
-separate cached-view/bulk-copy host path; backend numbers must not be presented as end-to-end browser
-render timings.
+The checked-in scenarios have no audio inputs and expose scalar f32 outputs. Buffer scenarios bind
+identically shaped, zero-initialized storage on both backends: mono and statically shaped buffers
+use their declared channel count, while dynamic-channel buffers use two channels. The buffer
+collection scenarios separately exercise constant, block-invariant, and sample-varying selectors;
+each includes mono, fixed-channel, and dynamic-channel collections. A separate forwarded-invariant
+scenario passes a collection window into a processor and measures constant plus block-invariant
+selection after processor-helper lowering. These measurements exercise generated buffer access
+without claiming to cover asset decoding, browser scheduling, AudioWorklet copying, or host-buffer
+traffic. The Web Audio adapter has a separate cached-view/bulk-copy host path; backend numbers must
+not be presented as end-to-end browser render timings.
 
 ## Illustrative run
 
@@ -75,7 +80,9 @@ The run used strict arithmetic with the realtime denormal policy, 128-frame
 blocks, a 2,000-block minimum, a 100 ms target per round, nine timing rounds, and
 five retained compile/instantiate samples. Binaryen used the production O4
 profile with StackIR disabled. Every parity comparison remained within the
-strict backend tolerance and LLVM was faster in every scenario.
+strict backend tolerance and LLVM was faster in every scenario. This historical snapshot predates
+the sequential and interpolation buffer rows; the current command reports those in addition to the
+four scenarios below.
 
 | Scenario | Blocks/round | MIR MessagePack KiB | Wasm KiB | Binaryen ms | Instantiate ms | LLVM JIT ms | LLVM ns/frame | Wasm ns/frame | Wasm/LLVM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -158,6 +165,13 @@ StackIR optimizer for an A/B run. It is disabled by default unless measurement
 justifies changing the production policy.
 
 ## Optimization findings
+
+Binaryen snapshots descriptor fields for direct and constant-selected buffers into function-entry
+locals because WebAssembly linear-memory aliasing otherwise prevents reliable loop-invariant load
+motion. Runtime collection selectors are evaluated once per buffer operation and reused for pointer,
+frame, and dynamic-channel lookup, including forwarded buffer spans and buffer-derived slices. Mono
+and fixed-channel shapes use their declared channel counts directly; sample-varying selections retain
+the descriptor loads that genuinely depend on the selected slot.
 
 Portable inlining and unconstrained scalar-state promotion were both rejected by measurement.
 Pre-inlining structured MIR regressed the larger reverb by roughly 30%, and promoting all 33

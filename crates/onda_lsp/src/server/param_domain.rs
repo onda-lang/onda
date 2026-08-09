@@ -24,6 +24,33 @@ pub(super) enum ParamDomainIdentifierRole {
     ScaleValue,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(super) enum BufferCountCompletionKind {
+    Field,
+    Expression,
+}
+
+pub(super) fn buffer_count_completion_context_at(
+    source: &str,
+    offset: usize,
+) -> Option<BufferCountCompletionKind> {
+    let offset = offset.min(source.len());
+    let stack = open_brace_stack(source, offset);
+    let open = *stack.last()?;
+    if !is_buffer_count_open(source, open, &stack[..stack.len() - 1]) {
+        return None;
+    }
+
+    let current = source[open + 1..offset].trim_start();
+    if top_level_equal(current).is_some()
+        || (!current.is_empty() && leading_identifier(current).is_none())
+    {
+        Some(BufferCountCompletionKind::Expression)
+    } else {
+        Some(BufferCountCompletionKind::Field)
+    }
+}
+
 pub(super) fn is_identifier_candidate(name: &str) -> bool {
     canonical_field(name).is_some() || ParamScale::from_name(name).is_some()
 }
@@ -182,6 +209,36 @@ fn is_param_domain_open(source: &str, open: usize, parent_braces: &[usize]) -> b
         .is_some_and(|line| leading_indent_len(line) == 0 && is_param_section_header(line.trim()))
 }
 
+fn is_buffer_count_open(source: &str, open: usize, parent_braces: &[usize]) -> bool {
+    let line_start = source[..open].rfind('\n').map_or(0, |index| index + 1);
+    let declaration_start = parent_braces
+        .last()
+        .map_or(line_start, |parent| line_start.max(parent + 1));
+    let declaration_prefix = source[declaration_start..open].trim();
+    if leading_identifier(declaration_prefix).is_none()
+        || is_buffer_section_header(declaration_prefix)
+    {
+        return false;
+    }
+
+    if let Some(parent) = parent_braces.last() {
+        let parent_line_start = source[..*parent].rfind('\n').map_or(0, |index| index + 1);
+        return is_buffer_section_header(source[parent_line_start..*parent].trim());
+    }
+
+    let declaration_indent = leading_indent_len(&source[line_start..open]);
+    source[..line_start]
+        .lines()
+        .rev()
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with('#')
+                && leading_indent_len(line) < declaration_indent
+        })
+        .is_some_and(|line| is_buffer_section_header(line.trim()))
+}
+
 fn is_param_section_header(text: &str) -> bool {
     let body = text.trim().strip_suffix(':').unwrap_or(text.trim()).trim();
     ["params", "kins"].iter().any(|keyword| {
@@ -190,6 +247,14 @@ fn is_param_section_header(text: &str) -> bool {
                 .strip_prefix(keyword)
                 .is_some_and(|rest| rest.starts_with('<') && rest.ends_with('>'))
     })
+}
+
+fn is_buffer_section_header(text: &str) -> bool {
+    let body = text.trim().strip_suffix(':').unwrap_or(text.trim()).trim();
+    body == "buffers"
+        || body
+            .strip_prefix("buffers")
+            .is_some_and(|rest| rest.starts_with('<') && rest.ends_with('>'))
 }
 
 fn leading_identifier(text: &str) -> Option<&str> {
@@ -374,6 +439,27 @@ mod tests {
             completion_context_at(positional, positional.len()).expect("positional domain");
         assert_eq!(positional_context.value_kind, ParamDomainValueKind::Scale);
         assert!(positional_context.allow_fields);
+    }
+
+    #[test]
+    fn recognizes_buffer_count_fields_and_values() {
+        let field = "buffers:\n  bank: f32 {co";
+        assert_eq!(
+            buffer_count_completion_context_at(field, field.len() - 2),
+            Some(BufferCountCompletionKind::Field)
+        );
+
+        let value = "buffers:\n  bank: f32 {count = VO";
+        assert_eq!(
+            buffer_count_completion_context_at(value, value.len() - 2),
+            Some(BufferCountCompletionKind::Expression)
+        );
+
+        let proc_field = "proc Reader:\n  buffers:\n    bank: f32 {";
+        assert_eq!(
+            buffer_count_completion_context_at(proc_field, proc_field.len()),
+            Some(BufferCountCompletionKind::Field)
+        );
     }
 
     #[test]

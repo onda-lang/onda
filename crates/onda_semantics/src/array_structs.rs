@@ -786,12 +786,15 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
         Expr::Index { index, .. } => {
             rewrite_struct_array_inline_field_expr(index, roots, defs, errors);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(s) = start {
-                rewrite_struct_array_inline_field_expr(s, roots, defs, errors);
-            }
-            if let Some(e) = end {
-                rewrite_struct_array_inline_field_expr(e, roots, defs, errors);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_struct_array_inline_field_expr(coordinate, roots, defs, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {

@@ -317,7 +317,7 @@ pub(super) fn parse_buffers_block(
 
     for child in block_pair.into_inner() {
         match child.as_rule() {
-            Rule::section_default_elem_type => {
+            Rule::section_default_buffer_type => {
                 default_ty = Some(parse_section_default_buffer_type(child, "buffers")?);
             }
             Rule::section_count => {
@@ -349,13 +349,21 @@ pub(super) fn parse_buffers_block(
                         )]);
                     };
                     let name = name_pair.as_str().to_owned();
-                    let (ty, ty_loc) = match inner.next() {
-                        Some(ty_pair) => (
-                            Some(parse_buffer_decl_type(ty_pair.clone())?),
-                            stmt_loc_from_pair(&ty_pair),
-                        ),
-                        None => (default_ty.clone(), Span::ZERO),
-                    };
+                    let mut ty = default_ty.clone();
+                    let mut ty_loc = Span::ZERO;
+                    let mut array_size = None;
+                    for declaration_part in inner {
+                        match declaration_part.as_rule() {
+                            Rule::buffer_decl_type => {
+                                ty_loc = stmt_loc_from_pair(&declaration_part);
+                                ty = Some(parse_buffer_decl_type(declaration_part)?);
+                            }
+                            Rule::buffer_count => {
+                                array_size = Some(parse_buffer_count(declaration_part)?);
+                            }
+                            _ => {}
+                        }
+                    }
                     if !seen.insert(name.clone()) {
                         return Err(vec![syntax_at_loc(
                             loc.as_ref(),
@@ -367,6 +375,7 @@ pub(super) fn parse_buffers_block(
                         name,
                         ty,
                         ty_loc,
+                        array_size,
                     });
                 }
             }

@@ -199,6 +199,10 @@ impl JitProgram {
         self.buffers.as_slice()
     }
 
+    pub fn buffer_arrays(&self) -> &[crate::DeclaredBufferArray] {
+        self.buffer_arrays.as_slice()
+    }
+
     pub fn state_entries(&self) -> &[crate::DeclaredState] {
         self.state_entries.as_slice()
     }
@@ -510,7 +514,9 @@ impl JitProgram {
     ///
     /// The raw input, output, and external-buffer pointers must remain valid,
     /// correctly sized/aligned, and mutually non-overlapping for the duration
-    /// of the call.
+    /// of the call. External-buffer descriptor tables must remain immutable
+    /// and must not overlap state, parameter, audio, or external-buffer sample
+    /// storage.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn process_checked(
         &self,
@@ -554,49 +560,6 @@ impl JitProgram {
                 flags,
                 in_ptrs,
                 out_ptrs,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-            );
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
-        }
-    }
-
-    /// Prepares any backend-derived buffer references from raw host tables.
-    ///
-    /// # Safety
-    ///
-    /// The raw buffer pointers and metadata must describe live host regions.
-    pub unsafe fn sync_proc_buffer_refs_for_process_checked(
-        &self,
-        state: &mut RuntimeState,
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
-    ) -> Result<(), Diagnostic> {
-        #[cfg(feature = "llvm-orc")]
-        let _ = (
-            state,
-            buffer_ptrs,
-            buffer_frames,
-            buffer_channels,
-            buffer_sample_rates,
-        );
-        #[cfg(feature = "llvm-orc")]
-        {
-            // MIR represents external buffer references as transient symbolic call values.
-            // Both direct and processor-dispatched accesses consume the current validated
-            // host table, so preparation has no pointer-bearing derived state to refresh.
-            Ok(())
-        }
-        #[cfg(not(feature = "llvm-orc"))]
-        {
-            let _ = (
-                state,
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { BrowserRunViewHost, mergeEvents, mergeParams } from "./run-view-host.js";
-import { UNBOUND_BUFFERS_MESSAGE } from "./browser-buffers.js";
 
 function scalarParam(overrides = {}) {
   return {
@@ -259,7 +258,7 @@ test("preserves event values only while the argument shape matches", () => {
   assert.equal(resetForDefault.args[0].value, 2);
 });
 
-test("blocks browser playback and shows guidance until every buffer is bound", async () => {
+test("allows browser playback while buffers are unbound", async () => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;
   const previousMutationObserver = globalThis.MutationObserver;
@@ -312,7 +311,7 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
           outputs: [],
           buffers: [{
             name: "clip",
-            type_repr: "buffer[f32]",
+            type_repr: "buffer<f32>",
             channels: "mono",
             static_channels: null,
           }],
@@ -320,12 +319,12 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
       },
     }, new Map());
 
-    assert.equal(host.state.status, UNBOUND_BUFFERS_MESSAGE);
+    assert.equal(host.state.status, "Stopped");
     assert.equal(host.state.running, false);
     assert.equal(host.state.sampleRateHz, 44_100);
     assert.equal(host.state.blockFrames, 256);
     await host.handleMessage({ type: "start" });
-    assert.equal(starts, 0);
+    assert.equal(starts, 1);
 
     host.updateBufferFile("clip", { name: "clip.wav" }, {
       frames: 96_000,
@@ -341,7 +340,7 @@ test("blocks browser playback and shows guidance until every buffer is bound", a
       { loadedFrames: 96_000, loadedChannels: 2, loadedSampleRate: 48_000 },
     );
     await host.handleMessage({ type: "start" });
-    assert.equal(starts, 1);
+    assert.equal(starts, 2);
 
     host.state.params = [{ name: "gain", default: 1, value: 0.5 }];
     host.state.events = [{

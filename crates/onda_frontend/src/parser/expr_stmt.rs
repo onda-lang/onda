@@ -531,38 +531,35 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         "missing indexed assignment base",
                     )]);
                 };
-                let Some(first_index_pair) = target_inner.next() else {
-                    return Err(vec![syntax_at_loc(
-                        loc.as_ref(),
-                        "missing indexed assignment index",
-                    )]);
-                };
-                if let Some(second_index_pair) = target_inner.next() {
+                let groups = target_inner.collect::<Vec<_>>();
+                let direct_channel_access = groups.len() == 1;
+                let indices = parse_index_groups(groups, loc)?;
+                if indices.len() > 1 {
+                    let has_third_index = indices.len() == 3;
                     let value_expr = parse_expr(expr_pair)?;
+                    let mut args = Vec::with_capacity(indices.len() + 2);
+                    args.push(CallArg {
+                        name: None,
+                        expr: Expr::var(base_pair.as_str().to_owned()),
+                    });
+                    args.extend(indices.into_iter().map(|expr| CallArg { name: None, expr }));
+                    args.push(CallArg {
+                        name: None,
+                        expr: value_expr,
+                    });
                     return Ok(Stmt::Expr {
                         loc,
                         expr: Expr::UserCall {
                             loc: Span::ZERO,
-                            name: INTERNAL_BUFFER_WRITE2_FN.to_owned(),
+                            name: if has_third_index {
+                                INTERNAL_BUFFER_WRITE3_FN.to_owned()
+                            } else if direct_channel_access {
+                                INTERNAL_BUFFER_WRITE_CHANNEL_FN.to_owned()
+                            } else {
+                                INTERNAL_BUFFER_WRITE2_FN.to_owned()
+                            },
                             type_args: Vec::new(),
-                            args: vec![
-                                CallArg {
-                                    name: None,
-                                    expr: Expr::var(base_pair.as_str().to_owned()),
-                                },
-                                CallArg {
-                                    name: None,
-                                    expr: parse_expr(first_index_pair)?,
-                                },
-                                CallArg {
-                                    name: None,
-                                    expr: parse_expr(second_index_pair)?,
-                                },
-                                CallArg {
-                                    name: None,
-                                    expr: value_expr,
-                                },
-                            ],
+                            args,
                         },
                     });
                 }
@@ -876,8 +873,10 @@ pub(super) fn parse_expr(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> 
 }
 
 pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
+    // Pest assigns higher precedence to operators registered later. Prefix
+    // operators must therefore follow every infix tier so `-a * b` parses as
+    // `(-a) * b`, while calls, indexing, and grouping remain primary expressions.
     let pratt = PrattParser::new()
-        .op(Op::prefix(Rule::prefix))
         .op(Op::infix(Rule::or_op, Assoc::Left))
         .op(Op::infix(Rule::and_op, Assoc::Left))
         .op(Op::infix(Rule::bit_or_op, Assoc::Left))
@@ -886,7 +885,8 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
         .op(Op::infix(Rule::cmp_op, Assoc::Left))
         .op(Op::infix(Rule::shift_op, Assoc::Left))
         .op(Op::infix(Rule::add_op, Assoc::Left))
-        .op(Op::infix(Rule::mul_op, Assoc::Left));
+        .op(Op::infix(Rule::mul_op, Assoc::Left))
+        .op(Op::prefix(Rule::prefix));
 
     pratt
         .map_primary(parse_primary_expr)
@@ -1170,35 +1170,33 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 .expect("index_expr rule must include base path")
                 .as_str()
                 .to_owned();
-            let idx_pair = inner
-                .next()
-                .expect("index_expr rule must include index expression");
-            let idx_first = parse_expr_inner(idx_pair);
-            if let Some(idx_second_pair) = inner.next() {
+            let groups = inner.collect::<Vec<_>>();
+            let direct_channel_access = groups.len() == 1;
+            let indices = parse_index_groups(groups, loc)
+                .expect("index_expr grammar must produce valid index groups");
+            if indices.len() > 1 {
                 Expr::UserCall {
                     loc,
-                    name: INTERNAL_BUFFER_READ2_FN.to_owned(),
+                    name: if indices.len() == 3 {
+                        INTERNAL_BUFFER_READ3_FN.to_owned()
+                    } else if direct_channel_access {
+                        INTERNAL_BUFFER_READ_CHANNEL_FN.to_owned()
+                    } else {
+                        INTERNAL_BUFFER_READ2_FN.to_owned()
+                    },
                     type_args: Vec::new(),
-                    args: vec![
-                        CallArg {
-                            name: None,
-                            expr: Expr::var(base),
-                        },
-                        CallArg {
-                            name: None,
-                            expr: idx_first,
-                        },
-                        CallArg {
-                            name: None,
-                            expr: parse_expr_inner(idx_second_pair),
-                        },
-                    ],
+                    args: std::iter::once(CallArg {
+                        name: None,
+                        expr: Expr::var(base),
+                    })
+                    .chain(indices.into_iter().map(|expr| CallArg { name: None, expr }))
+                    .collect(),
                 }
             } else {
                 Expr::Index {
                     loc,
                     base,
-                    index: Box::new(idx_first),
+                    index: Box::new(indices.into_iter().next().expect("one index was checked")),
                 }
             }
         }
@@ -1209,30 +1207,18 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 .expect("slice_expr rule must include base path")
                 .as_str()
                 .to_owned();
-            let mut start = None::<Box<Expr>>;
-            let mut end = None::<Box<Expr>>;
-            for bound in inner {
-                match bound.as_rule() {
-                    Rule::slice_start => {
-                        let expr = bound
-                            .into_inner()
-                            .next()
-                            .expect("slice_start must contain expr");
-                        start = Some(Box::new(parse_expr_inner(expr)));
-                    }
-                    Rule::slice_end => {
-                        let expr = bound
-                            .into_inner()
-                            .next()
-                            .expect("slice_end must contain expr");
-                        end = Some(Box::new(parse_expr_inner(expr)));
-                    }
-                    _ => {}
-                }
-            }
+            let super::type_helpers::ParsedSliceParts {
+                selector,
+                channel,
+                start,
+                end,
+            } = parse_slice_parts(inner.collect(), loc)
+                .expect("slice_expr grammar must produce a valid slice shape");
             Expr::Slice {
                 loc,
                 base,
+                selector,
+                channel,
                 start,
                 end,
             }
@@ -1523,28 +1509,28 @@ fn parse_call_index_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
 fn parse_call_index_member_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
     let mut inner = pair.into_inner();
     let Some(base_pair) = inner.next() else {
-        return (PROC_INDEX_CALL_SENTINEL.to_owned(), Vec::new());
+        return (String::new(), Vec::new());
     };
     let Some(index_pair) = inner.next() else {
-        return (PROC_INDEX_CALL_SENTINEL.to_owned(), Vec::new());
+        return (String::new(), Vec::new());
     };
     let Some(member_pair) = inner.next() else {
-        return (PROC_INDEX_CALL_SENTINEL.to_owned(), Vec::new());
+        return (String::new(), Vec::new());
     };
     let base = base_pair.as_str().to_owned();
     let member = member_pair.as_str();
+    // Preserve only the syntactic receiver relationship here. Semantic analysis
+    // decides whether the indexed value is a buffer, struct, or processor.
     (
-        format!("{PROC_INDEX_CALL_SENTINEL}.{member}"),
-        vec![
-            CallArg {
-                name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                expr: Expr::var(base),
+        member.to_owned(),
+        vec![CallArg {
+            name: Some(METHOD_RECEIVER_ARG.to_owned()),
+            expr: Expr::Index {
+                loc: stmt_loc_from_pair(&base_pair),
+                base,
+                index: Box::new(parse_expr_inner(index_pair)),
             },
-            CallArg {
-                name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
-                expr: parse_expr_inner(index_pair),
-            },
-        ],
+        }],
     )
 }
 

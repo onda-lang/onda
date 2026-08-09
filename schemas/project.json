@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onda-lang.org/schemas/project.json",
+  "title": "Onda project",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "entry"
+  ],
+  "properties": {
+    "entry": {
+      "$ref": "#/$defs/portablePath"
+    },
+    "buffers": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "minLength": 1,
+        "pattern": "^[^\\u0000]+$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/$defs/bufferBinding" },
+          {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/bufferBinding" }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "bufferBinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {
+            "file": { "$ref": "#/$defs/portablePath" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inline"],
+          "properties": {
+            "inline": { "$ref": "#/$defs/inlineBuffer" }
+          }
+        }
+      ]
+    },
+    "portablePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?![^/]{256})(?!.*\/[^/]{256})(?!.*(?:^|/)\\.\\.?/)(?!.*//).+$"
+    },
+    "inlineBuffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "element",
+        "channels",
+        "sample_rate",
+        "values"
+      ],
+      "properties": {
+        "element": {
+          "enum": [
+            "bool",
+            "i32",
+            "i64",
+            "f32",
+            "f64"
+          ]
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "sample_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "element": {
+                "const": "bool"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "items": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "element": {
+                "const": "i32"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "items": {
+                  "type": "integer",
+                  "minimum": -2147483648,
+                  "maximum": 2147483647
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "element": {
+                "const": "i64"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "items": {
+                  "type": "string",
+                  "pattern": "^-?(?:0|[1-9][0-9]*)$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "element": {
+                "enum": [
+                  "f32",
+                  "f64"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

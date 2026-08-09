@@ -29,8 +29,9 @@ use super::namespace_resolution::{
     UseInfo,
 };
 use super::param_domain::{
-    completion_context_at as param_domain_completion_context_at, ParamDomainCompletionContext,
-    ParamDomainValueKind, PARAM_DOMAIN_FIELDS,
+    buffer_count_completion_context_at,
+    completion_context_at as param_domain_completion_context_at, BufferCountCompletionKind,
+    ParamDomainCompletionContext, ParamDomainValueKind, PARAM_DOMAIN_FIELDS,
 };
 use super::position::{
     byte_index_for_lsp_character, byte_offset_for_lsp_position, span_end_position,
@@ -110,26 +111,6 @@ const BUFFER_BUILTIN_METHODS: &[BufferBuiltinMethod] = &[
         signature: "()",
         snippet: "samplerate()",
     },
-    BufferBuiltinMethod {
-        name: "unsafe_read",
-        signature: "(index: i32)",
-        snippet: "unsafe_read($1)",
-    },
-    BufferBuiltinMethod {
-        name: "unsafe_write",
-        signature: "(index: i32, value)",
-        snippet: "unsafe_write($1, $2)",
-    },
-    BufferBuiltinMethod {
-        name: "unsafe_read2",
-        signature: "(channel: i32, index: i32)",
-        snippet: "unsafe_read2($1, $2)",
-    },
-    BufferBuiltinMethod {
-        name: "unsafe_write2",
-        signature: "(channel: i32, index: i32, value)",
-        snippet: "unsafe_write2($1, $2, $3)",
-    },
 ];
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -194,6 +175,10 @@ pub(super) fn completion_items_for_document_with_index(
         CompletionContextKind::ParamDomain(domain) => {
             index.param_domain_items(domain, &context.prefix)
         }
+        CompletionContextKind::BufferCount(kind) => match kind {
+            BufferCountCompletionKind::Field => vec![buffer_count_field_item()],
+            BufferCountCompletionKind::Expression => index.general_items(&context.prefix),
+        },
         CompletionContextKind::General => index.general_items(&context.prefix),
         CompletionContextKind::ImportPath { .. } => Vec::new(),
     };
@@ -282,6 +267,7 @@ enum CompletionContextKind {
     Namespace { namespace: String },
     CallArgs { callee: String },
     ParamDomain(ParamDomainCompletionContext),
+    BufferCount(BufferCountCompletionKind),
     ImportPath { typed: String },
 }
 
@@ -354,6 +340,14 @@ impl CompletionContext {
             return Self {
                 prefix,
                 kind: CompletionContextKind::ParamDomain(domain),
+                in_comment,
+            };
+        }
+
+        if let Some(kind) = buffer_count_completion_context_at(source, prefix_start) {
+            return Self {
+                prefix,
+                kind: CompletionContextKind::BufferCount(kind),
                 in_comment,
             };
         }
@@ -2713,6 +2707,17 @@ fn param_domain_field_item(name: &str) -> CompletionItem {
         ))
 }
 
+fn buffer_count_field_item() -> CompletionItem {
+    CompletionItem::new("count", COMPLETION_ITEM_KIND_PROPERTY)
+        .detail("buffer count field")
+        .insert_text("count = ")
+        .snippet("count = $1")
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::LocalVariable,
+            "count",
+        ))
+}
+
 fn variable_item(name: &str, detail: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_VARIABLE)
         .detail(detail)
@@ -4128,6 +4133,30 @@ fn normalize_file_key(path: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn buffer_count_annotation_context_only_completes_count() {
+        let source = "buffers:\n  bank: f32 {";
+        let context = CompletionContext::from_source(source, source.len());
+        assert!(matches!(
+            context.kind,
+            CompletionContextKind::BufferCount(BufferCountCompletionKind::Field)
+        ));
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  bank: f32 {".len() as u32,
+            },
+            true,
+        );
+        assert_eq!(result.items.len(), 1, "items: {:?}", result.items);
+        assert_eq!(result.items[0]["label"], "count");
+    }
+
     fn encoded_item<'a>(items: &'a [Value], label: &str) -> &'a Value {
         items
             .iter()
@@ -4326,10 +4355,6 @@ sample:
             "len",
             "chans",
             "samplerate",
-            "unsafe_read",
-            "unsafe_write",
-            "unsafe_read2",
-            "unsafe_write2",
             "read",
             "write",
             "readL",
@@ -4376,8 +4401,8 @@ sample:
 
     #[test]
     fn member_completion_recognizes_proc_buffers_and_typed_buffer_params() {
-        let source = r#"def first(buf: buffer[f32[]]):
-  return buf.unsafe_read(0)
+        let source = r#"def first(buf: buffer<f32[]>):
+  return buf[0]
 
 proc Player:
   buffers:
@@ -4387,9 +4412,9 @@ proc Player:
   sample:
     out1 = clip.read(0)
 "#;
-        let param_index = index_at(source, "buf.unsafe_read", "buf".len());
+        let param_index = index_at(source, "buf[0]", "buf".len());
         let param_labels = labels(param_index.member_items("buf", ""));
-        assert!(param_labels.iter().any(|label| label == "unsafe_read"));
+        assert!(param_labels.iter().any(|label| label == "samplerate"));
         assert!(param_labels.iter().any(|label| label == "readL"));
 
         let proc_index = index_at(source, "clip.read", "clip".len());

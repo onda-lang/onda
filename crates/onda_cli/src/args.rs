@@ -38,12 +38,72 @@ pub(crate) fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, 
     }
 
     match cmd.as_str() {
+        "project" => parse_project_args(args),
         "compile" => parse_compile_args(args),
         "lsp" => parse_lsp_args(args),
         "run" => parse_run_args(args),
         "daemon" => parse_daemon_args(args),
         _ => Err(format!("unknown command '{cmd}'\n{}", usage())),
     }
+}
+
+fn parse_project_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let Some(destination) = args.next() else {
+        return Err(format!(
+            "project requires a destination directory\n\n{}",
+            usage()
+        ));
+    };
+    if destination == "--help" || destination == "-h" {
+        return Err(usage().to_owned());
+    }
+    let mut source = None;
+    let mut buffer_bindings = Vec::new();
+    while let Some(option) = args.next() {
+        match option.as_str() {
+            "--from" => {
+                let Some(value) = args.next() else {
+                    return Err("--from requires an Onda source path".to_owned());
+                };
+                if source.replace(PathBuf::from(value)).is_some() {
+                    return Err("--from may only be specified once".to_owned());
+                }
+            }
+            "--buffer" => {
+                let Some(value) = args.next() else {
+                    return Err("--buffer requires a name=path pair".to_owned());
+                };
+                buffer_bindings.push(parse_buffer_binding(&value)?);
+            }
+            "--help" | "-h" => return Err(usage().to_owned()),
+            _ if option.starts_with("--from=") => {
+                let value = &option["--from=".len()..];
+                if value.is_empty() {
+                    return Err("--from requires an Onda source path".to_owned());
+                }
+                if source.replace(PathBuf::from(value)).is_some() {
+                    return Err("--from may only be specified once".to_owned());
+                }
+            }
+            _ if option.starts_with("--buffer=") => {
+                buffer_bindings.push(parse_buffer_binding(&option["--buffer=".len()..])?);
+            }
+            _ => {
+                return Err(format!(
+                    "unknown option '{option}' for onda project\n\n{}",
+                    usage()
+                ))
+            }
+        }
+    }
+    if source.is_none() && !buffer_bindings.is_empty() {
+        return Err("--buffer requires --from when creating a project".to_owned());
+    }
+    Ok(Command::Project {
+        destination: PathBuf::from(destination),
+        source,
+        buffer_bindings,
+    })
 }
 
 fn parse_lsp_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -98,7 +158,10 @@ fn parse_daemon_args(mut args: impl Iterator<Item = String>) -> Result<Command, 
 
 fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(input) = args.next() else {
-        return Err(format!("compile requires an input file\n\n{}", usage()));
+        return Err(format!(
+            "compile requires an input source or project\n\n{}",
+            usage()
+        ));
     };
     let mut emit = CompileEmit::Check;
     let mut emit_explicit = false;

@@ -65,15 +65,19 @@ pub(crate) fn analyze_def_stmt(
     loop_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let buffer_alias_snapshot = st.local_buffer_aliases.clone();
+    let visible_declared_symbols =
+        with_local_buffer_aliases(ctx.declared_symbols, &buffer_alias_snapshot);
     with_stmt_diag_context(stmt, |_stmt_diag| {
         let known_scalars = &mut st.known_scalars;
         let local_aliases = &mut st.local_aliases;
         let local_array_aliases = &mut st.local_array_aliases;
         let local_proc_aliases = &mut st.local_proc_aliases;
+        let local_buffer_aliases = &mut st.local_buffer_aliases;
         let tuple_vars = &mut st.tuple_vars;
         let common = ctx.common;
         let locals = ctx.locals;
-        let declared_symbols = ctx.declared_symbols;
+        let declared_symbols = visible_declared_symbols.as_ref();
         let param_structs = ctx.param_structs;
         let proc_array_roots = ctx.proc_array_roots;
         let state_scalars = ctx.state_scalars;
@@ -149,6 +153,82 @@ pub(crate) fn analyze_def_stmt(
                         errors,
                     ) {
                         validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
+                        return;
+                    }
+                    if local_buffer_aliases.contains_key(name) {
+                        push_semantic(
+                            target_diag,
+                            errors,
+                            format!(
+                                "buffer-reference alias '{name}' is immutable and cannot be rebound"
+                            ),
+                        );
+                        return;
+                    }
+                    if let Some(alias) = buffer_reference_expr_info(expr, declared_symbols) {
+                        if decl_ty.is_some() || generic_decl_ty.is_some() || *is_typed_decl {
+                            push_semantic(
+                                target_diag,
+                                errors,
+                                format!(
+                                    "typed declaration for '{name}' is not supported for buffer-reference aliases"
+                                ),
+                            );
+                            return;
+                        }
+                        if split_field_path(name, errors).is_some() {
+                            push_semantic(
+                                target_diag,
+                                errors,
+                                "buffer-reference alias target must be a plain variable name",
+                            );
+                            return;
+                        }
+                        if known_scalars.contains(name)
+                            || local_aliases.contains_key(name)
+                            || local_array_aliases.contains_key(name)
+                            || state_scalars.contains_key(name)
+                            || input_names.contains(name)
+                            || output_names.contains(name)
+                            || param_names.contains(name)
+                            || declared_symbols.contains_key(name)
+                        {
+                            push_semantic(
+                                target_diag,
+                                errors,
+                                format!(
+                                    "buffer-reference alias declaration for '{name}' conflicts with existing symbol"
+                                ),
+                            );
+                            return;
+                        }
+                        if let Expr::Index { index, .. } = expr {
+                            validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
+                            let index_ty =
+                                infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                    index,
+                                    state_scalars,
+                                    declared_symbols,
+                                    None,
+                                    local_aliases,
+                                    local_array_aliases,
+                                    locals,
+                                    input_names,
+                                    output_names,
+                                    param_names,
+                                    struct_instance_ctx,
+                                    struct_defs,
+                                    proc_array_roots,
+                                    errors,
+                                );
+                            require_expr_numeric_type(
+                                index,
+                                index_ty,
+                                "buffer collection selector",
+                                errors,
+                            );
+                        }
+                        local_buffer_aliases.insert(name.clone(), alias);
                         return;
                     }
                     let declared_ty = *decl_ty;
@@ -389,7 +469,12 @@ pub(crate) fn analyze_def_stmt(
                         return;
                     }
                     if let Expr::Slice {
-                        base, start, end, ..
+                        base,
+                        selector,
+                        channel,
+                        start,
+                        end,
+                        ..
                     } = expr
                     {
                         if let Some(surface) =
@@ -402,11 +487,9 @@ pub(crate) fn analyze_def_stmt(
                                     "dynamic param array '{surface}' is not a first-class value; use '{surface}[i]' directly in block or sample"
                                 ),
                             );
-                            if let Some(start) = start {
-                                validate_expr(start, scope_expr_env!(ScopeKind::Def), errors);
-                            }
-                            if let Some(end) = end {
-                                validate_expr(end, scope_expr_env!(ScopeKind::Def), errors);
+                            for coordinate in [selector, channel, start, end].into_iter().flatten()
+                            {
+                                validate_expr(coordinate, scope_expr_env!(ScopeKind::Def), errors);
                             }
                             return;
                         }
@@ -1142,7 +1225,13 @@ pub(crate) fn analyze_def_stmt(
                         "indexed assignments in def are only allowed for mutable array or buffer references (for example local arrays, array params, buffer params, or array fields on struct params such as 'tmp[i] = x', 'arr[i] = x', 'buf[i] = x', or 'self.buf[i] = x')",
                     );
                 }
-                AssignTarget::Slice { base, start, end } => {
+                AssignTarget::Slice {
+                    base,
+                    selector,
+                    channel,
+                    start,
+                    end,
+                } => {
                     if decl_ty.is_some() || generic_decl_ty.is_some() || *is_typed_decl {
                         push_semantic(
                             target_diag,
@@ -1152,11 +1241,8 @@ pub(crate) fn analyze_def_stmt(
                     }
                     if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Def)) {
                         push_io_surface_scope_error(errors, target_loc.as_ref().into(), name);
-                        if let Some(start) = start {
-                            validate_expr(start, scope_expr_env!(ScopeKind::Def), errors);
-                        }
-                        if let Some(end) = end {
-                            validate_expr(end, scope_expr_env!(ScopeKind::Def), errors);
+                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                            validate_expr(coordinate, scope_expr_env!(ScopeKind::Def), errors);
                         }
                         validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                         return;
@@ -1171,19 +1257,16 @@ pub(crate) fn analyze_def_stmt(
                                 "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
                             ),
                         );
-                        if let Some(start) = start {
-                            validate_expr(start, scope_expr_env!(ScopeKind::Def), errors);
-                        }
-                        if let Some(end) = end {
-                            validate_expr(end, scope_expr_env!(ScopeKind::Def), errors);
+                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                            validate_expr(coordinate, scope_expr_env!(ScopeKind::Def), errors);
                         }
                         validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                         return;
                     }
                     let Some(target_info) = infer_def_slice_alias_info(
                         base,
-                        start.as_ref(),
-                        end.as_ref(),
+                        start.as_deref(),
+                        end.as_deref(),
                         declared_symbols,
                         local_array_aliases,
                         param_structs,
@@ -1397,6 +1480,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    &st.local_buffer_aliases,
                     tuple_vars,
                 );
                 for nested in then_branch {
@@ -1407,6 +1491,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    &st.local_buffer_aliases,
                     tuple_vars,
                 );
                 for nested in else_branch {
@@ -1417,6 +1502,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    &mut st.local_buffer_aliases,
                     tuple_vars,
                     then_state,
                     else_state,
@@ -1450,6 +1536,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    &st.local_buffer_aliases,
                     tuple_vars,
                 );
                 let loop_ctx = DefStmtAnalysisCtx {
@@ -1464,6 +1551,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    &mut st.local_buffer_aliases,
                     tuple_vars,
                     loop_state,
                 );
@@ -1480,6 +1568,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    &st.local_buffer_aliases,
                     tuple_vars,
                 );
                 for nested in body {
@@ -1490,6 +1579,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    &mut st.local_buffer_aliases,
                     tuple_vars,
                     loop_state,
                 );

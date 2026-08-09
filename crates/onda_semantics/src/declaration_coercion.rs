@@ -1122,6 +1122,15 @@ pub(crate) fn coerce_buffers(
                         }) else {
                             continue;
                         };
+                        if !validate_buffer_static_channels(
+                            ch,
+                            elem_ty,
+                            &ctx,
+                            buffer_loc.into(),
+                            errors,
+                        ) {
+                            continue;
+                        }
                         TypedBufferChannels::Static(ch)
                     }
                 };
@@ -1132,6 +1141,19 @@ pub(crate) fn coerce_buffers(
             name: buffer.name.clone(),
             elem_ty,
             channels,
+            is_array: buffer.array_size.is_some(),
+            array_len: match &buffer.array_size {
+                Some(size) => {
+                    let context = format!("buffer array '{}' size", buffer.name);
+                    let Some(len) = with_loc_diag_context(buffer_loc, |_diag| {
+                        eval_data_size_expr(size, options, &context, errors)
+                    }) else {
+                        continue;
+                    };
+                    len
+                }
+                None => 1,
+            },
         });
     }
 

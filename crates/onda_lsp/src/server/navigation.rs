@@ -6,10 +6,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use onda_frontend::{
-    is_language_type_name, parse_program, parse_program_file_with_overlays, ArrayElemType,
-    AssignTarget, Block, BlockExec, BufferDecl, ConstDecl, EventDef, EventParamDecl, Expr,
-    FnParamDecl, FnParamType, FunctionDef, NamespaceAliasDecl, NamespaceDecl, NamespaceItem,
-    ParamDecl, PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, StructField, UseDecl,
+    inject_auto_std_prelude, is_language_type_name, parse_program,
+    parse_program_file_with_overlays, ArrayElemType, AssignTarget, Block, BlockExec, BufferDecl,
+    ConstDecl, EventDef, EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef,
+    NamespaceAliasDecl, NamespaceDecl, NamespaceItem, ParamDecl, PortDecl, ProcessorDef, Program,
+    Span, Stmt, StructDef, StructField, UseDecl,
 };
 use onda_semantics::builtins::{
     builtin_constant_type, builtin_instance_method_names, is_builtin_function_name,
@@ -129,6 +130,56 @@ pub(super) fn definition_for_document_with_parsed(
         return definition.location_json(path, source, overlays);
     }
     source_namespace_const_definition(source, &token).and_then(|def| def.location_json(path))
+}
+
+pub(super) fn signature_help_for_document_with_parsed(
+    source: &str,
+    path: Option<&Path>,
+    overlays: &HashMap<PathBuf, String>,
+    parsed: Option<&Program>,
+    position: NavigationPosition,
+) -> Option<Value> {
+    let parsed_owned;
+    let parsed = if let Some(parsed) = parsed {
+        Some(parsed)
+    } else {
+        parsed_owned = parse_for_navigation(source, path, overlays, Some(position));
+        parsed_owned.as_ref()
+    };
+    let index = NavigationIndex::build(parsed, source, path, Some(position));
+    let offset =
+        byte_offset_for_lsp_position(source, LspPosition::new(position.line, position.character));
+    let (callee, open_paren) = active_call_context(source, offset)?;
+    let definition = index.resolve_callee(&callee, position.line, position.character)?;
+    let overloads = index
+        .definitions
+        .iter()
+        .filter(|candidate| {
+            candidate.full_name == definition.full_name
+                && matches!(candidate.kind, DefinitionKind::Def | DefinitionKind::Method)
+        })
+        .collect::<Vec<_>>();
+    if overloads.is_empty() {
+        return None;
+    }
+    let active_signature = overloads
+        .iter()
+        .position(|candidate| std::ptr::eq(*candidate, definition))
+        .unwrap_or(0);
+    // Both struct methods and free-function method sugar omit the receiver at
+    // the call site while their declaration signatures include it (`self` or
+    // the first ordinary parameter).
+    let implicit_receiver = split_member_callee(&callee).is_some();
+    let active_parameter = active_call_argument_index(source, open_paren, offset)
+        .saturating_add(usize::from(implicit_receiver));
+    Some(json!({
+        "signatures": overloads
+            .iter()
+            .map(|candidate| json!({ "label": candidate.detail }))
+            .collect::<Vec<_>>(),
+        "activeSignature": active_signature,
+        "activeParameter": active_parameter,
+    }))
 }
 
 pub(super) fn document_symbols_for_document_with_parsed(
@@ -409,10 +460,18 @@ impl NavigationIndex {
         };
 
         if let Some(program) = program {
-            for block in &program.blocks {
+            let mut expanded = program.clone();
+            // Semantic analysis injects this same prelude. Navigation must see
+            // the same program shape so auto-imported defs behave like explicit
+            // imports for hover, signature help, and go-to-definition.
+            let _ = inject_auto_std_prelude(&mut expanded);
+            for block in &expanded.blocks {
                 index.collect_block(block, "");
             }
             index.rebuild_namespace_members();
+            // Imported implementation scopes are not lexically visible in the
+            // current document. Scope indexing therefore stays tied to the
+            // original parsed program.
             index.collect_scopes(program);
             index.rebuild_scope_line_index();
         } else {
@@ -1855,7 +1914,17 @@ impl NavigationIndex {
                     return Some(definition);
                 }
             }
-            return self.resolve_member(&receiver, &member, token.line, token.start_character);
+            if let Some(definition) =
+                self.resolve_member(&receiver, &member, token.line, token.start_character)
+            {
+                return Some(definition);
+            }
+            // Ordinary defs may be invoked with method sugar (`value.func(...)`).
+            // Only fall back for a call, preserving field/member precedence.
+            if token_is_followed_by_call_start(source, token.byte_end) {
+                return self.resolve_unqualified(&member, token.line, token.start_character);
+            }
+            return None;
         }
         if named_arg_label_at_token(source, token) {
             if let Some(callee) = active_call_callee(source, token.byte_start) {
@@ -1881,6 +1950,19 @@ impl NavigationIndex {
             }
         }
         self.resolve_unqualified(&token.name, token.line, token.start_character)
+    }
+
+    fn resolve_callee(&self, callee: &str, line: u32, column: u32) -> Option<&DefinitionInfo> {
+        let callee = normalize_call_callee(callee);
+        if let Some((receiver, member)) = split_member_callee(&callee) {
+            return self
+                .resolve_member(receiver, member, line, column)
+                .or_else(|| self.resolve_unqualified(member, line, column));
+        }
+        if callee.contains("::") {
+            return self.resolve_qualified_at(&callee, line, column);
+        }
+        self.resolve_unqualified(&callee, line, column)
     }
 
     fn callable_hover_for_token(&self, source: &str, token: &SourceToken) -> Option<String> {
@@ -3566,6 +3648,10 @@ fn scan_path_segment_start(text: &str) -> Option<usize> {
 }
 
 fn active_call_callee(source: &str, offset: usize) -> Option<String> {
+    active_call_context(source, offset).map(|(callee, _)| callee)
+}
+
+fn active_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
     let mut depth = 0isize;
     let mut paren_idx = None;
     for (idx, ch) in source[..offset.min(source.len())].char_indices().rev() {
@@ -3584,7 +3670,23 @@ fn active_call_callee(source: &str, offset: usize) -> Option<String> {
     }
     let paren_idx = paren_idx?;
     let before = source[..paren_idx].trim_end();
-    scan_call_callee_left(before)
+    scan_call_callee_left(before).map(|callee| (callee, paren_idx))
+}
+
+fn active_call_argument_index(source: &str, open_paren: usize, offset: usize) -> usize {
+    let mut nested = 0usize;
+    let mut argument = 0usize;
+    let start = open_paren.saturating_add(1).min(source.len());
+    let end = offset.min(source.len()).max(start);
+    for ch in source[start..end].chars() {
+        match ch {
+            '(' | '[' | '{' => nested += 1,
+            ')' | ']' | '}' => nested = nested.saturating_sub(1),
+            ',' if nested == 0 => argument += 1,
+            _ => {}
+        }
+    }
+    argument
 }
 
 fn scan_call_callee_left(source_before_call: &str) -> Option<String> {

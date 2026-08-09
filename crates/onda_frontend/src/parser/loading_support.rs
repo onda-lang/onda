@@ -138,7 +138,8 @@ pub(super) fn split_top_level_items(
         let trimmed = code_part.trim();
 
         if brace_depth == 0 {
-            if let Some(item) = parse_top_level_directive(trimmed, line_no)
+            let source_line = preprocessed_line_map.get(idx).copied().unwrap_or(line_no);
+            if let Some(item) = parse_top_level_directive(trimmed, source_line)
                 .map_err(|diags| annotate_diagnostics_with_file(diags, file_path, 0))?
             {
                 if !code.trim().is_empty() {

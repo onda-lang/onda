@@ -3800,12 +3800,15 @@ graph:
             | Expr::UnaryBitNot { expr, .. } => {
                 collect_offending_proc_event_calls_in_expr(expr, owner, offending);
             }
-            Expr::Slice { start, end, .. } => {
-                if let Some(s) = start {
-                    collect_offending_proc_event_calls_in_expr(s, owner, offending);
-                }
-                if let Some(e) = end {
-                    collect_offending_proc_event_calls_in_expr(e, owner, offending);
+            Expr::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    collect_offending_proc_event_calls_in_expr(coordinate, owner, offending);
                 }
             }
             Expr::Tuple { values, .. } => {

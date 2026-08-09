@@ -70,6 +70,9 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.bufferInfo = Array.isArray(metadata.metadata?.buffers)
       ? metadata.metadata.buffers
       : [];
+    this.bufferArrayInfo = Array.isArray(metadata.metadata?.buffer_arrays)
+      ? metadata.metadata.buffer_arrays
+      : [];
     this.inputInfo = Array.isArray(metadata.metadata?.inputs)
       ? metadata.metadata.inputs
       : [];
@@ -607,11 +610,21 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
 
   bindInitialBuffers(options) {
     this.bufferInfo.forEach((buffer, bufferId) => {
-      const supplied = Array.isArray(options)
-        ? options[bufferId]
-        : options[buffer.name];
-      if (supplied === undefined) {
-        throw new Error(`Onda buffer '${buffer.name}' is not bound`);
+      const supplied = this.initialBufferOption(options, buffer, bufferId);
+      const declaredChannels = Number(buffer.static_channels ?? 0);
+      const fallbackChannels = declaredChannels || 1;
+      if (supplied === undefined || supplied === null) {
+        const sampleRate = Math.fround(this.compileSampleRate);
+        this.writeBufferDescriptor(bufferId, 0, 1, fallbackChannels, sampleRate);
+        this.bufferBindings[bufferId] = {
+          ...buffer,
+          pointer: 0,
+          frames: 1,
+          channels: fallbackChannels,
+          sampleRate,
+          bound: false,
+        };
+        return;
       }
       const descriptor =
         Array.isArray(supplied) || ArrayBuffer.isView(supplied)
@@ -632,7 +645,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
           `Onda buffer '${buffer.name}' requires non-empty bound data`,
         );
       }
-      const declaredChannels = Number(buffer.static_channels ?? 0);
       const channels = Number(descriptor.channels ?? declaredChannels);
       if (!Number.isInteger(channels) || channels <= 0) {
         throw new Error(`Onda buffer '${buffer.name}' requires channels > 0`);
@@ -655,23 +667,52 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       const elementSize = this.scalarByteSize(buffer.scalar);
       const pointer = this.alloc(length * elementSize, elementSize);
       this.writeScalarValues(pointer, buffer.scalar, data, length);
-      const view = this.memoryView();
-      view.setUint32(this.bufferPointersPtr + bufferId * 4, pointer, true);
-      view.setInt32(this.bufferFramesPtr + bufferId * 4, frames, true);
-      view.setInt32(this.bufferChannelsPtr + bufferId * 4, channels, true);
-      view.setFloat32(
-        this.bufferSampleRatesPtr + bufferId * 4,
-        sampleRate,
-        true,
-      );
+      this.writeBufferDescriptor(bufferId, pointer, frames, channels, sampleRate);
       this.bufferBindings[bufferId] = {
         ...buffer,
         pointer,
         frames,
         channels,
         sampleRate,
+        bound: true,
       };
     });
+  }
+
+  writeBufferDescriptor(bufferId, pointer, frames, channels, sampleRate) {
+    const view = this.memoryView();
+    view.setUint32(this.bufferPointersPtr + bufferId * 4, pointer, true);
+    view.setInt32(this.bufferFramesPtr + bufferId * 4, frames, true);
+    view.setInt32(this.bufferChannelsPtr + bufferId * 4, channels, true);
+    view.setFloat32(this.bufferSampleRatesPtr + bufferId * 4, sampleRate, true);
+  }
+
+  initialBufferOption(options, buffer, bufferId) {
+    if (Array.isArray(options)) {
+      return options[bufferId];
+    }
+    if (!options || typeof options !== "object") {
+      throw new Error("processorOptions.buffers must be an array or object");
+    }
+    if (Object.prototype.hasOwnProperty.call(options, buffer.name)) {
+      return options[buffer.name];
+    }
+    const group = this.bufferArrayInfo.find((candidate) => {
+      const first = Number(candidate.first_buffer);
+      const len = Number(candidate.len);
+      return bufferId >= first && bufferId < first + len;
+    });
+    if (!group || !Object.prototype.hasOwnProperty.call(options, group.name)) {
+      return undefined;
+    }
+    const supplied = options[group.name];
+    if (supplied === undefined || supplied === null) {
+      return undefined;
+    }
+    if (!Array.isArray(supplied)) {
+      throw new Error(`Onda buffer array '${group.name}' must be an array`);
+    }
+    return supplied[bufferId - Number(group.first_buffer)];
   }
 
   readBuffer(selector) {

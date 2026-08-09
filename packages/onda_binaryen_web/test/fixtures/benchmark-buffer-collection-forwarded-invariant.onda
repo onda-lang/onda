@@ -1,0 +1,24 @@
+buffers:
+  bank: f32[] {8}
+
+outs:
+  out1
+
+proc Reader:
+  params:
+    slot: i32 = 2
+  buffers:
+    clips: f32[] {6}
+  outs:
+    out1
+  init:
+    frame: i32 = 0
+  sample:
+    out1 = clips[0][1, frame] + clips[slot][1, frame]
+    frame = frame + 1
+
+init:
+  reader = Reader(slot = 2, clips = bank[1:7])
+
+sample:
+  out1 = reader()

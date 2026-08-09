@@ -1,6 +1,6 @@
 use super::{
-    compile_cmd, parse_args, run_compile, Command, CompileEmit, DaemonCommand, RunCommand,
-    RunHostKind,
+    compile_cmd, parse_args, project_cmd, run_compile, Command, CompileEmit, DaemonCommand,
+    RunCommand, RunHostKind,
 };
 use onda_codegen_llvm::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
@@ -24,6 +24,225 @@ fn write_temp_target_spec(contents: &str) -> PathBuf {
     ));
     std::fs::write(&path, contents).expect("target spec should write");
     path
+}
+
+fn generated_project_path(destination: &Path) -> PathBuf {
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("test destination should have a UTF-8 name");
+    destination.join(format!("{name}.ondaproject"))
+}
+
+#[test]
+fn parse_project_accepts_one_destination_directory() {
+    let cmd = parse_args(
+        ["onda", "project", "my-project"]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .expect("project args should parse");
+    match cmd {
+        Command::Project {
+            destination,
+            source,
+            buffer_bindings,
+        } => {
+            assert_eq!(destination, PathBuf::from("my-project"));
+            assert_eq!(source, None);
+            assert!(buffer_bindings.is_empty());
+        }
+        _ => panic!("expected project command"),
+    }
+}
+
+#[test]
+fn parse_project_accepts_source_and_buffer_assets() {
+    let cmd = parse_args(
+        [
+            "onda",
+            "project",
+            "portable",
+            "--from",
+            "main.onda",
+            "--buffer",
+            "sample=sample.wav",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    )
+    .expect("project packaging args should parse");
+    match cmd {
+        Command::Project {
+            destination,
+            source,
+            buffer_bindings,
+        } => {
+            assert_eq!(destination, PathBuf::from("portable"));
+            assert_eq!(source, Some(PathBuf::from("main.onda")));
+            assert_eq!(
+                buffer_bindings,
+                vec![("sample".to_owned(), PathBuf::from("sample.wav"))]
+            );
+        }
+        _ => panic!("expected project command"),
+    }
+}
+
+#[test]
+fn project_creates_a_resolvable_runnable_project() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let destination =
+        std::env::temp_dir().join(format!("onda-project-test-{}-{stamp}", std::process::id()));
+    project_cmd::run_project(&destination, None, &[]).expect("create project");
+    let project_path = generated_project_path(&destination);
+    assert!(project_path.is_file());
+    let project = project_cmd::resolve_entry(&project_path).expect("resolve generated project");
+    assert_eq!(
+        project.entry_path(),
+        std::fs::canonicalize(destination.join("code/main.onda"))
+            .expect("canonical generated entry")
+    );
+    std::fs::remove_dir_all(destination).expect("remove generated project");
+}
+
+#[test]
+fn project_packages_an_existing_source_and_typed_buffer() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("onda-package-test-{}-{stamp}", std::process::id()));
+    let destination = root.join("portable-sampler");
+    let source = root.join("instrument.onda");
+    let buffer = root.join("take-01.ondabuffer");
+    std::fs::create_dir_all(&root).expect("create package test directory");
+    std::fs::write(
+        &source,
+        "buffers:\n  values: buffer<i32>\nouts:\n  out1\nsample:\n  out1 = 0.0\n",
+    )
+    .expect("write package source");
+    let asset = onda_project::BufferAsset::new(
+        3,
+        1,
+        48_000.0,
+        onda_project::BufferSamples::I32(vec![1, 2, 3]),
+    )
+    .expect("valid typed asset");
+    std::fs::write(
+        &buffer,
+        onda_project::encode_ondabuffer(&asset).expect("encode typed asset"),
+    )
+    .expect("write typed asset");
+
+    project_cmd::run_project(
+        &destination,
+        Some(&source),
+        &[("values".to_owned(), buffer)],
+    )
+    .expect("package project");
+    assert!(destination.join("assets/take-01.ondabuffer").is_file());
+    assert!(destination.join("code/main.onda").is_file());
+    let project_path = generated_project_path(&destination);
+    assert!(project_path.is_file());
+    let resolved =
+        project_cmd::resolve_run_project(&project_path, &[]).expect("resolve packaged project");
+    assert_eq!(resolved.buffers.len(), 1);
+    assert_eq!(resolved.buffers[0].0, "values");
+    assert_eq!(
+        resolved.buffers[0].1.samples,
+        onda_project::BufferSamples::I32(vec![1, 2, 3])
+    );
+    std::fs::remove_dir_all(root).expect("remove package test directory");
+}
+
+#[test]
+fn run_override_skips_the_superseded_manifest_asset() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("onda-override-test-{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("create override test directory");
+    std::fs::write(root.join("main.onda"), "sample:\n  out1 = 0.0\n").expect("write entry source");
+    std::fs::write(
+        root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        r#"{
+  "entry": "main.onda",
+  "buffers": { "clip": { "file": "missing.wav" } }
+}
+"#,
+    )
+    .expect("write manifest");
+
+    let resolved = project_cmd::resolve_run_project(
+        &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        &[("clip".to_owned(), root.join("override.wav"))],
+    )
+    .expect("override should supersede the missing manifest asset before loading");
+    assert!(resolved.buffers.is_empty());
+    std::fs::remove_dir_all(root).expect("remove override test directory");
+}
+
+#[test]
+fn compile_project_validates_manifest_buffers_against_source_declarations() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "onda-compile-project-test-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).expect("create compile project test directory");
+    std::fs::write(
+        root.join("main.onda"),
+        "buffers:\n  values: buffer<i32>\nouts:\n  out1\nsample:\n  out1 = 0.0\n",
+    )
+    .expect("write project entry source");
+    std::fs::write(
+        root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        r#"{
+  "entry": "main.onda",
+  "buffers": {
+    "values": {
+      "inline": {
+        "element": "f32",
+        "channels": 1,
+        "sample_rate": 48000.0,
+        "values": [0.0]
+      }
+    }
+  }
+}
+"#,
+    )
+    .expect("write project manifest");
+
+    let error = run_compile(compile_cmd::CompileRequest {
+        input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        emit: CompileEmit::Check,
+        output: None,
+        meta_out: None,
+        sample_rate_hz: 48_000,
+        block_frames: 32,
+        dump_graph: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    })
+    .expect_err("project buffer type mismatch should fail compilation");
+    std::fs::remove_dir_all(root).expect("remove compile project test directory");
+
+    assert!(
+        error.contains("buffer 'values' requires i32, but its asset contains f32"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -692,7 +911,7 @@ fn parse_explicit_help_still_returns_usage() {
         Ok(_) => panic!("explicit help should not launch the run window"),
         Err(error) => error,
     };
-    assert!(error.contains("onda run [input.onda]"));
+    assert!(error.contains("onda run [input]"));
 }
 
 #[test]
@@ -947,7 +1166,7 @@ ins<f64> N
 outs<i32> 1:
   out1
 params<bool> 3
-buffers[f32] N
+buffers<f32> N
 sample:
   out1 = 0
 "#,
@@ -956,7 +1175,7 @@ sample:
 
     assert_eq!(
         onda_lsp::formatting::format_program(&program),
-        "const N = 2\n\nins<f64> N\n\nouts<i32> 1:\n  out1: i32\n\nparams<bool> 3\n\nbuffers[f32] N\n\nsample:\n  out1 = 0\n\n"
+        "const N = 2\n\nins<f64> N\n\nouts<i32> 1:\n  out1: i32\n\nparams<bool> 3\n\nbuffers<f32> N\n\nsample:\n  out1 = 0\n\n"
     );
 }
 
@@ -969,7 +1188,7 @@ proc Voice:
   ins<f64> N
   outs<i32> 1
   params<bool> N
-  buffers[f32] N
+  buffers<f32> N
   sample:
     out1 = 0
 
@@ -987,7 +1206,7 @@ sample:
     assert!(formatted.contains("  ins<f64> N\n"));
     assert!(formatted.contains("  outs<i32> 1\n"));
     assert!(formatted.contains("  params<bool> N\n"));
-    assert!(formatted.contains("  buffers[f32] N\n"));
+    assert!(formatted.contains("  buffers<f32> N\n"));
 }
 
 #[test]

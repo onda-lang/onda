@@ -19,20 +19,16 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             proc_api,
             errors,
         ),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 rewrite_nested_proc_calls_in_expr(
-                    start,
-                    owner_proc,
-                    nested_instances,
-                    proc_array_slots,
-                    proc_api,
-                    errors,
-                );
-            }
-            if let Some(end) = end {
-                rewrite_nested_proc_calls_in_expr(
-                    end,
+                    coordinate,
                     owner_proc,
                     nested_instances,
                     proc_array_slots,
@@ -415,6 +411,11 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             if let Some((base_raw, event_name)) = split_dot_path(name) {
                 let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
                 let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
+                    if proc_index_base_name(args)
+                        .is_some_and(|base| !proc_array_slots.contains_key(base))
+                    {
+                        return;
+                    }
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
@@ -1369,16 +1370,6 @@ pub(super) fn expand_nested_proc_ctor_assign(
                 errors,
             );
         }
-        if !matches!(expr, Expr::Var { .. }) {
-            push_semantic(
-                DiagCtx::default(),
-                errors,
-                format!(
-                    "processor constructor '{ctor_name}(...)' buffer argument '{}' for nested state '{nested_var}' must be a buffer symbol",
-                    buffer_spec.name
-                ),
-            );
-        }
         bound_buffers.push(expr);
     }
     out.push(Stmt::Expr {
@@ -1515,16 +1506,6 @@ pub(super) fn expand_proc_instance_ctor_assign(
                 ),
                 false,
                 errors,
-            );
-        }
-        if !matches!(expr, Expr::Var { .. }) {
-            push_semantic(
-                DiagCtx::default(),
-                errors,
-                format!(
-                    "processor constructor '{ctor_name}(...)' buffer argument '{}' must be a buffer symbol",
-                    buffer_spec.name
-                ),
             );
         }
         bound_buffers.push(expr);

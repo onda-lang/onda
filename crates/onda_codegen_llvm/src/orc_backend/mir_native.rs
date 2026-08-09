@@ -40,7 +40,7 @@ use crate::{RuntimeAllocator, RuntimeBuffer, RuntimeState, TargetOptLevel};
 
 use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_buffer_abi};
 
-const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 12;
+const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 13;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 /// Classification for failures at the validated MIR-to-LLVM boundary.
@@ -278,6 +278,7 @@ unsafe fn lower_type_recursive(
             let i8_ty = LLVMInt8TypeInContext(context);
             let mut fields = [
                 LLVMPointerType(i8_ty, 0),
+                LLVMPointerType(i8_ty, 0),
                 LLVMInt32TypeInContext(context),
                 LLVMInt32TypeInContext(context),
             ];
@@ -287,10 +288,17 @@ unsafe fn lower_type_recursive(
             let i8_ty = LLVMInt8TypeInContext(context);
             let mut fields = [
                 LLVMPointerType(i8_ty, 0),
+                LLVMPointerType(i8_ty, 0),
                 LLVMInt32TypeInContext(context),
                 LLVMInt32TypeInContext(context),
                 LLVMFloatTypeInContext(context),
             ];
+            LLVMStructTypeInContext(context, fields.as_mut_ptr(), fields.len() as u32, 0)
+        }
+        Type::BufferSpan { .. } => {
+            let i8_ty = LLVMInt8TypeInContext(context);
+            let pointer = LLVMPointerType(i8_ty, 0);
+            let mut fields = [pointer; 5];
             LLVMStructTypeInContext(context, fields.as_mut_ptr(), fields.len() as u32, 0)
         }
         unsupported => {
@@ -508,6 +516,20 @@ fn audio_port_shape(program: &Program, id: onda_mir::TypeId) -> Option<(ScalarTy
     }
 }
 
+fn fallback_buffer_byte_count(program: &Program) -> Result<usize, MirCodegenError> {
+    program
+        .interface
+        .buffers
+        .iter()
+        .try_fold(0, |maximum, buffer| {
+            let element_size =
+                usize::try_from(scalar_store_size(buffer.element)).map_err(|_| {
+                    MirCodegenError::unsupported("buffer scalar size does not fit usize")
+                })?;
+            Ok(maximum.max(element_size))
+        })
+}
+
 #[derive(Clone, Copy)]
 struct FunctionDecl {
     value: LLVMValueRef,
@@ -526,6 +548,17 @@ struct ModuleEmitter<'a> {
     runtime_context_ty: LLVMTypeRef,
     functions: Vec<FunctionDecl>,
     const_globals: Vec<LLVMValueRef>,
+    host_alias_scopes: HostAliasScopes,
+}
+
+#[derive(Clone, Copy)]
+struct HostAliasScopes {
+    alias_scope_kind: u32,
+    noalias_kind: u32,
+    invariant_group_kind: u32,
+    invariant_group: LLVMValueRef,
+    audio_outputs: LLVMValueRef,
+    buffer_descriptors: LLVMValueRef,
 }
 
 impl<'a> ModuleEmitter<'a> {
@@ -542,7 +575,7 @@ impl<'a> ModuleEmitter<'a> {
         let i32_ty = LLVMInt32TypeInContext(context);
         let mut runtime_fields = [
             ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
-            ptr_ty, i32_ty,
+            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty,
         ];
         let runtime_context_ty = LLVMStructTypeInContext(
             context,
@@ -553,6 +586,7 @@ impl<'a> ModuleEmitter<'a> {
         let effects = onda_mir::analyze_effects(program);
         let const_globals = build_const_globals(program, context, module)?;
         let functions = declare_functions(program, &effects, context, module, types, layouts)?;
+        let host_alias_scopes = build_host_alias_scopes(context);
         Ok(Self {
             program,
             effects,
@@ -565,6 +599,7 @@ impl<'a> ModuleEmitter<'a> {
             runtime_context_ty,
             functions,
             const_globals,
+            host_alias_scopes,
         })
     }
 
@@ -899,6 +934,65 @@ unsafe fn build_const_globals(
     Ok(globals)
 }
 
+unsafe fn build_host_alias_scopes(context: LLVMContextRef) -> HostAliasScopes {
+    // The raw ABI keeps descriptor tables stable and separate from every
+    // audio/buffer storage region for the duration of an entry-point call.
+    // Express that contract locally so LLVM can hoist invariant collection
+    // selections without claiming either program-wide memory invariance or
+    // that the descriptor tables are mutually disjoint (read and write
+    // pointer tables may legitimately alias). `invariant.group` is tied to
+    // the load's pointer SSA value, so a fresh entry-point invocation may bind
+    // a different value at the same host address.
+    let domain_name = "onda.host_regions";
+    let domain_label =
+        LLVMMDStringInContext2(context, domain_name.as_ptr().cast(), domain_name.len());
+    let domain = self_referential_metadata_node(context, &[domain_label]);
+
+    let output_name = "onda.audio_outputs";
+    let output_label =
+        LLVMMDStringInContext2(context, output_name.as_ptr().cast(), output_name.len());
+    let output_scope = self_referential_metadata_node(context, &[domain, output_label]);
+
+    let descriptor_name = "onda.buffer_descriptors";
+    let descriptor_label = LLVMMDStringInContext2(
+        context,
+        descriptor_name.as_ptr().cast(),
+        descriptor_name.len(),
+    );
+    let descriptor_scope = self_referential_metadata_node(context, &[domain, descriptor_label]);
+
+    let mut output_scopes = [output_scope];
+    let output_list =
+        LLVMMDNodeInContext2(context, output_scopes.as_mut_ptr(), output_scopes.len());
+    let mut descriptor_scopes = [descriptor_scope];
+    let descriptor_list = LLVMMDNodeInContext2(
+        context,
+        descriptor_scopes.as_mut_ptr(),
+        descriptor_scopes.len(),
+    );
+    let invariant_group = LLVMMDNodeInContext2(context, std::ptr::null_mut(), 0);
+    HostAliasScopes {
+        alias_scope_kind: LLVMGetMDKindIDInContext(context, c"alias.scope".as_ptr(), 11),
+        noalias_kind: LLVMGetMDKindIDInContext(context, c"noalias".as_ptr(), 7),
+        invariant_group_kind: LLVMGetMDKindIDInContext(context, c"invariant.group".as_ptr(), 15),
+        invariant_group: LLVMMetadataAsValue(context, invariant_group),
+        audio_outputs: LLVMMetadataAsValue(context, output_list),
+        buffer_descriptors: LLVMMetadataAsValue(context, descriptor_list),
+    }
+}
+
+unsafe fn self_referential_metadata_node(
+    context: LLVMContextRef,
+    trailing: &[LLVMMetadataRef],
+) -> LLVMMetadataRef {
+    let mut operands = Vec::with_capacity(trailing.len() + 1);
+    operands.push(std::ptr::null_mut());
+    operands.extend_from_slice(trailing);
+    let node = LLVMMDNodeInContext2(context, operands.as_mut_ptr(), operands.len());
+    LLVMReplaceMDNodeOperandWith(LLVMMetadataAsValue(context, node), 0, node);
+    node
+}
+
 unsafe fn llvm_scalar_constant(
     context: LLVMContextRef,
     value: onda_mir::ScalarValue,
@@ -1045,6 +1139,13 @@ unsafe fn emit_function_body(
     if builder.is_null() {
         return Err(MirCodegenError::llvm("failed to create LLVM builder"));
     }
+    let prologue_builder = LLVMCreateBuilderInContext(module.context);
+    if prologue_builder.is_null() {
+        LLVMDisposeBuilder(builder);
+        return Err(MirCodegenError::llvm(
+            "failed to create LLVM prologue builder",
+        ));
+    }
     let result = (|| {
         let entry = append_block(module.context, declaration.value, "entry")?;
         LLVMPositionBuilderAtEnd(builder, entry);
@@ -1053,17 +1154,25 @@ unsafe fn emit_function_body(
             _ => build_entry_runtime_context(module, declaration.value, function.kind, builder)?,
         };
 
+        let fallback_buffer_read =
+            load_context_field(module, builder, runtime_context, 14, "unbound_buffer_read")?;
+        let fallback_buffer_write =
+            load_context_field(module, builder, runtime_context, 15, "unbound_buffer_write")?;
         let mut emitter = FunctionEmitter {
             module,
             function,
             declaration,
             builder,
+            prologue_builder,
             runtime_context,
             locals: Vec::with_capacity(function.locals.len()),
             parameters: Vec::with_capacity(function.params.len()),
             event_parameters: Vec::new(),
             loop_stack: Vec::new(),
             fused_clamped_indices: fused_clamped_index_sources(module.program, function),
+            direct_buffer_fields: vec![[None; 5]; module.program.interface.buffers.len()],
+            fallback_buffer_read,
+            fallback_buffer_write,
         };
         emitter.allocate_storage()?;
         emitter.lower_block(&function.body)?;
@@ -1083,6 +1192,7 @@ unsafe fn emit_function_body(
         }
         Ok(())
     })();
+    LLVMDisposeBuilder(prologue_builder);
     LLVMDisposeBuilder(builder);
     result
 }
@@ -1096,7 +1206,8 @@ struct PlaceRef {
 
 #[derive(Clone, Copy)]
 struct BufferParts {
-    ptr: LLVMValueRef,
+    read_ptr: LLVMValueRef,
+    write_ptr: LLVMValueRef,
     frames: LLVMValueRef,
     channels: LLVMValueRef,
     element: onda_mir::ScalarType,
@@ -1104,7 +1215,8 @@ struct BufferParts {
 
 #[derive(Clone, Copy)]
 struct SliceParts {
-    ptr: LLVMValueRef,
+    read_ptr: LLVMValueRef,
+    write_ptr: LLVMValueRef,
     len: LLVMValueRef,
     stride_bytes: LLVMValueRef,
     element: onda_mir::ScalarType,
@@ -1121,12 +1233,20 @@ struct FunctionEmitter<'a, 'm> {
     function: &'a onda_mir::Function,
     declaration: FunctionDecl,
     builder: LLVMBuilderRef,
+    /// A separate insertion cursor used to materialize stable host-buffer
+    /// descriptor fields in the function entry block. Bindings may change
+    /// between entry-point calls, but remain fixed for the duration of one
+    /// call, so these SSA snapshots cannot become stale.
+    prologue_builder: LLVMBuilderRef,
     runtime_context: LLVMValueRef,
     locals: Vec<PlaceRef>,
     parameters: Vec<PlaceRef>,
     event_parameters: Vec<PlaceRef>,
     loop_stack: Vec<(LLVMBasicBlockRef, LLVMBasicBlockRef)>,
     fused_clamped_indices: Vec<Option<FusedClampedIndex>>,
+    direct_buffer_fields: Vec<[Option<LLVMValueRef>; 5]>,
+    fallback_buffer_read: LLVMValueRef,
+    fallback_buffer_write: LLVMValueRef,
 }
 
 impl FunctionEmitter<'_, '_> {
@@ -1199,7 +1319,7 @@ impl FunctionEmitter<'_, '_> {
             self.module,
             self.builder,
             self.runtime_context,
-            11,
+            12,
             "event_payload",
         )?;
         let i8_ty = LLVMInt8TypeInContext(self.module.context);
@@ -1241,7 +1361,7 @@ impl FunctionEmitter<'_, '_> {
                     );
                     let stride = LLVMConstInt(i32_ty, scalar_store_size(element), 0);
                     let descriptor =
-                        self.build_slice_descriptor(parameter.ty, data_ptr, len, stride)?;
+                        self.build_slice_descriptor(parameter.ty, data_ptr, data_ptr, len, stride)?;
                     let name = c_name(&format!("event_slice_{index}"))?;
                     let ptr = LLVMBuildAlloca(
                         self.builder,
@@ -1493,6 +1613,9 @@ impl FunctionEmitter<'_, '_> {
                         CallArgument::Buffer(buffer) => {
                             self.build_external_buffer_descriptor(*buffer, parameter.ty)?
                         }
+                        CallArgument::BufferSpan(span) => {
+                            self.build_buffer_span(*span, parameter.ty)?
+                        }
                         _ => {
                             return Err(MirCodegenError::unsupported(format!(
                                 "MIR call argument {index} cannot be passed by value"
@@ -1510,12 +1633,20 @@ impl FunctionEmitter<'_, '_> {
                             index,
                             bounds,
                         } => {
-                            let (ptr, _) = self.slice_element_ptr(*slice, *index, *bounds)?;
+                            let (ptr, _) = self.slice_element_ptr(
+                                *slice,
+                                *index,
+                                *bounds,
+                                parameter.mode == onda_mir::PassingMode::ReadWriteReference,
+                            )?;
                             PlaceRef {
                                 ptr,
                                 ty: parameter.ty,
                                 alignment: 1,
                             }
+                        }
+                        CallArgument::BufferParam(reference) => {
+                            self.buffer_param_place(*reference, parameter.ty)?
                         }
                         CallArgument::ArrayWindow {
                             array,
@@ -1526,7 +1657,13 @@ impl FunctionEmitter<'_, '_> {
                             slice,
                             start,
                             bounds,
-                        } => self.slice_window_ptr(*slice, *start, *bounds, parameter.ty)?,
+                        } => self.slice_window_ptr(
+                            *slice,
+                            *start,
+                            *bounds,
+                            parameter.ty,
+                            parameter.mode == onda_mir::PassingMode::ReadWriteReference,
+                        )?,
                         CallArgument::Buffer(buffer) => {
                             let descriptor =
                                 self.build_external_buffer_descriptor(*buffer, parameter.ty)?;
@@ -1699,6 +1836,7 @@ impl FunctionEmitter<'_, '_> {
         start: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
         parameter_ty: onda_mir::TypeId,
+        write: bool,
     ) -> Result<PlaceRef, MirCodegenError> {
         let Type::Array {
             element,
@@ -1758,7 +1896,7 @@ impl FunctionEmitter<'_, '_> {
         let start = self.lower_value(start)?;
         let start = self.normalize_dynamic_window_start(start, max_start, bounds)?;
         Ok(PlaceRef {
-            ptr: self.slice_ptr_at_index(parts, start, "slice_window")?,
+            ptr: self.slice_ptr_at_index(parts, start, "slice_window", write)?,
             ty: parameter_ty,
             alignment: 1,
         })
@@ -1850,15 +1988,34 @@ impl FunctionEmitter<'_, '_> {
 
     unsafe fn build_external_buffer_descriptor(
         &mut self,
-        buffer: onda_mir::BufferId,
+        buffer: onda_mir::BufferRef,
         ty: onda_mir::TypeId,
     ) -> Result<LLVMValueRef, MirCodegenError> {
-        let parts = self.external_buffer_parts(buffer)?;
-        let sample_rate = self.lower_external_buffer_metadata(buffer, 3)?;
+        let (parts, sample_rate) = match buffer {
+            onda_mir::BufferRef::Direct(_) => (
+                self.external_buffer_parts(buffer)?,
+                self.lower_external_buffer_metadata(buffer, 4)?,
+            ),
+            onda_mir::BufferRef::ArrayElement { .. } => {
+                // The selector is an arbitrary MIR value and must be evaluated
+                // exactly once while constructing a forwarded descriptor.
+                let runtime_index = self.lower_buffer_ref_index(buffer)?;
+                (
+                    self.external_buffer_parts_at(buffer, runtime_index)?,
+                    self.lower_external_buffer_metadata_at(runtime_index, 4)?,
+                )
+            }
+        };
         let mut descriptor = LLVMGetUndef(self.module.types.get(ty));
-        for (index, value) in [parts.ptr, parts.frames, parts.channels, sample_rate]
-            .into_iter()
-            .enumerate()
+        for (index, value) in [
+            parts.read_ptr,
+            parts.write_ptr,
+            parts.frames,
+            parts.channels,
+            sample_rate,
+        ]
+        .into_iter()
+        .enumerate()
         {
             descriptor = LLVMBuildInsertValue(
                 self.builder,
@@ -1912,15 +2069,15 @@ impl FunctionEmitter<'_, '_> {
                 index,
                 bounds,
             } => self.lower_buffer_param_load(*parameter, *channel, *index, *bounds),
-            Rvalue::BufferLen(buffer) => self.lower_external_buffer_metadata(*buffer, 1),
-            Rvalue::BufferChannels(buffer) => self.lower_external_buffer_metadata(*buffer, 2),
-            Rvalue::BufferSampleRate(buffer) => self.lower_external_buffer_metadata(*buffer, 3),
-            Rvalue::BufferParamLen(parameter) => self.lower_buffer_param_metadata(*parameter, 1),
+            Rvalue::BufferLen(buffer) => self.lower_external_buffer_metadata(*buffer, 2),
+            Rvalue::BufferChannels(buffer) => self.lower_external_buffer_channels(*buffer),
+            Rvalue::BufferSampleRate(buffer) => self.lower_external_buffer_metadata(*buffer, 4),
+            Rvalue::BufferParamLen(parameter) => self.lower_buffer_param_metadata(*parameter, 2),
             Rvalue::BufferParamChannels(parameter) => {
-                self.lower_buffer_param_metadata(*parameter, 2)
+                self.lower_buffer_param_metadata(*parameter, 3)
             }
             Rvalue::BufferParamSampleRate(parameter) => {
-                self.lower_buffer_param_metadata(*parameter, 3)
+                self.lower_buffer_param_metadata(*parameter, 4)
             }
             Rvalue::ConstDataLoad {
                 data,
@@ -2547,7 +2704,9 @@ impl FunctionEmitter<'_, '_> {
         )?;
         let value = self.lower_value(value)?;
         let ptr = self.audio_sample_ptr(1, scalar, port, frame)?;
-        LLVMBuildStore(self.builder, value, ptr);
+        let store = LLVMBuildStore(self.builder, value, ptr);
+        LLVMSetAlignment(store, scalar_store_size(scalar) as u32);
+        self.mark_audio_output_access(store);
         Ok(())
     }
 
@@ -2594,12 +2753,17 @@ impl FunctionEmitter<'_, '_> {
         frame: onda_mir::Value,
     ) -> Result<LLVMValueRef, MirCodegenError> {
         let ptr = self.audio_sample_ptr(context_field, scalar, port, frame)?;
-        Ok(LLVMBuildLoad2(
+        let load = LLVMBuildLoad2(
             self.builder,
             llvm_scalar_type(self.module.context, scalar),
             ptr,
             c_name("audio_load")?.as_ptr(),
-        ))
+        );
+        LLVMSetAlignment(load, scalar_store_size(scalar) as u32);
+        if context_field == 1 {
+            self.mark_audio_output_access(load);
+        }
+        Ok(load)
     }
 
     unsafe fn audio_sample_ptr(
@@ -2679,89 +2843,416 @@ impl FunctionEmitter<'_, '_> {
         }
     }
 
+    unsafe fn lower_buffer_ref_index(
+        &mut self,
+        buffer: onda_mir::BufferRef,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let i32_ty = LLVMInt32TypeInContext(self.module.context);
+        match buffer {
+            onda_mir::BufferRef::Direct(buffer) => {
+                Ok(LLVMConstInt(i32_ty, u64::from(buffer.raw()), 0))
+            }
+            onda_mir::BufferRef::ArrayElement {
+                first,
+                len,
+                selector,
+                bounds,
+            } => {
+                let selector = self.lower_value(selector)?;
+                let len = LLVMConstInt(i32_ty, u64::from(len), 0);
+                let selector = self.apply_dynamic_bounds(selector, len, bounds)?;
+                Ok(LLVMBuildAdd(
+                    self.builder,
+                    LLVMConstInt(i32_ty, u64::from(first.raw()), 0),
+                    selector,
+                    c_name("buffer_array_index")?.as_ptr(),
+                ))
+            }
+        }
+    }
+
     unsafe fn lower_external_buffer_metadata(
         &mut self,
-        buffer: onda_mir::BufferId,
+        buffer: onda_mir::BufferRef,
         descriptor_field: u32,
     ) -> Result<LLVMValueRef, MirCodegenError> {
-        let (context_field, element_ty, name) = match descriptor_field {
-            0 => (7, self.module.ptr_ty, "buffer_ptr"),
-            1 => (
-                8,
+        match buffer {
+            onda_mir::BufferRef::Direct(buffer) => {
+                self.snapshot_direct_buffer_field(buffer, descriptor_field)
+            }
+            onda_mir::BufferRef::ArrayElement { .. } => {
+                let index = self.lower_buffer_ref_index(buffer)?;
+                self.lower_external_buffer_metadata_at(index, descriptor_field)
+            }
+        }
+    }
+
+    unsafe fn lower_external_buffer_channels(
+        &mut self,
+        buffer: onda_mir::BufferRef,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let channels = self.module.program.interface.buffers[buffer.index()].channels;
+        match channels {
+            onda_mir::BufferChannels::Mono => Ok(LLVMConstInt(
                 LLVMInt32TypeInContext(self.module.context),
-                "buffer_frames",
-            ),
-            2 => (
-                9,
+                1,
+                0,
+            )),
+            onda_mir::BufferChannels::Static(channels) => Ok(LLVMConstInt(
                 LLVMInt32TypeInContext(self.module.context),
-                "buffer_channels",
-            ),
-            3 => (
-                10,
-                LLVMFloatTypeInContext(self.module.context),
-                "buffer_sample_rate",
-            ),
-            _ => return Err(MirCodegenError::invalid("invalid buffer descriptor field")),
-        };
+                channels as u64,
+                0,
+            )),
+            onda_mir::BufferChannels::Dynamic => self.lower_external_buffer_metadata(buffer, 3),
+        }
+    }
+
+    unsafe fn lower_external_buffer_metadata_at(
+        &mut self,
+        index: LLVMValueRef,
+        descriptor_field: u32,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        self.load_external_buffer_metadata_at(self.builder, index, descriptor_field)
+    }
+
+    unsafe fn load_external_buffer_metadata_at(
+        &self,
+        builder: LLVMBuilderRef,
+        index: LLVMValueRef,
+        descriptor_field: u32,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let (element_ty, context_field, name) = self.buffer_table_component(descriptor_field)?;
         let values = load_context_field(
             self.module,
-            self.builder,
+            builder,
             self.runtime_context,
             context_field,
             name,
         )?;
-        let index = LLVMConstInt(
-            LLVMInt32TypeInContext(self.module.context),
-            buffer.raw() as u64,
-            0,
-        );
         let ptr = LLVMBuildGEP2(
-            self.builder,
+            builder,
             element_ty,
             values,
             [index].as_mut_ptr(),
             1,
             c_name(name)?.as_ptr(),
         );
-        Ok(LLVMBuildLoad2(
+        let load = LLVMBuildLoad2(builder, element_ty, ptr, c_name(name)?.as_ptr());
+        self.mark_external_buffer_descriptor_access(load);
+        if descriptor_field <= 1 {
+            self.resolve_buffer_pointer(builder, load, descriptor_field == 1)
+        } else {
+            Ok(load)
+        }
+    }
+
+    unsafe fn resolve_buffer_pointer(
+        &self,
+        builder: LLVMBuilderRef,
+        pointer: LLVMValueRef,
+        write: bool,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let fallback = if write {
+            self.fallback_buffer_write
+        } else {
+            self.fallback_buffer_read
+        };
+        if fallback.is_null() {
+            return Err(MirCodegenError::invalid(
+                "buffer pointer used without fallback storage",
+            ));
+        }
+        let bound = LLVMBuildICmp(
+            builder,
+            LLVMIntPredicate::LLVMIntNE,
+            pointer,
+            LLVMConstPointerNull(self.module.ptr_ty),
+            c_name("buffer_is_bound")?.as_ptr(),
+        );
+        Ok(LLVMBuildSelect(
+            builder,
+            bound,
+            pointer,
+            fallback,
+            c_name(if write {
+                "buffer_write_or_discard"
+            } else {
+                "buffer_read_or_zero"
+            })?
+            .as_ptr(),
+        ))
+    }
+
+    unsafe fn snapshot_direct_buffer_field(
+        &mut self,
+        buffer: onda_mir::BufferId,
+        descriptor_field: u32,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let field = usize::try_from(descriptor_field)
+            .map_err(|_| MirCodegenError::invalid("buffer descriptor field does not fit usize"))?;
+        let cached = self
+            .direct_buffer_fields
+            .get(buffer.index())
+            .and_then(|fields| fields.get(field))
+            .ok_or_else(|| MirCodegenError::invalid("direct buffer descriptor is out of range"))?;
+        if let Some(value) = *cached {
+            return Ok(value);
+        }
+
+        let entry = LLVMGetEntryBasicBlock(self.declaration.value);
+        let terminator = LLVMGetBasicBlockTerminator(entry);
+        if terminator.is_null() {
+            LLVMPositionBuilderAtEnd(self.prologue_builder, entry);
+        } else {
+            LLVMPositionBuilderBefore(self.prologue_builder, terminator);
+        }
+        let index = LLVMConstInt(
+            LLVMInt32TypeInContext(self.module.context),
+            u64::from(buffer.raw()),
+            0,
+        );
+        let value =
+            self.load_external_buffer_metadata_at(self.prologue_builder, index, descriptor_field)?;
+        self.direct_buffer_fields[buffer.index()][field] = Some(value);
+        Ok(value)
+    }
+
+    unsafe fn buffer_table_component(
+        &self,
+        field: u32,
+    ) -> Result<(LLVMTypeRef, u32, &'static str), MirCodegenError> {
+        match field {
+            0 => Ok((self.module.ptr_ty, 7, "buffer_ptr")),
+            1 => Ok((self.module.ptr_ty, 8, "buffer_write_ptr")),
+            2 => Ok((
+                LLVMInt32TypeInContext(self.module.context),
+                9,
+                "buffer_frames",
+            )),
+            3 => Ok((
+                LLVMInt32TypeInContext(self.module.context),
+                10,
+                "buffer_channels",
+            )),
+            4 => Ok((
+                LLVMFloatTypeInContext(self.module.context),
+                11,
+                "buffer_sample_rate",
+            )),
+            _ => Err(MirCodegenError::invalid("invalid buffer descriptor field")),
+        }
+    }
+
+    unsafe fn offset_buffer_table(
+        &self,
+        base: LLVMValueRef,
+        index: LLVMValueRef,
+        field: u32,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let (element, _, name) = self.buffer_table_component(field)?;
+        Ok(LLVMBuildGEP2(
             self.builder,
-            element_ty,
-            ptr,
+            element,
+            base,
+            [index].as_mut_ptr(),
+            1,
             c_name(name)?.as_ptr(),
         ))
     }
 
-    unsafe fn lower_buffer_param_metadata(
+    unsafe fn build_buffer_span(
         &mut self,
-        parameter: onda_mir::ParameterId,
-        descriptor_field: u32,
+        span: onda_mir::BufferSpanRef,
+        expected: onda_mir::TypeId,
     ) -> Result<LLVMValueRef, MirCodegenError> {
-        let descriptor = self.load(self.parameters[parameter.index()]);
-        if descriptor_field == 2 {
-            let ty = self.function.params[parameter.index()].ty;
-            let Type::Buffer { channels, .. } = self.module.program.types[ty.index()] else {
+        let Type::BufferSpan {
+            len: expected_len, ..
+        } = self.module.program.types[expected.index()]
+        else {
+            return Err(MirCodegenError::invalid(
+                "buffer span argument targets a non-span parameter",
+            ));
+        };
+        let (start, len, source) = match span {
+            onda_mir::BufferSpanRef::Interface { first, len } => (first.raw(), len, None),
+            onda_mir::BufferSpanRef::Parameter { span, start, len } => (start, len, Some(span)),
+        };
+        if len != expected_len {
+            return Err(MirCodegenError::invalid(
+                "buffer span argument length does not match parameter type",
+            ));
+        }
+        let index = LLVMConstInt(
+            LLVMInt32TypeInContext(self.module.context),
+            u64::from(start),
+            0,
+        );
+        let source_span = if let Some(source) = source {
+            let place = self
+                .parameters
+                .get(source.index())
+                .copied()
+                .ok_or_else(|| MirCodegenError::invalid("buffer span parameter is out of range"))?;
+            let Type::BufferSpan {
+                len: source_len, ..
+            } = self.module.program.types[place.ty.index()]
+            else {
                 return Err(MirCodegenError::invalid(
-                    "buffer metadata operation uses a non-buffer parameter",
+                    "buffer span source is not span-typed",
                 ));
             };
-            match channels {
-                onda_mir::BufferChannels::Mono => {
-                    return Ok(LLVMConstInt(
-                        LLVMInt32TypeInContext(self.module.context),
-                        1,
-                        0,
+            if start.checked_add(len).is_none_or(|end| end > source_len) {
+                return Err(MirCodegenError::invalid(
+                    "buffer span source window is out of range",
+                ));
+            }
+            Some(self.load(place))
+        } else {
+            None
+        };
+        let mut value = LLVMGetUndef(self.module.types.get(expected));
+        for field in 0..5 {
+            let base = if let Some(source) = source_span {
+                LLVMBuildExtractValue(
+                    self.builder,
+                    source,
+                    field,
+                    c_name("buffer_span_table")?.as_ptr(),
+                )
+            } else {
+                let (_, context_field, name) = self.buffer_table_component(field)?;
+                load_context_field(
+                    self.module,
+                    self.builder,
+                    self.runtime_context,
+                    context_field,
+                    name,
+                )?
+            };
+            let base = self.offset_buffer_table(base, index, field)?;
+            value = LLVMBuildInsertValue(
+                self.builder,
+                value,
+                base,
+                field,
+                c_name("buffer_span")?.as_ptr(),
+            );
+        }
+        Ok(value)
+    }
+
+    unsafe fn buffer_param_descriptor(
+        &mut self,
+        reference: onda_mir::BufferParamRef,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        match reference {
+            onda_mir::BufferParamRef::Direct(parameter) => {
+                let place = self
+                    .parameters
+                    .get(parameter.index())
+                    .copied()
+                    .ok_or_else(|| MirCodegenError::invalid("buffer parameter is out of range"))?;
+                Ok(self.load(place))
+            }
+            onda_mir::BufferParamRef::ArrayElement {
+                span,
+                selector,
+                bounds,
+            } => {
+                let place = self.parameters.get(span.index()).copied().ok_or_else(|| {
+                    MirCodegenError::invalid("buffer span parameter is out of range")
+                })?;
+                let Type::BufferSpan { len, .. } = self.module.program.types[place.ty.index()]
+                else {
+                    return Err(MirCodegenError::invalid(
+                        "buffer collection reference uses a non-span parameter",
                     ));
+                };
+                let index = self.lower_fixed_index(selector, len as usize, bounds)?;
+                let span = self.load(place);
+                let mut fields = [
+                    self.module.ptr_ty,
+                    self.module.ptr_ty,
+                    LLVMInt32TypeInContext(self.module.context),
+                    LLVMInt32TypeInContext(self.module.context),
+                    LLVMFloatTypeInContext(self.module.context),
+                ];
+                let descriptor_ty = LLVMStructTypeInContext(
+                    self.module.context,
+                    fields.as_mut_ptr(),
+                    fields.len() as u32,
+                    0,
+                );
+                let mut descriptor = LLVMGetUndef(descriptor_ty);
+                for field in 0..5 {
+                    let table = LLVMBuildExtractValue(
+                        self.builder,
+                        span,
+                        field,
+                        c_name("buffer_span_table")?.as_ptr(),
+                    );
+                    let entry = self.offset_buffer_table(table, index, field)?;
+                    let (element, _, name) = self.buffer_table_component(field)?;
+                    let component =
+                        LLVMBuildLoad2(self.builder, element, entry, c_name(name)?.as_ptr());
+                    self.mark_external_buffer_descriptor_access(component);
+                    let component = if field <= 1 {
+                        self.resolve_buffer_pointer(self.builder, component, field == 1)?
+                    } else {
+                        component
+                    };
+                    descriptor = LLVMBuildInsertValue(
+                        self.builder,
+                        descriptor,
+                        component,
+                        field,
+                        c_name("buffer_descriptor")?.as_ptr(),
+                    );
                 }
-                onda_mir::BufferChannels::Static(channels) => {
-                    return Ok(LLVMConstInt(
-                        LLVMInt32TypeInContext(self.module.context),
-                        channels as u64,
-                        0,
-                    ));
-                }
-                onda_mir::BufferChannels::Dynamic => {}
+                Ok(descriptor)
             }
         }
+    }
+
+    unsafe fn buffer_param_place(
+        &mut self,
+        parameter: onda_mir::BufferParamRef,
+        ty: onda_mir::TypeId,
+    ) -> Result<PlaceRef, MirCodegenError> {
+        if matches!(parameter, onda_mir::BufferParamRef::Direct(_)) {
+            return self
+                .parameters
+                .get(parameter.index())
+                .copied()
+                .ok_or_else(|| MirCodegenError::invalid("buffer parameter is out of range"));
+        }
+        let descriptor = self.buffer_param_descriptor(parameter)?;
+        let ptr = LLVMBuildAlloca(
+            self.builder,
+            self.module.types.get(ty),
+            c_name("buffer_argument")?.as_ptr(),
+        );
+        LLVMBuildStore(self.builder, descriptor, ptr);
+        Ok(PlaceRef {
+            ptr,
+            ty,
+            alignment: self.module.layouts.type_alignments[ty.index()],
+        })
+    }
+
+    unsafe fn lower_buffer_param_metadata(
+        &mut self,
+        parameter: onda_mir::BufferParamRef,
+        descriptor_field: u32,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        if descriptor_field == 3 {
+            if let Some(channels) =
+                self.constant_buffer_channels(self.buffer_param_channel_kind(parameter)?)
+            {
+                return Ok(channels);
+            }
+        }
+        let descriptor = self.buffer_param_descriptor(parameter)?;
         Ok(LLVMBuildExtractValue(
             self.builder,
             descriptor,
@@ -2770,24 +3261,103 @@ impl FunctionEmitter<'_, '_> {
         ))
     }
 
+    fn buffer_param_channel_kind(
+        &self,
+        parameter: onda_mir::BufferParamRef,
+    ) -> Result<onda_mir::BufferChannels, MirCodegenError> {
+        let ty = self.function.params[parameter.index()].ty;
+        match self.module.program.types[ty.index()] {
+            Type::Buffer { channels, .. } | Type::BufferSpan { channels, .. } => Ok(channels),
+            _ => Err(MirCodegenError::invalid(
+                "buffer operation uses a non-buffer parameter",
+            )),
+        }
+    }
+
+    unsafe fn constant_buffer_channels(
+        &self,
+        channels: onda_mir::BufferChannels,
+    ) -> Option<LLVMValueRef> {
+        match channels {
+            onda_mir::BufferChannels::Mono => Some(LLVMConstInt(
+                LLVMInt32TypeInContext(self.module.context),
+                1,
+                0,
+            )),
+            onda_mir::BufferChannels::Static(channels) => Some(LLVMConstInt(
+                LLVMInt32TypeInContext(self.module.context),
+                channels as u64,
+                0,
+            )),
+            onda_mir::BufferChannels::Dynamic => None,
+        }
+    }
+
     unsafe fn external_buffer_parts(
         &mut self,
-        buffer: onda_mir::BufferId,
+        buffer: onda_mir::BufferRef,
+    ) -> Result<BufferParts, MirCodegenError> {
+        match buffer {
+            onda_mir::BufferRef::Direct(buffer_id) => {
+                let descriptor = &self.module.program.interface.buffers[buffer_id.index()];
+                let element = descriptor.element;
+                let declared_channels = descriptor.channels;
+                let read_ptr = self.snapshot_direct_buffer_field(buffer_id, 0)?;
+                let write_ptr = self.snapshot_direct_buffer_field(buffer_id, 1)?;
+                let frames = self.snapshot_direct_buffer_field(buffer_id, 2)?;
+                let channels = match declared_channels {
+                    onda_mir::BufferChannels::Mono => {
+                        LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 1, 0)
+                    }
+                    onda_mir::BufferChannels::Static(channels) => LLVMConstInt(
+                        LLVMInt32TypeInContext(self.module.context),
+                        channels as u64,
+                        0,
+                    ),
+                    onda_mir::BufferChannels::Dynamic => {
+                        self.snapshot_direct_buffer_field(buffer_id, 3)?
+                    }
+                };
+                Ok(BufferParts {
+                    read_ptr,
+                    write_ptr,
+                    frames,
+                    channels,
+                    element,
+                })
+            }
+            onda_mir::BufferRef::ArrayElement { .. } => {
+                let runtime_index = self.lower_buffer_ref_index(buffer)?;
+                self.external_buffer_parts_at(buffer, runtime_index)
+            }
+        }
+    }
+
+    unsafe fn external_buffer_parts_at(
+        &mut self,
+        buffer: onda_mir::BufferRef,
+        runtime_index: LLVMValueRef,
     ) -> Result<BufferParts, MirCodegenError> {
         let descriptor = &self.module.program.interface.buffers[buffer.index()];
-        let ptr = self.lower_external_buffer_metadata(buffer, 0)?;
-        let frames = self.lower_external_buffer_metadata(buffer, 1)?;
-        let runtime_channels = self.lower_external_buffer_metadata(buffer, 2)?;
+        let read_ptr = self.lower_external_buffer_metadata_at(runtime_index, 0)?;
+        let write_ptr = self.lower_external_buffer_metadata_at(runtime_index, 1)?;
+        let frames = self.lower_external_buffer_metadata_at(runtime_index, 2)?;
         let channels = match descriptor.channels {
             onda_mir::BufferChannels::Mono => {
                 LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 1, 0)
             }
-            onda_mir::BufferChannels::Static(_) | onda_mir::BufferChannels::Dynamic => {
-                runtime_channels
+            onda_mir::BufferChannels::Static(channels) => LLVMConstInt(
+                LLVMInt32TypeInContext(self.module.context),
+                channels as u64,
+                0,
+            ),
+            onda_mir::BufferChannels::Dynamic => {
+                self.lower_external_buffer_metadata_at(runtime_index, 3)?
             }
         };
         Ok(BufferParts {
-            ptr,
+            read_ptr,
+            write_ptr,
             frames,
             channels,
             element: descriptor.element,
@@ -2796,26 +3366,45 @@ impl FunctionEmitter<'_, '_> {
 
     unsafe fn buffer_param_parts(
         &mut self,
-        parameter: onda_mir::ParameterId,
+        parameter: onda_mir::BufferParamRef,
     ) -> Result<BufferParts, MirCodegenError> {
         let ty = self.function.params[parameter.index()].ty;
-        let Type::Buffer { element, .. } = self.module.program.types[ty.index()] else {
-            return Err(MirCodegenError::invalid(
-                "buffer operation uses a non-buffer parameter",
-            ));
+        let element = match self.module.program.types[ty.index()] {
+            Type::Buffer { element, .. } | Type::BufferSpan { element, .. } => element,
+            _ => {
+                return Err(MirCodegenError::invalid(
+                    "buffer operation uses a non-buffer parameter",
+                ));
+            }
         };
-        let descriptor = self.load(self.parameters[parameter.index()]);
-        let ptr =
+        let descriptor = self.buffer_param_descriptor(parameter)?;
+        let read_ptr =
             LLVMBuildExtractValue(self.builder, descriptor, 0, c_name("buffer_ptr")?.as_ptr());
-        let frames = LLVMBuildExtractValue(
+        let write_ptr = LLVMBuildExtractValue(
             self.builder,
             descriptor,
             1,
+            c_name("buffer_write_ptr")?.as_ptr(),
+        );
+        let frames = LLVMBuildExtractValue(
+            self.builder,
+            descriptor,
+            2,
             c_name("buffer_frames")?.as_ptr(),
         );
-        let channels = self.lower_buffer_param_metadata(parameter, 2)?;
+        let channels =
+            match self.constant_buffer_channels(self.buffer_param_channel_kind(parameter)?) {
+                Some(channels) => channels,
+                None => LLVMBuildExtractValue(
+                    self.builder,
+                    descriptor,
+                    3,
+                    c_name("buffer_channels")?.as_ptr(),
+                ),
+            };
         Ok(BufferParts {
-            ptr,
+            read_ptr,
+            write_ptr,
             frames,
             channels,
             element,
@@ -2828,16 +3417,21 @@ impl FunctionEmitter<'_, '_> {
         channel: Option<onda_mir::Value>,
         index: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
+        write: bool,
     ) -> Result<LLVMValueRef, MirCodegenError> {
         let index = self.lower_value(index)?;
-        let total_len = LLVMBuildMul(
-            self.builder,
-            parts.frames,
-            parts.channels,
-            c_name("buffer_total_len")?.as_ptr(),
-        );
+        let index = if bounds == onda_mir::BoundsMode::Clamp {
+            self.clamp_dynamic_index(index, parts.frames)?
+        } else {
+            self.apply_dynamic_bounds(index, parts.frames, bounds)?
+        };
         let flat = if let Some(channel) = channel {
             let channel = self.lower_value(channel)?;
+            let channel = if bounds == onda_mir::BoundsMode::Clamp {
+                self.clamp_dynamic_index(channel, parts.channels)?
+            } else {
+                self.apply_dynamic_bounds(channel, parts.channels, bounds)?
+            };
             let frame_offset = LLVMBuildMul(
                 self.builder,
                 index,
@@ -2853,88 +3447,120 @@ impl FunctionEmitter<'_, '_> {
         } else {
             index
         };
-        let flat = if bounds == onda_mir::BoundsMode::Clamp {
-            self.clamp_dynamic_index(flat, total_len)?
+        let base = if write {
+            parts.write_ptr
         } else {
-            self.apply_dynamic_bounds(flat, total_len, bounds)?
+            parts.read_ptr
         };
+        let flat = self.neutralize_fallback_offset(base, flat, write)?;
         Ok(LLVMBuildGEP2(
             self.builder,
             llvm_scalar_type(self.module.context, parts.element),
-            parts.ptr,
+            base,
             [flat].as_mut_ptr(),
             1,
             c_name("buffer_element")?.as_ptr(),
         ))
     }
 
+    unsafe fn neutralize_fallback_offset(
+        &self,
+        pointer: LLVMValueRef,
+        offset: LLVMValueRef,
+        write: bool,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let fallback = if write {
+            self.fallback_buffer_write
+        } else {
+            self.fallback_buffer_read
+        };
+        let is_fallback = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntEQ,
+            pointer,
+            fallback,
+            c_name("buffer_is_unbound")?.as_ptr(),
+        );
+        Ok(LLVMBuildSelect(
+            self.builder,
+            is_fallback,
+            LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 0, 0),
+            offset,
+            c_name("buffer_storage_offset")?.as_ptr(),
+        ))
+    }
+
     unsafe fn lower_buffer_load(
         &mut self,
-        buffer: onda_mir::BufferId,
+        buffer: onda_mir::BufferRef,
         channel: Option<onda_mir::Value>,
         index: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
     ) -> Result<LLVMValueRef, MirCodegenError> {
         let parts = self.external_buffer_parts(buffer)?;
-        let ptr = self.buffer_element_ptr(parts, channel, index, bounds)?;
+        let ptr = self.buffer_element_ptr(parts, channel, index, bounds, false)?;
         let load = LLVMBuildLoad2(
             self.builder,
             llvm_scalar_type(self.module.context, parts.element),
             ptr,
             c_name("buffer_load")?.as_ptr(),
         );
-        LLVMSetAlignment(load, 1);
+        LLVMSetAlignment(load, scalar_store_size(parts.element) as u32);
+        self.mark_external_buffer_access(load);
         Ok(load)
     }
 
     unsafe fn lower_buffer_param_load(
         &mut self,
-        parameter: onda_mir::ParameterId,
+        parameter: onda_mir::BufferParamRef,
         channel: Option<onda_mir::Value>,
         index: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
     ) -> Result<LLVMValueRef, MirCodegenError> {
         let parts = self.buffer_param_parts(parameter)?;
-        let ptr = self.buffer_element_ptr(parts, channel, index, bounds)?;
+        let ptr = self.buffer_element_ptr(parts, channel, index, bounds, false)?;
         let load = LLVMBuildLoad2(
             self.builder,
             llvm_scalar_type(self.module.context, parts.element),
             ptr,
             c_name("buffer_param_load")?.as_ptr(),
         );
-        LLVMSetAlignment(load, 1);
+        LLVMSetAlignment(load, scalar_store_size(parts.element) as u32);
+        self.mark_external_buffer_access(load);
         Ok(load)
     }
 
     unsafe fn lower_buffer_store(
         &mut self,
-        buffer: onda_mir::BufferId,
+        buffer: onda_mir::BufferRef,
         channel: Option<onda_mir::Value>,
         index: onda_mir::Value,
         value: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
     ) -> Result<(), MirCodegenError> {
         let parts = self.external_buffer_parts(buffer)?;
-        let ptr = self.buffer_element_ptr(parts, channel, index, bounds)?;
+        let ptr = self.buffer_element_ptr(parts, channel, index, bounds, true)?;
         let value = self.lower_value(value)?;
         let store = LLVMBuildStore(self.builder, value, ptr);
-        LLVMSetAlignment(store, 1);
+        LLVMSetAlignment(store, scalar_store_size(parts.element) as u32);
+        self.mark_external_buffer_access(store);
         Ok(())
     }
 
     unsafe fn lower_buffer_param_store(
         &mut self,
-        parameter: onda_mir::ParameterId,
+        parameter: onda_mir::BufferParamRef,
         channel: Option<onda_mir::Value>,
         index: onda_mir::Value,
         value: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
     ) -> Result<(), MirCodegenError> {
         let parts = self.buffer_param_parts(parameter)?;
-        let ptr = self.buffer_element_ptr(parts, channel, index, bounds)?;
+        let ptr = self.buffer_element_ptr(parts, channel, index, bounds, true)?;
         let value = self.lower_value(value)?;
         let store = LLVMBuildStore(self.builder, value, ptr);
-        LLVMSetAlignment(store, 1);
+        LLVMSetAlignment(store, scalar_store_size(parts.element) as u32);
+        self.mark_external_buffer_access(store);
         Ok(())
     }
 
@@ -2953,12 +3579,23 @@ impl FunctionEmitter<'_, '_> {
         };
         let descriptor = self.lower_value(slice)?;
         Ok(SliceParts {
-            ptr: LLVMBuildExtractValue(self.builder, descriptor, 0, c_name("slice_ptr")?.as_ptr()),
-            len: LLVMBuildExtractValue(self.builder, descriptor, 1, c_name("slice_len")?.as_ptr()),
+            read_ptr: LLVMBuildExtractValue(
+                self.builder,
+                descriptor,
+                0,
+                c_name("slice_read_ptr")?.as_ptr(),
+            ),
+            write_ptr: LLVMBuildExtractValue(
+                self.builder,
+                descriptor,
+                1,
+                c_name("slice_write_ptr")?.as_ptr(),
+            ),
+            len: LLVMBuildExtractValue(self.builder, descriptor, 2, c_name("slice_len")?.as_ptr()),
             stride_bytes: LLVMBuildExtractValue(
                 self.builder,
                 descriptor,
-                2,
+                3,
                 c_name("slice_stride_bytes")?.as_ptr(),
             ),
             element,
@@ -2970,6 +3607,7 @@ impl FunctionEmitter<'_, '_> {
         parts: SliceParts,
         index: LLVMValueRef,
         name: &str,
+        write: bool,
     ) -> Result<LLVMValueRef, MirCodegenError> {
         let byte_offset = LLVMBuildMul(
             self.builder,
@@ -2980,7 +3618,11 @@ impl FunctionEmitter<'_, '_> {
         Ok(LLVMBuildGEP2(
             self.builder,
             LLVMInt8TypeInContext(self.module.context),
-            parts.ptr,
+            if write {
+                parts.write_ptr
+            } else {
+                parts.read_ptr
+            },
             [byte_offset].as_mut_ptr(),
             1,
             c_name(name)?.as_ptr(),
@@ -2992,11 +3634,12 @@ impl FunctionEmitter<'_, '_> {
         slice: onda_mir::Value,
         index: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
+        write: bool,
     ) -> Result<(LLVMValueRef, onda_mir::ScalarType), MirCodegenError> {
         let parts = self.slice_parts(slice)?;
         let index = self.lower_value(index)?;
         let index = self.apply_dynamic_bounds(index, parts.len, bounds)?;
-        let ptr = self.slice_ptr_at_index(parts, index, "slice_element")?;
+        let ptr = self.slice_ptr_at_index(parts, index, "slice_element", write)?;
         Ok((ptr, parts.element))
     }
 
@@ -3020,21 +3663,23 @@ impl FunctionEmitter<'_, '_> {
             0,
         );
         let i32_ty = LLVMInt32TypeInContext(self.module.context);
-        let (base_ptr, stride_bytes, source_len) = match source {
+        let (read_base_ptr, write_base_ptr, stride_bytes, source_len) = match source {
             onda_mir::SliceSource::Place(place) => {
                 let place = self.lower_place(place)?;
                 match self.module.program.types[place.ty.index()] {
                     Type::Array { len, .. } => {
                         let zero = LLVMConstInt(i32_ty, 0, 0);
+                        let base = LLVMBuildGEP2(
+                            self.builder,
+                            self.module.types.get(place.ty),
+                            place.ptr,
+                            [zero, zero].as_mut_ptr(),
+                            2,
+                            c_name("slice_array_base")?.as_ptr(),
+                        );
                         (
-                            LLVMBuildGEP2(
-                                self.builder,
-                                self.module.types.get(place.ty),
-                                place.ptr,
-                                [zero, zero].as_mut_ptr(),
-                                2,
-                                c_name("slice_array_base")?.as_ptr(),
-                            ),
+                            base,
+                            base,
                             element_size,
                             LLVMConstInt(i32_ty, u64::from(len), 0),
                         )
@@ -3051,13 +3696,19 @@ impl FunctionEmitter<'_, '_> {
                             LLVMBuildExtractValue(
                                 self.builder,
                                 descriptor,
-                                2,
+                                1,
+                                c_name("slice_write_base")?.as_ptr(),
+                            ),
+                            LLVMBuildExtractValue(
+                                self.builder,
+                                descriptor,
+                                3,
                                 c_name("slice_source_stride")?.as_ptr(),
                             ),
                             LLVMBuildExtractValue(
                                 self.builder,
                                 descriptor,
-                                1,
+                                2,
                                 c_name("slice_source_len")?.as_ptr(),
                             ),
                         )
@@ -3084,15 +3735,17 @@ impl FunctionEmitter<'_, '_> {
                     descriptor.values.len() as u64,
                 );
                 let zero = LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 0, 0);
+                let base = LLVMBuildGEP2(
+                    self.builder,
+                    array_ty,
+                    self.module.const_globals[data.index()],
+                    [zero, zero].as_mut_ptr(),
+                    2,
+                    c_name("slice_const_base")?.as_ptr(),
+                );
                 (
-                    LLVMBuildGEP2(
-                        self.builder,
-                        array_ty,
-                        self.module.const_globals[data.index()],
-                        [zero, zero].as_mut_ptr(),
-                        2,
-                        c_name("slice_const_base")?.as_ptr(),
-                    ),
+                    base,
+                    base,
                     element_size,
                     LLVMConstInt(i32_ty, descriptor.values.len() as u64, 0),
                 )
@@ -3106,15 +3759,23 @@ impl FunctionEmitter<'_, '_> {
             stride_bytes,
             c_name("slice_start_byte_offset")?.as_ptr(),
         );
-        let ptr = LLVMBuildGEP2(
+        let read_ptr = LLVMBuildGEP2(
             self.builder,
             LLVMInt8TypeInContext(self.module.context),
-            base_ptr,
+            read_base_ptr,
             [start_byte_offset].as_mut_ptr(),
             1,
             c_name("slice_start")?.as_ptr(),
         );
-        self.build_slice_descriptor(expected, ptr, len, stride_bytes)
+        let write_ptr = LLVMBuildGEP2(
+            self.builder,
+            LLVMInt8TypeInContext(self.module.context),
+            write_base_ptr,
+            [start_byte_offset].as_mut_ptr(),
+            1,
+            c_name("slice_write_start")?.as_ptr(),
+        );
+        self.build_slice_descriptor(expected, read_ptr, write_ptr, len, stride_bytes)
     }
 
     unsafe fn make_buffer_slice(
@@ -3167,15 +3828,25 @@ impl FunctionEmitter<'_, '_> {
             start_offset,
             c_name("buffer_slice_checked_offset")?.as_ptr(),
         );
-        let ptr = LLVMBuildGEP2(
+        let read_offset = self.neutralize_fallback_offset(parts.read_ptr, offset, false)?;
+        let write_offset = self.neutralize_fallback_offset(parts.write_ptr, offset, true)?;
+        let read_ptr = LLVMBuildGEP2(
             self.builder,
             LLVMInt8TypeInContext(self.module.context),
-            parts.ptr,
-            [offset].as_mut_ptr(),
+            parts.read_ptr,
+            [read_offset].as_mut_ptr(),
             1,
             c_name("buffer_slice_checked_start")?.as_ptr(),
         );
-        self.build_slice_descriptor(expected, ptr, len, stride_bytes)
+        let write_ptr = LLVMBuildGEP2(
+            self.builder,
+            LLVMInt8TypeInContext(self.module.context),
+            parts.write_ptr,
+            [write_offset].as_mut_ptr(),
+            1,
+            c_name("buffer_slice_write_start")?.as_ptr(),
+        );
+        self.build_slice_descriptor(expected, read_ptr, write_ptr, len, stride_bytes)
     }
 
     unsafe fn normalize_slice_range(
@@ -3316,7 +3987,8 @@ impl FunctionEmitter<'_, '_> {
     unsafe fn build_slice_descriptor(
         &self,
         ty: onda_mir::TypeId,
-        ptr: LLVMValueRef,
+        read_ptr: LLVMValueRef,
+        write_ptr: LLVMValueRef,
         len: LLVMValueRef,
         stride_bytes: LLVMValueRef,
     ) -> Result<LLVMValueRef, MirCodegenError> {
@@ -3324,22 +3996,29 @@ impl FunctionEmitter<'_, '_> {
         descriptor = LLVMBuildInsertValue(
             self.builder,
             descriptor,
-            ptr,
+            read_ptr,
             0,
             c_name("slice_with_ptr")?.as_ptr(),
         );
         descriptor = LLVMBuildInsertValue(
             self.builder,
             descriptor,
-            len,
+            write_ptr,
             1,
+            c_name("slice_with_write_ptr")?.as_ptr(),
+        );
+        descriptor = LLVMBuildInsertValue(
+            self.builder,
+            descriptor,
+            len,
+            2,
             c_name("slice_with_len")?.as_ptr(),
         );
         Ok(LLVMBuildInsertValue(
             self.builder,
             descriptor,
             stride_bytes,
-            2,
+            3,
             c_name("slice_with_stride")?.as_ptr(),
         ))
     }
@@ -3350,7 +4029,7 @@ impl FunctionEmitter<'_, '_> {
         index: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
     ) -> Result<LLVMValueRef, MirCodegenError> {
-        let (ptr, element) = self.slice_element_ptr(slice, index, bounds)?;
+        let (ptr, element) = self.slice_element_ptr(slice, index, bounds, false)?;
         let load = LLVMBuildLoad2(
             self.builder,
             llvm_scalar_type(self.module.context, element),
@@ -3375,7 +4054,7 @@ impl FunctionEmitter<'_, '_> {
         value: onda_mir::Value,
         bounds: onda_mir::BoundsMode,
     ) -> Result<(), MirCodegenError> {
-        let (ptr, _) = self.slice_element_ptr(slice, index, bounds)?;
+        let (ptr, _) = self.slice_element_ptr(slice, index, bounds, true)?;
         let value = self.lower_value(value)?;
         let store = LLVMBuildStore(self.builder, value, ptr);
         LLVMSetAlignment(store, 1);
@@ -3422,7 +4101,7 @@ impl FunctionEmitter<'_, '_> {
         LLVMBuildCondBr(self.builder, in_bounds, body, exit);
 
         LLVMPositionBuilderAtEnd(self.builder, body);
-        let ptr = self.slice_ptr_at_index(destination, index, "slice_fill_element")?;
+        let ptr = self.slice_ptr_at_index(destination, index, "slice_fill_element", true)?;
         let store = LLVMBuildStore(self.builder, value, ptr);
         LLVMSetAlignment(store, 1);
         let next = LLVMBuildAdd(
@@ -3533,20 +4212,27 @@ impl FunctionEmitter<'_, '_> {
             LLVMConstInt(i64_ty, element_size, 0),
             c_name("slice_copy_bytes")?.as_ptr(),
         );
-        LLVMBuildMemMove(self.builder, destination.ptr, 1, source.ptr, 1, byte_count);
+        LLVMBuildMemMove(
+            self.builder,
+            destination.write_ptr,
+            1,
+            source.read_ptr,
+            1,
+            byte_count,
+        );
         LLVMBuildBr(self.builder, merge);
 
         LLVMPositionBuilderAtEnd(self.builder, strided_block);
         let intptr_ty = LLVMInt64TypeInContext(self.module.context);
         let destination_address = LLVMBuildPtrToInt(
             self.builder,
-            destination.ptr,
+            destination.write_ptr,
             intptr_ty,
             c_name("slice_copy_destination_address")?.as_ptr(),
         );
         let source_address = LLVMBuildPtrToInt(
             self.builder,
-            source.ptr,
+            source.read_ptr,
             intptr_ty,
             c_name("slice_copy_source_address")?.as_ptr(),
         );
@@ -3807,9 +4493,9 @@ impl FunctionEmitter<'_, '_> {
         source: SliceParts,
         index: LLVMValueRef,
     ) -> Result<(), MirCodegenError> {
-        let source_ptr = self.slice_ptr_at_index(source, index, "slice_copy_source")?;
+        let source_ptr = self.slice_ptr_at_index(source, index, "slice_copy_source", false)?;
         let destination_ptr =
-            self.slice_ptr_at_index(destination, index, "slice_copy_destination")?;
+            self.slice_ptr_at_index(destination, index, "slice_copy_destination", true)?;
         let value = LLVMBuildLoad2(
             self.builder,
             llvm_scalar_type(self.module.context, source.element),
@@ -4247,6 +4933,31 @@ impl FunctionEmitter<'_, '_> {
             LLVMSetFastMathFlags(instruction, flags);
         }
     }
+
+    unsafe fn mark_audio_output_access(&self, instruction: LLVMValueRef) {
+        let scopes = self.module.host_alias_scopes;
+        LLVMSetMetadata(instruction, scopes.alias_scope_kind, scopes.audio_outputs);
+    }
+
+    unsafe fn mark_external_buffer_access(&self, instruction: LLVMValueRef) {
+        let scopes = self.module.host_alias_scopes;
+        LLVMSetMetadata(instruction, scopes.noalias_kind, scopes.buffer_descriptors);
+    }
+
+    unsafe fn mark_external_buffer_descriptor_access(&self, instruction: LLVMValueRef) {
+        let scopes = self.module.host_alias_scopes;
+        LLVMSetMetadata(
+            instruction,
+            scopes.alias_scope_kind,
+            scopes.buffer_descriptors,
+        );
+        LLVMSetMetadata(instruction, scopes.noalias_kind, scopes.audio_outputs);
+        LLVMSetMetadata(
+            instruction,
+            scopes.invariant_group_kind,
+            scopes.invariant_group,
+        );
+    }
 }
 
 unsafe fn build_entry_runtime_context(
@@ -4263,8 +4974,12 @@ unsafe fn build_entry_runtime_context(
     let null = LLVMConstPointerNull(module.ptr_ty);
     let zero = LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0);
     let mut fields = [
-        null, null, zero, zero, zero, null, null, null, null, null, null, null, zero,
+        null, null, zero, zero, zero, null, null, null, null, null, null, null, null, zero, null,
+        null,
     ];
+    let (fallback_read, fallback_write) = allocate_entry_fallback_buffers(module, builder)?;
+    fields[14] = fallback_read;
+    fields[15] = fallback_write;
     match kind {
         FunctionKind::Init => {
             fields[5] = LLVMGetParam(function, 0);
@@ -4278,19 +4993,33 @@ unsafe fn build_entry_runtime_context(
             fields[2] = LLVMGetParam(function, 4);
             fields[3] = LLVMGetParam(function, 5);
             fields[4] = LLVMGetParam(function, 6);
-            fields[7] = LLVMGetParam(function, 7);
-            fields[8] = LLVMGetParam(function, 8);
-            fields[9] = LLVMGetParam(function, 9);
-            fields[10] = LLVMGetParam(function, 10);
+            let buffers =
+                entry_buffer_descriptor_table(module, builder, LLVMGetParam(function, 7))?;
+            fields[7] = buffers;
+            fields[8] = buffers;
+            for (field, parameter) in (9..=11).zip(8..=10) {
+                fields[field] = entry_buffer_descriptor_table(
+                    module,
+                    builder,
+                    LLVMGetParam(function, parameter),
+                )?;
+            }
         }
         FunctionKind::Event(_) => {
-            fields[11] = LLVMGetParam(function, 0);
+            fields[12] = LLVMGetParam(function, 0);
             fields[5] = LLVMGetParam(function, 1);
             fields[6] = LLVMGetParam(function, 2);
-            fields[7] = LLVMGetParam(function, 3);
-            fields[8] = LLVMGetParam(function, 4);
-            fields[9] = LLVMGetParam(function, 5);
-            fields[10] = LLVMGetParam(function, 6);
+            let buffers =
+                entry_buffer_descriptor_table(module, builder, LLVMGetParam(function, 3))?;
+            fields[7] = buffers;
+            fields[8] = buffers;
+            for (field, parameter) in (9..=11).zip(4..=6) {
+                fields[field] = entry_buffer_descriptor_table(
+                    module,
+                    builder,
+                    LLVMGetParam(function, parameter),
+                )?;
+            }
         }
         FunctionKind::User => unreachable!(),
     }
@@ -4305,6 +5034,61 @@ unsafe fn build_entry_runtime_context(
         LLVMBuildStore(builder, value, ptr);
     }
     Ok(context)
+}
+
+unsafe fn allocate_entry_fallback_buffers(
+    module: &ModuleEmitter<'_>,
+    builder: LLVMBuilderRef,
+) -> Result<(LLVMValueRef, LLVMValueRef), MirCodegenError> {
+    let byte_count = fallback_buffer_byte_count(module.program)?;
+    if byte_count == 0 {
+        let null = LLVMConstPointerNull(module.ptr_ty);
+        return Ok((null, null));
+    }
+    let i8_ty = LLVMInt8TypeInContext(module.context);
+    let storage_ty = LLVMArrayType2(i8_ty, byte_count as u64);
+    let read = LLVMBuildAlloca(builder, storage_ty, c_name("unbound_buffer_read")?.as_ptr());
+    let write = LLVMBuildAlloca(
+        builder,
+        storage_ty,
+        c_name("unbound_buffer_write")?.as_ptr(),
+    );
+    LLVMSetAlignment(read, 8);
+    LLVMSetAlignment(write, 8);
+    LLVMBuildMemSet(
+        builder,
+        read,
+        LLVMConstInt(i8_ty, 0, 0),
+        LLVMConstInt(LLVMInt64TypeInContext(module.context), byte_count as u64, 0),
+        8,
+    );
+    Ok((read, write))
+}
+
+unsafe fn entry_buffer_descriptor_table(
+    module: &ModuleEmitter<'_>,
+    builder: LLVMBuilderRef,
+    ptr: LLVMValueRef,
+) -> Result<LLVMValueRef, MirCodegenError> {
+    if module.program.interface.buffers.is_empty() {
+        return Ok(ptr);
+    }
+    let mut parameter_types = [module.ptr_ty];
+    let fn_ty = LLVMFunctionType(
+        module.ptr_ty,
+        parameter_types.as_mut_ptr(),
+        parameter_types.len() as u32,
+        0,
+    );
+    let function = ensure_named_function(module.module, "llvm.launder.invariant.group.p0", fn_ty)?;
+    Ok(LLVMBuildCall2(
+        builder,
+        fn_ty,
+        function,
+        [ptr].as_mut_ptr(),
+        1,
+        c_name("buffer_descriptor_group")?.as_ptr(),
+    ))
 }
 
 unsafe fn load_context_field(
@@ -4436,6 +5220,9 @@ fn fixed_payload_type_size(
         Type::Slice { .. } => Ok(None),
         Type::Buffer { .. } => Err(MirCodegenError::unsupported(
             "buffer values cannot be serialized in event payloads",
+        )),
+        Type::BufferSpan { .. } => Err(MirCodegenError::unsupported(
+            "buffer spans cannot be serialized in event payloads",
         )),
         Type::Tuple(_) | Type::Struct(_) => unreachable!("unsupported type rejected earlier"),
     }
@@ -4605,6 +5392,11 @@ fn validate_backend_capabilities(program: &Program) -> Result<(), Vec<MirCodegen
                             "MIR function {function_index} buffer parameter {parameter_index} is not passed by reference"
                         )));
                     }
+                    Type::BufferSpan { .. } if parameter.mode != onda_mir::PassingMode::Value => {
+                        errors.push(MirCodegenError::unsupported(format!(
+                            "MIR function {function_index} buffer span parameter {parameter_index} is not passed by value"
+                        )));
+                    }
                     _ => {}
                 }
             }
@@ -4648,7 +5440,7 @@ fn type_contains_runtime_descriptor(
     }
     visiting[id.index()] = true;
     let result = match &program.types[id.index()] {
-        Type::Slice { .. } | Type::Buffer { .. } => true,
+        Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => true,
         Type::Array { element, .. } => {
             type_contains_runtime_descriptor(program, *element, visiting)
         }
@@ -4675,7 +5467,7 @@ fn require_fixed_type(
         Type::Array { element, .. } => require_fixed_type(program, *element, visiting),
         Type::Tuple(_) => Err("tuples are not implemented"),
         Type::Struct(_) => Err("struct aggregates and field projections are not implemented"),
-        Type::Slice { .. } | Type::Buffer { .. } => Ok(()),
+        Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => Ok(()),
     };
     visiting[id.index()] = false;
     result
@@ -4713,7 +5505,9 @@ fn inspect_block(
                         }
                         CallArgument::SliceElement { .. }
                         | CallArgument::SliceWindow { .. }
-                        | CallArgument::Buffer(_) => {}
+                        | CallArgument::Buffer(_)
+                        | CallArgument::BufferParam(_)
+                        | CallArgument::BufferSpan(_) => {}
                     }
                 }
             }
@@ -5025,6 +5819,9 @@ impl MirJitProgram {
     /// Every channel pointer in the input and output tables, and every
     /// non-null pointer in the external-buffer table, must remain valid for
     /// the complete region described by the MIR interface and buffer metadata.
+    /// The four external-buffer descriptor tables must remain immutable and
+    /// must not overlap state, parameter, audio, or external-buffer sample
+    /// storage for the duration of the call.
     /// This method validates channel presence and alignment, but Rust slices
     /// cannot validate the extents, lifetimes, or aliasing of their pointees.
     #[allow(clippy::too_many_arguments)]
@@ -6611,13 +7408,13 @@ outs:
 buffers:
   table: f32
 
-def touch(buf: buffer[f32], index: i32):
+def touch(buf: buffer<f32>, index: i32):
   view = buf[:]
   value = buf[index] + view[index] - view[index]
-  unsafe_write(buf, index, value + 1.0)
+  buf[index] = value + 1.0
   return value + f32(buf.len()) + f32(buf.chans()) + buf.samplerate()
 
-def forward(buf: buffer[f32], index: i32):
+def forward(buf: buffer<f32>, index: i32):
   return touch(buf, index)
 
 sample:
@@ -6664,6 +7461,370 @@ sample:
 
         assert_eq!(native_output, [107.0, 108.0, 109.0, 110.0]);
         assert_eq!(native_buffer, [6.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn optimized_process_observes_descriptor_rebinding_between_calls() {
+        let source = r#"
+buffers:
+  bank: f32 {2}
+
+outs:
+  out1
+
+sample:
+  out1 = bank[0][0] + bank[1][0] * 2.0
+"#;
+        let block_size = 1;
+        let (_, mir) = source_program(source, block_size);
+        let native = lower_mir_and_jit_with_options(
+            mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("buffer rebinding source should JIT");
+        let params = native.default_param_bytes();
+        let mut state = native.initialize_state(&params).unwrap();
+        let mut first = [1.0_f32];
+        let mut second = [10.0_f32];
+        let mut rebound_first = [3.0_f32];
+        let mut rebound_second = [20.0_f32];
+        let mut buffers = [
+            first.as_mut_ptr().cast::<u8>(),
+            second.as_mut_ptr().cast::<u8>(),
+        ];
+        let frames = [1_i32; 2];
+        let channels = [1_i32; 2];
+        let sample_rates = [48_000.0_f32; 2];
+        let mut output = [0.0_f32];
+        let outputs = [output.as_mut_ptr().cast::<u8>()];
+        let inputs: [*const u8; 0] = [];
+
+        native
+            .test_process_checked(
+                &mut state,
+                &params,
+                0,
+                block_size,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &frames,
+                &channels,
+                &sample_rates,
+            )
+            .unwrap();
+        assert_eq!(output, [21.0]);
+
+        buffers.copy_from_slice(&[
+            rebound_first.as_mut_ptr().cast::<u8>(),
+            rebound_second.as_mut_ptr().cast::<u8>(),
+        ]);
+        native
+            .test_process_checked(
+                &mut state,
+                &params,
+                0,
+                block_size,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &frames,
+                &channels,
+                &sample_rates,
+            )
+            .unwrap();
+        assert_eq!(output, [43.0]);
+    }
+
+    #[test]
+    fn block_buffer_aliases_preserve_selection_and_resolve_rebound_descriptors() {
+        let source = r#"
+buffers:
+  bank: f32 {2}
+params:
+  selector: i32 = 1 {0, 1}
+block:
+  selected = bank[selector]
+sample:
+  out1 = selected[0]
+"#;
+        let block_size = 2;
+        let (_, mir) = source_program(source, block_size);
+        let native = lower_mir_and_jit_with_options(
+            mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("buffer alias source should JIT");
+        let params = native.default_param_bytes();
+        let mut state = native.initialize_state(&params).unwrap();
+        let mut first = [1.0_f32];
+        let mut selected = [10.0_f32];
+        let mut rebound_selected = [20.0_f32];
+        let mut buffers = [
+            first.as_mut_ptr().cast::<u8>(),
+            selected.as_mut_ptr().cast::<u8>(),
+        ];
+        let frames = [1_i32; 2];
+        let channels = [1_i32; 2];
+        let sample_rates = [48_000.0_f32; 2];
+        let mut output = [0.0_f32; 2];
+        let outputs = [output.as_mut_ptr().cast::<u8>()];
+        let inputs: [*const u8; 0] = [];
+
+        native
+            .test_process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                onda_mir::PROCESS_BEGIN_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &frames,
+                &channels,
+                &sample_rates,
+            )
+            .unwrap();
+        assert_eq!(output, [10.0, 0.0]);
+
+        buffers[1] = rebound_selected.as_mut_ptr().cast::<u8>();
+        native
+            .test_process_checked(
+                &mut state,
+                &params,
+                1,
+                1,
+                onda_mir::PROCESS_END_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &frames,
+                &channels,
+                &sample_rates,
+            )
+            .unwrap();
+        assert_eq!(output, [10.0, 20.0]);
+    }
+
+    #[test]
+    fn fixed_buffer_arrays_select_contiguous_descriptors_and_forward_elements() {
+        let source = r#"
+buffers:
+  bank: f32 {3}
+  stereo: f32[2] {2}
+  single: f32 {1}
+
+outs:
+  out1
+
+def first(buf: buffer<f32>):
+  return buf[0]
+
+init:
+  selector: i32 = 99
+
+sample:
+  out1 = first(bank[selector]) + stereo[0][1, 0] + f32(bank.len()) + f32(bank[0].len()) + f32(bank[0].chans()) + bank[0].samplerate() + f32(single.len()) + f32(single[0].len())
+"#;
+        let (_, mir) = source_program(source, 1);
+        assert_eq!(mir.interface.buffers.len(), 6);
+        assert_eq!(mir.interface.buffer_arrays.len(), 3);
+        assert_eq!(mir.interface.buffer_arrays[0].name, "bank");
+        assert_eq!(mir.interface.buffer_arrays[0].first.index(), 0);
+        assert_eq!(mir.interface.buffer_arrays[0].len, 3);
+        assert_eq!(mir.interface.buffer_arrays[2].name, "single");
+        assert_eq!(mir.interface.buffer_arrays[2].len, 1);
+
+        let native = lower_mir_and_jit_with_options(
+            mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .unwrap();
+        let native_params = native.default_param_bytes();
+        let mut native_state = native.initialize_state(&native_params).unwrap();
+        let mut bank0 = [1.0_f32];
+        let mut bank1 = [2.0_f32];
+        let mut bank2 = [3.0_f32];
+        let mut stereo0 = [10.0_f32, 20.0];
+        let mut stereo1 = [30.0_f32, 40.0];
+        let mut single = [50.0_f32];
+        let buffers = [
+            bank0.as_mut_ptr().cast::<u8>(),
+            bank1.as_mut_ptr().cast::<u8>(),
+            bank2.as_mut_ptr().cast::<u8>(),
+            stereo0.as_mut_ptr().cast::<u8>(),
+            stereo1.as_mut_ptr().cast::<u8>(),
+            single.as_mut_ptr().cast::<u8>(),
+        ];
+        let buffer_frames = [1_i32; 6];
+        let buffer_channels = [1_i32, 1, 1, 2, 2, 1];
+        let buffer_sample_rates = [100.0_f32; 6];
+        let mut output = [0.0_f32];
+        let outputs = [output.as_mut_ptr().cast::<u8>()];
+        let inputs: [*const u8; 0] = [];
+
+        native
+            .test_process_checked(
+                &mut native_state,
+                &native_params,
+                0,
+                1,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &buffer_frames,
+                &buffer_channels,
+                &buffer_sample_rates,
+            )
+            .unwrap();
+
+        // selector 99 clamps to bank[2].
+        assert_eq!(output, [130.0]);
+    }
+
+    #[test]
+    fn nested_proc_buffer_spans_forward_and_select_in_constant_space() {
+        let source = r#"
+buffers:
+  bank: f32 {4}
+outs:
+  out1
+
+proc Child:
+  params:
+    slot: i32 = 1
+  buffers:
+    clips: f32 {2}
+  outs:
+    out1
+  sample:
+    out1 = clips[slot][0]
+
+proc Parent:
+  buffers:
+    clips: f32 {3}
+  init:
+    child = Child(clips = clips[1:3])
+  outs:
+    out1
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent(clips = bank[1:4])
+sample:
+  out1 = parent()
+"#;
+        let (_, mir) = source_program(source, 1);
+        assert!(mir.functions.iter().any(|function| {
+            function.name == "Parent.__proc_step"
+                && function.params.iter().any(|parameter| {
+                    matches!(
+                        mir.types[parameter.ty.index()],
+                        Type::BufferSpan { len: 3, .. }
+                    )
+                })
+        }));
+
+        let native = lower_mir_and_jit_with_options(
+            mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .unwrap();
+        let params = native.default_param_bytes();
+        let mut state = native.initialize_state(&params).unwrap();
+        let mut bank = [[1.0_f32], [2.0], [3.0], [4.0]];
+        let buffers = bank
+            .iter_mut()
+            .map(|slot| slot.as_mut_ptr().cast::<u8>())
+            .collect::<Vec<_>>();
+        let frames = [1_i32; 4];
+        let channels = [1_i32; 4];
+        let sample_rates = [48_000.0_f32; 4];
+        let mut output = [0.0_f32];
+        let outputs = [output.as_mut_ptr().cast::<u8>()];
+
+        native
+            .test_process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &[],
+                &outputs,
+                &buffers,
+                &frames,
+                &channels,
+                &sample_rates,
+            )
+            .unwrap();
+
+        assert_eq!(output, [4.0]);
+    }
+
+    #[test]
+    fn multichannel_buffer_coordinates_clamp_independently() {
+        let source = r#"
+buffers:
+  stereo: f32[2]
+
+sample:
+  out1 = stereo[-1, 99] + stereo[99, -1]
+"#;
+        let (_, mir) = source_program(source, 1);
+        let native = lower_mir_and_jit_with_options(
+            mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .unwrap();
+        let native_params = native.default_param_bytes();
+        let mut native_state = native.initialize_state(&native_params).unwrap();
+        let mut stereo = [10.0_f32, 20.0, 30.0, 40.0];
+        let buffers = [stereo.as_mut_ptr().cast::<u8>()];
+        let buffer_frames = [2_i32];
+        let buffer_channels = [2_i32];
+        let buffer_sample_rates = [48_000.0_f32];
+        let mut output = [0.0_f32];
+        let outputs = [output.as_mut_ptr().cast::<u8>()];
+        let inputs: [*const u8; 0] = [];
+
+        native
+            .test_process_checked(
+                &mut native_state,
+                &native_params,
+                0,
+                1,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &buffer_frames,
+                &buffer_channels,
+                &buffer_sample_rates,
+            )
+            .unwrap();
+
+        assert_eq!(output, [50.0]);
     }
 
     #[test]
@@ -7476,14 +8637,296 @@ sample:
             },
         )
         .expect("buffer read MIR should emit LLVM IR");
-        assert!(ir.contains("buffer_total_len"));
+        assert!(!ir.contains("buffer_total_len"));
         assert!(ir.contains("dynamic_index_clamped"));
         assert!(!ir.contains("dynamic_len_positive"));
         assert!(!ir.contains("dynamic_clamp_nonempty"));
     }
 
     #[test]
-    fn raw_checked_buffer_abi_requires_nonempty_bound_buffers() {
+    fn direct_buffer_descriptors_are_snapshotted_outside_the_sample_loop() {
+        let (_, mir) = source_program(
+            r#"
+buffers:
+  data: f32[]
+sample:
+  out1 = data[0, 0] + data[1, 1] + f32(data.len()) + f32(data.chans()) + data.samplerate()
+"#,
+            8,
+        );
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("direct buffer reads should emit LLVM IR");
+
+        for (name, load) in [
+            ("read pointer", "buffer_ptr"),
+            ("frame count", "buffer_frames"),
+            ("channel count", "buffer_channels"),
+            ("sample rate", "buffer_sample_rate"),
+        ] {
+            assert_eq!(
+                ir.lines()
+                    .filter(|line| line.contains(load) && line.contains(" = load "))
+                    .count(),
+                1,
+                "direct buffer {name} should be loaded once per process entry"
+            );
+        }
+        assert!(ir.contains("buffer_load") && ir.contains("align 4"));
+        assert!(
+            ir.contains("!noalias !") && ir.contains("!alias.scope !"),
+            "external-buffer, descriptor, and audio-output accesses should carry host-region scopes"
+        );
+        let metadata_id = |line: &str, attachment: &str| {
+            line.split_once(attachment)
+                .and_then(|(_, suffix)| {
+                    suffix
+                        .split(|character: char| !character.is_ascii_digit())
+                        .next()
+                })
+                .filter(|id| !id.is_empty())
+                .and_then(|id| id.parse::<usize>().ok())
+                .expect("metadata attachment should have a numeric id")
+        };
+        let descriptor_scope = ir
+            .lines()
+            .find(|line| {
+                line.contains("buffer_ptr")
+                    && line.contains(" = load ")
+                    && line.contains("!alias.scope !")
+            })
+            .map(|line| metadata_id(line, "!alias.scope !"))
+            .expect("buffer descriptor load should have an alias scope");
+        let buffer_noalias = ir
+            .lines()
+            .find(|line| line.contains("buffer_load") && line.contains("!noalias !"))
+            .map(|line| metadata_id(line, "!noalias !"))
+            .expect("buffer sample load should have a noalias scope");
+        let output_scope = ir
+            .lines()
+            .find(|line| line.contains("store float") && line.contains("!alias.scope !"))
+            .map(|line| metadata_id(line, "!alias.scope !"))
+            .expect("audio output store should have an alias scope");
+        assert_eq!(
+            buffer_noalias, descriptor_scope,
+            "external-buffer samples must only claim disjointness from descriptor tables"
+        );
+        assert_ne!(
+            buffer_noalias, output_scope,
+            "the processor ABI permits audio output and external-buffer sample storage to alias"
+        );
+    }
+
+    #[test]
+    fn constant_and_invariant_buffer_collection_descriptors_are_hoisted() {
+        let (_, mir) = source_program(
+            r#"
+buffers:
+  mono: f32 {4}
+  fixed: f32[2] {4}
+  dynamic: f32[] {4}
+
+init:
+  index = 0
+  slot = 1
+
+sample:
+  out1 = mono[0][index] + fixed[slot][1, index] + dynamic[slot][1, index] + dynamic[slot].samplerate()
+  index = index + 1
+"#,
+            8,
+        );
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("buffer collection reads should emit LLVM IR");
+
+        for (name, load, expected) in [
+            ("read pointer", "buffer_ptr", 3),
+            ("frame count", "buffer_frames", 3),
+            ("dynamic channel count", "buffer_channels", 1),
+            ("sample rate", "buffer_sample_rate", 1),
+        ] {
+            assert_eq!(
+                ir.lines()
+                    .filter(|line| line.contains(load) && line.contains(" = load "))
+                    .count(),
+                expected,
+                "each selected collection {name} should be loaded once per process entry"
+            );
+        }
+        assert!(
+            ir.contains("onda.buffer_descriptors"),
+            "collection descriptor loads should carry their own host-region alias scope"
+        );
+    }
+
+    #[test]
+    fn forwarded_constant_and_invariant_buffer_collection_descriptors_are_hoisted() {
+        let (_, mir) = source_program(
+            r#"
+buffers:
+  bank: f32[] {8}
+
+outs:
+  out1
+
+proc Reader:
+  params:
+    slot: i32 = 2
+  buffers:
+    clips: f32[] {6}
+  outs:
+    out1
+  init:
+    frame: i32 = 0
+  sample:
+    out1 = clips[0][1, frame] + clips[slot][1, frame]
+    frame = frame + 1
+
+init:
+  reader = Reader(slot = 2, clips = bank[1:7])
+
+sample:
+  out1 = reader()
+"#,
+            8,
+        );
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("forwarded buffer collection reads should emit LLVM IR");
+
+        for (name, load) in [
+            ("read pointer", "buffer_ptr"),
+            ("frame count", "buffer_frames"),
+            ("dynamic channel count", "buffer_channels"),
+        ] {
+            assert_eq!(
+                ir.lines()
+                    .filter(|line| line.contains(load) && line.contains(" = load "))
+                    .count(),
+                2,
+                "each constant or invariant forwarded collection {name} should be loaded once per process entry"
+            );
+        }
+        assert!(
+            ir.contains("onda.buffer_descriptors"),
+            "forwarded collection descriptor loads should retain the host-region alias scope"
+        );
+        assert!(
+            ir.contains("!invariant.group"),
+            "descriptor loads should express pointer-scoped call invariance"
+        );
+        assert!(
+            ir.contains("llvm.launder.invariant.group.p0"),
+            "each entry-point call should establish a fresh descriptor invariant group"
+        );
+        assert!(
+            !ir.contains("!invariant.load"),
+            "descriptor bindings may change between entry-point calls"
+        );
+    }
+
+    #[test]
+    fn sample_varying_forwarded_buffer_collection_selection_remains_dynamic() {
+        let (_, mir) = source_program(
+            r#"
+buffers:
+  bank: f32[] {8}
+
+outs:
+  out1
+
+proc Reader:
+  buffers:
+    clips: f32[] {6}
+  outs:
+    out1
+  init:
+    frame: i32 = 0
+    slot: i32 = 0
+  sample:
+    out1 = clips[slot][1, frame]
+    frame = frame + 1
+    slot = slot + 1
+
+init:
+  reader = Reader(clips = bank[1:7])
+
+sample:
+  out1 = reader()
+"#,
+            8,
+        );
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("sample-varying forwarded collection reads should emit LLVM IR");
+
+        for (name, load) in [
+            ("read pointer", "buffer_ptr"),
+            ("frame count", "buffer_frames"),
+            ("dynamic channel count", "buffer_channels"),
+        ] {
+            assert!(
+                ir.lines()
+                    .filter(|line| line.contains(load) && line.contains(" = load "))
+                    .count()
+                    > 1,
+                "sample-varying forwarded collection {name} must remain inside the sample loop"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_buffer_accesses_expose_validated_natural_alignment() {
+        let (_, mir) = source_program(
+            r#"
+buffers:
+  data: f64
+sample:
+  value = data[0]
+  data[1] = value
+  out1 = f32(value)
+"#,
+            1,
+        );
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("aligned f64 buffer access should emit LLVM IR");
+        assert!(ir
+            .lines()
+            .any(|line| line.contains("buffer_load") && line.contains("align 8")));
+        assert!(ir
+            .lines()
+            .any(|line| line.contains("store double") && line.contains("align 8")));
+    }
+
+    #[test]
+    fn raw_checked_buffer_abi_accepts_null_unbound_descriptors() {
         let (_, mir) = source_program(
             r#"
 buffers:
@@ -7497,14 +8940,14 @@ sample:
         let pointer = storage.as_mut_ptr().cast::<u8>();
         validate_buffer_abi(&mir, &[pointer], &[1], &[1], &[48_000.0])
             .expect("positive, non-null buffer binding should be accepted");
+        validate_buffer_abi(&mir, &[std::ptr::null_mut()], &[1], &[1], &[48_000.0])
+            .expect("positive null buffer descriptor should represent an unbound buffer");
 
         let null = std::ptr::null_mut();
-        for (pointer, frames, channels) in
-            [(null, 0, 0), (pointer, 0, 0), (pointer, 1, 0), (null, 1, 1)]
-        {
+        for (pointer, frames, channels) in [(null, 0, 0), (pointer, 0, 0), (pointer, 1, 0)] {
             let error = validate_buffer_abi(&mir, &[pointer], &[frames], &[channels], &[48_000.0])
-                .expect_err("raw processor ABI requires every declared buffer to be bound");
-            assert!(error.message.contains("must be bound"));
+                .expect_err("raw processor ABI requires every descriptor to be prepared");
+            assert!(error.message.contains("requires positive dimensions"));
         }
 
         let error = validate_buffer_abi(&mir, &[null], &[0], &[0], &[f32::NAN])

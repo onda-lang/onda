@@ -1,6 +1,7 @@
 use onda_frontend::{
-    BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, PrimitiveType,
-    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
+    BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, PrimitiveType, SourceLoc,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
 };
 
 use crate::AnalysisOptions;
@@ -154,37 +155,21 @@ pub fn builtin_constant_type(name: &str) -> Option<PrimitiveType> {
     builtin_constant(name).map(|constant| constant.ty)
 }
 
-pub const UNSAFE_READ_FN: &str = "unsafe_read";
-pub const UNSAFE_WRITE_FN: &str = "unsafe_write";
-pub const UNSAFE_READ2_FN: &str = "unsafe_read2";
-pub const UNSAFE_WRITE2_FN: &str = "unsafe_write2";
-
-const BUILTIN_UNSAFE_DATA_FUNCTION_NAMES: &[&str] = &[UNSAFE_READ_FN, UNSAFE_WRITE_FN];
-const BUILTIN_BUFFER_2D_UNSAFE_FUNCTION_NAMES: &[&str] = &[UNSAFE_READ2_FN, UNSAFE_WRITE2_FN];
-const INTERNAL_BUFFER_2D_FUNCTION_NAMES: &[&str] =
-    &[INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN];
+const INTERNAL_BUFFER_2D_FUNCTION_NAMES: &[&str] = &[
+    INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    INTERNAL_BUFFER_READ3_FN,
+    INTERNAL_BUFFER_WRITE3_FN,
+];
 
 pub fn public_builtin_function_names() -> impl Iterator<Item = &'static str> {
-    BuiltinFn::ALL
-        .into_iter()
-        .map(BuiltinFn::name)
-        .chain(BUILTIN_UNSAFE_DATA_FUNCTION_NAMES.iter().copied())
-        .chain(BUILTIN_BUFFER_2D_UNSAFE_FUNCTION_NAMES.iter().copied())
+    BuiltinFn::ALL.into_iter().map(BuiltinFn::name)
 }
 
 pub fn is_builtin_function_name(name: &str) -> bool {
     BuiltinFn::from_name(name).is_some()
-        || BUILTIN_UNSAFE_DATA_FUNCTION_NAMES.contains(&name)
-        || BUILTIN_BUFFER_2D_UNSAFE_FUNCTION_NAMES.contains(&name)
-}
-
-pub fn is_builtin_unsafe_data_fn(name: &str) -> bool {
-    BUILTIN_UNSAFE_DATA_FUNCTION_NAMES.contains(&name)
-}
-
-pub fn is_builtin_buffer_2d_unsafe_fn(name: &str) -> bool {
-    BUILTIN_BUFFER_2D_UNSAFE_FUNCTION_NAMES.contains(&name)
-        || INTERNAL_BUFFER_2D_FUNCTION_NAMES.contains(&name)
 }
 
 pub fn is_internal_buffer_2d_fn(name: &str) -> bool {
@@ -192,7 +177,10 @@ pub fn is_internal_buffer_2d_fn(name: &str) -> bool {
 }
 
 pub fn is_builtin_buffer_write_function_name(name: &str) -> bool {
-    matches!(name, UNSAFE_WRITE_FN | UNSAFE_WRITE2_FN) || name == INTERNAL_BUFFER_WRITE2_FN
+    matches!(
+        name,
+        INTERNAL_BUFFER_WRITE2_FN | INTERNAL_BUFFER_WRITE3_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
+    )
 }
 
 pub const ARRAY_LEN_METHOD: &str = "len";
@@ -203,10 +191,6 @@ pub const BUILTIN_INSTANCE_METHOD_NAMES: &[&str] = &[
     ARRAY_LEN_METHOD,
     BUFFER_CHANS_METHOD,
     BUFFER_SAMPLERATE_METHOD,
-    UNSAFE_READ_FN,
-    UNSAFE_WRITE_FN,
-    UNSAFE_READ2_FN,
-    UNSAFE_WRITE2_FN,
 ];
 
 pub fn builtin_instance_method_names() -> impl Iterator<Item = &'static str> {
@@ -246,42 +230,6 @@ pub fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {
 pub fn parse_buffer_samplerate_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
     if method == BUFFER_SAMPLERATE_METHOD {
-        Some(base)
-    } else {
-        None
-    }
-}
-
-pub fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = split_instance_method_path(name)?;
-    if method == UNSAFE_READ_FN {
-        Some(base)
-    } else {
-        None
-    }
-}
-
-pub fn parse_unsafe_write_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = split_instance_method_path(name)?;
-    if method == UNSAFE_WRITE_FN {
-        Some(base)
-    } else {
-        None
-    }
-}
-
-pub fn parse_unsafe_read2_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = split_instance_method_path(name)?;
-    if method == UNSAFE_READ2_FN {
-        Some(base)
-    } else {
-        None
-    }
-}
-
-pub fn parse_unsafe_write2_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = split_instance_method_path(name)?;
-    if method == UNSAFE_WRITE2_FN {
         Some(base)
     } else {
         None
@@ -849,9 +797,56 @@ pub(crate) fn eval_data_size_expr(
     Some(truncated as usize)
 }
 
+pub(crate) const fn primitive_storage_bytes(ty: PrimitiveType) -> usize {
+    match ty {
+        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F64 | PrimitiveType::I64 => 8,
+        PrimitiveType::Bool => 1,
+    }
+}
+
+pub(crate) const fn max_buffer_static_channels(ty: PrimitiveType) -> usize {
+    (i32::MAX as usize) / primitive_storage_bytes(ty)
+}
+
+pub(crate) fn validate_buffer_static_channels(
+    channels: usize,
+    elem_ty: PrimitiveType,
+    context: &str,
+    loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let maximum = max_buffer_static_channels(elem_ty);
+    if channels <= maximum {
+        return true;
+    }
+    errors.push(Diagnostic::semantic_span(
+        format!(
+            "{context} exceeds the signed i32 buffer byte-extent limit for {} elements; maximum is {maximum}",
+            elem_ty.name()
+        ),
+        loc,
+    ));
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsafe_buffer_operations_are_not_public_builtins_or_methods() {
+        for name in [
+            "unsafe_read",
+            "unsafe_write",
+            "unsafe_read2",
+            "unsafe_write2",
+        ] {
+            assert!(!is_builtin_function_name(name));
+            assert!(!is_builtin_instance_method_name(name));
+            assert!(!public_builtin_function_names().any(|builtin| builtin == name));
+        }
+    }
 
     #[test]
     fn eval_const_expr_i64_exact_preserves_large_integer_results() {

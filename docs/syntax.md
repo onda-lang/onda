@@ -321,16 +321,18 @@ Rules:
 
 ### External Buffers
 
-`buffers` declares host-bound buffers.
+`buffers` declares host-bound buffers. The section uses the same scalar and fixed-array type
+spelling as the rest of Onda, but the brackets describe the channel layout of each buffer rather
+than an Onda array value:
 
 ```onda
 buffers:
-  src: buffer[f32]
-  bus: buffer[f32[2]]
-  any_bus: buffer[f32[]]
+  src: buffer<f32>
+  bus: buffer<f32[2]>
+  any_bus: buffer<f32[]>
 ```
 
-Inside a `buffers` block, shorthand element forms are accepted:
+The short form is canonical inside a `buffers` block:
 
 ```onda
 buffers:
@@ -339,46 +341,113 @@ buffers:
   dyn: f32[]
 ```
 
+- `f32` is a mono buffer.
+- `f32[2]` is a buffer with exactly two channels.
+- `f32[]` is a buffer with any positive runtime channel count.
+
+The explicit `buffer<...>` form is mainly useful where a buffer is itself a type, such as a
+function parameter. `buffer<f32[]>` is a channel-count wildcard: it accepts mono and exact-channel
+buffers. An exact type such as `buffer<f32[2]>` does not accept a dynamic-channel buffer.
+
 Shorthand forms:
 
 ```onda
 buffers 2
 
-buffers[f32]:
+buffers<f32>:
   delay
   scratch
+
+buffers:
+  piano: f32 {88}
+  stereo_layers: f32[2] {4}
+  named_count: f32 {count = 8}
 ```
+
+`{N}` declares a fixed collection of `N` independently bound buffers. `{count = N}` is an optional
+named spelling of the same declaration. The count belongs to the resource declaration, not its
+element type: `stereo_layers` is four buffers, each with two channels. It does not introduce a
+general multidimensional-array type.
 
 Buffer access and metadata:
 
 ```onda
+buffers:
+  src: f32
+  bus: f32[2]
+  piano: f32 {88}
+  stereo_layers: f32[2] {4}
+
 sample:
   mono0 = src[0]
-  left0 = bus[0][0]
+  left0 = bus[0, 0]
   n = src.len()
   c = bus.chans()
   sr = src.samplerate()
+  sample_count = piano.len()
+  middle_c_frames = piano[39].len()
+  middle_c0 = piano[39][0]
+  right0 = stereo_layers[layer][1, 0]
 ```
 
-Non-clamping access exists as both methods and free functions. Despite the
-historical `unsafe_` spelling, these operations fail processing on an invalid index; only
-compiler-proven accesses may be unchecked in MIR:
+The access forms are deliberately limited to one coordinate pair per selected buffer:
+
+| Declaration | Sample access | Slice access |
+| --- | --- | --- |
+| `mono: f32` | `mono[frame]` | `mono[start:end]` |
+| `stereo: f32[2]` | `stereo[channel, frame]` | `stereo[channel, start:end]` |
+| `bank: f32 {N}` | `bank[slot][frame]` | `bank[slot][start:end]` |
+| `layers: f32[2] {N}` | `layers[slot][channel, frame]` | `layers[slot][channel, start:end]` |
+
+`bank[slot]` and `layers[slot]` select a first-class buffer and can be passed to a function or used
+for metadata queries. A channel alone is not a first-class view; use the channel-and-frame or
+channel-and-slice forms above. The flattened `layers[slot, channel, frame]` form is not supported.
+
+A selected buffer can also be bound to an immutable, scoped reference alias:
 
 ```onda
-sample:
-  a = src.unsafe_read(i)
-  src.unsafe_write(i, a)
-  b = bus.unsafe_read2(ch, i)
-  bus.unsafe_write2(ch, i, b)
+buffers:
+  layers: f32[] {4}
+
+block:
+  source = layers[0]
+  frames = source.len()
+
+  sample:
+    left = source.readL(0, 0.0)
 ```
+
+The selector is evaluated once when the alias is bound. The alias retains resource identity rather
+than a sample-data pointer: host descriptor rebinding remains visible on subsequent processing
+calls. Buffer-reference aliases can be read, written, queried, used as method receivers, sliced,
+and passed to buffer parameters. They cannot be rebound, returned, stored in arrays or structs, or
+created in `init`. An alias introduced inside a conditional or loop is local to that control-flow
+scope.
+
+`std/lookup` provides `readL`/`readC` for clamped linear/cubic interpolation and `readLW`/`readCW`
+for their wrap-aware counterparts. The wrapping variants interpolate across the final-to-first
+frame boundary and are intended for cyclic tables and loopers.
+
+All source-level coordinates clamp independently. In `stereo[channel, frame]`, for example, the
+channel clamps to the channel range and the frame clamps to the frame range before the address is
+formed. Fixed buffer-collection selectors likewise clamp and select a descriptor in constant time.
+Only compiler-proven accesses may be unchecked in MIR.
 
 Rules:
 
 - `buffers N` expands to `buf1..bufN`.
 - Explicit declarations and count shorthand cannot currently be mixed in one `buffers` block.
-- Runtime binding validates element type and channel constraints.
-- A bound buffer always has a non-null pointer, positive frame and channel counts, and a finite
-  positive sample rate. Hosts must not process while a declared buffer is unbound.
+- `.len()` on a buffer collection returns its declared count. Select an element first to query its
+  frame count: `bank[i].len()`.
+- `.chans()` and `.samplerate()` apply to a selected buffer, not to the collection. Exact channel
+  counts are compile-time constants in generated code; dynamic counts come from the bound instance.
+- Runtime binding validates element type and channel constraints. Each fixed-array slot binds
+  independently and may be omitted.
+- Host metadata names physical collection slots `bank[0]`, `bank[1]`, and so on, while separate
+  collection metadata preserves the logical `bank` name and its contiguous slot range.
+- An unbound slot is a neutral one-frame buffer: reads return the element type's zero, writes are
+  discarded, `.len()` is `1`, `.samplerate()` is the host sample rate, and `.chans()` is the exact
+  declared channel count or `1` for a dynamic-channel declaration.
 - Binding with a zero sample rate unbinds the buffer; the pointer and dimensions are ignored.
 - Primitive buffer slices are supported with the same slice syntax as arrays.
 
@@ -579,7 +648,7 @@ Compound types:
 | Fixed array | `f32[8]` | Length is compile-time. |
 | Slice | `f32[]` | Read-only or writable view depending on source and call usage. |
 | Tuple | `(f32, i32)` | Anonymous fixed-length heterogeneous value. |
-| Buffer | `buffer[f32]`, `buffer[f32[2]]`, `buffer[f32[]]` | Host-bound external data. |
+| Buffer | `buffer<f32>`, `buffer<f32[2]>`, `buffer<f32[]>` | Host-bound external data. |
 | Struct | `Voice`, `Box<f32>` | Nominal data type declared with `struct`. |
 | Proc | `Gain`, `Sine<f64>` | Stateful processing unit declared with `proc`. |
 
@@ -747,6 +816,22 @@ Supported operators:
 Bitwise operators accept `i32` and `i64`. Mixed `i32` and `i64` operands widen
 to `i64`. `>>` is an arithmetic right shift.
 
+Expression precedence, from highest to lowest, is:
+
+1. Grouping, calls, indexing, and slicing
+2. Prefix `-`, `!`, `~`
+3. `*`, `/`, `%`
+4. `+`, `-`
+5. `<<`, `>>`
+6. `==`, `!=`, `<`, `<=`, `>`, `>=`
+7. `&`
+8. `^`
+9. `|`
+10. `&&`
+11. `||`
+
+Infix operators at the same tier associate from left to right. Parentheses override this order.
+
 ### Control Flow
 
 Supported forms:
@@ -838,7 +923,7 @@ const Ramp: f32[4] = ramp()
 
 Const arrays and const slices can be passed to ordinary runtime `def` array
 params when the callee treats the param as read-only. Writes through the param,
-aliases, `unsafe_write`, or forwarding to a mutable callee make the param
+aliases or forwarding to a mutable callee make the param
 mutable and reject const-array arguments.
 
 ## 8. Functions with `def`
@@ -927,7 +1012,7 @@ Rules:
 - Explicit struct types.
 - Typed arrays such as `arr: f32[]`.
 - Untyped arrays such as `arr: []`.
-- Typed buffers such as `buf: buffer[f32]`.
+- Typed buffers such as `buf: buffer<f32>`.
 - Bare buffers such as `buf: buffer`.
 - Generic struct and proc parameters specialized at the call site.
 - Typed tuple params such as `p: (f32, i32)`.
@@ -1107,6 +1192,11 @@ differences:
 - `kouts` processors use `block` with no nested `sample`, cannot declare `ins`, and cannot declare `graph`.
 - Proc constructor arguments for params and buffers are named-only.
 - Proc inputs are bound by positional proc call args or named input args.
+- A scalar proc buffer accepts one buffer or a selected collection slot, such as
+  `clip = bank[2]`.
+- A fixed proc buffer collection requires the same count. A larger collection can be passed only
+  through an exact, compile-time subspan such as `clips = bank[1:7]`; both bounds are checked at
+  compile time, and the descriptors are forwarded without copying their sample data.
 
 ```onda
 proc StereoGain:
@@ -1315,7 +1405,7 @@ Rules:
 
 - Runtime indices are clamped to the valid slot range.
 - Aliasing such as `v = voices[i]`, then `v(...)`, is supported.
-- Proc-array buffer refs are refreshed on the safe `process_checked` path.
+- Proc-array buffer refs resolve through the current validated buffer tables.
 - A proc cannot directly instantiate its own type in its own state.
 
 If the proc defines a `block` section, indexed proc-array calls use active-slot
@@ -1685,7 +1775,7 @@ Rules:
 | `kins` | `kins N` | `kins<i32>:` | `kin1..kinN` |
 | `outs` | `outs N` | `outs<f64>:` | `out1..outN` |
 | `kouts` | `kouts N` | `kouts<f32>:` | `kout1..koutN` |
-| `buffers` | `buffers N` | `buffers[f32]:` | `buf1..bufN` |
+| `buffers` | `buffers N` | `buffers<f32>:` | `buf1..bufN` |
 
 Section counts can use compile-time integer expressions, ordinary const values,
 and namespace integer template params.

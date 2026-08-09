@@ -1,7 +1,9 @@
 pub const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str =
     crate::proc_state_rewrite::PROC_INDEX_BUFFER_SELECT_SENTINEL;
+pub const PROC_INDEX_CALL_SENTINEL: &str = crate::proc_state_rewrite::PROC_INDEX_CALL_SENTINEL;
 pub const PROC_INDEX_BASE_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_BASE_ARG;
 pub const PROC_INDEX_EXPR_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_EXPR_ARG;
+pub use onda_frontend::METHOD_RECEIVER_ARG;
 
 pub fn sanitize_runtime_symbol_component(name: &str) -> String {
     name.chars()
@@ -19,6 +21,13 @@ pub fn runtime_proc_array_active_symbol(array_base: &str) -> String {
     format!(
         "__onda_proc_block_active_{}",
         sanitize_runtime_symbol_component(array_base)
+    )
+}
+
+pub fn runtime_buffer_alias_selector_symbol(alias: &str) -> String {
+    format!(
+        "__onda_buffer_alias_selector_{}",
+        sanitize_runtime_symbol_component(alias)
     )
 }
 

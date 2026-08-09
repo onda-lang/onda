@@ -5,9 +5,7 @@ pub(super) fn parse_section_default_decl_type(
     pair: Pair<'_, Rule>,
     block_name: &str,
 ) -> Result<DeclType, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::section_default_decl_type
-        && pair.as_rule() != Rule::section_default_elem_type
-    {
+    if pair.as_rule() != Rule::section_default_decl_type {
         return Err(vec![syntax_at_pair(
             &pair,
             format!("internal parser error: expected {block_name} section default type"),
@@ -45,23 +43,19 @@ pub(super) fn parse_section_default_buffer_type(
     block_name: &str,
 ) -> Result<BufferType, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&pair);
-    let decl_ty = parse_section_default_decl_type(pair, block_name)?;
-    let elem = match decl_ty {
-        DeclType::Scalar(prim) => BufferElemType::Primitive(prim),
-        DeclType::Generic(param) => BufferElemType::Generic(param),
-        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
-            return Err(vec![syntax_at_loc(
-                loc.as_ref(),
-                format!(
-                    "{block_name} section default type must be primitive or generic element type"
-                ),
-            )])
-        }
+    if pair.as_rule() != Rule::section_default_buffer_type {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            format!("internal parser error: expected {block_name} section default buffer type"),
+        )]);
+    }
+    let Some(inner) = pair.into_inner().next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            format!("missing {block_name} section default buffer type"),
+        )]);
     };
-    Ok(BufferType {
-        elem,
-        channels: BufferChannels::Mono,
-    })
+    parse_buffer_inner(inner)
 }
 
 pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, Vec<Diagnostic>> {
@@ -720,6 +714,171 @@ pub(super) fn parse_buffer_decl_type(pair: Pair<'_, Rule>) -> Result<BufferType,
     }
 }
 
+pub(super) fn parse_buffer_count(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
+    if pair.as_rule() != Rule::buffer_count {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "internal parser error: expected buffer count",
+        )]);
+    }
+    let Some(value) = pair.into_inner().next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "missing buffer count expression",
+        )]);
+    };
+    let value = if value.as_rule() == Rule::buffer_count_named {
+        value.into_inner().next().ok_or_else(|| {
+            vec![syntax_at_loc(
+                loc.as_ref(),
+                "missing named buffer count expression",
+            )]
+        })?
+    } else {
+        value
+    };
+    parse_expr(value)
+}
+
+pub(super) fn parse_index_groups(
+    groups: Vec<Pair<'_, Rule>>,
+    loc: Span,
+) -> Result<Vec<Expr>, Vec<Diagnostic>> {
+    if groups.is_empty() || groups.len() > 2 {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "indexing expects one or two bracket groups",
+        )]);
+    }
+    let group_count = groups.len();
+    let mut indices = Vec::new();
+    for (group_index, group) in groups.into_iter().enumerate() {
+        if group.as_rule() != Rule::index_group {
+            return Err(vec![syntax_at_pair(
+                &group,
+                "internal parser error: expected index group",
+            )]);
+        }
+        let Some(args) = group.into_inner().next() else {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "missing index expression",
+            )]);
+        };
+        let parsed = args
+            .into_inner()
+            .filter(|pair| pair.as_rule() == Rule::expr)
+            .map(parse_expr)
+            .collect::<Result<Vec<_>, _>>()?;
+        if parsed.is_empty()
+            || parsed.len() > 2
+            || (group_count == 2 && group_index == 0 && parsed.len() != 1)
+        {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "invalid indexed access shape",
+            )]);
+        }
+        indices.extend(parsed);
+    }
+    if indices.len() > 3 {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "indexed access supports at most resource, channel, and frame coordinates",
+        )]);
+    }
+    Ok(indices)
+}
+
+fn parse_slice_range(
+    pair: Pair<'_, Rule>,
+    loc: Span,
+) -> Result<(Option<Expr>, Option<Expr>), Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::slice_range {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "internal parser error: expected slice range",
+        )]);
+    }
+    let mut start = None;
+    let mut end = None;
+    for bound in pair.into_inner() {
+        let rule = bound.as_rule();
+        let Some(expression) = bound.into_inner().next() else {
+            return Err(vec![syntax_at_loc(loc.as_ref(), "missing slice bound")]);
+        };
+        match rule {
+            Rule::slice_start => start = Some(parse_expr(expression)?),
+            Rule::slice_end => end = Some(parse_expr(expression)?),
+            _ => {}
+        }
+    }
+    Ok((start, end))
+}
+
+pub(super) struct ParsedSliceParts {
+    pub selector: Option<Box<Expr>>,
+    pub channel: Option<Box<Expr>>,
+    pub start: Option<Box<Expr>>,
+    pub end: Option<Box<Expr>>,
+}
+
+pub(super) fn parse_slice_parts(
+    parts: Vec<Pair<'_, Rule>>,
+    loc: Span,
+) -> Result<ParsedSliceParts, Vec<Diagnostic>> {
+    let (selector, slice_group) = match parts.as_slice() {
+        [slice_group] if slice_group.as_rule() == Rule::slice_group => (None, slice_group.clone()),
+        [selector_group, slice_group]
+            if selector_group.as_rule() == Rule::index_group
+                && slice_group.as_rule() == Rule::slice_group =>
+        {
+            let selectors = parse_index_groups(vec![selector_group.clone()], loc)?;
+            if selectors.len() != 1 {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "buffer collection selection expects exactly one index",
+                )]);
+            }
+            (selectors.into_iter().next(), slice_group.clone())
+        }
+        _ => {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "invalid slice access shape",
+            )]);
+        }
+    };
+
+    let Some(contents) = slice_group.into_inner().next() else {
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing slice range")]);
+    };
+    let (channel, range) = match contents.as_rule() {
+        Rule::slice_range => (None, contents),
+        Rule::buffer_slice_args => {
+            let mut inner = contents.into_inner();
+            let channel = inner
+                .next()
+                .ok_or_else(|| vec![syntax_at_loc(loc.as_ref(), "missing buffer slice channel")])?;
+            let range = inner
+                .next()
+                .ok_or_else(|| vec![syntax_at_loc(loc.as_ref(), "missing buffer slice range")])?;
+            (Some(parse_expr(channel)?), range)
+        }
+        _ => {
+            return Err(vec![syntax_at_loc(loc.as_ref(), "invalid slice contents")]);
+        }
+    };
+    let (start, end) = parse_slice_range(range, loc)?;
+    Ok(ParsedSliceParts {
+        selector: selector.map(Box::new),
+        channel: channel.map(Box::new),
+        start: start.map(Box::new),
+        end: end.map(Box::new),
+    })
+}
+
 pub(super) fn parse_buffer_inner(
     inner_pair: Pair<'_, Rule>,
 ) -> Result<BufferType, Vec<Diagnostic>> {
@@ -867,33 +1026,16 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                     "missing sliced assignment base",
                 )]);
             };
-            let mut start = None::<Expr>;
-            let mut end = None::<Expr>;
-            for bound in inner {
-                match bound.as_rule() {
-                    Rule::slice_start => {
-                        let expr = bound.into_inner().next().ok_or_else(|| {
-                            vec![syntax_at_loc(
-                                loc.as_ref(),
-                                "missing sliced assignment start bound",
-                            )]
-                        })?;
-                        start = Some(parse_expr(expr)?);
-                    }
-                    Rule::slice_end => {
-                        let expr = bound.into_inner().next().ok_or_else(|| {
-                            vec![syntax_at_loc(
-                                loc.as_ref(),
-                                "missing sliced assignment end bound",
-                            )]
-                        })?;
-                        end = Some(parse_expr(expr)?);
-                    }
-                    _ => {}
-                }
-            }
+            let ParsedSliceParts {
+                selector,
+                channel,
+                start,
+                end,
+            } = parse_slice_parts(inner.collect(), loc)?;
             Ok(AssignTarget::Slice {
                 base: base_pair.as_str().to_owned(),
+                selector,
+                channel,
                 start,
                 end,
             })
@@ -907,13 +1049,8 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                     "missing indexed assignment base",
                 )]);
             };
-            let Some(index_pair) = inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing indexed assignment index",
-                )]);
-            };
-            if inner.next().is_some() {
+            let indices = parse_index_groups(inner.collect(), loc)?;
+            if indices.len() != 1 {
                 return Err(vec![syntax_at_loc(
                     loc.as_ref(),
                     "nested indexed assignment targets must use parser rewrite path",
@@ -921,7 +1058,7 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
             }
             Ok(AssignTarget::Index {
                 base: base_pair.as_str().to_owned(),
-                index: parse_expr(index_pair)?,
+                index: indices.into_iter().next().expect("one index was checked"),
             })
         }
         Rule::indexed_member_target => {

@@ -19,6 +19,7 @@ For build, CLI usage, and editor integrations, see the [getting-started guide](h
 | Crate | Role |
 | --- | --- |
 | `onda_frontend` | Parser, AST, diagnostics. PEG grammar (`grammar.pest`) driving an iterative parser. |
+| `onda_project` | Host-neutral project manifests and immutable images, portable source relocation, and typed buffer assets. |
 | `onda_semantics` | Semantic analysis and lowering rewrites: typing, overload resolution, generic specialization, proc/graph lowering, name resolution. |
 | `onda_mir` | Backend-neutral typed executable IR: logical types, explicit storage/resources, structured control flow, proof-aware validation, optimization, and JSON/MessagePack transport. |
 | `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
@@ -63,10 +64,17 @@ Non-crate directories of note:
 - `parser.rs`, `parser/` — parser entry plus submodules:
   - `parser/block_parsing.rs`, `parser/expr_stmt.rs` — block and expression/statement parsing.
   - `parser/preprocess.rs` — source preprocessing.
-  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution and authoritative non-stdlib source manifests.
+  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution, authoritative non-stdlib source manifests with exact documents and resolved/unresolved dependency edges, and filesystem-free replay of captured source graphs.
   - `parser/type_helpers.rs` — type-syntax helpers.
   - `parser/tests.rs` — parser tests.
 - `grammar.pest` — the PEG grammar.
+
+### `onda_project` (`crates/onda_project/src`)
+- `manifest.rs` — editable `.ondaproject` parsing, validation, contained filesystem resolution, and inline typed buffers.
+- `buffer.rs` — canonical `.ondabuffer` transport for every primitive buffer type plus the WAV adapter.
+- `capture.rs` — portable source-path assignment and syntax-aware graph relocation from an exact frontend manifest.
+- `image.rs` — immutable content-addressed source-and-buffer checkpoints with bounded stable serialization.
+- `materialize.rs` — filesystem-free export and empty `onda project` materialization plans.
 
 ### `onda_semantics` (`crates/onda_semantics/src`)
 - `lib.rs` — public types and orchestration wiring; re-exports `pipeline::analyze`.
@@ -133,9 +141,10 @@ Non-crate directories of note:
 
 ### `onda_compiler_web` (`crates/onda_compiler_web/src`)
 - `lib.rs` — browser-safe source-to-MIR front half. The Wasm exports compile one source or a virtual
-  multi-file project entirely in memory, resolve `std/...` from the embedded standard library,
-  return structured JSON diagnostics, and expose the MIR schema version. The native test API uses
-  the same path.
+  multi-file workspace or immutable project image entirely in memory, resolve `std/...` from the
+  embedded standard library, return structured JSON diagnostics and exact source graphs, and expose
+  host-neutral project image, materialization, typed-buffer, format-version, and MIR-schema APIs.
+  The native test API uses the same path.
 
 ### `onda_realtime` (`crates/onda_realtime/src`)
 - `lib.rs` — allocation-free, once-per-thread audio floating-point policy shared by runtime hosts.
@@ -151,7 +160,7 @@ Non-crate directories of note:
   `Instance::param_domain`.
 
 ### `onda_api` (`crates/onda_api/src`)
-- `lib.rs` — C ABI surface (compile/create/process/destroy, bind/set, metadata queries, event trigger, state snapshot/restore).
+- `lib.rs` — C ABI surface (single-source, filesystem-entry, exact in-memory source-graph, and project-image compilation; host-neutral project capture/load/serialization/materialization and typed buffer assets; source snapshot metadata and syntax-aware reference rewriting; create/process/destroy; bind/set; metadata queries; event trigger; state snapshot/restore).
 
 ### `onda_cpal` (`crates/onda_cpal/src`)
 - `lib.rs` — CPAL 0.18/PipeWire device discovery and stream setup, allocation-free input/output callbacks, FP-mode setup, and lock-free SPSC sample transport.
@@ -241,11 +250,17 @@ Non-crate directories of note:
 - Native checked and prepared-unchecked processing install the shared audio-thread denormal policy;
   on x86 this enables FTZ/DAZ once per thread before executing DSP.
 - Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).
-- Runtime processing is bound-buffer based (`process_checked`). Segment variants exist for hosts that split a logical block around sample-accurate events:
+- Runtime processing uses prepared buffer descriptor tables (`process_checked`); omitted slots are
+  prepared as neutral descriptors rather than blocking processing. Segment variants exist for hosts
+  that split a logical block around sample-accurate events:
   - `process_checked_segment(instance, start_frame, frames, flags)`
   - `prepare_unchecked_process(instance)` / `process_unchecked_segment(...)`
-  - unchecked preparation validates current bindings and completes backend setup; it does not
-    intentionally preserve stale buffer bindings after a rebind.
+  - unchecked preparation validates the current bindings; buffer references resolve directly
+    through those tables, so rebinding cannot leave pointer-bearing derived state stale.
+  - native codegen snapshots each used direct buffer descriptor field once at process/event entry,
+    exposes the validated primitive alignment on accesses, and marks external-buffer memory as
+    disjoint from audio outputs. Dynamic buffer-collection selection remains table-driven. This
+    keeps rebinding between calls while allowing loop-invariant descriptor reuse and SIMD.
   - segment variants keep full-block base pointers and JIT-loop local frames `[0, frames)`, addressing bound I/O at `start_frame + local_frame`.
   - flags `ONDA_PROCESS_BEGIN_BLOCK` / `ONDA_PROCESS_END_BLOCK` drive block hooks only; they do not imply an implicit runtime cursor.
 - The MIR schema defines the `(start_frame, frames, flags)` process signature and checked
@@ -253,7 +268,7 @@ Non-crate directories of note:
   and the flag mask; zero-frame segments are legal. The Binaryen wrapper and reference
   AudioWorklet implement the same scheduling contract. The worklet maintains the host-side
   compile-block cursor needed when Web Audio callback sizes differ from the compiled block size.
-- Entry-point behavior: declared buffers must be bound before processing; each top-level ranged
+- Entry-point behavior: omitted buffers use neutral prepared descriptors; each top-level ranged
   parameter used by an entry point is hoisted and clamped once at the start of init, each event, or
   each logical process block; top-level ranged inputs are clamped once per sample; ranged proc
   parameters are clamped once when stored and are not reclamped when read. Floating NaN maps to the

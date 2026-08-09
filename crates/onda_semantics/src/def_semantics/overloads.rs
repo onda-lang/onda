@@ -26,6 +26,7 @@ pub(crate) struct OverloadRewriteEnv {
     pub(crate) struct_instances: HashMap<String, String>,
     pub(crate) array_elem_types: HashMap<String, PrimitiveType>,
     pub(crate) buffer_types: HashMap<String, (PrimitiveType, TypedBufferChannels)>,
+    pub(crate) buffer_arrays: HashSet<String>,
 }
 
 impl OverloadRewriteEnv {
@@ -39,6 +40,8 @@ impl OverloadRewriteEnv {
             .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
         self.buffer_types
             .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
+        self.buffer_arrays
+            .retain(|binding| binding != name && !binding.starts_with(&child_prefix));
     }
 }
 
@@ -206,6 +209,13 @@ fn infer_overload_arg_shape(expr: &Expr, env: &OverloadRewriteEnv) -> OverloadAr
         }
         Expr::Index { base, .. } => {
             if let Some((elem_ty, _)) = env.buffer_types.get(base) {
+                if env.buffer_arrays.contains(base) {
+                    let (_, channels) = &env.buffer_types[base];
+                    return OverloadArgShape::Buffer {
+                        elem_ty: *elem_ty,
+                        channels: channels.clone(),
+                    };
+                }
                 return OverloadArgShape::Scalar(*elem_ty);
             }
             if let Some(elem_ty) = env.array_elem_types.get(base).copied() {
@@ -255,10 +265,8 @@ fn score_buffer_match(
             _ => None,
         },
         BufferChannels::Dynamic => match arg_channels {
-            TypedBufferChannels::Mono => None,
-            TypedBufferChannels::Static(ch) if *ch > 1 => Some(1),
+            TypedBufferChannels::Mono | TypedBufferChannels::Static(_) => Some(1),
             TypedBufferChannels::Dynamic => Some(0),
-            _ => None,
         },
         BufferChannels::Static(expr) => {
             let expected_ch = const_positive_usize_for_overload(expr);
@@ -270,13 +278,11 @@ fn score_buffer_match(
                 },
                 Some(ch) => match arg_channels {
                     TypedBufferChannels::Static(actual) if *actual == ch => Some(0),
-                    TypedBufferChannels::Dynamic => Some(1),
                     _ => None,
                 },
                 None => match arg_channels {
                     TypedBufferChannels::Mono => None,
                     TypedBufferChannels::Static(ch) if *ch > 1 => Some(1),
-                    TypedBufferChannels::Dynamic => Some(1),
                     _ => None,
                 },
             }
@@ -329,6 +335,13 @@ fn score_overload_param_match(
             OverloadArgShape::Unknown => Some(2),
             _ => None,
         },
+        Some(FnParamType::BufferArray { buffer, .. }) => match arg_shape {
+            OverloadArgShape::Buffer { elem_ty, channels } => {
+                score_buffer_match(buffer, *elem_ty, channels)
+            }
+            OverloadArgShape::Unknown => Some(2),
+            _ => None,
+        },
         Some(FnParamType::Array(Some(_expected_elem))) => match arg_shape {
             OverloadArgShape::Array => Some(0),
             OverloadArgShape::Unknown => Some(2),
@@ -364,6 +377,9 @@ fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_defaul
         Some(FnParamType::Primitive(prim)) => format!("{name}: {prim:?}").to_lowercase(),
         Some(FnParamType::Struct(struct_name)) => format!("{name}: {struct_name}"),
         Some(FnParamType::Buffer(buffer_ty)) => format!("{name}: {:?}", buffer_ty),
+        Some(FnParamType::BufferArray { buffer, len }) => {
+            format!("{name}: {buffer:?} {{{len}}}")
+        }
         Some(FnParamType::Array(Some(prim))) => format!("{name}: {prim:?}[]").to_lowercase(),
         Some(FnParamType::ArrayGeneric(param)) => format!("{name}: {param}[]"),
         Some(FnParamType::SizedArray {
@@ -581,12 +597,15 @@ pub(crate) fn rewrite_overloaded_calls_in_expr(
         Expr::Index { index, .. } => {
             rewrite_overloaded_calls_in_expr(index, env, overloads, errors);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                rewrite_overloaded_calls_in_expr(start, env, overloads, errors);
-            }
-            if let Some(end) = end {
-                rewrite_overloaded_calls_in_expr(end, env, overloads, errors);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_overloaded_calls_in_expr(coordinate, env, overloads, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {

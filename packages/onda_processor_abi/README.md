@@ -25,6 +25,12 @@ validate artifacts without installing the compiler or duplicating the ABI schema
 The detailed TypeScript records mirror `onda_processor_abi::ProcessorDescriptor`; both packages
 validate the same checked-in conformance fixture.
 
+The current descriptor represents every bindable buffer-array slot as a physical
+`metadata.buffers` entry and records logical contiguous groups in `metadata.buffer_arrays`. At
+runtime all four descriptor tables are present when any buffer exists, but an individual sample
+pointer may be null. Null entries select the processor's neutral one-frame zero/discard storage;
+they are valid bindings, not an incomplete artifact.
+
 `createParamControl()` validates and decodes one parameter descriptor into a reusable control with
 `constrainPlain()`, `normalizedToPlain()`, and `plainToNormalized()` methods. It preserves exact
 endpoints, clamps out-of-range values, applies linear, logarithmic, or SuperCollider-style curved

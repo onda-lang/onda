@@ -77,12 +77,15 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
         Expr::Index { index, .. } => {
             substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                substitute_call_type_args_with_bindings_expr(start, bindings, context, errors);
-            }
-            if let Some(end) = end {
-                substitute_call_type_args_with_bindings_expr(end, bindings, context, errors);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                substitute_call_type_args_with_bindings_expr(coordinate, bindings, context, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
@@ -172,15 +175,16 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
                 AssignTarget::Index { index, .. } => {
                     substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
                 }
-                AssignTarget::Slice { start, end, .. } => {
-                    if let Some(start) = start {
+                AssignTarget::Slice {
+                    selector,
+                    channel,
+                    start,
+                    end,
+                    ..
+                } => {
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
                         substitute_call_type_args_with_bindings_expr(
-                            start, bindings, context, errors,
-                        );
-                    }
-                    if let Some(end) = end {
-                        substitute_call_type_args_with_bindings_expr(
-                            end, bindings, context, errors,
+                            coordinate, bindings, context, errors,
                         );
                     }
                 }
@@ -275,6 +279,23 @@ pub(crate) fn specialize_generic_struct_template(
                     elem,
                     channels: buffer_ty.channels.clone(),
                 })
+            }
+            FnParamType::BufferArray { buffer, len } => {
+                let elem = match &buffer.elem {
+                    BufferElemType::Primitive(prim) => BufferElemType::Primitive(*prim),
+                    BufferElemType::Generic(param) => type_bindings
+                        .get(param)
+                        .copied()
+                        .map(BufferElemType::Primitive)
+                        .unwrap_or_else(|| BufferElemType::Generic(param.clone())),
+                };
+                FnParamType::BufferArray {
+                    buffer: BufferType {
+                        elem,
+                        channels: buffer.channels.clone(),
+                    },
+                    len: *len,
+                }
             }
             FnParamType::Array(elem) => FnParamType::Array(*elem),
             FnParamType::ArrayGeneric(name) => match type_bindings.get(name).copied() {
@@ -698,12 +719,15 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
         Expr::Index { index, .. } => {
             rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
         }
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                rewrite_generic_struct_ctor_expr(start, templates, generated, errors, locals);
-            }
-            if let Some(end) = end {
-                rewrite_generic_struct_ctor_expr(end, templates, generated, errors, locals);
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                rewrite_generic_struct_ctor_expr(coordinate, templates, generated, errors, locals);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {

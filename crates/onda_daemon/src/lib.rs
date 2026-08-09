@@ -3,7 +3,7 @@ mod run_session;
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
     RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo, RunEventParamInfo,
-    RunEventValue, RunOptions, RunParamInfo, RunSession, UNBOUND_BUFFERS_MESSAGE,
+    RunEventValue, RunOptions, RunParamInfo, RunSession,
 };
 
 use std::collections::HashMap;
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn run_binds_wav_file_to_f32_buffer() {
+    fn run_uses_neutral_descriptors_for_unbound_f32_buffers() {
         let dir = mk_temp_dir("run_buffer");
         let main = dir.join("main.onda");
         let wav = dir.join("input.wav");
@@ -334,7 +334,7 @@ mod tests {
 
         write_file(
             &main,
-            "buffers:\n  src: buffer[f32]\n  spare: buffer[f32]\nouts:\n  out1\ninit:\n  idx = 0\nsample:\n  out1 = src[idx]\n  idx = idx + 1\n",
+            "buffers:\n  src: buffer<f32>\n  spare: buffer<f32>\nouts:\n  out1\ninit:\n  idx = 0\nsample:\n  out1 = src[idx]\n  idx = idx + 1\n",
         );
         write_wav(&wav, 1, 48_000, &[0.1, 0.2, 0.3, 0.4]);
         write_wav(&wav_alt, 1, 48_000, &[0.9, 0.8, 0.7, 0.6]);
@@ -354,8 +354,8 @@ mod tests {
 
         let unbound = session
             .render_run_block(&main)
-            .expect_err("unbound buffers must prevent processing");
-        assert_eq!(unbound.message, UNBOUND_BUFFERS_MESSAGE);
+            .expect("unbound buffers should process through neutral descriptors");
+        assert!(unbound[0].iter().all(|sample| *sample == 0.0));
 
         session
             .run_mut(&main)
@@ -367,9 +367,11 @@ mod tests {
         assert_eq!(loaded.loaded_channels, Some(1));
         assert_eq!(loaded.loaded_sample_rate_hz, Some(48_000.0));
 
-        session
+        let partially_bound = session
             .render_run_block(&main)
-            .expect_err("one remaining unbound buffer must prevent processing");
+            .expect("unused unbound buffers should remain neutral");
+        assert!((partially_bound[0][0] - 0.1).abs() < 1e-6);
+        assert!((partially_bound[0][1] - 0.2).abs() < 1e-6);
         session
             .run_mut(&main)
             .expect("active run")
@@ -402,9 +404,48 @@ mod tests {
             .expect("clearing a buffer should succeed");
         let cleared = session
             .render_run_block(&main)
-            .expect_err("cleared buffers must prevent processing");
-        assert_eq!(cleared.message, UNBOUND_BUFFERS_MESSAGE);
+            .expect("cleared buffers should fall back to neutral descriptors");
+        assert!(cleared[0].iter().all(|sample| *sample == 0.0));
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_binds_typed_i32_buffer_asset() {
+        let dir = mk_temp_dir("run_i32_buffer");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "buffers:\n  values: buffer<i32>\nouts:\n  out1\ninit:\n  idx = 0\nsample:\n  out1 = f32(values[idx])\n  idx = idx + 1\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run(&main)
+            .expect("run should compile and start");
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .bind_buffer_asset(
+                "values",
+                onda_project::BufferAsset::new(
+                    512,
+                    1,
+                    1.0,
+                    onda_project::BufferSamples::I32({
+                        let mut values = vec![0; 512];
+                        values[..4].copy_from_slice(&[1, -2, 3, 4]);
+                        values
+                    }),
+                )
+                .expect("valid i32 buffer asset"),
+            )
+            .expect("i32 buffer bind should succeed");
+
+        let rendered = session
+            .render_run_block(&main)
+            .expect("run render with bound i32 buffer should succeed");
+        assert_eq!(&rendered[0][..4], &[1.0, -2.0, 3.0, 4.0]);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -416,7 +457,7 @@ mod tests {
 
         write_file(
             &main,
-            "buffers:\n  src: buffer[f32[2]]\nouts:\n  out1\n  out2\ninit:\n  idx = 0\nsample:\n  out1 = src[0][idx]\n  out2 = src[1][idx]\n  idx = idx + 1\n",
+            "buffers:\n  src: buffer<f32[2]>\nouts:\n  out1\n  out2\ninit:\n  idx = 0\nsample:\n  out1 = src[0, idx]\n  out2 = src[1, idx]\n  idx = idx + 1\n",
         );
         write_wav(&wav, 2, 48_000, &[0.1, 0.5, 0.2, 0.6, 0.3, 0.7, 0.4, 0.8]);
 
@@ -438,6 +479,44 @@ mod tests {
         assert!((rendered[1][0] - 0.5).abs() < 1e-6);
         assert!((rendered[0][1] - 0.2).abs() < 1e-6);
         assert!((rendered[1][1] - 0.6).abs() < 1e-6);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rejected_buffer_rebind_preserves_the_active_binding() {
+        let dir = mk_temp_dir("run_rejected_buffer_rebind");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "buffers:\n  src: buffer<f32[2]>\nouts:\n  out1\nsample:\n  out1 = src[0, 0]\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run(&main)
+            .expect("run should compile and start");
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .bind_buffer_samples("src", vec![0.25, 0.75], 2, 48_000.0)
+            .expect("valid stereo binding should succeed");
+
+        let error = session
+            .run_mut(&main)
+            .expect("active run")
+            .bind_buffer_samples("src", vec![0.9], 1, 48_000.0)
+            .expect_err("mono data must not replace a static stereo binding");
+        assert!(error.message.contains("expects 2 channels"), "{error:?}");
+
+        let run = session.run(&main).expect("active run");
+        assert_eq!(run.buffer_info()[0].loaded_channels, Some(2));
+        let rendered = session
+            .render_run_block(&main)
+            .expect("the previous binding should remain processable");
+        assert!(rendered[0]
+            .iter()
+            .all(|sample| (*sample - 0.25).abs() < 1e-6));
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -483,7 +562,7 @@ mod tests {
 
         write_file(
             &main,
-            "buffers:\n  src: buffer[f32]\nouts:\n  out1\ninit:\n  counter = 1\nsample:\n  out1 = f32(counter)\n  counter = counter + 1\n",
+            "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  counter = 1\nsample:\n  out1 = f32(counter)\n  counter = counter + 1\n",
         );
         write_wav(&wav_a, 1, 48_000, &[0.1, 0.2, 0.3, 0.4]);
         write_wav(&wav_b, 1, 48_000, &[0.8, 0.7, 0.6, 0.5]);
@@ -493,9 +572,10 @@ mod tests {
             .start_run(&main)
             .expect("run should compile and start");
 
-        session
+        let unbound = session
             .render_run_block(&main)
-            .expect_err("initial render must wait for the declared buffer");
+            .expect("unbound buffers should not prevent processing");
+        assert!((unbound[0][0] - 1.0).abs() < 1e-6);
 
         session
             .run_mut(&main)

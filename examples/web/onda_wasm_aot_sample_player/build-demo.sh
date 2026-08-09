@@ -51,6 +51,7 @@ cargo run --quiet --release \
 node "$demo_dir/build-artifact.mjs" "$mir_file" "$demo_dir"
 
 cp "$abi_dir/src/index.js" "$demo_dir/artifact.js"
+cp "$abi_dir/src/param-control.js" "$demo_dir/param-control.js"
 cp "$webaudio_dir/src/index.js" "$demo_dir/onda-webaudio.js"
 cp "$webaudio_dir/src/worklet.js" "$demo_dir/onda-wasm-processor.js"
 cp "$repo_root/examples/buffers-fft-convolution/impulse.wav" "$demo_dir/impulse.wav"

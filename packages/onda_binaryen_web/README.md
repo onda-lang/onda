@@ -54,7 +54,9 @@ The executable backend supports:
 - input loads, output stores, and immutable constant-data loads
 - scalar/fixed-array event payload loads and event ABI wrappers
 - scalar/fixed-array control-output stores in the shared state blob
-- interleaved mono/static/dynamic external buffers, including reads, writes, bounds modes, and runtime metadata queries
+- interleaved mono/static/dynamic external buffers, uniformly clamped source access, fixed
+  constant-time buffer collections, nullable host pointers with neutral zero/discard storage, and
+  runtime metadata queries
 - checked slice construction plus fixed-array/slice reference windows
 - address-taken scalar locals legalized through per-function reference scratch storage
 - SIMD contiguous slice fill with a scalar tail and bulk-memory contiguous slice copy

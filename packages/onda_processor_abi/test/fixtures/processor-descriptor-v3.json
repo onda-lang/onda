@@ -1,10 +1,10 @@
 {
   "format": "onda-processor",
-  "format_version": 2,
+  "format_version": 3,
   "artifact_kind": "webassembly_module",
-  "abi_version": 2,
+  "abi_version": 3,
   "backend": "conformance-fixture",
-  "mir_schema_version": 3,
+  "mir_schema_version": 4,
   "target": {
     "triple": "wasm32-unknown-unknown",
     "cpu": "generic",
@@ -90,7 +90,7 @@
     }],
     "buffers": [{
       "name": "scratch",
-      "type_repr": "buffer[f32]",
+      "type_repr": "buffer<f32>",
       "scalar": "f32",
       "element_size_bytes": 4,
       "channels": "mono",

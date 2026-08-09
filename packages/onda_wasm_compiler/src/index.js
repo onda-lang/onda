@@ -91,52 +91,204 @@ class OndaCompiler {
     } catch (error) {
       throw diagnosticsFromFrontend(error);
     }
-    const { mir, sourceFiles } = consumeFrontendCompilation(frontendCompilation);
+    const { mir, sourceFiles, sourceGraph } = consumeFrontendCompilation(frontendCompilation);
     const artifact = compileMirTransport(
       mir,
       compile.codegen,
       this.compileTrustedMir,
       sourceFiles,
     );
-    return { artifact, sourceFiles };
+    return { artifact, sourceFiles, sourceGraph };
   }
 
-  async compileProject(project, options = {}) {
-    if (!project || typeof project !== "object" || Array.isArray(project)) {
-      throw configurationError("project must contain an entry and source map");
+  async compileWorkspace(workspace, options = {}) {
+    if (!workspace || typeof workspace !== "object" || Array.isArray(workspace)) {
+      throw configurationError("workspace must contain an entry and source map");
     }
-    if (typeof project.entry !== "string" || project.entry.length === 0) {
-      throw configurationError("project.entry must be a non-empty string");
+    if (typeof workspace.entry !== "string" || workspace.entry.length === 0) {
+      throw configurationError("workspace.entry must be a non-empty string");
     }
-    if (!project.sources || typeof project.sources !== "object" || Array.isArray(project.sources)) {
-      throw configurationError("project.sources must be an object of paths to source strings");
+    if (!workspace.sources || typeof workspace.sources !== "object" || Array.isArray(workspace.sources)) {
+      throw configurationError("workspace.sources must be an object of paths to source strings");
     }
-    for (const [path, source] of Object.entries(project.sources)) {
+    for (const [path, source] of Object.entries(workspace.sources)) {
       if (typeof source !== "string") {
-        throw configurationError(`project source '${path}' must be a string`);
+        throw configurationError(`workspace source '${path}' must be a string`);
       }
     }
 
     const compile = normalizeCompileOptions(options);
     let frontendCompilation;
     try {
-      frontendCompilation = this.frontend.compile_project_to_mir_messagepack(
-        project.entry,
-        JSON.stringify(project.sources),
+      frontendCompilation = this.frontend.compile_source_workspace_to_mir_messagepack(
+        workspace.entry,
+        JSON.stringify(workspace.sources),
         compile.sampleRate,
         compile.blockSize,
       );
     } catch (error) {
       throw diagnosticsFromFrontend(error);
     }
-    const { mir, sourceFiles } = consumeFrontendCompilation(frontendCompilation);
+    const { mir, sourceFiles, sourceGraph } = consumeFrontendCompilation(frontendCompilation);
     const artifact = compileMirTransport(
       mir,
       compile.codegen,
       this.compileTrustedMir,
       sourceFiles,
     );
-    return { artifact, sourceFiles };
+    return { artifact, sourceFiles, sourceGraph };
+  }
+
+  async compileProjectImage(imageBytes, options = {}) {
+    const bytes = normalizeBytes(imageBytes, "project image");
+    const compile = normalizeCompileOptions(options);
+    let frontendCompilation;
+    try {
+      frontendCompilation = this.frontend.compile_project_image_to_mir_messagepack(
+        bytes,
+        compile.sampleRate,
+        compile.blockSize,
+      );
+    } catch (error) {
+      throw diagnosticsFromFrontend(error);
+    }
+    const { mir, sourceFiles, sourceGraph } = consumeFrontendCompilation(frontendCompilation);
+    const artifact = compileMirTransport(
+      mir,
+      compile.codegen,
+      this.compileTrustedMir,
+      sourceFiles,
+    );
+    return { artifact, sourceFiles, sourceGraph };
+  }
+
+  async createProjectImage(sourceGraph, buffers = new Map()) {
+    const graph = normalizeSourceGraph(sourceGraph);
+    const builder = new this.frontend.WebProjectImageBuilder(JSON.stringify(graph));
+    try {
+      for (const [name, bytes] of normalizeBufferAssetEntries(buffers)) {
+        builder.add_buffer(name, bytes);
+      }
+      const bytes = builder.serialize();
+      return {
+        bytes,
+        ...normalizeProjectImageInfo(JSON.parse(this.frontend.inspect_project_image(bytes))),
+      };
+    } catch (cause) {
+      throw new OndaCompilerError("failed to create Onda project image", { cause });
+    } finally {
+      builder.free();
+    }
+  }
+
+  async inspectProjectImage(imageBytes) {
+    try {
+      return normalizeProjectImageInfo(JSON.parse(this.frontend.inspect_project_image(
+        normalizeBytes(imageBytes, "project image"),
+      )));
+    } catch (cause) {
+      throw new OndaCompilerError("failed to inspect Onda project image", { cause });
+    }
+  }
+
+  async loadProjectFiles(files, projectFilePath = null) {
+    const builder = new this.frontend.WebMaterializedProjectBuilder();
+    try {
+      if (projectFilePath !== null) {
+        builder.select_project(normalizeProjectFilePath(projectFilePath));
+      }
+      for (const [path, bytes] of normalizeProjectFileEntries(files)) {
+        builder.add_file(path, bytes);
+      }
+      const bytes = builder.serialize();
+      return {
+        bytes,
+        ...normalizeProjectImageInfo(JSON.parse(this.frontend.inspect_project_image(bytes))),
+      };
+    } catch (cause) {
+      throw new OndaCompilerError("failed to load Onda project files", { cause });
+    } finally {
+      builder.free();
+    }
+  }
+
+  async materializeProjectImage(imageBytes, assetFileNames = new Map()) {
+    let plan;
+    try {
+      plan = this.frontend.materialize_project_image(
+        normalizeBytes(imageBytes, "project image"),
+        JSON.stringify(Object.fromEntries(normalizeAssetFileNameEntries(assetFileNames))),
+      );
+      const files = [];
+      for (let index = 0; index < plan.file_count(); index += 1) {
+        files.push({ path: plan.file_path(index), bytes: plan.file_bytes(index) });
+      }
+      return { directories: JSON.parse(plan.directories_json()), files };
+    } catch (cause) {
+      throw new OndaCompilerError("failed to materialize Onda project image", { cause });
+    } finally {
+      plan?.free();
+    }
+  }
+
+  async encodeBufferAsset(binding) {
+    const normalized = normalizeBufferBinding(binding);
+    try {
+      return this.frontend.encode_buffer_asset(
+        normalized.element,
+        normalized.frames,
+        normalized.channels,
+        normalized.sampleRate,
+        encodeCanonicalPayload(normalized.element, normalized.data),
+      );
+    } catch (cause) {
+      throw new OndaCompilerError("failed to encode Onda buffer asset", { cause });
+    }
+  }
+
+  async decodeBufferAsset(bytes) {
+    return this.#decodeBuffer(
+      () => this.frontend.decode_buffer_asset(normalizeBytes(bytes, "buffer asset")),
+      "failed to decode Onda buffer asset",
+    );
+  }
+
+  async decodeBufferFile(bytes, path = "buffer") {
+    return this.#decodeBuffer(
+      () => this.frontend.decode_buffer_file(
+        normalizeBytes(bytes, "buffer file"),
+        String(path),
+      ),
+      "failed to decode buffer file",
+    );
+  }
+
+  async #decodeBuffer(decode, message) {
+    let decoded;
+    try {
+      decoded = decode();
+      const element = decoded.element();
+      const payload = decoded.canonical_payload();
+      return {
+        element,
+        frames: decoded.frames(),
+        channels: decoded.channels(),
+        sampleRate: decoded.sample_rate(),
+        data: decodeCanonicalPayload(element, payload),
+      };
+    } catch (cause) {
+      throw new OndaCompilerError(message, { cause });
+    } finally {
+      decoded?.free();
+    }
+  }
+
+  async projectCapabilities() {
+    return {
+      imageFormatVersion: this.frontend.project_image_format_version(),
+      bufferAssetFormatVersion: this.frontend.buffer_asset_format_version(),
+      stdlibDigest: this.frontend.current_stdlib_digest(),
+    };
   }
 
   async sendLspMessage(message) {
@@ -190,8 +342,44 @@ class WorkerOndaCompiler {
     return this.request("compileSource", { source, options });
   }
 
-  compileProject(project, options = {}) {
-    return this.request("compileProject", { project, options });
+  compileWorkspace(workspace, options = {}) {
+    return this.request("compileWorkspace", { workspace, options });
+  }
+
+  compileProjectImage(imageBytes, options = {}) {
+    return this.request("compileProjectImage", { imageBytes, options });
+  }
+
+  createProjectImage(sourceGraph, buffers = new Map()) {
+    return this.request("createProjectImage", { sourceGraph, buffers });
+  }
+
+  inspectProjectImage(imageBytes) {
+    return this.request("inspectProjectImage", { imageBytes });
+  }
+
+  loadProjectFiles(files, projectFilePath = null) {
+    return this.request("loadProjectFiles", { files, projectFilePath });
+  }
+
+  materializeProjectImage(imageBytes, assetFileNames = new Map()) {
+    return this.request("materializeProjectImage", { imageBytes, assetFileNames });
+  }
+
+  encodeBufferAsset(binding) {
+    return this.request("encodeBufferAsset", { binding });
+  }
+
+  decodeBufferAsset(bytes) {
+    return this.request("decodeBufferAsset", { bytes });
+  }
+
+  decodeBufferFile(bytes, path = "buffer") {
+    return this.request("decodeBufferFile", { bytes, path });
+  }
+
+  projectCapabilities() {
+    return this.request("projectCapabilities");
   }
 
   sendLspMessage(message) {
@@ -340,7 +528,10 @@ function consumeFrontendCompilation(compilation) {
   try {
     const mir = compilation.take_mir();
     const sourceFiles = normalizeSourceFiles(JSON.parse(compilation.source_files_json()));
-    return { mir, sourceFiles };
+    const sourceGraph = normalizeReturnedSourceGraph(
+      JSON.parse(compilation.source_image_json()),
+    );
+    return { mir, sourceFiles, sourceGraph };
   } finally {
     compilation.free();
   }
@@ -429,4 +620,194 @@ function normalizeDiagnostics(diagnostics) {
 function normalizeSourceFiles(sourceFiles) {
   if (!Array.isArray(sourceFiles)) return [];
   return sourceFiles.map((path) => String(path));
+}
+
+function normalizeBytes(value, context) {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  throw new OndaCompilerError(`${context} must be an ArrayBuffer or typed-array view`);
+}
+
+function normalizeSourceGraph(graph) {
+  if (!graph || typeof graph !== "object" || Array.isArray(graph)) {
+    throw new OndaCompilerError("source graph must be an object");
+  }
+  const entry = String(graph.entry ?? "");
+  const stdlibDigest = String(graph.stdlibDigest ?? graph.stdlib_digest ?? "");
+  if (!entry || !stdlibDigest) {
+    throw new OndaCompilerError("source graph requires entry and stdlibDigest");
+  }
+  const documents = Array.isArray(graph.documents) ? graph.documents.map((document) => ({
+    path: String(document?.path ?? ""),
+    contents: String(document?.contents ?? ""),
+  })) : [];
+  const resolutions = Array.isArray(graph.resolutions) ? graph.resolutions.map((resolution) => ({
+    source: String(resolution?.source ?? ""),
+    kind: String(resolution?.kind ?? ""),
+    specifier: String(resolution?.specifier ?? ""),
+    target: String(resolution?.target ?? ""),
+  })) : [];
+  return {
+    entry,
+    stdlib_digest: stdlibDigest,
+    documents,
+    resolutions,
+  };
+}
+
+function normalizeReturnedSourceGraph(graph) {
+  if (!graph) return null;
+  return {
+    entry: String(graph.entry),
+    stdlibDigest: String(graph.stdlib_digest),
+    documents: graph.documents.map((document) => ({
+      path: String(document.path),
+      contents: String(document.contents),
+    })),
+    resolutions: graph.resolutions.map((resolution) => ({
+      source: String(resolution.source),
+      kind: String(resolution.kind),
+      specifier: String(resolution.specifier),
+      target: String(resolution.target),
+    })),
+  };
+}
+
+function normalizeProjectImageInfo(info) {
+  return {
+    formatVersion: Number(info.format_version),
+    contentDigest: String(info.content_digest),
+    sourceGraph: normalizeReturnedSourceGraph(info.sources),
+    buffers: info.buffers.map((buffer) => ({
+      name: String(buffer.name),
+      assetId: String(buffer.asset_id),
+      element: String(buffer.element),
+      frames: Number(buffer.frames),
+      channels: Number(buffer.channels),
+      sampleRate: Number(buffer.sample_rate),
+    })),
+  };
+}
+
+function normalizeBufferAssetEntries(buffers) {
+  const entries = buffers instanceof Map
+    ? [...buffers]
+    : buffers && typeof buffers === "object" && !Array.isArray(buffers)
+      ? Object.entries(buffers)
+      : null;
+  if (!entries) throw new OndaCompilerError("project buffers must be a Map or object");
+  return entries.map(([name, bytes]) => {
+    if (typeof name !== "string" || !name) {
+      throw new OndaCompilerError("project buffer names must be non-empty strings");
+    }
+    return [name, normalizeBytes(bytes, `project buffer '${name}'`)];
+  });
+}
+
+function normalizeAssetFileNameEntries(fileNames) {
+  const entries = fileNames instanceof Map
+    ? [...fileNames]
+    : fileNames && typeof fileNames === "object" && !Array.isArray(fileNames)
+      ? Object.entries(fileNames)
+      : null;
+  if (!entries) throw new OndaCompilerError("asset filenames must be a Map or object");
+  return entries.map(([name, fileName]) => {
+    if (typeof name !== "string" || !name || typeof fileName !== "string" || !fileName) {
+      throw new OndaCompilerError("asset filenames require non-empty buffer names and filenames");
+    }
+    return [name, fileName];
+  });
+}
+
+function normalizeProjectFilePath(path) {
+  if (typeof path !== "string" || !path) {
+    throw new OndaCompilerError("selected project manifest must be a non-empty string");
+  }
+  return path;
+}
+
+function normalizeProjectFileEntries(files) {
+  const entries = files instanceof Map
+    ? [...files]
+    : files && typeof files === "object" && !Array.isArray(files)
+      ? Object.entries(files)
+      : null;
+  if (!entries) throw new OndaCompilerError("project files must be a Map or object");
+  return entries.map(([path, bytes]) => {
+    if (typeof path !== "string" || !path) {
+      throw new OndaCompilerError("project file paths must be non-empty strings");
+    }
+    return [path, normalizeBytes(bytes, `project file '${path}'`)];
+  });
+}
+
+function normalizeBufferBinding(binding) {
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    throw new OndaCompilerError("buffer binding must be an object");
+  }
+  const element = String(binding.element ?? binding.scalar ?? "");
+  const frames = Number(binding.frames);
+  const channels = Number(binding.channels);
+  const sampleRate = Number(binding.sampleRate);
+  const data = binding.data;
+  const expectedConstructor = {
+    bool: Uint8Array,
+    i32: Int32Array,
+    i64: BigInt64Array,
+    f32: Float32Array,
+    f64: Float64Array,
+  }[element];
+  if (!expectedConstructor || !(data instanceof expectedConstructor)) {
+    throw new OndaCompilerError(`buffer element '${element}' requires ${expectedConstructor?.name ?? "a supported typed array"}`);
+  }
+  if (
+    !Number.isInteger(frames) || frames <= 0
+    || !Number.isInteger(channels) || channels <= 0
+    || !Number.isFinite(sampleRate) || sampleRate <= 0
+    || data.length !== frames * channels
+  ) {
+    throw new OndaCompilerError("buffer binding has an invalid shape or sample rate");
+  }
+  return { element, frames, channels, sampleRate, data };
+}
+
+function encodeCanonicalPayload(element, data) {
+  if (element === "bool") {
+    if (data.some((value) => value > 1)) {
+      throw new OndaCompilerError("bool buffer values must be 0 or 1");
+    }
+    return data.slice();
+  }
+  const bytes = new Uint8Array(data.length * data.BYTES_PER_ELEMENT);
+  const view = new DataView(bytes.buffer);
+  for (let index = 0; index < data.length; index += 1) {
+    const offset = index * data.BYTES_PER_ELEMENT;
+    if (element === "i32") view.setInt32(offset, data[index], true);
+    else if (element === "i64") view.setBigInt64(offset, data[index], true);
+    else if (element === "f32") view.setFloat32(offset, data[index], true);
+    else view.setFloat64(offset, data[index], true);
+  }
+  return bytes;
+}
+
+function decodeCanonicalPayload(element, payload) {
+  if (element === "bool") return payload.slice();
+  const elementBytes = element === "i32" || element === "f32" ? 4 : 8;
+  const length = payload.byteLength / elementBytes;
+  const output = element === "i32" ? new Int32Array(length)
+    : element === "i64" ? new BigInt64Array(length)
+      : element === "f32" ? new Float32Array(length)
+        : new Float64Array(length);
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  for (let index = 0; index < length; index += 1) {
+    const offset = index * elementBytes;
+    output[index] = element === "i32" ? view.getInt32(offset, true)
+      : element === "i64" ? view.getBigInt64(offset, true)
+        : element === "f32" ? view.getFloat32(offset, true)
+          : view.getFloat64(offset, true);
+  }
+  return output;
 }

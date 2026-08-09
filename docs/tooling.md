@@ -55,7 +55,8 @@ APIs for Node.js and browsers, including a worker-backed browser mode. The lower
 ## Real-time playback
 
 The standalone UI watches the entry plus every transitive non-standard-library import/include and
-provides controls for the program's exposed surface:
+provides controls for the program's exposed surface. When opened from an `.ondaproject` file, it
+also watches that manifest and its file-backed buffer assets:
 
 ```bash
 onda run examples/foundations/sine.onda
@@ -70,6 +71,10 @@ onda run play examples/foundations/sine.onda --dur 2
 onda run play examples/foundations/sine.onda --forever --set freq=220
 onda run play examples/buffers-fft-convolution/buffer_looper_read.onda --buffer src=sample.wav
 ```
+
+Buffer bindings are optional. Omitted scalar buffers and individual fixed-array slots use neutral
+one-frame storage, so they read as zero and discard writes without preventing playback. Array slots
+use their physical names at the CLI, for example `--buffer 'bank[3]=snare.ondabuffer'`.
 
 ## Offline rendering
 

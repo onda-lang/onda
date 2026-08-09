@@ -256,7 +256,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
                     return Some(PrimitiveType::F32);
                 }
             }
-            if is_builtin_buffer_2d_unsafe_fn(name) {
+            if is_internal_buffer_2d_fn(name) {
                 if let Some(CallArg {
                     expr: Expr::Var { name: base, .. },
                     ..
@@ -512,7 +512,9 @@ fn collect_def_return_observations<'a>(
                 }
                 locals.insert(param.clone(), PrimitiveType::F32);
             }
-            Some(FnParamType::Buffer(_)) | Some(FnParamType::BareBuffer) => {
+            Some(FnParamType::Buffer(_))
+            | Some(FnParamType::BufferArray { .. })
+            | Some(FnParamType::BareBuffer) => {
                 locals.insert(param.clone(), PrimitiveType::F32);
             }
             Some(FnParamType::Array(Some(prim))) => {

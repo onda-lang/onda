@@ -38,14 +38,17 @@ test("the standalone example remains a thin host for ui/playground", async () =>
   assert.doesNotMatch(bundler, /examples\/web\/onda_wasm_playground\/live\.js/);
 });
 
-test("both playground hosts expose new-patch and stable shortcut controls", async () => {
+test("both playground hosts keep only project-wide actions above the file tabs", async () => {
   const hosts = await Promise.all([
     readFile(resolve(repoRoot, "website/playground/index.html"), "utf8"),
     readFile(resolve(exampleRoot, "index.html"), "utf8"),
   ]);
 
   for (const host of hosts) {
-    assert.match(host, /data-new-patch/);
+    assert.match(host, /data-new-project>New project<\/button>/);
+    assert.match(host, /data-open-project>Open project<\/button>/);
+    assert.match(host, /data-download-project>Download project<\/button>/);
+    assert.doesNotMatch(host, /data-rename-file|data-main-file/);
     assert.match(host, /class="project-file-add"[^>]+data-new-file[^>]*>\+<\/button>/);
     assert.doesNotMatch(host, /data-new-file>New file<\/button>/);
     assert.match(host, /Ctrl\/⌘ ↵/);
@@ -67,8 +70,14 @@ test("both playground hosts expose new-patch and stable shortcut controls", asyn
   assert.match(playground, /setStatus\("Error", "fail"\)/);
   assert.match(
     playground,
-    /createNewPatch\(\) \{\s+if \(!window\.confirm\("Create a new patch\? This will delete your current project\."\)\) return;\s+await stopExecution\(\);/,
+    /createNewProject\(\) \{\s+if \(!window\.confirm\("Create a new project\? This will delete your current project\."\)\) return;\s+await stopExecution\(\);/,
   );
+
+  const editor = await readFile(resolve(repoRoot, "ui/playground/editor.js"), "utf8");
+  assert.match(editor, /className = "project-file-menu-trigger"/);
+  assert.match(editor, /action\("Rename", "project-file-menu-rename"/);
+  assert.match(editor, /action\("Set as main", "project-file-menu-main"/);
+  assert.match(editor, /"Delete",\s+"project-file-menu-delete"/);
 });
 
 test("the browser buffer picker stays hidden and cleans up after cancellation", async () => {
@@ -77,6 +86,15 @@ test("the browser buffer picker stays hidden and cleans up after cancellation", 
   assert.match(runView, /input\.hidden = true/);
   assert.match(runView, /input\.addEventListener\("cancel", cleanup, \{ once: true \}\)/);
   assert.match(runView, /window\.addEventListener\("focus", cleanupAfterCancel, \{ once: true \}\)/);
+});
+
+test("the shared run view presents one Onda source and project importer", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+
+  assert.match(runView, /class="primary" id="choose-onda-file"/);
+  assert.match(runView, /Open Onda source or project/);
+  assert.match(runView, /drop an \.onda or \.ondaproject file/);
+  assert.doesNotMatch(runView, /chooseProjectFolder|supportsProjectDirectorySelection/);
 });
 
 test("the shared run view only shows its scope when supported and during playback", async () => {
@@ -227,6 +245,8 @@ test("the browser smoke check follows the project-only share contract", async ()
 
   assert.match(playground, /encodeSharedSession\(project\)/);
   assert.doesNotMatch(playground, /decodedSession\.(?:sampleRate|blockSize)/);
+  assert.match(playground, /hasOpenProjectButton: Boolean\(openProjectButton\)/);
+  assert.match(playground, /hasDownloadProjectButton: Boolean\(downloadProjectButton\)/);
 });
 
 test("both native hosts preserve runtime options across unload", async () => {

@@ -43,11 +43,14 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         fast_math,
         target,
     } = request;
+    let project_input = crate::project_cmd::resolve_entry(input)?;
+    let source_input = project_input.entry_path();
     if dump_graph {
-        let lowered = parse_and_lower_graphs(input, sample_rate_hz as f32, block_frames)?;
+        let lowered = parse_and_lower_graphs(source_input, sample_rate_hz as f32, block_frames)?;
         print!("{}", format_program(&lowered));
     }
-    let typed = parse_and_analyze(input, sample_rate_hz as f32, block_frames)?;
+    let typed = parse_and_analyze(source_input, sample_rate_hz as f32, block_frames)?;
+    crate::project_cmd::validate_compile_project(&project_input, &typed)?;
     if show_meta {
         print_program_meta(&typed);
     }
@@ -141,7 +144,7 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
             let artifact = lower_optimized_mir_to_object_artifact(&mir, &codegen_options)
                 .map_err(|errors| format_mir_codegen_errors("object emission failed", &errors))?;
             let object_path = output.map(Path::to_path_buf).unwrap_or_else(|| {
-                default_object_output_path(input, &artifact.metadata.target.triple)
+                default_object_output_path(source_input, &artifact.metadata.target.triple)
             });
             fs::write(&object_path, &artifact.object_bytes).map_err(|err| {
                 format!(

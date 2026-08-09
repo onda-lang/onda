@@ -51,6 +51,7 @@ mod platform {
             path: Option<PathBuf>,
         },
         OndaFileDialogResult(Option<PathBuf>),
+        ProjectSaveDialogResult(Option<PathBuf>),
         OndaFileDropped(PathBuf),
     }
 
@@ -94,7 +95,7 @@ mod platform {
             })
             .with_drag_drop_handler(move |event| {
                 if let DragDropEvent::Drop { paths, .. } = event {
-                    if let Some(path) = paths.into_iter().find(|path| is_onda_path(path)) {
+                    if let Some(path) = paths.into_iter().find(|path| is_loadable_path(path)) {
                         let _ = drop_proxy.send_event(UserEvent::OndaFileDropped(path));
                     }
                 }
@@ -192,6 +193,23 @@ mod platform {
                         pending_state_sync = true;
                     }
                 }
+                Event::UserEvent(UserEvent::ProjectSaveDialogResult(path)) => {
+                    if let (Some(controller), Some(path)) = (controller.as_ref(), path) {
+                        let result = controller.save_as_project(&path);
+                        let message = match result {
+                            Ok(()) => format!("Saved project to {}", path.display()),
+                            Err(error) => format!("Could not save project: {error}"),
+                        };
+                        eval_js(
+                            &webview,
+                            &format!(
+                                "window.alert({})",
+                                serde_json::to_string(&message)
+                                    .unwrap_or_else(|_| "\"Project export finished\"".to_owned())
+                            ),
+                        );
+                    }
+                }
                 Event::UserEvent(UserEvent::OndaFileDropped(path)) => {
                     if controller.is_none() {
                         load_run_controller(
@@ -238,6 +256,14 @@ mod platform {
             .is_some_and(|extension| extension.eq_ignore_ascii_case("onda"))
     }
 
+    fn is_project_path(path: &Path) -> bool {
+        path.is_file() && onda_project::is_project_file_path(path)
+    }
+
+    fn is_loadable_path(path: &Path) -> bool {
+        is_onda_path(path) || is_project_path(path)
+    }
+
     fn load_run_controller(
         path: &Path,
         options: &RunHostOptions,
@@ -245,8 +271,8 @@ mod platform {
         controller: &mut Option<RunController>,
         load_error: &mut Option<String>,
     ) {
-        if !is_onda_path(path) {
-            *load_error = Some("Choose an .onda file".to_owned());
+        if !is_loadable_path(path) {
+            *load_error = Some("Choose an Onda file or project".to_owned());
             return;
         }
         match RunController::new(path, options.clone()) {
@@ -288,11 +314,30 @@ mod platform {
                 let dialog_proxy = proxy.clone();
                 std::thread::spawn(move || {
                     let path = rfd::FileDialog::new()
-                        .add_filter("Onda source", &["onda"])
-                        .set_title("Open an Onda file")
+                        .add_filter("Onda source or project", &["onda", "ondaproject"])
+                        .set_title("Open an Onda file or project")
                         .pick_file();
                     let _ = dialog_proxy.send_event(UserEvent::OndaFileDialogResult(path));
                 });
+                false
+            }
+            "saveProjectAs" => {
+                if let Some(controller) = controller.as_ref() {
+                    let suggested_name = controller
+                        .path()
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .map(|name| format!("{name}-project"))
+                        .unwrap_or_else(|| "onda-project".to_owned());
+                    let dialog_proxy = proxy.clone();
+                    std::thread::spawn(move || {
+                        let path = rfd::FileDialog::new()
+                            .set_title("Save as Onda project")
+                            .set_file_name(&suggested_name)
+                            .save_file();
+                        let _ = dialog_proxy.send_event(UserEvent::ProjectSaveDialogResult(path));
+                    });
+                }
                 false
             }
             "unload" => {
@@ -383,7 +428,7 @@ mod platform {
                     let dialog_proxy = proxy.clone();
                     std::thread::spawn(move || {
                         let path = rfd::FileDialog::new()
-                            .add_filter("Wave Audio", &["wav"])
+                            .add_filter("Onda buffer", &["wav", "ondabuffer"])
                             .set_title(format!("Bind '{buffer_name}' buffer"))
                             .pick_file();
                         let _ = dialog_proxy
@@ -445,6 +490,8 @@ mod platform {
             "supportsDeviceSelection": true,
             "supportsRunSettings": true,
             "supportsScope": true,
+            "supportsProjectExport": false,
+            "canExportProject": false,
             "sampleRateHz": options.sample_rate_hz,
             "blockFrames": options.block_frames,
             "themeMode": theme_mode,
@@ -478,6 +525,8 @@ mod platform {
             "supportsDeviceSelection": true,
             "supportsRunSettings": true,
             "supportsScope": true,
+            "supportsProjectExport": true,
+            "canExportProject": true,
             "sampleRateHz": options.sample_rate_hz,
             "blockFrames": options.block_frames,
             "themeMode": theme_mode,

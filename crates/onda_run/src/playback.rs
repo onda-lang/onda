@@ -14,8 +14,9 @@ use onda_cpal::{
 };
 use onda_daemon::{
     DaemonConfig, DaemonSession, RunBufferInfo, RunEventInfo, RunEventValue, RunOptions,
-    RunParamInfo, UNBOUND_BUFFERS_MESSAGE,
+    RunParamInfo,
 };
+use onda_project::BufferAsset;
 use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -45,6 +46,14 @@ pub struct PlaybackLaunch {
     pub control_json: bool,
     pub param_sets: Vec<(String, f64)>,
     pub buffer_bindings: Vec<(String, PathBuf)>,
+    pub project_buffer_bindings: Vec<ProjectBufferBinding>,
+}
+
+#[derive(Clone)]
+pub struct ProjectBufferBinding {
+    pub name: String,
+    pub asset: BufferAsset,
+    pub loaded_path: Option<PathBuf>,
 }
 
 struct PlaybackStartup {
@@ -286,17 +295,6 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             println!("{}", format_run_event_info(&startup.events));
         }
     }
-    if !launch.control_json
-        && startup
-            .buffers
-            .iter()
-            .any(|buffer| buffer.loaded_path.is_none())
-    {
-        stop_flag.store(true, Ordering::Release);
-        let _ = render_thread.join();
-        drop(control_server);
-        return Err(UNBOUND_BUFFERS_MESSAGE.to_owned());
-    }
     if startup.output_channels == 0 {
         stop_flag.store(true, Ordering::Release);
         let _ = render_thread.join();
@@ -519,11 +517,29 @@ fn spawn_run_render_thread(
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
             }
 
+            for binding in &launch.project_buffer_bindings {
+                let run = session
+                    .run_mut(&launch.input)
+                    .expect("run should be active while binding project buffers");
+                let result = if let Some(path) = &binding.loaded_path {
+                    run.bind_buffer_asset_at_path(
+                        &binding.name,
+                        binding.asset.clone(),
+                        path.clone(),
+                    )
+                } else {
+                    run.bind_buffer_asset(&binding.name, binding.asset.clone())
+                };
+                result.map_err(|diag| {
+                    format_single_diagnostic("daemon play project buffer failed", &diag)
+                })?;
+            }
+
             for (name, path) in &launch.buffer_bindings {
                 session
                     .run_mut(&launch.input)
                     .expect("run should be active while binding buffers")
-                    .bind_buffer_wav_path(name, path)
+                    .bind_buffer_file_path(name, path)
                     .map_err(|diag| format_single_diagnostic("daemon play buffer failed", &diag))?;
             }
 
@@ -581,9 +597,7 @@ fn spawn_run_render_thread(
 
         let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
         let mut play_requested = true;
-        let mut playing = session
-            .run(&launch.input)
-            .is_some_and(|run| run.buffers_ready());
+        let mut playing = session.run(&launch.input).is_some();
         let mut captured = vec![0.0_f32; launch.block_frames.saturating_mul(render_input_channels)];
         let mut interleaved =
             vec![0.0_f32; launch.block_frames.saturating_mul(render_output_channels)];
@@ -616,9 +630,6 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    if !run.buffers_ready() {
-                                        return Err(UNBOUND_BUFFERS_MESSAGE.to_owned());
-                                    }
                                     run.restart().map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play restart failed",
@@ -750,10 +761,7 @@ fn spawn_run_render_thread(
                                     })
                                 });
                             if result.is_ok() {
-                                playing = play_requested
-                                    && session
-                                        .run(&launch.input)
-                                        .is_some_and(|run| run.buffers_ready());
+                                playing = play_requested;
                             }
                             let _ = reply.send(result);
                         }
@@ -775,7 +783,7 @@ fn spawn_run_render_thread(
                                     })
                                 });
                             if result.is_ok() {
-                                playing = false;
+                                playing = play_requested;
                             }
                             let _ = reply.send(result);
                         }

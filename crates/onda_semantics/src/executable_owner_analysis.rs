@@ -506,8 +506,9 @@ pub(crate) fn analyze_owner_runtime_scopes<'a>(
     plans: impl IntoIterator<Item = RuntimeScopePlan<'a>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    for plan in plans {
-        register_and_analyze_runtime_scope(
+    let mut block_buffer_aliases = LocalBufferAliases::new();
+    for (scope_index, plan) in plans.into_iter().enumerate() {
+        let aliases = register_and_analyze_runtime_scope(
             plan.stmts.iter(),
             plan.common,
             plan.registration_mode,
@@ -525,11 +526,15 @@ pub(crate) fn analyze_owner_runtime_scopes<'a>(
             plan.runtime_known_scalars,
             plan.runtime_local_aliases,
             plan.runtime_local_array_aliases,
+            block_buffer_aliases.clone(),
             plan.runtime_forbidden_assign_names,
             plan.runtime_forbidden_assign_array_names,
             runtime_state.state_tuples,
             errors,
         );
+        if scope_index == 0 {
+            block_buffer_aliases = aliases;
+        }
     }
 }
 

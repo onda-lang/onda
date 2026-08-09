@@ -38,7 +38,7 @@ pub use validate::{
 /// additions retain this value; incompatible serialized-schema changes must
 /// increment it.
 // Synchronized from format-versions.json; do not edit this copy directly.
-pub const MIR_SCHEMA_VERSION: u32 = 3;
+pub const MIR_SCHEMA_VERSION: u32 = 4;
 
 /// Positional ABI indices for the three value parameters of the process entry.
 pub const PROCESS_START_FRAME_PARAM_INDEX: usize = 0;
@@ -54,6 +54,7 @@ pub const PROCESS_FULL_BLOCK: i32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
 /// Stable serialized names for the positional process-entry parameters.
 pub const PROCESS_PARAM_NAMES: [&str; PROCESS_PARAM_COUNT] = ["start_frame", "frames", "flags"];
 pub use analysis::{
-    analyze_effects, analyze_integer_ranges, EffectAnalysis, FunctionEffects,
-    FunctionRangeAnalysis, IntegerRange, MemoryRegionSet, ReferenceEffects,
+    analyze_buffer_writes, analyze_effects, analyze_integer_ranges, BufferWriteAnalysis,
+    BufferWriteAnalysisError, EffectAnalysis, FunctionEffects, FunctionRangeAnalysis, IntegerRange,
+    MemoryRegionSet, ReferenceEffects,
 };
