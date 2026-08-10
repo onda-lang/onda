@@ -10,7 +10,9 @@
   ],
   "scripts": {
     "sync:versions": "node ./scripts/sync-package-versions.mjs",
-    "build:website": "npm run build --workspace @onda-lang/wasm-compiler && node ./scripts/build-website-playground.mjs",
+    "docs:stdlib": "cargo run --quiet -p onda_lsp --example generate_stdlib_docs",
+    "check:stdlib-docs": "cargo run --quiet -p onda_lsp --example generate_stdlib_docs -- --check",
+    "build:website": "npm run docs:stdlib && npm run build --workspace @onda-lang/wasm-compiler && node ./scripts/build-website-playground.mjs",
     "check:versions": "node ./scripts/sync-package-versions.mjs --check",
     "test:playground": "node --test ./ui/playground/*.test.js",
     "test:web": "npm run test:playground && npm test --workspace @onda-lang/processor-abi && npm test --workspace @onda-lang/binaryen-web && npm test --workspace @onda-lang/webaudio && npm test --workspace @onda-lang/wasm-compiler"

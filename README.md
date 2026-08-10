@@ -47,7 +47,7 @@ Take a look at the `examples/` folder for more usage examples.
 
 ## Precompiled releases
 
-[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application entry, static and shared C libraries, public headers, language guide and examples. The Linux archive includes `install.sh` and `uninstall.sh` for a per-user CLI and desktop installation.
+[GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application entry, static and shared C libraries, public headers, language guide, standard-library reference, and examples. The Linux archive includes `install.sh` and `uninstall.sh` for a per-user CLI and desktop installation.
 
 Tagged releases attach portable tarballs and publish the four public npm packages:
 `@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and `@onda-lang/wasm-compiler`.
@@ -56,6 +56,7 @@ Tagged releases attach portable tarballs and publish the four public npm package
 
 - [CHANGELOG.md](CHANGELOG.md): release history and migration notes
 - [docs/syntax.md](docs/syntax.md): language syntax and semantics
+- [docs/stdlib.md](docs/stdlib.md): generated standard-library API reference
 - [docs/info.md](docs/info.md): project structure and implementation notes
 - [docs/projects.md](docs/projects.md): project manifests, typed buffer assets, and project images
 - [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary

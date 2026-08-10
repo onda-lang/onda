@@ -30,22 +30,38 @@ pub fn format_expr(expr: &Expr) -> String {
     format_expr_prec(expr, 0)
 }
 
+pub fn format_const_decl(decl: &onda_frontend::ConstDecl) -> String {
+    let mut text = format!("const {}", decl.name);
+    if let Some(ty) = &decl.ty {
+        text.push_str(": ");
+        text.push_str(&format_const_type(ty));
+    }
+    text.push_str(" = ");
+    text.push_str(&format_expr(&decl.expr));
+    text
+}
+
+pub fn format_namespace_header(namespace: &onda_frontend::NamespaceDecl) -> String {
+    if namespace.params.is_empty() {
+        format!("namespace {}:", namespace.name)
+    } else {
+        let params = namespace
+            .params
+            .iter()
+            .map(|param| format!("{} = {}", param.name, format_expr(&param.default)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("namespace {}<{}>:", namespace.name, params)
+    }
+}
+
 fn format_block(block: &Block, indent: usize, out: &mut String) {
     match block {
         Block::Ins(ports) => format_port_block("ins", ports, indent, out),
         Block::Outs(ports) => format_port_block("outs", ports, indent, out),
         Block::KOuts(ports) => format_port_block("kouts", ports, indent, out),
         Block::Params(params) => format_param_block(params, indent, out),
-        Block::Const(decl) => {
-            let mut text = format!("const {}", decl.name);
-            if let Some(ty) = &decl.ty {
-                text.push_str(": ");
-                text.push_str(&format_const_type(ty));
-            }
-            text.push_str(" = ");
-            text.push_str(&format_expr(&decl.expr));
-            push_line(out, indent, &text);
-        }
+        Block::Const(decl) => push_line(out, indent, &format_const_decl(decl)),
         Block::Events(events) => {
             push_line(out, indent, "events:");
             for event in events {
@@ -95,17 +111,7 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
 }
 
 fn format_namespace(namespace: &onda_frontend::NamespaceDecl, indent: usize, out: &mut String) {
-    let header = if namespace.params.is_empty() {
-        format!("namespace {}:", namespace.name)
-    } else {
-        let params = namespace
-            .params
-            .iter()
-            .map(|param| format!("{} = {}", param.name, format_expr(&param.default)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("namespace {}<{}>:", namespace.name, params)
-    };
+    let header = format_namespace_header(namespace);
     push_line(out, indent, &header);
     if namespace.items.is_empty() {
         push_line(out, indent + 1, "pass");
@@ -126,14 +132,7 @@ fn format_namespace_item(item: &onda_frontend::NamespaceItem, indent: usize, out
             );
         }
         onda_frontend::NamespaceItem::Const(decl) => {
-            let mut text = format!("const {}", decl.name);
-            if let Some(ty) = &decl.ty {
-                text.push_str(": ");
-                text.push_str(&format_const_type(ty));
-            }
-            text.push_str(" = ");
-            text.push_str(&format_expr(&decl.expr));
-            push_line(out, indent, &text);
+            push_line(out, indent, &format_const_decl(decl));
         }
         onda_frontend::NamespaceItem::Struct(def) => format_struct(def, indent, out),
         onda_frontend::NamespaceItem::Def(def) => format_def(def, indent, out),
@@ -289,8 +288,22 @@ fn format_param_section(
     }
 }
 
-fn format_buffer_section_default_type(ty: &BufferType) -> String {
+pub fn format_buffer_section_default_type(ty: &BufferType) -> String {
     format!("<{}>", format_buffer_inner(ty))
+}
+
+pub fn format_buffer_decl(buffer: &BufferDecl) -> String {
+    let mut text = buffer.name.clone();
+    if let Some(ty) = &buffer.ty {
+        text.push_str(": ");
+        text.push_str(&format_buffer_inner(ty));
+    }
+    if let Some(count) = &buffer.array_size {
+        text.push_str(" {");
+        text.push_str(&format_expr(count));
+        text.push('}');
+    }
+    text
 }
 
 fn format_buffer_block(label: &str, buffers: &BufferBlock, indent: usize, out: &mut String) {
@@ -321,17 +334,7 @@ fn format_buffer_section(
     }
     push_line(out, indent, &header);
     for buffer in buffers {
-        let mut text = buffer.name.clone();
-        if let Some(ty) = &buffer.ty {
-            text.push_str(": ");
-            text.push_str(&format_buffer_inner(ty));
-        }
-        if let Some(count) = &buffer.array_size {
-            text.push_str(" {");
-            text.push_str(&format_expr(count));
-            text.push('}');
-        }
-        push_line(out, indent + 1, &text);
+        push_line(out, indent + 1, &format_buffer_decl(buffer));
     }
 }
 
@@ -374,11 +377,7 @@ fn format_block_exec(exec: &BlockExec, indent: usize, out: &mut String) {
 }
 
 fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
-    let header = if proc.type_params.is_empty() {
-        format!("proc {}:", proc.name)
-    } else {
-        format!("proc {}<{}>:", proc.name, proc.type_params.join(", "))
-    };
+    let header = format_proc_header(proc);
     push_line(out, indent, &header);
     if !proc.ins.is_empty() || proc.ins_deferred_count.is_some() {
         format_port_section(
@@ -466,27 +465,49 @@ fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
     }
 }
 
-fn format_struct(def: &StructDef, indent: usize, out: &mut String) {
-    let header = if def.type_params.is_empty() {
-        format!("struct {}:", def.name)
+pub fn format_proc_header(proc: &ProcessorDef) -> String {
+    if proc.type_params.is_empty() {
+        format!("proc {}:", proc.name)
     } else {
-        format!("struct {}<{}>:", def.name, def.type_params.join(", "))
-    };
+        format!("proc {}<{}>:", proc.name, proc.type_params.join(", "))
+    }
+}
+
+fn format_struct(def: &StructDef, indent: usize, out: &mut String) {
+    let header = format_struct_header(def);
     push_line(out, indent, &header);
     for field in &def.fields {
-        let mut text = format!("{}: {}", field.name, format_field_type(&field.ty));
-        if let Some(default) = &field.default {
-            text.push_str(" = ");
-            text.push_str(&format_expr(default));
-        }
-        push_line(out, indent + 1, &text);
+        push_line(out, indent + 1, &format_struct_field(field));
     }
     for method in &def.methods {
         format_def(method, indent + 1, out);
     }
 }
 
+pub fn format_struct_header(def: &StructDef) -> String {
+    if def.type_params.is_empty() {
+        format!("struct {}:", def.name)
+    } else {
+        format!("struct {}<{}>:", def.name, def.type_params.join(", "))
+    }
+}
+
+pub fn format_struct_field(field: &onda_frontend::StructField) -> String {
+    let mut text = format!("{}: {}", field.name, format_field_type(&field.ty));
+    if let Some(default) = &field.default {
+        text.push_str(" = ");
+        text.push_str(&format_expr(default));
+    }
+    text
+}
+
 fn format_def(def: &FunctionDef, indent: usize, out: &mut String) {
+    let header = format_function_signature(def);
+    push_line(out, indent, &header);
+    format_stmt_list(&def.body, indent + 1, out);
+}
+
+pub fn format_function_signature(def: &FunctionDef) -> String {
     let prefix = if def.is_const { "const def" } else { "def" };
     let mut header = format!("{prefix} {}", def.name);
     if !def.type_params.is_empty() {
@@ -519,11 +540,16 @@ fn format_def(def: &FunctionDef, indent: usize, out: &mut String) {
         header.push_str(&format_fn_return_type(return_ty));
     }
     header.push(':');
-    push_line(out, indent, &header);
-    format_stmt_list(&def.body, indent + 1, out);
+    header
 }
 
 fn format_event(event: &EventDef, indent: usize, out: &mut String) {
+    let header = format_event_signature(event);
+    push_line(out, indent, &header);
+    format_stmt_list(&event.body, indent + 1, out);
+}
+
+pub fn format_event_signature(event: &EventDef) -> String {
     let mut header = format!("{}(", event.name);
     header.push_str(
         &event
@@ -541,8 +567,7 @@ fn format_event(event: &EventDef, indent: usize, out: &mut String) {
             .join(", "),
     );
     header.push_str("):");
-    push_line(out, indent, &header);
-    format_stmt_list(&event.body, indent + 1, out);
+    header
 }
 
 fn format_stmt_list(stmts: &[Stmt], indent: usize, out: &mut String) {
@@ -1091,7 +1116,7 @@ pub fn format_event_param_type(ty: &EventParamType) -> String {
     }
 }
 
-fn format_port_decl(port: &PortDecl) -> String {
+pub fn format_port_decl(port: &PortDecl) -> String {
     let mut text = port.name.clone();
     if let Some(ty) = &port.ty {
         text.push_str(": ");
@@ -1114,7 +1139,7 @@ fn format_port_decl(port: &PortDecl) -> String {
     text
 }
 
-pub(crate) fn format_param_decl(param: &ParamDecl) -> String {
+pub fn format_param_decl(param: &ParamDecl) -> String {
     let mut text = String::new();
     if param.pinned {
         text.push_str("pin ");

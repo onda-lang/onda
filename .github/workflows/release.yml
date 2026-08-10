@@ -79,6 +79,10 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Check generated standard-library reference
+        shell: bash
+        run: cargo run --quiet -p onda_lsp --example generate_stdlib_docs -- --check
+
       - name: Read workspace version
         id: version
         shell: bash
@@ -219,6 +223,7 @@ jobs:
           Copy-Item README.md $packageRoot
           Copy-Item CHANGELOG.md $packageRoot
           Copy-Item docs\syntax.md $packageRoot
+          Copy-Item docs\stdlib.md $packageRoot
           Copy-Item examples $packageRoot -Recurse
 
           $packagedCmakeBuildDir = Join-Path $PWD "target\cmake-sdk-packaged"
@@ -319,6 +324,7 @@ jobs:
           cp README.md "$package_root/"
           cp CHANGELOG.md "$package_root/"
           cp docs/syntax.md "$package_root/"
+          cp docs/stdlib.md "$package_root/"
           cp -R examples "$package_root/"
 
           cmake \

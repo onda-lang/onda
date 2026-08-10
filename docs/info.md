@@ -297,7 +297,9 @@ Non-crate directories of note:
   `onda-lang/onda` and `.github/workflows/release.yml` as its trusted publisher before relying on
   the tag job; newly reserved package names may need a one-time registry-owner bootstrap first.
 - `npm run build:website` builds the browser compiler, bundles its worker, and emits versioned,
-  content-addressed website assets. The homepage opens its displayed example in `/playground/`
+  content-addressed website assets. It also regenerates `docs/stdlib.md` from the standard-library
+  modules embedded in `onda_frontend`, so the repository and website share the same API reference.
+  The homepage opens its displayed example in `/playground/`
   without loading the compiler itself; `/playground/` provides the full LSP-backed editor and
   AudioWorklet host. The same build emits focused projects for every checked-in Onda example, with
   local source dependencies, so cookbook links can open directly in the playground.

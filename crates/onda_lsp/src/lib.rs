@@ -5,5 +5,6 @@
 
 pub mod formatting;
 mod server;
+pub mod stdlib_docs;
 
 pub use server::{run_stdio_loop, LspSession};

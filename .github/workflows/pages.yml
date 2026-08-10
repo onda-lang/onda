@@ -84,6 +84,7 @@ jobs:
       - name: Build versioned browser compiler assets
         run: |
           npm run check:versions
+          npm run check:stdlib-docs
           npm run build:website
 
       - name: Configure Pages

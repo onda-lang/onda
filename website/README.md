@@ -2,7 +2,9 @@
 
 The site implementation lives in this directory. Documentation remains in the
 repository-level `docs/` directory so the website and repository share one
-source of truth.
+source of truth. `docs/stdlib.md` is generated from the compiler's embedded
+standard-library modules as part of `npm run build:website`; use
+`npm run check:stdlib-docs` to verify it without writing the file.
 
 To preview locally using the same self-contained source tree as GitHub Pages,
 build the versioned, content-addressed compiler/playground assets, stage the site, and serve it from the repository root:
