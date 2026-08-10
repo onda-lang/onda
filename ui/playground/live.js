@@ -492,6 +492,39 @@ async function smokeEditorBindings() {
   if (scrollTabIndex === null) view.scrollDOM.removeAttribute("tabindex");
   else view.scrollDOM.setAttribute("tabindex", scrollTabIndex);
 
+  const caretProbe = `\n# ${"mobile-caret-center-".repeat(32)}`;
+  const caretProbeFrom = view.state.doc.length;
+  view.dispatch({
+    changes: { from: caretProbeFrom, insert: caretProbe },
+    selection: { anchor: caretProbeFrom + caretProbe.length },
+    userEvent: "input.type",
+  });
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+  const caretBounds = view.coordsAtPos(view.state.selection.main.head);
+  const editorBounds = view.scrollDOM.getBoundingClientRect();
+  const gutterBounds = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const viewportLeft = viewport?.offsetLeft ?? editorBounds.left;
+  const viewportRight = viewport
+    ? viewportLeft + viewport.width
+    : editorBounds.right;
+  const visibleLeft = Math.max(
+    editorBounds.left,
+    gutterBounds?.right ?? editorBounds.left,
+    viewportLeft,
+  ) + 16;
+  const visibleRight = Math.min(editorBounds.right, viewportRight) - 16;
+  const mobileCaretCenterHandled = Boolean(caretBounds)
+    && view.scrollDOM.scrollLeft > 0
+    && Math.abs(
+      (caretBounds.left + caretBounds.right) / 2
+        - (visibleLeft + visibleRight) / 2,
+    ) <= 2;
+  view.setState(originalState);
+  projectEditor.states.set(projectEditor.active, originalState);
+
   const stopEvent = new KeyboardEvent("keydown", {
     key: ".",
     code: "Period",
@@ -541,6 +574,7 @@ async function smokeEditorBindings() {
     editorFontSizeHandled,
     lineNumberFontSizeHandled,
     scrollPreservedTextFocus,
+    mobileCaretCenterHandled,
     ctrlPeriodHandled,
     runViewShortcutsHandled,
     shareRoundTripHandled,

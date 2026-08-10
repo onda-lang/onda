@@ -133,19 +133,12 @@ const semanticTokenField = StateField.define({
   provide: (field) => EditorView.decorations.from(field),
 });
 
-export function editorViewportMargins(editor, viewport, gutterWidth, padding = 16) {
+export function editorViewportMargins(editor, viewport, padding = 16) {
   const viewportTop = viewport.offsetTop;
   const viewportBottom = viewportTop + viewport.height;
-  const viewportLeft = viewport.offsetLeft;
-  const viewportRight = viewportLeft + viewport.width;
   return {
     top: Math.max(0, viewportTop - editor.top + padding),
     bottom: Math.max(0, editor.bottom - viewportBottom + padding),
-    // The visual viewport occlusion and sticky gutter cover adjacent areas.
-    // CodeMirror combines scroll-margin providers with Math.max, so include
-    // both here instead of letting one hide the other on a panned viewport.
-    left: Math.max(0, viewportLeft - editor.left) + gutterWidth + padding,
-    right: Math.max(0, editor.right - viewportRight + padding),
   };
 }
 
@@ -153,14 +146,40 @@ function visibleEditorMargins(view) {
   const viewport = window.visualViewport;
   if (!viewport) return null;
   const editor = view.scrollDOM.getBoundingClientRect();
-  const gutterWidth =
-    view.dom.querySelector(".cm-gutters")?.getBoundingClientRect().width ?? 0;
-  return editorViewportMargins(editor, viewport, gutterWidth);
+  return editorViewportMargins(editor, viewport);
 }
 
 function hasCompactEditingViewport() {
   const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
   return viewportWidth <= 720 || window.matchMedia?.("(pointer: coarse)").matches;
+}
+
+export function centeredCaretScrollLeft({
+  caret,
+  editor,
+  gutter,
+  viewport,
+  scrollLeft,
+  scrollWidth,
+  clientWidth,
+  scaleX = 1,
+  padding = 16,
+}) {
+  const viewportLeft = viewport?.offsetLeft ?? editor.left;
+  const viewportRight = viewport
+    ? viewportLeft + viewport.width
+    : editor.right;
+  const visibleLeft = Math.max(editor.left, gutter?.right ?? editor.left, viewportLeft) + padding;
+  const visibleRight = Math.min(editor.right, viewportRight) - padding;
+  if (visibleRight <= visibleLeft) return scrollLeft;
+
+  const caretCenter = (caret.left + caret.right) / 2;
+  const visibleCenter = (visibleLeft + visibleRight) / 2;
+  const maxScrollLeft = Math.max(0, scrollWidth - clientWidth);
+  return Math.min(
+    maxScrollLeft,
+    Math.max(0, scrollLeft + (caretCenter - visibleCenter) / scaleX),
+  );
 }
 
 export function colonIndentText(lineBeforeCursor) {
@@ -188,7 +207,9 @@ const ondaEditorTheme = EditorView.theme({
     height: "100%",
     color: "var(--code-ink)",
     backgroundColor: "var(--code-bg)",
-    font: ".84rem/1.55 var(--mono)",
+    fontFamily: "var(--mono)",
+    fontSize: "var(--onda-editor-font-size, .84rem)",
+    lineHeight: "1.55",
   },
   ".cm-scroller": { overflow: "auto", fontFamily: "inherit" },
   ".cm-content": { minHeight: "100%", padding: "1rem 0", caretColor: "var(--code-ink)" },
@@ -243,6 +264,15 @@ const ondaEditorTheme = EditorView.theme({
   ".cm-onda-semantic-state": { color: "var(--syntax-string)" },
   "&.cm-onda-definition-mode .cm-content": { cursor: "pointer" },
   "&.cm-focused": { outline: "none" },
+  "@media (pointer: coarse), (max-width: 720px)": {
+    // Keep the entire editor on one metric and prevent focus zoom from
+    // creating an independently panned visual viewport on mobile browsers.
+    "&": { fontSize: "max(16px, var(--onda-editor-font-size, .84rem))" },
+    // Horizontal centering needs scroll range after the end of the longest
+    // line. Without it, scrollLeft clamps while the caret is still at the
+    // right edge of the viewport.
+    ".cm-line": { paddingRight: "50vw" },
+  },
 });
 
 export function validProjectPath(value) {
@@ -311,13 +341,18 @@ export class OndaProjectEditor {
         this.view.focus();
       }
     }, { passive: true });
-    this.visualViewportResize = () =>
-      this.keepCaretVisible(this.view, { centerVertically: true });
+    this.visualViewportResize = () => this.keepCaretVisible(this.view, {
+      centerHorizontally: true,
+      centerVertically: true,
+    });
     window.visualViewport?.addEventListener("resize", this.visualViewportResize);
     this.renderFiles();
   }
 
-  keepCaretVisible(view, { centerVertically = false } = {}) {
+  keepCaretVisible(
+    view,
+    { centerHorizontally = false, centerVertically = false } = {},
+  ) {
     if (!view.hasFocus) return;
     cancelAnimationFrame(this.caretVisibilityFrame);
     this.caretVisibilityFrame = requestAnimationFrame(() => {
@@ -331,6 +366,32 @@ export class OndaProjectEditor {
           yMargin: 16,
         }),
       });
+      if (compact && centerHorizontally) this.centerCaretHorizontally(view);
+    });
+  }
+
+  centerCaretHorizontally(view) {
+    view.requestMeasure({
+      read: () => {
+        if (!view.hasFocus) return null;
+        const caret = view.coordsAtPos(view.state.selection.main.head);
+        if (!caret) return null;
+        return centeredCaretScrollLeft({
+          caret,
+          editor: view.scrollDOM.getBoundingClientRect(),
+          gutter: view.dom.querySelector(".cm-gutters")?.getBoundingClientRect(),
+          viewport: window.visualViewport,
+          scrollLeft: view.scrollDOM.scrollLeft,
+          scrollWidth: view.scrollDOM.scrollWidth,
+          clientWidth: view.scrollDOM.clientWidth,
+          scaleX: view.scaleX,
+        });
+      },
+      write: (scrollLeft) => {
+        if (scrollLeft !== null && Math.abs(view.scrollDOM.scrollLeft - scrollLeft) > 0.5) {
+          view.scrollDOM.scrollLeft = scrollLeft;
+        }
+      },
     });
   }
 
@@ -351,7 +412,7 @@ export class OndaProjectEditor {
   }
 
   setFontSize(fontSize) {
-    this.view.dom.style.fontSize = `${fontSize}px`;
+    this.view.dom.style.setProperty("--onda-editor-font-size", `${fontSize}px`);
     this.view.requestMeasure();
   }
 
@@ -387,7 +448,9 @@ export class OndaProjectEditor {
             this.onChange?.(this.project());
           }
           if ((update.docChanged || update.selectionSet) && update.view.hasFocus) {
-            this.keepCaretVisible(update.view);
+            this.keepCaretVisible(update.view, {
+              centerHorizontally: update.docChanged,
+            });
           }
         }),
         EditorView.domEventHandlers({
