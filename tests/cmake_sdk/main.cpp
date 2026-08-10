@@ -14,6 +14,7 @@ extern "C" ONDA_SMOKE_EXPORT int onda_cmake_sdk_smoke() {
   onda_diag_t diagnostic{};
   auto *program = onda_compile("outs { out1 }\nsample { out1 = 0.0 }\n",
                                &options, &diagnostic);
+  onda_diag_dispose(&diagnostic);
   if (program == nullptr)
     return 1;
   onda_program_destroy(program);

@@ -252,16 +252,15 @@ struct OndaInstanceAllocation {
     allocator: Option<RuntimeAllocator>,
 }
 
-const STATIC_ERR_NULL_ARG: &[u8] = b"null argument\0";
-const STATIC_ERR_INTERNAL: &[u8] = b"internal error\0";
-const STATIC_ERR_INVALID_ALLOCATOR: &[u8] = b"invalid allocator\0";
+const STATIC_ERR_NULL_ARG: &str = "null argument";
+const STATIC_ERR_INVALID_ALLOCATOR: &str = "invalid allocator";
 
-fn validate_compile_options(options: &onda_compile_options_t) -> Result<(), &'static [u8]> {
+fn validate_compile_options(options: &onda_compile_options_t) -> Result<(), &'static str> {
     if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
-        return Err(b"compile options require finite sample_rate > 0\0");
+        return Err("compile options require finite sample_rate > 0");
     }
     if options.block_size <= 0 {
-        return Err(b"compile options require block_size > 0\0");
+        return Err("compile options require block_size > 0");
     }
     Ok(())
 }
@@ -415,8 +414,8 @@ fn source_reference_to_c(
 }
 
 fn diag_to_c(diag: &Diagnostic) -> onda_diag_t {
-    let msg_ptr = leaked_c_string_ptr(Some(diag.message.as_str()));
-    let file_ptr = leaked_c_string_ptr(diag.file.as_deref());
+    let msg_ptr = owned_c_string_ptr(Some(diag.message.as_str()));
+    let file_ptr = owned_c_string_ptr(diag.file.as_deref());
     let trace_text = if diag.trace.is_empty() {
         None
     } else {
@@ -429,7 +428,7 @@ fn diag_to_c(diag: &Diagnostic) -> onda_diag_t {
                 .join("\n"),
         )
     };
-    let trace_ptr = leaked_c_string_ptr(trace_text.as_deref());
+    let trace_ptr = owned_c_string_ptr(trace_text.as_deref());
 
     onda_diag_t {
         code: diag_code_to_i32(diag.code),
@@ -443,18 +442,42 @@ fn diag_to_c(diag: &Diagnostic) -> onda_diag_t {
     }
 }
 
-fn leaked_c_string_ptr(text: Option<&str>) -> *const c_char {
+fn owned_c_string_ptr(text: Option<&str>) -> *const c_char {
     let Some(text) = text else {
         return ptr::null();
     };
-    if !text.as_bytes().iter().all(|b| *b != 0) {
-        return STATIC_ERR_INTERNAL.as_ptr().cast::<c_char>();
+    let text = if text.as_bytes().contains(&0) {
+        text.replace('\0', "\\0")
+    } else {
+        text.to_owned()
+    };
+    CString::new(text)
+        .expect("diagnostic NUL bytes were escaped")
+        .into_raw()
+        .cast_const()
+}
+
+unsafe fn dispose_owned_c_string(value: &mut *const c_char) {
+    if value.is_null() {
+        return;
     }
-    let mut owned = text.as_bytes().to_vec();
-    owned.push(0);
-    Box::leak(owned.into_boxed_slice())
-        .as_ptr()
-        .cast::<c_char>()
+    drop(CString::from_raw(value.cast_mut()));
+    *value = ptr::null();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_diag_dispose(diag: *mut onda_diag_t) {
+    let Some(diag) = diag.as_mut() else {
+        return;
+    };
+    dispose_owned_c_string(&mut diag.message);
+    dispose_owned_c_string(&mut diag.file);
+    dispose_owned_c_string(&mut diag.trace);
+    diag.code = 0;
+    diag.line = 0;
+    diag.column = 0;
+    diag.end_line = 0;
+    diag.end_column = 0;
 }
 
 fn diag_code_to_i32(code: DiagCode) -> i32 {
@@ -470,22 +493,27 @@ fn saturating_usize_to_i32(value: usize) -> i32 {
 }
 
 fn write_diag(out_diag: *mut onda_diag_t, diag: onda_diag_t) {
-    if !out_diag.is_null() {
-        // SAFETY: caller provides a writable pointer or null.
+    if out_diag.is_null() {
+        let mut diag = diag;
         unsafe {
-            ptr::write(out_diag, diag);
+            onda_diag_dispose(&mut diag);
         }
+        return;
+    }
+    // SAFETY: caller provides a writable pointer or null.
+    unsafe {
+        ptr::write(out_diag, diag);
     }
 }
 
-fn static_runtime_diag(message: &'static [u8]) -> onda_diag_t {
+fn runtime_diag(message: &str) -> onda_diag_t {
     onda_diag_t {
         code: DiagCode::Runtime as i32,
         line: 0,
         column: 0,
         end_line: 0,
         end_column: 0,
-        message: message.as_ptr().cast::<c_char>(),
+        message: owned_c_string_ptr(Some(message)),
         file: ptr::null(),
         trace: ptr::null(),
     }
@@ -495,14 +523,14 @@ unsafe fn runtime_allocator_from_c(
     allocator: *const onda_allocator_t,
 ) -> Result<RuntimeAllocator, onda_diag_t> {
     if allocator.is_null() {
-        return Err(static_runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
+        return Err(runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
     }
     let allocator = &*allocator;
     let Some(alloc) = allocator.alloc else {
-        return Err(static_runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
+        return Err(runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
     };
     let Some(free) = allocator.free else {
-        return Err(static_runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
+        return Err(runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
     };
     Ok(RuntimeAllocator::new(allocator.context, alloc, free))
 }
@@ -527,7 +555,7 @@ fn allocate_instance_handle(
     if raw.is_null() {
         write_diag(
             out_diag,
-            static_runtime_diag(b"runtime allocator returned null for instance handle\0"),
+            runtime_diag("runtime allocator returned null for instance handle"),
         );
         drop((inner, program));
         return ptr::null_mut();
@@ -538,7 +566,7 @@ fn allocate_instance_handle(
         }
         write_diag(
             out_diag,
-            static_runtime_diag(b"runtime allocator returned misaligned instance handle\0"),
+            runtime_diag("runtime allocator returned misaligned instance handle"),
         );
         drop((inner, program));
         return ptr::null_mut();
@@ -573,25 +601,13 @@ unsafe fn onda_compile_impl(
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
     if src_utf8.is_null() || options.is_null() {
-        write_diag(
-            out_diag,
-            onda_diag_t {
-                code: DiagCode::Runtime as i32,
-                line: 0,
-                column: 0,
-                end_line: 0,
-                end_column: 0,
-                message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
-                file: ptr::null(),
-                trace: ptr::null(),
-            },
-        );
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
 
     let options = &*options;
     if let Err(message) = validate_compile_options(options) {
-        write_diag(out_diag, static_runtime_diag(message));
+        write_diag(out_diag, runtime_diag(message));
         return ptr::null_mut();
     }
 
@@ -1011,25 +1027,13 @@ unsafe fn onda_compile_file_impl(
         *out_sources = ptr::null_mut();
     }
     if file_path_utf8.is_null() || options.is_null() {
-        write_diag(
-            out_diag,
-            onda_diag_t {
-                code: DiagCode::Runtime as i32,
-                line: 0,
-                column: 0,
-                end_line: 0,
-                end_column: 0,
-                message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
-                file: ptr::null(),
-                trace: ptr::null(),
-            },
-        );
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
 
     let options = &*options;
     if let Err(message) = validate_compile_options(options) {
-        write_diag(out_diag, static_runtime_diag(message));
+        write_diag(out_diag, runtime_diag(message));
         return ptr::null_mut();
     }
 
@@ -1084,12 +1088,12 @@ pub unsafe extern "C" fn onda_compile_source_graph(
         || options.is_null()
         || (resolution_count > 0 && resolutions.is_null())
     {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
     let options = &*options;
     if let Err(message) = validate_compile_options(options) {
-        write_diag(out_diag, static_runtime_diag(message));
+        write_diag(out_diag, runtime_diag(message));
         return ptr::null_mut();
     }
 
@@ -1240,7 +1244,7 @@ pub unsafe extern "C" fn onda_rewrite_source_references(
         || (rewrite_count > 0 && rewrites.is_null())
         || out_capacity < 0
     {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return -1;
     }
     let path = match parse_required_c_string(source_path_utf8, "source path") {
@@ -1773,7 +1777,7 @@ pub unsafe extern "C" fn onda_buffer_asset_encode(
     out_diag: *mut onda_diag_t,
 ) -> i64 {
     if sample_bytes > 0 && samples.is_null() {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return -1;
     }
     let Some(element) = buffer_element_from_c(element_type) else {
@@ -1830,7 +1834,7 @@ pub unsafe extern "C" fn onda_buffer_asset_decode(
     out_diag: *mut onda_diag_t,
 ) -> i64 {
     if byte_count > 0 && bytes.is_null() {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return -1;
     }
     let encoded = if byte_count == 0 {
@@ -1875,7 +1879,7 @@ pub unsafe extern "C" fn onda_project_image_capture(
         || manifest.is_null()
         || (buffer_count > 0 && buffers.is_null())
     {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
     let entry = match parse_required_c_string(entry_path_utf8, "project entry path") {
@@ -1935,7 +1939,7 @@ pub unsafe extern "C" fn onda_project_image_capture(
                 return ptr::null_mut();
             }
             if buffer.ondabuffer_byte_count > 0 && buffer.ondabuffer_bytes.is_null() {
-                write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+                write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
                 return ptr::null_mut();
             }
             let bytes = if buffer.ondabuffer_byte_count == 0 {
@@ -2011,7 +2015,7 @@ pub unsafe extern "C" fn onda_project_image_deserialize(
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_project_image {
     if byte_count > 0 && bytes.is_null() {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
     let bytes = if byte_count == 0 {
@@ -2043,7 +2047,7 @@ pub unsafe extern "C" fn onda_project_image_load_files(
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_project_image {
     if file_count == 0 || files.is_null() {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
     let limits = ProjectLimits::default();
@@ -2078,7 +2082,7 @@ pub unsafe extern "C" fn onda_project_image_load_files(
             }
         };
         if file.byte_count > 0 && file.bytes.is_null() {
-            write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+            write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
             return ptr::null_mut();
         }
         let bytes = if file.byte_count == 0 {
@@ -2126,7 +2130,7 @@ pub unsafe extern "C" fn onda_project_image_serialize(
     out_diag: *mut onda_diag_t,
 ) -> i64 {
     if image.is_null() {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return -1;
     }
     let bytes = match (*image).inner.serialize() {
@@ -2394,12 +2398,12 @@ pub unsafe extern "C" fn onda_project_image_compile(
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
     if image.is_null() || options.is_null() {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
     let options = &*options;
     if let Err(message) = validate_compile_options(options) {
-        write_diag(out_diag, static_runtime_diag(message));
+        write_diag(out_diag, runtime_diag(message));
         return ptr::null_mut();
     }
     let image = Arc::clone(&(*image).inner);
@@ -2419,7 +2423,7 @@ pub unsafe extern "C" fn onda_project_image_materialize(
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_project_materialization_plan {
     if image.is_null() {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
     let plan = match (*image).inner.materialization_plan() {
@@ -2546,15 +2550,12 @@ unsafe fn onda_instance_create_impl(
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
     if program.is_null() {
-        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
 
     if in_channels < 0 || out_channels < 0 {
-        write_diag(
-            out_diag,
-            static_runtime_diag(b"invalid instance configuration\0"),
-        );
+        write_diag(out_diag, runtime_diag("invalid instance configuration"));
         return ptr::null_mut();
     }
 
@@ -4455,4 +4456,32 @@ pub unsafe extern "C" fn onda_param_plain_to_normalized(
         plain,
         ParamValueConversion::PlainToNormalized,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_diagnostic_strings_escape_nul_and_dispose_idempotently() {
+        let mut diagnostic = Diagnostic::internal("left\0right");
+        diagnostic.file = Some("module.onda".into());
+        diagnostic.trace = vec!["outer".into(), "inner".into()];
+        let mut diagnostic = diag_to_c(&diagnostic);
+
+        let message = unsafe { CStr::from_ptr(diagnostic.message) };
+        assert_eq!(message.to_bytes(), b"left\\0right");
+        let file = unsafe { CStr::from_ptr(diagnostic.file) };
+        assert_eq!(file.to_bytes(), b"module.onda");
+        let trace = unsafe { CStr::from_ptr(diagnostic.trace) };
+        assert_eq!(trace.to_bytes(), b"inner\nouter");
+
+        unsafe {
+            onda_diag_dispose(&mut diagnostic);
+            onda_diag_dispose(&mut diagnostic);
+        }
+        assert!(diagnostic.message.is_null());
+        assert!(diagnostic.file.is_null());
+        assert!(diagnostic.trace.is_null());
+    }
 }

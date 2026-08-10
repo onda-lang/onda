@@ -38,7 +38,10 @@ enum {
   ONDA_BUFFER_CHANNELS_DYNAMIC = 2
 };
 
-/* Diagnostic payload returned from compile/create failures. */
+/* Diagnostic payload returned from API failures.
+   Every non-NULL string is owned by Onda. Zero-initialize this structure before
+   first use, call onda_diag_dispose before reusing it as an output, and call
+   onda_diag_dispose once more when the diagnostic is no longer needed. */
 typedef struct {
   int code;
   int line;
@@ -49,6 +52,11 @@ typedef struct {
   const char* file;
   const char* trace;
 } onda_diag_t;
+
+/* Releases all strings in diag and resets it to zero. Safe to call with NULL
+   or repeatedly on the same diagnostic. Copies of a diagnostic share the same
+   strings and must not be disposed independently. */
+void onda_diag_dispose(onda_diag_t* diag);
 
 /* Compile options for onda_compile. */
 typedef struct {

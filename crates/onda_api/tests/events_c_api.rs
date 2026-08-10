@@ -1,6 +1,7 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::fs;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::ThreadId;
@@ -15,8 +16,38 @@ fn diag_message(diag: &onda_diag_t) -> String {
     unsafe { CStr::from_ptr(diag.message).to_string_lossy().into_owned() }
 }
 
-fn empty_diag() -> onda_diag_t {
-    onda_diag_t {
+struct DiagnosticHandle(onda_diag_t);
+
+impl DiagnosticHandle {
+    fn clear(&mut self) {
+        unsafe {
+            onda_diag_dispose(&mut self.0);
+        }
+    }
+}
+
+impl Deref for DiagnosticHandle {
+    type Target = onda_diag_t;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for DiagnosticHandle {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for DiagnosticHandle {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+fn empty_diag() -> DiagnosticHandle {
+    DiagnosticHandle(onda_diag_t {
         code: 0,
         line: 0,
         column: 0,
@@ -25,7 +56,7 @@ fn empty_diag() -> onda_diag_t {
         message: std::ptr::null(),
         file: std::ptr::null(),
         trace: std::ptr::null(),
-    }
+    })
 }
 
 struct ProgramHandle(*mut onda_program);
@@ -183,13 +214,65 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
         block_size: 512,
     };
     let mut diag = empty_diag();
-    let program = onda_compile(src_c.as_ptr(), &options, &mut diag);
+    let program = onda_compile(src_c.as_ptr(), &options, &mut *diag);
     assert!(
         !program.is_null(),
         "compile failed: {}",
         diag_message(&diag)
     );
     ProgramHandle(program)
+}
+
+#[test]
+fn diagnostic_strings_have_an_explicit_reusable_lifecycle() {
+    unsafe {
+        let invalid = CString::new("this is not valid Onda").unwrap();
+        let valid = CString::new("outs { out1 }\nsample { out1 = 0.0 }\n").unwrap();
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+        };
+        let mut diag = empty_diag();
+
+        for _ in 0..32 {
+            let program = onda_compile(invalid.as_ptr(), &options, &mut *diag);
+            assert!(program.is_null());
+            assert!(!diag.message.is_null());
+            assert_ne!(diag.code, 0);
+            diag.clear();
+            assert!(diag.message.is_null());
+            assert!(diag.file.is_null());
+            assert!(diag.trace.is_null());
+            assert_eq!(diag.code, 0);
+        }
+
+        let program = onda_compile(valid.as_ptr(), &options, &mut *diag);
+        assert!(
+            !program.is_null(),
+            "compile failed: {}",
+            diag_message(&diag)
+        );
+        let _program = ProgramHandle(program);
+        diag.clear();
+        diag.clear();
+        onda_diag_dispose(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn null_diagnostic_output_releases_generated_strings() {
+    unsafe {
+        let invalid = CString::new("this is not valid Onda").unwrap();
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+        };
+        for _ in 0..32 {
+            assert!(onda_compile(invalid.as_ptr(), &options, std::ptr::null_mut()).is_null());
+        }
+    }
 }
 
 fn temp_source_dir(prefix: &str) -> PathBuf {
@@ -255,7 +338,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
         };
         let mut diag = empty_diag();
         let mut manifest = std::ptr::null_mut();
-        let program = onda_compile_file(path.as_ptr(), &options, &mut manifest, &mut diag);
+        let program = onda_compile_file(path.as_ptr(), &options, &mut manifest, &mut *diag);
         assert!(
             !program.is_null(),
             "compile failed: {}",
@@ -307,7 +390,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
             replay_resolutions.len(),
             &options,
             &mut replay_manifest,
-            &mut diag,
+            &mut *diag,
         );
         assert!(
             !replayed.is_null(),
@@ -321,7 +404,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
 
         fs::write(&dependency, "this is not valid onda\n").expect("break dependency");
         let mut failed_manifest = std::ptr::null_mut();
-        let failed = onda_compile_file(path.as_ptr(), &options, &mut failed_manifest, &mut diag);
+        let failed = onda_compile_file(path.as_ptr(), &options, &mut failed_manifest, &mut *diag);
         assert!(failed.is_null(), "broken dependency unexpectedly compiled");
         let failed_manifest = SourceManifestHandle(failed_manifest);
         assert_eq!(
@@ -334,11 +417,16 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
             ]
         );
         assert!(manifest_unresolved_paths(failed_manifest.0).is_empty());
+        diag.clear();
 
         fs::write(&main, "import missing/module\n").expect("write missing import");
         let mut unresolved_manifest = std::ptr::null_mut();
-        let unresolved =
-            onda_compile_file(path.as_ptr(), &options, &mut unresolved_manifest, &mut diag);
+        let unresolved = onda_compile_file(
+            path.as_ptr(),
+            &options,
+            &mut unresolved_manifest,
+            &mut *diag,
+        );
         assert!(
             unresolved.is_null(),
             "missing dependency unexpectedly compiled"
@@ -449,7 +537,7 @@ fn c_project_compile_replays_an_exact_in_memory_source_graph() {
             resolutions.len(),
             &options,
             &mut manifest,
-            &mut diag,
+            &mut *diag,
         );
         assert!(
             !program.is_null(),
@@ -529,7 +617,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
         };
         let mut diag = empty_diag();
         let mut manifest = std::ptr::null_mut();
-        let program = onda_compile_file(entry_c.as_ptr(), &options, &mut manifest, &mut diag);
+        let program = onda_compile_file(entry_c.as_ptr(), &options, &mut manifest, &mut *diag);
         assert!(
             !program.is_null(),
             "compile failed: {}",
@@ -554,7 +642,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
             std::mem::size_of_val(&samples),
             std::ptr::null_mut(),
             0,
-            &mut diag,
+            &mut *diag,
         );
         assert!(required > 0, "asset sizing failed: {}", diag_message(&diag));
         let mut asset = vec![0_u8; required as usize];
@@ -568,7 +656,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
                 std::mem::size_of_val(&samples),
                 asset.as_mut_ptr().cast(),
                 asset.len(),
-                &mut diag,
+                &mut *diag,
             ),
             required
         );
@@ -587,7 +675,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
                 &mut decoded_info,
                 decoded_samples.as_mut_ptr().cast(),
                 std::mem::size_of_val(&decoded_samples),
-                &mut diag,
+                &mut *diag,
             ),
             std::mem::size_of_val(&decoded_samples) as i64
         );
@@ -606,7 +694,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
             manifest.0,
             &binding,
             1,
-            &mut diag,
+            &mut *diag,
         );
         assert!(!image.is_null(), "capture failed: {}", diag_message(&diag));
         let image = ProjectImageHandle(image);
@@ -615,7 +703,8 @@ fn c_project_image_and_typed_asset_api_round_trip() {
             .into_owned();
         assert!(digest.starts_with("sha256:"));
 
-        let image_bytes = onda_project_image_serialize(image.0, std::ptr::null_mut(), 0, &mut diag);
+        let image_bytes =
+            onda_project_image_serialize(image.0, std::ptr::null_mut(), 0, &mut *diag);
         assert!(image_bytes > 0, "serialize failed: {}", diag_message(&diag));
         let mut serialized = vec![0_u8; image_bytes as usize];
         assert_eq!(
@@ -623,12 +712,15 @@ fn c_project_image_and_typed_asset_api_round_trip() {
                 image.0,
                 serialized.as_mut_ptr().cast(),
                 serialized.len(),
-                &mut diag,
+                &mut *diag,
             ),
             image_bytes
         );
-        let restored =
-            onda_project_image_deserialize(serialized.as_ptr().cast(), serialized.len(), &mut diag);
+        let restored = onda_project_image_deserialize(
+            serialized.as_ptr().cast(),
+            serialized.len(),
+            &mut *diag,
+        );
         assert!(
             !restored.is_null(),
             "restore failed: {}",
@@ -688,7 +780,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
             onda_project_image_buffer_sample_rate(restored.0, 0),
             48_000.0
         );
-        let replayed = onda_project_image_compile(restored.0, &options, &mut diag);
+        let replayed = onda_project_image_compile(restored.0, &options, &mut *diag);
         assert!(
             !replayed.is_null(),
             "replay failed: {}",
@@ -696,7 +788,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
         );
         let _replayed = ProgramHandle(replayed);
 
-        let plan = onda_project_image_materialize(restored.0, &mut diag);
+        let plan = onda_project_image_materialize(restored.0, &mut *diag);
         assert!(
             !plan.is_null(),
             "materialize failed: {}",
@@ -746,7 +838,7 @@ fn c_project_file_loader_accepts_an_explicit_manifest_selection() {
     let mut diag = empty_diag();
 
     let image = unsafe {
-        onda_project_image_load_files(files.as_ptr(), files.len(), selected.as_ptr(), &mut diag)
+        onda_project_image_load_files(files.as_ptr(), files.len(), selected.as_ptr(), &mut *diag)
     };
     assert!(!image.is_null(), "load failed: {}", diag_message(&diag));
     let image = ProjectImageHandle(image);
@@ -799,7 +891,7 @@ sample { out1 = samples[0] }
             files.as_ptr(),
             files.len(),
             paths[0].as_ptr(),
-            &mut diag,
+            &mut *diag,
         );
         assert!(!image.is_null(), "load failed: {}", diag_message(&diag));
 
@@ -808,7 +900,7 @@ sample { out1 = samples[0] }
             sample_rate: 48_000.0,
             block_size: 4,
         };
-        let program = onda_project_image_compile(image, &options, &mut diag);
+        let program = onda_project_image_compile(image, &options, &mut *diag);
         assert!(
             !program.is_null(),
             "project compile failed: {}",
@@ -816,7 +908,7 @@ sample { out1 = samples[0] }
         );
         onda_project_image_destroy(image);
 
-        let instance = onda_instance_create(program, 0, 1, &mut diag);
+        let instance = onda_instance_create(program, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -902,7 +994,7 @@ sample { samples[0] = 0.0 }
             files.as_ptr(),
             files.len(),
             paths[0].as_ptr(),
-            &mut diag,
+            &mut *diag,
         );
         assert!(!image.is_null(), "load failed: {}", diag_message(&diag));
         let image = ProjectImageHandle(image);
@@ -911,7 +1003,7 @@ sample { samples[0] = 0.0 }
             sample_rate: 48_000.0,
             block_size: 4,
         };
-        let program = onda_project_image_compile(image.0, &options, &mut diag);
+        let program = onda_project_image_compile(image.0, &options, &mut *diag);
         assert!(program.is_null());
         let message = diag_message(&diag);
         assert!(message.contains("immutable"), "unexpected error: {message}");
@@ -956,7 +1048,7 @@ fn c_api_rewrites_only_parsed_source_references() {
             rewrites.len(),
             std::ptr::null_mut(),
             0,
-            &mut diag,
+            &mut *diag,
         );
         assert!(required > 0, "rewrite failed: {}", diag_message(&diag));
         let mut output = vec![0_u8; required as usize];
@@ -969,7 +1061,7 @@ fn c_api_rewrites_only_parsed_source_references() {
                 rewrites.len(),
                 output.as_mut_ptr().cast::<c_char>(),
                 required,
-                &mut diag,
+                &mut *diag,
             ),
             required
         );
@@ -1008,7 +1100,7 @@ sample:
             block_size: 512,
         };
         let mut diag = empty_diag();
-        let program = onda_compile(src.as_ptr(), &options, &mut diag);
+        let program = onda_compile(src.as_ptr(), &options, &mut *diag);
         assert!(program.is_null(), "compile unexpectedly succeeded");
         assert_eq!((diag.line, diag.column), (7, 5));
         assert_eq!(diag.end_line, 7);
@@ -1305,7 +1397,7 @@ block {
         assert!(onda_control_output_byte_offset(program.0, 1) >= 0);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 0, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 0, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1359,7 +1451,7 @@ sample { out1 = amp }
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1432,7 +1524,7 @@ sample { out1 = gate }
         assert_eq!(onda_event_payload_bytes(program.0, event_idx), -1);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1500,7 +1592,7 @@ sample { out1 = amp }
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1564,7 +1656,7 @@ sample {
             free: Some(test_free),
         };
         let mut diag = empty_diag();
-        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut diag);
+        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1606,7 +1698,7 @@ fn c_api_custom_allocator_allocates_on_creation_thread_and_frees_on_instance_own
             free: Some(thread_bound_free),
         };
         let mut diag = empty_diag();
-        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut diag);
+        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1675,7 +1767,7 @@ sample {
         assert!(onda_state_total_bytes(program.0) >= 4);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1811,7 +1903,7 @@ sample { out1 = 0.25 }
             block_size: 128,
         };
         let mut diag = empty_diag();
-        let program = onda_compile(src.as_ptr(), &options, &mut diag);
+        let program = onda_compile(src.as_ptr(), &options, &mut *diag);
         assert!(
             !program.is_null(),
             "compile failed: {}",
@@ -1819,7 +1911,7 @@ sample { out1 = 0.25 }
         );
         let program = ProgramHandle(program);
 
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1857,7 +1949,7 @@ sample { out1 = 0.25 }
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1908,7 +2000,7 @@ block {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1989,7 +2081,7 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 1, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 1, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2061,7 +2153,7 @@ block {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2136,7 +2228,7 @@ sample { out1 = SAMPLE_RATE }
             block_size,
         };
         let mut diag = empty_diag();
-        let program = onda_compile(src.as_ptr(), &options, &mut diag);
+        let program = onda_compile(src.as_ptr(), &options, &mut *diag);
         assert!(
             !program.is_null(),
             "compile failed: {}",
@@ -2144,7 +2236,7 @@ sample { out1 = SAMPLE_RATE }
         );
         let program = ProgramHandle(program);
 
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2185,7 +2277,7 @@ sample:
 "#,
         );
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2376,7 +2468,7 @@ sample { out1 = 0.25 }
 "#,
         );
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2541,7 +2633,7 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 2, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 2, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2597,7 +2689,7 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",

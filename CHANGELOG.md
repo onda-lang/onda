@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.7.1]
+
+### Added
+
+- Added `onda_diag_dispose`; every non-null string returned in an `onda_diag_t` is now owned by
+  Onda and remains valid until the diagnostic is disposed.
+
+### Fixed
+
+- Corrected LLVM ORC ownership transfers during native JIT compilation, including cleanup on
+  optimization, verification, builder, and module-addition error paths.
+- Released diagnostic strings when callers dispose them or omit the diagnostic output, preventing
+  repeated compilation and project-operation failures from accumulating memory.
+
 ## [0.7.0]
 
 ### Added
@@ -304,6 +318,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.7.1]: https://github.com/onda-lang/onda/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/onda-lang/onda/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/onda-lang/onda/compare/0.5.4...0.6.0
 [0.5.4]: https://github.com/onda-lang/onda/compare/0.5.3...0.5.4

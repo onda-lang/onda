@@ -8,6 +8,7 @@ mod host_abi;
 
 use std::ffi::{CStr, CString};
 use std::fmt;
+use std::mem::ManuallyDrop;
 use std::ptr::null_mut;
 
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
@@ -41,6 +42,33 @@ use crate::{RuntimeAllocator, RuntimeBuffer, RuntimeState, TargetOptLevel};
 use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_buffer_abi};
 
 const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 13;
+
+struct OwnedLlvm<T: Copy> {
+    value: T,
+    dispose: unsafe extern "C" fn(T),
+}
+
+impl<T: Copy> OwnedLlvm<T> {
+    fn new(value: T, dispose: unsafe extern "C" fn(T)) -> Self {
+        Self { value, dispose }
+    }
+
+    fn get(&self) -> T {
+        self.value
+    }
+
+    fn release(self) -> T {
+        ManuallyDrop::new(self).value
+    }
+}
+
+impl<T: Copy> Drop for OwnedLlvm<T> {
+    fn drop(&mut self) {
+        unsafe {
+            (self.dispose)(self.value);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 /// Classification for failures at the validated MIR-to-LLVM boundary.
@@ -6173,12 +6201,14 @@ fn compile_native_jit(
         if builder.is_null() {
             return Err(MirCodegenError::llvm("failed to create LLJIT builder"));
         }
+        let builder = OwnedLlvm::new(builder, LLVMOrcDisposeLLJITBuilder);
         let target_builder =
             super::jit_utils::create_aggressive_jit_target_machine_builder(options.opt_level)
                 .map_err(codegen_diagnostic)?;
-        LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(builder, target_builder);
+        let target_builder = OwnedLlvm::new(target_builder, LLVMOrcDisposeJITTargetMachineBuilder);
+        LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(builder.get(), target_builder.release());
         let mut lljit = null_mut();
-        let error = LLVMOrcCreateLLJIT(&mut lljit, builder);
+        let error = LLVMOrcCreateLLJIT(&mut lljit, builder.release());
         if !error.is_null() {
             return Err(codegen_diagnostic(super::jit_utils::llvm_error_to_diag(
                 "failed to create native MIR LLJIT",
@@ -6201,48 +6231,44 @@ fn compile_native_jit(
             let data_layout = CStr::from_ptr(data_layout).to_string_lossy().into_owned();
             let (module, context, layouts) =
                 build_native_module(program, options.fast_math, &triple, &data_layout)?;
+            let context = OwnedLlvm::new(context, LLVMContextDispose);
+            let module = OwnedLlvm::new(module, LLVMDisposeModule);
             let target_machine = super::jit_utils::create_host_target_machine(options.opt_level)
                 .map_err(codegen_diagnostic)?;
-            let optimize = super::jit_utils::run_default_pass_pipeline(
-                module,
-                target_machine,
+            let target_machine = OwnedLlvm::new(target_machine, LLVMDisposeTargetMachine);
+            super::jit_utils::run_default_pass_pipeline(
+                module.get(),
+                target_machine.get(),
                 super::jit_utils::map_opt_level(options.opt_level),
             )
-            .map_err(codegen_diagnostic);
-            LLVMDisposeTargetMachine(target_machine);
-            if let Err(error) = optimize {
-                LLVMDisposeModule(module);
-                LLVMContextDispose(context);
-                return Err(error);
-            }
-            verify_module(module)?;
+            .map_err(codegen_diagnostic)?;
+            verify_module(module.get())?;
 
             let thread_context =
                 super::llvm_helpers::llvm_orc_create_new_thread_safe_context_from_llvm_context(
-                    context,
+                    context.release(),
                 );
             if thread_context.is_null() {
-                LLVMDisposeModule(module);
-                LLVMContextDispose(context);
                 return Err(MirCodegenError::llvm(
                     "failed to create ORC thread-safe context for MIR",
                 ));
             }
-            let thread_module = LLVMOrcCreateNewThreadSafeModule(module, thread_context);
+            let thread_context = OwnedLlvm::new(thread_context, LLVMOrcDisposeThreadSafeContext);
+            let thread_module =
+                LLVMOrcCreateNewThreadSafeModule(module.release(), thread_context.get());
             if thread_module.is_null() {
-                LLVMDisposeModule(module);
-                LLVMOrcDisposeThreadSafeContext(thread_context);
                 return Err(MirCodegenError::llvm(
                     "failed to create ORC thread-safe MIR module",
                 ));
             }
+            let thread_module = OwnedLlvm::new(thread_module, LLVMOrcDisposeThreadSafeModule);
+            drop(thread_context);
             let add_error = LLVMOrcLLJITAddLLVMIRModule(
                 lljit,
                 LLVMOrcLLJITGetMainJITDylib(lljit),
-                thread_module,
+                thread_module.release(),
             );
             if !add_error.is_null() {
-                LLVMOrcDisposeThreadSafeModule(thread_module);
                 return Err(codegen_diagnostic(super::jit_utils::llvm_error_to_diag(
                     "failed to add native MIR module to LLJIT",
                     add_error,
@@ -6290,29 +6316,23 @@ fn emit_native_ir(
     unsafe {
         let target_machine = super::jit_utils::create_host_target_machine(options.opt_level)
             .map_err(codegen_diagnostic)?;
-        let result = (|| {
-            let triple = super::jit_utils::target_machine_triple_string(target_machine)
-                .map_err(codegen_diagnostic)?;
-            let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine)
-                .map_err(codegen_diagnostic)?;
-            let (module, context, _) =
-                build_native_module(program, options.fast_math, &triple, &data_layout)?;
-            let result = (|| {
-                super::jit_utils::run_default_pass_pipeline(
-                    module,
-                    target_machine,
-                    super::jit_utils::map_opt_level(options.opt_level),
-                )
-                .map_err(codegen_diagnostic)?;
-                verify_module(module)?;
-                super::jit_utils::llvm_module_to_string(module).map_err(codegen_diagnostic)
-            })();
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            result
-        })();
-        LLVMDisposeTargetMachine(target_machine);
-        result
+        let target_machine = OwnedLlvm::new(target_machine, LLVMDisposeTargetMachine);
+        let triple = super::jit_utils::target_machine_triple_string(target_machine.get())
+            .map_err(codegen_diagnostic)?;
+        let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine.get())
+            .map_err(codegen_diagnostic)?;
+        let (module, context, _) =
+            build_native_module(program, options.fast_math, &triple, &data_layout)?;
+        let _context = OwnedLlvm::new(context, LLVMContextDispose);
+        let module = OwnedLlvm::new(module, LLVMDisposeModule);
+        super::jit_utils::run_default_pass_pipeline(
+            module.get(),
+            target_machine.get(),
+            super::jit_utils::map_opt_level(options.opt_level),
+        )
+        .map_err(codegen_diagnostic)?;
+        verify_module(module.get())?;
+        super::jit_utils::llvm_module_to_string(module.get()).map_err(codegen_diagnostic)
     }
 }
 
@@ -6326,29 +6346,23 @@ fn emit_targeted_native_ir(
             .map_err(codegen_diagnostic)?;
         let target_machine = super::jit_utils::create_target_machine_from_config(&resolved)
             .map_err(codegen_diagnostic)?;
-        let result = (|| {
-            let triple = super::jit_utils::target_machine_triple_string(target_machine)
-                .map_err(codegen_diagnostic)?;
-            let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine)
-                .map_err(codegen_diagnostic)?;
-            let (module, context, _) =
-                build_native_module(program, options.fast_math, &triple, &data_layout)?;
-            let result = (|| {
-                super::jit_utils::run_default_pass_pipeline(
-                    module,
-                    target_machine,
-                    resolved.opt_level,
-                )
-                .map_err(codegen_diagnostic)?;
-                verify_module(module)?;
-                super::jit_utils::llvm_module_to_string(module).map_err(codegen_diagnostic)
-            })();
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            result
-        })();
-        LLVMDisposeTargetMachine(target_machine);
-        result
+        let target_machine = OwnedLlvm::new(target_machine, LLVMDisposeTargetMachine);
+        let triple = super::jit_utils::target_machine_triple_string(target_machine.get())
+            .map_err(codegen_diagnostic)?;
+        let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine.get())
+            .map_err(codegen_diagnostic)?;
+        let (module, context, _) =
+            build_native_module(program, options.fast_math, &triple, &data_layout)?;
+        let _context = OwnedLlvm::new(context, LLVMContextDispose);
+        let module = OwnedLlvm::new(module, LLVMDisposeModule);
+        super::jit_utils::run_default_pass_pipeline(
+            module.get(),
+            target_machine.get(),
+            resolved.opt_level,
+        )
+        .map_err(codegen_diagnostic)?;
+        verify_module(module.get())?;
+        super::jit_utils::llvm_module_to_string(module.get()).map_err(codegen_diagnostic)
     }
 }
 
@@ -6380,40 +6394,34 @@ fn emit_targeted_native_object_parts(
             .map_err(codegen_diagnostic)?;
         let target_machine = super::jit_utils::create_target_machine_from_config(&resolved)
             .map_err(codegen_diagnostic)?;
-        let result = (|| {
-            let triple = super::jit_utils::target_machine_triple_string(target_machine)
-                .map_err(codegen_diagnostic)?;
-            let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine)
-                .map_err(codegen_diagnostic)?;
-            let (pointer_width_bits, byte_order) = target_data_facts(&data_layout)?;
-            let (module, context, layouts) =
-                build_native_module(program, options.fast_math, &triple, &data_layout)?;
-            let result = (|| {
-                super::jit_utils::run_default_pass_pipeline(
-                    module,
-                    target_machine,
-                    resolved.opt_level,
-                )
-                .map_err(codegen_diagnostic)?;
-                verify_module(module)?;
-                let object_bytes = emit_object_to_bytes(target_machine, module)?;
-                Ok(TargetedNativeObjectParts {
-                    object_bytes,
-                    layouts,
-                    triple,
-                    cpu: resolved.cpu.clone(),
-                    features: resolved.features.clone(),
-                    data_layout,
-                    pointer_width_bits,
-                    byte_order,
-                })
-            })();
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            result
-        })();
-        LLVMDisposeTargetMachine(target_machine);
-        result
+        let target_machine = OwnedLlvm::new(target_machine, LLVMDisposeTargetMachine);
+        let triple = super::jit_utils::target_machine_triple_string(target_machine.get())
+            .map_err(codegen_diagnostic)?;
+        let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine.get())
+            .map_err(codegen_diagnostic)?;
+        let (pointer_width_bits, byte_order) = target_data_facts(&data_layout)?;
+        let (module, context, layouts) =
+            build_native_module(program, options.fast_math, &triple, &data_layout)?;
+        let _context = OwnedLlvm::new(context, LLVMContextDispose);
+        let module = OwnedLlvm::new(module, LLVMDisposeModule);
+        super::jit_utils::run_default_pass_pipeline(
+            module.get(),
+            target_machine.get(),
+            resolved.opt_level,
+        )
+        .map_err(codegen_diagnostic)?;
+        verify_module(module.get())?;
+        let object_bytes = emit_object_to_bytes(target_machine.get(), module.get())?;
+        Ok(TargetedNativeObjectParts {
+            object_bytes,
+            layouts,
+            triple,
+            cpu: resolved.cpu.clone(),
+            features: resolved.features.clone(),
+            data_layout,
+            pointer_width_bits,
+            byte_order,
+        })
     }
 }
 
@@ -6625,32 +6633,30 @@ unsafe fn build_native_module(
     if context.is_null() {
         return Err(MirCodegenError::llvm("failed to create LLVM context"));
     }
+    let context = OwnedLlvm::new(context, LLVMContextDispose);
     let module_name = c_name("onda_mir_module")?;
-    let module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), context);
+    let module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), context.get());
     if module.is_null() {
-        LLVMContextDispose(context);
         return Err(MirCodegenError::llvm("failed to create LLVM MIR module"));
     }
-    let result = (|| {
-        let triple = c_name(target_triple)?;
-        let layout = c_name(data_layout)?;
-        LLVMSetTarget(module, triple.as_ptr());
-        LLVMSetDataLayout(module, layout.as_ptr());
-        let types = LoweredTypes::build(context, program)?;
-        let layouts = compute_native_layouts(program, &types, data_layout)?;
-        let emitter = ModuleEmitter::new(program, context, module, &types, &layouts, fast_math)?;
-        emitter.emit()?;
-        verify_module(module)?;
-        Ok(layouts)
-    })();
-    match result {
-        Ok(layouts) => Ok((module, context, layouts)),
-        Err(error) => {
-            LLVMDisposeModule(module);
-            LLVMContextDispose(context);
-            Err(error)
-        }
-    }
+    let module = OwnedLlvm::new(module, LLVMDisposeModule);
+    let triple = c_name(target_triple)?;
+    let layout = c_name(data_layout)?;
+    LLVMSetTarget(module.get(), triple.as_ptr());
+    LLVMSetDataLayout(module.get(), layout.as_ptr());
+    let types = LoweredTypes::build(context.get(), program)?;
+    let layouts = compute_native_layouts(program, &types, data_layout)?;
+    let emitter = ModuleEmitter::new(
+        program,
+        context.get(),
+        module.get(),
+        &types,
+        &layouts,
+        fast_math,
+    )?;
+    emitter.emit()?;
+    verify_module(module.get())?;
+    Ok((module.release(), context.release(), layouts))
 }
 
 unsafe fn verify_module(module: LLVMModuleRef) -> Result<(), MirCodegenError> {
