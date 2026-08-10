@@ -65,7 +65,14 @@ struct PluginEventCompletion {
     params: &'static str,
 }
 
-const PLUGIN_EVENT_COMPLETIONS: &[PluginEventCompletion] = &[
+#[derive(Debug, Clone, Copy)]
+struct PluginEventCompletionGroup {
+    label_prefix: &'static str,
+    description: &'static str,
+    events: &'static [PluginEventCompletion],
+}
+
+const PLUGIN_MIDI_EVENT_COMPLETIONS: &[PluginEventCompletion] = &[
     PluginEventCompletion {
         name: "note_on",
         params: "id: i32, channel: i32, key: i32, velocity: f32",
@@ -73,6 +80,10 @@ const PLUGIN_EVENT_COMPLETIONS: &[PluginEventCompletion] = &[
     PluginEventCompletion {
         name: "note_off",
         params: "id: i32, channel: i32, key: i32, velocity: f32",
+    },
+    PluginEventCompletion {
+        name: "poly_pressure",
+        params: "channel: i32, key: i32, pressure: f32",
     },
     PluginEventCompletion {
         name: "pitch_bend",
@@ -85,6 +96,62 @@ const PLUGIN_EVENT_COMPLETIONS: &[PluginEventCompletion] = &[
     PluginEventCompletion {
         name: "cc",
         params: "channel: i32, index: i32, value: f32",
+    },
+    PluginEventCompletion {
+        name: "program_change",
+        params: "channel: i32, program: i32",
+    },
+];
+
+const PLUGIN_HOST_CONTEXT_EVENT_COMPLETIONS: &[PluginEventCompletion] = &[
+    PluginEventCompletion {
+        name: "transport",
+        params: "playing: bool, recording: bool, looping: bool",
+    },
+    PluginEventCompletion {
+        name: "sample_position",
+        params: "sample: i64",
+    },
+    PluginEventCompletion {
+        name: "time_position",
+        params: "seconds: f64",
+    },
+    PluginEventCompletion {
+        name: "tempo",
+        params: "bpm: f64",
+    },
+    PluginEventCompletion {
+        name: "musical_position",
+        params: "quarter_note: f64",
+    },
+    PluginEventCompletion {
+        name: "bar_position",
+        params: "start_quarter_note: f64",
+    },
+    PluginEventCompletion {
+        name: "time_signature",
+        params: "numerator: i32, denominator: i32",
+    },
+    PluginEventCompletion {
+        name: "loop_region",
+        params: "start_quarter_note: f64, end_quarter_note: f64",
+    },
+    PluginEventCompletion {
+        name: "render_mode",
+        params: "realtime: bool",
+    },
+];
+
+const PLUGIN_EVENT_COMPLETION_GROUPS: &[PluginEventCompletionGroup] = &[
+    PluginEventCompletionGroup {
+        label_prefix: "plugin_midi",
+        description: "plugin MIDI",
+        events: PLUGIN_MIDI_EVENT_COMPLETIONS,
+    },
+    PluginEventCompletionGroup {
+        label_prefix: "plugin_host",
+        description: "plugin host-context",
+        events: PLUGIN_HOST_CONTEXT_EVENT_COMPLETIONS,
     },
 ];
 
@@ -1778,12 +1845,15 @@ impl CompletionIndex {
     fn general_items(&self, prefix: &str) -> Vec<CompletionItem> {
         let mut out = Vec::new();
         if self.is_top_level_completion_position(prefix) {
-            out.extend(
-                PLUGIN_EVENT_COMPLETIONS
-                    .iter()
-                    .copied()
-                    .map(plugin_event_item),
-            );
+            for group in PLUGIN_EVENT_COMPLETION_GROUPS {
+                out.extend(
+                    group
+                        .events
+                        .iter()
+                        .copied()
+                        .map(|event| plugin_event_item(*group, event)),
+                );
+            }
         }
         for &keyword in LANGUAGE_KEYWORDS {
             out.push(
@@ -2768,11 +2838,17 @@ fn event_item(event: &EventDef) -> CompletionItem {
         ))
 }
 
-fn plugin_event_item(event: PluginEventCompletion) -> CompletionItem {
-    let label = format!("plugin_{}", event.name);
+fn plugin_event_item(
+    group: PluginEventCompletionGroup,
+    event: PluginEventCompletion,
+) -> CompletionItem {
+    let label = format!("{}_{}", group.label_prefix, event.name);
     let insert_text = format!("event {}({}):\n  ", event.name, event.params);
     CompletionItem::new(&label, COMPLETION_ITEM_KIND_SNIPPET)
-        .detail(format!("declare the plugin {} event", event.name))
+        .detail(format!(
+            "declare the canonical {} {} event",
+            group.description, event.name
+        ))
         .insert_text(&insert_text)
         .snippet(format!("{insert_text}$0"))
         .sort_text(completion_sort_text(CompletionSortGroup::Event, &label))
@@ -4172,7 +4248,40 @@ mod tests {
     }
 
     #[test]
-    fn plugin_event_helpers_insert_individual_colon_style_declarations() {
+    fn plugin_event_helpers_are_separated_and_freeze_the_canonical_surface() {
+        assert_eq!(
+            PLUGIN_MIDI_EVENT_COMPLETIONS
+                .iter()
+                .map(|event| event.name)
+                .collect::<Vec<_>>(),
+            vec![
+                "note_on",
+                "note_off",
+                "poly_pressure",
+                "pitch_bend",
+                "channel_pressure",
+                "cc",
+                "program_change",
+            ]
+        );
+        assert_eq!(
+            PLUGIN_HOST_CONTEXT_EVENT_COMPLETIONS
+                .iter()
+                .map(|event| event.name)
+                .collect::<Vec<_>>(),
+            vec![
+                "transport",
+                "sample_position",
+                "time_position",
+                "tempo",
+                "musical_position",
+                "bar_position",
+                "time_signature",
+                "loop_region",
+                "render_mode",
+            ]
+        );
+
         let source = "plugin_";
         let result = completion_items_for_document_with_index(
             source,
@@ -4186,24 +4295,26 @@ mod tests {
             },
             true,
         );
-        for event in PLUGIN_EVENT_COMPLETIONS {
-            let label = format!("plugin_{}", event.name);
-            let item = encoded_item(&result.items, &label);
-            let insertion = item["insertText"]
-                .as_str()
-                .expect("snippet should have insertion text");
+        for group in PLUGIN_EVENT_COMPLETION_GROUPS {
+            for event in group.events {
+                let label = format!("{}_{}", group.label_prefix, event.name);
+                let item = encoded_item(&result.items, &label);
+                let insertion = item["insertText"]
+                    .as_str()
+                    .expect("snippet should have insertion text");
 
-            assert_eq!(item["kind"], COMPLETION_ITEM_KIND_SNIPPET);
-            assert_eq!(item["insertTextFormat"], INSERT_TEXT_FORMAT_SNIPPET);
-            assert_eq!(
-                insertion,
-                format!("event {}({}):\n  $0", event.name, event.params)
-            );
+                assert_eq!(item["kind"], COMPLETION_ITEM_KIND_SNIPPET);
+                assert_eq!(item["insertTextFormat"], INSERT_TEXT_FORMAT_SNIPPET);
+                assert_eq!(
+                    insertion,
+                    format!("event {}({}):\n  $0", event.name, event.params)
+                );
+            }
         }
         assert!(result
             .items
             .iter()
-            .all(|item| item["label"] != "vst3_midi_events"));
+            .all(|item| item["label"] != "plugin_note_on" && item["label"] != "vst3_midi_events"));
     }
 
     #[test]
@@ -4221,14 +4332,16 @@ mod tests {
             },
             false,
         );
-        for event in PLUGIN_EVENT_COMPLETIONS {
-            let label = format!("plugin_{}", event.name);
-            let item = encoded_item(&result.items, &label);
-            assert!(item.get("insertTextFormat").is_none());
-            assert_eq!(
-                item["insertText"],
-                format!("event {}({}):\n  ", event.name, event.params)
-            );
+        for group in PLUGIN_EVENT_COMPLETION_GROUPS {
+            for event in group.events {
+                let label = format!("{}_{}", group.label_prefix, event.name);
+                let item = encoded_item(&result.items, &label);
+                assert!(item.get("insertTextFormat").is_none());
+                assert_eq!(
+                    item["insertText"],
+                    format!("event {}({}):\n  ", event.name, event.params)
+                );
+            }
         }
 
         let nested = "sample:\n  plugin_ = 0.0\n";
@@ -4242,13 +4355,15 @@ mod tests {
             true,
         );
         assert!(
-            PLUGIN_EVENT_COMPLETIONS.iter().all(|event| {
-                let label = format!("plugin_{}", event.name);
-                nested_result
-                    .items
-                    .iter()
-                    .all(|item| item["label"] != label)
-            }),
+            PLUGIN_EVENT_COMPLETION_GROUPS
+                .iter()
+                .all(|group| group.events.iter().all(|event| {
+                    let label = format!("{}_{}", group.label_prefix, event.name);
+                    nested_result
+                        .items
+                        .iter()
+                        .all(|item| item["label"] != label)
+                })),
             "the event declaration helpers must not be offered inside a runtime block"
         );
     }

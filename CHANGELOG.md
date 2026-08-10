@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.7.2] - Unreleased
+
+### Added
+
+- Added separate `plugin_midi_*` and `plugin_host_*` LSP completion families for the canonical
+  plugin MIDI and DAW host-context event declarations.
+
 ## [0.7.1]
 
 ### Added
@@ -318,6 +325,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.7.2]: https://github.com/onda-lang/onda/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/onda-lang/onda/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/onda-lang/onda/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/onda-lang/onda/compare/0.5.4...0.6.0

@@ -223,6 +223,7 @@ onda lsp
 Current LSP support includes:
 - open, change, save, and close document tracking
 - immediate diagnostics on open/save and debounced diagnostics while editing
+- context-aware completion, including separate `plugin_midi_*` and `plugin_host_*` event helpers
 - semantic tokens for constants, params, ports, and init-scoped variables
 
 ## Updating the project version
