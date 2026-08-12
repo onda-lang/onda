@@ -1,0 +1,8 @@
+{
+  "entry": "code/main.onda",
+  "buffers": {
+    "room_ir": {
+      "file": "assets/impulse.wav"
+    }
+  }
+}

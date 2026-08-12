@@ -1,0 +1,39 @@
+import std/filter
+import std/osc
+import std/pitch
+import processors/stereo_chorus
+
+params:
+  live_input: i32 = 0 {0, 1, step = 1}
+  rate = 0.23 {0.03, 4.0, log, "Hz"}
+  depth_ms = 5.0 {0.0, 12.0, unit = "ms"}
+  width = 0.9 {0.0, 1.0}
+  mix = 0.48 {0.0, 1.0}
+  level = 0.7 {0.0, 1.0}
+
+init:
+  chorus = StereoChorus()
+  pad_a = std::osc::Saw(freq = std::pitch::note_to_hz(45.0), amp = 0.18)
+  pad_b = std::osc::Saw(freq = std::pitch::note_to_hz(52.0), amp = 0.14)
+  pad_c = std::osc::Triangle(freq = std::pitch::note_to_hz(57.0), amp = 0.12)
+  pad_filter = std::filter::OnePole(cutoff = 1250.0)
+  movement = std::osc::Sine(freq = 0.07)
+
+sample:
+  source_l = in1
+  source_r = in2
+  if (live_input == 0):
+    drift = movement()
+    pad_a.freq = std::pitch::note_to_hz(45.0) * (1.0 + drift * 0.0015)
+    pad_b.freq = std::pitch::note_to_hz(52.0) * (1.0 - drift * 0.0011)
+    pad = pad_filter(pad_a() + pad_b() + pad_c())
+    source_l = pad
+    source_r = pad
+
+  chorus.rate = rate
+  chorus.depth_ms = depth_ms
+  chorus.width = width
+  chorus.mix = mix
+  chorus(source_l, source_r)
+  out1 = chorus.out1 * level
+  out2 = chorus.out2 * level

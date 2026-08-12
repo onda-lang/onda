@@ -1,0 +1,111 @@
+import std/fft
+import std/pitch
+import std/random
+
+namespace SpectralFreeze<N = 1024>:
+  proc Engine:
+    params:
+      freeze: i32 = 1
+      transpose = 0.0
+      smear = 0.22
+
+    init:
+      analysis = std::fft<N>::RealFFT()
+      synthesis_l = std::fft<N>::RealIFFT()
+      synthesis_r = std::fft<N>::RealIFFT()
+      magnitudes: f32[N]
+      phase_re_l: f32[N]
+      phase_im_l: f32[N]
+      phase_re_r: f32[N]
+      phase_im_r: f32[N]
+      drift: f32[N]
+      spectrum_re_l: f32[N]
+      spectrum_im_l: f32[N]
+      spectrum_re_r: f32[N]
+      spectrum_im_r: f32[N]
+      rng = std::random::Rng<f32>()
+      configured = false
+      has_capture = false
+      capture_hops: i32 = 12
+
+    event recapture():
+      capture_hops = 8
+
+    block:
+      if (!configured):
+        rng.seed(19790531)
+        for k in 0..N:
+          drift[k] = rng.bipolar()
+          phase_re_l[k] = 1.0
+          phase_re_r[k] = 1.0
+        configured = true
+
+      ratio = std::pitch::ratio_between(0.0, transpose)
+
+      sample:
+        if (analysis.push(in1)):
+          half = N >> 1
+          for k in 0..(half + 1):
+            spectrum_re_l[k] = 0.0
+            spectrum_im_l[k] = 0.0
+            spectrum_re_r[k] = 0.0
+            spectrum_im_r[k] = 0.0
+
+          capturing = freeze == 0 || capture_hops > 0
+          if (capturing):
+            for k in 1..half:
+              bin_re = analysis.real(k)
+              bin_im = analysis.imag(k)
+              magnitude = sqrt(bin_re * bin_re + bin_im * bin_im)
+              if (has_capture):
+                magnitudes[k] = magnitudes[k] + (magnitude - magnitudes[k]) * 0.36
+              else:
+                magnitudes[k] = magnitude
+
+              if (magnitude > 0.000001):
+                inv_magnitude = 1.0 / magnitude
+                phase_re_l[k] = bin_re * inv_magnitude
+                phase_im_l[k] = bin_im * inv_magnitude
+                phase_re_r[k] = phase_re_l[k]
+                phase_im_r[k] = phase_im_l[k]
+
+            has_capture = true
+            if (freeze != 0 && capture_hops > 0):
+              capture_hops = capture_hops - 1
+
+          if (has_capture):
+            for k in 1..half:
+              destination = i32(f32(k) * ratio + 0.5)
+              if (destination > 0 && destination < half):
+                # Each hop is N/2 samples, so a bin's nominal phase advance is
+                # PI * destination: +1 for even bins and -1 for odd bins.
+                advance = 1.0
+                if ((destination & 1) != 0):
+                  advance = -1.0
+
+                # Small-angle polynomial rotation gives each bin a stable,
+                # deterministic drift without a burst of sin/cos calls.
+                angle = drift[k] * smear * 0.045
+                angle2 = angle * angle
+                rot_re = (1.0 - angle2 * 0.5) * advance
+                rot_im = (angle * (1.0 - angle2 / 6.0)) * advance
+                next_re_l = phase_re_l[k] * rot_re - phase_im_l[k] * rot_im
+                next_im_l = phase_im_l[k] * rot_re + phase_re_l[k] * rot_im
+                next_re_r = phase_re_r[k] * rot_re + phase_im_r[k] * rot_im
+                next_im_r = phase_im_r[k] * rot_re - phase_re_r[k] * rot_im
+                phase_re_l[k] = next_re_l
+                phase_im_l[k] = next_im_l
+                phase_re_r[k] = next_re_r
+                phase_im_r[k] = next_im_r
+
+                amplitude = magnitudes[k]
+                spectrum_re_l[destination] = spectrum_re_l[destination] + next_re_l * amplitude
+                spectrum_im_l[destination] = spectrum_im_l[destination] + next_im_l * amplitude
+                spectrum_re_r[destination] = spectrum_re_r[destination] + next_re_r * amplitude
+                spectrum_im_r[destination] = spectrum_im_r[destination] + next_im_r * amplitude
+
+            synthesis_l.load_complex(spectrum_re_l, spectrum_im_l)
+            synthesis_r.load_complex(spectrum_re_r, spectrum_im_r)
+
+        out1 = synthesis_l.tick()
+        out2 = synthesis_r.tick()

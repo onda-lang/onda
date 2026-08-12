@@ -12,6 +12,7 @@ import { EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
+  gutters,
   highlightActiveLine,
   highlightActiveLineGutter,
   hoverTooltip,
@@ -149,37 +150,39 @@ function visibleEditorMargins(view) {
   return editorViewportMargins(editor, viewport);
 }
 
-function hasCompactEditingViewport() {
-  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-  return viewportWidth <= 720 || window.matchMedia?.("(pointer: coarse)").matches;
+export function editorGuttersAreFixed(viewportWidth, coarsePointer) {
+  return viewportWidth > 720 && !coarsePointer;
 }
 
-export function centeredCaretScrollLeft({
+export function preferredCaretScrollLeft({
   caret,
   editor,
-  gutter,
   viewport,
   scrollLeft,
-  scrollWidth,
-  clientWidth,
+  preserveScroll,
   scaleX = 1,
   padding = 16,
 }) {
+  if (preserveScroll || scrollLeft <= 0) return scrollLeft;
   const viewportLeft = viewport?.offsetLeft ?? editor.left;
   const viewportRight = viewport
     ? viewportLeft + viewport.width
     : editor.right;
-  const visibleLeft = Math.max(editor.left, gutter?.right ?? editor.left, viewportLeft) + padding;
+  const visibleLeft = Math.max(editor.left, viewportLeft) + padding;
   const visibleRight = Math.min(editor.right, viewportRight) - padding;
-  if (visibleRight <= visibleLeft) return scrollLeft;
+  const caretAtStart = {
+    left: caret.left + scrollLeft * scaleX,
+    right: caret.right + scrollLeft * scaleX,
+  };
+  return caretAtStart.left >= visibleLeft && caretAtStart.right <= visibleRight
+    ? 0
+    : scrollLeft;
+}
 
-  const caretCenter = (caret.left + caret.right) / 2;
-  const visibleCenter = (visibleLeft + visibleRight) / 2;
-  const maxScrollLeft = Math.max(0, scrollWidth - clientWidth);
-  return Math.min(
-    maxScrollLeft,
-    Math.max(0, scrollLeft + (caretCenter - visibleCenter) / scaleX),
-  );
+function hasCompactEditingViewport() {
+  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+  const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+  return !editorGuttersAreFixed(viewportWidth, coarsePointer);
 }
 
 export function colonIndentText(lineBeforeCursor) {
@@ -205,13 +208,20 @@ function insertIndentedNewline({ state, dispatch }) {
 const ondaEditorTheme = EditorView.theme({
   "&": {
     height: "100%",
+    width: "100%",
+    minWidth: 0,
     color: "var(--code-ink)",
     backgroundColor: "var(--code-bg)",
     fontFamily: "var(--mono)",
     fontSize: "var(--onda-editor-font-size, .84rem)",
     lineHeight: "1.55",
   },
-  ".cm-scroller": { overflow: "auto", fontFamily: "inherit" },
+  ".cm-scroller": {
+    minWidth: 0,
+    maxWidth: "100%",
+    overflow: "auto",
+    fontFamily: "inherit",
+  },
   ".cm-content": { minHeight: "100%", padding: "1rem 0", caretColor: "var(--code-ink)" },
   ".cm-line": { padding: "0 1rem" },
   ".cm-gutters": {
@@ -268,10 +278,6 @@ const ondaEditorTheme = EditorView.theme({
     // Keep the entire editor on one metric and prevent focus zoom from
     // creating an independently panned visual viewport on mobile browsers.
     "&": { fontSize: "max(16px, var(--onda-editor-font-size, .84rem))" },
-    // Horizontal centering needs scroll range after the end of the longest
-    // line. Without it, scrollLeft clamps while the caret is still at the
-    // right edge of the viewport.
-    ".cm-line": { paddingRight: "50vw" },
   },
 });
 
@@ -326,13 +332,57 @@ export class OndaProjectEditor {
     this.tabs.addEventListener("dragover", (event) => this.dragTabOver(event));
     this.tabs.addEventListener("drop", (event) => this.dropTab(event));
     this.view = new EditorView({ state: this.states.get(this.active), parent });
-    this.scrollPointerDown = () => this.preserveFocusThroughPointer(this.view);
+    // Automatic caret scrolling should prefer the start of a line, but a
+    // horizontal gesture is an explicit request to preserve the viewport.
+    this.userScrolledHorizontally = false;
+    this.horizontalScrollPointer = null;
+    this.scrollPointerDown = (event) => {
+      this.horizontalScrollPointer = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        scrollLeft: this.view.scrollDOM.scrollLeft,
+      };
+      this.preserveFocusThroughPointer(this.view);
+    };
+    this.scrollPointerMove = (event) => {
+      const start = this.horizontalScrollPointer;
+      if (!start || event.pointerId !== start.id) return;
+      const deltaX = Math.abs(event.clientX - start.x);
+      const deltaY = Math.abs(event.clientY - start.y);
+      if (deltaX >= 8 && deltaX > deltaY) this.userScrolledHorizontally = true;
+    };
+    this.scrollPointerEnd = (event) => {
+      const start = this.horizontalScrollPointer;
+      if (event.pointerId === start?.id) {
+        if (Math.abs(this.view.scrollDOM.scrollLeft - start.scrollLeft) > 1) {
+          this.userScrolledHorizontally = true;
+        }
+        this.horizontalScrollPointer = null;
+      }
+    };
+    this.scrollWheel = (event) => {
+      if (
+        Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        || (event.shiftKey && event.deltaY !== 0)
+      ) {
+        this.userScrolledHorizontally = true;
+      }
+    };
     this.view.scrollDOM.addEventListener("pointerdown", this.scrollPointerDown, true);
+    this.view.scrollDOM.addEventListener("pointermove", this.scrollPointerMove, true);
+    this.view.scrollDOM.addEventListener("pointerup", this.scrollPointerEnd, true);
+    this.view.scrollDOM.addEventListener("pointercancel", this.scrollPointerEnd, true);
+    this.view.scrollDOM.addEventListener("wheel", this.scrollWheel, { passive: true });
     this.editorBlurredAt = -Infinity;
     this.view.contentDOM.addEventListener("blur", () => {
       this.editorBlurredAt = performance.now();
     });
     this.view.scrollDOM.addEventListener("scroll", () => {
+      const start = this.horizontalScrollPointer;
+      if (start && Math.abs(this.view.scrollDOM.scrollLeft - start.scrollLeft) > 1) {
+        this.userScrolledHorizontally = true;
+      }
       if (
         performance.now() - this.editorBlurredAt < 500
         && this.view.dom.isConnected
@@ -342,17 +392,14 @@ export class OndaProjectEditor {
       }
     }, { passive: true });
     this.visualViewportResize = () => this.keepCaretVisible(this.view, {
-      centerHorizontally: true,
       centerVertically: true,
+      preferStart: true,
     });
     window.visualViewport?.addEventListener("resize", this.visualViewportResize);
     this.renderFiles();
   }
 
-  keepCaretVisible(
-    view,
-    { centerHorizontally = false, centerVertically = false } = {},
-  ) {
+  keepCaretVisible(view, { centerVertically = false, preferStart = false } = {}) {
     if (!view.hasFocus) return;
     cancelAnimationFrame(this.caretVisibilityFrame);
     this.caretVisibilityFrame = requestAnimationFrame(() => {
@@ -366,24 +413,22 @@ export class OndaProjectEditor {
           yMargin: 16,
         }),
       });
-      if (compact && centerHorizontally) this.centerCaretHorizontally(view);
+      if (compact && preferStart) this.showLineStartWhenCaretFits(view);
     });
   }
 
-  centerCaretHorizontally(view) {
+  showLineStartWhenCaretFits(view) {
     view.requestMeasure({
       read: () => {
         if (!view.hasFocus) return null;
         const caret = view.coordsAtPos(view.state.selection.main.head);
         if (!caret) return null;
-        return centeredCaretScrollLeft({
+        return preferredCaretScrollLeft({
           caret,
           editor: view.scrollDOM.getBoundingClientRect(),
-          gutter: view.dom.querySelector(".cm-gutters")?.getBoundingClientRect(),
           viewport: window.visualViewport,
           scrollLeft: view.scrollDOM.scrollLeft,
-          scrollWidth: view.scrollDOM.scrollWidth,
-          clientWidth: view.scrollDOM.clientWidth,
+          preserveScroll: this.userScrolledHorizontally,
           scaleX: view.scaleX,
         });
       },
@@ -416,11 +461,20 @@ export class OndaProjectEditor {
     this.view.requestMeasure();
   }
 
+  setViewState(state) {
+    this.userScrolledHorizontally = false;
+    this.view.setState(state);
+  }
+
   createState(path, source, { readOnly = false } = {}) {
     return EditorState.create({
       doc: source,
       extensions: [
         minimalSetup,
+        // A sticky gutter can cover the caret when mobile browsers adjust
+        // their visual viewport for the on-screen keyboard. Let the gutter
+        // participate in horizontal scrolling on compact/touch layouts.
+        gutters({ fixed: !hasCompactEditingViewport() }),
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightActiveLine(),
@@ -448,9 +502,7 @@ export class OndaProjectEditor {
             this.onChange?.(this.project());
           }
           if ((update.docChanged || update.selectionSet) && update.view.hasFocus) {
-            this.keepCaretVisible(update.view, {
-              centerHorizontally: update.docChanged,
-            });
+            this.keepCaretVisible(update.view, { preferStart: true });
           }
         }),
         EditorView.domEventHandlers({
@@ -525,7 +577,7 @@ export class OndaProjectEditor {
   replaceActiveSource(source) {
     const state = this.createState(this.active, source);
     this.states.set(this.active, state);
-    this.view.setState(state);
+    this.setViewState(state);
     this.onChange?.(this.project());
   }
 
@@ -542,7 +594,7 @@ export class OndaProjectEditor {
       this.documentInfo.set(path, { kind: "project", label: path, readOnly: false });
       this.states.set(path, this.createState(path, source));
     }
-    this.view.setState(this.states.get(this.active));
+    this.setViewState(this.states.get(this.active));
     this.renderFiles();
     this.onChange?.(this.project());
     this.onActiveFile?.(this.active);
@@ -554,7 +606,7 @@ export class OndaProjectEditor {
     if (!this.states.has(path)) return;
     if (path !== this.active) {
       this.active = path;
-      this.view.setState(this.states.get(path));
+      this.setViewState(this.states.get(path));
       this.renderFiles();
       this.onChange?.(this.project());
       this.onActiveFile?.(path);
@@ -591,7 +643,7 @@ export class OndaProjectEditor {
     this.documentInfo.set(path, { kind: "project", label: path, readOnly: false });
     this.active = path;
     if (this.entry === previous) this.entry = path;
-    this.view.setState(this.states.get(path));
+    this.setViewState(this.states.get(path));
     this.renderFiles();
     this.onChange?.(this.project());
     this.onActiveFile?.(path);
@@ -620,7 +672,7 @@ export class OndaProjectEditor {
       const next = remainingPaths[Math.min(closedIndex, remainingPaths.length - 1)]
         ?? this.entry;
       this.active = next;
-      this.view.setState(this.states.get(next));
+      this.setViewState(this.states.get(next));
       this.onActiveFile?.(next);
       this.scheduleSemanticTokens(next, 0);
     }

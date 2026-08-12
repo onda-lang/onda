@@ -21,6 +21,14 @@ const BUILTIN_STD_MODULES: &[(&str, &str)] = &[
     ),
     ("std/env", include_str!("../../../../stdlib/std/env.onda")),
     (
+        "std/reverb",
+        include_str!("../../../../stdlib/std/reverb.onda"),
+    ),
+    (
+        "std/pitch_shift",
+        include_str!("../../../../stdlib/std/pitch_shift.onda"),
+    ),
+    (
         "std/noise",
         include_str!("../../../../stdlib/std/noise.onda"),
     ),

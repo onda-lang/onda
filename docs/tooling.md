@@ -15,26 +15,26 @@ The `onda` executable is the center of the toolchain. It checks and compiles sou
 Check a file:
 
 ```bash
-onda compile examples/foundations/sine.onda
+onda compile examples/basic/sine.onda
 ```
 
 Inspect graph lowering or generated LLVM IR:
 
 ```bash
-onda compile examples/processors-and-graphs/proc_gain_graph.onda --dump-graph
-onda compile examples/foundations/sine.onda --emit llvm-ir
+onda compile examples/feedback/cybernetic_feedback_graph.onda --dump-graph
+onda compile examples/basic/sine.onda --emit llvm-ir
 ```
 
 Emit a native object for ahead-of-time integration:
 
 ```bash
-onda compile examples/foundations/sine.onda --emit obj
+onda compile examples/basic/sine.onda --emit obj
 ```
 
 Target presets can describe cross-target code generation:
 
 ```bash
-onda compile examples/foundations/sine.onda --target-spec ./targets/arm64.toml --emit obj
+onda compile examples/basic/sine.onda --target-spec ./targets/arm64.toml --emit obj
 ```
 
 ## Compile a complete WebAssembly module
@@ -43,7 +43,7 @@ The separately packaged WebAssembly compiler produces a self-contained core-Wasm
 descriptor without LLVM or a linker:
 
 ```bash
-npx onda-wasm compile examples/foundations/sine.onda \
+npx onda-wasm compile examples/basic/sine.onda \
   --root . \
   --output ./sine.wasm
 ```
@@ -56,10 +56,17 @@ APIs for Node.js and browsers, including a worker-backed browser mode. The lower
 
 The standalone UI watches the entry plus every transitive non-standard-library import/include and
 provides controls for the program's exposed surface. When opened from an `.ondaproject` file, it
-also watches that manifest and its file-backed buffer assets:
+also watches that manifest, its declared entry, and its file-backed buffer assets. Unresolved source
+dependencies and missing project files remain watchable for recovery, and a failed parse preserves
+the previous dependency watch set. Partial platform-watcher coverage falls back to targeted disk
+validation.
+
+Filesystem-backed entries, imports/includes, project manifests, and project assets must not
+traverse symbolic links. Loading fails with an error identifying the offending path component;
+use regular files and directories for editable, watched inputs.
 
 ```bash
-onda run examples/foundations/sine.onda
+onda run examples/basic/sine.onda
 ```
 
 The native egui host is the default. Pass `--webview` to select the webview host. Common options select the sample rate, block size, audio devices, and color theme.
@@ -67,9 +74,8 @@ The native egui host is the default. Pass `--webview` to select the webview host
 For playback without the standalone UI:
 
 ```bash
-onda run play examples/foundations/sine.onda --dur 2
-onda run play examples/foundations/sine.onda --forever --set freq=220
-onda run play examples/buffers-fft-convolution/buffer_looper_read.onda --buffer src=sample.wav
+onda run play examples/basic/sine.onda --dur 2
+onda run play examples/basic/sine.onda --forever --set freq=220
 ```
 
 Buffer bindings are optional. Omitted scalar buffers and individual fixed-array slots use neutral
@@ -81,7 +87,7 @@ use their physical names at the CLI, for example `--buffer 'bank[3]=snare.ondabu
 Render through the run pipeline to a WAV file:
 
 ```bash
-onda run render examples/foundations/sine.onda \
+onda run render examples/basic/sine.onda \
   --output ./onda_out.wav \
   --dur 5 \
   --set freq=220
@@ -94,7 +100,7 @@ Offline rendering is a good default for automated comparisons and patches that d
 Run daemon-backed analysis once:
 
 ```bash
-onda daemon diagnose examples/foundations/sine.onda
+onda daemon diagnose examples/basic/sine.onda
 ```
 
 `onda daemon stdio` starts the JSON control transport for editor and tool integrations. `onda lsp` starts the language server over stdio.

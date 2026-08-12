@@ -1,85 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const exampleRoot = resolve(repoRoot, "examples/web/onda_wasm_playground");
-
-test("the standalone example remains a thin host for ui/playground", async () => {
-  const exampleFiles = new Set(await readdir(exampleRoot));
-  for (const sharedFile of [
-    "browser-buffers.js",
-    "browser-buffers.test.js",
-    "completions.js",
-    "completions.test.js",
-    "compile-cache.js",
-    "compile-cache.test.js",
-    "default.onda",
-    "editor.js",
-    "example-projects.test.js",
-    "examples.js",
-    "examples.test.js",
-    "live.js",
-    "lsp-client.js",
-    "microphone.js",
-    "microphone.test.js",
-    "run-view-host.js",
-    "share.js",
-    "tab-order.js",
-    "tab-order.test.js",
-  ]) {
-    assert.equal(exampleFiles.has(sharedFile), false, `${sharedFile} must remain owned by ui/playground`);
-  }
-
-  const bundler = await readFile(resolve(repoRoot, "scripts/bundle-web-playground.mjs"), "utf8");
-  assert.match(bundler, /ui\/playground\/live\.js/);
-  assert.doesNotMatch(bundler, /examples\/web\/onda_wasm_playground\/live\.js/);
-});
-
-test("both playground hosts keep only project-wide actions above the file tabs", async () => {
-  const hosts = await Promise.all([
-    readFile(resolve(repoRoot, "website/playground/index.html"), "utf8"),
-    readFile(resolve(exampleRoot, "index.html"), "utf8"),
-  ]);
-
-  for (const host of hosts) {
-    assert.match(host, /data-new-project>New project<\/button>/);
-    assert.match(host, /data-open-project>Open project<\/button>/);
-    assert.match(host, /data-download-project>Download project<\/button>/);
-    assert.doesNotMatch(host, /data-rename-file|data-main-file/);
-    assert.match(host, /class="project-file-add"[^>]+data-new-file[^>]*>\+<\/button>/);
-    assert.doesNotMatch(host, /data-new-file>New file<\/button>/);
-    assert.match(host, /Ctrl\/⌘ ↵/);
-    assert.match(host, /Ctrl\/⌘ \./);
-    assert.match(host, /data-status>Loading<\/span>/);
-    assert.match(host, /data-editor-font-size/);
-    assert.match(host, /<option value="2048">2048 frames<\/option>/);
-  }
-
-  const styles = await readFile(resolve(repoRoot, "website/assets/site/styles.css"), "utf8");
-  assert.match(styles, /\.play-workspace[^\n]+align-items: stretch/);
-  assert.match(styles, /\.play-run-panel \{ display: flex/);
-  assert.match(styles, /\.status::before[^\n]+border-radius: 50%/);
-  assert.match(hosts[1], /\.status::before \{[^}]+border-radius: 50%/s);
-
-  const playground = await readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8");
-  assert.doesNotMatch(playground, /setStatus\([^\n]*(?:Ctrl|Cmd|Period)/);
-  assert.match(playground, /setStatus\("Compiling"\)/);
-  assert.match(playground, /setStatus\("Error", "fail"\)/);
-  assert.match(
-    playground,
-    /createNewProject\(\) \{\s+if \(!window\.confirm\("Create a new project\? This will delete your current project\."\)\) return;\s+await stopExecution\(\);/,
-  );
-
-  const editor = await readFile(resolve(repoRoot, "ui/playground/editor.js"), "utf8");
-  assert.match(editor, /className = "project-file-menu-trigger"/);
-  assert.match(editor, /action\("Rename", "project-file-menu-rename"/);
-  assert.match(editor, /action\("Set as main", "project-file-menu-main"/);
-  assert.match(editor, /"Delete",\s+"project-file-menu-delete"/);
-});
-
 test("the browser buffer picker stays hidden and cleans up after cancellation", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 

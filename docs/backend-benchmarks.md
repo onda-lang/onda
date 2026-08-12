@@ -20,6 +20,9 @@ MAD for:
 The native timing helper is
 `crates/onda_examples/examples/benchmark_mir_native.rs`. It runs inside the
 process and does not include daemon, JSON, audio-device, or file-I/O overhead.
+Its JSON also includes cold-block maximum and steady-state block median, p99,
+and maximum latency, so hop-based DSP bursts can be inspected independently of
+average throughput. Scalar f32 inputs are supplied as deterministic silence.
 
 ## Methodology
 

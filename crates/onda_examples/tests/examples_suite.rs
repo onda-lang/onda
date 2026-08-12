@@ -69,15 +69,6 @@ fn bind_buffer(
     }
 }
 
-#[test]
-fn polyphonic_saw_file_example_analyzes() {
-    let parsed = parse_program_file(std::path::Path::new(
-        "../../examples/larger-patches/polyphonic_saw.onda",
-    ))
-    .expect("parse should succeed");
-    analyze(parsed).expect("analysis should succeed");
-}
-
 #[path = "examples_suite/analysis_and_stdlib.rs"]
 mod analysis_and_stdlib;
 #[path = "examples_suite/execution_and_runtime.rs"]

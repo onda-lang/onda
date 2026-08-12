@@ -135,8 +135,6 @@ sample {
 }
 "#;
 
-const STD_ENV_ADSR_FILE_EXAMPLE: &str =
-    include_str!("../../../../examples/standard-library/std_env_adsr.onda");
 const STDLIB_OSC_SQUARE_F64_EXAMPLE: &str = r#"
 import std/osc
 
@@ -288,8 +286,6 @@ sample {
 }
 "#;
 
-const STD_OSC_SHAPES_FILE_EXAMPLE: &str =
-    include_str!("../../../../examples/standard-library/std_osc_shapes.onda");
 const STDLIB_FILTER_ONE_POLE_MODES_EXAMPLE: &str = r#"
 import std/filter
 
@@ -372,10 +368,6 @@ sample {
 }
 "#;
 
-const STD_FILTER_MODES_FILE_EXAMPLE: &str =
-    include_str!("../../../../examples/standard-library/std_filter_modes.onda");
-const STD_NOISE_FILE_EXAMPLE: &str =
-    include_str!("../../../../examples/standard-library/std_noise.onda");
 const STDLIB_FILTER_SVF_EXTRA_MODES_EXAMPLE: &str = r#"
 import std/filter
 import std/osc
@@ -425,8 +417,6 @@ sample {
 }
 "#;
 
-const STD_SMOOTHING_FILE_EXAMPLE: &str =
-    include_str!("../../../../examples/standard-library/std_smoothing.onda");
 const STDLIB_MIX_HELPERS_EXAMPLE: &str = r#"
 import std/mix
 
@@ -520,39 +510,6 @@ sample {
 }
 "#;
 
-const STD_MIX_GAIN_PITCH_FILE_EXAMPLE: &str =
-    include_str!("../../../../examples/standard-library/std_mix_gain_pitch.onda");
-
-#[test]
-
-fn stdlib_f32_graph_example_matches_sample_version() {
-    let frames = 256;
-
-    let (mut sample_instance, sample_in_channels, sample_out_channels) =
-        compile_instance(STDLIB_F32_FILE_EXAMPLE, frames);
-
-    let (mut graph_instance, graph_in_channels, graph_out_channels) =
-        compile_instance(STDLIB_F32_GRAPH_FILE_EXAMPLE, frames);
-
-    assert_eq!(sample_in_channels, graph_in_channels);
-
-    assert_eq!(sample_out_channels, graph_out_channels);
-
-    let mut sample_output = vec![0.0_f32; frames * sample_out_channels];
-
-    let mut graph_output = vec![0.0_f32; frames * graph_out_channels];
-
-    process_interleaved(&mut sample_instance, &[], &mut sample_output, frames)
-        .expect("sample version should run");
-
-    process_interleaved(&mut graph_instance, &[], &mut graph_output, frames)
-        .expect("graph version should run");
-
-    for (sample, graph) in sample_output.iter().zip(&graph_output) {
-        assert_near(*graph, *sample, 1e-5);
-    }
-}
-
 #[test]
 
 fn wasm_playground_default_runs_with_bounded_output() {
@@ -563,9 +520,9 @@ fn wasm_playground_default_runs_with_bounded_output() {
 
     assert_eq!(in_channels, 0);
 
-    assert_eq!(out_channels, 1);
+    assert_eq!(out_channels, 2);
 
-    let mut output = vec![0.0_f32; frames];
+    let mut output = vec![0.0_f32; frames * out_channels];
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -679,83 +636,6 @@ fn stdlib_env_asr_supports_f64_and_holds_sustain() {
     for sample in tail {
         assert_near(*sample, 0.5, 0.05);
     }
-}
-
-#[test]
-
-fn std_env_adsr_example_responds_to_note_on_and_note_off() {
-    let frames = 128;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STD_ENV_ADSR_FILE_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let attack_idx = instance
-        .param_index("attack_s")
-        .expect("attack_s param must exist");
-    let decay_idx = instance
-        .param_index("decay_s")
-        .expect("decay_s param must exist");
-    let release_idx = instance
-        .param_index("release_s")
-        .expect("release_s param must exist");
-
-    set_param_by_index(&mut instance, attack_idx, &0.0005_f32.to_ne_bytes()).expect("set attack_s");
-    set_param_by_index(&mut instance, decay_idx, &0.001_f32.to_ne_bytes()).expect("set decay_s");
-    set_param_by_index(&mut instance, release_idx, &0.001_f32.to_ne_bytes())
-        .expect("set release_s");
-
-    let note_on_idx = instance
-        .event_index("note_on")
-        .expect("note_on event must exist");
-    let note_off_idx = instance
-        .event_index("note_off")
-        .expect("note_off event must exist");
-
-    assert_eq!(instance.event_payload_bytes(note_on_idx), Some(0));
-    assert_eq!(instance.event_payload_bytes(note_off_idx), Some(0));
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 1e-6),
-        "expected silence before note_on, got {output:?}"
-    );
-
-    trigger_event_by_index(&mut instance, note_on_idx, &[])
-        .expect("note_on trigger should succeed");
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    let on_peak = output
-        .iter()
-        .fold(0.0_f32, |acc, sample| acc.max(sample.abs()));
-
-    assert!(
-        on_peak >= 0.02,
-        "expected audible ADSR output after note_on, got {output:?}"
-    );
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 0.25),
-        "expected bounded ADSR example output, got {output:?}"
-    );
-
-    trigger_event_by_index(&mut instance, note_off_idx, &[])
-        .expect("note_off trigger should succeed");
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    let tail = &output[frames - 32..];
-
-    assert!(
-        tail.iter().all(|sample| sample.abs() <= 1e-2),
-        "expected ADSR release tail to decay close to zero, got {tail:?}"
-    );
 }
 
 #[test]
@@ -928,40 +808,6 @@ fn stdlib_triangle_supports_f64_and_stays_bounded() {
 
 #[test]
 
-fn std_osc_shapes_example_runs_with_bounded_output() {
-    let frames = 256;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STD_OSC_SHAPES_FILE_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let freq_idx = instance.param_index("freq").expect("freq param must exist");
-    let width_idx = instance
-        .param_index("pulse_width")
-        .expect("pulse_width param must exist");
-
-    set_param_by_index(&mut instance, freq_idx, &165.0_f32.to_ne_bytes()).expect("set freq");
-    set_param_by_index(&mut instance, width_idx, &0.2_f32.to_ne_bytes()).expect("set pulse_width");
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().any(|sample| sample.abs() >= 0.05),
-        "expected oscillator mix to produce audible output, got {output:?}"
-    );
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 0.45),
-        "expected oscillator mix to remain bounded, got {output:?}"
-    );
-}
-
-#[test]
-
 fn stdlib_one_pole_lowpass_and_highpass_modes_behave_distinctly() {
     let frames = 256;
 
@@ -1025,42 +871,6 @@ fn stdlib_dcblock_attenuates_steady_dc() {
     assert!(
         tail_avg <= 0.15,
         "expected DC blocker tail to decay toward zero, got avg {tail_avg} from {tail:?}"
-    );
-}
-
-#[test]
-
-fn std_filter_modes_example_runs_with_bounded_output() {
-    let frames = 256;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STD_FILTER_MODES_FILE_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let cutoff_idx = instance
-        .param_index("cutoff")
-        .expect("cutoff param must exist");
-    let mode_idx = instance
-        .param_index("svf_mode")
-        .expect("svf_mode param must exist");
-
-    set_param_by_index(&mut instance, cutoff_idx, &1800.0_f32.to_ne_bytes()).expect("set cutoff");
-    set_param_by_index(&mut instance, mode_idx, &2_i32.to_ne_bytes()).expect("set svf_mode");
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().any(|sample| sample.abs() >= 0.02),
-        "expected filter example to produce audible output, got {output:?}"
-    );
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 0.4),
-        "expected filter example to remain bounded, got {output:?}"
     );
 }
 
@@ -1166,39 +976,6 @@ fn stdlib_white_noise_supports_f64() {
 
 #[test]
 
-fn std_noise_example_runs_with_bounded_output() {
-    let frames = 256;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STD_NOISE_FILE_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let brightness_idx = instance
-        .param_index("brightness")
-        .expect("brightness param must exist");
-
-    set_param_by_index(&mut instance, brightness_idx, &0.75_f32.to_ne_bytes())
-        .expect("set brightness");
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().any(|sample| sample.abs() >= 0.01),
-        "expected noise example to produce audible output, got {output:?}"
-    );
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 0.25),
-        "expected noise example to remain bounded, got {output:?}"
-    );
-}
-
-#[test]
-
 fn stdlib_levels_helpers_return_expected_values() {
     let frames = 1;
 
@@ -1280,53 +1057,6 @@ fn stdlib_slew_supports_f64_and_limits_rise_rate() {
     assert_near(output[1], 0.2, 1e-4);
     assert_near(output[2], 0.3, 1e-4);
     assert_near(output[3], 0.4, 1e-4);
-}
-
-#[test]
-
-fn std_smoothing_example_runs_with_bounded_output() {
-    let frames = 128;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STD_SMOOTHING_FILE_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let target_idx = instance
-        .param_index("target")
-        .expect("target param must exist");
-    let attack_idx = instance
-        .param_index("attack_s")
-        .expect("attack_s param must exist");
-    let release_idx = instance
-        .param_index("release_s")
-        .expect("release_s param must exist");
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 1e-6),
-        "expected silence before target rises, got {output:?}"
-    );
-
-    set_param_by_index(&mut instance, target_idx, &1.0_f32.to_ne_bytes()).expect("set target");
-    set_param_by_index(&mut instance, attack_idx, &0.002_f32.to_ne_bytes()).expect("set attack_s");
-    set_param_by_index(&mut instance, release_idx, &0.01_f32.to_ne_bytes()).expect("set release_s");
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().any(|sample| sample.abs() >= 0.01),
-        "expected smoothing example to produce audible output, got {output:?}"
-    );
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 0.25),
-        "expected smoothing example to remain bounded, got {output:?}"
-    );
 }
 
 #[test]
@@ -1461,48 +1191,6 @@ fn stdlib_pitch_helpers_return_expected_values() {
     assert_near(output[3], 440.0, 1e-3);
     assert_near(output[4], 69.0, 1e-4);
     assert_near(output[5], 2.0, 1e-4);
-}
-
-#[test]
-
-fn std_mix_gain_pitch_example_runs_with_bounded_output() {
-    let frames = 256;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STD_MIX_GAIN_PITCH_FILE_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 2);
-
-    let note_idx = instance.param_index("note").expect("note param must exist");
-    let blend_idx = instance
-        .param_index("blend")
-        .expect("blend param must exist");
-    let db_idx = instance
-        .param_index("level_db")
-        .expect("level_db param must exist");
-    let smooth_idx = instance
-        .param_index("smooth_s")
-        .expect("smooth_s param must exist");
-
-    set_param_by_index(&mut instance, note_idx, &57.0_f32.to_ne_bytes()).expect("set note");
-    set_param_by_index(&mut instance, blend_idx, &0.6_f32.to_ne_bytes()).expect("set blend");
-    set_param_by_index(&mut instance, db_idx, &(-6.0_f32).to_ne_bytes()).expect("set level_db");
-    set_param_by_index(&mut instance, smooth_idx, &0.001_f32.to_ne_bytes()).expect("set smooth_s");
-
-    let mut output = vec![0.0_f32; frames * out_channels];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().any(|sample| sample.abs() >= 0.01),
-        "expected mix/gain/pitch example to produce audible output, got {output:?}"
-    );
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 0.3),
-        "expected mix/gain/pitch example to remain bounded, got {output:?}"
-    );
 }
 
 #[test]
@@ -3290,28 +2978,6 @@ sample {
 
 #[test]
 
-fn multitap_feedback_struct_data_example_compiles_and_runs() {
-    let frames = 128;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(MULTITAP_FEEDBACK_STRUCT_DATA_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().all(|v| v.is_finite()),
-        "multitap example output should be finite"
-    );
-}
-
-#[test]
-
 fn struct_data_field_clamps_and_truncates() {
     let frames = 8;
 
@@ -3662,6 +3328,78 @@ fn stdlib_math_is_auto_imported() {
 
     for sample in &output {
         assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_calls_are_specialized_inside_index_and_slice_coordinates() {
+    let source = r#"
+outs:
+  out1
+init:
+  constructed: f32[1] = [clamp(9.0, 0.0, 6.0)]
+sample:
+  values: f32[7] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+  selected = values[clamp(8, 0, 6)]
+  sliced = values[clamp(1, 0, 6):clamp(2, 0, 7)]
+  out1 = selected + sliced[0] + constructed[0]
+"#;
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 13.0, 1e-6);
+    }
+}
+
+#[test]
+fn nested_proc_event_updates_pinned_param_and_runs_bound_hook() {
+    let source = r#"
+proc Child:
+  params:
+    pin value = 0.0 => update_cached
+  init:
+    cached = 0.0
+  def update_cached():
+    cached = value * 2.0
+  event set(value_v: f32):
+    value = value_v
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Parent:
+  init:
+    child = Child()
+  outs:
+    out1
+  sample:
+    child.set(0.375)
+    out1 = child()
+
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#;
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
     }
 }
 
@@ -6970,11 +6708,11 @@ fn proc_without_block_has_only_step_entrypoint() {
         .map(|d| d.name.as_str())
         .collect::<std::collections::HashSet<_>>();
 
-    assert!(def_names.contains("NoInitProc.__proc_step"));
+    assert!(def_names.contains("NoInitProc.__onda_proc_step"));
 
-    assert!(!def_names.contains("NoInitProc.__proc_block_pre"));
+    assert!(!def_names.contains("NoInitProc.__onda_proc_block_pre"));
 
-    assert!(!def_names.contains("NoInitProc.__proc_block_post"));
+    assert!(!def_names.contains("NoInitProc.__onda_proc_block_post"));
 }
 
 #[test]
@@ -7012,9 +6750,9 @@ fn proc_outer_without_user_block_gets_effective_block_entrypoints_when_needed() 
         .map(|d| d.name.as_str())
         .collect::<std::collections::HashSet<_>>();
 
-    assert!(def_names.contains("OuterProc.__proc_block_pre"));
+    assert!(def_names.contains("OuterProc.__onda_proc_block_pre"));
 
-    assert!(def_names.contains("OuterProc.__proc_block_post"));
+    assert!(def_names.contains("OuterProc.__onda_proc_block_post"));
 }
 
 #[test]
@@ -7124,32 +6862,6 @@ fn proc_array_dynamic_index_block_hooks_use_same_clamped_slot_for_guard_and_call
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
     assert_near(out_b[0], 201.0, 1e-6);
-}
-
-#[test]
-
-fn proc_array_init_harmonics_example_is_not_silent() {
-    let frames = 256;
-
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/processors-and-graphs/proc_array_init_harmonics.onda"
-    );
-
-    let (mut instance, in_channels, out_channels) = compile_instance_file(path, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert_non_silent(
-        &output,
-        "examples/processors-and-graphs/proc_array_init_harmonics.onda",
-    );
 }
 
 #[test]

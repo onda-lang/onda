@@ -1,0 +1,150 @@
+import std/math
+
+const REVERB_REF_SR = 48000.0
+const REVERB_PRE_BUF_CAP = 32768
+const REVERB_DIFF_STAGES = 4
+const REVERB_DIFF_BLOCK_CAP = 4096
+const REVERB_DIFF_BUF_CAP = REVERB_DIFF_STAGES * REVERB_DIFF_BLOCK_CAP
+const REVERB_FDN_LINES = 8
+const REVERB_FDN_BLOCK_CAP = 32768
+const REVERB_FDN_BUF_CAP = REVERB_FDN_LINES * REVERB_FDN_BLOCK_CAP
+const REVERB_RT60_LOG_GAIN = -6.907755
+const REVERB_HOUSEHOLDER_SCALE = 0.25
+const REVERB_WET_TAP_GAIN = 0.35
+
+const REVERB_DIFF_LEN_0 = 211.0
+const REVERB_DIFF_LEN_1 = 373.0
+const REVERB_DIFF_LEN_2 = 541.0
+const REVERB_DIFF_LEN_3 = 787.0
+
+const REVERB_FDN_LEN_0 = 1531.0
+const REVERB_FDN_LEN_1 = 1777.0
+const REVERB_FDN_LEN_2 = 2111.0
+const REVERB_FDN_LEN_3 = 2371.0
+const REVERB_FDN_LEN_4 = 2749.0
+const REVERB_FDN_LEN_5 = 3187.0
+const REVERB_FDN_LEN_6 = 3613.0
+const REVERB_FDN_LEN_7 = 4093.0
+
+proc Reverb:
+    params:
+        mix = 1.0 {0.0, 1.0}
+        decay = 5.0 {0.1, 20.0}
+        damping = 0.5 {0.0, 0.99}
+        predelay = 0.02 {0.0, 0.1}
+        diffusion = 0.6 {0.0, 0.99}
+
+    init:
+        impulse = 0.0
+
+        pre_buf: f32[REVERB_PRE_BUF_CAP]
+        pre_idx: i32 = 0
+        pre_len: i32 = 0
+
+        diff_buf: f32[REVERB_DIFF_BUF_CAP]
+        diff_idx: i32[REVERB_DIFF_STAGES]
+        diff_len: i32[REVERB_DIFF_STAGES]
+
+        diff_len[0] = i32(REVERB_DIFF_LEN_0 * SR / REVERB_REF_SR)
+        diff_len[1] = i32(REVERB_DIFF_LEN_1 * SR / REVERB_REF_SR)
+        diff_len[2] = i32(REVERB_DIFF_LEN_2 * SR / REVERB_REF_SR)
+        diff_len[3] = i32(REVERB_DIFF_LEN_3 * SR / REVERB_REF_SR)
+
+        for i in 0..REVERB_DIFF_STAGES:
+            diff_idx[i] = 0
+
+        fdn_buf: f32[REVERB_FDN_BUF_CAP]
+        fdn_len: i32[REVERB_FDN_LINES]
+        fdn_idx: i32[REVERB_FDN_LINES]
+        fdn_lp: f32[REVERB_FDN_LINES]
+        fdn_gain: f32[REVERB_FDN_LINES]
+        fdn_out: f32[REVERB_FDN_LINES]
+
+        fdn_len[0] = i32(REVERB_FDN_LEN_0 * SR / REVERB_REF_SR)
+        fdn_len[1] = i32(REVERB_FDN_LEN_1 * SR / REVERB_REF_SR)
+        fdn_len[2] = i32(REVERB_FDN_LEN_2 * SR / REVERB_REF_SR)
+        fdn_len[3] = i32(REVERB_FDN_LEN_3 * SR / REVERB_REF_SR)
+        fdn_len[4] = i32(REVERB_FDN_LEN_4 * SR / REVERB_REF_SR)
+        fdn_len[5] = i32(REVERB_FDN_LEN_5 * SR / REVERB_REF_SR)
+        fdn_len[6] = i32(REVERB_FDN_LEN_6 * SR / REVERB_REF_SR)
+        fdn_len[7] = i32(REVERB_FDN_LEN_7 * SR / REVERB_REF_SR)
+
+    block:
+        pre_len = i32(predelay * SR)
+        decay_factor = REVERB_RT60_LOG_GAIN / (decay * SR)
+
+        for i in 0..REVERB_FDN_LINES:
+            fdn_gain[i] = exp(decay_factor * fdn_len[i])
+
+        sample:
+            mono_in = (in1 + in2) * 0.5
+
+            r_idx = pre_idx - pre_len
+            if r_idx < 0:
+                r_idx = r_idx + REVERB_PRE_BUF_CAP
+
+            pre_out = pre_buf[r_idx]
+            pre_buf[pre_idx] = mono_in
+
+            pre_idx = pre_idx + 1
+            if pre_idx >= REVERB_PRE_BUF_CAP:
+                pre_idx = 0
+
+            diff_sig = pre_out
+            for i in 0..REVERB_DIFF_STAGES:
+                base = i * REVERB_DIFF_BLOCK_CAP
+                dr_idx = diff_idx[i] - diff_len[i]
+                if dr_idx < 0:
+                    dr_idx = dr_idx + REVERB_DIFF_BLOCK_CAP
+
+                delayed = diff_buf[base + dr_idx]
+                v = diff_sig - diffusion * delayed
+                y = delayed + diffusion * v
+
+                diff_buf[base + diff_idx[i]] = v
+                diff_idx[i] = diff_idx[i] + 1
+                if diff_idx[i] >= REVERB_DIFF_BLOCK_CAP:
+                    diff_idx[i] = 0
+
+                diff_sig = y
+
+            inject = diff_sig
+
+            sum_out = 0.0
+            for i in 0..REVERB_FDN_LINES:
+                base = i * REVERB_FDN_BLOCK_CAP
+                fr_idx = fdn_idx[i] - fdn_len[i]
+                if fr_idx < 0:
+                    fr_idx = fr_idx + REVERB_FDN_BLOCK_CAP
+
+                val = fdn_buf[base + fr_idx]
+
+                fdn_lp[i] = val * (1.0 - damping) + fdn_lp[i] * damping
+
+                fdn_out[i] = fdn_lp[i] * fdn_gain[i]
+                sum_out = sum_out + fdn_out[i]
+
+            m = REVERB_HOUSEHOLDER_SCALE * sum_out
+
+            for i in 0..REVERB_FDN_LINES:
+                base = i * REVERB_FDN_BLOCK_CAP
+
+                inj = inject
+                if (i % 2) == 1:
+                    inj = 0.0 - inject
+
+                in_val = fdn_out[i] - m + inj
+
+                fdn_buf[base + fdn_idx[i]] = in_val
+                fdn_idx[i] = fdn_idx[i] + 1
+                if fdn_idx[i] >= REVERB_FDN_BLOCK_CAP:
+                    fdn_idx[i] = 0
+
+            wet_l = fdn_out[0] + fdn_out[2] - fdn_out[4] - fdn_out[6]
+            wet_r = fdn_out[1] + fdn_out[3] - fdn_out[5] - fdn_out[7]
+
+            wet_l = wet_l * REVERB_WET_TAP_GAIN
+            wet_r = wet_r * REVERB_WET_TAP_GAIN
+
+            out1 = in1 * (1.0 - mix) + wet_l * mix
+            out2 = in2 * (1.0 - mix) + wet_r * mix

@@ -4,7 +4,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::alloc::Layout;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -21,9 +21,11 @@ use onda_frontend::{
     SourceReferenceRewrite, SourceResolution,
 };
 use onda_project::{
-    decode_ondabuffer, encode_ondabuffer, validate_ondabuffer, AssetId, BufferAsset, BufferElement,
-    BufferSamples, MaterializationPlan, ProjectBufferChannels, ProjectBufferDeclaration,
-    ProjectImage, ProjectLimits, SourceImage,
+    decode_ondabuffer, encode_ondabuffer, is_project_file_path, resolve_project_input,
+    resolve_project_watch_paths, validate_buffer_assets, validate_ondabuffer, AssetId, BufferAsset,
+    BufferElement, BufferSamples, MaterializationPlan, ProjectBufferChannels,
+    ProjectBufferDeclaration, ProjectFile, ProjectImage, ProjectInput, ProjectLimits,
+    ProjectWatchPaths, SourceImage,
 };
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
@@ -180,9 +182,22 @@ struct CompiledProgram {
     project_defaults: Option<ProjectDefaults>,
 }
 
-struct ProjectDefaults {
-    image: Arc<ProjectImage>,
-    bindings: Vec<Option<AssetId>>,
+enum ProjectCompilation {
+    Filesystem(ProjectFile),
+    Image(Arc<ProjectImage>),
+}
+
+enum ProjectAssets {
+    Filesystem(BTreeMap<String, BufferAsset>),
+    Image(Arc<ProjectImage>),
+}
+
+enum ProjectDefaults {
+    Filesystem(Vec<Option<BufferAsset>>),
+    Image {
+        image: Arc<ProjectImage>,
+        bindings: Vec<Option<AssetId>>,
+    },
 }
 
 #[allow(non_camel_case_types)]
@@ -190,6 +205,7 @@ pub struct onda_source_manifest {
     inner: SourceManifest,
     paths: Vec<CString>,
     unresolved_paths: Vec<CString>,
+    watch_paths: Vec<CString>,
     document_paths: Vec<CString>,
     document_contents: Vec<Box<[u8]>>,
     resolutions: Vec<CSourceResolution>,
@@ -311,6 +327,22 @@ unsafe fn write_source_manifest(
     out_manifest: *mut *mut onda_source_manifest,
     manifest: &SourceManifest,
 ) -> Result<(), Diagnostic> {
+    write_source_manifest_impl(out_manifest, manifest, None)
+}
+
+unsafe fn write_source_manifest_with_watch_paths(
+    out_manifest: *mut *mut onda_source_manifest,
+    manifest: &SourceManifest,
+    additional_watch_paths: &[PathBuf],
+) -> Result<(), Diagnostic> {
+    write_source_manifest_impl(out_manifest, manifest, Some(additional_watch_paths))
+}
+
+unsafe fn write_source_manifest_impl(
+    out_manifest: *mut *mut onda_source_manifest,
+    manifest: &SourceManifest,
+    additional_watch_paths: Option<&[PathBuf]>,
+) -> Result<(), Diagnostic> {
     if out_manifest.is_null() {
         return Ok(());
     }
@@ -332,6 +364,23 @@ unsafe fn write_source_manifest(
         path_strings(&manifest.unresolved_files)?,
         "unresolved source path",
     )?;
+    let (additional_watch_paths, source_watch_paths, unresolved_watch_paths) =
+        additional_watch_paths.map_or((&[][..], &[][..], &[][..]), |additional| {
+            (
+                additional,
+                manifest.files.as_slice(),
+                manifest.unresolved_files.as_slice(),
+            )
+        });
+    let mut seen_watch_paths = HashSet::new();
+    let watch_paths = additional_watch_paths
+        .iter()
+        .chain(source_watch_paths)
+        .chain(unresolved_watch_paths)
+        .filter(|path| seen_watch_paths.insert((*path).clone()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let watch_paths = build_cstring_cache(path_strings(&watch_paths)?, "source watch path")?;
     let document_paths = build_cstring_cache(
         manifest
             .documents
@@ -382,6 +431,7 @@ unsafe fn write_source_manifest(
         inner: manifest.clone(),
         paths,
         unresolved_paths,
+        watch_paths,
         document_paths,
         document_contents,
         resolutions,
@@ -637,7 +687,7 @@ unsafe fn onda_compile_impl(
 fn compile_parsed_program(
     parsed: Program,
     options: &onda_compile_options_t,
-    project_image: Option<Arc<ProjectImage>>,
+    project: Option<ProjectCompilation>,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
     let typed = match analyze_with_options(
@@ -658,7 +708,7 @@ fn compile_parsed_program(
         }
     };
 
-    if let Some(image) = project_image.as_deref() {
+    let project_declarations = if project.is_some() {
         let mut declarations = Vec::with_capacity(typed.buffers.len());
         for buffer in &typed.buffers {
             let channels = match &buffer.channels {
@@ -692,11 +742,10 @@ fn compile_parsed_program(
                 is_array: buffer.is_array,
             });
         }
-        if let Err(error) = image.validate_buffer_declarations(&declarations) {
-            write_diag(out_diag, project_error_diag(error));
-            return ptr::null_mut();
-        }
-    }
+        declarations
+    } else {
+        Vec::new()
+    };
 
     let jit = match compile_typed_mir(typed, options.fast_math != 0) {
         Ok(j) => j,
@@ -710,8 +759,39 @@ fn compile_parsed_program(
         }
     };
 
-    let project_defaults = match project_image {
-        Some(image) => match project_defaults(&jit, image) {
+    let project_assets = match project {
+        Some(ProjectCompilation::Filesystem(project)) => {
+            let buffers = match project.load_buffer_assets(ProjectLimits::default()) {
+                Ok(buffers) => buffers
+                    .into_iter()
+                    .map(|(name, (asset, _))| (name, asset))
+                    .collect::<BTreeMap<_, _>>(),
+                Err(error) => {
+                    write_diag(out_diag, project_error_diag(error));
+                    return ptr::null_mut();
+                }
+            };
+            if let Err(error) = validate_buffer_assets(
+                buffers.iter().map(|(name, asset)| (name.as_str(), asset)),
+                &project_declarations,
+            ) {
+                write_diag(out_diag, project_error_diag(error));
+                return ptr::null_mut();
+            }
+            Some(ProjectAssets::Filesystem(buffers))
+        }
+        Some(ProjectCompilation::Image(image)) => {
+            if let Err(error) = image.validate_buffer_declarations(&project_declarations) {
+                write_diag(out_diag, project_error_diag(error));
+                return ptr::null_mut();
+            }
+            Some(ProjectAssets::Image(image))
+        }
+        None => None,
+    };
+
+    let project_defaults = match project_assets {
+        Some(assets) => match project_defaults(&jit, assets) {
             Ok(defaults) => Some(defaults),
             Err(error) => {
                 write_diag(out_diag, project_error_diag(error));
@@ -939,24 +1019,43 @@ fn compile_parsed_program(
 
 fn project_defaults(
     jit: &JitProgram,
-    image: Arc<ProjectImage>,
+    assets: ProjectAssets,
 ) -> Result<ProjectDefaults, onda_project::ProjectError> {
-    let mut bindings = vec![None; jit.buffer_count()];
-    for (name, asset_id) in image.buffer_bindings() {
-        let index = jit.buffer_index(name).ok_or_else(|| {
-            onda_project::ProjectError::new(format!(
-                "project buffer '{name}' is not a physical buffer in the compiled program"
-            ))
-        })?;
-        let declaration = &jit.buffers()[index];
-        if declaration.may_write() {
-            return Err(onda_project::ProjectError::new(format!(
-                "project asset for buffer '{name}' is immutable, but reachable Onda code may write that buffer; provide writable host memory with onda_bind_buffer instead"
-            )));
+    match assets {
+        ProjectAssets::Filesystem(assets) => {
+            let mut bindings = (0..jit.buffer_count()).map(|_| None).collect::<Vec<_>>();
+            for (name, asset) in assets {
+                let index = project_default_index(jit, &name)?;
+                bindings[index] = Some(asset);
+            }
+            Ok(ProjectDefaults::Filesystem(bindings))
         }
-        bindings[index] = Some(asset_id.clone());
+        ProjectAssets::Image(image) => {
+            let mut bindings = vec![None; jit.buffer_count()];
+            for (name, asset_id) in image.buffer_bindings() {
+                let index = project_default_index(jit, name)?;
+                bindings[index] = Some(asset_id.clone());
+            }
+            Ok(ProjectDefaults::Image { image, bindings })
+        }
     }
-    Ok(ProjectDefaults { image, bindings })
+}
+
+fn project_default_index(
+    jit: &JitProgram,
+    name: &str,
+) -> Result<usize, onda_project::ProjectError> {
+    let index = jit.buffer_index(name).ok_or_else(|| {
+        onda_project::ProjectError::new(format!(
+            "project buffer '{name}' is not a physical buffer in the compiled program"
+        ))
+    })?;
+    if jit.buffers()[index].may_write() {
+        return Err(onda_project::ProjectError::new(format!(
+            "project asset for buffer '{name}' is immutable, but reachable Onda code may write that buffer; provide writable host memory with onda_bind_buffer instead"
+        )));
+    }
+    Ok(index)
 }
 
 fn primitive_type_for_buffer_element(element: BufferElement) -> PrimitiveType {
@@ -974,15 +1073,25 @@ fn bind_project_default(
     defaults: &ProjectDefaults,
     index: usize,
 ) -> Result<bool, Diagnostic> {
-    let Some(asset_id) = defaults.bindings.get(index).and_then(Option::as_ref) else {
-        return Ok(false);
+    let asset = match defaults {
+        ProjectDefaults::Filesystem(bindings) => {
+            let Some(asset) = bindings.get(index).and_then(Option::as_ref) else {
+                return Ok(false);
+            };
+            asset
+        }
+        ProjectDefaults::Image { image, bindings } => {
+            let Some(asset_id) = bindings.get(index).and_then(Option::as_ref) else {
+                return Ok(false);
+            };
+            image.assets().get(asset_id).ok_or_else(|| {
+                Diagnostic::internal(format!(
+                    "project default buffer references missing asset '{}'",
+                    asset_id.as_str()
+                ))
+            })?
+        }
     };
-    let asset = defaults.image.assets().get(asset_id).ok_or_else(|| {
-        Diagnostic::internal(format!(
-            "project default buffer references missing asset '{}'",
-            asset_id.as_str()
-        ))
-    })?;
     unsafe {
         bind_buffer(
             instance,
@@ -1001,7 +1110,11 @@ fn bind_project_defaults(
     instance: &mut Instance,
     defaults: &ProjectDefaults,
 ) -> Result<(), Diagnostic> {
-    for index in 0..defaults.bindings.len() {
+    let binding_count = match defaults {
+        ProjectDefaults::Filesystem(bindings) => bindings.len(),
+        ProjectDefaults::Image { bindings, .. } => bindings.len(),
+    };
+    for index in 0..binding_count {
         bind_project_default(instance, defaults, index)?;
     }
     Ok(())
@@ -1045,10 +1158,60 @@ unsafe fn onda_compile_file_impl(
         }
     };
 
-    let loaded = match load_program_file(Path::new(&path)) {
+    let input_path = PathBuf::from(path);
+    let limits = ProjectLimits::default();
+    let (entry_path, project, project_watch_paths) = if is_project_file_path(&input_path) {
+        match resolve_project_input(&input_path, limits) {
+            Ok(ProjectInput::Project(project)) => {
+                let watch_paths = match project.watch_paths() {
+                    Ok(watch_paths) => watch_paths,
+                    Err(error) => match resolve_project_watch_paths(&input_path, limits) {
+                        Ok(watch_paths) => watch_paths,
+                        Err(_) => {
+                            let watch_paths = filesystem_input_watch_paths(&input_path, None);
+                            if let Err(diag) = write_source_manifest_with_watch_paths(
+                                out_sources,
+                                &SourceManifest::default(),
+                                &watch_paths,
+                            ) {
+                                write_diag(out_diag, diag_to_c(&diag));
+                                return ptr::null_mut();
+                            }
+                            write_diag(out_diag, project_error_diag(error));
+                            return ptr::null_mut();
+                        }
+                    },
+                };
+                (project.entry_path.clone(), Some(project), Some(watch_paths))
+            }
+            Ok(ProjectInput::Source(_)) => unreachable!("project extension must resolve a project"),
+            Err(error) => {
+                let project_watch_paths = resolve_project_watch_paths(&input_path, limits).ok();
+                let watch_paths =
+                    filesystem_input_watch_paths(&input_path, project_watch_paths.as_ref());
+                if let Err(diag) = write_source_manifest_with_watch_paths(
+                    out_sources,
+                    &SourceManifest::default(),
+                    &watch_paths,
+                ) {
+                    write_diag(out_diag, diag_to_c(&diag));
+                    return ptr::null_mut();
+                }
+                write_diag(out_diag, project_error_diag(error));
+                return ptr::null_mut();
+            }
+        }
+    } else {
+        (input_path.clone(), None, None)
+    };
+    let watch_paths = filesystem_input_watch_paths(&input_path, project_watch_paths.as_ref());
+
+    let loaded = match load_program_file(&entry_path) {
         Ok(loaded) => loaded,
         Err(error) => {
-            if let Err(diag) = write_source_manifest(out_sources, &error.sources) {
+            if let Err(diag) =
+                write_source_manifest_with_watch_paths(out_sources, &error.sources, &watch_paths)
+            {
                 write_diag(out_diag, diag_to_c(&diag));
                 return ptr::null_mut();
             }
@@ -1061,11 +1224,43 @@ unsafe fn onda_compile_file_impl(
             return ptr::null_mut();
         }
     };
-    if let Err(diag) = write_source_manifest(out_sources, &loaded.sources) {
+    if let Err(diag) =
+        write_source_manifest_with_watch_paths(out_sources, &loaded.sources, &watch_paths)
+    {
         write_diag(out_diag, diag_to_c(&diag));
         return ptr::null_mut();
     }
-    compile_parsed_program(loaded.program, options, None, out_diag)
+
+    let project = project.map(ProjectCompilation::Filesystem);
+    compile_parsed_program(loaded.program, options, project, out_diag)
+}
+
+fn filesystem_input_watch_paths(
+    input_path: &Path,
+    project: Option<&ProjectWatchPaths>,
+) -> Vec<PathBuf> {
+    // Resolved source manifests use canonical paths. Canonicalize the selected
+    // input as well so Windows' `\\?\` spelling (and equivalent relative
+    // spellings elsewhere) cannot expose the same file twice in the watch
+    // projection. Missing recovery paths deliberately remain lexical.
+    let input_path = if onda_frontend::ensure_no_symlink_components(input_path).is_ok() {
+        std::fs::canonicalize(input_path).unwrap_or_else(|_| {
+            onda_frontend::absolute_lexical_path(input_path)
+                .unwrap_or_else(|_| input_path.to_path_buf())
+        })
+    } else {
+        // Preserve a rejected symlink alias itself so replacing that alias with
+        // a supported file can trigger recovery.
+        onda_frontend::absolute_lexical_path(input_path)
+            .unwrap_or_else(|_| input_path.to_path_buf())
+    };
+    let mut paths = vec![input_path];
+    if let Some(project) = project {
+        paths.push(project.manifest.clone());
+        paths.push(project.entry.clone());
+        paths.extend(project.assets.iter().cloned());
+    }
+    paths
 }
 
 #[no_mangle]
@@ -1398,6 +1593,31 @@ pub unsafe extern "C" fn onda_source_manifest_unresolved_path(
     let manifest = &*manifest;
     manifest
         .unresolved_paths
+        .get(index as usize)
+        .map_or(ptr::null(), |path| path.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_watch_count(
+    manifest: *const onda_source_manifest,
+) -> i32 {
+    if manifest.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*manifest).watch_paths.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_manifest_watch_path(
+    manifest: *const onda_source_manifest,
+    index: i32,
+) -> *const c_char {
+    if manifest.is_null() || index < 0 {
+        return ptr::null();
+    }
+    let manifest = &*manifest;
+    manifest
+        .watch_paths
         .get(index as usize)
         .map_or(ptr::null(), |path| path.as_ptr())
 }
@@ -2414,7 +2634,12 @@ pub unsafe extern "C" fn onda_project_image_compile(
             return ptr::null_mut();
         }
     };
-    compile_parsed_program(loaded.program, options, Some(image), out_diag)
+    compile_parsed_program(
+        loaded.program,
+        options,
+        Some(ProjectCompilation::Image(image)),
+        out_diag,
+    )
 }
 
 #[no_mangle]

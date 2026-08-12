@@ -1,0 +1,91 @@
+import std/env
+import std/filter
+import std/levels
+import std/osc
+import std/pitch
+import std/reverb
+
+const VoiceCount = 6
+const PatternLength = 12
+const Notes: f32[PatternLength] = [0.0, 7.0, 12.0, 3.0, 10.0, 15.0, 5.0, 19.0, 12.0, 8.0, 17.0, 22.0]
+const Accents: f32[PatternLength] = [1.0, 0.46, 0.68, 0.38, 0.78, 0.42, 0.58, 0.86, 0.44, 0.64, 0.36, 0.72]
+
+proc FormantVoice:
+  params:
+    decay_s = 0.46
+    vowel = 0.45
+    resonance = 5.8
+
+  init:
+    frequency = 110.0
+    exciter = std::osc::Pulse(width = 0.055)
+    amplitude = std::env::DecayEnv(decay_s = decay_s)
+    formant_1 = std::filter::Resonator()
+    formant_2 = std::filter::Resonator()
+    formant_3 = std::filter::Resonator()
+
+  event strike(note: f32, velocity: f32):
+    frequency = std::pitch::note_to_hz(note)
+    shape = clamp(vowel, 0.0, 1.0)
+    formant_1.freq = lerp(820.0, 350.0, shape)
+    formant_2.freq = lerp(1150.0, 1850.0, shape)
+    formant_3.freq = lerp(2900.0, 2550.0, shape)
+    formant_1.bandwidth = 520.0 / resonance
+    formant_2.bandwidth = 680.0 / resonance
+    formant_3.bandwidth = 900.0 / resonance
+    exciter.reset()
+    amplitude.start(velocity)
+
+  sample:
+    pulse = exciter(freq = frequency, width = 0.035 + vowel * 0.055)
+    shaped = formant_1(pulse) * 0.72 + formant_2(pulse) * 0.44 + formant_3(pulse) * 0.23
+    out1 = tanh(shaped * 1.8) * amplitude(decay_s = decay_s)
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  root_note = 38.0 {24.0, 72.0, step = 1.0}
+  bpm = 104.0 {40.0, 190.0, unit = "BPM"}
+  vowel = 0.48 {0.0, 1.0}
+  resonance = 5.8 {1.0, 12.0}
+  decay_s = 0.48 {0.08, 2.5, log, unit = "s"}
+  space = 0.34 {0.0, 0.8}
+  level = 0.5 {0.0, 1.0}
+
+init:
+  voices: FormantVoice[VoiceCount] = FormantVoice()
+  reverb = std::reverb::Schroeder::Reverb(room_size = 0.72, damping = 0.42, width = 0.94, mix = 1.0)
+  clock: i32 = 0
+  step: i32 = 0
+  next_voice: i32 = 0
+  pending_bang = false
+
+event bang():
+  pending_bang = true
+
+sample:
+  step_samples = max(i32(SR * 15.0 / bpm), 1)
+  if auto_play != 0 && clock == 0:
+    pending_bang = true
+
+  if pending_bang:
+    voices[next_voice].decay_s = decay_s
+    voices[next_voice].vowel = wrap(vowel + f32(step) * 0.071, 0.0, 1.0)
+    voices[next_voice].resonance = resonance
+    voices[next_voice].strike(root_note + Notes[step], Accents[step])
+    next_voice = (next_voice + 1) % VoiceCount
+    step = (step + 1) % PatternLength
+    pending_bang = false
+  clock = (clock + 1) % step_samples
+
+  dry_l = 0.0
+  dry_r = 0.0
+  for i in 0..VoiceCount:
+    voice = voices[i]()
+    pan = -0.82 + f32(i) * 1.64 / f32(VoiceCount - 1)
+    (gain_l, gain_r) = std::levels::pan_3db(pan)
+    dry_l = dry_l + voice * gain_l
+    dry_r = dry_r + voice * gain_r
+
+  reverb(dry_l, dry_r)
+  out1 = tanh((dry_l + reverb.out1 * space) * level)
+  out2 = tanh((dry_r + reverb.out2 * space) * level)

@@ -1,0 +1,37 @@
+import std/lookup
+
+proc MorphOscillator:
+  buffers:
+    waves: f32 {4}
+
+  params:
+    frequency = 220.0
+    morph = 0.0
+
+  init:
+    phase = 0.0
+    detuned_phase = 0.0
+    sub_phase = 0.0
+
+  block:
+    shape_position = clamp(morph, 0.0, 1.0) * 3.0
+    shape_a = min(i32(shape_position), 2)
+    shape_mix = shape_position - f32(shape_a)
+    wave_a = waves[shape_a]
+    wave_b = waves[shape_a + 1]
+    frames_a = f32(wave_a.len())
+    frames_b = f32(wave_b.len())
+
+    sample:
+      phase = wrap(phase + frequency / SR, 0.0, 1.0)
+      detuned_phase = wrap(detuned_phase + frequency * 1.0041 / SR, 0.0, 1.0)
+      sub_phase = wrap(sub_phase + frequency * 0.5 / SR, 0.0, 1.0)
+
+      a = wave_a.readCW(phase * frames_a)
+      b = wave_b.readCW(phase * frames_b)
+      detuned_a = wave_a.readCW(detuned_phase * frames_a)
+      detuned_b = wave_b.readCW(detuned_phase * frames_b)
+      sub = wave_a.readCW(sub_phase * frames_a)
+      main = lerp(a, b, shape_mix)
+      detuned = lerp(detuned_a, detuned_b, shape_mix)
+      out1 = main * 0.58 + detuned * 0.24 + sub * 0.18

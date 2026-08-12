@@ -16,6 +16,7 @@ use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, Analy
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const WARMUP_BLOCKS: usize = 200;
+const BLOCK_LATENCY_SAMPLES: usize = 4_096;
 const PARITY_ABSOLUTE_TOLERANCE: f64 = 1e-6;
 const PARITY_RELATIVE_TOLERANCE: f64 = 1e-6;
 
@@ -38,6 +39,7 @@ struct NativeBenchmark {
     params: Vec<u8>,
     state: RuntimeState,
     input_ptrs: Vec<*const u8>,
+    _inputs: Vec<Vec<f32>>,
     output_ptrs: Vec<*mut u8>,
     _buffer_storage: Vec<Vec<u64>>,
     buffer_ptrs: Vec<*mut u8>,
@@ -54,7 +56,13 @@ impl NativeBenchmark {
         let state = jit
             .initialize_state(&params)
             .map_err(|error| format!("state initialization failed: {error:?}"))?;
-        let input_ptrs = Vec::new();
+        let inputs = (0..jit.required_in_channels())
+            .map(|_| vec![0.0_f32; block_size])
+            .collect::<Vec<_>>();
+        let input_ptrs = inputs
+            .iter()
+            .map(|input| input.as_ptr().cast::<u8>())
+            .collect::<Vec<_>>();
         let mut outputs = (0..jit.required_out_channels())
             .map(|_| vec![0.0_f32; block_size])
             .collect::<Vec<_>>();
@@ -84,6 +92,7 @@ impl NativeBenchmark {
             params,
             state,
             input_ptrs,
+            _inputs: inputs,
             output_ptrs,
             _buffer_storage: buffer_storage,
             buffer_ptrs,
@@ -217,13 +226,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
     };
 
-    let input_channels = jit.required_in_channels();
     let output_channels = jit.required_out_channels();
-    if input_channels != 0 {
-        return Err("native benchmark scenarios must not require audio inputs".into());
-    }
     if output_channels == 0 {
         return Err("native benchmark scenarios must expose an audio output".into());
+    }
+    if jit.mir().interface.inputs.iter().any(|input| {
+        !matches!(
+            jit.mir().types.get(input.ty.index()),
+            Some(onda_mir::Type::Scalar(onda_mir::ScalarType::F32))
+        )
+    }) {
+        return Err("native benchmark scenarios must expose scalar f32 audio inputs".into());
     }
     if jit.mir().interface.outputs.iter().any(|output| {
         !matches!(
@@ -239,6 +252,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     benchmark.process_checked()?;
     let parity =
         validate_first_block(&benchmark.outputs, Path::new(&expected_outputs), block_size)?;
+    let cold_block_latencies = measure_block_latencies(&mut benchmark, 15);
+    let cold_block_max_us = cold_block_latencies.iter().copied().fold(0.0_f64, f64::max);
     run_unchecked_blocks(&mut benchmark, WARMUP_BLOCKS);
     if validate_only {
         let recommended_iterations =
@@ -266,6 +281,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         black_box(output_checksum(&benchmark.outputs));
     }
     let process_summary = summarize_samples(samples)?;
+    let block_latencies = measure_block_latencies(&mut benchmark, BLOCK_LATENCY_SAMPLES);
+    let block_summary = summarize_samples(block_latencies.clone())?;
+    let block_p99_us = percentile(&block_latencies, 0.99);
     let compile_summary = compile_summary.expect("benchmark mode records compile samples");
 
     println!(
@@ -279,6 +297,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             "\"process_mad_ns_per_frame\":{:.6},",
             "\"process_min_ns_per_frame\":{:.6},",
             "\"process_max_ns_per_frame\":{:.6},",
+            "\"block_median_us\":{:.6},",
+            "\"block_p99_us\":{:.6},",
+            "\"block_max_us\":{:.6},",
+            "\"cold_block_max_us\":{:.6},",
             "\"parity_samples\":{},",
             "\"parity_max_abs_error\":{:.9},",
             "\"outputs\":{}",
@@ -292,6 +314,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         process_summary.median_absolute_deviation,
         process_summary.minimum,
         process_summary.maximum,
+        block_summary.median,
+        block_p99_us,
+        block_summary.maximum,
+        cold_block_max_us,
         parity.samples,
         parity.maximum_absolute_error,
         output_channels,
@@ -414,6 +440,23 @@ fn run_unchecked_blocks(benchmark: &mut NativeBenchmark, blocks: usize) {
         // Construction and the checked preflight establish the raw processor ABI invariants.
         unsafe { benchmark.process_unchecked() };
     }
+}
+
+fn measure_block_latencies(benchmark: &mut NativeBenchmark, blocks: usize) -> Vec<f64> {
+    let mut samples = Vec::with_capacity(blocks);
+    for _ in 0..blocks {
+        let started = Instant::now();
+        unsafe { benchmark.process_unchecked() };
+        samples.push(started.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+    samples
+}
+
+fn percentile(samples: &[f64], quantile: f64) -> f64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let index = ((sorted.len() - 1) as f64 * quantile).round() as usize;
+    sorted[index]
 }
 
 fn median_of_sorted(samples: &[f64]) -> f64 {

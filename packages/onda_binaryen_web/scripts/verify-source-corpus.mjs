@@ -24,10 +24,7 @@ import { resolveOndaCli } from "./onda-cli.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
-const corpusRoots = [
-  join(repoDir, "examples"),
-  join(packageDir, "test/fixtures"),
-];
+const corpusRoots = [join(packageDir, "test/fixtures")];
 
 // Intentional negative .onda fixtures belong here with a reason. Keeping the
 // exclusions explicit prevents a newly added source from silently escaping the
@@ -109,15 +106,11 @@ try {
 }
 
 const excludedCount = discovered.length - sources.length;
-const exampleCount = sources.filter((source) =>
-  repoPath(source).startsWith("examples/")
-).length;
-const fixtureCount = sources.length - exampleCount;
 if (failures.length > 0) {
   process.stderr.write(
     `\nOnda source corpus failed: ${failures.length} failure(s), ` +
       `${validModules}/${sources.length} valid Wasm module(s), ` +
-      `${exampleCount} example(s), ${fixtureCount} fixture(s), ` +
+      `${sources.length} fixture(s), ` +
       `${excludedCount} explicit exclusion(s).\n`,
   );
   for (const failure of failures) {
@@ -129,7 +122,7 @@ if (failures.length > 0) {
     `\nVerified full Onda source corpus: ${validModules}/${sources.length} ` +
       `schema-${SUPPORTED_MIR_SCHEMA_VERSION} MIR programs compiled to valid WebAssembly ` +
       `(${wasmBytes.toLocaleString("en-US")} total Wasm bytes, ` +
-      `${exampleCount} example(s), ${fixtureCount} fixture(s), ` +
+      `${sources.length} fixture(s), ` +
       `${excludedCount} explicit exclusion(s)).\n`,
   );
 }

@@ -889,23 +889,5 @@ sample {
 }
 "#;
 
-const MULTITAP_FEEDBACK_STRUCT_DATA_EXAMPLE: &str =
-    include_str!("../../../../../examples/buffers-fft-convolution/multitap_feedback_struct_data.onda");
-const PROC_GAIN_GRAPH_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/processors-and-graphs/proc_gain_graph.onda");
-const PROC_SPLIT_GRAPH_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/processors-and-graphs/proc_split_graph.onda");
-const PROC_ARRAY_STEREO_SINE_GRAPH_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/processors-and-graphs/proc_array_stereo_sine_graph.onda");
-const FEEDBACK_SATURATOR_GRAPH_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/processors-and-graphs/feedback_saturator_graph.onda");
-const STD_ONE_POLE_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/standard-library/std_one_pole.onda");
-const STD_ONE_POLE_GRAPH_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/standard-library/std_one_pole_graph.onda");
-const STDLIB_F32_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/standard-library/std_f32.onda");
-const STDLIB_F32_GRAPH_FILE_EXAMPLE: &str =
-    include_str!("../../../../../examples/standard-library/std_f32_graph.onda");
 const WASM_PLAYGROUND_FILE_EXAMPLE: &str =
     include_str!("../../../../../ui/playground/default.onda");

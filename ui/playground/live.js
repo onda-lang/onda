@@ -492,7 +492,7 @@ async function smokeEditorBindings() {
   if (scrollTabIndex === null) view.scrollDOM.removeAttribute("tabindex");
   else view.scrollDOM.setAttribute("tabindex", scrollTabIndex);
 
-  const caretProbe = `\n# ${"mobile-caret-center-".repeat(32)}`;
+  const caretProbe = `\n# ${"mobile-caret-scroll-".repeat(32)}`;
   const caretProbeFrom = view.state.doc.length;
   view.dispatch({
     changes: { from: caretProbeFrom, insert: caretProbe },
@@ -516,12 +516,36 @@ async function smokeEditorBindings() {
     viewportLeft,
   ) + 16;
   const visibleRight = Math.min(editorBounds.right, viewportRight) - 16;
-  const mobileCaretCenterHandled = Boolean(caretBounds)
+  const mobileCaretVisibilityHandled = Boolean(caretBounds)
     && view.scrollDOM.scrollLeft > 0
-    && Math.abs(
-      (caretBounds.left + caretBounds.right) / 2
-        - (visibleLeft + visibleRight) / 2,
-    ) <= 2;
+    && caretBounds.left >= visibleLeft - 2
+    && caretBounds.right <= visibleRight + 2;
+  const mobileGutterScrollHandled = Boolean(gutterBounds)
+    && view.scrollDOM.scrollLeft > 0
+    && gutterBounds.right <= editorBounds.left + 2;
+
+  const leftCaretProbeFrom = view.state.doc.length;
+  view.dispatch({
+    changes: { from: leftCaretProbeFrom, insert: "\n#" },
+    selection: { anchor: leftCaretProbeFrom + 2 },
+    userEvent: "input.type",
+  });
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+  const leftCaretBounds = view.coordsAtPos(view.state.selection.main.head);
+  const leftEditorBounds = view.scrollDOM.getBoundingClientRect();
+  const leftGutterBounds = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
+  const leftVisibleLeft = Math.max(
+    leftEditorBounds.left,
+    leftGutterBounds?.right ?? leftEditorBounds.left,
+    viewportLeft,
+  ) + 16;
+  const leftVisibleRight = Math.min(leftEditorBounds.right, viewportRight) - 16;
+  const mobileLeftCaretHandled = Boolean(leftCaretBounds)
+    && view.scrollDOM.scrollLeft <= 1
+    && leftCaretBounds.left >= leftVisibleLeft - 2
+    && leftCaretBounds.right <= leftVisibleRight + 2;
   view.setState(originalState);
   projectEditor.states.set(projectEditor.active, originalState);
 
@@ -574,7 +598,9 @@ async function smokeEditorBindings() {
     editorFontSizeHandled,
     lineNumberFontSizeHandled,
     scrollPreservedTextFocus,
-    mobileCaretCenterHandled,
+    mobileCaretVisibilityHandled,
+    mobileGutterScrollHandled,
+    mobileLeftCaretHandled,
     ctrlPeriodHandled,
     runViewShortcutsHandled,
     shareRoundTripHandled,

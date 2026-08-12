@@ -1,9 +1,0 @@
-import std/osc
-import std/filter
-
-init:
-  osc = std::osc::Phasor(freq = 110.0)
-  lp = std::filter::OnePole(cutoff = 600.0)
-
-sample:
-  out1 = lp(osc())

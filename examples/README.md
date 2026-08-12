@@ -1,22 +1,38 @@
 # Onda examples
 
-The examples are grouped by the same learning path used in the [example cookbook](../docs/examples.md).
+The examples are finished, compilable sounds organized by outcome. The online
+[example cookbook](https://onda-lang.org/docs/examples/) provides a guided listening path and opens
+the standalone sources directly in the browser playground.
 
 | Directory | Contents |
 | --- | --- |
-| `foundations/` | Small programs introducing execution scopes, parameters, events, and basic synthesis. |
-| `processors-and-graphs/` | Reusable processors, proc arrays, imperative composition, and declarative graphs. |
-| `standard-library/` | Focused examples for modules under `stdlib/std`. |
-| `buffers-fft-convolution/` | Host buffers, data structures, FFT processing, and convolution. |
-| `larger-patches/` | Polyphonic, feedback, reverb, neural, and other larger programs. |
-| `web/` | Browser and WebAssembly host examples. |
+| `basic/` | Compact synthesis, oversampling, events, and polyphony. |
+| `buffers/` | Host-bound sample and typed-buffer processing. |
+| `effects/` | Auditionable effects plus reusable processor implementations. |
+| `feedback/` | Delay matrices, graph cycles, and nonlinear feedback systems. |
+| `instruments/` | Self-playing and host-triggerable musical instruments. |
+| `projects/` | Complete `.ondaproject` patches with source modules and embedded data. |
+| `soundscapes/` | Granular, generative, and slowly evolving patches. |
+| `spectral/` | Streaming FFT effects and reusable spectral processors. |
+| `native/` | Native embedding and object-linking hosts. |
+| `web/` | Browser and WebAssembly hosts. |
 
-Run an example from the repository root:
+Run or render a standalone example from the repository or an extracted release:
 
 ```bash
-onda run examples/foundations/sine.onda
+onda run examples/instruments/fm_bells.onda
+onda run render examples/soundscapes/granular_cloud.onda --output cloud.wav --dur 12
 ```
 
-Buffer-oriented examples can run without an asset: omitted buffers use neutral one-frame storage,
-so reads return zero and writes are discarded. Bind a WAV or `.ondabuffer` when the example needs
-meaningful source data; its source or local README describes any other setup.
+Musical examples with built-in sequencing expose an `auto_play` parameter and a no-argument
+`bang()` event. Effects audition themselves by default and expose `live_input` when they can process
+host audio.
+
+Project examples carry their source and data bindings together:
+
+```bash
+onda run examples/projects/embedded_room/embedded-room.ondaproject
+```
+
+The sample player requires a host-provided WAV or `.ondabuffer`; omitted buffers use neutral
+one-frame storage, so unbound reads return zero and writes are discarded.

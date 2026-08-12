@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use eframe::egui;
 use onda_run::{
     ParamDomain, ParamScalarType, ParamScale, RunController, RunHostOptions, RunThemeMode,
+    CONTROLLER_POLL_INTERVAL,
 };
 use serde_json::{Number, Value};
 
@@ -164,6 +164,7 @@ struct RunApp {
     event_input_signatures: HashMap<String, Vec<EventArgSignature>>,
     number_drafts: HashMap<String, f64>,
     current_icon_dark: Option<bool>,
+    applied_theme_dark: Option<bool>,
     param_layout: ParamLayout,
 }
 
@@ -183,6 +184,7 @@ impl RunApp {
             event_input_signatures: HashMap::new(),
             number_drafts: HashMap::new(),
             current_icon_dark,
+            applied_theme_dark: None,
             param_layout,
         };
         app.sync_event_inputs();
@@ -792,10 +794,15 @@ impl eframe::App for RunApp {
                 self.sync_event_inputs();
             }
         }
-        ctx.request_repaint_after(Duration::from_millis(16));
+        if self.controller.is_some() {
+            ctx.request_repaint_after(CONTROLLER_POLL_INTERVAL);
+        }
         let theme = RunTheme::from_dark_mode(ctx.style().visuals.dark_mode);
         self.sync_window_icon(ctx, theme.is_dark);
-        apply_run_theme(ctx, &theme);
+        if self.applied_theme_dark != Some(theme.is_dark) {
+            apply_run_theme(ctx, &theme);
+            self.applied_theme_dark = Some(theme.is_dark);
+        }
         if self.controller.is_none() {
             egui::CentralPanel::default()
                 .frame(

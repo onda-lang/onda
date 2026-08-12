@@ -18,9 +18,10 @@ pub use image::{
     SourceReplayError, SourceResolution, ONDA_PROJECT_IMAGE_FORMAT_VERSION,
 };
 pub use manifest::{
-    is_project_file_path, resolve_project_input, InlineBuffer, ManifestBufferBinding,
-    ManifestBufferElementBinding, ProjectFile, ProjectInput, ProjectManifest, ProjectWatchPaths,
-    ONDA_PROJECT_DEFAULT_FILE_NAME, ONDA_PROJECT_FILE_EXTENSION,
+    is_project_file_path, resolve_project_input, resolve_project_watch_paths, InlineBuffer,
+    ManifestBufferBinding, ManifestBufferElementBinding, ProjectFile, ProjectInput,
+    ProjectManifest, ProjectWatchPaths, ONDA_PROJECT_DEFAULT_FILE_NAME,
+    ONDA_PROJECT_FILE_EXTENSION,
 };
 pub use materialize::{new_project_plan, MaterializationPlan, PlannedFile};
 

@@ -73,10 +73,10 @@ event_param_type = { array_type | fn_typed_array_param | type_name | named_type 
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
-def_block = { ("const" ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
+def_block = { (const_kw ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
 const_block = { const_decl ~ NEWLINE* }
-const_decl = { "const" ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ const_type)? ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
+const_decl = { const_kw ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ const_type)? ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
 const_type = { fn_typed_array_param | array_type | type_name }
 init_block = { "init" ~ section_default_decl_type? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 block_exec_block = { "block" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ block_exec_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
@@ -106,6 +106,7 @@ ins_kw = { "ins" | "inputs" }
 outs_kw = { "outs" | "outputs" }
 kouts_kw = { "kouts" }
 proc_kw = { "proc" | "processor" }
+const_kw = @{ "const" ~ !ident_char }
 section_default_decl_type = { "<" ~ NEWLINE* ~ (type_name | namespace_ref | qualified_ident) ~ NEWLINE* ~ ">" }
 section_default_buffer_type = { "<" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ ">" }
 

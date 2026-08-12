@@ -1,0 +1,94 @@
+import std/delay
+import std/env
+import std/levels
+import std/osc
+import std/pitch
+
+const VoiceCount = 6
+const PatternLength = 8
+const Notes: f32[PatternLength] = [0.0, 7.0, 12.0, 3.0, 10.0, 15.0, 7.0, 19.0]
+const Velocities: f32[PatternLength] = [1.0, 0.58, 0.74, 0.48, 0.82, 0.55, 0.68, 0.46]
+
+proc BellVoice:
+  params:
+    decay_s = 3.2
+    brightness = 0.65
+
+  init:
+    freq = 220.0
+    carrier = std::osc::Sine()
+    partial = std::osc::Sine()
+    modulator = std::osc::Sine()
+    amplitude = std::env::DecayEnv(decay_s = decay_s)
+    modulation_index = std::env::DecayEnv(decay_s = decay_s * 0.24)
+
+  event strike(note: f32, velocity: f32):
+    freq = std::pitch::note_to_hz(note)
+    carrier.reset()
+    partial.reset()
+    modulator.reset()
+    amplitude.start(velocity)
+    modulation_index.start()
+
+  sample:
+    index = (1.5 + brightness * 11.0) * modulation_index(decay_s = decay_s * 0.24)
+    modulation = modulator(freq = freq * 1.414) * index
+    carrier_signal = carrier(freq = freq, phase_offset = modulation)
+    partial_signal = partial(freq = freq * 2.41, phase_offset = modulation * 0.31)
+    out1 = (carrier_signal * 0.72 + partial_signal * 0.28) * amplitude(decay_s = decay_s)
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  root_note = 48.0 {24.0, 84.0, step = 1.0}
+  bpm = 92.0 {35.0, 180.0, unit = "BPM"}
+  decay_s = 3.2 {0.3, 10.0, unit = "s"}
+  brightness = 0.65 {0.0, 1.0}
+  space = 0.36 {0.0, 0.75}
+  level = 0.5 {0.0, 1.0}
+
+init:
+  voices: BellVoice[VoiceCount] = BellVoice()
+  delay_l = std::delay::Delay(delay_s = 0.29, feedback = 0.38, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = 0.41, feedback = 0.34, mix = 1.0)
+  clock: i32 = 0
+  step: i32 = 0
+  next_voice: i32 = 0
+  pending_bang = false
+
+event strike(note: f32 = 60.0, velocity: f32 = 0.8):
+  voices[next_voice].decay_s = decay_s
+  voices[next_voice].brightness = brightness
+  voices[next_voice].strike(note, velocity)
+  next_voice = (next_voice + 1) % VoiceCount
+
+event bang():
+  pending_bang = true
+
+sample:
+  step_samples = max(i32(SR * 30.0 / bpm), 1)
+  if auto_play != 0 && clock == 0:
+    pending_bang = true
+
+  if pending_bang:
+    voices[next_voice].decay_s = decay_s
+    voices[next_voice].brightness = brightness
+    voices[next_voice].strike(root_note + Notes[step], Velocities[step])
+    next_voice = (next_voice + 1) % VoiceCount
+    step = (step + 1) % PatternLength
+    pending_bang = false
+
+  clock = (clock + 1) % step_samples
+
+  dry_l = 0.0
+  dry_r = 0.0
+  for i in 0..VoiceCount:
+    voice = voices[i]()
+    pan = -0.8 + 1.6 * f32(i) / f32(VoiceCount - 1)
+    (gain_l, gain_r) = std::levels::pan_3db(pan)
+    dry_l = dry_l + voice * gain_l
+    dry_r = dry_r + voice * gain_r
+
+  wet_l = delay_l(dry_l + dry_r * 0.18)
+  wet_r = delay_r(dry_r + dry_l * 0.18)
+  out1 = tanh((dry_l + wet_l * space) * level)
+  out2 = tanh((dry_r + wet_r * space) * level)

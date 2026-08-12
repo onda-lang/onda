@@ -24,12 +24,12 @@ use crate::ast::{
 use crate::diagnostics::Diagnostic;
 
 const PROC_FIELD_SENTINEL_PREFIX: &str = "__onda_proc_field__";
-const PROC_FIELD_SENTINEL_ARG: &str = "__proc_field";
+const PROC_FIELD_SENTINEL_ARG: &str = "__onda_proc_field";
 const PROC_INDEX_CALL_SENTINEL: &str = "__onda_proc_index_call";
-const PROC_INDEX_BASE_ARG: &str = "__proc_index_base";
-const PROC_INDEX_EXPR_ARG: &str = "__proc_index_expr";
+const PROC_INDEX_BASE_ARG: &str = "__onda_proc_index_base";
+const PROC_INDEX_EXPR_ARG: &str = "__onda_proc_index_expr";
 const GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL: &str = "__onda_graph_proc_array_field_index";
-const GRAPH_PROC_FIELD_INDEX_EXPR_ARG: &str = "__proc_field_index_expr";
+const GRAPH_PROC_FIELD_INDEX_EXPR_ARG: &str = "__onda_proc_field_index_expr";
 const STRUCT_ARRAY_FIELD_INDEX_SENTINEL: &str = "__onda_struct_array_field_index";
 const SAFI_BASE_ARG: &str = "__safi_base";
 const SAFI_IDX_ARG: &str = "__safi_idx";
@@ -94,10 +94,11 @@ use module_loading::{parse_loc_from_raw, stmt_loc_from_pair};
 
 mod type_helpers;
 pub use module_loading::{
-    inject_auto_std_math, inject_auto_std_prelude, load_program_file,
-    load_program_file_from_snapshot, load_program_file_from_virtual_sources,
-    load_program_file_with_overlays, parse_namespace_ref_text_ast, parse_program,
-    parse_program_file, parse_program_file_from_virtual_sources, parse_program_file_with_overlays,
+    absolute_lexical_path, ensure_no_symlink_components, inject_auto_std_math,
+    inject_auto_std_prelude, load_program_file, load_program_file_from_snapshot,
+    load_program_file_from_virtual_sources, load_program_file_with_overlays,
+    parse_namespace_ref_text_ast, parse_program, parse_program_file,
+    parse_program_file_from_virtual_sources, parse_program_file_with_overlays,
     parse_program_with_path, parse_stdlib_module, rewrite_source_references, LoadError, LoadResult,
     LoadedProgram, SourceDocument, SourceManifest, SourceReferenceKind, SourceReferenceRewrite,
     SourceResolution, UnresolvedSourceResolution,

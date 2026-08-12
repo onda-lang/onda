@@ -1013,6 +1013,13 @@ impl SourceLoader {
     }
 
     fn resolve(&self, path: &Path) -> Result<PathBuf, String> {
+        if matches!(&self.policy, SourcePolicy::Filesystem) {
+            ensure_no_symlink_components(path).map_err(|error| error.to_string())?;
+        }
+        self.resolve_validated(path)
+    }
+
+    fn resolve_validated(&self, path: &Path) -> Result<PathBuf, String> {
         match &self.policy {
             SourcePolicy::Filesystem => resolve_file_or_overlay_path(path, &self.overlays)
                 .map_err(|error| error.to_string()),
@@ -1074,7 +1081,7 @@ impl SourceLoader {
             }
         }
         let include = Path::new(include_path);
-        let candidate = if include.is_absolute() {
+        let raw_candidate = if include.is_absolute() {
             include.to_path_buf()
         } else {
             current_file
@@ -1083,8 +1090,19 @@ impl SourceLoader {
                 .join(include)
         };
         let candidate = self
-            .normalize_candidate(candidate)
+            .normalize_candidate(raw_candidate.clone())
             .map_err(SourceResolutionError::without_candidates)?;
+        if matches!(self.policy, SourcePolicy::Filesystem) {
+            ensure_no_symlink_components(&raw_candidate).map_err(|error| {
+                SourceResolutionError {
+                    message: format!(
+                        "failed to resolve include '{}': {error}",
+                        candidate.display()
+                    ),
+                    candidates: vec![candidate.clone()],
+                }
+            })?;
+        }
         self.resolve(&candidate).map_err(|message| {
             let message = match self.policy {
                 SourcePolicy::Filesystem => {
@@ -1131,14 +1149,30 @@ impl SourceLoader {
                 .unwrap_or_else(|| Path::new("."))
                 .join(module)
         };
-        let candidates = ONDA_SOURCE_EXTENSIONS
+        let raw_candidates = ONDA_SOURCE_EXTENSIONS
             .iter()
             .copied()
-            .map(|extension| self.normalize_candidate(base.with_extension(extension)))
+            .map(|extension| base.with_extension(extension))
+            .collect::<Vec<_>>();
+        let candidates = raw_candidates
+            .iter()
+            .cloned()
+            .map(|candidate| self.normalize_candidate(candidate))
             .collect::<Result<Vec<_>, _>>()
             .map_err(SourceResolutionError::without_candidates)?;
-        for candidate in &candidates {
-            if let Ok(resolved) = self.resolve(candidate) {
+        for (raw_candidate, candidate) in raw_candidates.iter().zip(&candidates) {
+            if matches!(self.policy, SourcePolicy::Filesystem) {
+                ensure_no_symlink_components(raw_candidate).map_err(|error| {
+                    SourceResolutionError {
+                        message: format!(
+                            "failed to resolve import '{}': {error}",
+                            candidate.display()
+                        ),
+                        candidates: candidates.clone(),
+                    }
+                })?;
+            }
+            if let Ok(resolved) = self.resolve_validated(candidate) {
                 return Ok(resolved);
             }
         }
@@ -1161,7 +1195,16 @@ impl SourceLoader {
 
     fn normalize_candidate(&self, path: PathBuf) -> Result<PathBuf, String> {
         match &self.policy {
-            SourcePolicy::Filesystem => Ok(normalize_overlay_path(&path)),
+            SourcePolicy::Filesystem => {
+                let absolute = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .map_err(|error| error.to_string())?
+                        .join(path)
+                };
+                Ok(normalize_path_lexically(&absolute))
+            }
             SourcePolicy::Virtual { root } => normalize_virtual_path(root, &path),
             SourcePolicy::Snapshot { .. } => Ok(path),
         }
@@ -1240,6 +1283,71 @@ fn normalize_path_lexically(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+/// Returns an absolute, lexically normalized filesystem path without
+/// consulting the filesystem or following symbolic links.
+pub fn absolute_lexical_path(path: &Path) -> std::io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    Ok(normalize_path_lexically(&absolute))
+}
+
+/// Rejects filesystem paths that traverse a symlink while allowing a missing
+/// suffix, so hosts can still watch unresolved source candidates.
+pub fn ensure_no_symlink_components(path: &Path) -> std::io::Result<()> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    ensure_no_symlink_components_once(&path)?;
+
+    // Keep checking the spelling supplied by the caller so `link/../file`
+    // cannot hide a traversed symlink. Also check the lexical destination:
+    // once a missing component is reached, `missing/../link` would otherwise
+    // stop the first walk before observing `link`.
+    let normalized = normalize_path_lexically(&path);
+    if normalized != path {
+        ensure_no_symlink_components_once(&normalized)?;
+    }
+    Ok(())
+}
+
+fn ensure_no_symlink_components_once(path: &Path) -> std::io::Result<()> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if !matches!(component, Component::Normal(_)) {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "symlink component '{}' is not supported in filesystem-backed Onda path '{}'",
+                        current.display(),
+                        path.display()
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn normalize_overlay_path(path: &Path) -> PathBuf {

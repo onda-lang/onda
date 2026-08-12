@@ -1,20 +1,53 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { buildExampleProjectCatalog } from "../../scripts/example-projects.mjs";
 
-test("builds focused browser projects with local example dependencies", async () => {
-  const catalog = await buildExampleProjectCatalog(resolve("examples"));
-  const sine = catalog.projects["foundations/sine.onda"];
-  const reverb = catalog.projects["processors-and-graphs/reverb_graph.onda"];
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const catalog = await buildExampleProjectCatalog(resolve(repoRoot, "examples"));
 
+test("builds focused browser projects with exact local dependencies", () => {
   assert.equal(catalog.version, 1);
-  assert.deepEqual(Object.keys(sine.sources), ["foundations/sine.onda"]);
-  assert.deepEqual(Object.keys(reverb.sources), [
-    "processors-and-graphs/reverb.onda",
-    "processors-and-graphs/reverb_graph.onda",
+  assert.deepEqual(
+    Object.keys(catalog.projects["basic/sine.onda"].sources),
+    ["basic/sine.onda"],
+  );
+  assert.deepEqual(
+    Object.keys(catalog.projects["effects/fdn_reverb.onda"].sources),
+    [
+      "effects/fdn_reverb.onda",
+      "effects/processors/effect_audition.onda",
+      "effects/processors/fdn_reverb.onda",
+    ],
+  );
+  assert.deepEqual(
+    Object.keys(catalog.projects["projects/wavetable_garden/code/main.onda"].sources),
+    [
+      "projects/wavetable_garden/code/main.onda",
+      "projects/wavetable_garden/code/wavetable_voice.onda",
+    ],
+  );
+});
+
+test("every documented playground example exists in the generated catalog", async () => {
+  const documents = await Promise.all([
+    readFile(resolve(repoRoot, "docs/examples.md"), "utf8"),
+    readFile(resolve(repoRoot, "website/index.md"), "utf8"),
   ]);
-  assert.equal(reverb.entry, "processors-and-graphs/reverb_graph.onda");
-  assert.equal(reverb.active, reverb.entry);
+  const linked = new Set(
+    documents.flatMap((document) =>
+      [...document.matchAll(/example=([^' }]+)/g)].map((match) => match[1])
+    ),
+  );
+  assert.notEqual(linked.size, 0);
+  for (const example of linked) {
+    assert.equal(
+      Object.hasOwn(catalog.projects, example),
+      true,
+      `documented playground example '${example}' is missing from the catalog`,
+    );
+  }
 });

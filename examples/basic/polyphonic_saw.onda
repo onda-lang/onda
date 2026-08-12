@@ -1,0 +1,91 @@
+import std/osc
+import std/filter
+import std/env
+import std/levels
+import std/random
+
+const NumVoices = 8
+
+proc Voice:
+  params:
+    decay_s = 0.35
+    amp = 1.0
+
+  init:
+    freq = 220.0
+    cutoff = 1200.0
+    osc = std::osc::Saw(freq = freq)
+    lpf = std::filter::OnePole(cutoff = cutoff)
+    env = std::env::DecayEnv(decay_s = decay_s)
+
+  event bang(freq_hz, cutoff_hz):
+    freq = freq_hz
+    cutoff = cutoff_hz
+    osc.reset()
+    env.start()
+
+  sample:
+    osc.freq = freq
+    lpf.cutoff = cutoff
+    env.decay_s = decay_s
+
+    level = env()
+
+    sig = 0.0
+    if level > 0.00001:
+      sig = lpf(osc()) * level * amp
+
+    out1 = sig
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  freq_min = 110.0 {20.0, 4000.0}
+  freq_max = 880.0 {20.0, 4000.0}
+  cutoff_min = 300.0 {20.0, 20000.0}
+  cutoff_max = 6000.0 {20.0, 20000.0}
+  decay_s = 0.35 {0.01, 4.0}
+  amp = 1.0 {0.0, 1.0}
+  bpm = 126.0 {45.0, 220.0, unit = "BPM"}
+  level = 0.34 {0.0, 0.8}
+
+init:
+  voices: Voice[NumVoices] = Voice()
+  next_voice: i32 = 0
+  rng = std::random::Rng<f32>()
+  voice_pan: f32[NumVoices]
+  clock: i32 = 0
+  pending_bang = false
+
+event bang():
+  pending_bang = true
+
+sample:
+  period = max(i32(SR * 15.0 / bpm), 1)
+  if auto_play != 0 && clock == 0:
+    pending_bang = true
+  clock = (clock + 1) % period
+
+  if pending_bang:
+    lo_freq = min(freq_min, freq_max)
+    hi_freq = max(freq_min, freq_max)
+    lo_cutoff = min(cutoff_min, cutoff_max)
+    hi_cutoff = max(cutoff_min, cutoff_max)
+    voices[next_voice].decay_s = decay_s
+    voices[next_voice].amp = amp
+    voices[next_voice].bang(
+      freq_hz = rng.range(lo_freq, hi_freq),
+      cutoff_hz = rng.range(lo_cutoff, hi_cutoff),
+    )
+    voice_pan[next_voice] = rng.range(-0.9, 0.9)
+    next_voice = (next_voice + 1) % NumVoices
+    pending_bang = false
+
+  mix_l = 0.0
+  mix_r = 0.0
+  for i in 0..NumVoices:
+    voice = voices[i]()
+    (gain_l, gain_r) = std::levels::pan_3db(voice_pan[i])
+    mix_l = mix_l + voice * gain_l
+    mix_r = mix_r + voice * gain_r
+  out1 = tanh(mix_l * level)
+  out2 = tanh(mix_r * level)

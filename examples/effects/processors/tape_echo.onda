@@ -1,0 +1,66 @@
+import std/filter
+import std/osc
+
+const TapeLineSamples: i32 = i32(SR * 3)
+
+proc TapeLine:
+  params:
+    delay_s = 0.36
+    feedback = 0.58
+    tone = 3600.0
+    wow = 0.002
+    wow_rate = 0.31
+    drive = 1.4
+
+  init:
+    line: f32[TapeLineSamples]
+    write: i32 = 0
+    wow_lfo = std::osc::Sine(freq = wow_rate)
+    flutter_lfo = std::osc::Sine(freq = wow_rate * 7.31)
+    feedback_filter = std::filter::OnePole(cutoff = tone)
+
+  sample:
+    drift = wow_lfo(freq = wow_rate) + flutter_lfo(freq = wow_rate * 7.31) * 0.18
+    moving_delay = clamp(delay_s * (1.0 + wow * drift), 0.002, 2.95)
+    read_pos = wrap(f32(write) - moving_delay * SR, 0.0, f32(TapeLineSamples))
+    i0 = i32(read_pos)
+    i1 = i0 + 1
+    if (i1 >= TapeLineSamples):
+      i1 = 0
+    delayed = lerp(line[i0], line[i1], read_pos - f32(i0))
+
+    feedback_filter.cutoff = tone
+    dark_repeat = feedback_filter(delayed)
+    line[write] = tanh((in1 + dark_repeat * feedback) * drive)
+    write = (write + 1) % TapeLineSamples
+    out1 = delayed
+
+proc StereoTapeEcho:
+  params:
+    time_s = 0.36
+    feedback = 0.58
+    tone = 3600.0
+    wow = 0.0025
+    drive = 1.4
+    mix = 0.42
+
+  init:
+    left = TapeLine(wow_rate = 0.27)
+    right = TapeLine(wow_rate = 0.34)
+
+  sample:
+    left.delay_s = time_s
+    right.delay_s = time_s * 1.333
+    left.feedback = feedback
+    right.feedback = feedback * 0.97
+    left.tone = tone
+    right.tone = tone * 0.88
+    left.wow = wow
+    right.wow = wow * 1.17
+    left.drive = drive
+    right.drive = drive
+    wet_l = left(in1 + in2 * 0.12)
+    wet_r = right(in2 + in1 * 0.12)
+
+    out1 = tanh(in1 * (1.0 - mix) + wet_l * mix)
+    out2 = tanh(in2 * (1.0 - mix) + wet_r * mix)

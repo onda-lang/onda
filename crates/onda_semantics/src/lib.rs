@@ -908,7 +908,7 @@ sample:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("bound param hook program should analyze");
-        let hook_name = "Voice.__proc_local__update";
+        let hook_name = "Voice.__onda_proc_local__update";
 
         let top_level_hook_count = typed
             .init
@@ -953,7 +953,7 @@ sample:
         let init_def = typed
             .defs
             .iter()
-            .find(|def| def.name == "Voice.__proc_init")
+            .find(|def| def.name == "Voice.__onda_proc_init")
             .expect("missing generated proc init def");
         assert!(matches!(
             init_def.body.last(),
@@ -1003,7 +1003,7 @@ sample:
         let parent_hook = typed
             .defs
             .iter()
-            .find(|def| def.name == "Parent.__proc_local__update")
+            .find(|def| def.name == "Parent.__onda_proc_local__update")
             .expect("missing parent bind hook def");
         let assign_idx = parent_hook
             .body
@@ -1028,7 +1028,7 @@ sample:
             Some(Stmt::Expr {
                 expr: Expr::UserCall { name, .. },
                 ..
-            }) if name == "Parent.__proc_local__nested__child__update"
+            }) if name == "Parent.__onda_proc_local__nested__child__update"
         ));
     }
 
@@ -1077,13 +1077,13 @@ sample:
                     && def.body.iter().any(|stmt| {
                         stmt_contains_user_call_name(
                             stmt,
-                            "Parent.__proc_local__nested__children_0___update",
+                            "Parent.__onda_proc_local__nested__children_0___update",
                         )
                     })
                     && def.body.iter().any(|stmt| {
                         stmt_contains_user_call_name(
                             stmt,
-                            "Parent.__proc_local__nested__children_1___update",
+                            "Parent.__onda_proc_local__nested__children_1___update",
                         )
                     })
             })
@@ -1103,7 +1103,7 @@ sample:
             helper.body.iter().any(|stmt| {
                 stmt_contains_user_call_name(
                     stmt,
-                    "Parent.__proc_local__nested__children_0___update",
+                    "Parent.__onda_proc_local__nested__children_0___update",
                 )
             }),
             "missing slot 0 cascade hook in {:?}",
@@ -1113,7 +1113,7 @@ sample:
             helper.body.iter().any(|stmt| {
                 stmt_contains_user_call_name(
                     stmt,
-                    "Parent.__proc_local__nested__children_1___update",
+                    "Parent.__onda_proc_local__nested__children_1___update",
                 )
             }),
             "missing slot 1 cascade hook in {:?}",
@@ -1219,7 +1219,7 @@ sample:
                             ..
                         },
                     ..
-                }) if name == "Voice.__proc_local__update"
+                }) if name == "Voice.__onda_proc_local__update"
                     && matches!(
                         args.first(),
                         Some(CallArg {
@@ -1667,7 +1667,7 @@ sample:
                 expr: Expr::UserCall { name: call_name, .. },
                 ..
             } if name == "__onda_proc_call_result_tmp_0"
-                && call_name == "Voice.__proc_call_out0"
+                && call_name == "Voice.__onda_proc_call_out0"
         ));
         assert!(matches!(
             &typed.sample[3],
@@ -1682,7 +1682,7 @@ sample:
             Stmt::Expr {
                 expr: Expr::UserCall { name, .. },
                 ..
-            } if name == "Voice.__proc_local__update"
+            } if name == "Voice.__onda_proc_local__update"
         ));
         assert!(matches!(
             &typed.sample[5],
@@ -1691,7 +1691,7 @@ sample:
                 expr: Expr::UserCall { name: call_name, .. },
                 ..
             } if name == "__onda_proc_call_result_tmp_1"
-                && call_name == "Voice.__proc_call_out0"
+                && call_name == "Voice.__onda_proc_call_out0"
         ));
     }
 
@@ -1780,6 +1780,38 @@ sample:
     }
 
     #[test]
+    fn nested_proc_events_may_update_their_own_pinned_params() {
+        let src = r#"
+proc Child:
+  params:
+    pin value = 0.0
+  event set(value_v: f32):
+    value = value_v
+  outs:
+    out1
+  sample:
+    out1 = value
+
+proc Parent:
+  init:
+    child = Child()
+  outs:
+    out1
+  sample:
+    child.set(0.75)
+    out1 = child()
+
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program)
+            .expect("a nested child event should retain authority over its pinned params");
+    }
+
+    #[test]
     fn pinned_proc_params_reject_external_access() {
         let cases = [
             (
@@ -1790,6 +1822,16 @@ sample:
             (
                 "field read",
                 "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.cutoff\n",
+                "param 'cutoff' is pinned and cannot be read",
+            ),
+            (
+                "field read from user def",
+                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\ndef leak(voice: Voice):\n  return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = leak(voice)\n",
+                "param 'cutoff' is pinned and cannot be read",
+            ),
+            (
+                "field read from __proc-prefixed user method",
+                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nstruct Inspector:\n  def __proc_read(self, voice: Voice):\n    return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\n  inspector = Inspector()\nsample:\n  out1 = inspector.__proc_read(voice)\n",
                 "param 'cutoff' is pinned and cannot be read",
             ),
             (
@@ -1875,7 +1917,7 @@ sample:
         let step = typed
             .defs
             .iter()
-            .find(|def| def.name == "Parent.__proc_nested_mid_step")
+            .find(|def| def.name == "Parent.__onda_proc_nested_mid_step")
             .expect("missing nested mid step");
         let assign_idx = step
             .body
@@ -1895,7 +1937,7 @@ sample:
             Some(Stmt::Expr {
                 expr: Expr::UserCall { name, .. },
                 ..
-            }) if name == "Parent.__proc_local__nested__mid__leaf__update"
+            }) if name == "Parent.__onda_proc_local__nested__mid__leaf__update"
         ));
     }
 
@@ -1928,7 +1970,7 @@ sample:
         assert_eq!(
             typed
                 .def_sample_oversample_factors
-                .get("Voice.__proc_local__update")
+                .get("Voice.__onda_proc_local__update")
                 .copied(),
             Some(2)
         );
@@ -5521,6 +5563,72 @@ sample:
     }
 
     #[test]
+    fn nested_proc_array_state_len_analyzes() {
+        let src = r#"
+proc Inner:
+  init:
+    line: f32[32]
+
+  sample:
+    out1 = f32(line.len())
+
+proc Outer:
+  init:
+    inner = Inner()
+
+  sample:
+    out1 = inner()
+
+init:
+  outer = Outer()
+
+sample:
+  out1 = outer()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("nested proc array-state methods should analyze");
+    }
+
+    #[test]
+    fn nested_proc_buffer_methods_analyze() {
+        let src = r#"
+proc Inner:
+  buffers:
+    src: f32
+
+  block:
+    frames = src.len()
+    channels = src.chans()
+    rate = src.samplerate()
+    sample:
+      out1 = f32(frames + channels) + rate
+
+proc Outer:
+  buffers:
+    src: f32
+
+  init:
+    inner = Inner(src = src)
+
+  block:
+    sample:
+      out1 = inner()
+
+buffers:
+  src: f32
+
+init:
+  outer = Outer(src = src)
+
+block:
+  sample:
+    out1 = outer()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("nested proc buffer methods should analyze");
+    }
+
+    #[test]
     fn init_buffer_len_is_rejected_semantically() {
         let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  n = src.len()\nsample:\n  out1 = 0.0\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -5871,6 +5979,22 @@ sample:
     }
 
     #[test]
+    fn array_constructor_initializers_validate_generic_type_arguments_before_rewriting() {
+        let src = r#"
+outs:
+  out1
+
+def id<T>(x: T) -> T:
+  return x
+
+sample:
+  values: bool[1] = [id<bool>(true)]
+  out1 = 0.0
+"#;
+        assert_analyze_error_contains(src, "'bool' is not valid as a generic type argument");
+    }
+
+    #[test]
     fn generic_def_return_annotation_specializes_through_monomorphization() {
         let src = "outs:\n  out1\ndef id<T>(x: T) -> T:\n  return x\nsample:\n  out1 = id(0.5)\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -6001,7 +6125,7 @@ sample:
         let def = typed
             .defs
             .iter()
-            .find(|def| def.name.contains("Voice.__proc_local__pair"))
+            .find(|def| def.name.contains("Voice.__onda_proc_local__pair"))
             .expect("missing lowered proc-local def");
         assert_eq!(
             def.return_ty,
@@ -6473,7 +6597,7 @@ sample:
             typed
                 .block_pre
                 .iter()
-                .any(|stmt| stmt_contains_user_call_name(stmt, "Bank.__proc_block_pre")),
+                .any(|stmt| stmt_contains_user_call_name(stmt, "Bank.__onda_proc_block_pre")),
             "expected sample caller to inject Bank block_pre: {:#?}",
             typed.block_pre
         );
@@ -6481,7 +6605,7 @@ sample:
             typed
                 .block_post
                 .iter()
-                .any(|stmt| stmt_contains_user_call_name(stmt, "Bank.__proc_block_post")),
+                .any(|stmt| stmt_contains_user_call_name(stmt, "Bank.__onda_proc_block_post")),
             "expected sample caller to inject Bank block_post: {:#?}",
             typed.block_post
         );
@@ -6489,7 +6613,7 @@ sample:
         let bank_block_post = typed
             .defs
             .iter()
-            .find(|def| def.name == "Bank.__proc_block_post")
+            .find(|def| def.name == "Bank.__onda_proc_block_post")
             .expect("missing lowered Bank block_post def");
         assert!(
             bank_block_post
@@ -6566,7 +6690,7 @@ sample:
                 .block_post
                 .iter()
                 .any(|stmt| {
-                    stmt_contains_user_call_name(stmt, "Voice.__proc_block_post")
+                    stmt_contains_user_call_name(stmt, "Voice.__onda_proc_block_post")
                         || stmt_contains_index_base(stmt, "__onda_proc_block_active_voices")
                 }),
             "expected sample caller to flush top-level proc-array active slots in block_post: {:#?}",

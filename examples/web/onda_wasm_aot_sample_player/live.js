@@ -6,15 +6,12 @@ const playButton = document.querySelector("[data-play]");
 const stopPlaybackButton = document.querySelector("[data-stop-playback]");
 const speedInput = document.querySelector("[data-speed]");
 const speedValue = document.querySelector("[data-speed-value]");
-const amplitudeInput = document.querySelector("[data-amplitude]");
-const amplitudeValue = document.querySelector("[data-amplitude-value]");
 const statusElement = document.querySelector("[data-status]");
 const summaryElement = document.querySelector("[data-summary]");
 
 let artifact = null;
 let context = null;
 let processor = null;
-let amplitudeSource = null;
 
 function setStatus(message, kind = "") {
   statusElement.textContent = message;
@@ -74,12 +71,7 @@ async function startAudio() {
       params: { speed: Number(speedInput.value) },
       buffers: { clip },
     });
-    amplitudeSource = new ConstantSourceNode(context, {
-      offset: Number(amplitudeInput.value),
-    });
-    amplitudeSource.connect(processor.node);
     processor.node.connect(context.destination);
-    amplitudeSource.start();
     await context.resume();
     await processor.trigger("play", { enabled: true });
     audioButton.textContent = "Stop audio";
@@ -100,13 +92,6 @@ async function stopAudio() {
   processor?.node.disconnect();
   processor?.close();
   processor = null;
-  try {
-    amplitudeSource?.stop();
-  } catch {
-    // The source may not have reached its start call.
-  }
-  amplitudeSource?.disconnect();
-  amplitudeSource = null;
   await context.close();
   context = null;
   audioButton.textContent = "Start audio";
@@ -144,14 +129,6 @@ speedInput.addEventListener("input", () => {
   processor?.setParam("speed", Number(speedInput.value)).catch((error) =>
     setStatus(errorMessage(error), "fail")
   );
-});
-
-amplitudeInput.addEventListener("input", () => {
-  const value = Number(amplitudeInput.value);
-  amplitudeValue.value = value.toFixed(2);
-  if (amplitudeSource && context) {
-    amplitudeSource.offset.setValueAtTime(value, context.currentTime);
-  }
 });
 
 loadArtifact().catch((error) => {

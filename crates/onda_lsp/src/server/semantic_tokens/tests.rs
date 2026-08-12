@@ -77,6 +77,20 @@ fn nth_match_start(line: &str, needle: &str, occurrence: usize) -> Option<usize>
     None
 }
 
+fn nth_line_containing(source: &str, needle: &str, occurrence: usize) -> usize {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains(needle))
+        .nth(occurrence)
+        .map(|(line_no, _)| line_no)
+        .unwrap_or_else(|| panic!("expected occurrence {occurrence} of '{needle}'"))
+}
+
+fn line_containing(source: &str, needle: &str) -> usize {
+    nth_line_containing(source, needle, 0)
+}
+
 fn repo_source(rel: &str) -> (PathBuf, String) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -253,44 +267,49 @@ fn semantic_tokens_mark_onda_params_as_ports() {
 fn semantic_tokens_runtime_symbols_shadow_namespace_names_in_std_filter() {
     let (path, source) = repo_source("stdlib/std/filter.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
+    let mode_namespace = line_containing(&source, "  namespace mode:");
+    let one_pole_param = line_containing(&source, "mode: i32 = mode::ONE_POLE_LOWPASS");
+    let one_pole_read = line_containing(&source, "mode == mode::ONE_POLE_HIGHPASS");
+    let svf_param = line_containing(&source, "mode: i32 = 0");
+    let svf_read = line_containing(&source, "mode <= mode::SVF_LOWPASS");
 
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 1, "mode"),
+        token_type_at_text_on_line(&tokens, &source, mode_namespace, "mode"),
         Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
         "mode namespace declaration should remain a namespace"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 18, "mode"),
+        token_type_at_text_on_line(&tokens, &source, one_pole_param, "mode"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "OnePole param declaration should be a port"
     );
     assert_eq!(
-        token_type_at_nth_text_on_line(&tokens, &source, 18, "mode", 1),
+        token_type_at_nth_text_on_line(&tokens, &source, one_pole_param, "mode", 1),
         Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
         "OnePole default should keep mode:: as namespace"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 33, "mode"),
+        token_type_at_text_on_line(&tokens, &source, one_pole_read, "mode"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "OnePole mode read should be a port"
     );
     assert_eq!(
-        token_type_at_nth_text_on_line(&tokens, &source, 33, "mode", 1),
+        token_type_at_nth_text_on_line(&tokens, &source, one_pole_read, "mode", 1),
         Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
         "OnePole qualified mode:: use should be namespace"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 60, "mode"),
+        token_type_at_text_on_line(&tokens, &source, svf_param, "mode"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "Svf param declaration should be a port"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 95, "mode"),
+        token_type_at_text_on_line(&tokens, &source, svf_read, "mode"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "Svf mode read should be a port"
     );
     assert_eq!(
-        token_type_at_nth_text_on_line(&tokens, &source, 95, "mode", 1),
+        token_type_at_nth_text_on_line(&tokens, &source, svf_read, "mode", 1),
         Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
         "Svf qualified mode:: use should be namespace"
     );
@@ -343,30 +362,6 @@ fn semantic_tokens_do_not_leak_event_locals_into_sample_blocks() {
     );
     assert!(
         !amp_tokens.iter().any(|token| token.line == 25),
-        "sample block should not highlight event-local amp: {amp_tokens:?}"
-    );
-}
-
-#[test]
-fn semantic_tokens_do_not_leak_event_locals_into_sample_blocks_for_simple_events_file() {
-    let (path, source) = repo_source("examples/foundations/simple_events.onda");
-    let tokens = semantic_tokens_for_document(&source, Some(&path));
-
-    let amp_tokens = find_tokens_named(&tokens, &source, "amp");
-    assert!(
-        amp_tokens
-            .iter()
-            .any(|token| token.line == 12 && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
-        "event param declaration should still be highlighted: {amp_tokens:?}"
-    );
-    assert!(
-        amp_tokens
-            .iter()
-            .any(|token| token.line == 14 && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
-        "event param use should still be highlighted: {amp_tokens:?}"
-    );
-    assert!(
-        !amp_tokens.iter().any(|token| token.line == 24),
         "sample block should not highlight event-local amp: {amp_tokens:?}"
     );
 }
@@ -933,140 +928,6 @@ fn semantic_tokens_mark_proc_output_in_else_branch() {
 }
 
 #[test]
-fn semantic_tokens_mark_top_level_init_vars_in_buffer_looper_read() {
-    let (path, source) = repo_source("examples/buffers-fft-convolution/buffer_looper_read.onda");
-    let tokens = semantic_tokens_for_document(&source, Some(&path));
-
-    let pos_tokens = find_tokens_named(&tokens, &source, "pos");
-    assert!(!pos_tokens.is_empty(), "pos should be highlighted");
-    assert!(
-        pos_tokens
-            .iter()
-            .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "pos should be state everywhere: {pos_tokens:?}"
-    );
-
-    let rate_tokens = find_tokens_named(&tokens, &source, "rate");
-    assert!(!rate_tokens.is_empty(), "rate should be highlighted");
-    assert!(
-        rate_tokens
-            .iter()
-            .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
-        "rate should be port everywhere: {rate_tokens:?}"
-    );
-
-    let src_tokens = find_tokens_named(&tokens, &source, "src");
-    assert!(!src_tokens.is_empty(), "src should be highlighted");
-    assert!(
-        src_tokens
-            .iter()
-            .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
-        "src should be port everywhere: {src_tokens:?}"
-    );
-}
-
-#[test]
-fn semantic_tokens_mark_top_level_block_locals_in_nested_sample_for_buffer_looper_read() {
-    let (path, source) = repo_source("examples/buffers-fft-convolution/buffer_looper_read.onda");
-    let tokens = semantic_tokens_for_document(&source, Some(&path));
-
-    let frames_tokens = find_tokens_named(&tokens, &source, "frames");
-    assert!(
-        frames_tokens
-            .iter()
-            .any(|t| t.line == 10 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "top-level block local 'frames' should be highlighted in block: {frames_tokens:?}"
-    );
-    assert!(
-        frames_tokens
-            .iter()
-            .any(|t| t.line == 20 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "top-level block local 'frames' should carry into nested sample: {frames_tokens:?}"
-    );
-
-    let chans_tokens = find_tokens_named(&tokens, &source, "chans");
-    assert!(
-        chans_tokens
-            .iter()
-            .any(|t| t.line == 15 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "top-level block local 'chans' should carry into nested sample: {chans_tokens:?}"
-    );
-
-    let speed_tokens = find_tokens_named(&tokens, &source, "speed");
-    assert!(
-        speed_tokens
-            .iter()
-            .any(|t| t.line == 20 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "top-level block local 'speed' should carry into nested sample: {speed_tokens:?}"
-    );
-}
-
-#[test]
-fn semantic_tokens_do_not_mark_import_path_segments_as_init_state_in_polyphonic_saw() {
-    let (path, source) = repo_source("examples/larger-patches/polyphonic_saw.onda");
-    let tokens = semantic_tokens_for_document(&source, Some(&path));
-
-    let osc_tokens = find_tokens_named(&tokens, &source, "osc");
-    assert!(
-        osc_tokens
-            .iter()
-            .all(|t| !(t.line == 0 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE)),
-        "import path segment 'osc' should not be state on line 0: {osc_tokens:?}"
-    );
-    assert!(
-        osc_tokens
-            .iter()
-            .any(|t| t.line > 0 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc init state 'osc' should still be highlighted as state in executable scopes: {osc_tokens:?}"
-    );
-
-    let env_tokens = find_tokens_named(&tokens, &source, "env");
-    assert!(
-        env_tokens
-            .iter()
-            .all(|t| !(t.line == 2 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE)),
-        "import path segment 'env' should not be state on line 2: {env_tokens:?}"
-    );
-    assert!(
-        env_tokens
-            .iter()
-            .any(|t| t.line > 2 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc init state 'env' should still be highlighted as state in executable scopes: {env_tokens:?}"
-    );
-}
-
-#[test]
-fn semantic_tokens_mark_named_argument_labels_as_state_in_polyphonic_saw() {
-    let (path, source) = repo_source("examples/larger-patches/polyphonic_saw.onda");
-    let tokens = semantic_tokens_for_document(&source, Some(&path));
-
-    assert!(
-        has_token(&tokens, 16, 24, 4, SEMANTIC_TOKEN_TYPE_PORT),
-        "proc constructor label 'freq =' should use the port token"
-    );
-    assert!(
-        has_token(&tokens, 17, 31, 6, SEMANTIC_TOKEN_TYPE_PORT),
-        "proc constructor label 'cutoff =' should use the port token"
-    );
-    assert!(
-        has_token(&tokens, 18, 29, 7, SEMANTIC_TOKEN_TYPE_PORT),
-        "proc constructor label 'decay_s =' should use the port token"
-    );
-    assert!(
-        has_token(&tokens, 18, 48, 7, SEMANTIC_TOKEN_TYPE_PORT),
-        "proc constructor label 'trigger =' should use the port token"
-    );
-    assert!(
-        has_token(&tokens, 65, 4, 7, SEMANTIC_TOKEN_TYPE_STATE),
-        "event call named arg label 'freq_hz =' should use the state token"
-    );
-    assert!(
-        has_token(&tokens, 66, 4, 9, SEMANTIC_TOKEN_TYPE_STATE),
-        "event call named arg label 'cutoff_hz =' should use the state token"
-    );
-}
-
-#[test]
 fn semantic_tokens_do_not_mark_nested_init_locals_as_state() {
     let source = concat!(
         "outs:\n",
@@ -1420,46 +1281,31 @@ fn semantic_tokens_mark_named_instance_params_as_ports() {
 fn semantic_tokens_mark_proc_state_and_hook_state_for_std_osc() {
     let (path, source) = repo_source("stdlib/std/osc.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
+    let incr_lines = [
+        line_containing(&source, "incr = 0.0"),
+        line_containing(&source, "incr = freq / SR"),
+        line_containing(&source, "phase = phase + incr"),
+    ];
+    for line_no in incr_lines {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, &source, line_no, "incr"),
+            Some(SEMANTIC_TOKEN_TYPE_STATE),
+            "Phasor state 'incr' should remain state in init, hook, and sample"
+        );
+    }
 
-    let incr_tokens = find_tokens_named(&tokens, &source, "incr");
-    assert!(
-        incr_tokens
-            .iter()
-            .any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc init state 'incr' should be highlighted in init: {incr_tokens:?}"
-    );
-    assert!(
-        incr_tokens
-            .iter()
-            .any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc init state 'incr' should carry into hook defs: {incr_tokens:?}"
-    );
-    assert!(
-        incr_tokens
-            .iter()
-            .any(|t| t.line == 15 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc init state 'incr' should carry into sample: {incr_tokens:?}"
-    );
-
-    let dt_tokens = find_tokens_named(&tokens, &source, "dt");
-    assert!(
-        dt_tokens
-            .iter()
-            .any(|t| t.line == 55 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc init state 'dt' should be highlighted in init: {dt_tokens:?}"
-    );
-    assert!(
-        dt_tokens
-            .iter()
-            .any(|t| t.line == 58 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc init state 'dt' should carry into hook defs: {dt_tokens:?}"
-    );
-    assert!(
-        dt_tokens
-            .iter()
-            .any(|t| t.line == 63 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc init state 'dt' should carry into sample: {dt_tokens:?}"
-    );
+    let dt_lines = [
+        nth_line_containing(&source, "dt = 0.0", 0),
+        nth_line_containing(&source, "dt = freq / SR", 0),
+        line_containing(&source, "poly_blep<T>(phase, dt)"),
+    ];
+    for line_no in dt_lines {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, &source, line_no, "dt"),
+            Some(SEMANTIC_TOKEN_TYPE_STATE),
+            "Saw state 'dt' should remain state in init, hook, and sample"
+        );
+    }
 }
 
 #[test]

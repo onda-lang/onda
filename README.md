@@ -56,7 +56,9 @@ Tagged releases attach portable tarballs and publish the four public npm package
 
 - [CHANGELOG.md](CHANGELOG.md): release history and migration notes
 - [docs/syntax.md](docs/syntax.md): language syntax and semantics
-- [docs/stdlib.md](docs/stdlib.md): generated standard-library API reference
+- [docs/stdlib.md](docs/stdlib.md): generated standard-library API reference; after changing
+  `stdlib/`, update it with `scripts/update_stdlib_docs.sh` on Unix or
+  `scripts/update_stdlib_docs.ps1` on Windows
 - [docs/info.md](docs/info.md): project structure and implementation notes
 - [docs/projects.md](docs/projects.md): project manifests, typed buffer assets, and project images
 - [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
@@ -117,20 +119,20 @@ Typical uses:
 Examples:
 
 ```bash
-onda compile examples/foundations/sine.onda
-onda compile examples/foundations/sine.onda --emit mir
-onda compile examples/foundations/sine.onda --emit mir-json --output sine.mir.json
-onda compile examples/foundations/sine.onda --emit mir-messagepack --output sine.mir.msgpack
-onda compile examples/processors-and-graphs/proc_gain_graph.onda --dump-graph
-onda compile examples/foundations/sine.onda --emit llvm-ir
-onda compile examples/foundations/sine.onda --emit obj
-onda compile examples/foundations/sine.onda --target-triple aarch64-unknown-linux-gnu --emit obj
+onda compile examples/basic/sine.onda
+onda compile examples/basic/sine.onda --emit mir
+onda compile examples/basic/sine.onda --emit mir-json --output sine.mir.json
+onda compile examples/basic/sine.onda --emit mir-messagepack --output sine.mir.msgpack
+onda compile examples/feedback/cybernetic_feedback_graph.onda --dump-graph
+onda compile examples/basic/sine.onda --emit llvm-ir
+onda compile examples/basic/sine.onda --emit obj
+onda compile examples/basic/sine.onda --target-triple aarch64-unknown-linux-gnu --emit obj
 ```
 
 Cross-target IR and object emission is also supported:
 
 ```bash
-onda compile examples/foundations/sine.onda --target-spec ./targets/arm64.toml --emit obj
+onda compile examples/basic/sine.onda --target-spec ./targets/arm64.toml --emit obj
 ```
 
 ### `onda run`
@@ -140,10 +142,12 @@ This can be used to interactively play with the live-running code.
 Running `onda` without a command opens the same window with its file picker.
 The empty view lets you choose the sample rate and compile block size before loading a file. Use
 **Unload** to return there and recompile with different settings.
+Loaded filesystem sources and projects reload when their entry, transitive source dependencies,
+manifest, or file-backed assets change; unresolved and temporarily missing paths remain watchable.
 
 ```bash
 onda
-onda run examples/foundations/sine.onda
+onda run examples/basic/sine.onda
 ```
 
 Run host selection:
@@ -163,9 +167,8 @@ Runs the real-time playback/control transport without opening the standalone UI.
 Parameters can be set via the `--set` argument.
 
 ```bash
-onda run play examples/foundations/sine.onda --dur 2
-onda run play examples/foundations/sine.onda --forever --set freq=220
-onda run play examples/buffers-fft-convolution/buffer_looper_read.onda --buffer src=sample.wav
+onda run play examples/basic/sine.onda --dur 2
+onda run play examples/basic/sine.onda --forever --set freq=220
 ```
 
 Useful flags:
@@ -185,7 +188,7 @@ Offline render through the run pipeline.
 This is useful when you want to render out to a wav file without running real-time playback.
 
 ```bash
-onda run render examples/foundations/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
+onda run render examples/basic/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
 ```
 
 Useful flags:
@@ -201,7 +204,7 @@ Useful flags:
 Runs daemon-backed analysis for a file and reports diagnostics.
 
 ```bash
-onda daemon diagnose examples/foundations/sine.onda
+onda daemon diagnose examples/basic/sine.onda
 ```
 
 ### `onda daemon stdio`

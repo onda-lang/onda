@@ -51,6 +51,35 @@ namespace std::filter:
       y1 = y
       out1 = y
 
+  proc Resonator<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      freq = 1000.0 => update_coefficients
+      bandwidth = 120.0 => update_coefficients
+
+    init<T>:
+      y1 = 0.0
+      y2 = 0.0
+      coefficient = 0.0
+      radius_squared = 0.0
+      input_gain = 0.0
+
+    def update_coefficients():
+      center = clamp(freq, T(1.0), T(SR * 0.48))
+      width = clamp(bandwidth, T(1.0), T(SR * 0.48))
+      radius = exp(-PI * width / SR)
+      coefficient = T(2.0) * radius * cos(TWO_PI * center / SR)
+      radius_squared = radius * radius
+      input_gain = T(1.0) - radius
+
+    sample:
+      y = in1 * input_gain + coefficient * y1 - radius_squared * y2
+      y2 = y1
+      y1 = y
+      out1 = y
+
   proc Svf<T>:
     ins<T> 1
     outs<T> 1

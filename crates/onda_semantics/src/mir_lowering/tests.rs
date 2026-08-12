@@ -254,7 +254,7 @@ sample:
         "the proc-param assignment should clamp once:\n{process}"
     );
 
-    let step = formatted_function(&dump, "Gain.__proc_step");
+    let step = formatted_function(&dump, "Gain.__onda_proc_step");
     assert!(
         !step.contains("intrinsic range_clamp("),
         "reads of the already-constrained proc parameter should not reclamp:\n{step}"
@@ -1398,7 +1398,7 @@ sample 2 { out1 = voice() }
     assert!(mir
         .functions
         .iter()
-        .any(|function| function.name.starts_with("Voice.__proc_local__update")));
+        .any(|function| function.name.starts_with("Voice.__onda_proc_local__update")));
     let dump = format_program(&mir);
     assert!(dump.contains("f32(96000.0)"), "{dump}");
 }
@@ -1526,7 +1526,7 @@ sample:
     let step = mir
         .functions
         .iter()
-        .find(|function| function.name == "Tone.__proc_step")
+        .find(|function| function.name == "Tone.__onda_proc_step")
         .expect("processor step should lower");
     assert_eq!(
         block_loop_count(&step.body),
@@ -3207,9 +3207,9 @@ sample:
         .name
         .ends_with(".__onda_buffer_alias_selector_selected")));
     let dump = format_program(&mir);
-    let step = formatted_function(&dump, "Reader.__proc_step");
+    let step = formatted_function(&dump, "Reader.__onda_proc_step");
     assert!(step.contains("load_buffer_param @buffer_param_span"));
-    let block_pre = formatted_function(&dump, "Reader.__proc_block_pre");
+    let block_pre = formatted_function(&dump, "Reader.__onda_proc_block_pre");
     assert!(block_pre.contains("buffer_len @buffer_param_span"));
 }
 
@@ -3317,7 +3317,7 @@ sample:
     let step = mir
         .functions
         .iter()
-        .find(|function| function.name == "Reader.__proc_step")
+        .find(|function| function.name == "Reader.__onda_proc_step")
         .expect("missing reader step function");
     assert_eq!(
         step.params
@@ -3463,7 +3463,7 @@ sample:
     let mir = lower_test_program(&typed).expect("nested buffer subspans should lower");
     validate(&mir).expect("nested buffer subspan MIR should validate");
     assert!(mir.functions.iter().any(|function| {
-        function.name == "Parent.__proc_step"
+        function.name == "Parent.__onda_proc_step"
             && function
                 .params
                 .iter()

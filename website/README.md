@@ -16,8 +16,9 @@ bash ./website/stage.sh
 jekyll serve --source _site_source --baseurl "" --livereload
 ```
 
-The homepage links its displayed example into the browser playground without loading the compiler;
-it does not start audio. The `/playground/` route loads the same `wasm-opt -O4` frontend and Binaryen
+During staging, the homepage includes `examples/basic/saw_filter_saturator.onda` directly so its
+displayed source and playground target cannot drift. The link does not load the compiler or start
+audio. The `/playground/` route loads the same `wasm-opt -O4` frontend and Binaryen
 backend, runs the real `onda lsp` implementation in the compiler worker, and offers only 44100/48000 Hz
 sample rates and 128/256/512/1024/2048-frame compile blocks (defaulting to 512). The editor keeps a
 multi-file virtual project in local storage and uses the same shared run webview as `onda-vscode`

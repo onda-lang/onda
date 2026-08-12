@@ -1,22 +1,22 @@
 use super::*;
 
 pub(crate) const PROC_FIELD_SENTINEL_PREFIX: &str = "__onda_proc_field__";
-pub(crate) const PROC_FIELD_SENTINEL_ARG: &str = "__proc_field";
+pub(crate) const PROC_FIELD_SENTINEL_ARG: &str = "__onda_proc_field";
 pub(crate) const PROC_INDEX_CALL_SENTINEL: &str = "__onda_proc_index_call";
 pub(crate) const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str = "__onda_proc_index_buffer_select";
-pub(crate) const PROC_INDEX_BASE_ARG: &str = "__proc_index_base";
-pub(crate) const PROC_INDEX_EXPR_ARG: &str = "__proc_index_expr";
+pub(crate) const PROC_INDEX_BASE_ARG: &str = "__onda_proc_index_base";
+pub(crate) const PROC_INDEX_EXPR_ARG: &str = "__onda_proc_index_expr";
 pub(crate) const STRUCT_ARRAY_FIELD_INDEX_SENTINEL: &str = "__onda_struct_array_field_index";
 pub(crate) const SAFI_BASE_ARG: &str = "__safi_base";
 pub(crate) const SAFI_IDX_ARG: &str = "__safi_idx";
 pub(crate) const SAFI_FIELD_ARG: &str = "__safi_field";
 pub(crate) const SAFI_FIELD_IDX_ARG: &str = "__safi_field_idx";
-pub(crate) const PROC_INIT_FN_SUFFIX: &str = ".__proc_init";
-pub(crate) const PROC_BLOCK_PRE_FN_SUFFIX: &str = ".__proc_block_pre";
-pub(crate) const PROC_BLOCK_POST_FN_SUFFIX: &str = ".__proc_block_post";
-pub(crate) const PROC_STEP_FN_SUFFIX: &str = ".__proc_step";
-pub(crate) const PROC_CALL_OUT_FN_PREFIX: &str = ".__proc_call_out";
-pub(crate) const PROC_EVENT_FN_PREFIX: &str = ".__proc_event_";
+pub(crate) const PROC_INIT_FN_SUFFIX: &str = ".__onda_proc_init";
+pub(crate) const PROC_BLOCK_PRE_FN_SUFFIX: &str = ".__onda_proc_block_pre";
+pub(crate) const PROC_BLOCK_POST_FN_SUFFIX: &str = ".__onda_proc_block_post";
+pub(crate) const PROC_STEP_FN_SUFFIX: &str = ".__onda_proc_step";
+pub(crate) const PROC_CALL_OUT_FN_PREFIX: &str = ".__onda_proc_call_out";
+pub(crate) const PROC_EVENT_FN_PREFIX: &str = ".__onda_proc_event_";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcApi {

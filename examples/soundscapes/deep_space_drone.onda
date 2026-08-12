@@ -1,0 +1,80 @@
+import std/delay
+import std/filter
+import std/levels
+import std/noise
+import std/osc
+import std/pitch
+
+const VoiceCount = 5
+const Intervals: i32[VoiceCount] = [0, 7, 12, 19, 26]
+
+proc DroneVoice:
+  params:
+    note = 36.0
+    drift_rate = 0.03
+    drift_depth = 0.004
+    brightness = 1800.0
+
+  init:
+    saw = std::osc::Saw(freq = std::pitch::note_to_hz(note), amp = 0.48)
+    sine = std::osc::Sine(freq = std::pitch::note_to_hz(note) * 0.5, amp = 0.52)
+    drift = std::osc::Sine(freq = drift_rate)
+    tone = std::filter::OnePole(cutoff = brightness)
+
+  sample:
+    bend = 1.0 + drift() * drift_depth
+    freq = std::pitch::note_to_hz(note) * bend
+    saw.freq = freq
+    sine.freq = freq * 0.5
+    tone.cutoff = brightness
+    out1 = tone(saw() + sine())
+
+params:
+  root_note = 33.0 {21.0, 57.0, step = 1.0}
+  motion = 0.38 {0.0, 1.0}
+  brightness = 1900.0 {180.0, 9000.0, log, "Hz"}
+  air = 0.08 {0.0, 0.4}
+  space = 0.58 {0.0, 0.85}
+  level = 1.0 {0.0, 1.0}
+
+init:
+  voices: DroneVoice[VoiceCount] = DroneVoice()
+  noise = std::noise::Pink(amp = 1.0)
+  noise_bp_l = std::filter::Svf(cutoff = 720.0, q = 2.4, mode = std::filter::mode::SVF_BANDPASS)
+  noise_bp_r = std::filter::Svf(cutoff = 970.0, q = 2.8, mode = std::filter::mode::SVF_BANDPASS)
+  drift_l = std::osc::Sine(freq = 0.009)
+  drift_r = std::osc::Sine(freq = 0.013)
+  delay_l = std::delay::Delay(delay_s = 0.73, feedback = 0.62, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = 0.91, feedback = 0.59, mix = 1.0)
+
+  for i in 0..VoiceCount:
+    voices[i].note = root_note + Intervals[i]
+    voices[i].drift_rate = 0.011 + f32(i) * 0.007
+    voices[i].drift_depth = 0.0004 + motion * (0.0012 + f32(i) * 0.00035)
+    voices[i].brightness = brightness * (0.72 + f32(i) * 0.11)
+
+sample:
+  dry_l = 0.0
+  dry_r = 0.0
+  for i in 0..VoiceCount:
+    voices[i].note = root_note + Intervals[i]
+    voices[i].drift_depth = 0.0004 + motion * (0.0012 + f32(i) * 0.00035)
+    voices[i].brightness = brightness * (0.72 + f32(i) * 0.11)
+    voice = voices[i]() * (0.52 / f32(VoiceCount))
+    pan = -0.86 + 1.72 * f32(i) / f32(VoiceCount - 1)
+    (gain_l, gain_r) = std::levels::pan_3db(pan)
+    dry_l = dry_l + voice * gain_l
+    dry_r = dry_r + voice * gain_r
+
+  noise_motion_l = 620.0 + (drift_l() + 1.0) * 310.0 * motion
+  noise_motion_r = 790.0 + (drift_r() + 1.0) * 420.0 * motion
+  noise_bp_l.update_coeffs(noise_motion_l, 2.4)
+  noise_bp_r.update_coeffs(noise_motion_r, 2.8)
+  cloud = noise()
+  air_l = noise_bp_l(cloud) * air
+  air_r = noise_bp_r(cloud) * air
+
+  wet_l = delay_l(dry_l + air_l + dry_r * 0.13)
+  wet_r = delay_r(dry_r + air_r + dry_l * 0.13)
+  out1 = tanh((dry_l + air_l + wet_l * space) * level)
+  out2 = tanh((dry_r + air_r + wet_r * space) * level)

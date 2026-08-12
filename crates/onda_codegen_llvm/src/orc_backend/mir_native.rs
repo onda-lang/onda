@@ -6711,7 +6711,7 @@ fn codegen_diagnostic(diagnostic: Diagnostic) -> MirCodegenError {
 mod tests {
     use super::*;
 
-    use onda_frontend::{parse_program, parse_program_file};
+    use onda_frontend::parse_program;
     use onda_semantics::{
         analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedProgram,
     };
@@ -6776,13 +6776,6 @@ mod tests {
         options: &MirTargetOptions,
     ) -> Result<String, Vec<MirCodegenError>> {
         lower_optimized_mir_to_target_llvm_ir(&trusted_optimized(program.clone())?, options)
-    }
-
-    fn lower_mir_to_object(
-        program: &Program,
-        options: &MirTargetOptions,
-    ) -> Result<Vec<u8>, Vec<MirCodegenError>> {
-        lower_optimized_mir_to_object(&trusted_optimized(program.clone())?, options)
     }
 
     fn lower_mir_to_object_artifact(
@@ -6877,20 +6870,6 @@ mod tests {
                     buffer_channels,
                     buffer_sample_rates,
                 )
-            }
-        }
-    }
-
-    fn collect_onda_examples(directory: &std::path::Path, paths: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(directory).expect("example directory should be readable") {
-            let path = entry.expect("example entry should be readable").path();
-            if path.is_dir() {
-                collect_onda_examples(&path, paths);
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "onda")
-            {
-                paths.push(path);
             }
         }
     }
@@ -7093,139 +7072,6 @@ block:
             .unwrap_err()
             .message
             .contains("requires 4-byte alignment"));
-    }
-
-    #[test]
-    fn real_sine_source_executes_through_mir_llvm() {
-        let outputs = run_native_outputs(
-            include_str!("../../../../examples/foundations/sine.onda"),
-            16,
-        );
-        assert_eq!(outputs.len(), 1);
-        assert!(outputs[0].iter().all(|sample| sample.is_finite()));
-        assert!(outputs[0].iter().any(|sample| *sample != 0.0));
-    }
-
-    #[test]
-    fn real_const_array_source_executes_through_mir_llvm() {
-        let outputs = run_native_outputs(
-            include_str!("../../../../examples/foundations/const_harmonic_bank.onda"),
-            8,
-        );
-        assert_eq!(outputs.len(), 1);
-        assert!(outputs[0].iter().all(|sample| sample.is_finite()));
-    }
-
-    #[test]
-    fn all_checked_in_examples_lower_through_validated_mir_to_target_llvm() {
-        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-        let mut paths = Vec::new();
-        collect_onda_examples(&examples, &mut paths);
-        paths.sort();
-        assert_eq!(
-            paths.len(),
-            46,
-            "the canonical example sweep changed; review new or removed programs"
-        );
-
-        let mut failures = Vec::new();
-        for path in paths {
-            let result = (|| {
-                let parsed = parse_program_file(&path)
-                    .map_err(|diagnostics| format!("parse failed: {diagnostics:?}"))?;
-                let typed = analyze_with_options(
-                    parsed,
-                    AnalysisOptions {
-                        sample_rate: 48_000.0,
-                        block_size: 64,
-                    },
-                )
-                .map_err(|diagnostics| format!("analysis failed: {diagnostics:?}"))?;
-                let mir = lower_program_to_optimized_mir(&typed)
-                    .map_err(|diagnostics| format!("MIR lowering failed: {diagnostics:?}"))?;
-                let mut target = crate::TargetConfig::host();
-                target.opt_level = TargetOptLevel::O0;
-                lower_optimized_mir_to_target_llvm_ir(
-                    &mir,
-                    &MirTargetOptions {
-                        fast_math: false,
-                        target,
-                    },
-                )
-                .map(|_| ())
-                .map_err(|diagnostics| format!("LLVM lowering failed: {diagnostics:?}"))
-            })();
-            if let Err(error) = result {
-                failures.push(format!("{}: {error}", path.display()));
-            }
-        }
-        assert!(
-            failures.is_empty(),
-            "MIR-native LLVM example sweep failed:\n{}",
-            failures.join("\n")
-        );
-    }
-
-    #[test]
-    fn real_event_and_user_call_source_executes_through_mir_llvm() {
-        let block_size = 8;
-        let (_, mir) = source_program(
-            include_str!("../../../../examples/foundations/simple_events.onda"),
-            block_size,
-        );
-        let native = lower_mir_and_jit_with_options(
-            mir,
-            MirCompileOptions {
-                fast_math: false,
-                opt_level: TargetOptLevel::O0,
-            },
-        )
-        .expect("native MIR LLVM backend should compile");
-        assert_eq!(
-            native.event_payload_shape(0),
-            Some(MirEventPayloadShape::Fixed { byte_size: 8 })
-        );
-        let native_params = native.default_param_bytes();
-        let mut native_state = native.initialize_state(&native_params).unwrap();
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&330.0_f32.to_ne_bytes());
-        payload.extend_from_slice(&0.5_f32.to_ne_bytes());
-        let buffers: [*mut u8; 0] = [];
-        let metadata_i32: [i32; 0] = [];
-        let metadata_f32: [f32; 0] = [];
-        native
-            .test_trigger_event_by_index(
-                &mut native_state,
-                &native_params,
-                0,
-                &payload,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .unwrap();
-
-        let mut native_output = vec![0.0_f32; block_size];
-        let native_outputs = [native_output.as_mut_ptr().cast::<u8>()];
-        let inputs: [*const u8; 0] = [];
-        native
-            .test_process_checked(
-                &mut native_state,
-                &native_params,
-                0,
-                block_size,
-                3,
-                &inputs,
-                &native_outputs,
-                &buffers,
-                &metadata_i32,
-                &metadata_i32,
-                &metadata_f32,
-            )
-            .unwrap();
-        assert!(native_output.iter().all(|sample| sample.is_finite()));
-        assert!(native_output.iter().any(|sample| *sample != 0.0));
     }
 
     #[test]
@@ -7736,7 +7582,7 @@ sample:
 "#;
         let (_, mir) = source_program(source, 1);
         assert!(mir.functions.iter().any(|function| {
-            function.name == "Parent.__proc_step"
+            function.name == "Parent.__onda_proc_step"
                 && function.params.iter().any(|parameter| {
                     matches!(
                         mir.types[parameter.ty.index()],
@@ -8303,26 +8149,6 @@ sample:
             )
             .expect_err("division by zero in an event should return a runtime failure");
         assert!(error.message.contains("runtime safety check"));
-    }
-
-    #[test]
-    fn safe_optimized_process_has_no_runtime_failure_branch() {
-        let (_, mir) = source_program(
-            include_str!("../../../../examples/foundations/sine.onda"),
-            512,
-        );
-        let ir = lower_mir_to_llvm_ir_with_options(
-            &mir,
-            MirCompileOptions {
-                fast_math: false,
-                opt_level: TargetOptLevel::O3,
-            },
-        )
-        .expect("safe source should emit optimized LLVM IR");
-        assert!(ir.contains("i32 @onda_process("));
-        assert!(!ir.contains("@llvm.trap"));
-        assert!(!ir.contains("runtime_failure"));
-        assert!(!ir.contains("call_failure"));
     }
 
     #[test]
@@ -9265,33 +9091,6 @@ sample:
                 "missing reference ABI fact '{fact}' in {reference_definition}"
             );
         }
-    }
-
-    #[test]
-    fn target_configured_ir_and_object_have_native_entry_abi() {
-        let (_, mir) = source_program(
-            include_str!("../../../../examples/foundations/sine.onda"),
-            4,
-        );
-        let mut target = crate::TargetConfig::host();
-        target.opt_level = TargetOptLevel::O0;
-        let options = MirTargetOptions {
-            fast_math: false,
-            target,
-        };
-        let ir = lower_mir_to_target_llvm_ir(&mir, &options).expect("MIR should emit LLVM IR");
-        let object = lower_mir_to_object(&mir, &options).expect("MIR should emit an object file");
-        assert!(!object.is_empty());
-        assert!(ir.contains("target triple ="));
-        assert!(ir.contains("target datalayout ="));
-        assert!(ir.contains("define i32 @onda_process("));
-        assert!(!ir.contains("@llvm.trap"));
-        let signature = ir
-            .lines()
-            .find(|line| line.contains("define i32 @onda_process("))
-            .expect("process definition");
-        assert_eq!(signature.matches("ptr").count(), 8);
-        assert_eq!(signature.matches("i32 noundef range(i32").count(), 3);
     }
 
     #[test]

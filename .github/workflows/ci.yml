@@ -145,5 +145,6 @@ jobs:
           npm test --workspace @onda-lang/binaryen-web
           npm test --workspace @onda-lang/webaudio
           npm run build --workspace @onda-lang/wasm-compiler
+          npm run check:examples
           npm run test:built --workspace @onda-lang/wasm-compiler
           npm run test:pack:built --workspace @onda-lang/wasm-compiler

@@ -1052,6 +1052,21 @@ fn monomorphize_calls_in_stmt(
             expr,
             ..
         } => {
+            monomorphize_calls_in_assign_target(
+                target,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                enclosing_type_params,
+            );
             monomorphize_calls_in_expr(
                 expr,
                 env,
@@ -1313,6 +1328,71 @@ fn monomorphize_calls_in_stmt(
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn monomorphize_calls_in_assign_target(
+    target: &mut AssignTarget,
+    env: &OverloadRewriteEnv,
+    mono_eligible: &HashSet<String>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    original_defs: &[FunctionDef],
+    generic_templates: &HashSet<String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    generated_defs: &mut Vec<FunctionDef>,
+    generated_sigs: &mut HashMap<String, FnSignature>,
+    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    return_types: &mut HashMap<String, ReturnType>,
+    errors: &mut Vec<Diagnostic>,
+    enclosing_type_params: &[String],
+) {
+    let coordinates = match target {
+        AssignTarget::Index { index, .. } => std::slice::from_mut(index),
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                monomorphize_calls_in_expr(
+                    coordinate,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    struct_defs,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    return_types,
+                    errors,
+                    enclosing_type_params,
+                );
+            }
+            return;
+        }
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => return,
+    };
+    for coordinate in coordinates {
+        monomorphize_calls_in_expr(
+            coordinate,
+            env,
+            mono_eligible,
+            fn_signatures,
+            original_defs,
+            generic_templates,
+            struct_defs,
+            generated_defs,
+            generated_sigs,
+            mono_cache,
+            return_types,
+            errors,
+            enclosing_type_params,
+        );
     }
 }
 
@@ -1701,7 +1781,85 @@ fn monomorphize_calls_in_expr(
                 );
             }
         }
-        _ => {}
+        Expr::Index { index, .. } => {
+            monomorphize_calls_in_expr(
+                index,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                enclosing_type_params,
+            );
+        }
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                monomorphize_calls_in_expr(
+                    coordinate,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    struct_defs,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    return_types,
+                    errors,
+                    enclosing_type_params,
+                );
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            monomorphize_calls_in_expr(
+                &mut spec.size,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                enclosing_type_params,
+            );
+            if let Some(values) = init {
+                for value in values {
+                    monomorphize_calls_in_expr(
+                        value,
+                        env,
+                        mono_eligible,
+                        fn_signatures,
+                        original_defs,
+                        generic_templates,
+                        struct_defs,
+                        generated_defs,
+                        generated_sigs,
+                        mono_cache,
+                        return_types,
+                        errors,
+                        enclosing_type_params,
+                    );
+                }
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -1839,6 +1997,54 @@ sample:
             .expect("missing second-parameter specialization");
         assert_eq!(scalar_param_types(first), [Some(PrimitiveType::I32), None]);
         assert_eq!(scalar_param_types(second), [None, Some(PrimitiveType::I32)]);
+    }
+
+    #[test]
+    fn assignment_target_coordinates_are_monomorphized_and_retained() {
+        let source = r#"
+def pick(value):
+  return value
+
+params:
+  selected: i32 = 1
+
+outs 2
+
+sample:
+  values = [0.0, 0.0]
+  values[pick(selected):] = 0.0
+  outs[pick(selected)] = values[0]
+"#;
+        let parsed = parse_program(source).expect("assignment target source should parse");
+        let typed = crate::analyze(parsed).expect("assignment target call should analyze");
+        let specialized_name = "pick.__mono__scalar_i32";
+        assert!(
+            typed.defs.iter().any(|def| def.name == specialized_name),
+            "the specialization used only by the assignment target must remain reachable"
+        );
+        let target_calls = typed
+            .sample
+            .iter()
+            .filter_map(|stmt| {
+                let Stmt::Assign { target, .. } = stmt else {
+                    return None;
+                };
+                let coordinate = match target {
+                    AssignTarget::Index { index, .. } => index,
+                    AssignTarget::Slice {
+                        start: Some(start), ..
+                    } => start,
+                    _ => return None,
+                };
+                match coordinate {
+                    Expr::UserCall { name, .. } => Some(name.as_str()),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(target_calls, [specialized_name, specialized_name]);
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("assignment target specialization should lower to MIR");
     }
 
     #[test]

@@ -98,6 +98,9 @@ Basic source rules:
 - Top-level declarations are processed in lexical order.
 - `import module/path` loads `module/path.onda`.
 - `include "path.onda"` or `include "path.on"` inserts another file by quoted path.
+- Native filesystem-backed entry, import, and include paths must not traverse symbolic links. The
+  loader rejects the path and identifies the offending component; virtual sources and immutable
+  project images are unaffected.
 
 Top-level forms:
 
@@ -1653,7 +1656,7 @@ Current std modules include:
 
 ```text
 std/prelude std/math std/random std/complex
-std/osc std/filter std/env std/delay std/data std/lookup
+std/osc std/filter std/env std/delay std/reverb std/pitch_shift std/data std/lookup
 std/fft std/convolution std/gain std/levels std/mix
 std/noise std/pitch std/smoothing
 ```

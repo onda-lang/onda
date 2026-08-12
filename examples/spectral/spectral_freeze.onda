@@ -1,0 +1,52 @@
+import std/delay
+import std/filter
+import std/osc
+import std/pitch
+import processors/spectral_freeze
+
+params:
+  live_input: i32 = 0 {0, 1, step = 1}
+  freeze: i32 = 1 {0, 1, step = 1}
+  transpose = 0.0 {-24.0, 24.0, step = 1.0, unit = "st"}
+  smear = 0.22 {0.0, 1.0}
+  width = 0.72 {0.0, 1.0}
+  mix = 0.86 {0.0, 1.0}
+  space = 0.28 {0.0, 0.72}
+  level = 0.8 {0.0, 1.0}
+
+init:
+  freezer = SpectralFreeze<1024>::Engine()
+  saw = std::osc::Saw(freq = std::pitch::note_to_hz(45.0), amp = 0.16)
+  filter = std::filter::OnePole(cutoff = 2100.0)
+  space_l = std::delay::Delay(delay_s = 0.31, feedback = 0.34, mix = 1.0)
+  space_r = std::delay::Delay(delay_s = 0.43, feedback = 0.31, mix = 1.0)
+
+event recapture():
+  freezer.recapture()
+
+block:
+  freezer.freeze = freeze
+  freezer.transpose = transpose
+  freezer.smear = smear
+
+  sample:
+    dry_l = in1
+    dry_r = in2
+    if (live_input == 0):
+      source = filter(saw())
+      dry_l = source
+      dry_r = source
+
+    mono = (dry_l + dry_r) * 0.5
+    freezer(mono)
+    frozen_mid = (freezer.out1 + freezer.out2) * 0.5
+    frozen_side = (freezer.out1 - freezer.out2) * 0.5 * width
+    frozen_l = frozen_mid + frozen_side
+    frozen_r = frozen_mid - frozen_side
+
+    wet_l = space_l(frozen_l + frozen_r * 0.14)
+    wet_r = space_r(frozen_r + frozen_l * 0.14)
+    cloud_l = frozen_l + wet_l * space
+    cloud_r = frozen_r + wet_r * space
+    out1 = tanh((dry_l * (1.0 - mix) + cloud_l * mix) * level)
+    out2 = tanh((dry_r * (1.0 - mix) + cloud_r * mix) * level)

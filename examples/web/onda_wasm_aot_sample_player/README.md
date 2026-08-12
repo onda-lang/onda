@@ -11,13 +11,12 @@ sample_player.onda
 
 The browser does not load `onda_compiler_web`, Binaryen, MIR, or an Onda source file. It fetches the
 finished `sample-player.wasm` and integrity-checked `sample-player.onda.json`, decodes
-[`impulse.wav`](../../buffers-fft-convolution/impulse.wav), binds it to the processor's `clip`
-buffer, and supplies the processor's amplitude input with a Web Audio `ConstantSourceNode`.
+[`impulse.wav`](../../projects/embedded_room/assets/impulse.wav) and binds it to the processor's
+`clip` buffer.
 
 The processor is the exact shared
-[`sample_player.onda`](../../buffers-fft-convolution/sample_player.onda) used by the native raw-object
-example. `play(bool)` starts or stops the clip, the `speed` parameter changes playback rate, and the
-single audio input controls output amplitude.
+[`sample_player.onda`](../../buffers/sample_player.onda) used by the native raw-object
+example. `play(bool)` starts or stops the clip, and the `speed` parameter changes playback rate.
 
 ## Build and run
 
@@ -34,8 +33,7 @@ Windows PowerShell:
 ```
 
 Open `http://127.0.0.1:8788/`. **Start audio** instantiates the already-built module, loads the WAV,
-and sends `play(true)`. The other controls replay the clip, send `play(false)`, update `speed`, and
-change the audio-rate amplitude input.
+and sends `play(true)`. The other controls replay the clip, send `play(false)`, and update `speed`.
 
 Without `--serve` or `-Serve`, the scripts only build the static assets. They require Rust/Cargo
 and Node/npm, but not LLVM, the native audio/GUI stack, `wasm-pack`, or a Wasm linker. Binaryen is a

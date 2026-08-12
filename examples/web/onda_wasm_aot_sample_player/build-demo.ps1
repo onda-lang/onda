@@ -9,7 +9,7 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
 $backendDir = Join-Path $repoRoot "packages\onda_binaryen_web"
 $webAudioDir = Join-Path $repoRoot "packages\onda_webaudio"
 $abiDir = Join-Path $repoRoot "packages\onda_processor_abi"
-$sourceFile = Join-Path $repoRoot "examples\buffers-fft-convolution\sample_player.onda"
+$sourceFile = Join-Path $repoRoot "examples\buffers\sample_player.onda"
 $mirFile = Join-Path $demoDir "sample-player.mir.msgpack"
 
 node -p "require.resolve('binaryen', { paths: [process.argv[1]] })" $backendDir | Out-Null
@@ -30,7 +30,7 @@ Copy-Item (Join-Path $abiDir "src\param-control.js") (Join-Path $demoDir "param-
 Copy-Item (Join-Path $webAudioDir "src\index.js") (Join-Path $demoDir "onda-webaudio.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\worklet.js") (Join-Path $demoDir "onda-wasm-processor.js") -Force
 Copy-Item `
-    (Join-Path $repoRoot "examples\buffers-fft-convolution\impulse.wav") `
+    (Join-Path $repoRoot "examples\projects\embedded_room\assets\impulse.wav") `
     (Join-Path $demoDir "impulse.wav") `
     -Force
 node (Join-Path $demoDir "smoke-test.mjs")

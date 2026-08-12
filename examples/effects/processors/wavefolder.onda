@@ -1,0 +1,39 @@
+import std/filter
+import std/osc
+
+def triangle_fold(x):
+  y = wrap(x + 1.0, 0.0, 4.0)
+  if (y > 2.0):
+    y = 4.0 - y
+  return y - 1.0
+
+proc Wavefolder:
+  params:
+    folds = 3.2
+    bias = 0.0
+
+  sample 8:
+    out1 = triangle_fold(in1 * folds + bias)
+
+proc StereoWavefolder:
+  params:
+    folds = 3.2
+    bias = 0.0
+    movement = 0.38
+    mix = 0.82
+
+  init:
+    folder_l = Wavefolder()
+    folder_r = Wavefolder()
+    dc_l = std::filter::DCBlock()
+    dc_r = std::filter::DCBlock()
+    lfo_a = std::osc::Sine(freq = 0.11)
+    lfo_b = std::osc::Sine(freq = 0.071)
+
+  sample:
+    mod_l = 1.0 + lfo_a() * movement * 0.55
+    mod_r = 1.0 + lfo_b() * movement * 0.55
+    folded_l = dc_l(folder_l(in1, folds = folds * mod_l, bias = bias))
+    folded_r = dc_r(folder_r(in2, folds = folds * mod_r, bias = -bias))
+    out1 = in1 * (1.0 - mix) + folded_l * mix
+    out2 = in2 * (1.0 - mix) + folded_r * mix

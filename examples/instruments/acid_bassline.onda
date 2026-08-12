@@ -1,0 +1,91 @@
+import std/delay
+import std/env
+import std/filter
+import std/osc
+import std/pitch
+import std/smoothing
+
+const PatternLength = 16
+const Notes: f32[PatternLength] = [0.0, 0.0, 12.0, 3.0, 0.0, 7.0, 10.0, 7.0, 0.0, 12.0, 15.0, 10.0, 5.0, 3.0, 7.0, 10.0]
+const Gates: i32[PatternLength] = [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1]
+const Accents: i32[PatternLength] = [1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0]
+const Slides: i32[PatternLength] = [0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0]
+
+proc Drive:
+  params:
+    amount = 2.0
+
+  sample 4:
+    out1 = tanh(in1 * amount)
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  root_note = 36.0 {24.0, 60.0, step = 1.0}
+  bpm = 126.0 {55.0, 190.0, unit = "BPM"}
+  cutoff = 520.0 {70.0, 7000.0, log, "Hz"}
+  resonance = 3.8 {0.5, 9.0}
+  env_amount = 5.5 {0.0, 12.0}
+  decay_s = 0.19 {0.04, 0.8, unit = "s"}
+  drive = 2.4 {1.0, 7.0}
+  echo = 0.24 {0.0, 0.65}
+  level = 0.5 {0.0, 1.0}
+
+init:
+  saw = std::osc::Saw(freq = std::pitch::note_to_hz(root_note))
+  sub = std::osc::Square(freq = std::pitch::note_to_hz(root_note) * 0.5)
+  glide = std::smoothing::Lag(time_s = 0.003)
+  filter = std::filter::Svf(cutoff = cutoff, q = resonance)
+  saturator = Drive(amount = drive)
+  delay_l = std::delay::Delay(delay_s = 0.238, feedback = 0.38, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = 0.357, feedback = 0.34, mix = 1.0)
+  target_freq = std::pitch::note_to_hz(root_note)
+  amplitude = std::env::DecayEnv(decay_s = decay_s)
+  filter_sweep = std::env::DecayEnv(decay_s = decay_s * 0.62)
+  clock: i32 = 0
+  step: i32 = 0
+  pending_bang = false
+
+event bang():
+  pending_bang = true
+
+block:
+  step_samples = max(i32(SR * 15.0 / bpm), 1)
+
+  sample:
+    auto_step = auto_play != 0 && clock == 0
+
+    if pending_bang:
+      while Gates[step] == 0:
+        step = (step + 1) % PatternLength
+
+    if pending_bang || auto_step:
+      if Gates[step] == 1:
+        target_freq = std::pitch::note_to_hz(root_note + Notes[step])
+        accent = 1.0
+        if (Accents[step] == 1):
+          accent = 1.38
+        amplitude.start(accent)
+        filter_sweep.start(accent)
+        if (Slides[step] == 1):
+          glide.time_s = 0.085
+        else:
+          glide.time_s = 0.003
+      step = (step + 1) % PatternLength
+      pending_bang = false
+
+    clock = (clock + 1) % step_samples
+    amp_level = amplitude(decay_s = decay_s)
+    filter_level = filter_sweep(decay_s = decay_s * 0.62)
+
+    freq = glide(target_freq)
+    saw.freq = freq
+    sub.freq = freq * 0.5
+    filter_cutoff = clamp(cutoff * (1.0 + filter_level * env_amount), 40.0, SR * 0.45)
+    filter.update_coeffs(filter_cutoff, resonance)
+
+    source = saw() * 0.78 + sub() * 0.22
+    acid = saturator(filter(source) * amp_level, amount = drive)
+    wet_l = delay_l(acid)
+    wet_r = delay_r(acid)
+    out1 = tanh((acid + wet_l * echo) * level)
+    out2 = tanh((acid + wet_r * echo) * level)

@@ -8,7 +8,7 @@ eyebrow: Language reference
 
 # Onda standard library
 
-This page is generated from the standard library embedded in the compiler. Run `npm run docs:stdlib` after changing `stdlib/`; CI verifies that the checked-in reference is current. Declarations whose names begin with `_` are implementation helpers and are omitted.
+This page is generated from the standard library embedded in the compiler. Run `scripts/update_stdlib_docs.sh` on Unix or `scripts/update_stdlib_docs.ps1` on Windows after changing `stdlib/`; `npm run docs:stdlib` is the equivalent package command, and CI verifies that the checked-in reference is current. Declarations whose names begin with `_` are implementation helpers and are omitted.
 
 `std/prelude` is imported automatically. It loads `std/math`, `std/lookup`, and `std/random`, including the unqualified forwarding functions from the first two modules. Import the other modules explicitly before using their qualified APIs.
 
@@ -19,8 +19,10 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/math`](#stdmath) | `ampdb`, `clamp`, `cpsmidi`, `cpsoct`, `cubic_interp`, `dbamp`, `expexp`, `explin`, `fract`, `inverse_lerp`, `lerp`, `linexp`, `linlin`, `map`, `midicps`, `midiratio`, `octcps`, `ratiomidi`, `sign`, `smoothstep`, `wrap` |
 | [`std/complex`](#stdcomplex) | `Complex` |
 | [`std/osc`](#stdosc) | `Phasor`, `Pulse`, `Saw`, `SawDown`, `Sine`, `Square`, `Triangle`, `poly_blep` |
-| [`std/filter`](#stdfilter) | `DCBlock`, `OnePole`, `Svf`, `mode` |
-| [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `DecayEnv`, `stage` |
+| [`std/filter`](#stdfilter) | `DCBlock`, `OnePole`, `Resonator`, `Svf`, `mode` |
+| [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `DecayEnv`, `decay_coefficient`, `stage` |
+| [`std/reverb`](#stdreverb) | `Schroeder` |
+| [`std/pitch_shift`](#stdpitch_shift) | `DualWindow` |
 | [`std/noise`](#stdnoise) | `Brown`, `Pink`, `White` |
 | [`std/levels`](#stdlevels) | `DB_PER_NAT`, `DB_TO_GAIN_SCALE`, `HALF_PI`, `MIN_FLOAT`, `db_to_gain`, `gain_to_db`, `pan_3db`, `pan_linear` |
 | [`std/mix`](#stdmix) | `ConstantSum`, `Crossfade`, `MonoToStereo`, `StereoToMono`, `chans` |
@@ -151,6 +153,8 @@ proc Phasor<T>:
   outs<T> 1
   params:
     freq: T = 1.0 => update_freq
+  events:
+    reset(phase_cycles: T = 0.0):
 ```
 
 ### Processor `Sine<T>`
@@ -161,6 +165,9 @@ proc Sine<T>:
   params:
     freq: T = 440.0
     amp: T = 1.0
+    phase_offset: T = 0.0
+  events:
+    reset(phase_cycles: T = 0.0):
 ```
 
 ### Processor `Saw<T>`
@@ -171,6 +178,8 @@ proc Saw<T>:
   params:
     freq: T = 440.0 => update_freq
     amp: T = 1.0
+  events:
+    reset(phase_cycles: T = 0.0):
 ```
 
 ### Processor `SawDown<T>`
@@ -181,6 +190,8 @@ proc SawDown<T>:
   params:
     freq: T = 440.0 => update_freq
     amp: T = 1.0
+  events:
+    reset(phase_cycles: T = 0.0):
 ```
 
 ### Processor `Pulse<T>`
@@ -192,6 +203,8 @@ proc Pulse<T>:
     freq: T = 440.0 => update_shape
     width: T = 0.5 => update_shape
     amp: T = 1.0
+  events:
+    reset(phase_cycles: T = 0.0):
 ```
 
 ### Processor `Square<T>`
@@ -202,6 +215,8 @@ proc Square<T>:
   params:
     freq: T = 440.0
     amp: T = 1.0
+  events:
+    reset(phase_cycles: T = 0.0):
 ```
 
 ### Processor `Triangle<T>`
@@ -212,6 +227,8 @@ proc Triangle<T>:
   params:
     freq: T = 440.0 => update_freq
     amp: T = 1.0
+  events:
+    reset(phase_cycles: T = 0.0):
 ```
 
 
@@ -257,6 +274,17 @@ proc DCBlock<T>:
   outs<T> 1
 ```
 
+### Processor `Resonator<T>`
+
+```onda
+proc Resonator<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    freq: T = 1000.0 => update_coefficients
+    bandwidth: T = 120.0 => update_coefficients
+```
+
 ### Processor `Svf<T>`
 
 ```onda
@@ -280,6 +308,12 @@ import std/env
 
 Namespace: `std::env`.
 
+### Functions
+
+```onda
+def decay_coefficient<T>(time_s: T):
+```
+
 ### Processor `DecayEnv<T>`
 
 ```onda
@@ -288,6 +322,8 @@ proc DecayEnv<T>:
   params:
     decay_s: T = 0.2 => update_decay
     trigger: T = 0.0
+  events:
+    start(level: T = 1.0):
 ```
 
 ### Processor `AR<T>`
@@ -336,6 +372,60 @@ proc ADSR<T>:
     sustain: T = 0.7 => update_shape
     release_s: T = 0.2 => update_shape
     gate: T = 0.0
+```
+
+
+## `std/reverb`
+
+```onda
+import std/reverb
+```
+
+Namespace: `std::reverb`.
+
+### Namespace `Schroeder<CombCapacity = 8192, AllpassCapacity = 4096>`
+
+#### Constants
+
+```onda
+const CombLines = 8
+const AllpassLines = 4
+const ReferenceRate = 48000
+const CombTuning: i32[CombLines] = [1116, 1188, 1277, 1356, 1139, 1211, 1300, 1379]
+const AllpassTuning: i32[AllpassLines] = [556, 441, 579, 464]
+```
+
+#### Processor `Reverb<T>`
+
+```onda
+proc Reverb<T>:
+  ins<T> 2
+  outs<T> 2
+  params:
+    room_size: T = 0.82
+    damping: T = 0.34
+    width: T = 0.92
+    mix: T = 1.0
+```
+
+
+## `std/pitch_shift`
+
+```onda
+import std/pitch_shift
+```
+
+Namespace: `std::pitch_shift`.
+
+### Processor `DualWindow<T>`
+
+```onda
+proc DualWindow<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    semitones: T = 12.0
+    window_s: T = 0.09
 ```
 
 
@@ -760,7 +850,6 @@ struct STFT<T>:
 struct RealFFT<T>:
   fft: FFT<T>
   input: T[N]
-  packed: T[N]
   window_kind: i32 = _WindowHann
   write: i32
   filled: i32
@@ -774,7 +863,13 @@ struct RealFFT<T>:
   def clear(self):
   def push(self, x: T):
   def is_ready(self):
+  def real(self, i: i32):
+  def imag(self, i: i32):
+  def power(self, i: i32):
+  def magnitude(self, i: i32):
+  def phase(self, i: i32):
   def packed_value(self, i: i32):
+  def store_real_packed(self, output: T[]):
 ```
 
 ### Struct `RealIFFT<T>`
@@ -787,6 +882,7 @@ struct RealIFFT<T>:
   window_kind: i32 = _WindowHann
   frame: i32
   pending: i32
+  overlap_frames: i32
   def size(self):
   def hop_size(self):
   def set_hann(self):

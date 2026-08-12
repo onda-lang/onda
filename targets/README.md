@@ -9,8 +9,8 @@ Every target emits a relocatable object plus the generic Onda processor descript
 Examples:
 
 ```powershell
-cargo run -p onda_cli -- compile examples/foundations/sine.onda --emit obj --target-spec .\targets\arm64.toml
-cargo run -p onda_cli -- compile examples/foundations/sine.onda --emit obj --target-spec .\targets\aarch64-none-elf.toml
+cargo run -p onda_cli -- compile examples/basic/sine.onda --emit obj --target-spec .\targets\arm64.toml
+cargo run -p onda_cli -- compile examples/basic/sine.onda --emit obj --target-spec .\targets\aarch64-none-elf.toml
 cargo run -p onda_cli -- compile examples/web/onda_wasm_playground/default.onda --emit obj --target-spec .\targets\wasm32-unknown-unknown.toml
 ```
 

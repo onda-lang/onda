@@ -1,16 +1,20 @@
-use std::collections::{BTreeMap, HashMap};
+//! Shared native run controller for the egui and webview frontends.
+//!
+//! The controller owns source/project filesystem watching, targeted snapshot
+//! invalidation, and disk-validation fallback when watcher coverage is partial.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
@@ -34,7 +38,10 @@ pub use project_io::{
 };
 
 const SCOPE_MAX_FRAMES: usize = 1024;
-const SCOPE_POLL_INTERVAL_MS: u64 = 50;
+const SOURCE_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
+const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_millis(500);
+/// Periodic controller polling interval used while a native run frontend is loaded.
+pub const CONTROLLER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub const DEFAULT_REALTIME_BLOCK_FRAMES: usize = 256;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -126,9 +133,18 @@ pub fn available_audio_devices() -> (Vec<String>, Vec<String>) {
 
 #[derive(Debug)]
 enum ControllerEvent {
-    ChildReady { generation: u64, ready: ReadyEvent },
-    TcpResponse { generation: u64, line: String },
-    SourcesMayHaveChanged,
+    ChildReady {
+        generation: u64,
+        ready: ReadyEvent,
+    },
+    TcpResponse {
+        generation: u64,
+        line: String,
+    },
+    SourcesMayHaveChanged {
+        paths: Vec<PathBuf>,
+        watch_batch: SourceWatchBatch,
+    },
 }
 
 impl ControllerEvent {
@@ -137,7 +153,7 @@ impl ControllerEvent {
             Self::ChildReady { generation, .. } | Self::TcpResponse { generation, .. } => {
                 Some(*generation)
             }
-            Self::SourcesMayHaveChanged => None,
+            Self::SourcesMayHaveChanged { .. } => None,
         };
         event_generation.is_none_or(|generation| generation == child_generation)
     }
@@ -243,8 +259,13 @@ pub struct RunController {
     bridge: IpcBridge,
     child: ChildSession,
     child_generation: u64,
-    _watcher: Option<FileWatcher>,
+    watcher: Option<FileWatcher>,
     watched_sources: Vec<PathBuf>,
+    watched_paths: Vec<PathBuf>,
+    watched_roots: HashMap<PathBuf, notify::RecursiveMode>,
+    source_watch_revision: SourceWatchRevision,
+    compiled_watch_revision: Option<u64>,
+    last_source_fallback_validation: Instant,
     preserved_params: Vec<(String, Value)>,
     preserved_buffers: BTreeMap<String, PreservedBufferBinding>,
     preserved_events: Vec<(String, Vec<Value>)>,
@@ -264,32 +285,30 @@ pub struct PollResult {
 
 impl RunController {
     pub fn new(onda_path: &Path, options: RunHostOptions) -> Result<Self, String> {
-        let launch_path = std::fs::canonicalize(onda_path)
-            .map_err(|e| format!("cannot resolve path {}: {e}", onda_path.display()))?;
-        let project_input = onda_project::resolve_project_input(
-            &launch_path,
-            onda_project::ProjectLimits::default(),
-        )
-        .map_err(|error| error.to_string())?;
-        let project_file = project_input.project().cloned();
-        let onda_path = std::fs::canonicalize(project_input.entry_path()).map_err(|e| {
-            format!(
-                "cannot resolve project entry {}: {e}",
-                project_input.entry_path().display()
-            )
+        onda_frontend::ensure_no_symlink_components(onda_path).map_err(|error| {
+            format!("cannot watch Onda input '{}': {error}", onda_path.display())
         })?;
+        let input_path = project_io::absolute_lexical_path(onda_path)?;
+        let launch_path = std::fs::canonicalize(&input_path)
+            .map_err(|e| format!("cannot resolve path {}: {e}", onda_path.display()))?;
+        let (onda_path, project_watch_paths) = resolve_run_input_paths(&launch_path)?;
         let (events_tx, events_rx) = mpsc::channel();
         let bridge = IpcBridge::new();
         let state = RunState::new(&launch_path, &options);
+        let source_watch_revision = SourceWatchRevision::default();
+        let compiled_watch_revision = source_watch_revision.current();
         let pending_sources = source_snapshot_from_paths(&onda_path, &[]);
-        let project_watch_paths = project_file
-            .as_ref()
-            .map(onda_project::ProjectFile::watch_paths)
-            .transpose()
-            .map_err(|error| error.to_string())?;
         let pending_sources = pending_sources.with_project(project_watch_paths.as_ref());
         let watched_sources = pending_sources.paths();
-        let watcher = start_source_watcher(&pending_sources.watch_paths(), events_tx.clone());
+        let watched_paths = pending_sources.watch_paths();
+        let (watcher, watched_roots) = start_source_watcher(
+            &watched_paths,
+            source_watch_revision.clone(),
+            events_tx.clone(),
+        );
+        if !pending_sources.matches_disk_changes(&watched_paths) {
+            source_watch_revision.observe_change();
+        }
         let child_generation = 1;
         let child =
             ChildSession::spawn(&launch_path, &options, child_generation, events_tx.clone())
@@ -306,8 +325,13 @@ impl RunController {
             bridge,
             child,
             child_generation,
-            _watcher: watcher,
+            watcher,
             watched_sources,
+            watched_paths,
+            watched_roots,
+            source_watch_revision,
+            compiled_watch_revision: Some(compiled_watch_revision),
+            last_source_fallback_validation: Instant::now(),
             preserved_params: Vec::new(),
             preserved_buffers: BTreeMap::new(),
             preserved_events: Vec::new(),
@@ -401,7 +425,7 @@ impl RunController {
 
         if self.scope_polling_active
             && !self.scope_polling_in_flight
-            && self.last_scope_poll.elapsed() >= Duration::from_millis(SCOPE_POLL_INTERVAL_MS)
+            && self.last_scope_poll.elapsed() >= CONTROLLER_POLL_INTERVAL
         {
             let _ = self
                 .bridge
@@ -424,23 +448,35 @@ impl RunController {
                     result.state_changed |= response.state_changed;
                     result.scope_changed |= response.scope_changed;
                 }
-                ControllerEvent::SourcesMayHaveChanged => {
-                    if self.sources_require_recompile() {
-                        self.recompile_after_source_change();
+                ControllerEvent::SourcesMayHaveChanged {
+                    paths: changed_paths,
+                    watch_batch,
+                } => {
+                    if self.sources_require_recompile(&changed_paths) {
+                        self.recompile_after_source_change(&changed_paths);
                         result.state_changed = true;
                     } else if self.watched_sources.iter().any(|path| !path.exists()) {
                         // A parent of an unresolved nested candidate may have
                         // just appeared. Retarget the watch as the path becomes
                         // reachable without recompiling for directory-only
                         // changes.
-                        let refreshed = self.refresh_source_watcher();
+                        let refreshed = self.refresh_source_watcher(&changed_paths);
                         if !self.source_compilation.matches(&refreshed) {
-                            self.recompile_after_source_change();
+                            self.recompile_after_source_change(&changed_paths);
                             result.state_changed = true;
+                        } else {
+                            self.acknowledge_source_watch_revision(watch_batch);
                         }
+                    } else {
+                        self.refresh_kqueue_file_watches(&changed_paths);
+                        self.acknowledge_source_watch_revision(watch_batch);
                     }
                 }
             }
+        }
+
+        if self.validate_degraded_source_watch() {
+            result.state_changed = true;
         }
 
         if let Some((code, error)) = self.child.try_take_exit() {
@@ -480,6 +516,7 @@ impl RunController {
             self.child.kill();
             self.bridge.disconnect();
             self.source_compilation = SourceCompilationState::None;
+            self.compiled_watch_revision = None;
         }
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
@@ -603,11 +640,21 @@ impl RunController {
     }
 
     fn restart_with_status(&mut self, status: &str) -> Result<(), String> {
-        let pending_sources = self.refresh_source_watcher();
+        self.restart_with_status_after_changes(status, &[])
+    }
+
+    fn restart_with_status_after_changes(
+        &mut self,
+        status: &str,
+        changed_paths: &[PathBuf],
+    ) -> Result<(), String> {
+        let compiled_watch_revision = self.source_watch_revision.current();
+        let pending_sources = self.refresh_source_watcher(changed_paths);
         self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
         self.source_compilation = SourceCompilationState::None;
+        self.compiled_watch_revision = None;
         self.pending_commands.clear();
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
@@ -628,11 +675,13 @@ impl RunController {
             Ok(child) => {
                 self.child = child;
                 self.source_compilation = SourceCompilationState::Compiling(pending_sources);
+                self.compiled_watch_revision = Some(compiled_watch_revision);
                 self.state.running = true;
                 Ok(())
             }
             Err(e) => {
                 self.source_compilation = SourceCompilationState::Failed(pending_sources);
+                self.compiled_watch_revision = None;
                 self.state.status = "Failed to start".to_owned();
                 self.state.error = Some(e.clone());
                 Err(e)
@@ -643,28 +692,59 @@ impl RunController {
     fn can_reuse_compiled_child(&self) -> bool {
         self.bridge.is_connected()
             && self.child.is_active()
-            && self.source_compilation.ready().is_some_and(|compiled| {
-                *compiled
-                    == source_snapshot_with_project(
-                        &self.onda_path,
-                        &self.watched_sources,
-                        self.project_watch_paths.as_ref(),
-                    )
-            })
+            && self
+                .source_compilation
+                .ready()
+                .is_some_and(|snapshot| self.compiled_sources_are_current(snapshot))
     }
 
-    fn sources_require_recompile(&self) -> bool {
-        let current = source_snapshot_with_project(
-            &self.onda_path,
-            &self.watched_sources,
-            self.project_watch_paths.as_ref(),
-        );
-        !self.source_compilation.matches(&current)
+    fn sources_require_recompile(&self, changed_paths: &[PathBuf]) -> bool {
+        !self
+            .source_compilation
+            .snapshot()
+            .is_some_and(|snapshot| snapshot.matches_disk_changes(changed_paths))
     }
 
-    fn recompile_after_source_change(&mut self) {
+    fn validate_degraded_source_watch(&mut self) -> bool {
+        if self.source_compilation.snapshot().is_none()
+            || self.last_source_fallback_validation.elapsed() < SOURCE_WATCH_FALLBACK_INTERVAL
+        {
+            return false;
+        }
+        self.last_source_fallback_validation = Instant::now();
+
+        let validation_paths = self.source_watch_fallback_paths().to_vec();
+        if validation_paths.is_empty() {
+            return false;
+        }
+        if self.sources_require_recompile(&validation_paths) {
+            self.recompile_after_source_change(&validation_paths);
+            return true;
+        }
+
+        // A missing directory or rejected symlink may have been replaced
+        // without an event from a partially covered watcher. Move the watch
+        // inward as soon as the reachable, non-symlink topology changes.
+        if source_watch_root_map(&self.watched_paths) != self.watched_roots {
+            let refreshed = self.refresh_source_watcher(&[]);
+            if !self.source_compilation.matches(&refreshed) {
+                self.recompile_after_source_change(&validation_paths);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn source_watch_fallback_paths(&self) -> &[PathBuf] {
+        self.watcher
+            .as_ref()
+            .map(FileWatcher::fallback_validation_paths)
+            .unwrap_or(&self.watched_paths)
+    }
+
+    fn recompile_after_source_change(&mut self, changed_paths: &[PathBuf]) {
         if self.processing_requested {
-            let _ = self.restart_with_status("Restarting...");
+            let _ = self.restart_with_status_after_changes("Restarting...", changed_paths);
         } else {
             self.invalidate_compiled_child();
         }
@@ -676,6 +756,7 @@ impl RunController {
         self.bridge.disconnect();
         self.pending_commands.clear();
         self.source_compilation = SourceCompilationState::None;
+        self.compiled_watch_revision = None;
         self.state.connected = false;
         self.state.status = "Stopped".to_owned();
         self.state.error = None;
@@ -684,15 +765,15 @@ impl RunController {
     }
 
     fn handle_child_ready(&mut self, ready: ReadyEvent) {
-        let current_sources = source_snapshot_with_project(
-            &self.onda_path,
-            &self.watched_sources,
-            self.project_watch_paths.as_ref(),
-        );
-        if !matches!(
-            &self.source_compilation,
-            SourceCompilationState::Compiling(pending) if pending == &current_sources
-        ) {
+        let compilation_is_current = match &self.source_compilation {
+            SourceCompilationState::Compiling(pending) => {
+                self.compiled_sources_are_current(pending)
+            }
+            SourceCompilationState::None
+            | SourceCompilationState::Ready(_)
+            | SourceCompilationState::Failed(_) => false,
+        };
+        if !compilation_is_current {
             let _ = self.restart_with_status("Restarting...");
             return;
         }
@@ -756,32 +837,117 @@ impl RunController {
         self.last_scope_poll = Instant::now();
     }
 
-    fn refresh_source_watcher(&mut self) -> SourceSnapshot {
-        let mut input_resolved = false;
+    fn refresh_source_watcher(&mut self, changed_paths: &[PathBuf]) -> SourceSnapshot {
+        let previous_assets = self
+            .source_compilation
+            .snapshot()
+            .map(|snapshot| snapshot.assets.clone())
+            .unwrap_or_default();
+        let mut project_input_resolved = false;
         let mut project_file = None;
         if let Ok(project_input) = onda_project::resolve_project_input(
             &self.launch_path,
             onda_project::ProjectLimits::default(),
         ) {
-            input_resolved = true;
+            project_input_resolved = true;
             project_file = project_input.project().cloned();
             if let Ok(entry) = std::fs::canonicalize(project_input.entry_path()) {
                 self.onda_path = entry;
             }
+        } else if let Ok(paths) = onda_project::resolve_project_watch_paths(
+            &self.launch_path,
+            onda_project::ProjectLimits::default(),
+        ) {
+            self.onda_path = paths.entry.clone();
+            self.project_watch_paths = Some(paths);
         }
         let snapshot = source_snapshot_from_paths(&self.onda_path, &self.watched_sources);
         if let Some(project) = project_file {
             if let Ok(paths) = project.watch_paths() {
                 self.project_watch_paths = Some(paths);
             }
-        } else if input_resolved {
+        } else if project_input_resolved {
             self.project_watch_paths = None;
         }
-        let snapshot = snapshot.with_project(self.project_watch_paths.as_ref());
+        let snapshot = snapshot.with_project_reusing(
+            self.project_watch_paths.as_ref(),
+            &previous_assets,
+            changed_paths,
+        );
         self.watched_sources = snapshot.paths();
-        self._watcher = start_source_watcher(&snapshot.watch_paths(), self.events_tx.clone());
+        let watched_paths = snapshot.watch_paths();
+        let previous_fallback_paths = self.source_watch_fallback_paths().to_vec();
+        let gap_validation_paths = watcher_gap_validation_paths(
+            &watched_paths,
+            &self.watched_paths,
+            &previous_fallback_paths,
+        );
+        let (watcher, watched_roots) = start_source_watcher(
+            &watched_paths,
+            self.source_watch_revision.clone(),
+            self.events_tx.clone(),
+        );
+        if !snapshot.matches_disk_changes(&gap_validation_paths) {
+            // Validate the discovery gap for imports/assets that were not part
+            // of a complete previous watch. Force the in-flight compilation
+            // generation stale if one changed before registration.
+            self.source_watch_revision.observe_change();
+        }
+        self.watcher = watcher;
+        self.watched_roots = watched_roots;
+        self.watched_paths = watched_paths;
+        self.last_source_fallback_validation = Instant::now();
         snapshot
     }
+
+    fn compiled_sources_are_current(&self, snapshot: &SourceSnapshot) -> bool {
+        let fallback_paths = self.source_watch_fallback_paths();
+        compiled_snapshot_is_current(
+            snapshot,
+            self.compiled_watch_revision,
+            self.source_watch_revision.current(),
+            fallback_paths,
+        )
+    }
+
+    fn acknowledge_source_watch_revision(&mut self, watch_batch: SourceWatchBatch) {
+        // While the child is compiling, matching bytes only prove what is on
+        // disk now. The child may have parsed transient contents which were
+        // changed back before this batch was delivered.
+        if !self.source_compilation.can_acknowledge_watch_revision() {
+            return;
+        }
+        if let Some(compiled_revision) = &mut self.compiled_watch_revision {
+            if let Some(acknowledged) = watch_batch.advance(*compiled_revision) {
+                *compiled_revision = acknowledged;
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn refresh_kqueue_file_watches(&mut self, changed_paths: &[PathBuf]) {
+        let Some(paths) = self
+            .source_compilation
+            .snapshot()
+            .map(SourceSnapshot::watch_paths)
+        else {
+            return;
+        };
+        let affected = paths
+            .into_iter()
+            .filter(|path| {
+                changed_paths
+                    .iter()
+                    .any(|changed| paths_overlap(path, changed))
+            })
+            .collect::<Vec<_>>();
+        if let Some(watcher) = self.watcher.as_mut() {
+            watcher.reattach_existing_paths(&affected);
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn refresh_kqueue_file_watches(&mut self, _changed_paths: &[PathBuf]) {}
 
     fn advance_child_generation(&mut self) {
         self.child_generation = self
@@ -796,6 +962,7 @@ impl RunController {
         self.bridge.disconnect();
         self.pending_commands.clear();
         self.source_compilation.mark_failed();
+        self.compiled_watch_revision = None;
         self.state.running = false;
         self.state.connected = false;
         self.state.status = "Runtime error".to_owned();
@@ -889,6 +1056,34 @@ impl RunController {
         if !self.state.running {
             self.scope_polling_in_flight = false;
         }
+    }
+}
+
+fn resolve_run_input_paths(
+    launch_path: &Path,
+) -> Result<(PathBuf, Option<onda_project::ProjectWatchPaths>), String> {
+    let limits = onda_project::ProjectLimits::default();
+    match onda_project::resolve_project_input(launch_path, limits) {
+        Ok(input) => {
+            let entry = input.entry_path().to_path_buf();
+            let project_watch_paths = match input.project() {
+                Some(project) => match project.watch_paths() {
+                    Ok(paths) => Some(paths),
+                    Err(strict_error) => Some(
+                        onda_project::resolve_project_watch_paths(launch_path, limits)
+                            .map_err(|_| strict_error.to_string())?,
+                    ),
+                },
+                None => None,
+            };
+            Ok((entry, project_watch_paths))
+        }
+        Err(strict_error) if onda_project::is_project_file_path(launch_path) => {
+            onda_project::resolve_project_watch_paths(launch_path, limits)
+                .map(|paths| (paths.entry.clone(), Some(paths)))
+                .map_err(|_| strict_error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -1362,81 +1557,356 @@ impl IpcBridge {
 }
 
 struct FileWatcher {
-    _debouncer: notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>,
+    _watcher: notify::RecommendedWatcher,
+    coverage: SourceWatchCoverage,
+}
+
+struct SourceWatchCoverage {
+    watched_paths: Vec<PathBuf>,
+    initially_uncovered_paths: Vec<PathBuf>,
+    coverage_lost: Arc<AtomicBool>,
+}
+
+struct SourceWatchPlan {
+    roots: HashMap<PathBuf, notify::RecursiveMode>,
+    path_requirements: Vec<(PathBuf, Vec<PathBuf>)>,
+}
+
+impl SourceWatchCoverage {
+    fn fallback_validation_paths(&self) -> &[PathBuf] {
+        if self.coverage_lost.load(Ordering::Acquire) {
+            &self.watched_paths
+        } else {
+            &self.initially_uncovered_paths
+        }
+    }
+
+    #[cfg(test)]
+    fn covers_all_paths(&self) -> bool {
+        self.fallback_validation_paths().is_empty()
+    }
+}
+
+#[derive(Clone, Default)]
+struct SourceWatchRevision(Arc<AtomicU64>);
+
+#[derive(Clone, Copy, Debug)]
+struct SourceWatchBatch {
+    first_revision: u64,
+    last_revision: u64,
+    contiguous: bool,
+}
+
+impl SourceWatchBatch {
+    fn advance(self, current: u64) -> Option<u64> {
+        if self.last_revision <= current {
+            return Some(current);
+        }
+        (self.contiguous && self.first_revision == current.wrapping_add(1))
+            .then_some(self.last_revision)
+    }
+}
+
+impl SourceWatchRevision {
+    fn current(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+
+    fn observe_change(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Release).wrapping_add(1)
+    }
 }
 
 impl FileWatcher {
-    fn watch(paths: &[PathBuf], on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> Option<Self> {
-        if paths.is_empty() {
-            return None;
-        }
-        let mut watch_roots = HashMap::<PathBuf, notify::RecursiveMode>::new();
-        for path in paths {
-            let (root, mode) = source_watch_root(path);
-            watch_roots
-                .entry(root)
-                .and_modify(|existing| {
-                    if mode == notify::RecursiveMode::Recursive {
-                        *existing = mode;
-                    }
-                })
-                .or_insert(mode);
-        }
-        Self::watch_roots(watch_roots, on_change)
+    #[cfg(test)]
+    fn watch(
+        paths: &[PathBuf],
+        revision: SourceWatchRevision,
+        on_change: impl Fn(Vec<PathBuf>, SourceWatchBatch) + Send + 'static,
+    ) -> Option<Self> {
+        Self::watch_plan(source_watch_plan(paths), revision, on_change)
     }
 
+    fn watch_plan(
+        plan: SourceWatchPlan,
+        revision: SourceWatchRevision,
+        on_change: impl Fn(Vec<PathBuf>, SourceWatchBatch) + Send + 'static,
+    ) -> Option<Self> {
+        if plan.path_requirements.is_empty() {
+            return None;
+        }
+        let relevant_paths = plan
+            .path_requirements
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        Self::watch_roots_filtered(
+            plan.roots,
+            plan.path_requirements,
+            revision,
+            move |changed| {
+                relevant_paths
+                    .iter()
+                    .any(|watched| paths_overlap(changed, watched))
+            },
+            on_change,
+        )
+    }
+
+    #[cfg(test)]
     fn watch_roots(
         watch_roots: HashMap<PathBuf, notify::RecursiveMode>,
-        on_change: impl Fn(Vec<PathBuf>) + Send + 'static,
+        revision: SourceWatchRevision,
+        on_change: impl Fn(Vec<PathBuf>, SourceWatchBatch) + Send + 'static,
+    ) -> Option<Self> {
+        let path_requirements = watch_roots
+            .keys()
+            .map(|root| (root.clone(), vec![root.clone()]))
+            .collect();
+        Self::watch_roots_filtered(
+            watch_roots,
+            path_requirements,
+            revision,
+            |_| true,
+            on_change,
+        )
+    }
+
+    fn watch_roots_filtered(
+        watch_roots: HashMap<PathBuf, notify::RecursiveMode>,
+        path_requirements: Vec<(PathBuf, Vec<PathBuf>)>,
+        revision: SourceWatchRevision,
+        is_relevant: impl Fn(&Path) -> bool + Send + 'static,
+        on_change: impl Fn(Vec<PathBuf>, SourceWatchBatch) + Send + 'static,
     ) -> Option<Self> {
         let (tx, rx) = mpsc::channel();
-        let mut debouncer = new_debouncer(Duration::from_millis(200), tx).ok()?;
+        let mut watcher = notify::recommended_watcher(tx).ok()?;
         let mut registered_root = false;
+        let mut registered_roots = HashSet::new();
+        let rescan_paths = watch_roots.keys().cloned().collect::<Vec<_>>();
         for (root, mode) in watch_roots {
-            registered_root |= debouncer.watcher().watch(&root, mode).is_ok();
+            let registered = notify::Watcher::watch(&mut watcher, &root, mode).is_ok();
+            registered_root |= registered;
+            if registered {
+                registered_roots.insert(root);
+            }
         }
         if !registered_root {
             return None;
         }
 
+        let mut watched_paths = Vec::with_capacity(path_requirements.len());
+        let mut initially_uncovered_paths = Vec::new();
+        for (path, required_roots) in path_requirements {
+            if required_roots
+                .iter()
+                .any(|root| !registered_roots.contains(root))
+            {
+                initially_uncovered_paths.push(path.clone());
+            }
+            watched_paths.push(path);
+        }
+        let coverage_lost = Arc::new(AtomicBool::new(false));
+        let callback_coverage_lost = coverage_lost.clone();
         thread::spawn(move || {
-            while let Ok(Ok(events)) = rx.recv() {
-                let mut changed = events
-                    .into_iter()
-                    .filter(|event| {
-                        matches!(
-                            event.kind,
-                            DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous
-                        )
-                    })
-                    .map(|event| event.path)
-                    .collect::<Vec<_>>();
+            while let Ok(event) = rx.recv() {
+                // Keep unrelated activity outside the sliding debounce window,
+                // otherwise a busy sibling can indefinitely postpone reloads.
+                let Some(mut changed) = relevant_source_change_paths(
+                    event,
+                    &rescan_paths,
+                    &is_relevant,
+                    &callback_coverage_lost,
+                ) else {
+                    continue;
+                };
+                let first_revision = revision.observe_change();
+                let mut last_revision = first_revision;
+                let mut revisions_are_contiguous = true;
+
+                let mut deadline = Instant::now() + SOURCE_WATCH_DEBOUNCE;
+                loop {
+                    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(event) => {
+                            if let Some(next) = relevant_source_change_paths(
+                                event,
+                                &rescan_paths,
+                                &is_relevant,
+                                &callback_coverage_lost,
+                            ) {
+                                let next_revision = revision.observe_change();
+                                revisions_are_contiguous &=
+                                    next_revision == last_revision.wrapping_add(1);
+                                last_revision = next_revision;
+                                changed.extend(next);
+                                deadline = Instant::now() + SOURCE_WATCH_DEBOUNCE;
+                            }
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => break,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+
                 changed.sort();
                 changed.dedup();
-                if !changed.is_empty() {
-                    on_change(changed);
-                }
+                on_change(
+                    changed,
+                    SourceWatchBatch {
+                        first_revision,
+                        last_revision,
+                        contiguous: revisions_are_contiguous,
+                    },
+                );
             }
         });
 
         Some(Self {
-            _debouncer: debouncer,
+            _watcher: watcher,
+            coverage: SourceWatchCoverage {
+                watched_paths,
+                initially_uncovered_paths,
+                coverage_lost,
+            },
         })
+    }
+
+    #[cfg(test)]
+    fn covers_all_paths(&self) -> bool {
+        self.coverage.covers_all_paths()
+    }
+
+    fn fallback_validation_paths(&self) -> &[PathBuf] {
+        self.coverage.fallback_validation_paths()
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn reattach_existing_paths(&mut self, paths: &[PathBuf]) {
+        for path in paths {
+            match fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    // Filesystem-backed Onda paths reject symlinks. Keep only
+                    // the parent watch so replacing the alias remains visible.
+                    continue;
+                }
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    // The parent subscription covers creation of a missing path.
+                    continue;
+                }
+                Err(_) => {
+                    self.coverage.coverage_lost.store(true, Ordering::Release);
+                    continue;
+                }
+            }
+            let _ = notify::Watcher::unwatch(&mut self._watcher, path);
+            if notify::Watcher::watch(
+                &mut self._watcher,
+                path,
+                notify::RecursiveMode::NonRecursive,
+            )
+            .is_err()
+            {
+                // Kqueue parent watches detect replacement but not subsequent
+                // in-place writes to the new inode. Fall back to disk validation.
+                self.coverage.coverage_lost.store(true, Ordering::Release);
+            }
+        }
     }
 }
 
+fn watcher_gap_validation_paths(
+    watched_paths: &[PathBuf],
+    previous_paths: &[PathBuf],
+    previous_fallback_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    watched_paths
+        .iter()
+        .filter(|path| !previous_paths.contains(path) || previous_fallback_paths.contains(path))
+        .cloned()
+        .collect()
+}
+
+fn relevant_source_change_paths(
+    event: notify::Result<notify::Event>,
+    rescan_paths: &[PathBuf],
+    is_relevant: &impl Fn(&Path) -> bool,
+    coverage_lost: &AtomicBool,
+) -> Option<Vec<PathBuf>> {
+    if event.is_err() {
+        // A backend error can mean that an existing subscription was lost
+        // (for example, because the platform watch limit was exhausted).
+        // This watcher instance must use disk validation from this point on.
+        coverage_lost.store(true, Ordering::Release);
+    }
+    let mut changed = source_change_paths(event)?;
+    if changed.is_empty() {
+        changed.extend_from_slice(rescan_paths);
+    }
+    changed.retain(|path| is_relevant(path));
+    (!changed.is_empty()).then_some(changed)
+}
+
+fn source_change_paths(event: notify::Result<notify::Event>) -> Option<Vec<PathBuf>> {
+    let Ok(event) = event else {
+        return Some(Vec::new());
+    };
+    if event.need_rescan() {
+        return Some(event.paths);
+    }
+    // Snapshotting reads every source. Treating those reads as changes creates
+    // a watcher -> parse -> watcher feedback loop on backends that report access.
+    // A close-after-write is also represented as an access event, however, and
+    // is the only mutation some filesystems report after an editor save.
+    let changes_source = matches!(
+        event.kind,
+        notify::EventKind::Access(notify::event::AccessKind::Close(
+            notify::event::AccessMode::Write
+        ))
+    ) || !matches!(
+        event.kind,
+        notify::EventKind::Access(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Metadata(
+                notify::event::MetadataKind::AccessTime
+            ))
+    );
+    if changes_source {
+        Some(event.paths)
+    } else {
+        None
+    }
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
 fn source_watch_root(path: &Path) -> (PathBuf, notify::RecursiveMode) {
-    let desired = path.parent().unwrap_or_else(|| Path::new("."));
-    if desired.is_dir() {
-        return (desired.to_path_buf(), notify::RecursiveMode::NonRecursive);
+    let desired = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut current = PathBuf::new();
+    let mut deepest_directory = None;
+    for component in desired.components() {
+        current.push(component.as_os_str());
+        if matches!(component, std::path::Component::Prefix(_)) {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => break,
+            Ok(metadata) if metadata.is_dir() => deepest_directory = Some(current.clone()),
+            Ok(_) | Err(_) => break,
+        }
     }
 
-    let mut existing = desired;
-    while !existing.is_dir() {
-        let Some(parent) = existing.parent() else {
-            return (PathBuf::from("."), notify::RecursiveMode::Recursive);
-        };
-        existing = parent;
+    let existing = deepest_directory.unwrap_or_else(|| PathBuf::from("."));
+    if existing == desired {
+        return (existing, notify::RecursiveMode::NonRecursive);
     }
     let mode = if existing.parent().is_some() {
         notify::RecursiveMode::Recursive
@@ -1445,7 +1915,50 @@ fn source_watch_root(path: &Path) -> (PathBuf, notify::RecursiveMode) {
         // for the first component of an absolute include path.
         notify::RecursiveMode::NonRecursive
     };
-    (existing.to_path_buf(), mode)
+    (existing, mode)
+}
+
+fn source_watch_roots(path: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut roots = vec![source_watch_root(path)];
+    // Kqueue does not report writes to a directory's children through a
+    // non-recursive directory watch. Watch the current inode as well, while
+    // retaining the parent subscription for atomic replacement.
+    #[cfg(target_os = "macos")]
+    if fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.file_type().is_symlink()) {
+        roots.push((path.to_path_buf(), notify::RecursiveMode::NonRecursive));
+    }
+    roots
+}
+
+fn source_watch_plan(paths: &[PathBuf]) -> SourceWatchPlan {
+    let mut watch_roots = HashMap::<PathBuf, notify::RecursiveMode>::new();
+    let mut requirements = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
+    for path in paths {
+        for (root, mode) in source_watch_roots(path) {
+            watch_roots
+                .entry(root.clone())
+                .and_modify(|existing| {
+                    if mode == notify::RecursiveMode::Recursive {
+                        *existing = mode;
+                    }
+                })
+                .or_insert(mode);
+            requirements.entry(path.clone()).or_default().push(root);
+        }
+    }
+    for required_roots in requirements.values_mut() {
+        required_roots.sort();
+        required_roots.dedup();
+    }
+    SourceWatchPlan {
+        roots: watch_roots,
+        path_requirements: requirements.into_iter().collect(),
+    }
+}
+
+fn source_watch_root_map(paths: &[PathBuf]) -> HashMap<PathBuf, notify::RecursiveMode> {
+    source_watch_plan(paths).roots
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1454,7 +1967,6 @@ struct SourceSnapshot {
     sources: Vec<SourceFileSnapshot>,
     project_manifest: Option<SourceFileSnapshot>,
     assets: Vec<AssetFileSnapshot>,
-    asset_aliases: Vec<PathBuf>,
 }
 
 impl SourceSnapshot {
@@ -1475,30 +1987,92 @@ impl SourceSnapshot {
                     .map(|manifest| manifest.path.clone()),
             )
             .chain(self.assets.iter().map(|asset| asset.path.clone()))
-            .chain(self.asset_aliases.iter().cloned())
             .collect()
     }
 
-    fn with_project(mut self, project: Option<&onda_project::ProjectWatchPaths>) -> Self {
+    #[cfg(test)]
+    fn matches_disk(&self) -> bool {
+        self.sources.iter().all(SourceFileSnapshot::matches_disk)
+            && self
+                .project_manifest
+                .as_ref()
+                .is_none_or(SourceFileSnapshot::matches_disk)
+            && self.assets.iter().all(AssetFileSnapshot::matches_disk)
+    }
+
+    fn matches_disk_changes(&self, changed_paths: &[PathBuf]) -> bool {
+        let may_have_changed = |path: &Path| {
+            changed_paths
+                .iter()
+                .any(|changed| paths_overlap(path, changed))
+        };
+        self.sources
+            .iter()
+            .filter(|source| may_have_changed(&source.path))
+            .all(SourceFileSnapshot::matches_disk)
+            && self
+                .project_manifest
+                .iter()
+                .filter(|manifest| may_have_changed(&manifest.path))
+                .all(SourceFileSnapshot::matches_disk)
+            && self
+                .assets
+                .iter()
+                .filter(|asset| may_have_changed(&asset.path))
+                .all(AssetFileSnapshot::matches_disk)
+    }
+
+    fn with_project(self, project: Option<&onda_project::ProjectWatchPaths>) -> Self {
+        self.with_project_reusing(project, &[], &[])
+    }
+
+    fn with_project_reusing(
+        mut self,
+        project: Option<&onda_project::ProjectWatchPaths>,
+        previous_assets: &[AssetFileSnapshot],
+        changed_paths: &[PathBuf],
+    ) -> Self {
         self.project_manifest = project.map(|project| SourceFileSnapshot {
-            contents: fs::read(&project.manifest).ok(),
+            contents: read_file_without_symlinks(&project.manifest),
             path: project.manifest.clone(),
         });
+        let previous_assets = previous_assets
+            .iter()
+            .map(|asset| (asset.path.as_path(), asset.digest))
+            .collect::<HashMap<_, _>>();
         self.assets = project
             .into_iter()
             .flat_map(|project| &project.assets)
-            .map(|path| AssetFileSnapshot {
-                digest: digest_file(path),
-                path: path.clone(),
+            .map(|path| {
+                let changed = changed_paths
+                    .iter()
+                    .any(|changed| paths_overlap(path, changed));
+                let digest = if changed {
+                    digest_file(path)
+                } else {
+                    previous_assets
+                        .get(path.as_path())
+                        .copied()
+                        .unwrap_or_else(|| digest_file(path))
+                };
+                AssetFileSnapshot {
+                    digest,
+                    path: path.clone(),
+                }
             })
-            .collect();
-        self.asset_aliases = project
-            .into_iter()
-            .flat_map(|project| &project.asset_aliases)
-            .cloned()
             .collect();
         self
     }
+}
+
+fn compiled_snapshot_is_current(
+    snapshot: &SourceSnapshot,
+    compiled_watch_revision: Option<u64>,
+    current_watch_revision: u64,
+    fallback_validation_paths: &[PathBuf],
+) -> bool {
+    compiled_watch_revision == Some(current_watch_revision)
+        && snapshot.matches_disk_changes(fallback_validation_paths)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1507,10 +2081,22 @@ struct SourceFileSnapshot {
     contents: Option<Vec<u8>>,
 }
 
+impl SourceFileSnapshot {
+    fn matches_disk(&self) -> bool {
+        self.contents == read_file_without_symlinks(&self.path)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AssetFileSnapshot {
     path: PathBuf,
     digest: Option<[u8; 32]>,
+}
+
+impl AssetFileSnapshot {
+    fn matches_disk(&self) -> bool {
+        self.digest == digest_file(&self.path)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1543,6 +2129,10 @@ impl SourceCompilationState {
         self.snapshot() == Some(snapshot)
     }
 
+    fn can_acknowledge_watch_revision(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
     fn mark_failed(&mut self) {
         let previous = std::mem::take(self);
         *self = match previous {
@@ -1559,6 +2149,7 @@ fn source_snapshot(entry: &Path, previous: &[PathBuf]) -> SourceSnapshot {
     source_snapshot_with_project(entry, previous, None)
 }
 
+#[cfg(test)]
 fn source_snapshot_with_project(
     entry: &Path,
     previous: &[PathBuf],
@@ -1575,6 +2166,12 @@ fn source_snapshot_from_paths(entry: &Path, previous: &[PathBuf]) -> SourceSnaps
         Ok(loaded) => (loaded.sources, true),
         Err(error) => (error.sources, false),
     };
+    let mut document_contents = manifest
+        .documents
+        .into_vec()
+        .into_iter()
+        .map(|document| (document.path, document.contents.into_bytes()))
+        .collect::<HashMap<_, _>>();
     let mut paths = manifest.files;
     if !paths.iter().any(|path| path == entry) {
         paths.insert(0, entry.to_path_buf());
@@ -1594,7 +2191,9 @@ fn source_snapshot_from_paths(entry: &Path, previous: &[PathBuf]) -> SourceSnaps
     let sources = paths
         .into_iter()
         .map(|path| SourceFileSnapshot {
-            contents: fs::read(&path).ok(),
+            contents: document_contents
+                .remove(&path)
+                .or_else(|| read_file_without_symlinks(&path)),
             path,
         })
         .collect();
@@ -1603,11 +2202,16 @@ fn source_snapshot_from_paths(entry: &Path, previous: &[PathBuf]) -> SourceSnaps
         sources,
         project_manifest: None,
         assets: Vec::new(),
-        asset_aliases: Vec::new(),
     }
 }
 
+fn read_file_without_symlinks(path: &Path) -> Option<Vec<u8>> {
+    onda_frontend::ensure_no_symlink_components(path).ok()?;
+    fs::read(path).ok()
+}
+
 fn digest_file(path: &Path) -> Option<[u8; 32]> {
+    onda_frontend::ensure_no_symlink_components(path).ok()?;
     let mut file = fs::File::open(path).ok()?;
     let mut hasher = Sha256::new();
     let mut chunk = [0_u8; 64 * 1024];
@@ -1623,11 +2227,15 @@ fn digest_file(path: &Path) -> Option<[u8; 32]> {
 
 fn start_source_watcher(
     paths: &[PathBuf],
+    revision: SourceWatchRevision,
     events_tx: Sender<ControllerEvent>,
-) -> Option<FileWatcher> {
-    FileWatcher::watch(paths, move |_| {
-        let _ = events_tx.send(ControllerEvent::SourcesMayHaveChanged);
-    })
+) -> (Option<FileWatcher>, HashMap<PathBuf, notify::RecursiveMode>) {
+    let plan = source_watch_plan(paths);
+    let watched_roots = plan.roots.clone();
+    let watcher = FileWatcher::watch_plan(plan, revision, move |paths, watch_batch| {
+        let _ = events_tx.send(ControllerEvent::SourcesMayHaveChanged { paths, watch_batch });
+    });
+    (watcher, watched_roots)
 }
 
 fn list_input_devices() -> Vec<String> {
@@ -1884,16 +2492,18 @@ fn display_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        events_are_compatible_for_preservation, params_are_compatible_for_preservation,
-        reconcile_preserved_events, reconcile_preserved_params, run_param_json, source_snapshot,
-        source_snapshot_with_project, ControllerEvent, FileWatcher, ParamDomain, ParamScalarType,
+        compiled_snapshot_is_current, events_are_compatible_for_preservation,
+        params_are_compatible_for_preservation, reconcile_preserved_events,
+        reconcile_preserved_params, relevant_source_change_paths, run_param_json,
+        source_change_paths, source_snapshot, source_snapshot_with_project, source_watch_root,
+        watcher_gap_validation_paths, ControllerEvent, FileWatcher, ParamDomain, ParamScalarType,
         ParamScale, PendingCommand, PreservedBufferBinding, RunHostOptions, RunParamInfo,
-        RunParamWire, SourceCompilationState,
+        RunParamWire, SourceCompilationState, SourceWatchRevision,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -2011,7 +2621,95 @@ mod tests {
         };
         assert!(event.is_current_for(41));
         assert!(!event.is_current_for(42));
-        assert!(ControllerEvent::SourcesMayHaveChanged.is_current_for(42));
+        assert!(ControllerEvent::SourcesMayHaveChanged {
+            paths: Vec::new(),
+            watch_batch: super::SourceWatchBatch {
+                first_revision: 1,
+                last_revision: 1,
+                contiguous: true,
+            },
+        }
+        .is_current_for(42));
+    }
+
+    #[test]
+    fn source_watch_batches_only_acknowledge_contiguous_revisions() {
+        let contiguous = super::SourceWatchBatch {
+            first_revision: 5,
+            last_revision: 7,
+            contiguous: true,
+        };
+        assert_eq!(contiguous.advance(4), Some(7));
+
+        let starts_after_gap = super::SourceWatchBatch {
+            first_revision: 6,
+            ..contiguous
+        };
+        assert_eq!(starts_after_gap.advance(4), None);
+
+        let interleaved = super::SourceWatchBatch {
+            contiguous: false,
+            ..contiguous
+        };
+        assert_eq!(interleaved.advance(4), None);
+        assert_eq!(contiguous.advance(7), Some(7));
+    }
+
+    #[test]
+    fn compiling_sources_never_acknowledge_transient_mutations() {
+        let snapshot = super::SourceSnapshot {
+            load_succeeded: false,
+            sources: Vec::new(),
+            project_manifest: None,
+            assets: Vec::new(),
+        };
+        assert!(
+            !SourceCompilationState::Compiling(snapshot.clone()).can_acknowledge_watch_revision()
+        );
+        assert!(SourceCompilationState::Ready(snapshot).can_acknowledge_watch_revision());
+    }
+
+    #[test]
+    fn disk_fallback_never_replaces_the_watcher_revision_guard() {
+        let snapshot = super::SourceSnapshot {
+            load_succeeded: false,
+            sources: Vec::new(),
+            project_manifest: None,
+            assets: Vec::new(),
+        };
+
+        assert!(compiled_snapshot_is_current(&snapshot, Some(7), 7, &[]));
+        assert!(
+            !compiled_snapshot_is_current(&snapshot, Some(7), 8, &[]),
+            "matching disk state cannot make a stale compilation revision current"
+        );
+    }
+
+    #[test]
+    fn watcher_recreation_validates_uncovered_and_new_paths() {
+        let first = PathBuf::from("first.onda");
+        let second = PathBuf::from("second.onda");
+        let watched = vec![first.clone(), second.clone()];
+
+        assert_eq!(
+            watcher_gap_validation_paths(&watched, &watched, &watched),
+            watched,
+            "every uncovered path must be checked across watcher recreation"
+        );
+        assert_eq!(
+            watcher_gap_validation_paths(
+                &[first.clone(), second.clone()],
+                std::slice::from_ref(&first),
+                &[],
+            ),
+            vec![second.clone()],
+            "new paths must be checked even after complete previous coverage"
+        );
+        assert_eq!(
+            watcher_gap_validation_paths(&watched, &watched, std::slice::from_ref(&first)),
+            vec![first],
+            "covered paths must rely on revisions instead of redundant disk reads"
+        );
     }
 
     #[test]
@@ -2028,9 +2726,13 @@ mod tests {
         fs::write(&watched, "outs:\n  out1\nsample:\n  out1 = 0.0\n").expect("write initial file");
 
         let (tx, rx) = mpsc::channel();
-        let _watcher = FileWatcher::watch(std::slice::from_ref(&watched), move |_| {
-            let _ = tx.send(());
-        })
+        let _watcher = FileWatcher::watch(
+            std::slice::from_ref(&watched),
+            SourceWatchRevision::default(),
+            move |_, _| {
+                let _ = tx.send(());
+            },
+        )
         .expect("watcher should start");
 
         replace_file(&watched, "outs:\n  out1\nsample:\n  out1 = 1.0\n");
@@ -2061,7 +2763,8 @@ mod tests {
 
         let paths = vec![entry, dependency.clone()];
         let (tx, rx) = mpsc::channel();
-        let _watcher = FileWatcher::watch(&paths, move |paths| {
+        let revision = SourceWatchRevision::default();
+        let _watcher = FileWatcher::watch(&paths, revision.clone(), move |paths, _| {
             let _ = tx.send(paths);
         })
         .expect("watcher should start");
@@ -2073,8 +2776,173 @@ mod tests {
                 .contains(&dependency),
             "dependency event should include the replaced path"
         );
+        assert_ne!(revision.current(), 0, "a mutation must stale the snapshot");
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn file_watcher_reports_project_entry_changes() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_project_entry_watch_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        let source_dir = temp_root.join("code");
+        fs::create_dir_all(&source_dir).expect("create source directory");
+        let manifest = temp_root.join("project.ondaproject");
+        let entry = source_dir.join("main.onda");
+        fs::write(&manifest, "{\"entry\":\"code/main.onda\"}\n").expect("write manifest");
+        fs::write(&entry, "outs:\n  out1\nsample:\n  out1 = 0.0\n").expect("write entry");
+
+        let project = onda_project::resolve_project_watch_paths(
+            &manifest,
+            onda_project::ProjectLimits::default(),
+        )
+        .expect("resolve project watch paths");
+        let snapshot = source_snapshot_with_project(&project.entry, &[], Some(&project));
+        let (tx, rx) = mpsc::channel();
+        let _watcher = FileWatcher::watch(
+            &snapshot.watch_paths(),
+            SourceWatchRevision::default(),
+            move |paths, _| {
+                let _ = tx.send(paths);
+            },
+        )
+        .expect("project watcher should start");
+
+        replace_file(&entry, "outs:\n  out1\nsample:\n  out1 = 1.0\n");
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("project entry replacement should trigger")
+                .contains(&entry),
+            "project entry event should include the changed source"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn file_watcher_ignores_read_only_accesses() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_access_watch_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let watched = temp_root.join("run.onda");
+        fs::write(&watched, "outs:\n  out1\nsample:\n  out1 = 0.0\n").expect("write file");
+
+        let (tx, rx) = mpsc::channel();
+        let _watcher = FileWatcher::watch(
+            std::slice::from_ref(&watched),
+            SourceWatchRevision::default(),
+            move |_, _| {
+                let _ = tx.send(());
+            },
+        )
+        .expect("watcher should start");
+
+        fs::read(&watched).expect("read watched file");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(500)).is_err(),
+            "reading a source must not schedule a source rescan"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn source_change_filter_keeps_mutations_only() {
+        use notify::event::{AccessKind, AccessMode, DataChange, Flag, MetadataKind, ModifyKind};
+        use notify::EventKind;
+
+        let path = PathBuf::from("source.onda");
+        let event = |kind| Ok(notify::Event::new(kind).add_path(path.clone()));
+
+        assert_eq!(
+            source_change_paths(event(EventKind::Access(AccessKind::Read))),
+            None
+        );
+        assert_eq!(
+            source_change_paths(event(EventKind::Access(AccessKind::Close(
+                AccessMode::Read
+            )))),
+            None
+        );
+        assert_eq!(
+            source_change_paths(event(EventKind::Access(AccessKind::Close(
+                AccessMode::Write
+            )))),
+            Some(vec![path.clone()])
+        );
+        assert!(
+            source_change_paths(event(EventKind::Modify(ModifyKind::Metadata(
+                MetadataKind::AccessTime
+            ))))
+            .is_none()
+        );
+        assert_eq!(
+            source_change_paths(event(EventKind::Other)),
+            Some(vec![path.clone()])
+        );
+        assert_eq!(
+            source_change_paths(Ok(notify::Event::new(EventKind::Other)
+                .add_path(path.clone())
+                .set_flag(Flag::Rescan))),
+            Some(vec![path.clone()])
+        );
+        assert_eq!(
+            source_change_paths(event(EventKind::Modify(ModifyKind::Data(
+                DataChange::Content
+            )))),
+            Some(vec![path])
+        );
+    }
+
+    #[test]
+    fn source_change_filter_drops_unrelated_mutations_before_debouncing() {
+        use notify::event::{DataChange, ModifyKind};
+        use notify::EventKind;
+
+        let watched = PathBuf::from("sources/main.onda");
+        let sibling = PathBuf::from("sources/build.log");
+        let relevant = |path: &Path| super::paths_overlap(path, &watched);
+        let event = Ok(notify::Event::new(EventKind::Modify(ModifyKind::Data(
+            DataChange::Content,
+        )))
+        .add_path(sibling));
+        let coverage_lost = std::sync::atomic::AtomicBool::new(false);
+
+        assert_eq!(
+            relevant_source_change_paths(event, &[], &relevant, &coverage_lost),
+            None,
+            "unrelated sibling activity must not extend the source debounce window"
+        );
+        assert!(!coverage_lost.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn watcher_errors_permanently_downgrade_coverage() {
+        let root = PathBuf::from("sources");
+        let coverage_lost = std::sync::atomic::AtomicBool::new(false);
+        assert_eq!(
+            relevant_source_change_paths(
+                Err(notify::Error::generic("watch subscription was lost")),
+                std::slice::from_ref(&root),
+                &|_| true,
+                &coverage_lost,
+            ),
+            Some(vec![root])
+        );
+        assert!(
+            coverage_lost.load(std::sync::atomic::Ordering::Acquire),
+            "a backend error must keep the watcher on disk-validation fallback"
+        );
     }
 
     #[test]
@@ -2090,13 +2958,55 @@ mod tests {
         let missing_root = temp_root.join("missing");
         let roots = HashMap::from([
             (temp_root.clone(), notify::RecursiveMode::NonRecursive),
-            (missing_root, notify::RecursiveMode::NonRecursive),
+            (missing_root.clone(), notify::RecursiveMode::NonRecursive),
         ]);
 
-        let watcher = FileWatcher::watch_roots(roots, |_| {})
+        let watcher = FileWatcher::watch_roots(roots, SourceWatchRevision::default(), |_, _| {})
             .expect("one invalid root must not disable a valid watch root");
+        assert!(
+            !watcher.covers_all_paths(),
+            "partial watcher coverage must retain disk-validation fallback"
+        );
+        assert_eq!(watcher.fallback_validation_paths(), [missing_root]);
 
         drop(watcher);
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_watch_root_stops_before_a_symlink_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_symlink_watch_root_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        let assets = temp_root.join("assets");
+        let target = temp_root.join("target");
+        fs::create_dir_all(&assets).expect("create assets directory");
+        fs::create_dir_all(&target).expect("create target directory");
+        let alias = assets.join("linked");
+        symlink(&target, &alias).expect("create directory symlink");
+
+        let watched = alias.join("sample.wav");
+        assert_eq!(
+            source_watch_root(&watched),
+            (assets.clone(), notify::RecursiveMode::Recursive),
+            "the watcher must observe replacement of the rejected alias"
+        );
+
+        fs::remove_file(&alias).expect("remove symlink");
+        fs::create_dir(&alias).expect("replace symlink with a real directory");
+        assert_eq!(
+            source_watch_root(&watched),
+            (alias, notify::RecursiveMode::NonRecursive),
+            "the watcher may move inward after the path becomes symlink-free"
+        );
+
         let _ = fs::remove_dir_all(temp_root);
     }
 
@@ -2156,7 +3066,12 @@ mod tests {
         let entry = fs::canonicalize(entry).expect("canonical entry");
 
         let launched = source_snapshot(&entry, &[]);
+        assert!(launched.matches_disk());
         fs::write(&dependency, "const value = 2.0\n").expect("change dependency");
+        assert!(
+            !launched.matches_disk(),
+            "known-source comparison should reject a stale child without reparsing"
+        );
         let ready = source_snapshot(&entry, &launched.paths());
 
         assert_ne!(
@@ -2164,6 +3079,42 @@ mod tests {
             "a child compiled from the launched snapshot must not be accepted"
         );
         assert!(!SourceCompilationState::Compiling(launched).matches(&ready));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_snapshot_rejects_identical_symlink_replacements() {
+        use std::os::unix::fs::symlink;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_symlink_replacement_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let entry = temp_root.join("main.onda");
+        let target = temp_root.join("target.onda");
+        let source = "outs 1\nsample:\n  out1 = 0.0\n";
+        fs::write(&entry, source).expect("write entry");
+        fs::write(&target, source).expect("write identical target");
+        let entry = fs::canonicalize(entry).expect("canonical entry");
+        let snapshot = source_snapshot(&entry, &[]);
+
+        fs::remove_file(&entry).expect("remove regular entry");
+        symlink(&target, &entry).expect("replace entry with symlink");
+
+        assert!(
+            !snapshot.matches_disk_changes(std::slice::from_ref(&entry)),
+            "a symlink replacement must invalidate even when its target has identical contents"
+        );
+        assert!(
+            super::read_file_without_symlinks(&entry).is_none(),
+            "snapshot recovery must not read through the replacement symlink"
+        );
 
         let _ = fs::remove_dir_all(temp_root);
     }
@@ -2181,15 +3132,14 @@ mod tests {
         let entry = temp_root.join("main.onda");
         let manifest = temp_root.join("project.ondaproject");
         let asset = temp_root.join("sample.ondabuffer");
-        let asset_alias = temp_root.join("linked-sample.ondabuffer");
         fs::write(&entry, "outs 1\nsample:\n  out1 = 0.0\n").expect("write entry");
         fs::write(&manifest, "{\"entry\":\"main.onda\"}\n").expect("write manifest");
         fs::write(&asset, [1_u8, 2, 3]).expect("write asset");
         let entry = fs::canonicalize(entry).expect("canonical entry");
         let project = onda_project::ProjectWatchPaths {
             manifest: fs::canonicalize(manifest).expect("canonical manifest"),
+            entry: entry.clone(),
             assets: vec![fs::canonicalize(&asset).expect("canonical asset")],
-            asset_aliases: vec![asset_alias.clone()],
         };
 
         let initial = source_snapshot_with_project(&entry, &[], Some(&project));
@@ -2200,19 +3150,103 @@ mod tests {
                 entry.clone(),
                 project.manifest.clone(),
                 project.assets[0].clone(),
-                asset_alias,
             ]
         );
         assert_eq!(initial.assets.len(), 1);
         assert!(initial.assets[0].digest.is_some());
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let target = temp_root.join("identical.ondabuffer");
+            fs::write(&target, [1_u8, 2, 3]).expect("write identical asset target");
+            fs::remove_file(&asset).expect("remove regular asset");
+            symlink(&target, &asset).expect("replace asset with symlink");
+            assert!(
+                super::digest_file(&project.assets[0]).is_none(),
+                "asset recovery must not hash through a replacement symlink"
+            );
+            assert!(
+                !initial.matches_disk_changes(std::slice::from_ref(&project.assets[0])),
+                "an asset symlink replacement must invalidate even with an identical digest"
+            );
+            fs::remove_file(&asset).expect("remove asset symlink");
+            fs::write(&asset, [1_u8, 2, 3]).expect("restore regular asset");
+        }
+
         fs::write(&asset, [3_u8, 2, 1]).expect("change asset without changing its length");
+        assert!(
+            initial.matches_disk_changes(std::slice::from_ref(&entry)),
+            "a source-only event should not hash unrelated project assets"
+        );
+        assert!(
+            !initial.matches_disk_changes(std::slice::from_ref(&project.assets[0])),
+            "an asset event must validate the changed asset"
+        );
+        let source_only_refresh = super::source_snapshot_from_paths(&entry, &initial.paths())
+            .with_project_reusing(
+                Some(&project),
+                &initial.assets,
+                std::slice::from_ref(&entry),
+            );
+        assert_eq!(
+            source_only_refresh.assets, initial.assets,
+            "a source event must reuse unrelated project asset fingerprints"
+        );
+        let targeted_asset_refresh = super::source_snapshot_from_paths(&entry, &initial.paths())
+            .with_project_reusing(
+                Some(&project),
+                &initial.assets,
+                std::slice::from_ref(&project.assets[0]),
+            );
+        assert_ne!(
+            targeted_asset_refresh.assets, initial.assets,
+            "an asset event must refresh the affected fingerprint"
+        );
         let changed = source_snapshot_with_project(&entry, &initial.paths(), Some(&project));
         assert_ne!(
             changed, initial,
             "asset content changes must invalidate the run"
         );
         assert_eq!(changed.paths(), vec![entry]);
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn missing_project_entry_creation_invalidates_the_snapshot() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_run_missing_project_entry_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join("code")).expect("create source directory");
+        let manifest = temp_root.join("project.ondaproject");
+        fs::write(&manifest, "{\"entry\":\"code/main.onda\"}\n").expect("write manifest");
+        let project = onda_project::resolve_project_watch_paths(
+            &manifest,
+            onda_project::ProjectLimits::default(),
+        )
+        .expect("missing project entry should remain watchable");
+        let launch_path = fs::canonicalize(&manifest).expect("canonical manifest");
+        let (run_entry, run_project) = super::resolve_run_input_paths(&launch_path)
+            .expect("run initialization must retain a missing project entry");
+        assert_eq!(run_entry, project.entry);
+        assert_eq!(run_project, Some(project.clone()));
+
+        let initial = source_snapshot_with_project(&project.entry, &[], Some(&project));
+        assert!(!initial.load_succeeded);
+        assert!(initial.paths().contains(&project.entry));
+        assert!(initial.matches_disk());
+
+        fs::write(&project.entry, "outs 1\nsample:\n  out1 = 0.0\n").expect("create project entry");
+        assert!(
+            !initial.matches_disk_changes(std::slice::from_ref(&project.entry)),
+            "creating the missing entry must invalidate the failed snapshot"
+        );
 
         let _ = fs::remove_dir_all(temp_root);
     }
@@ -2240,9 +3274,13 @@ mod tests {
         );
 
         let (tx, rx) = mpsc::channel();
-        let _watcher = FileWatcher::watch(&failed.paths(), move |paths| {
-            let _ = tx.send(paths);
-        })
+        let _watcher = FileWatcher::watch(
+            &failed.paths(),
+            SourceWatchRevision::default(),
+            move |paths, _| {
+                let _ = tx.send(paths);
+            },
+        )
         .expect("watcher should start");
 
         fs::create_dir_all(dependency.parent().expect("dependency parent"))

@@ -1500,8 +1500,9 @@ fn generate_nested_wrapper_defs(
                             proc_api,
                             errors,
                         );
-                        inject_bound_proc_param_hooks_in_stmts(
-                            Some(&proc.name),
+                        inject_bound_proc_param_hooks_in_nested_event_stmts(
+                            &proc.name,
+                            &nested_path,
                             &mut nested_event_body,
                             &nested_hook_instances,
                             &shape.nested_proc_array_slots,

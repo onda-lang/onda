@@ -1,0 +1,14 @@
+params:
+  freq = 440.0 { 20, 1000 }
+
+init:
+  phase = 0.0
+
+block:
+  incr = freq * TWO_PI / SR
+  
+  sample:
+    phase = phase + incr
+    if (phase > TWO_PI):
+      phase = phase - TWO_PI
+    out1 = sin(phase)

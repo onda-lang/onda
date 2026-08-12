@@ -4,9 +4,9 @@ import test from "node:test";
 import { loadExampleProject } from "./examples.js";
 
 const project = {
-  entry: "foundations/sine.onda",
-  active: "foundations/sine.onda",
-  sources: { "foundations/sine.onda": "sample:\n  out1 = 0.0\n" },
+  entry: "basic/sine.onda",
+  active: "basic/sine.onda",
+  sources: { "basic/sine.onda": "sample:\n  out1 = 0.0\n" },
 };
 
 test("loads an exact project from the versioned example catalog", async () => {
@@ -32,7 +32,7 @@ test("rejects invalid and unknown example paths", async () => {
     /path is invalid/,
   );
   await assert.rejects(
-    loadExampleProject("/examples.json", "foundations/missing.onda", fetchCatalog),
+    loadExampleProject("/examples.json", "basic/missing.onda", fetchCatalog),
     /was not found/,
   );
 });

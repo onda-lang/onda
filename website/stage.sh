@@ -24,6 +24,8 @@ mkdir -p "$destination"
 
 cp -R "$repo_root/website/." "$destination/"
 rm "$destination/docs"
+cp "$repo_root/examples/basic/saw_filter_saturator.onda" \
+  "$destination/_includes/home-example.onda"
 cp -R "$repo_root/docs" "$destination/docs"
 cp -R "$repo_root/assets/." "$destination/assets/"
 mkdir -p "$destination/_data" "$destination/assets/play"

@@ -1,0 +1,36 @@
+# Schroeder Reverb
+# Sound: a bright, spacious algorithmic room with adjustable damping and stereo spread.
+# Demonstrates: a reusable stdlib reverb and declarative graph routing for an input effect.
+# Try: raise `room_size`, darken `damping`, then set `live_input` to 1 for external audio.
+
+import std/reverb
+import processors/effect_audition
+
+outs 2
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  live_input = 0.0 {0.0, 1.0, step = 1.0}
+  mix = 0.54 {0.0, 1.0}
+  room_size = 0.84 {0.0, 1.0}
+  damping = 0.36 {0.0, 0.98}
+  width = 0.94 {0.0, 1.0}
+  level = 0.8 {0.0, 1.0}
+
+init:
+  audition = EffectAudition()
+  reverb = std::reverb::Schroeder::Reverb()
+
+event bang():
+  audition.bang()
+
+graph:
+  auto_play >> audition.auto_play
+  audition.out1 * (1.0 - live_input) + in1 * live_input >> reverb.in1
+  audition.out2 * (1.0 - live_input) + in2 * live_input >> reverb.in2
+  mix >> reverb.mix
+  room_size >> reverb.room_size
+  damping >> reverb.damping
+  width >> reverb.width
+  reverb.out1 * level >> out1
+  reverb.out2 * level >> out2

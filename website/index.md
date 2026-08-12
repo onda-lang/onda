@@ -19,11 +19,11 @@ description: Expressive and performant JIT-compiled audio programming language
   <section class="home-example">
     <div class="section-title">
       <h2>Code example</h2>
-      <p>A standard-library oscillator and resonant filter with a custom oversampled saturator</p>
+      <p>A wide, evolving subtractive synth with resonant filtering and local oversampling</p>
     </div>
     <div class="home-example-code">
 <pre><code class="language-onda">{% include home-example.onda %}</code></pre>
-      <a class="primary-button" href="{{ '/playground/?example=processors-and-graphs/saw_filter_saturator.onda' | relative_url }}">Open in playground</a>
+      <a class="primary-button" href="{{ '/playground/?example=basic/saw_filter_saturator.onda' | relative_url }}">Open in playground</a>
     </div>
   </section>
 
@@ -31,7 +31,7 @@ description: Expressive and performant JIT-compiled audio programming language
     <div class="doc-list">
       <a href="{{ '/docs/getting-started/' | relative_url }}"><strong>Getting started</strong><span>Try Onda in your browser, install the CLI, run a program, and render audio</span></a>
       <a href="{{ '/docs/language/' | relative_url }}"><strong>Language guide</strong><span>Syntax and semantics from basic programs through processors, graphs, generics, and modules</span></a>
-      <a href="{{ '/docs/examples/' | relative_url }}"><strong>Examples</strong><span>Programs covering oscillators, events, processors, graphs, the standard library, FFT, and convolution</span></a>
+      <a href="{{ '/docs/examples/' | relative_url }}"><strong>Examples</strong><span>Musical instruments, effects, soundscapes, embedded-buffer projects, advanced DSP, and focused language references</span></a>
       <a href="{{ '/docs/tooling/' | relative_url }}"><strong>CLI and editors</strong><span>Compilation, playback, rendering, language-server support, and embedding</span></a>
     </div>
   </nav>
