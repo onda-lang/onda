@@ -197,11 +197,13 @@ jobs:
           $binDir = Join-Path $packageRoot "bin"
           $libDir = Join-Path $packageRoot "lib"
           $includeDir = Join-Path $packageRoot "include"
+          $docsDir = Join-Path $packageRoot "docs"
           $cmakeDir = Join-Path $libDir "cmake\Onda"
 
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
           New-Item -ItemType Directory -Force -Path $libDir | Out-Null
           New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $docsDir | Out-Null
           New-Item -ItemType Directory -Force -Path $cmakeDir | Out-Null
 
           Copy-Item target\release\onda.exe $binDir
@@ -222,9 +224,14 @@ jobs:
           Copy-Item LICENSE $packageRoot
           Copy-Item README.md $packageRoot
           Copy-Item CHANGELOG.md $packageRoot
-          Copy-Item docs\syntax.md $packageRoot
-          Copy-Item docs\stdlib.md $packageRoot
+          Copy-Item docs\syntax.md $docsDir
+          Copy-Item docs\stdlib.md $docsDir
           Copy-Item examples $packageRoot -Recurse
+
+          if (-not (Test-Path (Join-Path $docsDir "syntax.md")) -or
+              -not (Test-Path (Join-Path $docsDir "stdlib.md"))) {
+            throw "release documentation was not packaged under docs"
+          }
 
           $packagedCmakeBuildDir = Join-Path $PWD "target\cmake-sdk-packaged"
           cmake `
@@ -249,9 +256,10 @@ jobs:
           bin_dir="$package_root/bin"
           lib_dir="$package_root/lib"
           include_dir="$package_root/include"
+          docs_dir="$package_root/docs"
           cmake_dir="$lib_dir/cmake/Onda"
 
-          mkdir -p "$bin_dir" "$lib_dir" "$include_dir" "$cmake_dir"
+          mkdir -p "$bin_dir" "$lib_dir" "$include_dir" "$docs_dir" "$cmake_dir"
 
           cp target/release/onda "$bin_dir/"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
@@ -323,9 +331,12 @@ jobs:
           cp LICENSE "$package_root/"
           cp README.md "$package_root/"
           cp CHANGELOG.md "$package_root/"
-          cp docs/syntax.md "$package_root/"
-          cp docs/stdlib.md "$package_root/"
+          cp docs/syntax.md "$docs_dir/"
+          cp docs/stdlib.md "$docs_dir/"
           cp -R examples "$package_root/"
+
+          test -f "$docs_dir/syntax.md"
+          test -f "$docs_dir/stdlib.md"
 
           cmake \
             -S tests/cmake_sdk \
