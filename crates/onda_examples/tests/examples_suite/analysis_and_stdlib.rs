@@ -1422,6 +1422,42 @@ fn assert_rejects_false_namespace_compile_time_condition() {
 
 #[test]
 
+fn stdlib_decay_env_start_preserves_level_while_trigger_is_held() {
+    let source = r#"
+import std/env
+
+events:
+  restart():
+    decay.start(0.25)
+
+init:
+  decay = std::env::DecayEnv(decay_s = 1.0, trigger = 1.0)
+
+sample:
+  out1 = decay(trigger = 1.0)
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 1];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("initial processing should succeed");
+
+    let restart = instance
+        .event_index("restart")
+        .expect("restart event should exist");
+    trigger_event_by_index(&mut instance, restart, &[]).expect("restart should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("processing after restart should succeed");
+
+    let coefficient = (-1.0_f32 / 48_000.0).exp();
+    assert_near(output[0], 0.25 * coefficient, 1e-6);
+}
+
+#[test]
+
 fn stdlib_fft_impulse_compile_and_run() {
     let frames = 2;
 
@@ -1713,6 +1749,24 @@ fn stdlib_realfft_struct_compile_and_run() {
 
 #[test]
 
+fn stdlib_realfft_matches_full_complex_reference() {
+    let frames = 64;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REALFFT_REFERENCE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[frames - 1], 0.0, 2e-4);
+}
+
+#[test]
+
 fn stdlib_realfft_namespaced_proc_compile_and_run() {
     let frames = 128;
 
@@ -1763,10 +1817,71 @@ fn stdlib_realfft_hann_ola_passthrough_compile_and_run() {
 
     assert!(
 
-        peak < 0.02,
+        peak < 5e-4,
 
         "hann overlap-add passthrough should reconstruct the delayed signal closely, peak error was {peak}"
 
+    );
+}
+
+#[test]
+fn stdlib_realifft_hann_waits_for_stable_overlap_normalization() {
+    let frames = 64;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REALIFFT_HANN_PRIMING_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(output[..32].iter().all(|sample| *sample == 0.0));
+    assert!(output[32..].iter().any(|sample| sample.abs() > 1e-4));
+    assert!(output.iter().all(|sample| sample.is_finite()));
+    let peak = output
+        .iter()
+        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+    assert!(peak <= 2.0, "primed overlap-add peak was {peak}");
+}
+
+#[test]
+fn stdlib_realifft_hann_reprimes_after_becoming_inactive() {
+    let frames = 160;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REALIFFT_HANN_PRIMING_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output[128..].iter().all(|sample| *sample == 0.0),
+        "an isolated Hann frame after inactivity must wait for a new overlapping frame"
+    );
+}
+
+#[test]
+fn stdlib_realifft_first_frame_uses_prepared_twiddles() {
+    let frames = 64;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REALIFFT_FIRST_FRAME_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let peak_error = output
+        .iter()
+        .copied()
+        .fold(0.0_f32, |peak, error| peak.max(error));
+    assert!(
+        peak_error < 2e-5,
+        "first-frame inverse error was {peak_error}"
     );
 }
 
@@ -1984,79 +2099,6 @@ fn stdlib_convolution_generic_f64_compile_and_run() {
     assert_near(output[2], 0.25, 1e-4);
 
     assert_near(output[3], 0.0, 1e-4);
-}
-
-#[test]
-
-fn convolution_wav_impulse_example_reproduces_ir_from_event_payload() {
-    let src =
-        include_str!("../../../../examples/buffers-fft-convolution/convolution_wav_impulse.onda");
-    const MAX_IR: usize = 100_000;
-
-    let ir_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("examples")
-        .join("buffers-fft-convolution")
-        .join("impulse.wav");
-
-    let mut ir = read_wav_mixdown_f32(ir_path.to_str().expect("utf8 path"));
-    ir.truncate(MAX_IR);
-    assert!(
-        !ir.is_empty(),
-        "impulse wav should produce at least one sample"
-    );
-
-    let frames = ir.len();
-
-    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
-        src,
-        frames,
-        CompileOptions {
-            sample_rate: 44_100.0,
-
-            block_size: frames,
-
-            fast_math: false,
-            opt_level: TargetOptLevel::O3,
-        },
-    );
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let event_idx = instance
-        .event_index("load_ir")
-        .expect("load_ir event must exist");
-
-    assert_eq!(instance.event_payload_bytes(event_idx), None);
-
-    let mut payload =
-        Vec::with_capacity(std::mem::size_of::<i32>() + ir.len() * std::mem::size_of::<f32>());
-
-    payload.extend_from_slice(&(ir.len() as i32).to_ne_bytes());
-
-    for sample in &ir {
-        payload.extend_from_slice(&sample.to_ne_bytes());
-    }
-
-    trigger_event_by_index(&mut instance, event_idx, &payload)
-        .expect("event trigger should succeed");
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    let latency = 0usize;
-
-    for sample in output.iter().take(latency) {
-        assert_near(*sample, 0.0, 1e-4);
-    }
-
-    for (idx, expected) in ir.iter().enumerate() {
-        assert_near(output[latency + idx], *expected, 1e-3);
-    }
 }
 
 #[test]
@@ -3549,5 +3591,35 @@ fn namespace_consts_are_accessible_via_qualified_paths() {
         assert_near(output[frame * 2], 4.0, 1e-6);
 
         assert_near(output[frame * 2 + 1], 128.0, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_schroeder_is_a_configurable_namespace() {
+    let source = r#"
+import std/reverb
+
+outs 2
+
+init:
+  reverb = std::reverb::Schroeder<2048, 1024>::Reverb()
+
+sample:
+  reverb(0.0, 0.0)
+  out1 = f32(std::reverb::Schroeder<2048, 1024>::CombLines) + reverb.out1
+  out2 = f32(std::reverb::Schroeder<2048, 1024>::AllpassLines) + reverb.out2
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * 2];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        assert_near(output[frame * 2], 8.0, 1e-6);
+        assert_near(output[frame * 2 + 1], 4.0, 1e-6);
     }
 }

@@ -28,10 +28,11 @@ fn update_run_settings(message: &serde_json::Value, options: &mut RunHostOptions
 mod platform {
     use super::update_run_settings;
     use std::path::{Path, PathBuf};
-    use std::time::Duration;
 
     use image::ImageReader;
-    use onda_run::{RunController, RunHostOptions, RunState, RunThemeMode};
+    use onda_run::{
+        RunController, RunHostOptions, RunState, RunThemeMode, CONTROLLER_POLL_INTERVAL,
+    };
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
     use tao::window::{Icon, WindowBuilder};
@@ -119,8 +120,12 @@ mod platform {
         let mut pending_scope_sync = true;
 
         event_loop.run(move |event, _target, control_flow| {
-            *control_flow =
-                ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_millis(16));
+            let controller_was_active = controller.is_some();
+            *control_flow = if controller.is_some() {
+                ControlFlow::WaitUntil(std::time::Instant::now() + CONTROLLER_POLL_INTERVAL)
+            } else {
+                ControlFlow::Wait
+            };
 
             if let Some(controller) = controller.as_mut() {
                 let poll = controller.poll();
@@ -240,6 +245,13 @@ mod platform {
                     sync_scope_state(&webview, controller.state());
                 }
                 pending_scope_sync = false;
+            }
+
+            if !controller_was_active && controller.is_some() {
+                // The callback began in ControlFlow::Wait, so creating a
+                // controller during this event must explicitly wake the loop.
+                // Subsequent callbacks use the normal bounded poll interval.
+                *control_flow = ControlFlow::Poll;
             }
         });
     }

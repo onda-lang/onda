@@ -1,0 +1,33 @@
+import processors/effect_audition
+import processors/fdn_reverb
+
+outs 2
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  live_input = 0.0 {0.0, 1.0, step = 1.0}
+  mix = 0.56 {0.0, 1.0}
+  decay = 4.8 {0.2, 16.0, log, "s"}
+  damping = 0.46 {0.0, 0.98}
+  predelay = 0.018 {0.0, 0.1, unit = "s"}
+  diffusion = 0.64 {0.0, 0.95}
+  level = 0.7 {0.0, 1.0}
+
+init:
+  audition = EffectAudition()
+  reverb = Reverb()
+
+event bang():
+  audition.bang()
+
+graph:
+  auto_play >> audition.auto_play
+  audition.out1 * (1.0 - live_input) + in1 * live_input >> reverb.in1
+  audition.out2 * (1.0 - live_input) + in2 * live_input >> reverb.in2
+  mix >> reverb.mix
+  decay >> reverb.decay
+  damping >> reverb.damping
+  predelay >> reverb.predelay
+  diffusion >> reverb.diffusion
+  reverb.out1 * level >> out1
+  reverb.out2 * level >> out2

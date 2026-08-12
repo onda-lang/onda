@@ -1,0 +1,105 @@
+# Live Tape Looper
+# Sound: a captured phrase repeats from a virtual tape with varispeed, reverse, wow, and overdub.
+# Demonstrates: event-controlled recording, circular buffers, cubic lookup, and stdlib modulation.
+# Try: call `reverse()`, change `speed`, or set `live_input` to 1 before `recapture()`.
+
+import std/env
+import std/lookup
+import std/osc
+import std/pitch
+
+const TapeCapacity = i32(SR * 8)
+const PatternLength = 8
+const Notes: f32[PatternLength] = [45.0, 52.0, 57.0, 64.0, 55.0, 60.0, 69.0, 48.0]
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  live_input = 0.0 {0.0, 1.0, step = 1.0}
+  loop_s = 2.8 {0.5, 7.5, unit = "s"}
+  speed = 1.0 {0.25, 2.0}
+  overdub = 0.0 {0.0, 0.92}
+  wow = 0.0025 {0.0, 0.02}
+  mix = 0.82 {0.0, 1.0}
+  level = 0.8 {0.0, 1.0}
+
+init:
+  tape_l: f32[TapeCapacity]
+  tape_r: f32[TapeCapacity]
+  captured_frames: i32 = 0
+  write_index: i32 = 0
+  read_position = 0.0
+  recording = true
+  direction = 1.0
+
+  source_a = std::osc::Saw(amp = 0.58)
+  source_b = std::osc::Sine(amp = 0.24)
+  envelope = std::env::DecayEnv(decay_s = 0.22)
+  source_clock: i32 = 0
+  source_step: i32 = 0
+  source_frequency = std::pitch::note_to_hz(Notes[0])
+  pending_bang = false
+  wow_lfo = std::osc::Sine(freq = 0.27)
+
+event recapture():
+  recording = true
+  captured_frames = 0
+  write_index = 0
+  read_position = 0.0
+
+event reverse():
+  direction = -direction
+
+event clear():
+  recording = false
+  captured_frames = 0
+  write_index = 0
+  read_position = 0.0
+
+event bang():
+  pending_bang = true
+
+sample:
+  source_period = max(i32(SR * 0.41), 1)
+  if auto_play != 0 && source_clock == 0:
+    pending_bang = true
+
+  if pending_bang:
+    source_frequency = std::pitch::note_to_hz(Notes[source_step])
+    source_a.reset()
+    source_b.reset()
+    envelope.start()
+    source_step = (source_step + 1) % PatternLength
+    pending_bang = false
+  source_clock = (source_clock + 1) % source_period
+
+  audition = source_a(freq = source_frequency)
+  audition = audition + source_b(freq = source_frequency * 1.4983)
+  audition = audition * envelope() * 0.44
+  input_l = audition * (1.0 - live_input) + in1 * live_input
+  input_r = audition * (1.0 - live_input) + in2 * live_input
+  target_frames = min(max(i32(loop_s * SR), 8), TapeCapacity)
+
+  loop_l = 0.0
+  loop_r = 0.0
+  if recording:
+    tape_l[write_index] = input_l
+    tape_r[write_index] = input_r
+    write_index = write_index + 1
+    captured_frames = captured_frames + 1
+    if write_index >= target_frames:
+      recording = false
+      captured_frames = target_frames
+      read_position = 0.0
+  elif captured_frames > 1:
+    loop_l = std::lookup::readCW(tape_l, read_position)
+    loop_r = std::lookup::readCW(tape_r, read_position)
+    if overdub > 0.0:
+      overdub_index = i32(read_position) % captured_frames
+      tape_l[overdub_index] = loop_l * overdub + input_l * (1.0 - overdub)
+      tape_r[overdub_index] = loop_r * overdub + input_r * (1.0 - overdub)
+
+    transport_speed = speed * direction * (1.0 + wow_lfo() * wow)
+    read_position = wrap(read_position + transport_speed, 0.0, f32(captured_frames))
+
+  out1 = tanh((input_l * (1.0 - mix) + loop_l * mix) * level)
+  out2 = tanh((input_r * (1.0 - mix) + loop_r * mix) * level)

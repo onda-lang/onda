@@ -9,7 +9,7 @@ export async function buildExampleProjectCatalog(examplesRoot) {
   const sources = Object.fromEntries(await Promise.all(
     files
       .filter((path) => ONDA_EXTENSIONS.has(extname(path)))
-      .map(async (path) => [projectPath(root, path), await readFile(path, "utf8")]),
+      .map(async (path) => [relativeProjectPath(root, path), await readFile(path, "utf8")]),
   ));
   const projects = {};
   for (const entry of Object.keys(sources).sort()) {
@@ -71,7 +71,7 @@ function resolveModule(directory, module, allSources, owner) {
   return found;
 }
 
-async function filesBelow(directory) {
+export async function filesBelow(directory) {
   const result = [];
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -83,6 +83,6 @@ async function filesBelow(directory) {
   return result;
 }
 
-function projectPath(root, path) {
+export function relativeProjectPath(root, path) {
   return relative(root, path).split("\\").join("/");
 }

@@ -35,6 +35,63 @@ fn write_file(path: &Path, text: &str) {
     fs::write(path, text).expect("write test file");
 }
 
+#[cfg(unix)]
+#[test]
+fn filesystem_source_loading_rejects_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let dir = mk_temp_dir("source_resolution_import_symlink");
+    let main = dir.join("main.onda");
+    let target = dir.join("implementation.on");
+    let candidate = dir.join("module.onda");
+    write_file(&main, "import module\n");
+    write_file(&target, "const value = 1.0\n");
+    symlink(&target, &candidate).expect("create import symlink");
+
+    let error = load_program_file(&main).expect_err("source symlinks must be rejected");
+    assert!(
+        error.diagnostics[0].message.contains("symlink component"),
+        "unexpected diagnostic: {}",
+        error.diagnostics[0].message
+    );
+
+    let entry_alias = dir.join("entry.onda");
+    symlink(&main, &entry_alias).expect("create entry symlink");
+    let error = load_program_file(&entry_alias).expect_err("entry symlinks must be rejected");
+    assert!(error.diagnostics[0].message.contains("symlink component"));
+
+    let normalized_alias = dir.join("missing/../entry.onda");
+    let error = super::ensure_no_symlink_components(&normalized_alias)
+        .expect_err("a missing prefix must not hide a symlink after normalization");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+
+    let outside = dir.join("outside");
+    let nested = outside.join("nested");
+    fs::create_dir_all(&nested).expect("create symlink traversal target");
+    write_file(
+        &outside.join("escaped.onda"),
+        "outs 1\nsample:\n  out1 = 0.0\n",
+    );
+    let directory_alias = dir.join("directory_alias");
+    symlink(&nested, &directory_alias).expect("create directory symlink");
+    let traversing_entry = directory_alias.join("../escaped.onda");
+    let error = load_program_file(&traversing_entry)
+        .expect_err("parent components must not hide traversed symlinks");
+    assert!(error.diagnostics[0].message.contains("symlink component"));
+
+    write_file(&main, "include \"directory_alias/../escaped.onda\"\n");
+    let error = load_program_file(&main)
+        .expect_err("include normalization must not hide traversed symlinks");
+    assert!(error.diagnostics[0].message.contains("symlink component"));
+
+    write_file(&main, "import directory_alias/../escaped\n");
+    let error = load_program_file(&main)
+        .expect_err("import normalization must not hide traversed symlinks");
+    assert!(error.diagnostics[0].message.contains("symlink component"));
+
+    fs::remove_dir_all(dir).ok();
+}
+
 fn assert_deferred_int_count(expr: &Option<Expr>, expected: i64) {
     fn expr_int_value(expr: &Expr) -> Option<i64> {
         match expr {
@@ -4282,6 +4339,34 @@ sample {
         } => assert_eq!(values.len(), 2),
         _ => panic!("expected ArrayCtor with array initializer"),
     }
+}
+
+#[test]
+fn identifiers_starting_with_const_are_not_parsed_as_const_declarations() {
+    let src = r#"
+outs:
+  out1
+init:
+  constructed: f32[1] = [1.0]
+sample:
+  out1 = constructed[0]
+"#;
+    let program = parse_program(src).expect("const-prefixed identifier should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Init(stmts) => Some(&stmts.body),
+            _ => None,
+        })
+        .expect("init block");
+    assert!(matches!(
+        init.as_slice(),
+        [Stmt::Assign {
+            target: AssignTarget::Var(name),
+            ..
+        }] if name == "constructed"
+    ));
 }
 
 #[test]

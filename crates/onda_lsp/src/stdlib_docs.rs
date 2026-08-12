@@ -34,9 +34,10 @@ pub fn generate_stdlib_reference() -> Result<String, String> {
     out.push_str("# Onda standard library\n\n");
     out.push_str(
         "This page is generated from the standard library embedded in the compiler. Run \
-         `npm run docs:stdlib` after changing `stdlib/`; CI verifies that the checked-in reference \
-         is current. Declarations whose names begin with `_` are implementation helpers and are \
-         omitted.\n\n",
+         `scripts/update_stdlib_docs.sh` on Unix or `scripts/update_stdlib_docs.ps1` on Windows after \
+         changing `stdlib/`; `npm run docs:stdlib` is the equivalent package command, and CI \
+         verifies that the checked-in reference is current. Declarations whose names begin with \
+         `_` are implementation helpers and are omitted.\n\n",
     );
     out.push_str(
         "`std/prelude` is imported automatically. It loads `std/math`, `std/lookup`, and \

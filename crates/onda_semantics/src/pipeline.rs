@@ -9197,7 +9197,7 @@ pub fn analyze_with_options(
                     }
                     TypedFnParam::ProcArray { proc_name, len } => {
                         let slot_names = (0..*len)
-                            .map(|idx| format!("{param_name}.__proc_array_slot_{idx}"))
+                            .map(|idx| format!("{param_name}.__onda_proc_array_slot_{idx}"))
                             .collect::<Vec<_>>();
                         for slot_name in &slot_names {
                             def_proc_vars.insert(
@@ -9218,7 +9218,9 @@ pub fn analyze_with_options(
                 }
             }
         }
-        if !def_proc_vars.is_empty() || !def_proc_array_slots.is_empty() {
+        if (!def_proc_vars.is_empty() || !def_proc_array_slots.is_empty())
+            && !crate::internal_names::is_compiler_generated_function_name(&def.name)
+        {
             rewrite_proc_calls_in_stmts(
                 &mut def.body,
                 &def_proc_vars,
@@ -10126,7 +10128,11 @@ fn validate_generic_def_type_args_in_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     match stmt {
-        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+        Stmt::Assign { target, expr, .. } => {
+            validate_generic_def_type_args_in_assign_target(target, fn_signatures, errors);
+            validate_generic_def_type_args_in_expr(expr, fn_signatures, errors);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             validate_generic_def_type_args_in_expr(expr, fn_signatures, errors);
         }
         Stmt::If {
@@ -10139,7 +10145,18 @@ fn validate_generic_def_type_args_in_stmt(
             validate_generic_def_type_args_in_stmts(then_branch, fn_signatures, errors);
             validate_generic_def_type_args_in_stmts(else_branch, fn_signatures, errors);
         }
-        Stmt::For { body, .. } => {
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            validate_generic_def_type_args_in_expr(start, fn_signatures, errors);
+            validate_generic_def_type_args_in_expr(end, fn_signatures, errors);
+            if let Some(step) = step {
+                validate_generic_def_type_args_in_expr(step, fn_signatures, errors);
+            }
             validate_generic_def_type_args_in_stmts(body, fn_signatures, errors);
         }
         Stmt::While { cond, body, .. } => {
@@ -10147,6 +10164,30 @@ fn validate_generic_def_type_args_in_stmt(
             validate_generic_def_type_args_in_stmts(body, fn_signatures, errors);
         }
         _ => {}
+    }
+}
+
+fn validate_generic_def_type_args_in_assign_target(
+    target: &AssignTarget,
+    fn_signatures: &HashMap<String, FnSignature>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match target {
+        AssignTarget::Index { index, .. } => {
+            validate_generic_def_type_args_in_expr(index, fn_signatures, errors);
+        }
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                validate_generic_def_type_args_in_expr(coordinate, fn_signatures, errors);
+            }
+        }
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
     }
 }
 
@@ -10225,6 +10266,14 @@ fn validate_generic_def_type_args_in_expr(
         } => {
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 validate_generic_def_type_args_in_expr(coordinate, fn_signatures, errors);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            validate_generic_def_type_args_in_expr(&spec.size, fn_signatures, errors);
+            if let Some(values) = init {
+                for value in values {
+                    validate_generic_def_type_args_in_expr(value, fn_signatures, errors);
+                }
             }
         }
         _ => {}
@@ -12410,7 +12459,11 @@ fn collect_called_typed_defs_in_stmt(
 ) {
     match stmt {
         Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
-        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+        Stmt::Assign { target, expr, .. } => {
+            collect_called_typed_defs_in_assign_target(target, def_names, pending, seen_pending);
+            collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);
         }
         Stmt::If {
@@ -12441,6 +12494,31 @@ fn collect_called_typed_defs_in_stmt(
             collect_called_typed_defs_in_expr(cond, def_names, pending, seen_pending);
             seed_called_typed_defs_from_stmts(body, def_names, pending, seen_pending);
         }
+    }
+}
+
+fn collect_called_typed_defs_in_assign_target(
+    target: &AssignTarget,
+    def_names: &HashSet<String>,
+    pending: &mut Vec<String>,
+    seen_pending: &mut HashSet<String>,
+) {
+    match target {
+        AssignTarget::Index { index, .. } => {
+            collect_called_typed_defs_in_expr(index, def_names, pending, seen_pending);
+        }
+        AssignTarget::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                collect_called_typed_defs_in_expr(coordinate, def_names, pending, seen_pending);
+            }
+        }
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
     }
 }
 

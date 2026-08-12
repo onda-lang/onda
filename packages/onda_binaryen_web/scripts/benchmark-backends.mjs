@@ -63,7 +63,7 @@ const scenarios = [
     name: "saturator",
     source: join(
       repoDir,
-      "examples/processors-and-graphs/saw_filter_saturator.onda",
+      "examples/basic/saw_filter_saturator.onda",
     ),
   },
   {

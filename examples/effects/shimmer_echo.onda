@@ -1,0 +1,41 @@
+import std/delay
+import std/pitch_shift
+import processors/effect_audition
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  live_input = 0.0 {0.0, 1.0, step = 1.0}
+  time_s = 0.38 {0.08, 1.2, log, unit = "s"}
+  feedback = 0.46 {0.0, 0.86}
+  shimmer = 0.34 {0.0, 0.72}
+  shift = 12.0 {0.0, 19.0, unit = "st"}
+  window_s = 0.09 {0.035, 0.22, log, unit = "s"}
+  mix = 0.58 {0.0, 1.0}
+  level = 0.7 {0.0, 1.0}
+
+init:
+  audition = EffectAudition(interval_s = 0.82, decay_s = 0.18)
+  delay_l = std::delay::Delay(delay_s = time_s, feedback = 0.0, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = time_s * 1.317, feedback = 0.0, mix = 1.0)
+  shifter_l = std::pitch_shift::DualWindow(semitones = shift, window_s = window_s)
+  shifter_r = std::pitch_shift::DualWindow(semitones = shift, window_s = window_s)
+  feedback_l = 0.0
+  feedback_r = 0.0
+
+event bang():
+  audition.bang()
+
+sample:
+  audition(auto_play = auto_play)
+  source_l = audition.out1 * (1.0 - live_input) + in1 * live_input
+  source_r = audition.out2 * (1.0 - live_input) + in2 * live_input
+
+  wet_l = delay_l(source_l + feedback_r * 0.24, delay_s = time_s)
+  wet_r = delay_r(source_r + feedback_l * 0.24, delay_s = time_s * 1.317)
+  octave_l = shifter_l(wet_l, semitones = shift, window_s = window_s)
+  octave_r = shifter_r(wet_r, semitones = shift, window_s = window_s)
+  feedback_l = tanh(wet_l * feedback + octave_l * shimmer)
+  feedback_r = tanh(wet_r * feedback + octave_r * shimmer)
+
+  out1 = tanh((source_l * (1.0 - mix) + wet_l * mix + octave_l * shimmer * 0.36) * level)
+  out2 = tanh((source_r * (1.0 - mix) + wet_r * mix + octave_r * shimmer * 0.36) * level)

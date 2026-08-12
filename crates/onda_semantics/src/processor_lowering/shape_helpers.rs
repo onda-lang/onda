@@ -4,7 +4,7 @@ use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 fn is_proc_operator_helper_name(name: &str) -> bool {
     name.ends_with(PROC_STEP_FN_SUFFIX)
         || name.contains(PROC_CALL_OUT_FN_PREFIX)
-        || (name.contains(".__proc_nested_")
+        || (name.contains(".__onda_proc_nested_")
             && (name.ends_with("_step") || name.contains("_call_out")))
 }
 
@@ -29,7 +29,7 @@ fn nested_proc_operator_timing(
                 .get(&instance.proc_name)
                 .map(|api| api.outputs.timing);
         }
-        let prefix = format!("{owner_proc}.__proc_nested_{nested_var}_call_out");
+        let prefix = format!("{owner_proc}.__onda_proc_nested_{nested_var}_call_out");
         if let Some(raw_idx) = name.strip_prefix(&prefix) {
             raw_idx.parse::<usize>().ok()?;
             return proc_api

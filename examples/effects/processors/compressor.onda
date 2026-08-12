@@ -1,0 +1,45 @@
+import std/env
+import std/levels
+
+def time_coefficient(time_ms):
+  return std::env::decay_coefficient(time_ms * 0.001)
+
+def soft_knee_reduction(level_db, threshold_db, ratio, knee_db):
+  over_db = level_db - threshold_db
+  slope = 1.0 - 1.0 / max(ratio, 1.0)
+  half_knee = knee_db * 0.5
+  if (over_db >= half_knee):
+    return over_db * slope
+  if (over_db > -half_knee && knee_db > 0.0):
+    knee_pos = over_db + half_knee
+    return slope * knee_pos * knee_pos / (2.0 * knee_db)
+  return 0.0
+
+proc StereoCompressor:
+  params:
+    threshold_db = -18.0
+    ratio = 4.0
+    attack_ms = 8.0
+    release_ms = 120.0
+    knee_db = 6.0
+    makeup_db = 2.0
+
+  init:
+    detector = 0.0
+
+  block:
+    attack = time_coefficient(attack_ms)
+    release = time_coefficient(release_ms)
+
+    sample:
+      peak = max(abs(in1), abs(in2))
+      if (peak > detector):
+        detector = peak + (detector - peak) * attack
+      else:
+        detector = peak + (detector - peak) * release
+
+      level_db = std::levels::gain_to_db(max(detector, 0.000001))
+      reduction_db = soft_knee_reduction(level_db, threshold_db, ratio, knee_db)
+      gain = std::levels::db_to_gain(makeup_db - reduction_db)
+      out1 = in1 * gain
+      out2 = in2 * gain

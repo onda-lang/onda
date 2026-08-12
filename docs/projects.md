@@ -23,6 +23,11 @@ onda compile my-project/my-project.ondaproject
 onda run my-project/my-project.ondaproject
 ```
 
+For complete musical uses of the format, see the checked-in
+[project showcases](https://github.com/onda-lang/onda/tree/main/examples/projects): a morphable
+wavetable bank, a typed-buffer score driving a modal instrument, and a stereo impulse response
+driving a room effect. Each is self-contained and renders without additional host bindings.
+
 The destination passed to `onda project` must be new or an empty directory. Onda writes the complete
 project to a sibling staging directory and publishes it with one rename, so a failed export does not
 leave a partially written project at the destination.
@@ -52,7 +57,8 @@ Each path component is at most 255 UTF-8 bytes. Absolute paths, `.`, `..`, empty
 backslashes, control characters, Windows-reserved characters and device names, and components
 ending in a dot or space are rejected. Referenced files must also remain distinct under portable
 Unicode case folding and cannot conflict as both a file and an ancestor directory. Paths which
-escape through symlinks are rejected.
+traverse symlinks are rejected. This keeps editable filesystem projects and live watching bound to
+stable paths; immutable captured project images are unaffected.
 
 The manifest's containing directory is its project root. A manifest may occur at any path in a
 larger file set; its `entry` and file-backed buffers are resolved relative to that directory. The
@@ -166,6 +172,8 @@ and `.ondaproject` files. Dropping either input onto the window works as well.
 While an editable project is open, the native run host watches the selected manifest and its
 file-backed buffer assets in addition to the entry and transitive non-standard-library sources.
 Changing any of them reloads the project; inline assets change when the manifest changes.
+Filesystem-backed Onda inputs, source dependencies, and project assets must not traverse symlinks;
+the loader reports the offending component instead of establishing ambiguous live-watch semantics.
 
 Once a source or project is loaded, **Save as project** captures the exact reachable sources and the
 currently bound buffers into a new portable project directory. Existing inline project assets are
@@ -209,13 +217,15 @@ versioned binary image; `ProjectImage::deserialize` verifies every asset and the
 publication. `materialization_plan` returns relative filenames and bytes without writing the
 filesystem, leaving atomic publication policy to the host.
 
-The native C runtime treats image assets as immutable program defaults. Compiling an image retains
-shared ownership of its decoded assets, and every instance initially binds the same sample storage
-without copying it. A project binding is rejected when reachable Onda code may write that physical
-buffer slot. Hosts can replace a default with `onda_bind_buffer`, unbind it to obtain the neutral
-buffer behavior, or restore it with `onda_reset_buffer_to_project_default`. Instances retain their
-compiled program and project assets, so destroying the original program or image handle does not
-invalidate their bindings.
+The native C runtime treats assets from editable filesystem projects and immutable images as program
+defaults. `onda_compile_file` performs source analysis and code generation before decoding external
+assets, then makes those decoded assets part of the compiled program without constructing a portable
+project image. `onda_project_image_compile` instead retains shared ownership of the image's decoded
+assets. Every instance initially binds the program-owned sample storage without copying it. A project
+binding is rejected when reachable Onda code may write that physical buffer slot. Hosts can replace a
+default with `onda_bind_buffer`, unbind it to obtain the neutral buffer behavior, or restore it with
+`onda_reset_buffer_to_project_default`. Instances retain their compiled program and project assets,
+so destroying the original program or image handle does not invalidate their bindings.
 
 ## Native and web API parity
 
@@ -225,14 +235,22 @@ portable project image:
 
 | Operation | C API | Web compiler |
 | --- | --- | --- |
+| Compile an editable filesystem source or project | `onda_compile_file` | — |
 | Compile exact in-memory sources | `onda_compile_source_graph` | `compileWorkspace` |
 | Capture/build an image | `onda_project_image_capture` | `createProjectImage` |
-| Load editable project files | `onda_project_image_load_files` | `loadProjectFiles` |
+| Load a materialized project file set | `onda_project_image_load_files` | `loadProjectFiles` |
 | Serialize or inspect an image | `onda_project_image_serialize`, `onda_project_image_*` getters | `createProjectImage`, `inspectProjectImage` |
 | Compile an image | `onda_project_image_compile` | `compileProjectImage` |
 | Produce relative files and bytes | `onda_project_image_materialize` | `materializeProjectImage` |
 | Encode/decode typed buffers | `onda_buffer_asset_encode`, `onda_buffer_asset_decode` | `encodeBufferAsset`, `decodeBufferAsset` |
 | Query immutable format contracts | `onda_project_image_format_version`, `onda_buffer_asset_format_version`, `onda_current_stdlib_digest` | `projectCapabilities` |
+
+`onda_compile_file` is the native editable-filesystem entry point: it accepts `.onda`, `.on`, and
+`.ondaproject`, attaches project buffers as immutable defaults, and returns a source manifest whose
+deduplicated watch projection includes the selected input, resolved and unresolved source graph,
+project manifest, declared entry, and file-backed assets. Missing dependency, entry, and asset paths
+remain in the projection on failure so their creation can recover the project. The host owns the
+polling or OS-watcher mechanism and recompiles the same input after a relevant change.
 
 The web methods return JavaScript objects and typed arrays; C uses opaque handles and two-pass
 buffer sizing. Those are transport differences only. Image serialization, content and asset

@@ -494,24 +494,51 @@ init {
 sample {
   saw.freq = 440.0
   if (fwd.push(saw())) {
-    for i in 0..64 {
+    half = 64 >> 1
+    for i in 0..(half + 1) {
       scratch_re[i] = 0.0
       scratch_im[i] = 0.0
     }
-    scratch_re[0] = fwd.fft.real(0)
-    half = 64 >> 1
+    scratch_re[0] = fwd.real(0)
     for k in 1..half {
       shifted = k + 1
       if (shifted < half) {
-        scratch_re[shifted] = fwd.fft.real(k)
-        scratch_im[shifted] = fwd.fft.imag(k)
-        scratch_re[64 - shifted] = fwd.fft.real(64 - k)
-        scratch_im[64 - shifted] = fwd.fft.imag(64 - k)
+        scratch_re[shifted] = fwd.real(k)
+        scratch_im[shifted] = fwd.imag(k)
       }
     }
     inv.load_complex(scratch_re, scratch_im)
   }
   out1 = inv.tick()
+}
+"#;
+
+const STDLIB_REALFFT_REFERENCE_EXAMPLE: &str = r#"
+import std/fft
+outs 1
+init {
+  fwd = std::fft<64>::RealFFT()
+  reference = std::fft<64>::STFT()
+  input: f32[64]
+  clock: i32 = 0
+}
+sample {
+  x = sin(TWO_PI * 5.0 * f32(clock) / 64.0)
+  x = x + cos(TWO_PI * 13.0 * f32(clock) / 64.0) * 0.37
+  if (clock < 64) {
+    input[clock] = x
+  }
+
+  error = 0.0
+  if (fwd.push(x)) {
+    reference.forward_real(input)
+    for i in 0..(fwd.real_bin_count()) {
+      error = max(error, abs(fwd.real(i) - reference.real(i)))
+      error = max(error, abs(fwd.imag(i) - reference.imag(i)))
+    }
+  }
+  clock = clock + 1
+  out1 = error
 }
 "#;
 
@@ -534,18 +561,16 @@ namespace BinShift<N = 64>:
       saw.freq = freq
       sample:
         if (fwd.push(saw())):
-          for i in 0..N:
+          half = N >> 1
+          for i in 0..(half + 1):
             scratch_re[i] = 0.0
             scratch_im[i] = 0.0
-          scratch_re[0] = fwd.fft.real(0)
-          half = N >> 1
+          scratch_re[0] = fwd.real(0)
           for k in 1..half:
             shifted = k + 1
             if (shifted < half):
-              scratch_re[shifted] = fwd.fft.real(k)
-              scratch_im[shifted] = fwd.fft.imag(k)
-              scratch_re[N - shifted] = fwd.fft.real(N - k)
-              scratch_im[N - shifted] = fwd.fft.imag(N - k)
+              scratch_re[shifted] = fwd.real(k)
+              scratch_im[shifted] = fwd.imag(k)
           inv.load_complex(scratch_re, scratch_im)
         out1 = inv.tick()
 
@@ -564,8 +589,7 @@ init {
   osc = std::osc::Sine(freq = 220.0)
   fwd = std::fft<64>::RealFFT()
   inv = std::fft<64>::RealIFFT()
-  scratch_re: f32[64]
-  scratch_im: f32[64]
+  packed: f32[64]
   delay: f32[64]
   delay_i: i32 = 0
   frames_seen: i32 = 0
@@ -584,9 +608,8 @@ sample {
   }
 
   if (fwd.push(x)) {
-    fwd.fft.store_real(scratch_re)
-    fwd.fft.store_imag(scratch_im)
-    inv.load_complex(scratch_re, scratch_im)
+    fwd.store_real_packed(packed)
+    inv.load_packed(packed)
   }
 
   y = inv.tick()
@@ -598,6 +621,59 @@ sample {
   }
   out2 = f32(fwd.hop_size())
   out3 = f32(inv.hop_size())
+}
+"#;
+
+const STDLIB_REALIFFT_HANN_PRIMING_EXAMPLE: &str = r#"
+import std/fft
+outs 1
+init {
+  inv = std::fft<64>::RealIFFT()
+  spectrum_re: f32[64]
+  spectrum_im: f32[64]
+  clock: i32 = 0
+}
+sample {
+  if (clock == 0) {
+    spectrum_re[5] = 32.0
+    inv.load_complex(spectrum_re, spectrum_im)
+  } elif (clock == 32) {
+    spectrum_re[5] = -32.0
+    inv.load_complex(spectrum_re, spectrum_im)
+  } elif (clock == 128) {
+    spectrum_re[5] = 32.0
+    inv.load_complex(spectrum_re, spectrum_im)
+  }
+  out1 = inv.tick()
+  clock = clock + 1
+}
+"#;
+
+const STDLIB_REALIFFT_FIRST_FRAME_EXAMPLE: &str = r#"
+import std/fft
+outs 1
+init {
+  inv = std::fft<64>::RealIFFT()
+  spectrum_re: f32[64]
+  spectrum_im: f32[64]
+  clock: i32 = 0
+  inv.set_rectangular()
+}
+sample {
+  if (clock == 0) {
+    for k in 0..33 {
+      phase = -TWO_PI * f32(k) / 64.0
+      spectrum_re[k] = cos(phase)
+      spectrum_im[k] = sin(phase)
+    }
+    inv.load_complex(spectrum_re, spectrum_im)
+  }
+  expected = 0.0
+  if (clock == 1) {
+    expected = 1.0
+  }
+  out1 = abs(inv.tick() - expected)
+  clock = clock + 1
 }
 "#;
 

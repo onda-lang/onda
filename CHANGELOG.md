@@ -7,12 +7,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
-## [0.7.2] - Unreleased
+## [0.7.2]
 
 ### Added
 
 - Added separate `plugin_midi_*` and `plugin_host_*` LSP completion families for the canonical
   plugin MIDI and DAW host-context event declarations.
+- Added an implementation-status and product-contract guide for the separate live-linked OndaSynth
+  and OndaFX VST3 plugins.
+- Made `onda_compile_file` the generic native filesystem entry point for `.onda`, `.on`, and
+  `.ondaproject`; project inputs resolve their entries internally and retain inline and file-backed
+  buffers as program defaults, so C hosts no longer need to materialize project bytes themselves.
+  Added `onda_source_manifest_watch_count` and `onda_source_manifest_watch_path` for a deduplicated
+  watch projection returned on success and failure, covering the selected input, resolved and
+  unresolved sources, project manifest, entry, and file-backed assets.
+- Added `std/reverb` with a stereo Schroeder reverb and `std/pitch_shift` with a dual-window pitch
+  shifter, plus a resonator filter, reusable decay-envelope coefficient and trigger event,
+  oscillator phase reset events, and a sine phase-offset parameter.
+- Added direct real, imaginary, power, magnitude, phase, and packed-spectrum access to
+  `std::fft::RealFFT`, including bulk packed-spectrum output.
+
+### Changed
+
+- Reworked the checked-in examples into outcome-oriented `basic`, `buffers`, `effects`, `feedback`,
+  `instruments`, `soundscapes`, and `spectral` collections, with self-playing musical patches and
+  reusable processors. Added self-contained Wavetable Garden, Score-driven Resonator, and Embedded
+  Room `.ondaproject` showcases, and refreshed the website, playground, and AOT sample player for
+  the new corpus.
+- Native run hosts now share one controller-owned filesystem watcher, perform path-targeted source
+  validation, reuse parser-captured source bytes, and avoid rereading unchanged sources or hashing
+  unrelated project assets. The egui and webview frontends poll at 20 Hz only while loaded and sleep
+  while unloaded; egui also reapplies its theme only when it changes.
+- Filesystem project compilation now analyzes and generates code before decoding external assets,
+  directly owns decoded program defaults, and avoids constructing or hashing a temporary portable
+  project image.
+- Native filesystem-backed entries, imports, includes, project manifests, project entries, assets,
+  run inputs, and LSP file URIs now reject symbolic-link traversal. Virtual sources and immutable
+  project images remain unaffected.
+- LSP invalidation is now dependency-aware and preserves unrelated parse, completion, and semantic
+  token caches while remaining driven by editor and watched-file notifications.
+- Real FFT analysis and synthesis now use a half-size complex transform, avoid redundant packed
+  spectrum storage, and suppress incomplete initial overlap-add output.
+- Native benchmark JSON now reports cold-block maximum latency and steady-state block median, p99,
+  and maximum latency, and supplies deterministic silence to scalar `f32` inputs.
+
+### Fixed
+
+- Fixed native live reload missing changes after watcher creation or partial-coverage failures,
+  during compilation or watcher recreation, after temporarily invalid parses, while project entries
+  or assets are missing, and after atomic file replacement on macOS.
+- Fixed LSP dependency edits leaving affected diagnostics stale, and replayed diagnostic-worker
+  results from their exact source snapshots so thread-local source-location identities cannot cross
+  threads.
+- Fixed generic-call monomorphization inside index expressions, slice coordinates, and array
+  constructor sizes and initializers.
+- Fixed nested processor lowering for generated helper functions, nested method paths, proc-array
+  state lengths, buffer methods, and events that update their own pinned parameters without exposing
+  those parameters to external user code.
+- Fixed identifiers beginning with `const`, such as `constructed`, being parsed as constant
+  declarations.
+
+### Migration notes
+
+- Replace symbolic links in native filesystem-backed source and project paths with regular files
+  and directories, or use virtual sources or an immutable project image when indirection is needed.
+- Replace direct `RealFFT.packed` field access with `packed_value`, the direct spectrum accessors, or
+  `store_real_packed`; FFT sizes must now be powers of two greater than one.
+- Update scripts and links that reference the previous checked-in example directories to the new
+  `basic`, `buffers`, `effects`, `feedback`, `instruments`, `projects`, `soundscapes`, and `spectral`
+  paths.
 
 ## [0.7.1]
 

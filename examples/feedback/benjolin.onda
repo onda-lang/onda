@@ -1,0 +1,159 @@
+import std/delay
+import std/filter
+import std/osc
+import std/pitch
+
+proc RunglerCore:
+  params:
+    frequency_a = 70.0
+    frequency_b = 4.0
+    scale = 0.78
+    rungler_a = 0.16
+    rungler_b = 0.03
+    rungler_filter = 0.58
+    feedback_loop = 0.82
+    filter_frequency = 90.0
+
+  init:
+    triangle_a = std::osc::Triangle()
+    pulse_a = std::osc::Pulse(width = 0.5)
+    triangle_b = std::osc::Triangle()
+    pulse_b = std::osc::Pulse(width = 0.5)
+    shift_register: i32 = 173
+    previous_clock = false
+
+  sample:
+    dac = f32(shift_register & 255) / 255.0
+    bipolar = dac * 2.0 - 1.0
+    rungler_note = 20.0 + clamp(scale, 0.0, 1.0) * dac * 100.0
+    rungler_hz = std::pitch::note_to_hz(rungler_note)
+
+    freq_a = clamp(frequency_a + rungler_hz * rungler_a, 0.1, SR * 0.22)
+    freq_b = clamp(frequency_b + rungler_hz * rungler_b, 0.1, SR * 0.22)
+    tri_a = triangle_a(freq = freq_a)
+    square_a = pulse_a(freq = freq_a)
+    tri_b = triangle_b(freq = freq_b)
+    square_b = pulse_b(freq = freq_b)
+
+    clock = square_b > 0.0
+    if (clock && !previous_clock):
+      comparator_bit: i32 = 0
+      if (tri_a + tri_b > 0.0):
+        comparator_bit = 1
+      feedback_bit = ((shift_register >> 5) ^ (shift_register >> 7)) & 1
+      input_bit = comparator_bit
+      if (feedback_loop > 0.5):
+        input_bit = comparator_bit ^ feedback_bit
+      shift_register = ((shift_register << 1) | input_bit) & 255
+    previous_clock = clock
+
+    xor_wave = -1.0
+    if ((shift_register & 1) ^ ((shift_register >> 7) & 1)) == 1:
+      xor_wave = 1.0
+    comparator = -1.0
+    if (tri_a + tri_b > 0.0):
+      comparator = 1.0
+
+    cutoff = clamp(
+      filter_frequency + rungler_hz * rungler_filter * 12.0,
+      25.0,
+      SR * 0.44,
+    )
+
+    out1 = tri_a
+    out2 = square_a
+    out3 = tri_b
+    out4 = square_b
+    out5 = comparator
+    out6 = bipolar
+    out7 = cutoff
+
+proc Benjolin:
+  params:
+    frequency_a = 70.0
+    frequency_b = 4.0
+    scale = 0.78
+    rungler_a = 0.16
+    rungler_b = 0.03
+    rungler_filter = 0.58
+    feedback_loop = 0.82
+    filter_frequency = 90.0
+    resonance = 3.7
+    filter_mode: i32 = 0
+    output_signal_l: i32 = 6
+    output_signal_r: i32 = 6
+
+  init:
+    core = RunglerCore()
+    filter = std::filter::Svf()
+
+  sample:
+    core(
+      frequency_a = frequency_a,
+      frequency_b = frequency_b,
+      scale = scale,
+      rungler_a = rungler_a,
+      rungler_b = rungler_b,
+      rungler_filter = rungler_filter,
+      feedback_loop = feedback_loop,
+      filter_frequency = filter_frequency,
+    )
+    filter.update_coeffs(core.out7, resonance)
+    filter.mode = filter_mode
+    filtered = filter(tanh((core.out5 * 0.72 + core.out6 * 0.28) * 1.8))
+    signals: f32[7] = [
+      core.out1,
+      core.out2,
+      core.out3,
+      core.out4,
+      core.out5,
+      core.out6,
+      filtered,
+    ]
+    out1 = signals[clamp(output_signal_l, 0, 6)]
+    out2 = signals[clamp(output_signal_r, 0, 6)]
+
+params:
+  frequency_a = 70.0 {20.0, 14000.0, log, "Hz"}
+  frequency_b = 4.0 {0.1, 14000.0, log, "Hz"}
+  scale = 0.78 {0.0, 1.0}
+  rungler_a = 0.16 {0.0, 1.0}
+  rungler_b = 0.03 {0.0, 1.0}
+  rungler_filter = 0.58 {0.0, 1.0}
+  feedback_loop = 0.82 {0.0, 1.0}
+  filter_frequency = 90.0 {20.0, 20000.0, log, "Hz"}
+  resonance = 3.7 {0.5, 8.0}
+  filter_mode: i32 = 0 {0, 5, step = 1}
+  output_signal_l: i32 = 6 {0, 6, step = 1}
+  output_signal_r: i32 = 6 {0, 6, step = 1}
+  space = 0.24 {0.0, 0.7}
+  level = 0.5 {0.0, 1.0}
+
+init:
+  benjolin = Benjolin()
+  dc_l = std::filter::DCBlock()
+  dc_r = std::filter::DCBlock()
+  echo_l = std::delay::Delay(delay_s = 0.173, feedback = 0.31, mix = 1.0)
+  echo_r = std::delay::Delay(delay_s = 0.227, feedback = 0.27, mix = 1.0)
+
+sample:
+  benjolin(
+    frequency_a = frequency_a,
+    frequency_b = frequency_b,
+    scale = scale,
+    rungler_a = rungler_a,
+    rungler_b = rungler_b,
+    rungler_filter = rungler_filter,
+    feedback_loop = feedback_loop,
+    filter_frequency = filter_frequency,
+    resonance = resonance,
+    filter_mode = filter_mode,
+    output_signal_l = output_signal_l,
+    output_signal_r = output_signal_r,
+  )
+  dry_l = dc_l(benjolin.out1)
+  dry_r = dc_r(benjolin.out2)
+  wet_l = echo_l(dry_l + dry_r * 0.11)
+  wet_r = echo_r(dry_r + dry_l * 0.11)
+  out1 = tanh((dry_l + wet_l * space) * level)
+  out2 = tanh((dry_r + wet_r * space) * level)

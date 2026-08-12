@@ -1,0 +1,99 @@
+import std/delay
+import std/env
+import std/levels
+import std/osc
+import std/pitch
+
+const VoiceCount = 6
+
+proc GlassVoice:
+  params:
+    decay_s = 2.8
+    hardness = 0.62
+
+  init:
+    frequency = 440.0
+    oscillator_1 = std::osc::Sine()
+    oscillator_2 = std::osc::Sine()
+    oscillator_3 = std::osc::Sine()
+    envelope_1 = std::env::DecayEnv()
+    envelope_2 = std::env::DecayEnv()
+    envelope_3 = std::env::DecayEnv()
+
+  event strike(note: f32, velocity: f32):
+    frequency = std::pitch::note_to_hz(note)
+    oscillator_1.reset()
+    oscillator_2.reset()
+    oscillator_3.reset()
+    envelope_1.start(velocity)
+    envelope_2.start(velocity * hardness)
+    envelope_3.start(velocity * hardness * hardness)
+
+  sample:
+    tone = oscillator_1(freq = frequency) * envelope_1(decay_s = decay_s)
+    tone = tone + oscillator_2(freq = frequency * 2.706) * envelope_2(decay_s = decay_s * 0.47) * 0.46
+    tone = tone + oscillator_3(freq = frequency * 5.813) * envelope_3(decay_s = decay_s * 0.19) * 0.18
+    out1 = tone
+
+buffers:
+  notes: i32
+  velocities: f32
+  beats: f32
+  pans: f32
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  root_note = 55.0 {36.0, 76.0, step = 1.0}
+  bpm = 76.0 {35.0, 160.0, unit = "BPM"}
+  decay_s = 3.4 {0.6, 10.0, unit = "s"}
+  hardness = 0.68 {0.0, 1.0}
+  space = 0.48 {0.0, 0.8}
+  level = 0.5 {0.0, 0.7}
+
+init:
+  voices: GlassVoice[VoiceCount] = GlassVoice()
+  delay_l = std::delay::Delay(delay_s = 0.407, feedback = 0.44, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = 0.613, feedback = 0.39, mix = 1.0)
+  voice_pans: f32[VoiceCount]
+  clock: i32 = 0
+  next_step: i32 = 1
+  step: i32 = 0
+  next_voice: i32 = 0
+  pending_bang = false
+
+event bang():
+  pending_bang = true
+
+block:
+  score_length = min(min(notes.len(), velocities.len()), min(beats.len(), pans.len()))
+
+  sample:
+    if auto_play != 0 && clock >= next_step:
+      pending_bang = true
+
+    if pending_bang:
+      velocity = clamp(velocities[step], 0.0, 1.0)
+      voices[next_voice].decay_s = decay_s
+      voices[next_voice].hardness = hardness
+      voices[next_voice].strike(root_note + f32(notes[step]), velocity)
+      voice_pans[next_voice] = clamp(pans[step], -1.0, 1.0)
+      next_voice = (next_voice + 1) % VoiceCount
+      beat_count = max(beats[step], 0.125)
+      next_step = max(i32(SR * 60.0 * beat_count / bpm), 1)
+      step = (step + 1) % score_length
+      clock = 0
+      pending_bang = false
+    clock = min(clock + 1, next_step)
+
+    dry_l = 0.0
+    dry_r = 0.0
+    for i in 0..VoiceCount:
+      voice = voices[i]()
+      (gain_l, gain_r) = std::levels::pan_3db(voice_pans[i])
+      dry_l = dry_l + voice * gain_l
+      dry_r = dry_r + voice * gain_r
+
+    wet_l = delay_l(dry_l + dry_r * 0.17)
+    wet_r = delay_r(dry_r + dry_l * 0.17)
+    out1 = tanh((dry_l + wet_l * space) * level)
+    out2 = tanh((dry_r + wet_r * space) * level)

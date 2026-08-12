@@ -35,7 +35,7 @@ For build, CLI usage, and editor integrations, see the [getting-started guide](h
 | `onda_cli` | `onda` binary: argument parsing and `compile`/`run`/`daemon`/`lsp` command dispatch. |
 | `onda_egui` | Native egui run host (default `onda run` UI). |
 | `onda_webview` | Native webview run host (opt-in via `--webview`). |
-| `onda_examples` | Example `.onda` programs surfaced through `examples/`. |
+| `onda_examples` | Example `.onda` programs and `.ondaproject` showcases surfaced through `examples/`. |
 
 Non-crate directories of note:
 
@@ -64,13 +64,13 @@ Non-crate directories of note:
 - `parser.rs`, `parser/` — parser entry plus submodules:
   - `parser/block_parsing.rs`, `parser/expr_stmt.rs` — block and expression/statement parsing.
   - `parser/preprocess.rs` — source preprocessing.
-  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution, authoritative non-stdlib source manifests with exact documents and resolved/unresolved dependency edges, and filesystem-free replay of captured source graphs.
+  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution, authoritative non-stdlib source manifests with exact documents and resolved/unresolved dependency edges, symlink-free native filesystem loading, and filesystem-free replay of captured source graphs.
   - `parser/type_helpers.rs` — type-syntax helpers.
   - `parser/tests.rs` — parser tests.
 - `grammar.pest` — the PEG grammar.
 
 ### `onda_project` (`crates/onda_project/src`)
-- `manifest.rs` — editable `.ondaproject` parsing, validation, contained filesystem resolution, and inline typed buffers.
+- `manifest.rs` — editable `.ondaproject` parsing, validation, symlink-free contained filesystem resolution, recovery watch paths for missing entries/assets, and inline typed buffers.
 - `buffer.rs` — canonical `.ondabuffer` transport for every primitive buffer type plus the WAV adapter.
 - `capture.rs` — portable source-path assignment and syntax-aware graph relocation from an exact frontend manifest.
 - `image.rs` — immutable content-addressed source-and-buffer checkpoints with bounded stable serialization.
@@ -160,7 +160,7 @@ Non-crate directories of note:
   `Instance::param_domain`.
 
 ### `onda_api` (`crates/onda_api/src`)
-- `lib.rs` — C ABI surface (single-source, filesystem-entry, exact in-memory source-graph, and project-image compilation; host-neutral project capture/load/serialization/materialization and typed buffer assets; source snapshot metadata and syntax-aware reference rewriting; create/process/destroy; bind/set; metadata queries; event trigger; state snapshot/restore).
+- `lib.rs` — C ABI surface (single-source, direct filesystem source/project input, exact in-memory source-graph, and project-image compilation; complete filesystem watch projections; program-owned filesystem project defaults without an intermediate portable image; host-neutral project capture/load/serialization/materialization and typed buffer assets; source snapshot metadata and syntax-aware reference rewriting; create/process/destroy; bind/set; metadata queries; event trigger; state snapshot/restore).
 
 ### `onda_cpal` (`crates/onda_cpal/src`)
 - `lib.rs` — CPAL 0.18/PipeWire device discovery and stream setup, allocation-free input/output callbacks, FP-mode setup, and lock-free SPSC sample transport.
@@ -171,13 +171,17 @@ Non-crate directories of note:
 - `run_session.rs` — live JIT instance lifecycle, param/buffer binding, `render_block`.
 
 ### `onda_run` (`crates/onda_run/src`)
-- `lib.rs` — run controller wiring real-time audio to a daemon run session, including dynamic
-  watching of the entry and every transitive non-stdlib source reported by the frontend loader.
+- `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw
+  filesystem watcher for the entry, transitive non-stdlib sources, project manifest/entry/assets,
+  unresolved recovery paths, path-targeted snapshot validation, and disk fallback for partial
+  watcher coverage.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
 
 ### `onda_lsp` (`crates/onda_lsp/src`)
 - `lib.rs` — public LSP entry point used by `onda lsp`.
-- `server.rs` — JSON-RPC transport, document state, request dispatch, and server integration tests.
+- `server.rs` — JSON-RPC transport, document and watched-file notification state, dependency-aware
+  cache invalidation, snapshot-replayed diagnostic workers, request dispatch, and integration tests;
+  the server does not own an OS filesystem watcher.
 - `server/diagnostics.rs`, `server/completion.rs`, `server/navigation.rs` — diagnostics, completion, hover, and definition handling.
 - `server/namespace_resolution.rs`, `server/position.rs`, `server/path_utils.rs` — namespace, source-position, and path support.
 - `server/semantic_tokens/{mod,ast_index,source_fallback,tests}.rs` — semantic-token indexing, incomplete-source fallback, and tests.
@@ -301,8 +305,8 @@ Non-crate directories of note:
   modules embedded in `onda_frontend`, so the repository and website share the same API reference.
   The homepage opens its displayed example in `/playground/`
   without loading the compiler itself; `/playground/` provides the full LSP-backed editor and
-  AudioWorklet host. The same build emits focused projects for every checked-in Onda example, with
-  local source dependencies, so cookbook links can open directly in the playground.
+  AudioWorklet host. The same build discovers every checked-in Onda example automatically and emits
+  it with its local source dependencies, so cookbook links open complete projects directly.
   `website/stage.sh` refuses to stage stale or missing browser assets and writes the product version
   into Jekyll data.
 - `bash ./examples/web/onda_wasm_playground/build-demo.sh --serve` builds/stages the compiler and pinned
@@ -313,10 +317,12 @@ Non-crate directories of note:
   equivalent is `.\examples\web\onda_wasm_aot_sample_player\build-demo.ps1 -Serve`.
 - From `packages/onda_binaryen_web`, `npm test` runs backend/worklet fixtures, `npm run test:onda` runs
   real Onda source plus LLVM/Binaryen parity and the internal-Wasm FMA oracle, and `npm run test:parity`
-  selects the differential renderer. `npm run test:corpus` continuously compiles all 47 checked-in
-  examples and positive backend fixtures through source -> MIR MessagePack -> Binaryen -> valid
-  Wasm. These source-driven commands require a working native Rust/LLVM Onda build; `npm test` and
-  the browser asset build do not.
+  selects the differential renderer. `npm run test:corpus` continuously compiles the positive
+  backend fixtures through source -> MIR MessagePack -> Binaryen -> valid Wasm. After building the
+  browser compiler, `npm run check:examples` compiles every generated example-catalog project and
+  every materialized `.ondaproject` showcase through the browser frontend and Binaryen backend.
+  The backend-fixture command requires a working native Rust/LLVM Onda build; the example verifier
+  and browser asset build do not.
 - `npm run bench` runs the reproducible native LLVM versus Binaryen/Wasm comparison documented in
   [`docs/backend-benchmarks.md`](backend-benchmarks.md). It is a development benchmark, not a
   universal browser-performance claim.

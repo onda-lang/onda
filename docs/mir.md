@@ -309,9 +309,9 @@ production codegen. Construction happens in a fresh program, so an unsupported r
 errors rather than a partial artifact. The boundary is available from the CLI:
 
 ```bash
-onda compile examples/foundations/sine.onda --emit mir
-onda compile examples/foundations/sine.onda --emit mir-json --output sine.mir.json
-onda compile examples/foundations/sine.onda --emit mir-messagepack --output sine.mir.msgpack
+onda compile examples/basic/sine.onda --emit mir
+onda compile examples/basic/sine.onda --emit mir-json --output sine.mir.json
+onda compile examples/basic/sine.onda --emit mir-messagepack --output sine.mir.msgpack
 ```
 
 The lowering owns:
@@ -457,8 +457,8 @@ LLVM/Binaryen render parity, and the internal-Wasm FMA oracle, and `npm run test
 differential render subset. The differential suite covers full and segmented blocks, zero-frame
 hooks, events, numeric edge rules, the complete f32/f64 math surface, packed snapshots/restores,
 buffers, slices, processor arrays, and oversampling.
-`npm run test:corpus` discovers all checked-in examples and positive backend fixtures and requires
-each source to produce current-schema MIR and valid Binaryen WebAssembly. The source-driven
+`npm run test:corpus` discovers the positive backend fixtures and requires each source to produce
+current-schema MIR and valid Binaryen WebAssembly. The source-driven
 commands intentionally require the native Rust/LLVM Onda build; the backend fixtures and embedded
 compiler asset build do not. The checked-in compiler playground performs Rust semantic compilation
 and Binaryen O4 optimization in a module worker and can export the complete Wasm module with its

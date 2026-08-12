@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use onda_project::{
@@ -48,6 +48,12 @@ pub fn package_project_plan(
     project_file_name: &str,
     asset_file_names: &BTreeMap<String, String>,
 ) -> Result<MaterializationPlan, String> {
+    onda_frontend::ensure_no_symlink_components(source).map_err(|error| {
+        format!(
+            "failed to resolve project source '{}': {error}",
+            source.display()
+        )
+    })?;
     let entry = fs::canonicalize(source).map_err(|error| {
         format!(
             "failed to resolve project source '{}': {error}",
@@ -283,25 +289,9 @@ fn format_diagnostics(prefix: &str, diagnostics: &[onda_frontend::Diagnostic]) -
     }
 }
 
-fn absolute_lexical_path(path: &Path) -> Result<PathBuf, String> {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|error| format!("failed to determine current directory: {error}"))?
-            .join(path)
-    };
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    Ok(normalized)
+pub(super) fn absolute_lexical_path(path: &Path) -> Result<PathBuf, String> {
+    onda_frontend::absolute_lexical_path(path)
+        .map_err(|error| format!("failed to determine current directory: {error}"))
 }
 
 struct StagingCleanup {
@@ -373,5 +363,37 @@ mod tests {
         publish_project_plan(&root.join("project"), &plan)
             .expect_err("escaping publication paths must be rejected");
         assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_packaging_rejects_symlink_source_inputs() {
+        use std::os::unix::fs::symlink;
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "onda-symlink-package-source-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create test directory");
+        let source = root.join("main.onda");
+        let alias = root.join("linked.onda");
+        fs::write(&source, "outs 1\nsample:\n  out1 = 0.0\n").expect("write source");
+        symlink(&source, &alias).expect("create source symlink");
+
+        let error = package_project_plan(
+            &alias,
+            None,
+            BTreeMap::new(),
+            "project.ondaproject",
+            &BTreeMap::new(),
+        )
+        .expect_err("project packaging must reject a symlink source");
+        assert!(error.contains("symlink component"));
+
+        fs::remove_dir_all(root).ok();
     }
 }

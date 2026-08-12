@@ -141,8 +141,8 @@ semantics, buffers, slices, processor arrays, and oversampling. Strict arithmeti
 raw f32 output bits and f64 snapshot storage, with NaN payloads treated as unspecified; only scenarios
 that exercise approximate transcendental kernels use numeric tolerances. The source-driven
 and parity commands require the native Rust/LLVM Onda build. `npm run test:corpus` continuously
-discovers every `.onda` program under `examples/` and this package's positive fixtures, compiles each
-through the CLI to current-schema MIR, lowers it with Binaryen, and validates the generated Wasm. It also
+discovers this package's positive fixtures, compiles each through the CLI to current-schema MIR,
+lowers it with Binaryen, and validates the generated Wasm. It also
 requires the native build. `npm test` does not.
 
 Run `npm run bench` for the reproducible development comparison documented in

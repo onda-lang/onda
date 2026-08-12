@@ -1,0 +1,59 @@
+import std/delay
+import std/env
+import std/filter
+import std/pitch
+import wavetable_voice
+
+const PatternLength = 12
+const Notes: i32[PatternLength] = [0, 7, 12, 3, 10, 15, 7, 19, 12, 5, 10, 22]
+const Accents: f32[PatternLength] = [1.0, 0.55, 0.72, 0.48, 0.84, 0.52, 0.68, 0.44, 0.78, 0.5, 0.64, 0.42]
+
+buffers:
+  waves: f32 {4}
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  root_note = 38.0 {24.0, 60.0, step = 1.0}
+  bpm = 104.0 {45.0, 180.0, unit = "BPM"}
+  morph = 0.58 {0.0, 1.0}
+  brightness = 0.54 {0.0, 1.0}
+  decay_s = 0.42 {0.08, 1.8, unit = "s"}
+  space = 0.34 {0.0, 0.75}
+  level = 1.0 {0.0, 1.0}
+
+init:
+  oscillator = MorphOscillator(waves = waves)
+  filter = std::filter::Svf(cutoff = 1800.0, q = 1.2)
+  echo_l = std::delay::Delay(delay_s = 0.288, feedback = 0.38, mix = 1.0)
+  echo_r = std::delay::Delay(delay_s = 0.433, feedback = 0.34, mix = 1.0)
+  frequency = std::pitch::note_to_hz(root_note)
+  envelope = std::env::DecayEnv(decay_s = decay_s)
+  clock: i32 = 0
+  step: i32 = 0
+  pending_bang = false
+
+event bang():
+  pending_bang = true
+
+sample:
+  step_samples = max(i32(SR * 15.0 / bpm), 1)
+  if auto_play != 0 && clock == 0:
+    pending_bang = true
+
+  if pending_bang:
+    frequency = std::pitch::note_to_hz(root_note + Notes[step])
+    envelope.start(Accents[step])
+    step = (step + 1) % PatternLength
+    pending_bang = false
+  clock = (clock + 1) % step_samples
+
+  source = oscillator(frequency = frequency, morph = morph)
+  envelope_level = envelope(decay_s = decay_s)
+  filter_cutoff = clamp(260.0 + brightness * 5200.0 + envelope_level * 2800.0, 80.0, SR * 0.44)
+  filter.update_coeffs(filter_cutoff, 0.9 + brightness * 2.6)
+  voice = filter(source * envelope_level)
+
+  wet_l = echo_l(voice)
+  wet_r = echo_r(voice)
+  out1 = tanh((voice * 0.82 + wet_l * space) * level)
+  out2 = tanh((voice * 0.82 + wet_r * space) * level)

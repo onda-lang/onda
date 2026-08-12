@@ -8,7 +8,6 @@ authors.workspace = true
 [dependencies]
 libc = "0.2"
 notify = { version = "7", default-features = false, features = ["macos_kqueue"] }
-notify-debouncer-mini = "0.5"
 onda_daemon = { path = "../onda_daemon" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_cpal = { path = "../onda_cpal" }

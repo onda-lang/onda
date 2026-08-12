@@ -1,0 +1,140 @@
+import std/filter
+import std/env
+import std/osc
+import std/random
+
+const KickPattern: i32 = 5137
+const SnarePattern: i32 = 4112
+const HatPattern: i32 = 21845
+const OpenHatPattern: i32 = 32896
+
+struct StepClock:
+  clock: i32
+  step: i32
+  length: i32 = 1
+
+  def active(self, pattern: i32):
+    return ((pattern >> self.step) & 1) == 1
+
+  def advance_to_hit(self):
+    while !self.active(KickPattern) && !self.active(SnarePattern) && !self.active(HatPattern) && !self.active(OpenHatPattern):
+      self.step = (self.step + 1) & 15
+
+  def begin_step(self, bpm: f32, swing: f32):
+    straight: i32 = max(i32(SR * 15.0 / bpm), 1)
+    self.length = straight
+    if ((self.step & 1) == 0):
+      self.length = i32(f32(straight) * (1.0 + swing))
+    else:
+      self.length = i32(f32(straight) * (1.0 - swing))
+    self.step = (self.step + 1) & 15
+
+  def tick(self):
+    self.clock = self.clock + 1
+    if (self.clock >= self.length):
+      self.clock = 0
+
+proc Kick:
+  init:
+    oscillator = std::osc::Sine()
+    amplitude = std::env::DecayEnv()
+    pitch_sweep = std::env::DecayEnv(decay_s = 0.028)
+
+  event hit(decay_s: f32, velocity: f32):
+    oscillator.reset()
+    amplitude.decay_s = decay_s
+    amplitude.start(velocity)
+    pitch_sweep.start()
+
+  sample:
+    pitch = pitch_sweep()
+    click = pitch * pitch * pitch
+    out1 = (oscillator(freq = 45.0 + pitch * 105.0) + click * 0.12) * amplitude()
+
+proc Snare:
+  init:
+    rng = std::random::Rng<f32>()
+    noise_hp = std::filter::OnePole(cutoff = 1100.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+    oscillator = std::osc::Sine(freq = 185.0)
+    amplitude = std::env::DecayEnv()
+    tone = std::env::DecayEnv(decay_s = 0.045)
+
+  event hit(decay_s: f32, velocity: f32):
+    oscillator.reset()
+    amplitude.decay_s = decay_s
+    amplitude.start(velocity)
+    tone.start(velocity)
+
+  sample:
+    noise = noise_hp(rng.bipolar())
+    body = oscillator() * tone()
+    out1 = (noise * 0.78 + body * 0.34) * amplitude()
+
+proc Hat:
+  init:
+    square_a = std::osc::Square(freq = 5407.0)
+    square_b = std::osc::Square(freq = 7433.0)
+    square_c = std::osc::Square(freq = 8939.0)
+    amplitude = std::env::DecayEnv()
+    hp = std::filter::OnePole(cutoff = 6200.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+
+  event hit(decay_s: f32, velocity: f32):
+    square_a.reset()
+    square_b.reset(0.17)
+    square_c.reset(0.31)
+    amplitude.decay_s = decay_s
+    amplitude.start(velocity)
+
+  sample:
+    a = square_a()
+    b = square_b()
+    c = square_c()
+    metal = a * b + b * c + c * a
+    out1 = hp(metal * 0.33) * amplitude()
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  bpm = 118.0 {55.0, 190.0, unit = "BPM"}
+  kick_decay = 0.34 {0.08, 1.2, unit = "s"}
+  snare_decay = 0.16 {0.04, 0.8, unit = "s"}
+  hat_decay = 0.045 {0.01, 0.3, unit = "s"}
+  swing = 0.08 {0.0, 0.45}
+  drive = 1.45 {0.7, 4.0}
+  level = 1.0 {0.0, 1.0}
+
+init:
+  kick = Kick()
+  snare = Snare()
+  hat = Hat()
+  sequencer = StepClock()
+  pending_bang = false
+
+event bang():
+  pending_bang = true
+
+sample:
+  auto_step = auto_play != 0 && sequencer.clock == 0
+
+  if pending_bang:
+    sequencer.advance_to_hit()
+
+  if pending_bang || auto_step:
+    if (sequencer.active(KickPattern)):
+      kick.hit(kick_decay, 1.0)
+    if (sequencer.active(SnarePattern)):
+      snare.hit(snare_decay, 0.8)
+    if (sequencer.active(HatPattern)):
+      hat.hit(hat_decay, 0.4)
+    if (sequencer.active(OpenHatPattern)):
+      hat.hit(hat_decay * 4.5, 0.4)
+    sequencer.begin_step(bpm, swing)
+    pending_bang = false
+
+  sequencer.tick()
+
+  k = kick()
+  s = snare()
+  h = hat()
+  bus = tanh((k + s * 0.72 + h * 0.42) * drive)
+  out1 = (bus + h * 0.08) * level
+  out2 = (bus - h * 0.08) * level

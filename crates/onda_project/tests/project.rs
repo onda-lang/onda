@@ -5,10 +5,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use onda_project::{
     decode_buffer_bytes, decode_ondabuffer, encode_ondabuffer, encode_wav_f32, load_buffer_file,
-    resolve_project_input, validate_buffer_assets, AssetId, BufferAsset, BufferElement,
-    BufferSamples, InlineBuffer, MaterializationPlan, PlannedFile, ProjectBufferChannels,
-    ProjectBufferDeclaration, ProjectImage, ProjectInput, ProjectLimits, ProjectManifest,
-    SourceDocument, SourceImage, SourceReferenceKind, SourceResolution,
+    resolve_project_input, resolve_project_watch_paths, validate_buffer_assets, AssetId,
+    BufferAsset, BufferElement, BufferSamples, InlineBuffer, MaterializationPlan, PlannedFile,
+    ProjectBufferChannels, ProjectBufferDeclaration, ProjectImage, ProjectInput, ProjectLimits,
+    ProjectManifest, SourceDocument, SourceImage, SourceReferenceKind, SourceResolution,
     ONDA_PROJECT_DEFAULT_FILE_NAME,
 };
 use serde_json::json;
@@ -1280,24 +1280,46 @@ fn project_watch_paths_preserve_missing_assets() {
         watch_paths.assets,
         vec![project.root.join("assets/missing.ondabuffer")]
     );
-    assert!(watch_paths.asset_aliases.is_empty());
+
+    fs::remove_dir_all(directory).expect("remove test directory");
+}
+
+#[test]
+fn project_watch_paths_preserve_a_missing_entry() {
+    let directory = temporary_directory("missing-watch-entry");
+    fs::create_dir_all(directory.join("code")).expect("create source directory");
+    let project_path = directory.join("project.ondaproject");
+    fs::write(
+        &project_path,
+        ProjectManifest::empty("code/new.onda")
+            .to_pretty_json()
+            .expect("manifest JSON"),
+    )
+    .expect("write manifest");
+
+    resolve_project_input(&project_path, ProjectLimits::default())
+        .expect_err("ordinary project resolution must still require an entry file");
+    let watch_paths = resolve_project_watch_paths(&project_path, ProjectLimits::default())
+        .expect("the missing entry must remain watchable");
+    assert_eq!(watch_paths.entry, directory.join("code/new.onda"));
 
     fs::remove_dir_all(directory).expect("remove test directory");
 }
 
 #[cfg(unix)]
 #[test]
-fn project_watch_paths_include_symlinks_and_their_resolved_targets() {
+fn project_paths_reject_symlinks() {
     use std::os::unix::fs::symlink;
 
     let directory = temporary_directory("symlink-watch-asset");
     fs::create_dir_all(directory.join("assets")).expect("create asset directory");
     fs::create_dir_all(directory.join("media")).expect("create media directory");
     fs::write(
-        directory.join("main.onda"),
+        directory.join("media/main.onda"),
         "outs 1\nsample:\n  out1 = 0.0\n",
     )
     .expect("write source");
+    symlink("media/main.onda", directory.join("main.onda")).expect("create entry symlink");
     let target = directory.join("media/sample.ondabuffer");
     fs::write(&target, [1_u8, 2, 3]).expect("write asset");
     symlink(
@@ -1318,20 +1340,40 @@ fn project_watch_paths_include_symlinks_and_their_resolved_targets() {
     )
     .expect("write manifest");
 
+    let error = resolve_project_input(&project_path, ProjectLimits::default())
+        .expect_err("project entry symlinks must be rejected");
+    assert!(error.to_string().contains("symlink component"));
+    let error = resolve_project_input(directory.join("main.onda"), ProjectLimits::default())
+        .expect_err("standalone source inputs must reject symlinks too");
+    assert!(error.to_string().contains("symlink component"));
+
+    fs::remove_file(directory.join("main.onda")).expect("remove entry symlink");
+    fs::write(
+        directory.join("main.onda"),
+        "outs 1\nsample:\n  out1 = 0.0\n",
+    )
+    .expect("write regular entry");
     let ProjectInput::Project(project) =
         resolve_project_input(&project_path, ProjectLimits::default()).expect("resolve project")
     else {
         panic!("expected project input");
     };
-    let watch_paths = project.watch_paths().expect("resolve watch paths");
+    let error = project
+        .watch_paths()
+        .expect_err("project asset symlinks must be rejected");
+    assert!(error.to_string().contains("symlink component"));
+    let recovery_paths = resolve_project_watch_paths(&project_path, ProjectLimits::default())
+        .expect("recovery watches must retain the unsupported asset alias");
     assert_eq!(
-        watch_paths.assets,
-        vec![fs::canonicalize(target).expect("canonical target")]
+        recovery_paths.assets,
+        vec![directory.join("assets/sample.ondabuffer")]
     );
-    assert_eq!(
-        watch_paths.asset_aliases,
-        vec![project.root.join("assets/sample.ondabuffer")]
-    );
+
+    let manifest_alias = directory.join("linked.ondaproject");
+    symlink(&project_path, &manifest_alias).expect("create manifest symlink");
+    let error = resolve_project_input(&manifest_alias, ProjectLimits::default())
+        .expect_err("project manifest symlinks must be rejected");
+    assert!(error.to_string().contains("symlink component"));
 
     fs::remove_dir_all(directory).expect("remove test directory");
 }
@@ -1374,7 +1416,7 @@ fn project_watch_paths_reject_missing_assets_below_external_symlinks() {
     let error = project
         .watch_paths()
         .expect_err("external symlinks must remain confined");
-    assert!(error.to_string().contains("outside the project root"));
+    assert!(error.to_string().contains("symlink component"));
 
     fs::remove_dir_all(directory).expect("remove test directory");
 }
@@ -1563,7 +1605,7 @@ fn generated_ondaproject_files_contain_only_project_data() {
 
 #[cfg(unix)]
 #[test]
-fn source_capture_matches_canonical_manifests_through_symlink_paths() {
+fn source_capture_input_rejects_symlink_paths() {
     use std::os::unix::fs::symlink;
 
     let root = temporary_directory("symlink-capture");
@@ -1579,24 +1621,9 @@ fn source_capture_matches_canonical_manifests_through_symlink_paths() {
     symlink(&real_root, &linked_root).expect("create project symlink");
 
     let linked_entry = linked_root.join("main.onda");
-    let loaded = onda_frontend::load_program_file(&linked_entry).expect("load through symlink");
-    let captured = SourceImage::capture(
-        &linked_entry,
-        &linked_root,
-        &loaded.sources,
-        ProjectLimits::default(),
-    )
-    .expect("capture canonical manifest through original symlink paths");
-
-    assert_eq!(captured.entry, "main.onda");
-    assert!(captured
-        .documents
-        .iter()
-        .any(|document| document.path == "voice.onda"));
-    assert!(captured
-        .documents
-        .iter()
-        .all(|document| !document.path.starts_with("external/")));
+    let error = onda_frontend::load_program_file(&linked_entry)
+        .expect_err("filesystem source capture must reject symlink paths");
+    assert!(error.diagnostics[0].message.contains("symlink component"));
 
     fs::remove_dir_all(root).expect("remove symlink capture directory");
 }

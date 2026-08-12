@@ -354,7 +354,7 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
     let mut param_types = vec![None, None];
 
     for idx in 0..PROC_INDEX_CALL_MAX_POSITIONAL_ARGS {
-        params.push(format!("__proc_index_arg{idx}"));
+        params.push(format!("__onda_proc_index_arg{idx}"));
         defaults.push(Some(Expr::number(0.0)));
         param_types.push(None);
     }
@@ -1641,20 +1641,20 @@ sample:
                     Stmt::Expr {
                         expr: Expr::UserCall { name, .. },
                         ..
-                    } if name.ends_with(".__proc_event_init") => Some(name.clone()),
+                    } if name.ends_with(".__onda_proc_event_init") => Some(name.clone()),
                     _ => None,
                 }),
                 _ => None,
             })
             .expect("expected lowered top-level builtin init event call");
-        assert_eq!(init_call_name, "Voice.__proc_event_init");
+        assert_eq!(init_call_name, "Voice.__onda_proc_event_init");
 
         let init_def = desugared
             .program
             .blocks
             .iter()
             .find_map(|block| match block {
-                Block::Def(def) if def.name == "Voice.__proc_event_init" => Some(def),
+                Block::Def(def) if def.name == "Voice.__onda_proc_event_init" => Some(def),
                 _ => None,
             })
             .expect("expected generated builtin init event def");
@@ -1705,7 +1705,7 @@ sample:
             Stmt::Expr {
                 expr: Expr::UserCall { name, args, .. },
                 ..
-            } if name == "Voice.__proc_init" && args.len() == 1
+            } if name == "Voice.__onda_proc_init" && args.len() == 1
         )));
     }
 
@@ -1813,7 +1813,8 @@ sample:
             .iter()
             .find_map(|block| match block {
                 Block::Def(def)
-                    if def.name.contains("Voice") && def.name.ends_with(".__proc_event_init") =>
+                    if def.name.contains("Voice")
+                        && def.name.ends_with(".__onda_proc_event_init") =>
                 {
                     Some(def)
                 }
@@ -1989,7 +1990,7 @@ graph:
                 Stmt::Expr {
                     expr: Expr::UserCall { name, args, .. },
                     ..
-                } if name == "Sum.__proc_step"
+                } if name == "Sum.__onda_proc_step"
                     && args.iter().filter(|arg| matches!(
                         arg.expr,
                         Expr::Var { name: ref tmp, .. } if tmp == "__graph_fanout_0"
@@ -2264,7 +2265,7 @@ graph:
                 Stmt::Expr {
                     expr: Expr::UserCall { name, args, .. },
                     ..
-                } if name == "Take.__proc_step"
+                } if name == "Take.__onda_proc_step"
                     && args.iter().any(|arg| matches!(
                         arg.expr,
                         Expr::Index { ref base, ref index, .. }
@@ -2314,7 +2315,7 @@ graph:
                 Stmt::Expr {
                     expr: Expr::UserCall { name, args, .. },
                     ..
-                } if name == "Take.__proc_step"
+                } if name == "Take.__onda_proc_step"
                     && args.iter().any(|arg| matches!(
                         arg.expr,
                         Expr::Var { ref name, .. } if name == "src.pair[1]"
@@ -2406,7 +2407,7 @@ graph:
                 target: AssignTarget::Var(tmp),
                 expr: Expr::UserCall { name, args, .. },
                 ..
-            } if name == "Voice.__proc_call_out1"
+            } if name == "Voice.__onda_proc_call_out1"
                 && args.iter().any(|inner| {
                     matches!(
                         inner.expr,
@@ -2432,7 +2433,7 @@ graph:
                 Stmt::Expr {
                     expr: Expr::UserCall { name, args, .. },
                     ..
-                } if name == "Take.__proc_step"
+                } if name == "Take.__onda_proc_step"
                     && args.iter().any(|arg| matches!(
                         arg.expr,
                         Expr::Var { ref name, .. } if name == proc_out_tmp
@@ -2479,7 +2480,7 @@ graph:
                             index,
                             Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
                         )
-                        && name.starts_with("Voice.__proc_call_out")
+                        && name.starts_with("Voice.__onda_proc_call_out")
                 ))
                 .count()
                 == 2,
@@ -2838,7 +2839,7 @@ graph:
                 Stmt::Expr {
                     expr: Expr::UserCall { name, args, .. },
                     ..
-                } if name == "Gain.__proc_step"
+                } if name == "Gain.__onda_proc_step"
                     && args.len() == 2
                     && matches!(args[0].expr, Expr::Var { name: ref node, .. } if node == "g")
                     && args.iter().any(|arg| matches!(
@@ -2908,7 +2909,7 @@ graph:
                     Stmt::Expr {
                         expr: Expr::UserCall { name, .. },
                         ..
-                    } if name == "Pass.__proc_step"
+                    } if name == "Pass.__onda_proc_step"
                 ))
                 .count()
                 == 2,
@@ -2955,7 +2956,7 @@ graph:
                 Stmt::Expr {
                     expr: Expr::UserCall { name, .. },
                     ..
-                } if name == "Swap.__proc_step"
+                } if name == "Swap.__onda_proc_step"
             )),
             "expected proc-local graph proc to lower to a proc step call: {:?}",
             typed.sample
@@ -3136,7 +3137,7 @@ graph:
                 Stmt::Expr {
                     expr: Expr::UserCall { name, args, .. },
                     ..
-                } if name == "Sum2.__proc_step"
+                } if name == "Sum2.__onda_proc_step"
                     && args
                         .iter()
                         .filter(|arg| matches!(
@@ -3540,7 +3541,7 @@ graph:
                 Stmt::Expr {
                     expr: Expr::UserCall { name, .. },
                     ..
-                } if name == "Gain.__proc_step"
+                } if name == "Gain.__onda_proc_step"
             )),
             "expected lowered sample proc step for g: {:?}",
             typed.sample

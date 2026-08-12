@@ -1,0 +1,53 @@
+import std/osc
+
+const ChorusLineSamples: i32 = i32(SR / 10)
+
+proc ChorusTap:
+  params:
+    rate = 0.23
+    base_ms = 17.0
+    depth_ms = 5.0
+    phase_offset = 0.0
+
+  init:
+    line: f32[ChorusLineSamples]
+    write: i32 = 0
+    lfo = std::osc::Sine(freq = rate)
+
+  sample:
+    line[write] = in1
+    modulation = lfo(freq = rate, phase_offset = phase_offset * TWO_PI)
+    delay_samples = (base_ms + depth_ms * modulation) * SR * 0.001
+    read_pos = wrap(f32(write) - delay_samples, 0.0, f32(ChorusLineSamples))
+    i0 = i32(read_pos)
+    i1 = i0 + 1
+    if (i1 >= ChorusLineSamples):
+      i1 = 0
+    delayed = lerp(line[i0], line[i1], read_pos - f32(i0))
+    write = (write + 1) % ChorusLineSamples
+    out1 = delayed
+
+proc StereoChorus:
+  params:
+    rate = 0.23
+    depth_ms = 5.0
+    width = 0.9
+    mix = 0.48
+
+  init:
+    tap_l = ChorusTap(base_ms = 15.0, phase_offset = 0.0)
+    tap_r = ChorusTap(base_ms = 19.0, phase_offset = 0.25)
+
+  sample:
+    tap_l.rate = rate
+    tap_r.rate = rate * (1.0 + width * 0.071)
+    tap_l.depth_ms = depth_ms
+    tap_r.depth_ms = depth_ms
+    wet_l = tap_l(in1)
+    wet_r = tap_r(in2)
+
+    cross = width * 0.22
+    chorus_l = wet_l * (1.0 - cross) + wet_r * cross
+    chorus_r = wet_r * (1.0 - cross) + wet_l * cross
+    out1 = in1 * (1.0 - mix) + chorus_l * mix
+    out2 = in2 * (1.0 - mix) + chorus_r * mix

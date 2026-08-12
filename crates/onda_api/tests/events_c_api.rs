@@ -309,6 +309,18 @@ unsafe fn manifest_unresolved_paths(manifest: *const onda_source_manifest) -> Ve
         .collect()
 }
 
+unsafe fn manifest_watch_paths(manifest: *const onda_source_manifest) -> Vec<PathBuf> {
+    (0..onda_source_manifest_watch_count(manifest))
+        .map(|index| {
+            PathBuf::from(
+                CStr::from_ptr(onda_source_manifest_watch_path(manifest, index))
+                    .to_str()
+                    .expect("watch path should be UTF-8"),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn c_file_compile_returns_source_manifest_on_success_and_failure() {
     unsafe {
@@ -355,6 +367,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
                 fs::canonicalize(&dependency).expect("canonical dependency"),
             ]
         );
+        assert_eq!(manifest_watch_paths(manifest.0), manifest_paths(manifest.0));
         assert!(manifest_unresolved_paths(manifest.0).is_empty());
 
         let replay_sources = (0..onda_source_manifest_document_count(manifest.0))
@@ -401,6 +414,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
         let replay_manifest = SourceManifestHandle(replay_manifest);
         assert_eq!(onda_source_manifest_document_count(replay_manifest.0), 4);
         assert_eq!(onda_source_manifest_resolution_count(replay_manifest.0), 3);
+        assert!(manifest_watch_paths(replay_manifest.0).is_empty());
 
         fs::write(&dependency, "this is not valid onda\n").expect("break dependency");
         let mut failed_manifest = std::ptr::null_mut();
@@ -484,6 +498,187 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
         );
 
         fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[test]
+fn c_file_compile_accepts_filesystem_projects_with_defaults_and_watch_paths() {
+    unsafe {
+        let dir = temp_source_dir("filesystem_project");
+        let code_dir = dir.join("code");
+        let asset_dir = dir.join("assets");
+        fs::create_dir_all(&code_dir).expect("create project sources");
+        fs::create_dir_all(&asset_dir).expect("create project assets");
+        let project = dir.join("synth.ondaproject");
+        let main = code_dir.join("main.onda");
+        let voice = code_dir.join("voice.onda");
+        let asset = asset_dir.join("sample.ondabuffer");
+
+        fs::write(
+            &project,
+            r#"{
+                "entry": "code/main.onda",
+                "buffers": {"samples": {"file": "assets/sample.ondabuffer"}}
+            }"#,
+        )
+        .expect("write project manifest");
+        fs::write(
+            &main,
+            "import voice\nouts { out1 }\nbuffers { samples: buffer<f32> }\nsample { out1 = samples[0] * VOICE }\n",
+        )
+        .expect("write project entry");
+        fs::write(&voice, "const VOICE = 1.0\n").expect("write project dependency");
+
+        let samples = [0.75_f32];
+        let mut diag = empty_diag();
+        let encoded_bytes = onda_buffer_asset_encode(
+            ONDA_PRIMITIVE_F32,
+            1,
+            1,
+            48_000.0,
+            samples.as_ptr().cast(),
+            std::mem::size_of_val(&samples),
+            std::ptr::null_mut(),
+            0,
+            &mut *diag,
+        );
+        assert!(
+            encoded_bytes > 0,
+            "asset sizing failed: {}",
+            diag_message(&diag)
+        );
+        let mut encoded = vec![0_u8; encoded_bytes as usize];
+        assert_eq!(
+            onda_buffer_asset_encode(
+                ONDA_PRIMITIVE_F32,
+                1,
+                1,
+                48_000.0,
+                samples.as_ptr().cast(),
+                std::mem::size_of_val(&samples),
+                encoded.as_mut_ptr().cast(),
+                encoded.len(),
+                &mut *diag,
+            ),
+            encoded_bytes
+        );
+        fs::write(&asset, encoded).expect("write project asset");
+
+        let project_path = CString::new(project.to_str().expect("UTF-8 project path")).unwrap();
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 4,
+        };
+        let mut manifest = std::ptr::null_mut();
+        let program = onda_compile_file(project_path.as_ptr(), &options, &mut manifest, &mut *diag);
+        assert!(
+            !program.is_null(),
+            "filesystem project compile failed: {}",
+            diag_message(&diag)
+        );
+        let program = ProgramHandle(program);
+        let manifest = SourceManifestHandle(manifest);
+        assert_eq!(
+            manifest_paths(manifest.0),
+            vec![
+                fs::canonicalize(&main).expect("canonical project entry"),
+                fs::canonicalize(&voice).expect("canonical project dependency"),
+            ]
+        );
+        let mut watch_paths = manifest_watch_paths(manifest.0);
+        watch_paths.sort();
+        let mut expected_watch_paths = vec![
+            fs::canonicalize(&project).expect("canonical project manifest"),
+            fs::canonicalize(&main).expect("canonical project entry"),
+            fs::canonicalize(&voice).expect("canonical project dependency"),
+            fs::canonicalize(&asset).expect("canonical project asset"),
+        ];
+        expected_watch_paths.sort();
+        assert_eq!(watch_paths, expected_watch_paths);
+
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        assert!(
+            !instance.is_null(),
+            "project instance creation failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+        let mut output = [0.0_f32; 4];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_process_checked(instance.0, output.len() as i32), 0);
+        assert_eq!(output, [0.75; 4]);
+
+        drop(instance);
+        drop(program);
+        drop(manifest);
+        diag.clear();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let asset_target = asset_dir.join("sample-target.ondabuffer");
+            fs::rename(&asset, &asset_target).expect("move asset behind a symlink");
+            symlink(&asset_target, &asset).expect("create asset symlink");
+            let mut failed_manifest = std::ptr::null_mut();
+            let failed = onda_compile_file(
+                project_path.as_ptr(),
+                &options,
+                &mut failed_manifest,
+                &mut *diag,
+            );
+            assert!(
+                failed.is_null(),
+                "symlink project asset unexpectedly compiled"
+            );
+            let failed_manifest = SourceManifestHandle(failed_manifest);
+            let failed_watch_paths = manifest_watch_paths(failed_manifest.0);
+            assert!(failed_watch_paths.contains(&fs::canonicalize(&project).unwrap()));
+            assert!(failed_watch_paths.contains(&fs::canonicalize(&main).unwrap()));
+            assert!(failed_watch_paths.contains(&fs::canonicalize(&voice).unwrap()));
+            assert!(failed_watch_paths.contains(&asset));
+
+            drop(failed_manifest);
+            fs::remove_file(&asset).expect("remove asset symlink");
+            fs::rename(&asset_target, &asset).expect("restore regular asset");
+            diag.clear();
+        }
+
+        fs::write(
+            &project,
+            r#"{
+                "entry": "code/missing.onda",
+                "buffers": {"samples": {"file": "assets/sample.ondabuffer"}}
+            }"#,
+        )
+        .expect("point project at a missing entry");
+        let mut failed_manifest = std::ptr::null_mut();
+        let failed = onda_compile_file(
+            project_path.as_ptr(),
+            &options,
+            &mut failed_manifest,
+            &mut *diag,
+        );
+        assert!(
+            failed.is_null(),
+            "missing project entry unexpectedly compiled"
+        );
+        let failed_manifest = SourceManifestHandle(failed_manifest);
+        let failed_watch_paths = manifest_watch_paths(failed_manifest.0);
+        assert!(failed_watch_paths.contains(&fs::canonicalize(&project).unwrap()));
+        assert!(failed_watch_paths.contains(&code_dir.join("missing.onda")));
+        assert!(failed_watch_paths.contains(&fs::canonicalize(&asset).unwrap()));
+
+        fs::remove_dir_all(dir).ok();
     }
 }
 

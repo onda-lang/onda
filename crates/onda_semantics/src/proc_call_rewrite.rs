@@ -3844,6 +3844,7 @@ fn reject_pinned_proc_param_assignment(
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
+    authorized_receiver: Option<&str>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let Some((proc_name, receiver, field)) =
@@ -3851,6 +3852,9 @@ fn reject_pinned_proc_param_assignment(
     else {
         return;
     };
+    if authorized_receiver == Some(receiver.as_str()) {
+        return;
+    }
     push_semantic(
         DiagCtx::new(target_loc),
         errors,
@@ -4132,6 +4136,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
+    authorized_pinned_receiver: Option<&str>,
     errors: &mut Vec<Diagnostic>,
     skip_top_level_indices: Option<&HashSet<usize>>,
     temp_counter: &mut usize,
@@ -4150,6 +4155,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_vars,
                     proc_array_slots,
                     proc_api,
+                    authorized_pinned_receiver,
                     errors,
                     None,
                     temp_counter,
@@ -4160,6 +4166,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_vars,
                     proc_array_slots,
                     proc_api,
+                    authorized_pinned_receiver,
                     errors,
                     None,
                     temp_counter,
@@ -4172,6 +4179,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_vars,
                     proc_array_slots,
                     proc_api,
+                    authorized_pinned_receiver,
                     errors,
                     None,
                     temp_counter,
@@ -4198,6 +4206,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_vars,
                     proc_array_slots,
                     proc_api,
+                    authorized_pinned_receiver,
                     errors,
                 );
                 reject_bound_proc_dynamic_params_assignment(
@@ -4277,6 +4286,7 @@ pub(super) fn inject_bound_proc_param_hooks_in_stmts(
         proc_vars,
         proc_array_slots,
         proc_api,
+        None,
         errors,
         None,
         &mut temp_counter,
@@ -4299,8 +4309,32 @@ pub(super) fn inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
         proc_vars,
         proc_array_slots,
         proc_api,
+        None,
         errors,
         Some(skip_top_level_indices),
+        &mut temp_counter,
+    );
+}
+
+pub(super) fn inject_bound_proc_param_hooks_in_nested_event_stmts(
+    owner_proc: &str,
+    nested_receiver: &str,
+    stmts: &mut Vec<Stmt>,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut temp_counter = 0usize;
+    inject_bound_proc_param_hooks_in_stmts_inner(
+        stmts,
+        Some(owner_proc),
+        proc_vars,
+        proc_array_slots,
+        proc_api,
+        Some(nested_receiver),
+        errors,
+        None,
         &mut temp_counter,
     );
 }

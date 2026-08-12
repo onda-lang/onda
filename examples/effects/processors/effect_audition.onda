@@ -1,0 +1,47 @@
+import std/env
+import std/osc
+import std/pitch
+
+const AuditionPatternLength = 6
+const AuditionNotes: f32[AuditionPatternLength] = [45.0, 52.0, 57.0, 64.0, 55.0, 60.0]
+
+proc EffectAudition:
+  outs 2
+
+  params:
+    auto_play: i32 = 1
+    interval_s = 0.74
+    decay_s = 0.22
+
+  init:
+    fundamental = std::osc::Sine(amp = 0.64)
+    upper = std::osc::Sine(amp = 0.25)
+    shimmer = std::osc::Sine(amp = 0.11)
+    envelope = std::env::DecayEnv(decay_s = decay_s)
+    clock: i32 = 0
+    step: i32 = 0
+    frequency = std::pitch::note_to_hz(AuditionNotes[0])
+    pending_bang = false
+
+  event bang():
+    pending_bang = true
+
+  sample:
+    period = max(i32(interval_s * SR), 1)
+    if auto_play != 0 && clock == 0:
+      pending_bang = true
+
+    if pending_bang:
+      frequency = std::pitch::note_to_hz(AuditionNotes[step])
+      fundamental.reset()
+      upper.reset()
+      shimmer.reset()
+      envelope.start()
+      step = (step + 1) % AuditionPatternLength
+      pending_bang = false
+    clock = (clock + 1) % period
+
+    source = (fundamental(freq = frequency) + upper(freq = frequency * 1.4983) + shimmer(freq = frequency * 2.006))
+    source = source * envelope(decay_s = decay_s) * 0.52
+    out1 = source
+    out2 = source

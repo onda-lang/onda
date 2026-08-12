@@ -35,7 +35,7 @@ repo_root="$(cd -- "$demo_dir/../../.." && pwd)"
 backend_dir="$repo_root/packages/onda_binaryen_web"
 webaudio_dir="$repo_root/packages/onda_webaudio"
 abi_dir="$repo_root/packages/onda_processor_abi"
-source_file="$repo_root/examples/buffers-fft-convolution/sample_player.onda"
+source_file="$repo_root/examples/buffers/sample_player.onda"
 mir_file="$demo_dir/sample-player.mir.msgpack"
 
 if ! node -p "require.resolve('binaryen', { paths: [process.argv[1]] })" "$backend_dir" >/dev/null; then
@@ -54,7 +54,7 @@ cp "$abi_dir/src/index.js" "$demo_dir/artifact.js"
 cp "$abi_dir/src/param-control.js" "$demo_dir/param-control.js"
 cp "$webaudio_dir/src/index.js" "$demo_dir/onda-webaudio.js"
 cp "$webaudio_dir/src/worklet.js" "$demo_dir/onda-wasm-processor.js"
-cp "$repo_root/examples/buffers-fft-convolution/impulse.wav" "$demo_dir/impulse.wav"
+cp "$repo_root/examples/projects/embedded_room/assets/impulse.wav" "$demo_dir/impulse.wav"
 node "$demo_dir/smoke-test.mjs"
 
 echo "Built the precompiled sample-player artifact in: $demo_dir"

@@ -86,10 +86,9 @@ if (processor.port.messages.some((message) => message.type === "onda-error")) {
 
 let renderedPeak = 0;
 for (let offset = 0; offset < clip.frames && renderedPeak === 0; offset += 128) {
-  const amplitude = new Float32Array(128).fill(0.2);
   const left = new Float32Array(128);
   const right = new Float32Array(128);
-  processor.process([[amplitude]], [[left, right]]);
+  processor.process([], [[left, right]]);
   for (const sample of [...left, ...right]) {
     renderedPeak = Math.max(renderedPeak, Math.abs(sample));
   }

@@ -1,0 +1,49 @@
+import std/pitch
+
+namespace std::pitch_shift:
+  proc DualWindow<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      semitones = 12.0
+      window_s = 0.09
+
+    init:
+      buffer: T[SR / 2]
+      write_index: i32 = 0
+      phase = 0.0
+
+    block:
+      ratio = std::pitch::ratio_between(T(0.0), semitones)
+      window_samples = clamp(window_s * SR, T(16.0), T(buffer.len() - 2))
+      phase_increment = (T(1.0) - ratio) / window_samples
+
+      sample:
+        buffer[write_index] = in1
+        phase = wrap(phase + phase_increment, T(0.0), T(1.0))
+        phase_b = wrap(phase + T(0.5), T(0.0), T(1.0))
+
+        read_a = T(write_index) - phase * window_samples
+        read_b = T(write_index) - phase_b * window_samples
+        gain_a = T(0.5) - T(0.5) * cos(phase * TWO_PI)
+        gain_b = T(0.5) - T(0.5) * cos(phase_b * TWO_PI)
+        index_a = i32(floor(read_a))
+        fraction_a = read_a - T(index_a)
+        index_a0 = index_a % buffer.len()
+        if index_a0 < 0:
+          index_a0 = index_a0 + buffer.len()
+        index_a1 = (index_a0 + 1) % buffer.len()
+
+        index_b = i32(floor(read_b))
+        fraction_b = read_b - T(index_b)
+        index_b0 = index_b % buffer.len()
+        if index_b0 < 0:
+          index_b0 = index_b0 + buffer.len()
+        index_b1 = (index_b0 + 1) % buffer.len()
+
+        shifted = lerp(buffer[index_a0], buffer[index_a1], fraction_a) * gain_a
+        shifted = shifted + lerp(buffer[index_b0], buffer[index_b1], fraction_b) * gain_b
+
+        write_index = (write_index + 1) % buffer.len()
+        out1 = shifted

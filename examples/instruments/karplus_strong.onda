@@ -1,0 +1,105 @@
+import std/delay
+import std/levels
+import std/pitch
+import std/random
+
+const VoiceCount = 6
+const PatternLength = 12
+const Notes: f32[PatternLength] = [0.0, 7.0, 12.0, 14.0, 3.0, 10.0, 15.0, 12.0, 5.0, 9.0, 17.0, 10.0]
+
+proc StringVoice:
+  params:
+    damping = 0.992
+    brightness = 0.72
+
+  init:
+    line: f32[SR * 2]
+    length: i32 = 220
+    index: i32 = 0
+    previous = 0.0
+    rng = std::random::Rng<f32>()
+
+  event pluck(note: f32, velocity: f32):
+    freq = std::pitch::note_to_hz(note)
+    length = i32(SR / freq)
+    if (length < 2):
+      length = 2
+    elif (length >= line.len()):
+      length = line.len() - 1
+    index = 0
+    previous = 0.0
+    for i in 0..length:
+      noise = rng.bipolar()
+      soft = previous + (noise - previous) * brightness
+      line[i] = soft * velocity
+      previous = noise
+
+  sample:
+    next_index = index + 1
+    if (next_index >= length):
+      next_index = 0
+
+    current = line[index]
+    following = line[next_index]
+    line[index] = (current + following) * 0.5 * damping
+    index = next_index
+    out1 = current
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  root_note = 43.0 {24.0, 72.0, step = 1.0}
+  bpm = 108.0 {35.0, 200.0, unit = "BPM"}
+  damping = 0.992 {0.94, 0.9998}
+  brightness = 0.72 {0.05, 1.0}
+  echo = 0.28 {0.0, 0.7}
+  level = 0.5 {0.0, 1.0}
+
+init:
+  strings: StringVoice[VoiceCount] = StringVoice()
+  echo_l = std::delay::Delay(delay_s = 0.375, feedback = 0.32, mix = 1.0)
+  echo_r = std::delay::Delay(delay_s = 0.5, feedback = 0.28, mix = 1.0)
+  clock: i32 = 0
+  step: i32 = 0
+  next_voice: i32 = 0
+  pending_bang = false
+
+event pluck(note: f32 = 55.0, velocity: f32 = 0.8):
+  strings[next_voice].damping = damping
+  strings[next_voice].brightness = brightness
+  strings[next_voice].pluck(note, velocity)
+  next_voice = (next_voice + 1) % VoiceCount
+
+event bang():
+  pending_bang = true
+
+sample:
+  step_samples = max(i32(SR * 15.0 / bpm), 1)
+  if auto_play != 0 && clock == 0:
+    pending_bang = true
+
+  if pending_bang:
+    velocity = 0.5
+    if ((step % 4) == 0):
+      velocity = 1.0
+    strings[next_voice].damping = damping
+    strings[next_voice].brightness = brightness
+    strings[next_voice].pluck(root_note + Notes[step], velocity)
+    next_voice = (next_voice + 1) % VoiceCount
+    step = (step + 1) % PatternLength
+    pending_bang = false
+
+  clock = (clock + 1) % step_samples
+
+  dry_l = 0.0
+  dry_r = 0.0
+  for i in 0..VoiceCount:
+    voice = strings[i]()
+    pan = -0.72 + 1.44 * f32((i * 5) % VoiceCount) / f32(VoiceCount - 1)
+    (gain_l, gain_r) = std::levels::pan_3db(pan)
+    dry_l = dry_l + voice * gain_l
+    dry_r = dry_r + voice * gain_r
+
+  wet_l = echo_l(dry_l + dry_r * 0.2)
+  wet_r = echo_r(dry_r + dry_l * 0.2)
+  out1 = tanh((dry_l + wet_l * echo) * level)
+  out2 = tanh((dry_r + wet_r * echo) * level)

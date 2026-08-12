@@ -1,7 +1,7 @@
 # Direct native processor object
 
 This example compiles the shared
-[`sample_player.onda`](../../buffers-fft-convolution/sample_player.onda) to a relocatable object,
+[`sample_player.onda`](../../buffers/sample_player.onda) to a relocatable object,
 links it directly into a C application, and calls the raw processor ABI. It does not link an Onda
 runtime, compiler, loader, or linker wrapper.
 
@@ -37,7 +37,7 @@ not satisfy a descriptor must use its platform's over-aligned allocation API ins
 
 ```bash
 onda compile \
-  examples/buffers-fft-convolution/sample_player.onda \
+  examples/buffers/sample_player.onda \
   --emit obj \
   --target-spec targets/linux-x64-generic.toml \
   --output target/sample_player.o \
@@ -62,7 +62,7 @@ Use the checked-in arm64 macOS target and the platform Clang linker driver:
 
 ```bash
 onda compile \
-  examples/buffers-fft-convolution/sample_player.onda \
+  examples/buffers/sample_player.onda \
   --emit obj \
   --target-spec targets/macos-arm64-generic.toml \
   --output target/sample_player.o \
@@ -89,7 +89,7 @@ platform linker:
 
 ```powershell
 onda.exe compile `
-  .\examples\buffers-fft-convolution\sample_player.onda `
+  .\examples\buffers\sample_player.onda `
   --emit obj `
   --target-spec .\targets\windows-x64-generic.toml `
   --output .\target\sample_player.obj `

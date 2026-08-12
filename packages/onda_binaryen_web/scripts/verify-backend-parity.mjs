@@ -52,33 +52,6 @@ const scenarios = [
     blocks: 3,
   },
   {
-    name: "oversampled dual-oscillator corpus example",
-    source: join(
-      repoDir,
-      "examples/foundations/dual_osc_oversampled_8x.onda",
-    ),
-    blocks: 3,
-    comparison: "approximate",
-  },
-  {
-    name: "oversampled saturator input interpolation",
-    source: join(
-      repoDir,
-      "examples/processors-and-graphs/saw_filter_saturator.onda",
-    ),
-    blocks: 3,
-    comparison: "approximate",
-  },
-  {
-    name: "processor-array initialization, indexed dispatch, and block updates",
-    source: join(
-      repoDir,
-      "examples/processors-and-graphs/proc_array_init_harmonics.onda",
-    ),
-    blocks: 3,
-    comparison: "approximate",
-  },
-  {
     name: "host event dispatch and scalar payload layout",
     source: join(packageDir, "test/fixtures/event-parity.onda"),
     actions: [

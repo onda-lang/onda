@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  centeredCaretScrollLeft,
   colonIndentText,
+  editorGuttersAreFixed,
   editorViewportMargins,
+  preferredCaretScrollLeft,
   validProjectPath,
 } from "./editor.js";
 
@@ -40,43 +41,32 @@ test("visual viewport margins are independent of CodeMirror's gutter margin", ()
   });
 });
 
-test("typing centers the caret in the visible code area", () => {
-  const geometry = {
-    editor: { left: 12, right: 380 },
-    gutter: { right: 56 },
-    viewport: { offsetLeft: 72, width: 320 },
-    scrollLeft: 200,
-    scrollWidth: 900,
-    clientWidth: 368,
-  };
-
-  assert.equal(centeredCaretScrollLeft({
-    ...geometry,
-    caret: { left: 319, right: 321 },
-  }), 294);
-  assert.equal(centeredCaretScrollLeft({
-    ...geometry,
-    caret: { left: 79, right: 81 },
-  }), 54);
+test("only desktop editors keep line-number gutters fixed", () => {
+  assert.equal(editorGuttersAreFixed(390, false), false);
+  assert.equal(editorGuttersAreFixed(1024, true), false);
+  assert.equal(editorGuttersAreFixed(1024, false), true);
 });
 
-test("caret centering respects both horizontal scroll limits", () => {
+test("compact editors return to the line start only when the caret still fits", () => {
   const geometry = {
     editor: { left: 0, right: 360 },
-    gutter: { right: 48 },
     viewport: { offsetLeft: 0, width: 360 },
-    scrollWidth: 600,
-    clientWidth: 360,
+    scrollLeft: 30,
   };
 
-  assert.equal(centeredCaretScrollLeft({
+  assert.equal(preferredCaretScrollLeft({
     ...geometry,
-    caret: { left: 55, right: 57 },
-    scrollLeft: 0,
+    caret: { left: 55, right: 56 },
+    preserveScroll: false,
   }), 0);
-  assert.equal(centeredCaretScrollLeft({
+  assert.equal(preferredCaretScrollLeft({
     ...geometry,
-    caret: { left: 500, right: 502 },
-    scrollLeft: 200,
-  }), 240);
+    caret: { left: 330, right: 331 },
+    preserveScroll: false,
+  }), 30);
+  assert.equal(preferredCaretScrollLeft({
+    ...geometry,
+    caret: { left: 55, right: 56 },
+    preserveScroll: true,
+  }), 30);
 });

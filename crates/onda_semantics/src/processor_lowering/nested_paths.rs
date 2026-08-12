@@ -5,23 +5,23 @@ pub(super) fn nested_field_name(var: &str, field: &str) -> String {
 }
 
 pub(super) fn nested_init_fn_name(owner_proc: &str, nested_var: &str) -> String {
-    format!("{owner_proc}.__proc_nested_{nested_var}_init")
+    format!("{owner_proc}.__onda_proc_nested_{nested_var}_init")
 }
 
 pub(crate) fn nested_step_fn_name(owner_proc: &str, nested_var: &str) -> String {
-    format!("{owner_proc}.__proc_nested_{nested_var}_step")
+    format!("{owner_proc}.__onda_proc_nested_{nested_var}_step")
 }
 
 pub(super) fn nested_event_fn_name(owner_proc: &str, nested_var: &str, event_name: &str) -> String {
-    format!("{owner_proc}.__proc_nested_{nested_var}_event_{event_name}")
+    format!("{owner_proc}.__onda_proc_nested_{nested_var}_event_{event_name}")
 }
 
 pub(super) fn nested_block_pre_fn_name(owner_proc: &str, nested_var: &str) -> String {
-    format!("{owner_proc}.__proc_nested_{nested_var}_block_pre")
+    format!("{owner_proc}.__onda_proc_nested_{nested_var}_block_pre")
 }
 
 pub(super) fn nested_block_post_fn_name(owner_proc: &str, nested_var: &str) -> String {
-    format!("{owner_proc}.__proc_nested_{nested_var}_block_post")
+    format!("{owner_proc}.__onda_proc_nested_{nested_var}_block_post")
 }
 
 pub(crate) fn nested_call_out_fn_name(
@@ -29,7 +29,7 @@ pub(crate) fn nested_call_out_fn_name(
     nested_var: &str,
     out_idx: usize,
 ) -> String {
-    format!("{owner_proc}.__proc_nested_{nested_var}_call_out{out_idx}")
+    format!("{owner_proc}.__onda_proc_nested_{nested_var}_call_out{out_idx}")
 }
 
 pub(super) fn rewrite_nested_field_paths_in_expr(
@@ -442,9 +442,17 @@ pub(super) fn prefix_self_fields_in_expr(
                 prefix_self_fields_in_expr(arg, prefix, nested_field_names);
             }
         }
-        Expr::UserCall { args, .. } => {
+        Expr::UserCall { name, args, .. } => {
             for arg in args {
                 prefix_self_fields_in_expr(&mut arg.expr, prefix, nested_field_names);
+            }
+            let remapped_name = split_receiver_method_path(name).and_then(|(receiver, method)| {
+                let (root, field) = split_simple_field_path(receiver)?;
+                (root == "self" && nested_field_names.contains(field))
+                    .then(|| format!("self.{}.{}", nested_field_name(prefix, field), method))
+            });
+            if let Some(remapped_name) = remapped_name {
+                *name = remapped_name;
             }
         }
         Expr::Cast { expr: inner, .. }

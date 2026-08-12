@@ -1,15 +1,50 @@
 # Default project embedded by the shared browser playground.
+import std/filter
+import std/osc
+import std/pitch
+
+proc Saturator:
+  params:
+    amount = 1.0
+
+  sample 4:
+    out1 = tanh(in1 * amount)
+
+outs 2
+
 params:
-  freq = 440.0 { 20, 1000 }
+  note = 45.0 {24.0, 84.0, step = 1.0}
+  cutoff = 920.0 {80.0, 9000.0, log, "Hz"}
+  resonance = 1.4 {0.5, 6.0}
+  motion = 0.52 {0.0, 1.0}
+  drive = 1.8 {1.0, 6.0}
+  level = 0.28 {0.0, 0.7}
 
 init:
-  phase = 0.0
+  saw_a = std::osc::Saw()
+  saw_b = std::osc::Saw()
+  sub = std::osc::Square()
+  lfo = std::osc::Sine(freq = 0.09)
+  filter_l = std::filter::Svf(cutoff = cutoff, q = resonance)
+  filter_r = std::filter::Svf(cutoff = cutoff, q = resonance)
+  saturator_l = Saturator()
+  saturator_r = Saturator()
 
-block:
-  incr = freq * TWO_PI / SR
+sample:
+  freq = std::pitch::note_to_hz(note)
+  saw_a.freq = freq * 0.997
+  saw_b.freq = freq * 1.503
+  sub.freq = freq * 0.5
+  movement = 0.5 + 0.5 * lfo()
+  cutoff_l = clamp(cutoff * (1.0 + movement * motion * 5.0), 40.0, SR * 0.44)
+  cutoff_r = clamp(cutoff * (1.0 + (1.0 - movement) * motion * 5.0), 40.0, SR * 0.44)
+  filter_l.update_coeffs(cutoff_l, resonance)
+  filter_r.update_coeffs(cutoff_r, resonance)
 
-  sample:
-    phase = phase + incr
-    if (phase > TWO_PI):
-      phase = phase - TWO_PI
-    out1 = sin(phase)
+  a = saw_a()
+  b = saw_b()
+  bass = sub()
+  left = filter_l(a * 0.62 + b * 0.24 + bass * 0.14)
+  right = filter_r(a * 0.38 - b * 0.46 + bass * 0.16)
+  out1 = saturator_l(left, amount = drive) * level
+  out2 = saturator_r(right, amount = drive) * level

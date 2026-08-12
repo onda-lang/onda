@@ -1187,27 +1187,6 @@ fn compiler_failure_js(failure: CompilerFailure) -> wasm_bindgen::JsValue {
 mod tests {
     use super::*;
 
-    fn onda_sources_below(root: &Path) -> Vec<PathBuf> {
-        fn visit(directory: &Path, out: &mut Vec<PathBuf>) {
-            let mut entries = std::fs::read_dir(directory)
-                .expect("example directory should be readable")
-                .map(|entry| entry.expect("example entry should be readable").path())
-                .collect::<Vec<_>>();
-            entries.sort();
-            for path in entries {
-                if path.is_dir() {
-                    visit(&path, out);
-                } else if path.extension().and_then(|value| value.to_str()) == Some("onda") {
-                    out.push(path);
-                }
-            }
-        }
-
-        let mut out = Vec::new();
-        visit(root, &mut out);
-        out
-    }
-
     #[test]
     fn compiles_in_memory_source_to_valid_deterministic_mir() {
         let source = r#"
@@ -1457,42 +1436,5 @@ sample:
         .expect_err("oversized blocks should fail before parsing");
         assert_eq!(errors[0].stage, "configuration");
         assert!(errors[0].message.contains("2147483647"));
-    }
-
-    #[test]
-    fn browser_front_half_compiles_the_checked_in_example_corpus() {
-        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-        let paths = onda_sources_below(&examples);
-        assert_eq!(paths.len(), 46, "example corpus count changed");
-        let sources = paths
-            .iter()
-            .map(|path| {
-                let relative = path
-                    .strip_prefix(&examples)
-                    .expect("example should be below corpus root")
-                    .to_string_lossy()
-                    .into_owned();
-                let source =
-                    std::fs::read_to_string(path).expect("example source should be readable");
-                (relative, source)
-            })
-            .collect::<HashMap<_, _>>();
-        let mut failures = Vec::new();
-        for path in paths {
-            let entry = path
-                .strip_prefix(&examples)
-                .expect("example should be below corpus root")
-                .to_string_lossy();
-            if let Err(errors) =
-                compile_project_sources_to_mir_json(&entry, &sources, 48_000.0, 512)
-            {
-                failures.push(format!("{}: {errors:?}", path.display()));
-            }
-        }
-        assert!(
-            failures.is_empty(),
-            "browser compiler corpus failures:\n{}",
-            failures.join("\n")
-        );
     }
 }

@@ -22,7 +22,7 @@ use topology::*;
 use validation::*;
 
 const GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL: &str = "__onda_graph_proc_array_field_index";
-const GRAPH_PROC_FIELD_INDEX_EXPR_ARG: &str = "__proc_field_index_expr";
+const GRAPH_PROC_FIELD_INDEX_EXPR_ARG: &str = "__onda_proc_field_index_expr";
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum GraphNodeKey {

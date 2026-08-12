@@ -2,7 +2,15 @@ use super::*;
 
 pub(super) fn lsp_document_path(uri: &str) -> Result<Option<PathBuf>, String> {
     match uri.split_once(':') {
-        Some(("file", _)) => file_uri_to_path(uri).map(|path| Some(normalize_path(&path))),
+        Some(("file", _)) => {
+            let path = file_uri_to_path(uri)?;
+            // Browser LSP sessions use file URIs as stable identities for
+            // in-memory overlays. They have no host filesystem to inspect.
+            #[cfg(not(target_family = "wasm"))]
+            onda_frontend::ensure_no_symlink_components(&path)
+                .map_err(|error| format!("unsupported filesystem-backed Onda document: {error}"))?;
+            Ok(Some(normalize_path(&path)))
+        }
         Some(("untitled", _)) => Ok(None),
         Some((scheme, _)) => Err(format!("unsupported uri scheme '{scheme}'")),
         None => Err(format!("invalid uri '{uri}'")),

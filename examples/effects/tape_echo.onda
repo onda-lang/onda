@@ -1,0 +1,70 @@
+# Tape Echo
+# Sound: dark, gently unstable repeats with saturation, wow, and offset stereo timing.
+# Demonstrates: a reusable delay module, filtered feedback, stdlib envelopes, and live-input switching.
+# Try: raise `feedback`, darken `tone`, then set `live_input` to 1 for external audio.
+
+import std/env
+import std/filter
+import std/osc
+import std/pitch
+import processors/tape_echo
+
+params:
+  auto_play: i32 = 1 {0, 1, step = 1}
+  live_input: i32 = 0 {0, 1, step = 1}
+  time_s = 0.36 {0.04, 1.2, log, "s"}
+  feedback = 0.58 {0.0, 0.92}
+  tone = 3600.0 {250.0, 14000.0, log, "Hz"}
+  wow = 0.0025 {0.0, 0.015}
+  drive = 1.4 {0.7, 4.0}
+  mix = 0.42 {0.0, 1.0}
+  level = 0.8 {0.0, 1.0}
+
+init:
+  echo = StereoTapeEcho()
+  saw = std::osc::Saw(freq = std::pitch::note_to_hz(45.0))
+  filter = std::filter::OnePole(cutoff = 1300.0)
+  envelope = std::env::DecayEnv(decay_s = 0.075)
+  clock: i32 = 0
+  step: i32 = 0
+  pending_bang = false
+
+event bang():
+  pending_bang = true
+
+sample:
+  beat_samples = max(i32(SR * 0.42), 1)
+  if auto_play != 0 && clock == 0:
+    pending_bang = true
+
+  if pending_bang:
+    note = 45.0
+    if ((step & 3) == 1):
+      note = 52.0
+    elif ((step & 3) == 2):
+      note = 57.0
+    elif ((step & 3) == 3):
+      note = 48.0
+    saw.freq = std::pitch::note_to_hz(note)
+    saw.reset()
+    envelope.start()
+    step = step + 1
+    pending_bang = false
+  clock = (clock + 1) % beat_samples
+
+  source = filter(saw()) * envelope() * 0.34
+  source_l = in1
+  source_r = in2
+  if live_input == 0:
+    source_l = source
+    source_r = source
+
+  echo.time_s = time_s
+  echo.feedback = feedback
+  echo.tone = tone
+  echo.wow = wow
+  echo.drive = drive
+  echo.mix = mix
+  echo(source_l, source_r)
+  out1 = echo.out1 * level
+  out2 = echo.out2 * level

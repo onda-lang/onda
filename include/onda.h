@@ -140,11 +140,15 @@ onda_program_t* onda_compile(
   const onda_compile_options_t* options,
   onda_diag_t* out_diag
 );
-/* Compiles an Onda file and returns a program handle, or NULL on failure.
-   Relative include/import resolution uses file_path_utf8 as the entry path.
+/* Compiles an editable filesystem .onda, .on, or .ondaproject input and returns
+   a program handle, or NULL on failure. A project input resolves its entry and
+   retains inline and file-backed project buffers as immutable program defaults.
+   Relative include/import resolution uses the resolved source entry path.
+   Filesystem-backed inputs, source dependencies, and project assets must not
+   traverse symbolic links.
    When out_sources is non-NULL, it receives an owned manifest on success or
    failure containing every non-stdlib source resolved before compilation
-   stopped, plus unresolved candidates which a host may watch for creation.
+   stopped, plus unresolved candidates and the complete filesystem watch set.
    Destroy it with onda_source_manifest_destroy. */
 onda_program_t* onda_compile_file(
   const char* file_path_utf8,
@@ -198,6 +202,19 @@ int onda_source_manifest_unresolved_count(const onda_source_manifest_t* manifest
 /* Returns one absolute normalized UTF-8 unresolved candidate path, or NULL for
    an invalid index/handle. The pointer remains valid until manifest destruction. */
 const char* onda_source_manifest_unresolved_path(
+  const onda_source_manifest_t* manifest,
+  int index
+);
+/* Returns the exact filesystem paths whose contents or existence may affect a
+   repeated onda_compile_file call. The set includes the selected input,
+   resolved and unresolved sources, and, for .ondaproject inputs, its manifest,
+   declared entry, and file-backed buffer assets. Missing dependency, entry,
+   and asset paths are retained for recovery. Paths are unique and remain valid
+   until manifest destruction. The count returns -1 for an invalid handle; the
+   path getter returns NULL for an invalid handle/index. In-memory source-graph
+   manifests have an empty watch set. */
+int onda_source_manifest_watch_count(const onda_source_manifest_t* manifest);
+const char* onda_source_manifest_watch_path(
   const onda_source_manifest_t* manifest,
   int index
 );
@@ -429,9 +446,10 @@ void onda_program_destroy(onda_program_t* program);
 
 /* Creates a runtime instance for a compiled program, or NULL on failure.
    Uses compile-time sample_rate and block_size captured in the program handle.
-   Programs compiled from project images automatically bind their shared,
-   immutable project buffer defaults. The instance retains the compiled program,
-   so the program and source project-image handles may be destroyed afterward. */
+   Programs compiled from filesystem .ondaproject inputs or project images
+   automatically bind their immutable project buffer defaults. The instance
+   retains the compiled program and its defaults, so the original program and
+   project-image handles may be destroyed afterward. */
 onda_instance_t* onda_instance_create(
   const onda_program_t* program,
   int in_channels,
@@ -441,6 +459,7 @@ onda_instance_t* onda_instance_create(
 /* Creates a runtime instance whose instance-owned storage uses allocator.
    The returned instance still retains a reference to the compiled program internally;
    compiled/JIT memory is released when the last program/instance reference is gone.
+   Immutable project defaults are bound exactly as for onda_instance_create.
    allocator->alloc and allocator->free must be non-NULL and must honor size/align. */
 onda_instance_t* onda_instance_create_with_allocator(
   const onda_program_t* program,
@@ -520,8 +539,9 @@ int onda_bind_output(
    one-frame storage: reads return zero and writes are discarded. Otherwise, ptr must be non-null and
    remain valid, correctly sized for positive frame/channel counts, and at a stable address until
    this slot is rebound/unbound or the instance is destroyed.
-   ptr memory must be writable during processing and naturally aligned for elem_type;
-   misaligned bindings are rejected.
+   ptr memory must be readable during processing and naturally aligned for elem_type;
+   it must also be writable when the buffer declaration permits writes. Misaligned
+   bindings are rejected.
    Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
 int onda_bind_buffer(
   onda_instance_t* instance,
@@ -534,8 +554,8 @@ int onda_bind_buffer(
 );
 
 /* Restores the immutable project asset associated with a buffer slot. Returns
-   0 on success, -1 for an invalid instance/index, or -2 when the program was
-   not compiled from a project image or the slot has no project default. */
+   0 on success, -1 for an invalid instance/index, or -2 when the program has
+   no project defaults or the slot has no project default. */
 int onda_reset_buffer_to_project_default(
   onda_instance_t* instance,
   int index

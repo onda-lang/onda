@@ -63,11 +63,15 @@ pub struct ProjectFile {
     pub entry_path: PathBuf,
 }
 
+/// Absolute filesystem paths which can affect an editable project.
+///
+/// The manifest exists and is canonical. The declared entry and deduplicated
+/// file-backed assets may be missing when produced for watcher recovery.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ProjectWatchPaths {
     pub manifest: PathBuf,
+    pub entry: PathBuf,
     pub assets: Vec<PathBuf>,
-    pub asset_aliases: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -291,39 +295,10 @@ impl InlineBuffer {
 }
 
 impl ProjectFile {
+    /// Resolves the manifest, entry, and file-backed asset paths for a valid
+    /// project, rejecting symlink traversal.
     pub fn watch_paths(&self) -> Result<ProjectWatchPaths, ProjectError> {
-        let manifest = fs::canonicalize(&self.manifest_path).map_err(|error| {
-            ProjectError::new(format!(
-                "failed to resolve project manifest '{}': {error}",
-                self.manifest_path.display()
-            ))
-        })?;
-        let mut assets = BTreeSet::new();
-        let mut asset_aliases = BTreeSet::new();
-        for binding in self.manifest.buffers.values() {
-            let files: Vec<&ManifestBufferFile> = match binding {
-                ManifestBufferBinding::File(file) => vec![file],
-                ManifestBufferBinding::Inline(_) => Vec::new(),
-                ManifestBufferBinding::Array(elements) => elements
-                    .iter()
-                    .flatten()
-                    .filter_map(|element| match element {
-                        ManifestBufferElementBinding::File(file) => Some(file),
-                        ManifestBufferElementBinding::Inline(_) => None,
-                    })
-                    .collect(),
-            };
-            for file in files {
-                let (asset, alias) = resolve_contained_watch_path(&self.root, &file.file)?;
-                assets.insert(asset);
-                asset_aliases.extend(alias);
-            }
-        }
-        Ok(ProjectWatchPaths {
-            manifest,
-            assets: assets.into_iter().collect(),
-            asset_aliases: asset_aliases.into_iter().collect(),
-        })
+        strict_project_watch_paths(&self.root, &self.manifest_path, &self.manifest)
     }
 
     pub fn load_buffer_assets(
@@ -455,6 +430,12 @@ pub fn resolve_project_input(
     limits: ProjectLimits,
 ) -> Result<ProjectInput, ProjectError> {
     let input = input.as_ref();
+    onda_frontend::ensure_no_symlink_components(input).map_err(|error| {
+        ProjectError::new(format!(
+            "failed to resolve project input '{}': {error}",
+            input.display()
+        ))
+    })?;
     let metadata = fs::metadata(input).map_err(|error| {
         ProjectError::new(format!(
             "failed to inspect project input '{}': {error}",
@@ -470,9 +451,60 @@ pub fn resolve_project_input(
     if !is_project_file_path(input) {
         return Ok(ProjectInput::Source(input.to_path_buf()));
     }
-    let manifest_path = input.to_path_buf();
+    let (root, manifest_path, manifest) = load_project_manifest(input, &limits)?;
+    let entry_path = resolve_contained_path(&root, &manifest.entry)?;
+    if entry_path == manifest_path {
+        return Err(ProjectError::new(
+            "project entry cannot be its .ondaproject file",
+        ));
+    }
+    if !entry_path.is_file() {
+        return Err(ProjectError::new(format!(
+            "project entry '{}' is not a file",
+            entry_path.display()
+        )));
+    }
+    Ok(ProjectInput::Project(ProjectFile {
+        root,
+        manifest_path,
+        manifest,
+        entry_path,
+    }))
+}
+
+/// Resolves the absolute lexical paths needed to watch an editable project.
+///
+/// The manifest must exist, be valid, and not traverse symlinks. Its declared
+/// entry and file-backed assets may be missing or currently be symlinks;
+/// retaining those paths lets a host observe their replacement with supported
+/// filesystem objects. Loading the project still rejects symlink traversal.
+pub fn resolve_project_watch_paths(
+    input: impl AsRef<Path>,
+    limits: ProjectLimits,
+) -> Result<ProjectWatchPaths, ProjectError> {
+    let input = input.as_ref();
+    if !is_project_file_path(input) {
+        return Err(ProjectError::new(format!(
+            "project watch input '{}' is not an .ondaproject file",
+            input.display()
+        )));
+    }
+    let (root, manifest_path, manifest) = load_project_manifest(input, &limits)?;
+    recovery_project_watch_paths(&root, &manifest_path, &manifest)
+}
+
+fn load_project_manifest(
+    manifest_path: &Path,
+    limits: &ProjectLimits,
+) -> Result<(PathBuf, PathBuf, ProjectManifest), ProjectError> {
+    onda_frontend::ensure_no_symlink_components(manifest_path).map_err(|error| {
+        ProjectError::new(format!(
+            "failed to resolve project file '{}': {error}",
+            manifest_path.display()
+        ))
+    })?;
     let manifest_bytes = crate::read_bounded_file(
-        &manifest_path,
+        manifest_path,
         limits.max_manifest_bytes,
         "project manifest",
         "file",
@@ -487,38 +519,80 @@ pub fn resolve_project_input(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| ProjectError::new("project filename must be valid UTF-8"))?;
-    manifest.validate_for_project_file(project_file_name, &limits)?;
-    let root_path = project_root_path(&manifest_path);
+    manifest.validate_for_project_file(project_file_name, limits)?;
+    let root_path = project_root_path(manifest_path);
     let root = fs::canonicalize(root_path).map_err(|error| {
         ProjectError::new(format!(
             "failed to resolve project root '{}': {error}",
             root_path.display()
         ))
     })?;
-    let entry_path = resolve_contained_path(&root, &manifest.entry)?;
-    let canonical_manifest = fs::canonicalize(&manifest_path).map_err(|error| {
+    let canonical_manifest = fs::canonicalize(manifest_path).map_err(|error| {
         ProjectError::new(format!(
             "failed to resolve project file '{}': {error}",
             manifest_path.display()
         ))
     })?;
-    if entry_path == canonical_manifest {
-        return Err(ProjectError::new(
-            "project entry cannot be its .ondaproject file",
-        ));
-    }
-    if !entry_path.is_file() {
-        return Err(ProjectError::new(format!(
-            "project entry '{}' is not a file",
-            entry_path.display()
-        )));
-    }
-    Ok(ProjectInput::Project(ProjectFile {
+    Ok((root, canonical_manifest, manifest))
+}
+
+fn strict_project_watch_paths(
+    root: &Path,
+    manifest_path: &Path,
+    manifest: &ProjectManifest,
+) -> Result<ProjectWatchPaths, ProjectError> {
+    onda_frontend::ensure_no_symlink_components(manifest_path).map_err(|error| {
+        ProjectError::new(format!(
+            "failed to resolve project manifest '{}': {error}",
+            manifest_path.display()
+        ))
+    })?;
+    project_watch_paths_with(root, manifest_path, manifest, resolve_contained_watch_path)
+}
+
+fn recovery_project_watch_paths(
+    root: &Path,
+    manifest_path: &Path,
+    manifest: &ProjectManifest,
+) -> Result<ProjectWatchPaths, ProjectError> {
+    project_watch_paths_with(
         root,
-        manifest_path: canonical_manifest,
+        manifest_path,
         manifest,
-        entry_path,
-    }))
+        resolve_contained_lexical_watch_path,
+    )
+}
+
+fn project_watch_paths_with(
+    root: &Path,
+    manifest_path: &Path,
+    manifest: &ProjectManifest,
+    resolve_watch_path: fn(&Path, &str) -> Result<PathBuf, ProjectError>,
+) -> Result<ProjectWatchPaths, ProjectError> {
+    let entry = resolve_watch_path(root, &manifest.entry)?;
+    let mut assets = BTreeSet::new();
+    for binding in manifest.buffers.values() {
+        let files: Vec<&ManifestBufferFile> = match binding {
+            ManifestBufferBinding::File(file) => vec![file],
+            ManifestBufferBinding::Inline(_) => Vec::new(),
+            ManifestBufferBinding::Array(elements) => elements
+                .iter()
+                .flatten()
+                .filter_map(|element| match element {
+                    ManifestBufferElementBinding::File(file) => Some(file),
+                    ManifestBufferElementBinding::Inline(_) => None,
+                })
+                .collect(),
+        };
+        for file in files {
+            assets.insert(resolve_watch_path(root, &file.file)?);
+        }
+    }
+    Ok(ProjectWatchPaths {
+        manifest: manifest_path.to_path_buf(),
+        entry,
+        assets: assets.into_iter().collect(),
+    })
 }
 
 fn project_root_path(manifest_path: &Path) -> &Path {
@@ -690,6 +764,12 @@ fn is_windows_reserved_port_suffix(suffix: &str) -> bool {
 fn resolve_contained_path(root: &Path, relative: &str) -> Result<PathBuf, ProjectError> {
     validate_relative_project_path(relative, &ProjectLimits::default())?;
     let candidate = root.join(relative);
+    onda_frontend::ensure_no_symlink_components(&candidate).map_err(|error| {
+        ProjectError::new(format!(
+            "failed to resolve project file '{}': {error}",
+            candidate.display()
+        ))
+    })?;
     let canonical = fs::canonicalize(&candidate).map_err(|error| {
         ProjectError::new(format!(
             "failed to resolve project file '{}': {error}",
@@ -705,50 +785,23 @@ fn resolve_contained_path(root: &Path, relative: &str) -> Result<PathBuf, Projec
     Ok(canonical)
 }
 
-fn resolve_contained_watch_path(
+fn resolve_contained_watch_path(root: &Path, relative: &str) -> Result<PathBuf, ProjectError> {
+    let candidate = resolve_contained_lexical_watch_path(root, relative)?;
+    onda_frontend::ensure_no_symlink_components(&candidate).map_err(|error| {
+        ProjectError::new(format!(
+            "failed to resolve project file '{}': {error}",
+            candidate.display()
+        ))
+    })?;
+    Ok(candidate)
+}
+
+fn resolve_contained_lexical_watch_path(
     root: &Path,
     relative: &str,
-) -> Result<(PathBuf, Option<PathBuf>), ProjectError> {
+) -> Result<PathBuf, ProjectError> {
     validate_relative_project_path(relative, &ProjectLimits::default())?;
-    let candidate = root.join(relative);
-    let mut existing_ancestor = candidate.as_path();
-
-    let canonical_ancestor = loop {
-        match fs::canonicalize(existing_ancestor) {
-            Ok(path) => break path,
-            Err(error)
-                if existing_ancestor != root
-                    && matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                    ) =>
-            {
-                existing_ancestor = existing_ancestor
-                    .parent()
-                    .expect("a project path below its root has a parent");
-            }
-            Err(error) => {
-                return Err(ProjectError::new(format!(
-                    "failed to resolve project file '{}': {error}",
-                    candidate.display()
-                )));
-            }
-        }
-    };
-
-    if !canonical_ancestor.starts_with(root) {
-        return Err(ProjectError::new(format!(
-            "project file '{}' resolves outside the project root",
-            candidate.display()
-        )));
-    }
-
-    let unresolved_suffix = candidate
-        .strip_prefix(existing_ancestor)
-        .expect("the nearest existing ancestor belongs to the project path");
-    let resolved = canonical_ancestor.join(unresolved_suffix);
-    let alias = (candidate != resolved).then_some(candidate);
-    Ok((resolved, alias))
+    Ok(root.join(relative))
 }
 
 fn parse_i32(value: &Value) -> Result<i32, ProjectError> {

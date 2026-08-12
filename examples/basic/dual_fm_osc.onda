@@ -1,0 +1,46 @@
+import std/osc
+
+proc DualOscillator:
+  params:
+    frequency = 110.0
+    mod_depth = 1.5
+    detune = 1.0
+
+  init:
+    oscillator_a = std::osc::Sine()
+    oscillator_b = std::osc::Sine()
+    previous_a = 0.0
+    previous_b = 0.0
+
+  sample 8:
+    current_a = oscillator_a(
+      freq = frequency,
+      phase_offset = previous_b * mod_depth,
+    )
+    current_b = oscillator_b(
+      freq = frequency + detune,
+      phase_offset = previous_a * mod_depth,
+    )
+
+    previous_a = current_a
+    previous_b = current_b
+    out1 = current_a
+    out2 = current_b
+
+params:
+  frequency = 110.0 {20.0, 1000.0, log, "Hz"}
+  mod_depth = 1.5 {0.0, 20.0}
+  detune = 1.0 {0.0, 100.0, unit = "Hz"}
+  level = 0.5 {0.0, 1.0}
+
+init:
+  oscillator = DualOscillator()
+
+sample:
+  oscillator(
+    frequency = frequency,
+    mod_depth = mod_depth,
+    detune = detune,
+  )
+  out1 = tanh(oscillator.out1 * level)
+  out2 = tanh(oscillator.out2 * level)

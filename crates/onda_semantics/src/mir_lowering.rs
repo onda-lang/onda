@@ -1940,8 +1940,7 @@ fn compiler_generated_function_attributes() -> FunctionAttributes {
 }
 
 fn source_function_attributes(name: &str) -> FunctionAttributes {
-    let compiler_generated = name.contains(".__proc_") || name.starts_with("__onda_");
-    if compiler_generated {
+    if crate::internal_names::is_compiler_generated_function_name(name) {
         compiler_generated_function_attributes()
     } else {
         FunctionAttributes::default()
@@ -2289,7 +2288,7 @@ fn effective_call_context(
     oversample_factors: &HashMap<String, usize>,
     proc_instance_oversample_factors: &HashMap<String, usize>,
 ) -> CompileContext {
-    let instance_context = if name.contains(".__proc_") {
+    let instance_context = if name.contains(".__onda_proc_") {
         receiver
             .and_then(|expression| {
                 proc_instance_oversample_key_for_expr(expression, proc_instance_oversample_factors)
