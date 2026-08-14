@@ -22,6 +22,7 @@ fn infer_def_slice_alias_info(
         param_structs,
         struct_defs,
         errors,
+        false,
     )
 }
 
@@ -50,6 +51,7 @@ pub(crate) struct DefStmtAnalysisCtx<'a> {
     pub locals: &'a HashSet<String>,
     pub declared_symbols: &'a DeclaredSymbolMap,
     pub param_structs: &'a HashMap<String, String>,
+    pub struct_array_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub state_scalars: &'a HashMap<String, PrimitiveType>,
     pub def_return_types: &'a HashMap<String, ReturnType>,
@@ -57,6 +59,24 @@ pub(crate) struct DefStmtAnalysisCtx<'a> {
 }
 
 pub(crate) type DefStmtAnalysisState = ScopeFlowState;
+
+pub(crate) fn analyze_def_stmt_list(
+    stmts: &[Stmt],
+    ctx: DefStmtAnalysisCtx<'_>,
+    st: &mut DefStmtAnalysisState,
+    loop_depth: usize,
+    errors: &mut Vec<Diagnostic>,
+) -> super::call_types::StatementFlow {
+    use super::call_types::{statement_flow, StatementFlow};
+
+    for stmt in stmts {
+        analyze_def_stmt(stmt, ctx, st, loop_depth, errors);
+        if statement_flow(stmt) == StatementFlow::Terminates {
+            return StatementFlow::Terminates;
+        }
+    }
+    StatementFlow::Continues
+}
 
 pub(crate) fn analyze_def_stmt(
     stmt: &Stmt,
@@ -66,6 +86,7 @@ pub(crate) fn analyze_def_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     let buffer_alias_snapshot = st.local_buffer_aliases.clone();
+    let local_struct_alias_snapshot = st.local_struct_aliases.clone();
     let visible_declared_symbols =
         with_local_buffer_aliases(ctx.declared_symbols, &buffer_alias_snapshot);
     with_stmt_diag_context(stmt, |_stmt_diag| {
@@ -73,6 +94,7 @@ pub(crate) fn analyze_def_stmt(
         let local_aliases = &mut st.local_aliases;
         let local_array_aliases = &mut st.local_array_aliases;
         let local_proc_aliases = &mut st.local_proc_aliases;
+        let local_struct_aliases = &mut st.local_struct_aliases;
         let local_buffer_aliases = &mut st.local_buffer_aliases;
         let tuple_vars = &mut st.tuple_vars;
         let common = ctx.common;
@@ -91,7 +113,9 @@ pub(crate) fn analyze_def_stmt(
         let empty_data = HashMap::<String, usize>::new();
         // In def analysis, struct-typed parameters (for example `self`) should be
         // visible to expression type inference, including indexed array field reads.
-        let struct_instance_ctx = param_structs;
+        let mut struct_instance_bindings = param_structs.clone();
+        struct_instance_bindings.extend(local_struct_alias_snapshot.clone());
+        let struct_instance_ctx = &struct_instance_bindings;
         let empty_outputs = HashSet::<String>::new();
         let array_vars = merged_data_vars_for_runtime(&empty_data, local_array_aliases);
         let expr_inputs = build_scope_analysis_expr_inputs(
@@ -102,6 +126,7 @@ pub(crate) fn analyze_def_stmt(
             param_structs,
             struct_instance_ctx,
             &empty_outputs,
+            ctx.struct_array_roots,
             proc_array_roots,
         );
         macro_rules! stmt_expr_env {
@@ -184,7 +209,8 @@ pub(crate) fn analyze_def_stmt(
                             );
                             return;
                         }
-                        if known_scalars.contains(name)
+                        if state_scalars.contains_key(name)
+                            || known_scalars.contains(name)
                             || local_aliases.contains_key(name)
                             || local_array_aliases.contains_key(name)
                             || state_scalars.contains_key(name)
@@ -281,6 +307,7 @@ pub(crate) fn analyze_def_stmt(
                                         name.clone(),
                                         LocalArrayAliasInfo {
                                             len: size_value,
+                                            static_len: Some(size_value),
                                             elem_ty: *elem_ty,
                                             elem_struct: None,
                                             writable: true,
@@ -428,8 +455,7 @@ pub(crate) fn analyze_def_stmt(
                                 proc_array_roots,
                                 errors,
                             );
-                        let elem_ty = untyped_literal_type(&values[0])
-                            .or(inferred_first)
+                        let elem_ty = effective_untyped_assignment_type(&values[0], inferred_first)
                             .unwrap_or(PrimitiveType::F32);
                         for (idx, value) in values.iter().enumerate() {
                             let value_ty =
@@ -461,6 +487,7 @@ pub(crate) fn analyze_def_stmt(
                             name.clone(),
                             LocalArrayAliasInfo {
                                 len: values.len(),
+                                static_len: Some(values.len()),
                                 elem_ty,
                                 elem_struct: None,
                                 writable: true,
@@ -543,7 +570,7 @@ pub(crate) fn analyze_def_stmt(
                         }
                         return;
                     }
-                    if local_aliases.contains_key(name) {
+                    if name.contains('.') && local_aliases.contains_key(name) {
                         validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                         let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             expr,
@@ -568,9 +595,6 @@ pub(crate) fn analyze_def_stmt(
                             &format!("alias assignment to '{name}'"),
                             errors,
                         );
-                        let tuple_arity =
-                            infer_tracked_tuple_arity(expr, tuple_vars, def_return_types);
-                        track_tuple_var_assignment(tuple_vars, name, tuple_arity);
                         known_scalars.insert(name.clone());
                         return;
                     }
@@ -753,6 +777,10 @@ pub(crate) fn analyze_def_stmt(
                                                 index_expr: index.as_ref().clone(),
                                             },
                                         );
+                                        if let Some(proc_array) = proc_array_roots.get(base) {
+                                            local_struct_aliases
+                                                .insert(name.clone(), proc_array.proc_name.clone());
+                                        }
                                         return;
                                     }
                                     IndexedBindingKind::StructElementAlias(struct_name) => {
@@ -768,6 +796,7 @@ pub(crate) fn analyze_def_stmt(
                                         ) {
                                             return;
                                         }
+                                        local_struct_aliases.insert(name.clone(), struct_name);
                                         return;
                                     }
                                     IndexedBindingKind::PrimitiveScalar => {
@@ -815,7 +844,7 @@ pub(crate) fn analyze_def_stmt(
                     if input_names.contains(name)
                         || output_names.contains(name)
                         || param_names.contains(name)
-                        || state_scalars.contains_key(name)
+                        || (state_scalars.contains_key(name) && !known_scalars.contains(name))
                     {
                         push_semantic(
                             target_diag,
@@ -832,6 +861,104 @@ pub(crate) fn analyze_def_stmt(
                         errors,
                     );
                     let had_expr_validation_error = errors.len() > expr_error_count_before;
+                    let can_track_local = !input_names.contains(name)
+                        && !output_names.contains(name)
+                        && !param_names.contains(name)
+                        && !state_scalars.contains_key(name);
+                    let tuple_types = infer_tracked_tuple_types(
+                        &expr_for_validation,
+                        tuple_vars,
+                        local_aliases,
+                        None,
+                        struct_instance_ctx,
+                        struct_defs,
+                        def_return_types,
+                        |value| {
+                            infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                value,
+                                state_scalars,
+                                declared_symbols,
+                                None,
+                                local_aliases,
+                                local_array_aliases,
+                                locals,
+                                input_names,
+                                output_names,
+                                param_names,
+                                struct_instance_ctx,
+                                struct_defs,
+                                proc_array_roots,
+                                errors,
+                            )
+                        },
+                    );
+                    let existing_tuple_types =
+                        tracked_local_tuple_types(name, tuple_vars, local_aliases);
+                    if let Some(tuple_types) = tuple_types.as_ref() {
+                        if declared_ty.is_some() {
+                            push_semantic(
+                                target_diag,
+                                errors,
+                                format!(
+                                    "typed scalar declaration for '{name}' cannot use a tuple value"
+                                ),
+                            );
+                            return;
+                        }
+                        if let Some(existing_types) = existing_tuple_types {
+                            require_tuple_expr_assignable_types(
+                                name,
+                                &expr_for_validation,
+                                tuple_types,
+                                &existing_types,
+                                errors,
+                            );
+                            replace_tracked_tuple_types(local_aliases, name, Some(&existing_types));
+                            replace_tracked_tuple_types(
+                                &mut resolved_scalar_locals.borrow_mut(),
+                                name,
+                                Some(&existing_types),
+                            );
+                            track_tuple_var_assignment(
+                                tuple_vars,
+                                name,
+                                Some(existing_types.len()),
+                            );
+                            known_scalars.insert(name.clone());
+                            return;
+                        }
+                        if known_scalars.contains(name)
+                            || local_aliases.contains_key(name)
+                            || resolved_scalar_locals.borrow().contains_key(name)
+                        {
+                            push_semantic(
+                                target_diag,
+                                errors,
+                                format!("cannot assign a tuple value to scalar local '{name}'"),
+                            );
+                            return;
+                        }
+                    }
+                    if let Some(tuple_types) = tuple_types.filter(|_| can_track_local) {
+                        local_aliases.remove(name);
+                        replace_tracked_tuple_types(local_aliases, name, Some(&tuple_types));
+                        {
+                            let mut resolved = resolved_scalar_locals.borrow_mut();
+                            resolved.remove(name);
+                            replace_tracked_tuple_types(&mut resolved, name, Some(&tuple_types));
+                        }
+                        track_tuple_var_assignment(tuple_vars, name, Some(tuple_types.len()));
+                        known_scalars.insert(name.clone());
+                        return;
+                    }
+                    if existing_tuple_types.is_some() {
+                        push_semantic(
+                            target_diag,
+                            errors,
+                            format!("assignment to tuple local '{name}' requires a tuple value"),
+                        );
+                        return;
+                    }
                     let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         &expr_for_validation,
                         state_scalars,
@@ -848,10 +975,6 @@ pub(crate) fn analyze_def_stmt(
                         proc_array_roots,
                         errors,
                     );
-                    let can_track_local = !input_names.contains(name)
-                        && !output_names.contains(name)
-                        && !param_names.contains(name)
-                        && !state_scalars.contains_key(name);
                     let target_ty = if let Some(declared) = declared_ty {
                         declared
                     } else if let Some(existing) = local_aliases.get(name).copied() {
@@ -878,6 +1001,12 @@ pub(crate) fn analyze_def_stmt(
                     // tuple-returning call) for indexing validation
                     let tuple_arity = infer_tracked_tuple_arity(expr, tuple_vars, def_return_types);
                     track_tuple_var_assignment(tuple_vars, name, tuple_arity);
+                    replace_tracked_tuple_types(local_aliases, name, None);
+                    replace_tracked_tuple_types(
+                        &mut resolved_scalar_locals.borrow_mut(),
+                        name,
+                        None,
+                    );
                     if can_track_local {
                         local_aliases.entry(name.clone()).or_insert(target_ty);
                         resolved_scalar_locals
@@ -888,6 +1017,19 @@ pub(crate) fn analyze_def_stmt(
                     known_scalars.insert(name.clone());
                 }
                 AssignTarget::Index { base, index } => {
+                    let lexical_root = base.split('.').next().unwrap_or(base);
+                    if locals.contains(lexical_root) {
+                        push_semantic(
+                            target_diag,
+                            errors,
+                            format!(
+                                "loop variable '{lexical_root}' is scalar and cannot be indexed"
+                            ),
+                        );
+                        validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
+                        return;
+                    }
                     if decl_ty.is_some() || generic_decl_ty.is_some() || *is_typed_decl {
                         push_semantic(
                             target_diag,
@@ -1232,6 +1374,21 @@ pub(crate) fn analyze_def_stmt(
                     start,
                     end,
                 } => {
+                    let lexical_root = base.split('.').next().unwrap_or(base);
+                    if locals.contains(lexical_root) {
+                        push_semantic(
+                            target_diag,
+                            errors,
+                            format!(
+                                "loop variable '{lexical_root}' is scalar and cannot be sliced"
+                            ),
+                        );
+                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                            validate_expr(coordinate, scope_expr_env!(ScopeKind::Def), errors);
+                        }
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
+                        return;
+                    }
                     if decl_ty.is_some() || generic_decl_ty.is_some() || *is_typed_decl {
                         push_semantic(
                             target_diag,
@@ -1401,41 +1558,33 @@ pub(crate) fn analyze_def_stmt(
                     if !targets_ok {
                         return;
                     }
-                    let destructured_types = match expr {
-                        Expr::UserCall { name, .. } => {
-                            match def_return_types.get(name.as_str()) {
-                                Some(ReturnType::Tuple(types)) => Some(types.clone()),
-                                _ => None,
-                            }
-                        }
-                        Expr::Tuple { values, .. } => Some(
-                            values
-                                .iter()
-                                .map(|value| {
-                                    let inferred =
-                                        infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                                            value,
-                                            state_scalars,
-                                            declared_symbols,
-                                            None,
-                                            local_aliases,
-                                            local_array_aliases,
-                                            locals,
-                                            input_names,
-                                            output_names,
-                                            param_names,
-                                            struct_instance_ctx,
-                                            struct_defs,
-                                            proc_array_roots,
-                                            errors,
-                                        );
-                                    effective_untyped_assignment_type(value, inferred)
-                                        .unwrap_or(PrimitiveType::F32)
-                                })
-                                .collect(),
-                        ),
-                        _ => None,
-                    };
+                    let destructured_types = infer_tracked_tuple_types(
+                        expr,
+                        tuple_vars,
+                        local_aliases,
+                        None,
+                        struct_instance_ctx,
+                        struct_defs,
+                        def_return_types,
+                        |value| {
+                            infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                value,
+                                state_scalars,
+                                declared_symbols,
+                                None,
+                                local_aliases,
+                                local_array_aliases,
+                                locals,
+                                input_names,
+                                output_names,
+                                param_names,
+                                struct_instance_ctx,
+                                struct_defs,
+                                proc_array_roots,
+                                errors,
+                            )
+                        },
+                    );
                     clear_tuple_var_bindings(tuple_vars, targets.iter());
                     // Register each destructured target as a known scalar
                     for (index, target_name) in targets.iter().enumerate() {
@@ -1445,9 +1594,15 @@ pub(crate) fn analyze_def_stmt(
                             .copied()
                             .unwrap_or(PrimitiveType::F32);
                         known_scalars.insert(target_name.clone());
+                        replace_tracked_tuple_types(local_aliases, target_name, None);
                         local_aliases
                             .entry(target_name.clone())
                             .or_insert(target_ty);
+                        replace_tracked_tuple_types(
+                            &mut resolved_scalar_locals.borrow_mut(),
+                            target_name,
+                            None,
+                        );
                         resolved_scalar_locals
                             .borrow_mut()
                             .entry(target_name.clone())
@@ -1467,7 +1622,7 @@ pub(crate) fn analyze_def_stmt(
                 cond,
                 then_branch,
                 else_branch,
-                ..
+                loc,
             } => {
                 require_validated_bool_stmt_expr(
                     cond,
@@ -1480,32 +1635,37 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    local_struct_aliases,
                     &st.local_buffer_aliases,
                     tuple_vars,
                 );
-                for nested in then_branch {
-                    analyze_def_stmt(nested, ctx, &mut then_state, loop_depth, errors);
-                }
+                let then_flow =
+                    analyze_def_stmt_list(then_branch, ctx, &mut then_state, loop_depth, errors);
                 let mut else_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    local_struct_aliases,
                     &st.local_buffer_aliases,
                     tuple_vars,
                 );
-                for nested in else_branch {
-                    analyze_def_stmt(nested, ctx, &mut else_state, loop_depth, errors);
-                }
-                merge_branch_scope_flow_state(
+                let else_flow =
+                    analyze_def_stmt_list(else_branch, ctx, &mut else_state, loop_depth, errors);
+                merge_reachable_branch_scope_flow_state(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    local_struct_aliases,
                     &mut st.local_buffer_aliases,
                     tuple_vars,
                     then_state,
+                    then_flow,
                     else_state,
+                    else_flow,
+                    (*loc).into(),
+                    errors,
                 );
             }
             Stmt::For {
@@ -1536,6 +1696,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    local_struct_aliases,
                     &st.local_buffer_aliases,
                     tuple_vars,
                 );
@@ -1543,14 +1704,13 @@ pub(crate) fn analyze_def_stmt(
                     locals: &loop_locals,
                     ..ctx
                 };
-                for nested in body {
-                    analyze_def_stmt(nested, loop_ctx, &mut loop_state, loop_depth + 1, errors);
-                }
+                analyze_def_stmt_list(body, loop_ctx, &mut loop_state, loop_depth + 1, errors);
                 adopt_loop_scope_flow_state(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    local_struct_aliases,
                     &mut st.local_buffer_aliases,
                     tuple_vars,
                     loop_state,
@@ -1568,17 +1728,17 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    local_struct_aliases,
                     &st.local_buffer_aliases,
                     tuple_vars,
                 );
-                for nested in body {
-                    analyze_def_stmt(nested, ctx, &mut loop_state, loop_depth + 1, errors);
-                }
+                analyze_def_stmt_list(body, ctx, &mut loop_state, loop_depth + 1, errors);
                 adopt_loop_scope_flow_state(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    local_struct_aliases,
                     &mut st.local_buffer_aliases,
                     tuple_vars,
                     loop_state,

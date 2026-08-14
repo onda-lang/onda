@@ -446,19 +446,17 @@ pub(crate) fn analyze_owner_init_stmts(
     init_state: &mut InitAnalysisState,
     errors: &mut Vec<Diagnostic>,
 ) {
-    for stmt in init_stmts {
-        analyze_init_stmt(
-            stmt,
-            InitStmtAnalysisCtx {
-                init: init_ctx,
-                locals: init_locals,
-            },
-            init_state,
-            0,
-            0,
-            errors,
-        );
-    }
+    analyze_init_stmt_list(
+        init_stmts,
+        InitStmtAnalysisCtx {
+            init: init_ctx,
+            locals: init_locals,
+        },
+        init_state,
+        0,
+        0,
+        errors,
+    );
 }
 
 pub(crate) fn rewrite_owner_struct_array_inline_fields(

@@ -4242,9 +4242,8 @@ sample:
             .unwrap_or_default();
 
         assert!(
-            top_level.contains(
-                r#"param mix = 0.5 {0.0, 1.0, curve = 0.0 - 4, unit = "%", step = 0.25}"#
-            ),
+            top_level
+                .contains(r#"param mix = 0.5 {0.0, 1.0, curve = -4, unit = "%", step = 0.25}"#),
             "top-level param hover should include its control domain: {top_level:?}"
         );
         assert!(

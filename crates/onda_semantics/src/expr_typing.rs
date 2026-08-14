@@ -21,9 +21,8 @@ use crate::{
 
 /// Returns the appropriate type for a literal in an untyped assignment context.
 /// Float literals default to F32, int literals fitting in i32 default to I32,
-/// larger ints default to I64. This preserves backward-compatible inference for
-/// untyped assignments like `x = 0.5` (F32) while typed literals elsewhere use
-/// the full-precision F64/I64 types.
+/// and larger ints default to I64. Typed literals elsewhere retain their
+/// full-precision F64/I64 representation until a context selects a type.
 pub(crate) fn untyped_literal_type(expr: &Expr) -> Option<PrimitiveType> {
     match expr {
         Expr::Number { .. } => Some(PrimitiveType::F32),
@@ -37,24 +36,42 @@ pub(crate) fn untyped_literal_type(expr: &Expr) -> Option<PrimitiveType> {
 }
 
 /// For untyped first-assignment inference, maps the inferred type of a pure
-/// literal expression to its backward-compatible default (F64→F32, I64→I32).
+/// literal expression to its ordinary first-assignment default. Float
+/// expressions default to F32. Integer literals are handled above with an
+/// exact range check. Pure integer expressions default to I32 only when none
+/// of their literal leaves already requires I64.
 pub(crate) fn effective_untyped_assignment_type(
     expr: &Expr,
     expr_ty: Option<PrimitiveType>,
 ) -> Option<PrimitiveType> {
-    // Bare literals: use the classic F32/I32 defaults
+    // Bare literals use the ordinary F32/I32 defaults.
     if let Some(lit_ty) = untyped_literal_type(expr) {
         return Some(lit_ty);
     }
-    // Pure numeric expressions (e.g. 0.5 + 0.5, PI * 2.0): narrow F64→F32, I64→I32
+    // Pure numeric expressions (e.g. 0.5 + 0.5, PI * 2.0) use the ordinary
+    // F32/I32 defaults. Preserve I64 when a literal leaf itself is outside the
+    // i32 range; such a value must not be made narrow merely by wrapping it in
+    // a larger constant expression.
     if is_pure_numeric_literal_expr(expr) {
         return expr_ty.map(|ty| match ty {
             PrimitiveType::F64 => PrimitiveType::F32,
-            PrimitiveType::I64 => PrimitiveType::I32,
+            PrimitiveType::I64 if !contains_wide_integer_literal(expr) => PrimitiveType::I32,
             other => other,
         });
     }
     expr_ty
+}
+
+fn contains_wide_integer_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int { value, .. } => *value < i32::MIN as i64 || *value > i32::MAX as i64,
+        Expr::Binary { lhs, rhs, .. } => {
+            contains_wide_integer_literal(lhs) || contains_wide_integer_literal(rhs)
+        }
+        Expr::UnaryBitNot { expr, .. } => contains_wide_integer_literal(expr),
+        Expr::Call { args, .. } => args.iter().any(contains_wide_integer_literal),
+        _ => false,
+    }
 }
 
 /// Returns true if the expression is a "pure" numeric expression composed
@@ -81,8 +98,8 @@ pub(crate) fn is_pure_numeric_literal_expr(expr: &Expr) -> bool {
 
 /// When one operand of a binary expression is a pure numeric literal expression
 /// and the other is not, adapt the literal's inferred type to the non-literal's
-/// type. This preserves backward-compatible expression types (e.g. `x_f32 + 0.5`
-/// → F32, `acc + sin(0.0)` → F32) while keeping full precision internally.
+/// type (for example, `x_f32 + 0.5` and `acc + sin(0.0)` stay F32) while keeping
+/// full precision until that context is known.
 pub(crate) fn adapt_binary_operand_types(
     lhs: &Expr,
     rhs: &Expr,
@@ -175,7 +192,7 @@ pub(crate) fn adapt_numeric_argument_types(
         .collect()
 }
 
-fn merge_numeric_types_without_diagnostics(
+pub(crate) fn merge_numeric_types_without_diagnostics(
     lhs: PrimitiveType,
     rhs: PrimitiveType,
 ) -> Option<PrimitiveType> {
@@ -186,6 +203,49 @@ fn merge_numeric_types_without_diagnostics(
         (F32, _) | (_, F32) => Some(F32),
         (I64, _) | (_, I64) => Some(I64),
         (I32, I32) => Some(I32),
+    }
+}
+
+pub(crate) fn intrinsic_result_type(
+    function: BuiltinFn,
+    adapted_arg_types: &[PrimitiveType],
+) -> Option<PrimitiveType> {
+    match function {
+        BuiltinFn::Abs => adapted_arg_types
+            .first()
+            .copied()
+            .filter(|ty| *ty != PrimitiveType::Bool),
+        BuiltinFn::Min | BuiltinFn::Max => merge_numeric_types_without_diagnostics(
+            *adapted_arg_types.first()?,
+            *adapted_arg_types.get(1)?,
+        ),
+        BuiltinFn::RangeClamp => {
+            let value = *adapted_arg_types.first()?;
+            adapted_arg_types
+                .iter()
+                .copied()
+                .skip(1)
+                .try_fold(value, merge_numeric_types_without_diagnostics)
+        }
+        BuiltinFn::Pow
+        | BuiltinFn::Sin
+        | BuiltinFn::Cos
+        | BuiltinFn::Tan
+        | BuiltinFn::Tanh
+        | BuiltinFn::Atan
+        | BuiltinFn::Atan2
+        | BuiltinFn::Exp
+        | BuiltinFn::Log
+        | BuiltinFn::Sqrt
+        | BuiltinFn::Floor
+        | BuiltinFn::Ceil
+        | BuiltinFn::Round
+        | BuiltinFn::Trunc
+        | BuiltinFn::Fma => Some(if adapted_arg_types.contains(&PrimitiveType::F64) {
+            PrimitiveType::F64
+        } else {
+            PrimitiveType::F32
+        }),
     }
 }
 
@@ -260,6 +320,10 @@ fn infer_scalar_expr_type_with_proc_arrays(
             if let Some(ty) = builtin_constant_type(name) {
                 return Some(ty);
             }
+            let lexical_root = name.split('.').next().unwrap_or(name);
+            if locals.contains(lexical_root) {
+                return (name == lexical_root).then_some(PrimitiveType::I32);
+            }
             if let Some((base, field)) = split_field_path(name, errors) {
                 let flat = format!("{base}.{field}");
                 if let Some(ty) = state_scalars.get(&flat).copied() {
@@ -287,8 +351,6 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 Some(ty)
             } else if let Some(ty) = local_aliases.get(name).copied() {
                 Some(ty)
-            } else if locals.contains(name) {
-                Some(PrimitiveType::I32)
             } else if input_names.contains(name)
                 || output_names.contains(name)
                 || param_names.contains(name)
@@ -301,7 +363,20 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 None
             }
         }
-        Expr::Index { base, .. } => {
+        Expr::Index { base, index, .. } => {
+            if locals.contains(base.split('.').next().unwrap_or(base)) {
+                return None;
+            }
+            if let Expr::Int { value, .. } = index.as_ref() {
+                if let Some(ty) = state_scalars
+                    .get(&format!("{base}.__{value}"))
+                    .or_else(|| state_scalars.get(&format!("{base}[{value}]")))
+                    .or_else(|| local_aliases.get(&format!("{base}[{value}]")))
+                    .copied()
+                {
+                    return Some(ty);
+                }
+            }
             // Port index access: ins[i], outs[i], kouts[i], params[i], kins[i]
             // These are validated upstream; here we just return the uniform type.
             // The fallback at the end of this arm returns F32 which covers the common case,
@@ -333,10 +408,21 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     if let Some(field_decl) =
                         resolve_struct_field_decl(struct_name, field, struct_defs)
                     {
-                        if let TypedFieldType::Array(_) = field_decl.ty {
-                            if let Some(elem_ty) = field_decl.array_elem_ty {
-                                return Some(elem_ty);
+                        match &field_decl.ty {
+                            TypedFieldType::Array(_) => {
+                                if let Some(elem_ty) = field_decl.array_elem_ty {
+                                    return Some(elem_ty);
+                                }
                             }
+                            TypedFieldType::Tuple(elem_types) => {
+                                let Expr::Int { value, .. } = index.as_ref() else {
+                                    return None;
+                                };
+                                return usize::try_from(*value)
+                                    .ok()
+                                    .and_then(|index| elem_types.get(index).copied());
+                            }
+                            TypedFieldType::Scalar(_) | TypedFieldType::Struct => {}
                         }
                     }
                 }

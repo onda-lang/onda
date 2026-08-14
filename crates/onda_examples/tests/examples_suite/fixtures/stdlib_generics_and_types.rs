@@ -693,12 +693,43 @@ sample {
 }
 "#;
 
+const STDLIB_CONVOLUTION_TIME_DOMAIN_WRAP_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+init {
+  conv = std::convolution<8, 4>::TimeDomainConvolver<f32>()
+  ir: f32[2] = [0.75, -0.25]
+  conv.set_impulse(ir)
+}
+sample {
+  out1 = conv(in1)
+}
+"#;
+
 const STDLIB_CONVOLUTION_BLOCK_EXAMPLE: &str = r#"
 import std/convolution
 outs { out1 }
 init {
   conv = std::convolution<8, 4>::BlockConvolver<f32>()
   ir: f32[4] = [1.0, 0.5, 0.25, 0.0]
+  conv.set_impulse(ir)
+}
+sample {
+  out1 = conv(in1)
+}
+"#;
+
+const STDLIB_CONVOLUTION_BLOCK_SPREAD_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+init {
+  conv = std::convolution<8, 16>::BlockConvolver<f32>()
+  ir: f32[13] = [
+    1.0, -0.5, 0.25, 0.125,
+    -0.75, 0.3, -0.2, 0.1,
+    0.05, -0.04, 0.03, -0.02,
+    0.01,
+  ]
   conv.set_impulse(ir)
 }
 sample {
@@ -713,6 +744,35 @@ init {
   conv = std::convolution<8, 8>::ZeroLatencyConvolver<f32>()
   ir: f32[5] = [1.0, 0.5, 0.25, 0.0, 0.125]
   conv.set_impulse(ir)
+}
+sample {
+  out1 = conv(in1)
+}
+"#;
+
+const STDLIB_CONVOLUTION_ZERO_LATENCY_MULTISTAGE_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+init {
+  conv = std::convolution<16384, 8200>::ZeroLatencyConvolver<f32>()
+  conv.set_offset(137)
+  ir: f32[8200]
+  ir[0] = 0.75
+  ir[127] = -0.5
+  ir[128] = 0.375
+  ir[511] = -0.25
+  ir[512] = 0.2
+  ir[2047] = -0.15
+  ir[2048] = 0.125
+  ir[8191] = -0.1
+  ir[8192] = 0.075
+  ir[8199] = -0.05
+  conv.set_impulse(ir)
+}
+events {
+  reset_conv() {
+    conv.reset()
+  }
 }
 sample {
   out1 = conv(in1)
@@ -1061,6 +1121,52 @@ init {
 sample {
   out1 = f32(x)
 }
+"#;
+
+const NEGATIVE_SCALAR_INFERENCE_EXAMPLE: &str = r#"
+outs { out1 }
+
+proc Neg<T>:
+  ins<T> 1
+  outs<T> 1
+  sample:
+    out1 = -in1
+
+proc NegativeDefaults<T>:
+  ins<T>:
+    in1 = -1
+  outs<T> 1
+  params<T>:
+    amount = -1
+  sample:
+    out1 = in1 + amount
+
+init:
+  inferred_i32 = -1
+  inferred_i64 = -2147483649
+  explicit_i32: i32 = -1
+  explicit_i64: i64 = -1
+  explicit_f32: f32 = -1.0
+  explicit_f64: f64 = -1.0
+  neg_i32 = Neg<i32>()
+  neg_i64 = Neg<i64>()
+  neg_f32 = Neg<f32>()
+  neg_f64 = Neg<f64>()
+  defaults_i32 = NegativeDefaults<i32>()
+  defaults_i64 = NegativeDefaults<i64>()
+  defaults_f32 = NegativeDefaults<f32>()
+  defaults_f64 = NegativeDefaults<f64>()
+
+sample:
+  sum = f32(neg_i32(i32(1)))
+  sum = sum + f32(neg_i64(i64(2)))
+  sum = sum + neg_f32(3.0)
+  sum = sum + f32(neg_f64(f64(4.0)))
+  sum = sum + f32(defaults_i32())
+  sum = sum + f32(defaults_i64())
+  sum = sum + defaults_f32()
+  sum = sum + f32(defaults_f64())
+  out1 = sum
 "#;
 
 const TYPED_INIT_F64_PRESERVES_PRECISION_EXAMPLE: &str = r#"

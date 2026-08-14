@@ -13,7 +13,7 @@ const PatternLength = 8
 const Notes: f32[PatternLength] = [45.0, 52.0, 57.0, 64.0, 55.0, 60.0, 69.0, 48.0]
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
+  auto_play = true
   live_input = 0.0 {0.0, 1.0, step = 1.0}
   loop_s = 2.8 {0.5, 7.5, unit = "s"}
   speed = 1.0 {0.25, 2.0}
@@ -25,8 +25,8 @@ params:
 init:
   tape_l: f32[TapeCapacity]
   tape_r: f32[TapeCapacity]
-  captured_frames: i32 = 0
-  write_index: i32 = 0
+  captured_frames = 0
+  write_index = 0
   read_position = 0.0
   recording = true
   direction = 1.0
@@ -34,8 +34,8 @@ init:
   source_a = std::osc::Saw(amp = 0.58)
   source_b = std::osc::Sine(amp = 0.24)
   envelope = std::env::DecayEnv(decay_s = 0.22)
-  source_clock: i32 = 0
-  source_step: i32 = 0
+  source_clock = 0
+  source_step = 0
   source_frequency = std::pitch::note_to_hz(Notes[0])
   pending_bang = false
   wow_lfo = std::osc::Sine(freq = 0.27)
@@ -60,7 +60,7 @@ event bang():
 
 sample:
   source_period = max(i32(SR * 0.41), 1)
-  if auto_play != 0 && source_clock == 0:
+  if auto_play && source_clock == 0:
     pending_bang = true
 
   if pending_bang:
@@ -99,7 +99,7 @@ sample:
       tape_r[overdub_index] = loop_r * overdub + input_r * (1.0 - overdub)
 
     transport_speed = speed * direction * (1.0 + wow_lfo() * wow)
-    read_position = wrap(read_position + transport_speed, 0.0, f32(captured_frames))
+    read_position = wrap(read_position + transport_speed, 0.0, captured_frames)
 
   out1 = tanh((input_l * (1.0 - mix) + loop_l * mix) * level)
   out2 = tanh((input_r * (1.0 - mix) + loop_r * mix) * level)

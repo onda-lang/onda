@@ -90,6 +90,11 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
         }
         Expr::ArrayCtor { spec, init, .. } => {
             substitute_call_type_args_with_bindings_expr(&mut spec.size, bindings, context, errors);
+            if let ArrayElemType::Struct(type_name) = &spec.elem {
+                if let Some(bound) = bindings.get(type_name).copied() {
+                    spec.elem = ArrayElemType::Primitive(bound);
+                }
+            }
             if let Some(values) = init {
                 for value in values {
                     substitute_call_type_args_with_bindings_expr(value, bindings, context, errors);
@@ -170,7 +175,21 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
 ) {
     with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
         Stmt::Const { .. } => {}
-        Stmt::Assign { target, expr, .. } => {
+        Stmt::Assign {
+            target,
+            decl_ty,
+            generic_decl_ty,
+            expr,
+            ..
+        } => {
+            if let Some(bound) = generic_decl_ty
+                .as_ref()
+                .and_then(|type_name| bindings.get(type_name))
+                .copied()
+            {
+                *decl_ty = Some(bound);
+                *generic_decl_ty = None;
+            }
             match target {
                 AssignTarget::Index { index, .. } => {
                     substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
@@ -978,11 +997,24 @@ pub(crate) fn infer_scalar_type_for_generic_binding(
     scalar_locals: &HashMap<String, PrimitiveType>,
     array_elem_locals: &HashMap<String, PrimitiveType>,
 ) -> Option<PrimitiveType> {
-    let mut locals = scalar_locals.clone();
-    for (name, ty) in array_elem_locals {
-        locals.entry(name.clone()).or_insert(*ty);
-    }
-    infer_expr_type_for_def_return_inference(expr, &locals, &HashMap::new())
+    let mut env = CallTypeEnv::default();
+    env.scalar_types.extend(scalar_locals.clone());
+    env.array_types
+        .extend(array_elem_locals.iter().map(|(name, elem)| {
+            (
+                name.clone(),
+                crate::def_semantics::CallArrayType::primitive(*elem, None),
+            )
+        }));
+    let inferred = infer_call_scalar_expr_type(
+        expr,
+        &env,
+        CallTypeContext {
+            return_types: &HashMap::new(),
+            struct_defs: &HashMap::new(),
+        },
+    );
+    effective_untyped_assignment_type(expr, inferred).or(inferred)
 }
 
 pub(crate) fn infer_array_elem_type_for_generic_binding(
@@ -994,8 +1026,10 @@ pub(crate) fn infer_array_elem_type_for_generic_binding(
         Expr::ArrayLiteral { values, .. } => {
             let mut acc = None::<PrimitiveType>;
             for value in values {
-                let ty =
+                let inferred =
                     infer_scalar_type_for_generic_binding(value, scalar_locals, array_elem_locals)?;
+                let ty =
+                    effective_untyped_assignment_type(value, Some(inferred)).unwrap_or(inferred);
                 acc = Some(match acc {
                     Some(existing) => merge_inferred_return_types(existing, ty)?,
                     None => ty,

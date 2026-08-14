@@ -1253,6 +1253,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
     callee_param_specs: &[ProcParamSpec],
     callee_buffer_specs: &[ProcBufferSpec],
     proc_array_slot: Option<(usize, usize)>,
+    constructor_array_symbols: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> (Vec<Stmt>, Vec<Expr>) {
     let mut param_names = callee_param_specs
@@ -1291,18 +1292,22 @@ pub(super) fn expand_nested_proc_ctor_assign(
     for (idx, param) in callee_param_specs.iter().enumerate() {
         let values = match resolved.get(idx).copied().flatten() {
             Some(expr) => {
-                let expr = if let Some((array_slot_idx, array_len)) = proc_array_slot {
-                    select_proc_array_initializer_expr_for_slot(
-                        expr,
-                        array_slot_idx,
-                        array_len,
-                        &format!(
+                let expr = if param.slots.len() == 1 {
+                    if let Some((array_slot_idx, array_len)) = proc_array_slot {
+                        select_proc_array_initializer_expr_for_slot(
+                            expr,
+                            array_slot_idx,
+                            array_len,
+                            &format!(
                             "processor constructor '{}(...)' argument '{}' for nested state '{}'",
                             ctor_name, param.name, nested_var
                         ),
-                        true,
-                        errors,
-                    )
+                            constructor_array_symbols,
+                            errors,
+                        )
+                    } else {
+                        expr.clone()
+                    }
                 } else {
                     expr.clone()
                 };
@@ -1357,18 +1362,20 @@ pub(super) fn expand_nested_proc_ctor_assign(
             );
             continue;
         };
-        if let Some((array_slot_idx, array_len)) = proc_array_slot {
-            expr = select_proc_array_initializer_expr_for_slot(
-                &expr,
-                array_slot_idx,
-                array_len,
-                &format!(
+        if !buffer_spec.is_array {
+            if let Some((array_slot_idx, array_len)) = proc_array_slot {
+                expr = select_proc_array_initializer_expr_for_slot(
+                    &expr,
+                    array_slot_idx,
+                    array_len,
+                    &format!(
                     "processor constructor '{}(...)' buffer argument '{}' for nested state '{}'",
                     ctor_name, buffer_spec.name, nested_var
                 ),
-                false,
-                errors,
-            );
+                    constructor_array_symbols,
+                    errors,
+                );
+            }
         }
         bound_buffers.push(expr);
     }
@@ -1394,6 +1401,7 @@ pub(super) fn expand_proc_instance_ctor_assign(
     param_specs: &[ProcParamSpec],
     buffer_specs: &[ProcBufferSpec],
     proc_array_slot: Option<(usize, usize)>,
+    constructor_array_symbols: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> (Vec<Stmt>, Vec<Expr>) {
     let mut param_names = param_specs
@@ -1429,18 +1437,22 @@ pub(super) fn expand_proc_instance_ctor_assign(
     for (idx, param) in param_specs.iter().enumerate() {
         let values = match resolved.get(idx).copied().flatten() {
             Some(expr) => {
-                let expr = if let Some((array_slot_idx, array_len)) = proc_array_slot {
-                    select_proc_array_initializer_expr_for_slot(
-                        expr,
-                        array_slot_idx,
-                        array_len,
-                        &format!(
-                            "processor constructor '{}(...)' argument '{}' for instance '{}'",
-                            ctor_name, param.name, instance_var
-                        ),
-                        true,
-                        errors,
-                    )
+                let expr = if param.slots.len() == 1 {
+                    if let Some((array_slot_idx, array_len)) = proc_array_slot {
+                        select_proc_array_initializer_expr_for_slot(
+                            expr,
+                            array_slot_idx,
+                            array_len,
+                            &format!(
+                                "processor constructor '{}(...)' argument '{}' for instance '{}'",
+                                ctor_name, param.name, instance_var
+                            ),
+                            constructor_array_symbols,
+                            errors,
+                        )
+                    } else {
+                        expr.clone()
+                    }
                 } else {
                     expr.clone()
                 };
@@ -1495,18 +1507,20 @@ pub(super) fn expand_proc_instance_ctor_assign(
             );
             continue;
         };
-        if let Some((array_slot_idx, array_len)) = proc_array_slot {
-            expr = select_proc_array_initializer_expr_for_slot(
-                &expr,
-                array_slot_idx,
-                array_len,
-                &format!(
-                    "processor constructor '{}(...)' buffer argument '{}' for instance '{}'",
-                    ctor_name, buffer_spec.name, instance_var
-                ),
-                false,
-                errors,
-            );
+        if !buffer_spec.is_array {
+            if let Some((array_slot_idx, array_len)) = proc_array_slot {
+                expr = select_proc_array_initializer_expr_for_slot(
+                    &expr,
+                    array_slot_idx,
+                    array_len,
+                    &format!(
+                        "processor constructor '{}(...)' buffer argument '{}' for instance '{}'",
+                        ctor_name, buffer_spec.name, instance_var
+                    ),
+                    constructor_array_symbols,
+                    errors,
+                );
+            }
         }
         bound_buffers.push(expr);
     }

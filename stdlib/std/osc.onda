@@ -37,6 +37,28 @@ namespace std::osc:
 
     sample:
       out1 = sin(phasor(freq = freq) * TWO_PI + phase_offset) * amp
+
+  proc KSine<T>:
+    kouts<T> 1
+
+    params<T>:
+      freq = 1.0
+      amp = 1.0
+      phase_offset = 0.0
+
+    init<T>:
+      phase = 0.0
+
+    event reset(phase_cycles: T = 0.0):
+      phase = wrap(phase_cycles, T(0.0), T(1.0))
+
+    block:
+      kout1 = sin(phase * TWO_PI + phase_offset) * amp
+      phase = wrap(
+        phase + freq * T(BS) / T(SR),
+        T(0.0),
+        T(1.0),
+      )
   
   def poly_blep<T>(t: T, dt: T) -> T:
     zero = dt - dt

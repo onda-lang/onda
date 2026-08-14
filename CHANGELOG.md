@@ -7,6 +7,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.7.3]
+
+### Added
+
+- Runtime `def` parameters without type annotations can now specialize to each call site's scalar
+  type, including `bool`. Unsized processor-array parameters likewise specialize to the supplied
+  array capacity.
+- Locals created in every continuing branch of an `if` are now available afterward. Compatible
+  numeric types are widened automatically, while arrays and other aggregates must retain one
+  compatible shape.
+- Added `std::osc::KSine<T>`, a block-rate sine oscillator with frequency, amplitude, phase offset,
+  and phase-reset controls.
+- Added `set_offset` events to `std::convolution` block and zero-latency convolvers for
+  deterministic scheduling when required.
+
+### Changed
+
+- Reworked `std::convolution` to spread long-impulse FFT work across each hop, use progressively
+  larger zero-latency stages, reduce spectrum storage, and make the direct convolution loop use
+  contiguous history reads.
+- Refreshed the bundled patches to use boolean controls, block-rate modulation where appropriate,
+  and the improved type inference, and clarified how browser users open complete `.ondaproject`
+  workspaces from ZIP files.
+
+### Fixed
+
+- Fixed generic calls and overloads losing argument types through reassignments, control-flow
+  joins, aliases, tuple and struct fields, array and buffer views, omitted defaults, and nested
+  calls. Fixed-size array contracts now retain and validate their element type and length.
+- Fixed negative literals and unary negation to preserve `i32`, `i64`, `f32`, and `f64` types and
+  precision, including inside generic code.
+- Fixed long zero-latency convolution impulses becoming misaligned across stage boundaries or after
+  reset.
+- Fixed browser builds attempting native filesystem safety checks for in-memory module paths.
+- Fixed parameter-knob indicators rendering and rotating inconsistently in the shared run view.
+- Fixed generated standard-library documentation exposing internal namespaces.
+
 ## [0.7.2]
 
 ### Added
@@ -388,6 +425,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.7.3]: https://github.com/onda-lang/onda/compare/0.7.2...0.7.3
 [0.7.2]: https://github.com/onda-lang/onda/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/onda-lang/onda/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/onda-lang/onda/compare/0.6.0...0.7.0

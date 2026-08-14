@@ -849,21 +849,10 @@
       }
 
       .param-knob-indicator {
-        position: absolute;
-        inset: 6px;
-        transform: rotate(var(--knob-rotation));
-      }
-
-      .param-knob-indicator::after {
-        content: "";
-        position: absolute;
-        top: 0;
-        left: 50%;
-        width: 3px;
-        height: 12px;
-        border-radius: var(--radius-round);
-        background: var(--text);
-        transform: translateX(-50%);
+        stroke: var(--text);
+        stroke-width: 3;
+        stroke-linecap: round;
+        vector-effect: non-scaling-stroke;
       }
 
       #params[data-layout="knobs"] {
@@ -1931,10 +1920,14 @@
         valueArc.classList.add("param-knob-ring-value");
         valueArc.setAttribute("d", ringPath);
         valueArc.setAttribute("pathLength", "1");
-        ring.append(track, valueArc);
-        const indicator = document.createElement("div");
-        indicator.className = "param-knob-indicator";
-        dial.append(ring, indicator);
+        const indicator = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        indicator.classList.add("param-knob-indicator");
+        indicator.setAttribute("x1", "29");
+        indicator.setAttribute("y1", "18");
+        indicator.setAttribute("x2", "29");
+        indicator.setAttribute("y2", "6");
+        ring.append(track, valueArc, indicator);
+        dial.appendChild(ring);
         knob.appendChild(dial);
 
         const controller = createRangeValueController({
@@ -1942,8 +1935,8 @@
           constrainValue: (value) => constrainParamPlain(param, value),
           renderValue: (value) => {
             const ratio = paramPlainToNormalized(param, value);
-            valueArc.style.strokeDasharray = `${ratio} 1`;
-            dial.style.setProperty("--knob-rotation", `${-135 + ratio * 270}deg`);
+            valueArc.setAttribute("stroke-dasharray", `${ratio} 1`);
+            indicator.setAttribute("transform", `rotate(${-135 + ratio * 270} 29 29)`);
             knob.setAttribute("aria-valuenow", String(value));
             knob.dataset.value = String(value);
           },

@@ -16,7 +16,7 @@ namespace NeuralSynth<Neurons = 14, AudioInputs = 4, ControlInputs = 3, Oversamp
     return i
 
   def hash_i32(a: i32, b: i32, c: i32):
-    x: i32 = a * 1103515245 + b * 12345 + c * 265443576
+    x = a * 1103515245 + b * 12345 + c * 265443576
     x = x ^ (x >> 13)
     x = x * 1664525 + 1013904223
     return x
@@ -24,14 +24,14 @@ namespace NeuralSynth<Neurons = 14, AudioInputs = 4, ControlInputs = 3, Oversamp
   def signed_weight(a: i32, b: i32, salt: i32):
     h = hash_i32(a + 1, b + 17, salt)
     mag_bits = (h >> 1) & 3
-    mag = 1.0 + f32(mag_bits) * 0.5
+    mag = 1.0 + mag_bits * 0.5
     if (h & 1) == 0:
       return -mag
     return mag
 
   def neuron_bias(i: i32):
     h = hash_i32(i + 11, 7, 31337)
-    raw = f32((h >> 2) & 255) / 255.0
+    raw = ((h >> 2) & 255) / 255.0
     return (raw * 2.0 - 1.0) * 0.35
 
   proc Core:
@@ -48,8 +48,8 @@ namespace NeuralSynth<Neurons = 14, AudioInputs = 4, ControlInputs = 3, Oversamp
       control_gain = 5.0 {0.0, 24.0}
       control_slew_hz = 4.0 {0.1, 40.0}
       noise = 0.002 {0.0, 0.05}
-      output_a: i32 = 0
-      output_b: i32 = 1
+      output_a = 0
+      output_b = 1
       stereo_spread = 0.35 {0.0, 1.0}
       level = 0.25 {0.0, 1.0}
 
@@ -60,7 +60,7 @@ namespace NeuralSynth<Neurons = 14, AudioInputs = 4, ControlInputs = 3, Oversamp
       band_bp: f32[Neurons]
       audio_dc: f32[AudioInputs]
       control_env: f32[ControlInputs]
-      rng = std::random::Rng<f32>()
+      rng = std::random::Rng()
       rng.seed(90731)
 
       for i in 0..Neurons:
@@ -76,11 +76,10 @@ namespace NeuralSynth<Neurons = 14, AudioInputs = 4, ControlInputs = 3, Oversamp
         control_env[i] = 0.0
 
     sample Oversample:
-      tau = f32(TWO_PI)
-      eff_sr = SR * f32(Oversample)
-      audio_dc_coeff = min(f32(30.0) * tau / eff_sr, f32(1.0))
-      control_coeff = min(control_slew_hz * tau / eff_sr, f32(1.0))
-      band_coeff = min(band_hz * tau / eff_sr, f32(0.5))
+      eff_sr = SR * Oversample
+      audio_dc_coeff = min(30.0 * TWO_PI / eff_sr, 1.0)
+      control_coeff = min(control_slew_hz * TWO_PI / eff_sr, 1.0)
+      band_coeff = min(band_hz * TWO_PI / eff_sr, 0.5)
 
       audio_in: f32[AudioInputs]
       ctrl_in: f32[ControlInputs]
@@ -92,7 +91,7 @@ namespace NeuralSynth<Neurons = 14, AudioInputs = 4, ControlInputs = 3, Oversamp
 
       for i in 0..ControlInputs:
         raw = ins[AudioInputs + i]
-        if raw < f32(0.0):
+        if raw < 0.0:
           raw = -raw
         control_env[i] = control_env[i] + (raw - control_env[i]) * control_coeff
         ctrl_in[i] = control_env[i] * control_gain
@@ -103,16 +102,16 @@ namespace NeuralSynth<Neurons = 14, AudioInputs = 4, ControlInputs = 3, Oversamp
         sum = neuron_bias(n) + thermal_kick * signed_weight(n, 0, 997)
 
         for i in 0..AudioInputs:
-          sum = sum + audio_in[i] * signed_weight(n, i, 101) * (0.85 / f32(AudioInputs))
+          sum = sum + audio_in[i] * signed_weight(n, i, 101) * (0.85 / AudioInputs)
 
         for i in 0..ControlInputs:
-          sum = sum + ctrl_in[i] * signed_weight(n, i, 211) * (1.35 / f32(ControlInputs))
+          sum = sum + ctrl_in[i] * signed_weight(n, i, 211) * (1.35 / ControlInputs)
 
         for j in 0..Neurons:
-          sum = sum + neuron[j] * signed_weight(n, j, 307) * (feedback / f32(Neurons))
-          sum = sum + band_bp[j] * signed_weight(n, j, 401) * (band_feedback / f32(Neurons))
+          sum = sum + neuron[j] * signed_weight(n, j, 307) * (feedback / Neurons)
+          sum = sum + band_bp[j] * signed_weight(n, j, 401) * (band_feedback / Neurons)
 
-        local_drive = drive * (f32(1.0) + neuron_bias(n) * f32(0.08))
+        local_drive = drive * (1.0 + neuron_bias(n) * 0.08)
         next_neuron[n] = tanh(sum * local_drive)
 
       for n in 0..Neurons:
@@ -127,13 +126,13 @@ namespace NeuralSynth<Neurons = 14, AudioInputs = 4, ControlInputs = 3, Oversamp
       mix = 0.0
       for n in 0..Neurons:
         mix = mix + neuron[n]
-      mix = mix / f32(Neurons)
+      mix = mix / Neurons
 
       out_a = neuron[ia]
       out_b = neuron[ib]
 
-      out1 = (out_a * (f32(1.0) - stereo_spread) + mix * stereo_spread) * level
-      out2 = (out_b * (f32(1.0) - stereo_spread) + mix * stereo_spread) * level
+      out1 = (out_a * (1.0 - stereo_spread) + mix * stereo_spread) * level
+      out2 = (out_b * (1.0 - stereo_spread) + mix * stereo_spread) * level
 
 params:
   pitch = 41.0 {0, 1000.0}
@@ -147,8 +146,8 @@ params:
   control_gain = 5.0 {0.0, 24.0}
   control_slew_hz = 4.0 {0.1, 40.0}
   noise = 0.002 {0.0, 0.05}
-  output_a: i32 = 0
-  output_b: i32 = 1
+  output_a = 0
+  output_b = 1
   stereo_spread = 0.35 {0.0, 1.0}
   level = 0.25 {0.0, 1.0}
 

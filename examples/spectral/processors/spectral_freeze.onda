@@ -5,7 +5,7 @@ import std/random
 namespace SpectralFreeze<N = 1024>:
   proc Engine:
     params:
-      freeze: i32 = 1
+      freeze = true
       transpose = 0.0
       smear = 0.22
 
@@ -23,17 +23,16 @@ namespace SpectralFreeze<N = 1024>:
       spectrum_im_l: f32[N]
       spectrum_re_r: f32[N]
       spectrum_im_r: f32[N]
-      rng = std::random::Rng<f32>()
+      rng = std::random::Rng()
       configured = false
       has_capture = false
-      capture_hops: i32 = 12
+      capture_hops = 12
 
     event recapture():
       capture_hops = 8
 
     block:
-      if (!configured):
-        rng.seed(19790531)
+      if !configured:
         for k in 0..N:
           drift[k] = rng.bipolar()
           phase_re_l[k] = 1.0
@@ -43,7 +42,7 @@ namespace SpectralFreeze<N = 1024>:
       ratio = std::pitch::ratio_between(0.0, transpose)
 
       sample:
-        if (analysis.push(in1)):
+        if analysis.push(in1):
           half = N >> 1
           for k in 0..(half + 1):
             spectrum_re_l[k] = 0.0
@@ -51,7 +50,7 @@ namespace SpectralFreeze<N = 1024>:
             spectrum_re_r[k] = 0.0
             spectrum_im_r[k] = 0.0
 
-          capturing = freeze == 0 || capture_hops > 0
+          capturing = freeze || capture_hops > 0
           if (capturing):
             for k in 1..half:
               bin_re = analysis.real(k)
@@ -70,13 +69,13 @@ namespace SpectralFreeze<N = 1024>:
                 phase_im_r[k] = phase_im_l[k]
 
             has_capture = true
-            if (freeze != 0 && capture_hops > 0):
+            if !freeze && capture_hops > 0:
               capture_hops = capture_hops - 1
 
-          if (has_capture):
+          if has_capture:
             for k in 1..half:
-              destination = i32(f32(k) * ratio + 0.5)
-              if (destination > 0 && destination < half):
+              destination = i32(k * ratio + 0.5)
+              if destination > 0 && destination < half:
                 # Each hop is N/2 samples, so a bin's nominal phase advance is
                 # PI * destination: +1 for even bins and -1 for odd bins.
                 advance = 1.0

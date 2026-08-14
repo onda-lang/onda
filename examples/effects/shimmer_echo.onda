@@ -3,7 +3,7 @@ import std/pitch_shift
 import processors/effect_audition
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
+  auto_play = true
   live_input = 0.0 {0.0, 1.0, step = 1.0}
   time_s = 0.38 {0.08, 1.2, log, unit = "s"}
   feedback = 0.46 {0.0, 0.86}

@@ -12,8 +12,8 @@ buffers:
   waves: f32 {4}
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  root_note = 38.0 {24.0, 60.0, step = 1.0}
+  auto_play = true
+  root_note = 38 {24, 60}
   bpm = 104.0 {45.0, 180.0, unit = "BPM"}
   morph = 0.58 {0.0, 1.0}
   brightness = 0.54 {0.0, 1.0}
@@ -26,10 +26,10 @@ init:
   filter = std::filter::Svf(cutoff = 1800.0, q = 1.2)
   echo_l = std::delay::Delay(delay_s = 0.288, feedback = 0.38, mix = 1.0)
   echo_r = std::delay::Delay(delay_s = 0.433, feedback = 0.34, mix = 1.0)
-  frequency = std::pitch::note_to_hz(root_note)
+  frequency = std::pitch::note_to_hz(f32(root_note))
   envelope = std::env::DecayEnv(decay_s = decay_s)
-  clock: i32 = 0
-  step: i32 = 0
+  clock = 0
+  step = 0
   pending_bang = false
 
 event bang():
@@ -37,11 +37,11 @@ event bang():
 
 sample:
   step_samples = max(i32(SR * 15.0 / bpm), 1)
-  if auto_play != 0 && clock == 0:
+  if auto_play && clock == 0:
     pending_bang = true
 
   if pending_bang:
-    frequency = std::pitch::note_to_hz(root_note + Notes[step])
+    frequency = std::pitch::note_to_hz(f32(root_note + Notes[step]))
     envelope.start(Accents[step])
     step = (step + 1) % PatternLength
     pending_bang = false

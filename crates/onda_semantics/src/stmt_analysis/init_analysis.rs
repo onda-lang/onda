@@ -79,6 +79,7 @@ fn infer_init_slice_alias_info(
         struct_instances,
         struct_defs,
         errors,
+        false,
     )
 }
 
@@ -214,6 +215,25 @@ fn build_decl_check_state(st: &InitAnalysisState) -> ProcStateFields {
     psf
 }
 
+pub(crate) fn analyze_init_stmt_list(
+    stmts: &[Stmt],
+    ctx: InitStmtAnalysisCtx<'_>,
+    st: &mut InitAnalysisState,
+    loop_depth: usize,
+    scope_depth: usize,
+    errors: &mut Vec<Diagnostic>,
+) -> crate::def_semantics::call_types::StatementFlow {
+    use crate::def_semantics::call_types::{statement_flow, StatementFlow};
+
+    for stmt in stmts {
+        analyze_init_stmt(stmt, ctx, st, loop_depth, scope_depth, errors);
+        if statement_flow(stmt) == StatementFlow::Terminates {
+            return StatementFlow::Terminates;
+        }
+    }
+    StatementFlow::Continues
+}
+
 pub(crate) fn analyze_init_stmt(
     stmt: &Stmt,
     ctx: InitStmtAnalysisCtx<'_>,
@@ -236,6 +256,7 @@ pub(crate) fn analyze_init_stmt(
             &empty_param_structs,
             &st.struct_instances,
             common.output_names,
+            &st.state_array_struct_roots,
             &st.nested_proc_arrays,
         );
         let stmt_expr_env = |scope| {
@@ -304,7 +325,7 @@ pub(crate) fn analyze_init_stmt(
                 cond,
                 then_branch,
                 else_branch,
-                ..
+                loc,
             } => {
                 require_validated_bool_stmt_expr(
                     cond,
@@ -314,46 +335,48 @@ pub(crate) fn analyze_init_stmt(
                 );
                 let base_flow = st.flow_state();
                 let mut then_st = st.clone();
-                for nested in then_branch {
-                    analyze_init_stmt(
-                        nested,
-                        ctx,
-                        &mut then_st,
-                        loop_depth,
-                        scope_depth + 1,
-                        errors,
-                    );
-                }
+                let then_execution = analyze_init_stmt_list(
+                    then_branch,
+                    ctx,
+                    &mut then_st,
+                    loop_depth,
+                    scope_depth + 1,
+                    errors,
+                );
                 let then_flow = then_st.flow_state();
 
                 let mut else_st = st.clone();
-                for nested in else_branch {
-                    analyze_init_stmt(
-                        nested,
-                        ctx,
-                        &mut else_st,
-                        loop_depth,
-                        scope_depth + 1,
-                        errors,
-                    );
-                }
+                let else_execution = analyze_init_stmt_list(
+                    else_branch,
+                    ctx,
+                    &mut else_st,
+                    loop_depth,
+                    scope_depth + 1,
+                    errors,
+                );
                 let else_flow = else_st.flow_state();
 
                 st.absorb_registered_state(then_st, init_ctx.context_label, errors);
                 st.absorb_registered_state(else_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
                 let mut tuple_vars = HashMap::new();
-                merge_branch_scope_flow_state(
+                merge_reachable_branch_scope_flow_state(
                     &mut st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut struct_aliases,
                     &mut buffer_aliases,
                     &mut tuple_vars,
                     then_flow,
+                    then_execution,
                     else_flow,
+                    else_execution,
+                    (*loc).into(),
+                    errors,
                 );
                 st.sync_known_scalars_with_registered_state();
             }
@@ -386,20 +409,19 @@ pub(crate) fn analyze_init_stmt(
                     locals: &loop_locals,
                     ..ctx
                 };
-                for nested in body {
-                    analyze_init_stmt(
-                        nested,
-                        loop_ctx,
-                        &mut loop_st,
-                        loop_depth + 1,
-                        scope_depth + 1,
-                        errors,
-                    );
-                }
+                analyze_init_stmt_list(
+                    body,
+                    loop_ctx,
+                    &mut loop_st,
+                    loop_depth + 1,
+                    scope_depth + 1,
+                    errors,
+                );
                 let loop_flow = loop_st.flow_state();
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
                 let mut tuple_vars = HashMap::new();
                 adopt_loop_scope_flow_state(
@@ -407,6 +429,7 @@ pub(crate) fn analyze_init_stmt(
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut struct_aliases,
                     &mut buffer_aliases,
                     &mut tuple_vars,
                     loop_flow,
@@ -422,20 +445,19 @@ pub(crate) fn analyze_init_stmt(
                 );
                 let base_flow = st.flow_state();
                 let mut loop_st = st.clone();
-                for nested in body {
-                    analyze_init_stmt(
-                        nested,
-                        ctx,
-                        &mut loop_st,
-                        loop_depth + 1,
-                        scope_depth + 1,
-                        errors,
-                    );
-                }
+                analyze_init_stmt_list(
+                    body,
+                    ctx,
+                    &mut loop_st,
+                    loop_depth + 1,
+                    scope_depth + 1,
+                    errors,
+                );
                 let loop_flow = loop_st.flow_state();
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
                 let mut tuple_vars = HashMap::new();
                 adopt_loop_scope_flow_state(
@@ -443,6 +465,7 @@ pub(crate) fn analyze_init_stmt(
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut struct_aliases,
                     &mut buffer_aliases,
                     &mut tuple_vars,
                     loop_flow,
@@ -499,6 +522,7 @@ fn analyze_assign_init(
                 &empty_param_structs,
                 &st.struct_instances,
                 output_names,
+                &st.state_array_struct_roots,
                 &st.nested_proc_arrays,
             )
         };
@@ -540,6 +564,15 @@ fn analyze_assign_init(
     }
     match target {
         AssignTarget::Index { base, index } => {
+            let lexical_root = base.split('.').next().unwrap_or(base);
+            if locals.contains(lexical_root) {
+                target_error!(format!(
+                    "loop variable '{lexical_root}' is scalar and cannot be indexed"
+                ));
+                validate_expr(index, scope_expr_env!(ScopeKind::Init), errors);
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                return;
+            }
             if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Init)) {
                 push_io_surface_scope_error(errors, target_loc, name);
                 validate_expr(index, scope_expr_env!(ScopeKind::Init), errors);
@@ -676,6 +709,17 @@ fn analyze_assign_init(
             start,
             end,
         } => {
+            let lexical_root = base.split('.').next().unwrap_or(base);
+            if locals.contains(lexical_root) {
+                target_error!(format!(
+                    "loop variable '{lexical_root}' is scalar and cannot be sliced"
+                ));
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    validate_expr(coordinate, scope_expr_env!(ScopeKind::Init), errors);
+                }
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                return;
+            }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 target_error!("typed declaration is only supported for plain scalar variables",);
             }
@@ -1024,8 +1068,8 @@ fn analyze_assign_init(
                     validate_expr(value, scope_expr_env!(ScopeKind::Init), errors);
                 }
 
-                // Use backward-compatible literal type for the first element so
-                // that `a = [0, 1]` infers as I32[] not I64[].
+                // Untyped arrays acquire their element type from the first
+                // element using the same defaults as untyped scalar locals.
                 let inferred_first = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     &values[0],
                     &st.state_scalars,
@@ -1042,8 +1086,7 @@ fn analyze_assign_init(
                     &st.nested_proc_arrays,
                     errors,
                 );
-                let elem_ty = untyped_literal_type(&values[0])
-                    .or(inferred_first)
+                let elem_ty = effective_untyped_assignment_type(&values[0], inferred_first)
                     .unwrap_or(PrimitiveType::F32);
                 for (idx, value) in values.iter().enumerate() {
                     let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
@@ -1104,7 +1147,7 @@ fn analyze_assign_init(
                 let mut elem_tys = Vec::new();
                 for (idx, value) in values.iter().enumerate() {
                     validate_expr(value, scope_expr_env!(scope), errors);
-                    let elem_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                    let inferred = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         value,
                         &st.state_scalars,
                         &st.declared_symbols,
@@ -1119,8 +1162,9 @@ fn analyze_assign_init(
                         struct_defs,
                         &st.nested_proc_arrays,
                         errors,
-                    )
-                    .unwrap_or(PrimitiveType::F32);
+                    );
+                    let elem_ty = effective_untyped_assignment_type(value, inferred)
+                        .unwrap_or(PrimitiveType::F32);
                     elem_tys.push(elem_ty);
                     let flat_name = format!("{name}.__{idx}");
                     st.state_scalars.insert(flat_name, elem_ty);
@@ -1532,6 +1576,7 @@ fn analyze_assign_init(
                                 ArrayStructRootInfo {
                                     struct_name: proc_ctor,
                                     len,
+                                    static_len: Some(len),
                                 },
                             );
                         }
@@ -1628,6 +1673,7 @@ fn analyze_assign_init(
                                 ArrayStructRootInfo {
                                     struct_name: proc_ctor,
                                     len,
+                                    static_len: Some(len),
                                 },
                             );
                         }

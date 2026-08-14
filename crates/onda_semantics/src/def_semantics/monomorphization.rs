@@ -1,25 +1,45 @@
 use std::collections::{HashMap, HashSet};
 
-use super::overloads::OverloadRewriteEnv;
+use super::call_types::{
+    infer_array_arg_type as infer_call_array_arg_type, infer_buffer_arg_info,
+    infer_scalar_expr_type, infer_struct_expr_type, infer_tuple_arg_types, join_branch_envs,
+    resolved_buffer_channels, update_call_type_env_after_assign, CallArrayElemType,
+    CallTypeContext, CallTypeEnv, StatementFlow,
+};
 use crate::*;
 use onda_frontend::ast::{FnReturnScalarType, FnReturnType, Span};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum MonoParamKey {
-    /// Non-generic param — keep as-is.
+    /// A concrete, non-generic parameter that needs no specialization.
     Passthrough,
+    /// An untyped parameter whose supplied value has no concrete scalar or
+    /// aggregate shape yet. It remains on the structural inference path.
+    UnresolvedStructural,
     /// Resolved concrete struct name (e.g. "Voice.__gen__f32").
     ResolvedStruct(String),
     /// Resolved array element type.
     ResolvedArray(PrimitiveType),
+    /// Resolved nominal array element type. Processor arrays retain their
+    /// fixed capacity; data-struct arrays use a length-independent view ABI.
+    ResolvedNominalArray(String, Option<usize>),
     /// Resolved buffer element type + channels.
     ResolvedBuffer(PrimitiveType, TypedBufferChannels),
+    /// Resolved fixed buffer-collection element type + per-buffer channels.
+    ResolvedBufferArray(PrimitiveType, TypedBufferChannels, usize),
     /// Resolved tuple element types (inferred from tuple literal arg).
     ResolvedTuple(Vec<PrimitiveType>),
     /// Resolved primitive type for an untyped scalar parameter.
     ResolvedScalar(PrimitiveType),
     /// Resolved generic def type parameter (e.g. T = f32).
     GenericType(PrimitiveType),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MonoOwnerContext<'a> {
+    pub(crate) type_params: &'a [String],
+    pub(crate) proc_types: &'a HashSet<String>,
+    pub(crate) return_type_env: &'a CallTypeEnv,
 }
 
 fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
@@ -30,13 +50,24 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
             // `[I32, passthrough]` and `[passthrough, I32]` collide even though
             // they describe different concrete signatures.
             MonoParamKey::Passthrough => suffix.push_str("__pass"),
+            MonoParamKey::UnresolvedStructural => suffix.push_str("__open"),
             MonoParamKey::ResolvedStruct(s) => {
                 suffix.push_str("__");
-                suffix.push_str(&sanitize_symbol_component(s));
+                suffix.push_str(&crate::internal_names::encode_internal_symbol_component(s));
             }
             MonoParamKey::ResolvedArray(prim) => {
                 suffix.push_str("__arr_");
                 suffix.push_str(&format!("{prim:?}").to_lowercase());
+            }
+            MonoParamKey::ResolvedNominalArray(name, len) => {
+                suffix.push_str("__arr_nom_");
+                suffix.push_str(&crate::internal_names::encode_internal_symbol_component(
+                    name,
+                ));
+                match len {
+                    Some(len) => suffix.push_str(&format!("_{len}")),
+                    None => suffix.push_str("_view"),
+                }
             }
             MonoParamKey::ResolvedBuffer(prim, ch) => {
                 suffix.push_str("__buf_");
@@ -48,6 +79,16 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
                     }
                     TypedBufferChannels::Dynamic => suffix.push_str("_dyn"),
                 }
+            }
+            MonoParamKey::ResolvedBufferArray(prim, ch, len) => {
+                suffix.push_str("__bufs_");
+                suffix.push_str(&format!("{prim:?}").to_lowercase());
+                match ch {
+                    TypedBufferChannels::Mono => {}
+                    TypedBufferChannels::Static(n) => suffix.push_str(&format!("_{n}ch")),
+                    TypedBufferChannels::Dynamic => suffix.push_str("_dyn"),
+                }
+                suffix.push_str(&format!("_{len}items"));
             }
             MonoParamKey::ResolvedTuple(elem_tys) => {
                 suffix.push_str("__tup");
@@ -66,90 +107,101 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
             }
         }
     }
-    format!("{base}.__mono{suffix}")
+    // The generated member begins with the language-reserved `__onda_`
+    // prefix, so no legal source declaration can shadow a specialization.
+    format!("{base}.__onda_mono{suffix}")
 }
 
 fn infer_mono_arg_key(
     arg_expr: &Expr,
     param_ty: Option<&FnParamType>,
-    env: &OverloadRewriteEnv,
+    env: &CallTypeEnv,
     generic_templates: &HashSet<String>,
+    proc_types: &HashSet<String>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<MonoParamKey> {
     match param_ty {
         Some(FnParamType::Struct(struct_name)) if generic_templates.contains(struct_name) => {
-            // Arg must be a variable whose concrete struct type is known.
-            if let Expr::Var { name: var_name, .. } = arg_expr {
-                if let Some(concrete) = env.struct_instances.get(var_name) {
-                    // Check if this concrete name is a specialization of the template.
-                    if concrete.starts_with(struct_name) || concrete.contains(".__gen__") {
-                        return Some(MonoParamKey::ResolvedStruct(concrete.clone()));
-                    }
-                    // Could be a different struct that happens to match.
-                    return Some(MonoParamKey::ResolvedStruct(concrete.clone()));
-                }
-            }
-            None // Can't determine concrete struct type
+            infer_struct_expr_type(
+                arg_expr,
+                env,
+                CallTypeContext {
+                    return_types,
+                    struct_defs,
+                },
+            )
+            .map(MonoParamKey::ResolvedStruct)
         }
         Some(FnParamType::Array(None)) => {
-            if let Some(elem_ty) =
-                infer_array_arg_elem_type(arg_expr, env, return_types, struct_defs)
-            {
-                return Some(MonoParamKey::ResolvedArray(elem_ty));
-            }
-            // Default to f32 if we can't infer
-            Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
+            infer_array_arg_key(arg_expr, env, proc_types, return_types, struct_defs)
         }
-        Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
-            if let Some(elem_ty) =
-                infer_array_arg_elem_type(arg_expr, env, return_types, struct_defs)
-            {
-                return Some(MonoParamKey::ResolvedArray(elem_ty));
-            }
-            Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
+        Some(FnParamType::ArrayGeneric(name)) if proc_types.contains(name) => {
+            infer_array_arg_key(arg_expr, env, proc_types, return_types, struct_defs)
         }
-        Some(FnParamType::BareBuffer) => {
-            if let Some((elem_ty, channels)) = infer_buffer_arg_info(arg_expr, env) {
-                return Some(MonoParamKey::ResolvedBuffer(elem_ty, channels));
-            }
-            // Default to f32 mono
-            Some(MonoParamKey::ResolvedBuffer(
-                PrimitiveType::F32,
-                TypedBufferChannels::Mono,
-            ))
-        }
+        Some(FnParamType::BareBuffer) => infer_buffer_arg_info(arg_expr, env)
+            .map(|(elem_ty, channels)| MonoParamKey::ResolvedBuffer(elem_ty, channels)),
         None => {
             // Untyped parameters are structural duck types. Resolve resource
             // shapes before scalar shapes so one source def can be called with
             // arrays and buffers (including different element types) without a
             // later inference pass collapsing all call sites into one ABI.
+            if let Some(struct_name) = infer_struct_expr_type(
+                arg_expr,
+                env,
+                CallTypeContext {
+                    return_types,
+                    struct_defs,
+                },
+            ) {
+                return Some(MonoParamKey::ResolvedStruct(struct_name));
+            }
+            if let Expr::Var { name, .. } = arg_expr {
+                if let Some(len) = env.buffer_array_lens.get(name).copied() {
+                    if let Some((elem_ty, channels)) = infer_buffer_arg_info(arg_expr, env) {
+                        return Some(MonoParamKey::ResolvedBufferArray(elem_ty, channels, len));
+                    }
+                }
+            }
             if let Some((elem_ty, channels)) = infer_buffer_arg_info(arg_expr, env) {
                 return Some(MonoParamKey::ResolvedBuffer(elem_ty, channels));
             }
-            if let Some(elem_ty) =
-                infer_array_arg_elem_type(arg_expr, env, return_types, struct_defs)
+            if let Some(key) =
+                infer_array_arg_key(arg_expr, env, proc_types, return_types, struct_defs)
             {
-                return Some(MonoParamKey::ResolvedArray(elem_ty));
+                return Some(key);
             }
             // Untyped scalar values are semantic polymorphism, not a backend
             // choice. Resolve primitive and tuple shapes at the call site so
             // every backend receives concrete function signatures.
-            if let Expr::Tuple { values, .. } = arg_expr {
-                let elem_tys: Vec<PrimitiveType> = values
-                    .iter()
-                    .map(|v| infer_tuple_elem_type(v, env))
-                    .collect();
+            if let Some(elem_tys) = infer_tuple_arg_types(
+                arg_expr,
+                env,
+                CallTypeContext {
+                    return_types,
+                    struct_defs,
+                },
+            ) {
                 return Some(MonoParamKey::ResolvedTuple(elem_tys));
+            }
+            // Aggregate syntax carries a shape even when one of its dependent
+            // element types is not concrete yet. Treat that as deferred, not
+            // as the legacy shape-free f32 passthrough.
+            if matches!(
+                arg_expr,
+                Expr::ArrayLiteral { .. }
+                    | Expr::Tuple { .. }
+                    | Expr::Slice { .. }
+                    | Expr::ArrayCtor { .. }
+            ) {
+                return None;
             }
             if let Some(primitive) =
                 infer_concrete_untyped_scalar_arg_type(arg_expr, env, return_types, struct_defs)
             {
-                if primitive != PrimitiveType::F32 {
-                    return Some(MonoParamKey::ResolvedScalar(primitive));
-                }
+                return Some(MonoParamKey::ResolvedScalar(primitive));
             }
-            Some(MonoParamKey::Passthrough)
+            Some(MonoParamKey::UnresolvedStructural)
         }
         _ => Some(MonoParamKey::Passthrough),
     }
@@ -161,126 +213,79 @@ fn infer_mono_arg_key(
 /// resolved type.
 fn infer_concrete_untyped_scalar_arg_type(
     expr: &Expr,
-    env: &OverloadRewriteEnv,
+    env: &CallTypeEnv,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
-    match expr {
-        Expr::Number { .. } | Expr::Int { .. } => untyped_literal_type(expr),
-        Expr::Bool { .. } => Some(PrimitiveType::Bool),
-        Expr::Cast { to, .. } => Some(*to),
-        Expr::Var { name, .. } => builtin_constant_type(name)
-            .or_else(|| lookup_scalar_symbol_type(name, env, struct_defs)),
-        Expr::Index { base, .. } => lookup_slice_base_elem_type(base, env),
-        Expr::UserCall { name, .. } => return_types.get(name).and_then(ReturnType::scalar),
-        Expr::Binary { .. } | Expr::Call { .. } | Expr::UnaryBitNot { .. } => {
-            let inferred = infer_expr_primitive_type(expr, env, return_types, struct_defs);
-            if is_pure_numeric_literal_expr(expr) {
-                effective_untyped_assignment_type(expr, inferred)
-            } else {
-                inferred
-            }
-        }
-        Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
-            Some(PrimitiveType::Bool)
-        }
-        Expr::ArrayLiteral { .. }
-        | Expr::Tuple { .. }
-        | Expr::Slice { .. }
-        | Expr::ArrayCtor { .. } => None,
+    let inferred = infer_expr_primitive_type(expr, env, return_types, struct_defs);
+    if is_pure_numeric_literal_expr(expr) {
+        effective_untyped_assignment_type(expr, inferred)
+    } else {
+        inferred
     }
 }
 
-fn lookup_scalar_symbol_type(
-    name: &str,
-    env: &OverloadRewriteEnv,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) -> Option<PrimitiveType> {
-    if let Some(ty) = env.scalar_types.get(name).copied() {
-        return Some(ty);
-    }
-    let (base, field) = split_simple_field_path(name)?;
-    if let Some(ty) = env.scalar_types.get(&format!("{base}.{field}")).copied() {
-        return Some(ty);
-    }
-    let struct_name = env.struct_instances.get(base)?;
-    let field = resolve_struct_field_decl(struct_name, field, struct_defs)?;
-    match field.ty {
-        TypedFieldType::Scalar(ty) => Some(ty),
-        TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => None,
-    }
-}
-
-fn lookup_array_symbol_elem_type(name: &str, env: &OverloadRewriteEnv) -> Option<PrimitiveType> {
-    if let Some(elem_ty) = env.array_elem_types.get(name).copied() {
-        return Some(elem_ty);
-    }
-    split_simple_field_path(name).and_then(|(root, field)| {
-        let flat = format!("{root}.{field}");
-        env.array_elem_types.get(&flat).copied()
-    })
-}
-
-fn lookup_slice_base_elem_type(name: &str, env: &OverloadRewriteEnv) -> Option<PrimitiveType> {
-    lookup_array_symbol_elem_type(name, env).or_else(|| {
-        if let Some((elem_ty, _)) = env.buffer_types.get(name) {
-            return Some(*elem_ty);
-        }
-        split_simple_field_path(name).and_then(|(root, field)| {
-            let flat = format!("{root}.{field}");
-            env.buffer_types.get(&flat).map(|(elem_ty, _)| *elem_ty)
-        })
-    })
-}
-
-fn infer_buffer_arg_info(
+fn infer_array_arg_type(
     expr: &Expr,
-    env: &OverloadRewriteEnv,
-) -> Option<(PrimitiveType, TypedBufferChannels)> {
-    let name = match expr {
-        Expr::Var { name, .. } => name,
-        Expr::Index { base, .. } if env.buffer_arrays.contains(base) => base,
-        _ => return None,
-    };
-    if let Some((elem_ty, channels)) = env.buffer_types.get(name) {
-        return Some((*elem_ty, channels.clone()));
-    }
-    split_simple_field_path(name).and_then(|(root, field)| {
-        let flat = format!("{root}.{field}");
-        env.buffer_types
-            .get(&flat)
-            .map(|(elem_ty, channels)| (*elem_ty, channels.clone()))
-    })
+    env: &CallTypeEnv,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<super::call_types::CallArrayType> {
+    infer_call_array_arg_type(
+        expr,
+        env,
+        CallTypeContext {
+            return_types,
+            struct_defs,
+        },
+    )
 }
 
 fn infer_array_arg_elem_type(
     expr: &Expr,
-    env: &OverloadRewriteEnv,
+    env: &CallTypeEnv,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
-    match expr {
-        Expr::Var { name, .. } => lookup_array_symbol_elem_type(name, env),
-        Expr::Slice { base, .. } => lookup_slice_base_elem_type(base, env),
-        Expr::ArrayLiteral { values, .. } => values
-            .first()
-            .and_then(|value| infer_expr_primitive_type(value, env, return_types, struct_defs)),
-        Expr::ArrayCtor { spec, .. } => match &spec.elem {
-            ArrayElemType::Primitive(elem_ty) => Some(*elem_ty),
-            ArrayElemType::Struct(_) => None,
-        },
-        _ => None,
+    infer_array_arg_type(expr, env, return_types, struct_defs)?.primitive_elem()
+}
+
+fn infer_array_arg_key(
+    expr: &Expr,
+    env: &CallTypeEnv,
+    proc_types: &HashSet<String>,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<MonoParamKey> {
+    let array_ty = infer_array_arg_type(expr, env, return_types, struct_defs)?;
+    match array_ty.elem {
+        CallArrayElemType::Primitive(elem) => Some(MonoParamKey::ResolvedArray(elem)),
+        CallArrayElemType::Nominal(name) if proc_types.contains(&name) => array_ty
+            .len
+            .map(|len| MonoParamKey::ResolvedNominalArray(name, Some(len))),
+        CallArrayElemType::Nominal(name) => Some(MonoParamKey::ResolvedNominalArray(name, None)),
     }
 }
 
-fn refresh_monomorphized_return_types(
+fn source_buffer_channels(channels: &TypedBufferChannels) -> BufferChannels {
+    match channels {
+        TypedBufferChannels::Mono => BufferChannels::Mono,
+        TypedBufferChannels::Dynamic => BufferChannels::Dynamic,
+        TypedBufferChannels::Static(channels) => {
+            BufferChannels::Static(Expr::int(*channels as i64))
+        }
+    }
+}
+
+pub(crate) fn refresh_monomorphized_return_types(
     return_types: &mut HashMap<String, ReturnType>,
     original_defs: &[FunctionDef],
     generated_defs: &[FunctionDef],
     fn_signatures: &HashMap<String, FnSignature>,
     generated_sigs: &HashMap<String, FnSignature>,
+    env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> bool {
     let mut combined_defs = Vec::with_capacity(original_defs.len() + generated_defs.len());
     combined_defs.extend_from_slice(original_defs);
     combined_defs.extend_from_slice(generated_defs);
@@ -290,74 +295,19 @@ fn refresh_monomorphized_return_types(
         combined_sigs.insert(name.clone(), sig.clone());
     }
 
-    *return_types = infer_def_return_types(&combined_defs, &combined_sigs, struct_defs);
-}
-
-fn update_mono_env_after_assign(
-    target: &AssignTarget,
-    decl_ty: Option<PrimitiveType>,
-    expr: &Expr,
-    env: &mut OverloadRewriteEnv,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    return_types: &HashMap<String, ReturnType>,
-) {
-    let AssignTarget::Var(name) = target else {
-        return;
-    };
-
-    if let Some(declared) = decl_ty {
-        env.scalar_types.insert(name.clone(), declared);
-        env.array_elem_types.remove(name);
-        env.struct_instances.remove(name);
-        return;
+    // Strict return inference publishes only results whose complete expression
+    // dependencies are known. Keep dependent templates in the input so a
+    // result that does not depend on their open parameters (for example
+    // `def len(value): return 1`) remains available to nested call inference.
+    // A result that actually reads an open parameter or unresolved call is
+    // withheld by `infer_known_def_return_types` itself.
+    let refreshed =
+        infer_known_def_return_types(&combined_defs, &combined_sigs, env_seed, struct_defs);
+    if *return_types == refreshed {
+        return false;
     }
-
-    if let Some(elem_ty) = infer_array_arg_elem_type(expr, env, return_types, struct_defs) {
-        env.array_elem_types.insert(name.clone(), elem_ty);
-        env.scalar_types.remove(name);
-        env.struct_instances.remove(name);
-        return;
-    }
-
-    if let Expr::UserCall { name: callee, .. } = expr {
-        if struct_defs.contains_key(callee) {
-            env.struct_instances.insert(name.clone(), callee.clone());
-            env.scalar_types.remove(name);
-            env.array_elem_types.remove(name);
-            return;
-        }
-    }
-
-    if let Expr::Var { name: src, .. } = expr {
-        if let Some(struct_name) = env.struct_instances.get(src).cloned() {
-            env.struct_instances.insert(name.clone(), struct_name);
-            env.scalar_types.remove(name);
-            env.array_elem_types.remove(name);
-            return;
-        }
-    }
-
-    if let Some(ty) = infer_expr_primitive_type(expr, env, return_types, struct_defs) {
-        env.scalar_types.insert(name.clone(), ty);
-        env.array_elem_types.remove(name);
-        env.struct_instances.remove(name);
-    }
-}
-
-/// Infer the primitive type of a tuple element expression for monomorphization.
-fn infer_tuple_elem_type(expr: &Expr, env: &OverloadRewriteEnv) -> PrimitiveType {
-    match expr {
-        Expr::Int { .. } => PrimitiveType::I32,
-        Expr::Bool { .. } => PrimitiveType::Bool,
-        Expr::Number { .. } => PrimitiveType::F32,
-        Expr::Cast { to, .. } => *to,
-        Expr::Var { name, .. } => env
-            .scalar_types
-            .get(name)
-            .copied()
-            .unwrap_or(PrimitiveType::F32),
-        _ => PrimitiveType::F32,
-    }
+    *return_types = refreshed;
+    true
 }
 
 /// Generated definitions are implementation details, so diagnostics originating
@@ -505,12 +455,12 @@ fn generate_mono_def(
     keys: &[MonoParamKey],
     mono_name: &str,
     origin: Span,
-    _generic_templates: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> (FunctionDef, FnSignature) {
     let mut new_def = original.clone();
     new_def.name = mono_name.to_owned();
     let mut new_sig = original_sig.clone();
+    new_sig.requires_call_specialization = false;
 
     // Build type bindings from GenericType keys for body rewriting.
     let mut type_bindings = HashMap::<String, PrimitiveType>::new();
@@ -518,7 +468,7 @@ fn generate_mono_def(
 
     for (idx, key) in keys.iter().enumerate() {
         match key {
-            MonoParamKey::Passthrough => {}
+            MonoParamKey::Passthrough | MonoParamKey::UnresolvedStructural => {}
             MonoParamKey::ResolvedStruct(concrete_name) => {
                 if let Some(param) = new_def.params.get_mut(idx) {
                     param.ty = Some(FnParamType::Struct(concrete_name.clone()));
@@ -546,22 +496,69 @@ fn generate_mono_def(
                     *pt = Some(new_ty);
                 }
             }
+            MonoParamKey::ResolvedNominalArray(name, resolved_len) => {
+                let original_param_ty = original.params.get(idx).and_then(|p| p.ty.as_ref());
+                let new_ty = if let Some(FnParamType::SizedArray { size, .. }) = original_param_ty {
+                    FnParamType::SizedArray {
+                        elem: None,
+                        generic_name: Some(name.clone()),
+                        size: size.clone(),
+                    }
+                } else if let Some(len) = resolved_len {
+                    FnParamType::SizedArray {
+                        elem: None,
+                        generic_name: Some(name.clone()),
+                        size: Expr::int(*len as i64),
+                    }
+                } else {
+                    FnParamType::ArrayGeneric(name.clone())
+                };
+                if let Some(param) = new_def.params.get_mut(idx) {
+                    param.ty = Some(new_ty.clone());
+                }
+                if let Some(param_ty) = new_sig.param_types.get_mut(idx) {
+                    *param_ty = Some(new_ty);
+                }
+            }
             MonoParamKey::ResolvedBuffer(elem_ty, channels) => {
+                let declared_channels = match original.params.get(idx).and_then(|p| p.ty.as_ref()) {
+                    Some(FnParamType::Buffer(buffer)) => Some(buffer.channels.clone()),
+                    _ => None,
+                };
                 let buf_ty = BufferType {
                     elem: BufferElemType::Primitive(*elem_ty),
-                    channels: match channels {
-                        TypedBufferChannels::Mono => BufferChannels::Mono,
-                        TypedBufferChannels::Dynamic => BufferChannels::Dynamic,
-                        TypedBufferChannels::Static(n) => {
-                            BufferChannels::Static(Expr::int(*n as i64))
-                        }
-                    },
+                    channels: declared_channels.unwrap_or_else(|| source_buffer_channels(channels)),
                 };
                 if let Some(param) = new_def.params.get_mut(idx) {
                     param.ty = Some(FnParamType::Buffer(buf_ty.clone()));
                 }
                 if let Some(pt) = new_sig.param_types.get_mut(idx) {
                     *pt = Some(FnParamType::Buffer(buf_ty));
+                }
+            }
+            MonoParamKey::ResolvedBufferArray(elem_ty, channels, resolved_len) => {
+                let (declared_channels, len) =
+                    match original.params.get(idx).and_then(|p| p.ty.as_ref()) {
+                        Some(FnParamType::BufferArray { buffer, len }) => {
+                            (buffer.channels.clone(), *len)
+                        }
+                        None => (source_buffer_channels(channels), *resolved_len),
+                        _ => continue,
+                    };
+                let new_ty = FnParamType::BufferArray {
+                    buffer: BufferType {
+                        elem: BufferElemType::Primitive(*elem_ty),
+                        // Specialization resolves only the generic element;
+                        // the collection's declared channel contract is exact.
+                        channels: declared_channels,
+                    },
+                    len,
+                };
+                if let Some(param) = new_def.params.get_mut(idx) {
+                    param.ty = Some(new_ty.clone());
+                }
+                if let Some(param_ty) = new_sig.param_types.get_mut(idx) {
+                    *param_ty = Some(new_ty);
                 }
             }
             MonoParamKey::ResolvedTuple(elem_tys) => {
@@ -634,6 +631,19 @@ fn generate_mono_def(
                             elem: BufferElemType::Generic(ref name),
                             ..
                         })),
+                    ) if original.type_params.contains(name) => {
+                        type_bindings.insert(name.clone(), *prim);
+                    }
+                    (
+                        MonoParamKey::ResolvedBufferArray(prim, _, _),
+                        Some(FnParamType::BufferArray {
+                            buffer:
+                                BufferType {
+                                    elem: BufferElemType::Generic(ref name),
+                                    ..
+                                },
+                            ..
+                        }),
                     ) if original.type_params.contains(name) => {
                         type_bindings.insert(name.clone(), *prim);
                     }
@@ -727,6 +737,7 @@ fn generate_mono_def(
     for stmt in &mut new_def.body {
         rebase_generated_stmt(stmt, origin);
     }
+    new_sig.sync_defaults_from_def(&new_def);
 
     (new_def, new_sig)
 }
@@ -736,15 +747,21 @@ fn resolve_generic_def_type_bindings(
     sig: &FnSignature,
     type_args: &[CallTypeArg],
     args: &[CallArg],
-    env: &OverloadRewriteEnv,
+    env: &CallTypeEnv,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     call_name: &str,
     errors: &mut Vec<Diagnostic>,
-) -> HashMap<String, PrimitiveType> {
+) -> Option<HashMap<String, PrimitiveType>> {
     let mut bindings = HashMap::new();
 
     if !type_args.is_empty() {
+        if type_args
+            .iter()
+            .any(|type_arg| matches!(type_arg, CallTypeArg::Primitive(PrimitiveType::Bool)))
+        {
+            return None;
+        }
         // Explicit type args: map type_params[i] -> type_args[i]
         for (i, tp) in sig.type_params.iter().enumerate() {
             if let Some(CallTypeArg::Primitive(prim)) = type_args.get(i) {
@@ -767,6 +784,7 @@ fn resolve_generic_def_type_bindings(
             &mut Vec::new(),
         );
         let mut constraints = HashMap::<String, Vec<(PrimitiveType, bool, &Expr)>>::new();
+        let mut has_dependent_argument = false;
         for (idx, param_ty) in sig.param_types.iter().enumerate() {
             let type_param_name = match param_ty {
                 Some(FnParamType::Struct(ref name)) if sig.type_params.contains(name) => {
@@ -783,12 +801,22 @@ fn resolve_generic_def_type_bindings(
                     elem: BufferElemType::Generic(ref name),
                     ..
                 })) if sig.type_params.contains(name) => Some(name.clone()),
+                Some(FnParamType::BufferArray {
+                    buffer:
+                        BufferType {
+                            elem: BufferElemType::Generic(ref name),
+                            ..
+                        },
+                    ..
+                }) if sig.type_params.contains(name) => Some(name.clone()),
                 _ => None,
             };
             let Some(name) = type_param_name else {
                 continue;
             };
-            if let Some(Some(arg_expr)) = resolved_args.get(idx) {
+            let supplied_arg = resolved_args.get(idx).copied().flatten();
+            let arg_expr = supplied_arg.or_else(|| sig.defaults.get(idx).and_then(Option::as_ref));
+            if let Some(arg_expr) = arg_expr {
                 // For array/buffer params, infer from the arg's element type.
                 let (inferred, exact) = match param_ty {
                     Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => (
@@ -802,6 +830,17 @@ fn resolve_generic_def_type_bindings(
                         infer_buffer_arg_info(arg_expr, env).map(|(prim, _)| prim),
                         true,
                     ),
+                    Some(FnParamType::BufferArray {
+                        buffer:
+                            BufferType {
+                                elem: BufferElemType::Generic(_),
+                                ..
+                            },
+                        ..
+                    }) => (
+                        infer_buffer_arg_info(arg_expr, env).map(|(prim, _)| prim),
+                        true,
+                    ),
                     _ => (
                         infer_expr_primitive_type(arg_expr, env, return_types, struct_defs),
                         false,
@@ -812,8 +851,22 @@ fn resolve_generic_def_type_bindings(
                         .entry(name)
                         .or_default()
                         .push((prim, exact, arg_expr));
+                } else if supplied_arg.is_some() || !expr_references_type_param(arg_expr, &name) {
+                    // The argument exists, but its semantic type depends on an
+                    // enclosing specialization, or the omitted default depends
+                    // on a return type that has not converged yet. Defer this
+                    // call instead of confusing either unknown with an
+                    // argument-free generic parameter. A default that actually
+                    // references this type parameter is self-contextual and
+                    // intentionally contributes no constraint, allowing the
+                    // parameter's ordinary f32 default to break the cycle.
+                    has_dependent_argument = true;
                 }
             }
+        }
+
+        if has_dependent_argument {
+            return None;
         }
 
         for type_param in &sig.type_params {
@@ -828,34 +881,58 @@ fn resolve_generic_def_type_bindings(
                     .iter()
                     .find(|(ty, exact, _)| *exact && *ty != exact_target)
                 {
-                    errors.push(Diagnostic::semantic_span(
+                    let diagnostic = Diagnostic::semantic_span(
                         format!(
                             "generic function '{call_name}' type parameter '{type_param}' has incompatible exact argument types {} and {}",
                             exact_target.name(),
                             actual.name()
                         ),
                         expr.loc(),
-                    ));
+                    );
+                    if !errors.contains(&diagnostic) {
+                        errors.push(diagnostic);
+                    }
+                    return None;
                 }
                 exact_target
             } else {
-                let mut inferred = type_constraints[0].0;
+                let contextual_type = |actual, expr| {
+                    effective_untyped_assignment_type(expr, Some(actual)).unwrap_or(actual)
+                };
+                let mut inferred = contextual_type(type_constraints[0].0, type_constraints[0].2);
                 for (next, _, expr) in type_constraints.iter().skip(1) {
-                    let Some(merged) = merge_monomorphized_numeric_types(inferred, *next) else {
-                        errors.push(Diagnostic::semantic_span(
+                    let next = contextual_type(*next, expr);
+                    let Some(merged) = merge_inferred_return_types(inferred, next) else {
+                        let diagnostic = Diagnostic::semantic_span(
                             format!(
                                 "generic function '{call_name}' type parameter '{type_param}' has incompatible argument types {} and {}",
                                 inferred.name(),
                                 next.name()
                             ),
                             expr.loc(),
-                        ));
-                        continue;
+                        );
+                        if !errors.contains(&diagnostic) {
+                            errors.push(diagnostic);
+                        }
+                        return None;
                     };
                     inferred = merged;
                 }
                 inferred
             };
+
+            if !target.is_numeric() {
+                let diagnostic = Diagnostic::semantic_span(
+                    format!(
+                        "generic function '{call_name}' type parameter '{type_param}' inferred as bool, but generic type arguments must be numeric (f32, f64, i32, or i64)"
+                    ),
+                    type_constraints[0].2.loc(),
+                );
+                if !errors.contains(&diagnostic) {
+                    errors.push(diagnostic);
+                }
+                return None;
+            }
 
             for (actual, exact, expr) in type_constraints {
                 let compatible = if *exact {
@@ -864,137 +941,107 @@ fn resolve_generic_def_type_bindings(
                     can_assign_expr_to_type(expr, *actual, target)
                 };
                 if !compatible {
-                    errors.push(Diagnostic::semantic_span(
+                    let diagnostic = Diagnostic::semantic_span(
                         format!(
                             "generic function '{call_name}' type parameter '{type_param}' resolves to {}, but argument has type {} and cannot be implicitly converted",
                             target.name(),
                             actual.name()
                         ),
                         expr.loc(),
-                    ));
+                    );
+                    if !errors.contains(&diagnostic) {
+                        errors.push(diagnostic);
+                    }
+                    return None;
                 }
             }
             bindings.insert(type_param.clone(), target);
         }
     }
 
-    bindings
+    Some(bindings)
+}
+
+/// Returns whether an expression's type is explicitly contextualized by
+/// `type_param`. Such a default cannot independently infer that same type
+/// parameter: `T(1)` and `identity<T>(1)` acquire their type from `T`, rather
+/// than supplying a constraint for it.
+fn expr_references_type_param(expr: &Expr, type_param: &str) -> bool {
+    match expr {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
+            .iter()
+            .any(|value| expr_references_type_param(value, type_param)),
+        Expr::Index { index, .. } => expr_references_type_param(index, type_param),
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => [selector, channel, start, end]
+            .into_iter()
+            .flatten()
+            .any(|value| expr_references_type_param(value, type_param)),
+        Expr::ArrayCtor { spec, init, .. } => {
+            matches!(&spec.elem, ArrayElemType::Struct(name) if name == type_param)
+                || expr_references_type_param(&spec.size, type_param)
+                || init.as_ref().is_some_and(|values| {
+                    values
+                        .iter()
+                        .any(|value| expr_references_type_param(value, type_param))
+                })
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            expr_references_type_param(lhs, type_param)
+                || expr_references_type_param(rhs, type_param)
+        }
+        Expr::Call { args, .. } => args
+            .iter()
+            .any(|arg| expr_references_type_param(arg, type_param)),
+        Expr::UserCall {
+            name,
+            type_args,
+            args,
+            ..
+        } => {
+            name == type_param
+                || type_args
+                    .iter()
+                    .any(|arg| matches!(arg, CallTypeArg::Generic(name) if name == type_param))
+                || args
+                    .iter()
+                    .any(|arg| expr_references_type_param(&arg.expr, type_param))
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            expr_references_type_param(expr, type_param)
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => false,
+    }
 }
 
 /// Infer the primitive type of an expression for generic type inference.
 fn infer_expr_primitive_type(
     expr: &Expr,
-    env: &OverloadRewriteEnv,
+    env: &CallTypeEnv,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
-    match expr {
-        Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { .. } => untyped_literal_type(expr),
-        Expr::Bool { .. } => Some(PrimitiveType::Bool),
-        Expr::Cast { to, .. } => Some(*to),
-        Expr::Var { name, .. } => builtin_constant_type(name)
-            .or_else(|| lookup_scalar_symbol_type(name, env, struct_defs)),
-        Expr::Index { base, .. } => lookup_slice_base_elem_type(base, env),
-        Expr::UserCall { name, .. } => {
-            if let Some(return_ty) = return_types.get(name.as_str()) {
-                return return_ty.scalar();
-            }
-            None
-        }
-        Expr::Binary { op, lhs, rhs, .. } => {
-            let lhs_ty = infer_expr_primitive_type(lhs, env, return_types, struct_defs)?;
-            let rhs_ty = infer_expr_primitive_type(rhs, env, return_types, struct_defs)?;
-            let (lhs_ty, rhs_ty) = adapt_binary_operand_types(lhs, rhs, lhs_ty, rhs_ty);
-            match op {
-                BinaryOp::BitAnd
-                | BinaryOp::BitOr
-                | BinaryOp::BitXor
-                | BinaryOp::ShiftLeft
-                | BinaryOp::ShiftRight => match (lhs_ty, rhs_ty) {
-                    (PrimitiveType::I64, PrimitiveType::I32)
-                    | (PrimitiveType::I32, PrimitiveType::I64)
-                    | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
-                    (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
-                    _ => None,
-                },
-                _ => merge_monomorphized_numeric_types(lhs_ty, rhs_ty),
-            }
-        }
-        Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
-            Some(PrimitiveType::Bool)
-        }
-        Expr::UnaryBitNot { expr, .. } => {
-            let ty = infer_expr_primitive_type(expr, env, return_types, struct_defs)?;
-            matches!(ty, PrimitiveType::I32 | PrimitiveType::I64).then_some(ty)
-        }
-        Expr::Call { func, args, .. } => {
-            let arg_types = args
-                .iter()
-                .map(|arg| infer_expr_primitive_type(arg, env, return_types, struct_defs))
-                .collect::<Option<Vec<_>>>()?;
-            let arg_types = adapt_numeric_argument_types(args, &arg_types);
-            match func {
-                BuiltinFn::Abs => arg_types.first().copied(),
-                BuiltinFn::Min | BuiltinFn::Max => {
-                    merge_monomorphized_numeric_types(*arg_types.first()?, *arg_types.get(1)?)
-                }
-                BuiltinFn::RangeClamp => {
-                    let value = *arg_types.first()?;
-                    arg_types
-                        .iter()
-                        .copied()
-                        .skip(1)
-                        .try_fold(value, merge_monomorphized_numeric_types)
-                }
-                BuiltinFn::Pow
-                | BuiltinFn::Sin
-                | BuiltinFn::Cos
-                | BuiltinFn::Tan
-                | BuiltinFn::Tanh
-                | BuiltinFn::Atan
-                | BuiltinFn::Atan2
-                | BuiltinFn::Exp
-                | BuiltinFn::Log
-                | BuiltinFn::Sqrt
-                | BuiltinFn::Floor
-                | BuiltinFn::Ceil
-                | BuiltinFn::Round
-                | BuiltinFn::Trunc
-                | BuiltinFn::Fma => Some(if arg_types.contains(&PrimitiveType::F64) {
-                    PrimitiveType::F64
-                } else {
-                    PrimitiveType::F32
-                }),
-            }
-        }
-        Expr::ArrayLiteral { .. }
-        | Expr::Tuple { .. }
-        | Expr::Slice { .. }
-        | Expr::ArrayCtor { .. } => None,
-    }
-}
-
-fn merge_monomorphized_numeric_types(
-    lhs: PrimitiveType,
-    rhs: PrimitiveType,
-) -> Option<PrimitiveType> {
-    use PrimitiveType::{Bool, F32, F64, I32, I64};
-    match (lhs, rhs) {
-        (a, b) if a == b => Some(a),
-        (Bool, _) | (_, Bool) => None,
-        (F64, _) | (_, F64) => Some(F64),
-        (F32, I64) | (I64, F32) => Some(F64),
-        (F32, I32) | (I32, F32) | (F32, F32) => Some(F32),
-        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
-        (I32, I32) => Some(I32),
-    }
+    infer_scalar_expr_type(
+        expr,
+        env,
+        CallTypeContext {
+            return_types,
+            struct_defs,
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn monomorphize_calls_in_stmts(
     stmts: &mut [Stmt],
-    env: &OverloadRewriteEnv,
+    env: &CallTypeEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
     original_defs: &[FunctionDef],
@@ -1005,33 +1052,97 @@ pub(crate) fn monomorphize_calls_in_stmts(
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
     return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
-    enclosing_type_params: &[String],
-) -> OverloadRewriteEnv {
+    owner: MonoOwnerContext<'_>,
+) -> CallTypeEnv {
     let mut local_env = env.clone();
-    for stmt in stmts.iter_mut() {
-        monomorphize_calls_in_stmt(
-            stmt,
-            &mut local_env,
-            mono_eligible,
-            fn_signatures,
-            original_defs,
-            generic_templates,
-            struct_defs,
-            generated_defs,
-            generated_sigs,
-            mono_cache,
-            return_types,
-            errors,
-            enclosing_type_params,
-        );
-    }
+    monomorphize_calls_in_stmt_list_impl(
+        stmts,
+        &mut local_env,
+        mono_eligible,
+        fn_signatures,
+        original_defs,
+        generic_templates,
+        struct_defs,
+        generated_defs,
+        generated_sigs,
+        mono_cache,
+        return_types,
+        errors,
+        owner,
+    );
     local_env
+}
+
+/// Monomorphizes every runtime expression owned by a function. Parameter
+/// defaults are call sites just like body expressions, but their lexical
+/// environment is built incrementally in declaration order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn monomorphize_calls_in_function(
+    def: &mut FunctionDef,
+    env: &CallTypeEnv,
+    mono_eligible: &HashSet<String>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    original_defs: &[FunctionDef],
+    generic_templates: &HashSet<String>,
+    proc_types: &HashSet<String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    generated_defs: &mut Vec<FunctionDef>,
+    generated_sigs: &mut HashMap<String, FnSignature>,
+    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    return_types: &mut HashMap<String, ReturnType>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let type_params = def.type_params.clone();
+    let owner = MonoOwnerContext {
+        type_params: &type_params,
+        proc_types,
+        return_type_env: env,
+    };
+    let mut local_env = env.clone();
+    local_env.set_owner_type_params(&type_params);
+
+    for param in &mut def.params {
+        local_env.bind_function_param(param, &type_params);
+        if let Some(default) = &mut param.default {
+            monomorphize_calls_in_expr(
+                default,
+                &local_env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                owner,
+            );
+        }
+    }
+
+    monomorphize_calls_in_stmts(
+        &mut def.body,
+        &local_env,
+        mono_eligible,
+        fn_signatures,
+        original_defs,
+        generic_templates,
+        struct_defs,
+        generated_defs,
+        generated_sigs,
+        mono_cache,
+        return_types,
+        errors,
+        owner,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
 fn monomorphize_calls_in_stmt(
     stmt: &mut Stmt,
-    env: &mut OverloadRewriteEnv,
+    env: &mut CallTypeEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
     original_defs: &[FunctionDef],
@@ -1042,13 +1153,14 @@ fn monomorphize_calls_in_stmt(
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
     return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
-    enclosing_type_params: &[String],
-) {
+    owner: MonoOwnerContext<'_>,
+) -> StatementFlow {
     match stmt {
-        Stmt::Const { .. } => {}
+        Stmt::Const { .. } => StatementFlow::Continues,
         Stmt::Assign {
             target,
             decl_ty,
+            generic_decl_ty,
             expr,
             ..
         } => {
@@ -1065,7 +1177,7 @@ fn monomorphize_calls_in_stmt(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
             monomorphize_calls_in_expr(
                 expr,
@@ -1080,9 +1192,20 @@ fn monomorphize_calls_in_stmt(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
-            update_mono_env_after_assign(target, *decl_ty, expr, env, struct_defs, return_types);
+            update_call_type_env_after_assign(
+                target,
+                *decl_ty,
+                generic_decl_ty.as_deref(),
+                expr,
+                env,
+                CallTypeContext {
+                    return_types,
+                    struct_defs,
+                },
+            );
+            StatementFlow::Continues
         }
         Stmt::Expr { expr, .. } => {
             monomorphize_calls_in_expr(
@@ -1098,8 +1221,9 @@ fn monomorphize_calls_in_stmt(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
+            StatementFlow::Continues
         }
         Stmt::Return { expr, .. } => {
             monomorphize_calls_in_expr(
@@ -1115,8 +1239,9 @@ fn monomorphize_calls_in_stmt(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
+            StatementFlow::Terminates
         }
         Stmt::If {
             cond,
@@ -1137,79 +1262,43 @@ fn monomorphize_calls_in_stmt(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
             let mut then_env = env.clone();
-            for s in then_branch.iter_mut() {
-                monomorphize_calls_in_stmt(
-                    s,
-                    &mut then_env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    enclosing_type_params,
-                );
-            }
+            let then_flow = monomorphize_calls_in_stmt_list_impl(
+                then_branch,
+                &mut then_env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                owner,
+            );
             let mut else_env = env.clone();
-            for s in else_branch.iter_mut() {
-                monomorphize_calls_in_stmt(
-                    s,
-                    &mut else_env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    enclosing_type_params,
-                );
-            }
-            env.scalar_types = then_env
-                .scalar_types
-                .iter()
-                .filter_map(|(name, ty)| {
-                    else_env
-                        .scalar_types
-                        .get(name)
-                        .copied()
-                        .filter(|other| other == ty)
-                        .map(|_| (name.clone(), *ty))
-                })
-                .collect::<HashMap<_, _>>();
-            env.struct_instances = then_env
-                .struct_instances
-                .iter()
-                .filter_map(|(name, ty)| {
-                    else_env
-                        .struct_instances
-                        .get(name)
-                        .filter(|other| *other == ty)
-                        .map(|_| (name.clone(), ty.clone()))
-                })
-                .collect::<HashMap<_, _>>();
-            env.array_elem_types = then_env
-                .array_elem_types
-                .iter()
-                .filter_map(|(name, ty)| {
-                    else_env
-                        .array_elem_types
-                        .get(name)
-                        .copied()
-                        .filter(|other| other == ty)
-                        .map(|_| (name.clone(), *ty))
-                })
-                .collect::<HashMap<_, _>>();
+            let else_flow = monomorphize_calls_in_stmt_list_impl(
+                else_branch,
+                &mut else_env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                owner,
+            );
+            let (joined, flow) = join_branch_envs(then_env, then_flow, else_env, else_flow);
+            *env = joined;
+            flow
         }
         Stmt::For {
             var,
@@ -1232,7 +1321,7 @@ fn monomorphize_calls_in_stmt(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
             monomorphize_calls_in_expr(
                 end,
@@ -1247,7 +1336,7 @@ fn monomorphize_calls_in_stmt(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
             if let Some(step) = step {
                 monomorphize_calls_in_expr(
@@ -1263,7 +1352,7 @@ fn monomorphize_calls_in_stmt(
                     mono_cache,
                     return_types,
                     errors,
-                    enclosing_type_params,
+                    owner,
                 );
             }
             let mut body_env = env.clone();
@@ -1271,26 +1360,26 @@ fn monomorphize_calls_in_stmt(
             // resolved semantic fact available while specializing calls in the
             // body; otherwise generated helpers called with `i` silently fall
             // back to their contextual f32 template.
+            body_env.shadow_binding(var);
             body_env
                 .scalar_types
                 .insert(var.clone(), PrimitiveType::I32);
-            for s in body.iter_mut() {
-                monomorphize_calls_in_stmt(
-                    s,
-                    &mut body_env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    enclosing_type_params,
-                );
-            }
+            monomorphize_calls_in_stmt_list_impl(
+                body,
+                &mut body_env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                owner,
+            );
+            StatementFlow::Continues
         }
         Stmt::While { cond, body, .. } => {
             monomorphize_calls_in_expr(
@@ -1306,35 +1395,34 @@ fn monomorphize_calls_in_stmt(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
             let mut body_env = env.clone();
-            for s in body.iter_mut() {
-                monomorphize_calls_in_stmt(
-                    s,
-                    &mut body_env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    enclosing_type_params,
-                );
-            }
+            monomorphize_calls_in_stmt_list_impl(
+                body,
+                &mut body_env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                owner,
+            );
+            StatementFlow::Continues
         }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn monomorphize_calls_in_assign_target(
-    target: &mut AssignTarget,
-    env: &OverloadRewriteEnv,
+fn monomorphize_calls_in_stmt_list_impl(
+    stmts: &mut [Stmt],
+    env: &mut CallTypeEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
     original_defs: &[FunctionDef],
@@ -1345,7 +1433,46 @@ fn monomorphize_calls_in_assign_target(
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
     return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
-    enclosing_type_params: &[String],
+    owner: MonoOwnerContext<'_>,
+) -> StatementFlow {
+    for stmt in stmts {
+        let flow = monomorphize_calls_in_stmt(
+            stmt,
+            env,
+            mono_eligible,
+            fn_signatures,
+            original_defs,
+            generic_templates,
+            struct_defs,
+            generated_defs,
+            generated_sigs,
+            mono_cache,
+            return_types,
+            errors,
+            owner,
+        );
+        if flow == StatementFlow::Terminates {
+            return flow;
+        }
+    }
+    StatementFlow::Continues
+}
+
+#[allow(clippy::too_many_arguments)]
+fn monomorphize_calls_in_assign_target(
+    target: &mut AssignTarget,
+    env: &CallTypeEnv,
+    mono_eligible: &HashSet<String>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    original_defs: &[FunctionDef],
+    generic_templates: &HashSet<String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    generated_defs: &mut Vec<FunctionDef>,
+    generated_sigs: &mut HashMap<String, FnSignature>,
+    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    return_types: &mut HashMap<String, ReturnType>,
+    errors: &mut Vec<Diagnostic>,
+    owner: MonoOwnerContext<'_>,
 ) {
     let coordinates = match target {
         AssignTarget::Index { index, .. } => std::slice::from_mut(index),
@@ -1370,7 +1497,7 @@ fn monomorphize_calls_in_assign_target(
                     mono_cache,
                     return_types,
                     errors,
-                    enclosing_type_params,
+                    owner,
                 );
             }
             return;
@@ -1391,7 +1518,7 @@ fn monomorphize_calls_in_assign_target(
             mono_cache,
             return_types,
             errors,
-            enclosing_type_params,
+            owner,
         );
     }
 }
@@ -1399,7 +1526,7 @@ fn monomorphize_calls_in_assign_target(
 #[allow(clippy::too_many_arguments)]
 fn monomorphize_calls_in_expr(
     expr: &mut Expr,
-    env: &OverloadRewriteEnv,
+    env: &CallTypeEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
     original_defs: &[FunctionDef],
@@ -1410,7 +1537,7 @@ fn monomorphize_calls_in_expr(
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
     return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
-    enclosing_type_params: &[String],
+    owner: MonoOwnerContext<'_>,
 ) {
     match expr {
         Expr::UserCall {
@@ -1434,7 +1561,7 @@ fn monomorphize_calls_in_expr(
                     mono_cache,
                     return_types,
                     errors,
-                    enclosing_type_params,
+                    owner,
                 );
             }
 
@@ -1464,7 +1591,7 @@ fn monomorphize_calls_in_expr(
                 let mut has_forwarded = false;
                 for ta in type_args.iter() {
                     if let CallTypeArg::Generic(param) = ta {
-                        if enclosing_type_params.contains(param) {
+                        if owner.type_params.contains(param) {
                             has_forwarded = true;
                         } else {
                             errors.push(Diagnostic::semantic_span(
@@ -1484,16 +1611,19 @@ fn monomorphize_calls_in_expr(
                 }
             }
             let resolved_type_bindings: HashMap<String, PrimitiveType> = if has_def_type_params {
-                let mut bindings = resolve_generic_def_type_bindings(
+                let call_display_name = sig.display_name.as_deref().unwrap_or(name);
+                let Some(mut bindings) = resolve_generic_def_type_bindings(
                     sig,
                     type_args,
                     args,
                     env,
                     return_types,
                     struct_defs,
-                    name,
+                    call_display_name,
                     errors,
-                );
+                ) else {
+                    return;
+                };
                 for tp in &sig.type_params {
                     bindings.entry(tp.clone()).or_insert(PrimitiveType::F32);
                 }
@@ -1555,36 +1685,53 @@ fn monomorphize_calls_in_expr(
                         }
                     }
                     // buffer<T> / buffer<T[N]> — generic element type buffer param
-                    if let Some(FnParamType::Buffer(BufferType {
-                        elem: BufferElemType::Generic(ref s),
-                        channels: ref _declared_channels,
-                    })) = param_ty
-                    {
-                        if sig.type_params.contains(s) {
-                            if let Some(prim) = resolved_type_bindings.get(s) {
-                                // Infer channels from the argument
-                                let inferred_channels = resolved_args
-                                    .get(idx)
-                                    .and_then(|a| a.as_ref())
-                                    .and_then(|arg| {
-                                        infer_buffer_arg_info(arg, env).map(|(_, ch)| ch)
-                                    })
-                                    .unwrap_or(TypedBufferChannels::Mono);
-                                keys.push(MonoParamKey::ResolvedBuffer(*prim, inferred_channels));
-                                continue;
+                    if let Some(FnParamType::Buffer(buffer)) = param_ty {
+                        if let BufferElemType::Generic(s) = &buffer.elem {
+                            if sig.type_params.contains(s) {
+                                if let Some(prim) = resolved_type_bindings.get(s) {
+                                    keys.push(MonoParamKey::ResolvedBuffer(
+                                        *prim,
+                                        resolved_buffer_channels(buffer),
+                                    ));
+                                    continue;
+                                }
+                                // Fall through to Phase 3 inference
                             }
-                            // Fall through to Phase 3 inference
+                        }
+                    }
+                    // buffer<T> {N} — generic fixed buffer collection.
+                    if let Some(FnParamType::BufferArray { buffer, len }) = param_ty {
+                        if let BufferElemType::Generic(s) = &buffer.elem {
+                            if sig.type_params.contains(s) {
+                                if let Some(prim) = resolved_type_bindings.get(s) {
+                                    keys.push(MonoParamKey::ResolvedBufferArray(
+                                        *prim,
+                                        resolved_buffer_channels(buffer),
+                                        *len,
+                                    ));
+                                    continue;
+                                }
+                            }
                         }
                     }
                 }
 
-                let arg_expr = resolved_args.get(idx).copied().flatten();
+                // Defaults are effective call arguments. They must contribute
+                // exactly the same specialization shape as an explicitly
+                // supplied expression; otherwise the rewritten call and the
+                // generated function signature disagree at the MIR boundary.
+                let arg_expr = resolved_args
+                    .get(idx)
+                    .copied()
+                    .flatten()
+                    .or_else(|| sig.defaults.get(idx).and_then(Option::as_ref));
                 if let Some(arg_expr) = arg_expr {
                     if let Some(key) = infer_mono_arg_key(
                         arg_expr,
                         param_ty,
                         env,
                         generic_templates,
+                        owner.proc_types,
                         return_types,
                         struct_defs,
                     ) {
@@ -1594,9 +1741,14 @@ fn monomorphize_calls_in_expr(
                         break;
                     }
                 } else {
-                    // A genuinely shape-free parameter remains on the
-                    // non-specialized structural inference path.
-                    keys.push(MonoParamKey::Passthrough);
+                    // A genuinely missing value cannot contribute a call-site
+                    // shape. Preserve that distinction for incomplete calls so
+                    // it cannot suppress another parameter's specialization.
+                    keys.push(if param_ty.is_none() {
+                        MonoParamKey::UnresolvedStructural
+                    } else {
+                        MonoParamKey::Passthrough
+                    });
                 }
             }
 
@@ -1624,6 +1776,16 @@ fn monomorphize_calls_in_expr(
                         })) if sig.type_params.contains(s) => {
                             covered.insert(s.clone());
                         }
+                        Some(FnParamType::BufferArray {
+                            buffer:
+                                BufferType {
+                                    elem: BufferElemType::Generic(ref s),
+                                    ..
+                                },
+                            ..
+                        }) if sig.type_params.contains(s) => {
+                            covered.insert(s.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -1639,12 +1801,27 @@ fn monomorphize_calls_in_expr(
                 }
             }
 
+            let has_unresolved_structural = keys
+                .iter()
+                .any(|key| matches!(key, MonoParamKey::UnresolvedStructural));
+
+            // A deferred call must retain its source callee name so the next
+            // fixed-point iteration can reconsider every argument after nested
+            // return types become concrete. Rewriting it to an `__open`
+            // specialization would make the call ineligible for refinement.
+            if has_unresolved_structural {
+                return;
+            }
+
             if !all_resolved {
                 return;
             }
 
             // Check if all keys are passthrough (nothing to monomorphize)
-            if keys.iter().all(|k| matches!(k, MonoParamKey::Passthrough)) {
+            if keys
+                .iter()
+                .all(|key| matches!(key, MonoParamKey::Passthrough))
+            {
                 return;
             }
 
@@ -1654,33 +1831,25 @@ fn monomorphize_calls_in_expr(
             } else {
                 let new_name = mono_def_name(name, &keys);
 
-                // Find original def
-                let original = original_defs
-                    .iter()
-                    .find(|d| d.name == *name)
-                    .or_else(|| generated_defs.iter().find(|d| d.name == *name));
-
-                if let Some(original) = original {
-                    let (gen_def, gen_sig) = generate_mono_def(
-                        original,
-                        sig,
-                        &keys,
-                        &new_name,
-                        *loc,
-                        generic_templates,
-                        errors,
-                    );
-                    generated_defs.push(gen_def);
-                    generated_sigs.insert(new_name.clone(), gen_sig);
-                    refresh_monomorphized_return_types(
-                        return_types,
-                        original_defs,
-                        generated_defs,
-                        fn_signatures,
-                        generated_sigs,
-                        struct_defs,
-                    );
-                }
+                // Specializations must always clone an immutable source
+                // template. A body already rewritten for an open or different
+                // call context is not a valid template for another ABI.
+                let Some(original) = original_defs.iter().find(|d| d.name == *name) else {
+                    return;
+                };
+                let (gen_def, gen_sig) =
+                    generate_mono_def(original, sig, &keys, &new_name, *loc, errors);
+                generated_defs.push(gen_def);
+                generated_sigs.insert(new_name.clone(), gen_sig);
+                refresh_monomorphized_return_types(
+                    return_types,
+                    original_defs,
+                    generated_defs,
+                    fn_signatures,
+                    generated_sigs,
+                    owner.return_type_env,
+                    struct_defs,
+                );
 
                 mono_cache.insert(cache_key, new_name.clone());
                 new_name
@@ -1706,7 +1875,7 @@ fn monomorphize_calls_in_expr(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
             monomorphize_calls_in_expr(
                 rhs,
@@ -1721,7 +1890,7 @@ fn monomorphize_calls_in_expr(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
         }
         Expr::Call { args, .. } => {
@@ -1739,7 +1908,7 @@ fn monomorphize_calls_in_expr(
                     mono_cache,
                     return_types,
                     errors,
-                    enclosing_type_params,
+                    owner,
                 );
             }
         }
@@ -1759,7 +1928,7 @@ fn monomorphize_calls_in_expr(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
         }
         Expr::ArrayLiteral { values: elems, .. } | Expr::Tuple { values: elems, .. } => {
@@ -1777,7 +1946,7 @@ fn monomorphize_calls_in_expr(
                     mono_cache,
                     return_types,
                     errors,
-                    enclosing_type_params,
+                    owner,
                 );
             }
         }
@@ -1795,7 +1964,7 @@ fn monomorphize_calls_in_expr(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
         }
         Expr::Slice {
@@ -1819,7 +1988,7 @@ fn monomorphize_calls_in_expr(
                     mono_cache,
                     return_types,
                     errors,
-                    enclosing_type_params,
+                    owner,
                 );
             }
         }
@@ -1837,7 +2006,7 @@ fn monomorphize_calls_in_expr(
                 mono_cache,
                 return_types,
                 errors,
-                enclosing_type_params,
+                owner,
             );
             if let Some(values) = init {
                 for value in values {
@@ -1854,7 +2023,7 @@ fn monomorphize_calls_in_expr(
                         mono_cache,
                         return_types,
                         errors,
-                        enclosing_type_params,
+                        owner,
                     );
                 }
             }
@@ -1929,7 +2098,7 @@ sample:
             .iter()
             .find(|def| {
                 def.name
-                    .starts_with("Core.__arr_read_clamp_3.__mono__scalar_i32")
+                    .starts_with("Core.__arr_read_clamp_3.__onda_mono__scalar_i32")
                     && scalar_param_types(def).first() == Some(&Some(PrimitiveType::I32))
             })
             .unwrap_or_else(|| {
@@ -1945,14 +2114,19 @@ sample:
             });
         assert_eq!(
             scalar_param_types(read_helper),
-            [Some(PrimitiveType::I32), None, None, None,]
+            [
+                Some(PrimitiveType::I32),
+                Some(PrimitiveType::F32),
+                Some(PrimitiveType::F32),
+                Some(PrimitiveType::F32),
+            ]
         );
 
         let clamp = typed
             .defs
             .iter()
             .find(|def| {
-                def.name == "clamp_idx.__mono__scalar_i32__scalar_i32"
+                def.name == "clamp_idx.__onda_mono__scalar_i32__scalar_i32"
                     && scalar_param_types(def)
                         == [Some(PrimitiveType::I32), Some(PrimitiveType::I32)]
             })
@@ -1988,15 +2162,21 @@ sample:
         let first = typed
             .defs
             .iter()
-            .find(|def| def.name == "left.__mono__scalar_i32__pass")
+            .find(|def| def.name == "left.__onda_mono__scalar_i32__scalar_f32")
             .expect("missing first-parameter specialization");
         let second = typed
             .defs
             .iter()
-            .find(|def| def.name == "left.__mono__pass__scalar_i32")
+            .find(|def| def.name == "left.__onda_mono__scalar_f32__scalar_i32")
             .expect("missing second-parameter specialization");
-        assert_eq!(scalar_param_types(first), [Some(PrimitiveType::I32), None]);
-        assert_eq!(scalar_param_types(second), [None, Some(PrimitiveType::I32)]);
+        assert_eq!(
+            scalar_param_types(first),
+            [Some(PrimitiveType::I32), Some(PrimitiveType::F32)]
+        );
+        assert_eq!(
+            scalar_param_types(second),
+            [Some(PrimitiveType::F32), Some(PrimitiveType::I32)]
+        );
     }
 
     #[test]
@@ -2017,7 +2197,7 @@ sample:
 "#;
         let parsed = parse_program(source).expect("assignment target source should parse");
         let typed = crate::analyze(parsed).expect("assignment target call should analyze");
-        let specialized_name = "pick.__mono__scalar_i32";
+        let specialized_name = "pick.__onda_mono__scalar_i32";
         assert!(
             typed.defs.iter().any(|def| def.name == specialized_name),
             "the specialization used only by the assignment target must remain reachable"
@@ -2078,12 +2258,13 @@ sample:
         let expected = [
             ("i32", PrimitiveType::I32),
             ("i64", PrimitiveType::I64),
+            ("f32", PrimitiveType::F32),
             ("f64", PrimitiveType::F64),
             ("bool", PrimitiveType::Bool),
         ];
         for (suffix, primitive) in expected {
-            let leaf_name = format!("leaf.__mono__scalar_{suffix}");
-            let middle_name = format!("middle.__mono__scalar_{suffix}");
+            let leaf_name = format!("leaf.__onda_mono__scalar_{suffix}");
+            let middle_name = format!("middle.__onda_mono__scalar_{suffix}");
             let leaf = typed
                 .defs
                 .iter()
@@ -2107,27 +2288,6 @@ sample:
                 "specialization '{middle_name}' inserted an unexpected argument adaptation: {args:?}"
             );
         }
-
-        let default_leaf = typed
-            .defs
-            .iter()
-            .find(|def| def.name == "leaf")
-            .expect("missing canonical f32 leaf specialization");
-        let default_middle = typed
-            .defs
-            .iter()
-            .find(|def| def.name == "middle")
-            .expect("missing canonical f32 middle specialization");
-        assert_eq!(scalar_param_types(default_leaf), [None]);
-        assert_eq!(scalar_param_types(default_middle), [None]);
-        assert_eq!(
-            default_leaf.return_ty,
-            ReturnType::Scalar(PrimitiveType::F32)
-        );
-        assert_eq!(
-            default_middle.return_ty,
-            ReturnType::Scalar(PrimitiveType::F32)
-        );
 
         crate::lower_program_to_optimized_mir(&typed)
             .expect("every scalar specialization should lower to MIR");
@@ -2153,7 +2313,7 @@ sample:
         let wrapper = typed
             .defs
             .iter()
-            .find(|def| def.name == "wrapper.__mono__scalar_i32")
+            .find(|def| def.name == "wrapper.__onda_mono__scalar_i32")
             .expect("missing i32 wrapper specialization");
 
         assert_eq!(scalar_param_types(wrapper), [Some(PrimitiveType::I32)]);
@@ -2189,9 +2349,10 @@ sample:
         let typed = crate::analyze(parsed).expect("literal specializations should analyze");
 
         for (name, primitive) in [
-            ("identity.__mono__scalar_i32", PrimitiveType::I32),
-            ("identity.__mono__scalar_i64", PrimitiveType::I64),
-            ("identity.__mono__scalar_f64", PrimitiveType::F64),
+            ("identity.__onda_mono__scalar_i32", PrimitiveType::I32),
+            ("identity.__onda_mono__scalar_f32", PrimitiveType::F32),
+            ("identity.__onda_mono__scalar_i64", PrimitiveType::I64),
+            ("identity.__onda_mono__scalar_f64", PrimitiveType::F64),
         ] {
             let specialization = typed
                 .defs
@@ -2201,17 +2362,6 @@ sample:
             assert_eq!(scalar_param_types(specialization), [Some(primitive)]);
             assert_eq!(specialization.return_ty, ReturnType::Scalar(primitive));
         }
-        let default_f32 = typed
-            .defs
-            .iter()
-            .find(|def| def.name == "identity")
-            .expect("missing canonical f32 specialization");
-        assert_eq!(scalar_param_types(default_f32), [None]);
-        assert_eq!(
-            default_f32.return_ty,
-            ReturnType::Scalar(PrimitiveType::F32)
-        );
-
         crate::lower_program_to_optimized_mir(&typed)
             .expect("literal specializations should lower to MIR");
     }
@@ -2263,12 +2413,286 @@ sample:
         assert!(typed
             .defs
             .iter()
-            .any(|def| def.name == "wrapper.__mono__scalar_i32"));
+            .any(|def| def.name == "wrapper.__onda_mono__scalar_i32"));
         assert!(typed
             .defs
             .iter()
-            .any(|def| def.name == "inner.__mono__scalar_i32"));
+            .any(|def| def.name == "inner.__onda_mono__scalar_i32"));
         crate::lower_program_to_optimized_mir(&typed)
             .expect("nested integer specializations should lower to MIR");
+    }
+
+    #[test]
+    fn typed_parameters_do_not_suppress_f32_specialization_of_untyped_parameters() {
+        let source = r#"
+def classify(x: i32) -> f32:
+  return 1.0
+
+def classify(x: f32) -> f32:
+  return 2.0
+
+def relay(x, count: i32):
+  return classify(x) + f32(count - count)
+
+sample:
+  out1 = relay(1.0, 1)
+"#;
+        let parsed = parse_program(source).expect("mixed parameter source should parse");
+        let typed = crate::analyze(parsed)
+            .expect("the typed parameter must not suppress f32 specialization");
+
+        let relay = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "relay.__onda_mono__scalar_f32__pass")
+            .expect("missing concrete f32 relay specialization");
+        assert_eq!(
+            scalar_param_types(relay),
+            [Some(PrimitiveType::F32), Some(PrimitiveType::I32)]
+        );
+        let [Stmt::Return {
+            expr: Expr::Binary { lhs, .. },
+            ..
+        }] = relay.body.as_slice()
+        else {
+            panic!("expected relay to return a binary expression");
+        };
+        assert!(matches!(
+            lhs.as_ref(),
+            Expr::UserCall { name, .. }
+                if name.starts_with("__onda_ovl_classify") && name.ends_with("_2")
+        ));
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("the mixed-signature specialization should lower to MIR");
+    }
+
+    #[test]
+    fn nested_generated_returns_reach_a_monomorphization_fixed_point() {
+        let source = r#"
+def identity<T>(x: T):
+  return x
+
+def relay<T>(x: T):
+  return identity(x)
+
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+sample:
+  out1 = f32(integer_only(relay(1)))
+"#;
+        let parsed = parse_program(source).expect("nested generic source should parse");
+        let typed = crate::analyze(parsed)
+            .expect("generated return types should drive enclosing specialization");
+
+        for expected in [
+            "identity.__onda_mono__g_i32",
+            "relay.__onda_mono__g_i32",
+            "integer_only.__onda_mono__g_i32",
+        ] {
+            let specialization = typed
+                .defs
+                .iter()
+                .find(|def| def.name == expected)
+                .unwrap_or_else(|| panic!("missing specialization '{expected}'"));
+            assert_eq!(
+                specialization.return_ty,
+                ReturnType::Scalar(PrimitiveType::I32)
+            );
+        }
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("the converged generic chain should lower to MIR");
+    }
+
+    #[test]
+    fn dependent_nested_returns_do_not_freeze_partial_specializations() {
+        let source = r#"
+def identity<T>(value: T) -> T:
+  return value
+
+def relay<T>(value: T):
+  return identity(value)
+
+def choose(first, second):
+  return second
+
+sample:
+  result = choose(1, relay(1))
+  out1 = f32(result)
+"#;
+        let parsed = parse_program(source).expect("dependent call source should parse");
+        let typed =
+            crate::analyze(parsed).expect("the outer call should wait for the nested return type");
+
+        let expected = "choose.__onda_mono__scalar_i32__scalar_i32";
+        assert!(
+            typed.defs.iter().any(|def| def.name == expected),
+            "missing fully concrete outer specialization"
+        );
+        assert!(
+            typed
+                .defs
+                .iter()
+                .all(|def| def.name != "choose.__onda_mono__scalar_i32__open"),
+            "a deferred call was frozen as a partially open specialization"
+        );
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("the refined outer specialization should lower to MIR");
+    }
+
+    #[test]
+    fn tuple_struct_fields_supply_call_site_element_types() {
+        let source = r#"
+struct Holder:
+  values: (i32, f32) = (1, 2.0)
+
+def first(holder: Holder):
+  return holder.values[0]
+
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+init:
+  holder = Holder()
+
+sample:
+  direct = integer_only(holder.values[0])
+  nested = integer_only(first(holder))
+  out1 = f32(direct + nested)
+"#;
+        let parsed = parse_program(source).expect("tuple field source should parse");
+        let typed = crate::analyze(parsed)
+            .expect("tuple field elements should provide concrete call types");
+
+        let specialization = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "integer_only.__onda_mono__g_i32")
+            .expect("missing tuple-field-driven i32 specialization");
+        assert_eq!(
+            scalar_param_types(specialization),
+            [Some(PrimitiveType::I32)]
+        );
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("tuple-field-driven calls should lower to MIR");
+    }
+
+    #[test]
+    fn omitted_defaults_select_the_same_specialization_as_explicit_arguments() {
+        let source = r#"
+def implicit_identity(value = 1):
+  return value
+
+def generic_identity<T>(value: T = 1) -> T:
+  return value
+
+def contextual_default<T>(value: T = T(1)) -> T:
+  return value
+
+sample:
+  implicit = implicit_identity()
+  generic = generic_identity()
+  contextual = contextual_default()
+  out1 = f32(implicit + generic) + contextual
+"#;
+        let parsed = parse_program(source).expect("default specialization source should parse");
+        let typed = crate::analyze(parsed)
+            .expect("omitted defaults should provide concrete specialization types");
+
+        for expected in [
+            "implicit_identity.__onda_mono__scalar_i32",
+            "generic_identity.__onda_mono__g_i32",
+            "contextual_default.__onda_mono__g_f32",
+        ] {
+            assert!(
+                typed.defs.iter().any(|def| def.name == expected),
+                "missing default-driven specialization '{expected}'"
+            );
+        }
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("default-driven specializations should lower to MIR");
+    }
+
+    #[test]
+    fn omitted_dependent_defaults_wait_for_concrete_return_types() {
+        let source = r#"
+def identity<T>(value: T) -> T:
+  return value
+
+def produce():
+  return identity(i32(1))
+
+def consume<T>(value: T = produce()) -> T:
+  return value
+
+def need_i32(value: i32):
+  return value
+
+sample:
+  omitted = consume()
+  explicit = consume(produce())
+  out1 = f32(need_i32(omitted + explicit))
+"#;
+        let parsed = parse_program(source).expect("dependent default source should parse");
+        let typed = crate::analyze(parsed)
+            .expect("an omitted dependent default should wait for its return type");
+
+        assert!(
+            typed
+                .defs
+                .iter()
+                .any(|def| def.name == "consume.__onda_mono__g_i32"),
+            "missing return-type-driven i32 specialization"
+        );
+        assert!(
+            typed
+                .defs
+                .iter()
+                .all(|def| def.name != "consume.__onda_mono__g_f32"),
+            "the unresolved default was prematurely specialized as f32"
+        );
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("dependent-default specialization should lower to MIR");
+    }
+
+    #[test]
+    fn deferred_specializations_clone_pristine_source_templates() {
+        let source = r#"
+def helper<T>(value, marker: T):
+  return value
+
+def wrapper(value):
+  return helper(value, 1)
+
+def identity<T>(value: T):
+  return value
+
+def relay<T>(value: T):
+  return identity(value)
+
+sample:
+  out1 = f32(wrapper(relay(1)))
+"#;
+        let parsed = parse_program(source).expect("deferred specialization source should parse");
+        let typed = crate::analyze(parsed)
+            .expect("deferred specializations should use pristine source templates");
+
+        let wrapper = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "wrapper.__onda_mono__scalar_i32")
+            .expect("missing concrete wrapper specialization");
+        let (callee, _) = returned_call(wrapper);
+        assert_eq!(callee, "helper.__onda_mono__scalar_i32__g_i32");
+        assert!(
+            typed.defs.iter().any(|def| {
+                def.name == "helper.__onda_mono__scalar_i32__g_i32"
+                    && scalar_param_types(def)
+                        == [Some(PrimitiveType::I32), Some(PrimitiveType::I32)]
+            }),
+            "missing fully concrete nested helper specialization"
+        );
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("pristine-template specialization should lower to MIR");
     }
 }

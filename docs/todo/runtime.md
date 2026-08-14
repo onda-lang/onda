@@ -8,8 +8,23 @@
   - Target cases include exhaustive constant-bound loops such as `for i in 0..N: voices[i]()` where the visited entries are known at compile time.
 
 - SIMD strategy
-  - Add explicit vector DSL design (or auto-vectorization-oriented lowering passes) beyond current LLVM loop optimizations.
-  - Define stable semantics for vector math and scalar/vector interoperability.
+  - `std/convolution`'s time-domain convolver uses a mirrored history ring so its hot loop reads
+    two contiguous forward ranges without a per-tap wrap recurrence. Keep that layout covered by
+    wraparound tests; it is intentionally a standard-library fix and does not promise that every
+    backend will vectorize the loop. Native LLVM currently recognizes the cleaned-up reduction with
+    `--fast-math`, but retains vector clamps and masked gathers; strict arithmetic remains scalar
+    because reassociation would change its floating-point semantics.
+  - Eliminate fixed-array clamps only when MIR proves the index range at the individual access.
+    This requires branch refinement, canonical loop-induction facts, and a proof-consuming rewrite
+    from `Clamp` to trusted `Unchecked`; the current integer-range summary alone is insufficient.
+    The range-refined integer binding design tracked in `language.md` should provide explicit facts
+    for persistent state where whole-program inference would otherwise be required.
+  - Design a backend-neutral dot-product or multiply-reduction operation if cleaned-up scalar loops
+    still do not vectorize reliably in both LLVM and Binaryen. Define its floating-point contract
+    first: scalar-order preservation, a fixed reduction tree, or explicitly reassociated arithmetic.
+  - Add explicit vector DSL design only if portable reductions and auto-vectorization-oriented MIR
+    lowering do not cover real DSP workloads. Define stable semantics for vector math and
+    scalar/vector interoperability before exposing vector types in the language.
 
 - RT-safety verification suite
   - Add automated checks/assertions for callback-time allocation/lock regressions.
@@ -17,4 +32,3 @@
 
 - C ABI diagnostics lifecycle
   - Tighten memory ownership model for diagnostic messages and document host-side lifecycle guarantees.
-

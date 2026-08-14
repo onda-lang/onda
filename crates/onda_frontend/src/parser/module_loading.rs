@@ -1299,24 +1299,37 @@ pub fn absolute_lexical_path(path: &Path) -> std::io::Result<PathBuf> {
 /// Rejects filesystem paths that traverse a symlink while allowing a missing
 /// suffix, so hosts can still watch unresolved source candidates.
 pub fn ensure_no_symlink_components(path: &Path) -> std::io::Result<()> {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    ensure_no_symlink_components_once(&path)?;
-
-    // Keep checking the spelling supplied by the caller so `link/../file`
-    // cannot hide a traversed symlink. Also check the lexical destination:
-    // once a missing component is reached, `missing/../link` would otherwise
-    // stop the first walk before observing `link`.
-    let normalized = normalize_path_lexically(&path);
-    if normalized != path {
-        ensure_no_symlink_components_once(&normalized)?;
+    #[cfg(target_family = "wasm")]
+    {
+        // Browser sources are in-memory overlays. wasm32 has no filesystem to
+        // inspect, and some browser runtimes report `Unsupported` here before
+        // the overlay resolver gets a chance to match the document.
+        let _ = path;
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        ensure_no_symlink_components_once(&path)?;
+
+        // Keep checking the spelling supplied by the caller so `link/../file`
+        // cannot hide a traversed symlink. Also check the lexical destination:
+        // once a missing component is reached, `missing/../link` would otherwise
+        // stop the first walk before observing `link`.
+        let normalized = normalize_path_lexically(&path);
+        if normalized != path {
+            ensure_no_symlink_components_once(&normalized)?;
+        }
+        Ok(())
+    }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn ensure_no_symlink_components_once(path: &Path) -> std::io::Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {

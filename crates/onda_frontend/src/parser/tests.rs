@@ -597,7 +597,7 @@ sample {
                 lhs,
                 rhs,
                 ..
-            } if matches!(lhs.as_ref(), Expr::Number { value, .. } if *value == 0.0)
+            } if matches!(lhs.as_ref(), Expr::Int { value, .. } if *value == 0)
                 && matches!(rhs.as_ref(), Expr::Var { name, .. } if name == expected)
         )
     };
@@ -672,6 +672,43 @@ sample {
             ..
         } if matches!(lhs.as_ref(), Expr::UnaryBitNot { expr, .. }
             if matches!(expr.as_ref(), Expr::Index { base, .. } if base == "values"))
+    ));
+}
+
+#[test]
+fn negative_literals_preserve_their_numeric_kind() {
+    let program = parse_program(
+        r#"
+init {
+  integer = -1
+  float = -1.5
+}
+sample { out1 = 0.0 }
+"#,
+    )
+    .expect("negative literals should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Init(init) => Some(&init.body),
+            _ => None,
+        })
+        .expect("init block");
+
+    assert!(matches!(
+        &init[0],
+        Stmt::Assign {
+            expr: Expr::Int { value: -1, .. },
+            ..
+        }
+    ));
+    assert!(matches!(
+        &init[1],
+        Stmt::Assign {
+            expr: Expr::Number { value, .. },
+            ..
+        } if (*value + 1.5).abs() < f64::EPSILON
     ));
 }
 
@@ -1209,7 +1246,7 @@ sample {
             end_inclusive,
             ..
         } => {
-            assert!(matches!(step, Some(Expr::Binary { .. })));
+            assert!(matches!(step, Some(Expr::Int { value: -1, .. })));
             assert!(matches!(start, Expr::Int { value: 10, .. }));
             assert!(matches!(end, Expr::Int { value: 0, .. }));
             assert!(!end_inclusive);
@@ -2128,10 +2165,7 @@ sample {
     assert_eq!(params[2].control.scale, ParamScale::Linear);
     assert!(matches!(
         params[2].control.curve,
-        Some(Expr::Binary {
-            op: BinaryOp::Sub,
-            ..
-        })
+        Some(Expr::Int { value: -4, .. })
     ));
     assert_eq!(params[2].control.unit.as_deref(), Some("%"));
     assert!(params[3].range.as_ref().unwrap().min.is_none());
@@ -7066,8 +7100,8 @@ sample:
         "expected td event call to remain receiver-based, got {event_calls:?}"
     );
     assert!(
-        event_calls.iter().any(|name| name == "tail.set_impulse"),
-        "expected tail event call to remain receiver-based, got {event_calls:?}"
+        event_calls.iter().any(|name| name == "final.set_impulse"),
+        "expected final-stage event call to remain receiver-based, got {event_calls:?}"
     );
 }
 

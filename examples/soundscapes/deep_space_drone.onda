@@ -30,7 +30,7 @@ proc DroneVoice:
     out1 = tone(saw() + sine())
 
 params:
-  root_note = 33.0 {21.0, 57.0, step = 1.0}
+  root_note = 33 {21, 57}
   motion = 0.38 {0.0, 1.0}
   brightness = 1900.0 {180.0, 9000.0, log, "Hz"}
   air = 0.08 {0.0, 0.4}
@@ -49,19 +49,19 @@ init:
 
   for i in 0..VoiceCount:
     voices[i].note = root_note + Intervals[i]
-    voices[i].drift_rate = 0.011 + f32(i) * 0.007
-    voices[i].drift_depth = 0.0004 + motion * (0.0012 + f32(i) * 0.00035)
-    voices[i].brightness = brightness * (0.72 + f32(i) * 0.11)
+    voices[i].drift_rate = 0.011 + i * 0.007
+    voices[i].drift_depth = 0.0004 + motion * (0.0012 + i * 0.00035)
+    voices[i].brightness = brightness * (0.72 + i * 0.11)
 
 sample:
   dry_l = 0.0
   dry_r = 0.0
   for i in 0..VoiceCount:
     voices[i].note = root_note + Intervals[i]
-    voices[i].drift_depth = 0.0004 + motion * (0.0012 + f32(i) * 0.00035)
-    voices[i].brightness = brightness * (0.72 + f32(i) * 0.11)
-    voice = voices[i]() * (0.52 / f32(VoiceCount))
-    pan = -0.86 + 1.72 * f32(i) / f32(VoiceCount - 1)
+    voices[i].drift_depth = 0.0004 + motion * (0.0012 + i * 0.00035)
+    voices[i].brightness = brightness * (0.72 + i * 0.11)
+    voice = voices[i]() * (0.52 / VoiceCount)
+    pan = -0.86 + 1.72 * i / (VoiceCount - 1)
     (gain_l, gain_r) = std::levels::pan_3db(pan)
     dry_l = dry_l + voice * gain_l
     dry_r = dry_r + voice * gain_r

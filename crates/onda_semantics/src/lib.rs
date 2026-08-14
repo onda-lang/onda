@@ -489,12 +489,25 @@ pub struct TypedNestedProcArray {
 #[derive(Debug, Clone)]
 pub(crate) struct ArrayStructRootInfo {
     pub(crate) struct_name: String,
+    /// Physical flattening extent used by aggregate lowering. Unsized
+    /// function parameters use one element as their local layout unit.
     pub(crate) len: usize,
+    /// Source-visible fixed length, when the root has one. This stays `None`
+    /// for `Struct[]` parameters so call validation never mistakes the local
+    /// layout unit for a declared one-element contract.
+    pub(crate) static_len: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct LocalArrayAliasInfo {
+    /// Physical extent or conservative layout hint used by semantic lowering.
+    /// This is not necessarily a source-level fixed-length guarantee: slices
+    /// and unsized function parameters still need a non-zero local extent.
     pub(crate) len: usize,
+    /// Source-visible fixed length, when the binding has one. Keeping this
+    /// separate from `len` prevents lowering placeholders from satisfying a
+    /// fixed-array call contract.
+    pub(crate) static_len: Option<usize>,
     pub(crate) elem_ty: PrimitiveType,
     pub(crate) elem_struct: Option<String>,
     pub(crate) writable: bool,
@@ -3515,6 +3528,34 @@ sample:
     }
 
     #[test]
+    fn runtime_const_array_indexes_publish_element_return_types() {
+        let src = r#"
+const Table: i32[2] = [1, 2]
+
+def lookup(index: i32):
+  return Table[index]
+
+def consume(value: i32):
+  return value
+
+params:
+  index: i32 = 0
+
+sample:
+  out1 = f32(consume(lookup(index)))
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("const array element types should be visible to def return inference");
+
+        assert!(typed.defs.iter().any(|function| {
+            function.name == "lookup"
+                && function.return_ty == ReturnType::Scalar(PrimitiveType::I32)
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("runtime const-array lookup should lower to MIR");
+    }
+
+    #[test]
     fn const_array_len_and_static_index_are_compile_time_evaluable() {
         let src = r#"
 const Table: i32[3] = [2, 4, 8]
@@ -4188,6 +4229,67 @@ sample:
             .expect("typed const array");
         assert_eq!(table.elem_ty, PrimitiveType::I64);
         assert_eq!(table.values, vec![TypedConstValue::I64(9007199254740993)]);
+    }
+
+    #[test]
+    fn folded_intrinsics_preserve_every_numeric_scalar_type_and_precision() {
+        let src = r#"
+const I32Value = min(i32(1024), 4096)
+const I64Value = min(i64(9007199254740993), 9007199254740995)
+const F32Value = fma(f32(16777217), f32(1), f32(-16777216))
+const F64Value = min(f64(1.0000000000000002), f64(1.0000000000000004))
+
+const I32Values: i32[3] = [I32Value, max(i32(-7), -3), abs(i32(-11))]
+const I64Values: i64[3] = [
+  I64Value,
+  max(i64(9007199254740993), 9007199254740995),
+  abs(i64(-9007199254740993)),
+]
+const F32Values: f32[1] = [F32Value]
+const F64Values: f64[1] = [F64Value]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(I32Value >> 3) + f32(I64Value >> 53) + F32Value + f32(F64Value)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("typed intrinsic constants should analyze");
+
+        let values = |name: &str| {
+            typed
+                .const_arrays
+                .iter()
+                .find(|array| array.name == name)
+                .unwrap_or_else(|| panic!("missing const array '{name}'"))
+                .values
+                .clone()
+        };
+        assert_eq!(
+            values("I32Values"),
+            vec![
+                TypedConstValue::I32(1024),
+                TypedConstValue::I32(-3),
+                TypedConstValue::I32(11),
+            ]
+        );
+        assert_eq!(
+            values("I64Values"),
+            vec![
+                TypedConstValue::I64(9007199254740993),
+                TypedConstValue::I64(9007199254740995),
+                TypedConstValue::I64(9007199254740993),
+            ]
+        );
+        assert_eq!(values("F32Values"), vec![TypedConstValue::F32(0.0)]);
+        assert_eq!(
+            values("F64Values"),
+            vec![TypedConstValue::F64(1.0000000000000002)]
+        );
+
+        lower_program_to_optimized_mir(&typed)
+            .expect("typed folded intrinsics should lower to MIR without casts at use sites");
     }
 
     #[test]
@@ -5915,6 +6017,1880 @@ sample:
     }
 
     #[test]
+    fn generic_calls_use_argument_types_consistently_in_every_executable_owner() {
+        let cases = [
+            (
+                "sample",
+                r#"
+def float_only<T>(x: T):
+  return exp(x)
+params:
+  value = 1 {0, 10}
+sample:
+  out1 = float_only(value)
+"#,
+            ),
+            (
+                "block",
+                r#"
+def float_only<T>(x: T):
+  return exp(x)
+params:
+  value = 1 {0, 10}
+block:
+  held = float_only(value)
+  sample:
+    out1 = held
+"#,
+            ),
+            (
+                "event",
+                r#"
+def float_only<T>(x: T):
+  return exp(x)
+init:
+  held = 0.0
+events:
+  set(value: i32):
+    held = float_only(value)
+sample:
+  out1 = held
+"#,
+            ),
+            (
+                "def",
+                r#"
+def float_only<T>(x: T):
+  return exp(x)
+def caller(value: i32):
+  return float_only(value)
+sample:
+  out1 = caller(1)
+"#,
+            ),
+            (
+                "proc",
+                r#"
+def float_only<T>(x: T):
+  return exp(x)
+proc Voice:
+  params:
+    value: i32 = 1
+  sample:
+    out1 = float_only(value)
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#,
+            ),
+        ];
+
+        for (owner, source) in cases {
+            let program = parse_program(source)
+                .unwrap_or_else(|error| panic!("{owner} source should parse: {error:?}"));
+            let errors = match analyze(program) {
+                Err(errors) => errors,
+                Ok(_) => panic!("{owner} must specialize float_only as i32"),
+            };
+            assert!(
+                errors.iter().any(|diagnostic| {
+                    diagnostic.message.contains("float_only")
+                        && diagnostic.message.contains("requires float arguments")
+                        && diagnostic.message.contains("I32")
+                }),
+                "{owner} used a different generic specialization rule: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn call_inference_uses_runtime_numeric_merge_rules() {
+        let source = r#"
+def identity(value):
+  return value
+
+params:
+  narrow: f32 = 1.0
+  wide_integer: i64 = 2
+
+sample:
+  from_binary = identity(narrow + wide_integer)
+  from_builtin = identity(max(narrow, wide_integer))
+  out1 = from_binary + from_builtin
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("call inference must agree with runtime expression typing");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "identity.__onda_mono__scalar_f32"));
+        assert!(!typed
+            .defs
+            .iter()
+            .any(|function| function.name == "identity.__onda_mono__scalar_f64"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("consistently inferred numeric expressions should lower to MIR");
+    }
+
+    #[test]
+    fn preexisting_scalar_type_controls_specialization_across_branches() {
+        let source = r#"
+def identity(value):
+  return value
+
+params:
+  select: bool = true
+
+sample:
+  chosen = f64(0)
+  if select:
+    chosen = f32(1)
+  else:
+    chosen = i64(2)
+  out1 = f32(identity(chosen))
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("branch assignments should retain the established scalar type");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "identity.__onda_mono__scalar_f64"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("joined branch scalar types should lower to MIR");
+    }
+
+    #[test]
+    fn branch_local_numeric_types_join_before_specialization_and_lowering() {
+        let source = r#"
+def identity(value):
+  return value
+
+def tuple_id(value):
+  return value
+
+def pick(flag: bool):
+  if flag:
+    value = f32(1)
+  else:
+    value = i64(2)
+  return value
+
+params:
+  select: bool = true
+
+sample:
+  if select:
+    chosen = i64(1)
+    pair = (i32(2), f32(3))
+  else:
+    chosen = i32(4)
+    pair = (i64(5), i32(6))
+  joined_pair = tuple_id(pair)
+  out1 = f32(identity(chosen) + joined_pair[0] + pick(select)) + joined_pair[1]
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("branch-local numeric values should have deterministic common types");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "identity.__onda_mono__scalar_i64"));
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "tuple_id.__onda_mono__tup_i64_f32"));
+        assert!(typed.defs.iter().any(|function| function.name == "pick"
+            && function.return_ty == ReturnType::Scalar(PrimitiveType::F64)));
+        lower_program_to_optimized_mir(&typed)
+            .expect("branch-local numeric joins should be represented in MIR");
+    }
+
+    #[test]
+    fn incompatible_branch_local_scalar_types_are_semantic_errors() {
+        let source = r#"
+params:
+  select: bool = true
+
+sample:
+  if select:
+    chosen = true
+  else:
+    chosen = 1
+  out1 = f32(chosen)
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("a branch-local value needs one representable type");
+        assert!(errors.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("binding 'chosen' has incompatible branch types: bool and i32")));
+    }
+
+    #[test]
+    fn first_assignment_defaults_drive_call_specialization() {
+        let source = r#"
+def identity(value):
+  return value
+
+def first(values: []):
+  return values[0]
+
+def local_first():
+  values = [PI]
+  return first(values)
+
+init:
+  state_values = [PI]
+
+sample:
+  scalar = PI
+  values = [PI]
+  out1 = identity(scalar) + first(values) + first(state_values) + local_first()
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("call inference should use the types assigned to untyped locals");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "identity.__onda_mono__scalar_f32"));
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "first.__onda_mono__arr_f32"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("defaulted scalar and array locals should lower consistently");
+    }
+
+    #[test]
+    fn generic_constraints_contextualize_pure_numeric_arguments() {
+        let source = r#"
+def identity<T>(value: T) -> T:
+  return value
+
+def choose<T>(left: T, right: T) -> T:
+  return left + right
+
+def first<T>(values: T[]) -> T:
+  return values[0]
+
+params:
+  narrow: f32 = 1.0
+
+sample:
+  out1 = identity(PI) + choose(PI, narrow) + first([PI]) + f32(identity(2147483648 + 0))
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("pure numeric arguments should adopt an available call-site context");
+        for specialization in [
+            "identity.__onda_mono__g_f32",
+            "identity.__onda_mono__g_i64",
+            "choose.__onda_mono__g_f32__g_f32",
+            "first.__onda_mono__arr_f32",
+        ] {
+            assert!(
+                typed
+                    .defs
+                    .iter()
+                    .any(|function| function.name == specialization),
+                "missing f32 specialization '{specialization}': {:?}",
+                typed
+                    .defs
+                    .iter()
+                    .map(|function| function.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+        lower_program_to_optimized_mir(&typed)
+            .expect("contextual generic constraints should lower consistently");
+    }
+
+    #[test]
+    fn explicit_cast_selects_float_generic_specialization_in_every_executable_owner() {
+        let cases = [
+            r#"
+def float_only<T>(x: T):
+  return exp(x)
+params:
+  value = 1 {0, 10}
+sample:
+  out1 = float_only(f32(value))
+"#,
+            r#"
+def float_only<T>(x: T):
+  return exp(x)
+params:
+  value = 1 {0, 10}
+block:
+  held = float_only(f32(value))
+  sample:
+    out1 = held
+"#,
+            r#"
+def float_only<T>(x: T):
+  return exp(x)
+init:
+  held = 0.0
+events:
+  set(value: i32):
+    held = float_only(f32(value))
+sample:
+  out1 = held
+"#,
+            r#"
+def float_only<T>(x: T):
+  return exp(x)
+def caller(value: i32):
+  return float_only(f32(value))
+sample:
+  out1 = caller(1)
+"#,
+            r#"
+def float_only<T>(x: T):
+  return exp(x)
+proc Voice:
+  params:
+    value: i32 = 1
+  sample:
+    out1 = float_only(f32(value))
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#,
+        ];
+
+        for source in cases {
+            let program = parse_program(source).expect("explicit-cast source should parse");
+            analyze(program).expect("an explicit cast should select the f32 specialization");
+        }
+    }
+
+    #[test]
+    fn overload_resolution_uses_the_same_call_type_environment() {
+        let cases = [
+            (
+                "compiler-generated parameter alias",
+                r#"
+def classify(x: i32) -> f32:
+  return 1.0
+def classify(x: f32) -> f32:
+  return 2.0
+params:
+  value = 1 {0, 10}
+sample:
+  out1 = classify(value)
+"#,
+            ),
+            (
+                "event parameter",
+                r#"
+def classify(x: i32) -> f32:
+  return 1.0
+def classify(x: f32) -> f32:
+  return 2.0
+init:
+  held = 0.0
+events:
+  set(value: i32):
+    held = classify(value)
+sample:
+  out1 = held
+"#,
+            ),
+            (
+                "loop index",
+                r#"
+def classify(x: i32) -> f32:
+  return 1.0
+def classify(x: f32) -> f32:
+  return 2.0
+sample:
+  total = 0.0
+  for i in 0..2:
+    total = total + classify(i)
+  out1 = total
+"#,
+            ),
+        ];
+
+        for (binding, source) in cases {
+            let program = parse_program(source)
+                .unwrap_or_else(|error| panic!("{binding} source should parse: {error:?}"));
+            analyze(program).unwrap_or_else(|errors| {
+                panic!("{binding} should select the i32 overload: {errors:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn overload_resolution_applies_contextual_aggregate_conversions() {
+        let source = r#"
+def array_choice(values: f64[]) -> f64:
+  return values[0]
+
+def array_choice(values: bool[]) -> f64:
+  return 0.0
+
+def tuple_choice(values: (f64, i32)) -> f64:
+  return values[0]
+
+def tuple_choice(values: (bool, bool)) -> f64:
+  return 0.0
+
+sample:
+  values = (1.0, 2)
+  from_array = array_choice([1.0])
+  from_literal_tuple = tuple_choice((1.0, 2))
+  from_tuple_value = tuple_choice(values)
+  out1 = f32(from_array + from_literal_tuple + from_tuple_value)
+"#;
+        let program = parse_program(source).expect("aggregate overload source should parse");
+        let typed = analyze(program)
+            .expect("contextually assignable aggregates should select the numeric overloads");
+        lower_program_to_optimized_mir(&typed)
+            .expect("contextual aggregate conversions should lower to MIR");
+    }
+
+    #[test]
+    fn overload_resolution_applies_contextual_constant_conversions() {
+        let source = r#"
+def choose(value: f32) -> f32:
+  return value
+
+def choose(value: bool) -> f32:
+  return 0.0
+
+def tuple_id(value):
+  return value
+
+sample:
+  tuple_value = tuple_id((PI, 1))
+  out1 = choose(PI) + tuple_value[0]
+"#;
+        let program = parse_program(source).expect("constant overload source should parse");
+        let typed = analyze(program)
+            .expect("a pure numeric constant should select its assignable f32 overload");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "tuple_id.__onda_mono__tup_f32_i32"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("contextual constant conversion should lower to MIR");
+    }
+
+    #[test]
+    fn tuple_call_arguments_reject_implicit_narrowing() {
+        let cases = [
+            r#"
+def choose(values: (f32, i32)):
+  return values[0]
+
+sample:
+  values = (f64(1.0), 2)
+  out1 = choose(values)
+"#,
+            r#"
+def make() -> (f64, i32):
+  return (f64(1.0), 2)
+
+def choose(values: (f32, i32)):
+  return values[0]
+
+sample:
+  out1 = choose(make())
+"#,
+        ];
+
+        for source in cases {
+            let program = parse_program(source).expect("tuple narrowing source should parse");
+            let errors = analyze(program).expect_err("tuple arguments must not narrow implicitly");
+            assert!(
+                errors.iter().any(|diagnostic| {
+                    diagnostic.message.contains("tuple element 0 type mismatch")
+                        && diagnostic.message.contains("f64")
+                        && diagnostic.message.contains("f32")
+                }),
+                "missing tuple narrowing diagnostic: {errors:?}"
+            );
+        }
+
+        let default_source = r#"
+def choose(values: (f32, i32) = (f64(1.0), 2)):
+  return values[0]
+
+sample:
+  out1 = choose()
+"#;
+        let program = parse_program(default_source).expect("tuple default source should parse");
+        let errors = analyze(program).expect_err("tuple defaults must not narrow implicitly");
+        assert!(
+            errors.iter().any(|diagnostic| {
+                diagnostic
+                    .message
+                    .contains("function 'choose' argument 'values'")
+                    && diagnostic.message.contains("cannot assign F64 to F32")
+            }),
+            "missing tuple default narrowing diagnostic: {errors:?}"
+        );
+
+        let scalar_source = r#"
+def make() -> f32:
+  return 1.0
+
+def choose(values: (f32, i32)):
+  return values[0]
+
+sample:
+  out1 = choose(make())
+"#;
+        let program =
+            parse_program(scalar_source).expect("scalar tuple argument source should parse");
+        let errors = analyze(program).expect_err("a scalar return is not a tuple argument");
+        assert!(
+            errors.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("parameter 'values' expects a tuple value")),
+            "missing scalar-to-tuple diagnostic: {errors:?}"
+        );
+
+        let tuple_source = r#"
+def make() -> (f32, i32):
+  return (1.0, 2)
+
+def choose(value: f32):
+  return value
+
+sample:
+  out1 = choose(make())
+"#;
+        let program =
+            parse_program(tuple_source).expect("tuple scalar argument source should parse");
+        let errors = analyze(program).expect_err("a tuple return is not a scalar argument");
+        assert!(
+            errors.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("parameter 'value' expects a scalar value")),
+            "missing tuple-to-scalar diagnostic: {errors:?}"
+        );
+
+        let shape_cases = [
+            (
+                r#"
+def choose(value: (f32, i32)):
+  return value[0]
+
+sample:
+  values = [1.0, 2.0]
+  out1 = choose(values)
+"#,
+                "parameter 'value' expects a tuple value",
+            ),
+            (
+                r#"
+def choose(value: f32[]):
+  return value[0]
+
+sample:
+  values = (1.0, 2)
+  out1 = choose(values)
+"#,
+                "parameter 'value' expects an array value",
+            ),
+            (
+                r#"
+def choose(value: f32):
+  return value
+
+sample:
+  values = [1.0, 2.0]
+  out1 = choose(values)
+"#,
+                "parameter 'value' expects a scalar value",
+            ),
+        ];
+        for (source, expected) in shape_cases {
+            let program = parse_program(source).expect("aggregate shape source should parse");
+            let errors = analyze(program).expect_err("aggregate argument shape must match");
+            assert!(
+                errors
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected)),
+                "missing aggregate shape diagnostic '{expected}': {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn overload_resolution_uses_builtin_result_types() {
+        let source = r#"
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+params:
+  value = 1 {0, 10}
+
+sample:
+  selected: i32 = classify(abs(value))
+  out1 = f32(selected)
+"#;
+        let program = parse_program(source).expect("builtin overload source should parse");
+        analyze(program).expect("abs(i32) should select the i32 overload");
+    }
+
+    #[test]
+    fn overload_resolution_uses_user_call_return_types() {
+        let source = r#"
+def make() -> i32:
+  return 1
+
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+sample:
+  selected: i32 = classify(make())
+  out1 = f32(selected)
+"#;
+        let program = parse_program(source).expect("nested call overload source should parse");
+        analyze(program).expect("an i32-returning call should select the i32 overload");
+    }
+
+    #[test]
+    fn user_methods_named_like_resource_builtins_keep_their_declared_return_types() {
+        let source = r#"
+struct Ops:
+  def len(self) -> f64:
+    return f64(1)
+
+  def chans(self) -> f64:
+    return f64(2)
+
+  def samplerate(self) -> i64:
+    return i64(3)
+
+def identity<T>(value: T) -> T:
+  return value
+
+def classify(value: i32) -> f64:
+  return f64(value)
+
+def classify(value: f64) -> f64:
+  return value
+
+init:
+  ops = Ops()
+
+sample:
+  selected: f64 = classify(ops.len())
+  out1 = f32(selected + identity(ops.chans()) + f64(identity(ops.samplerate())))
+"#;
+        let program = parse_program(source).expect("resource-named method source should parse");
+        let typed = analyze(program)
+            .expect("user methods must take precedence over builtin instance method spellings");
+        assert!(typed.defs.iter().any(|function| {
+            function.name == "identity.__onda_mono__g_f64"
+                && function.return_ty == ReturnType::Scalar(PrimitiveType::F64)
+        }));
+        assert!(typed.defs.iter().any(|function| {
+            function.name == "identity.__onda_mono__g_i64"
+                && function.return_ty == ReturnType::Scalar(PrimitiveType::I64)
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("resource-named method calls should lower with their declared types");
+    }
+
+    #[test]
+    fn method_self_fields_drive_generic_specialization() {
+        let source = r#"
+def float_only<T>(x: T):
+  return exp(x)
+
+struct Counter<T>:
+  value: T
+
+  def read(self):
+    return float_only(self.value)
+
+init:
+  counter = Counter<i32>(1)
+
+sample:
+  out1 = counter.read()
+"#;
+        let program = parse_program(source).expect("method specialization source should parse");
+        let errors = analyze(program).expect_err("self.value must specialize as i32");
+        assert!(
+            errors.iter().any(|diagnostic| {
+                diagnostic.message.contains("float_only")
+                    && diagnostic.message.contains("requires float arguments")
+                    && diagnostic.message.contains("I32")
+            }),
+            "method self field selected the wrong specialization: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn concrete_method_self_publishes_return_types_for_nested_specialization() {
+        let source = r#"
+struct Cell<T>:
+  value: T
+
+  def read(self):
+    return self.value
+
+  def set(self, value):
+    self.value = value
+
+  def copy_value(self):
+    self.set(self.read())
+
+init:
+  cell = Cell<f64>(f64(1))
+  cell.copy_value()
+
+sample:
+  out1 = f32(cell.read())
+"#;
+        let program = parse_program(source).expect("nested method source should parse");
+        let typed = analyze(program).expect("the concrete self type must publish read() as f64");
+        assert!(typed.defs.iter().any(|function| {
+            function
+                .name
+                .contains("Cell.__gen__f64.set.__onda_mono__pass__scalar_f64")
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the nested f64 method specialization should lower to MIR");
+    }
+
+    #[test]
+    fn synthetic_param_surface_preserves_its_element_type_for_specialization() {
+        let source = r#"
+def float_only<T>(x: T):
+  return exp(x)
+
+params<i32> 2
+
+sample:
+  out1 = float_only(params[0])
+"#;
+        let program = parse_program(source).expect("indexed param source should parse");
+        let errors = analyze(program).expect_err("params[i] must specialize as i32");
+        assert!(
+            errors.iter().any(|diagnostic| {
+                diagnostic.message.contains("float_only")
+                    && diagnostic.message.contains("requires float arguments")
+                    && diagnostic.message.contains("I32")
+            }),
+            "synthetic params surface selected the wrong specialization: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn overloads_in_generic_templates_resolve_after_specialization() {
+        let source = r#"
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+def relay<T>(x: T) -> T:
+  return classify(x)
+
+sample:
+  out1 = f32(relay(1))
+"#;
+        let program = parse_program(source).expect("generic overload source should parse");
+        let typed = analyze(program).expect("the generated relay must replay overload resolution");
+        assert!(typed.defs.iter().any(|function| {
+            function.name.contains("relay.__onda_mono__g_i32")
+                && function.return_ty == ReturnType::Scalar(PrimitiveType::I32)
+        }));
+    }
+
+    #[test]
+    fn dependent_tuple_elements_defer_until_specialization() {
+        let source = r#"
+def integer_first(values):
+  return ~values[0]
+
+def relay<T>(x: T):
+  return integer_first((x, x))
+
+sample:
+  out1 = f32(relay(1))
+"#;
+        let program = parse_program(source).expect("dependent tuple source should parse");
+        let typed = analyze(program).expect("dependent tuple elements should resolve as i32");
+        assert!(typed.defs.iter().any(|function| function
+            .name
+            .contains("integer_first.__onda_mono__tup_i32_i32")));
+    }
+
+    #[test]
+    fn slice_aliases_preserve_element_types_for_specialization() {
+        let source = r#"
+const Values: i32[1] = [1]
+
+def integer_first(values: []):
+  return ~values[0]
+
+sample:
+  alias = Values[0:1]
+  out1 = f32(integer_first(alias))
+"#;
+        let program = parse_program(source).expect("slice alias source should parse");
+        let typed = analyze(program).expect("a slice alias should preserve its i32 elements");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_first.__onda_mono__arr_i32")));
+    }
+
+    #[test]
+    fn branch_call_types_use_the_runtime_numeric_join() {
+        let source = r#"
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+sample:
+  if true:
+    value = 1
+  else:
+    value = 1.0
+  out1 = f32(classify(value))
+"#;
+        let program = parse_program(source).expect("branch inference source should parse");
+        let typed =
+            analyze(program).expect("numeric branches should select one predictable common type");
+        assert!(typed.defs.iter().any(|function| matches!(
+            function.param_kinds.as_slice(),
+            [TypedFnParam::Scalar {
+                ty: Some(PrimitiveType::F32)
+            }]
+        )));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the overload-selected branch join should lower to MIR");
+    }
+
+    #[test]
+    fn loop_index_fully_shadows_same_named_aggregate_root() {
+        let source = r#"
+ins:
+  i: f32[2] = [0.0, 0.0]
+
+sample:
+  for i in 0..2:
+    out1 = i[0]
+"#;
+        let program = parse_program(source).expect("loop root shadowing source should parse");
+        let errors = analyze(program).expect_err("a scalar loop index cannot retain array shape");
+        assert!(
+            errors.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("loop variable 'i' is scalar and cannot be indexed")),
+            "missing lexical-root shadowing diagnostic: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn loop_index_fully_shadows_same_named_assignment_root() {
+        let source = r#"
+init:
+  i: f32[2]
+  for i in 0..2:
+    i[0] = 1.0
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(source).expect("loop target shadowing source should parse");
+        let errors = analyze(program).expect_err("a scalar loop index cannot mutate an array");
+        assert!(
+            errors.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("loop variable 'i' is scalar and cannot be indexed")),
+            "missing assignment-root shadowing diagnostic: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn buffer_alias_preserves_shape_for_monomorphization() {
+        let source = r#"
+def read_first(buf: buffer):
+  return buf[0]
+buffers:
+  bank: f64 {2}
+sample:
+  source = bank[0]
+  out1 = f32(read_first(source))
+"#;
+        let program = parse_program(source).expect("buffer alias source should parse");
+        let typed = analyze(program).expect("buffer alias type should remain f64");
+        let specialization = typed
+            .defs
+            .iter()
+            .find(|function| function.name.contains("read_first.__onda_mono__buf_f64"))
+            .expect("missing f64 buffer specialization");
+        assert!(matches!(
+            specialization.param_kinds.as_slice(),
+            [TypedFnParam::Buffer {
+                elem_ty: PrimitiveType::F64,
+                ..
+            }]
+        ));
+        assert_eq!(
+            specialization.return_ty,
+            ReturnType::Scalar(PrimitiveType::F64)
+        );
+    }
+
+    #[test]
+    fn reassignment_preserves_the_binding_type_for_call_inference() {
+        let source = r#"
+def float_only<T>(x: T):
+  return exp(x)
+
+init:
+  held = 0.0
+
+block:
+  held = 1
+
+sample:
+  out1 = float_only(held)
+"#;
+        let program = parse_program(source).expect("reassignment source should parse");
+        let typed = analyze(program).expect("held remains f32 after assigning an integer literal");
+        assert!(
+            typed
+                .defs
+                .iter()
+                .any(|function| function.name.contains("float_only.__onda_mono__g_f32")),
+            "the call must use the target binding's f32 type"
+        );
+    }
+
+    #[test]
+    fn reassignment_preserves_the_binding_type_for_overload_resolution() {
+        let source = r#"
+def classify(x: i32) -> f32:
+  return 1.0
+
+def classify(x: f32) -> f32:
+  return 2.0
+
+init:
+  held = 0.0
+
+block:
+  held = 1
+
+sample:
+  out1 = classify(held)
+"#;
+        let program = parse_program(source).expect("overload reassignment source should parse");
+        analyze(program).expect("held should continue selecting the f32 overload");
+    }
+
+    #[test]
+    fn struct_field_reassignment_preserves_declared_call_type() {
+        let source = r#"
+def identity<T>(x: T) -> T:
+  return x
+
+struct Holder:
+  value: f64
+
+init:
+  holder = Holder(f64(0))
+  holder.value = 1.0
+
+sample:
+  out1 = f32(identity(holder.value))
+"#;
+        let program = parse_program(source).expect("field reassignment source should parse");
+        let typed = analyze(program).expect("holder.value must retain its declared f64 type");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("identity.__onda_mono__g_f64")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the f64 field specialization should lower to MIR");
+    }
+
+    #[test]
+    fn concrete_tuple_parameters_seed_nested_call_inference() {
+        let source = r#"
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+def relay(values: (i32, f32)):
+  return integer_only(values[0])
+
+sample:
+  out1 = f32(relay((1, 2.0)))
+"#;
+        let program = parse_program(source).expect("tuple parameter source should parse");
+        let typed = analyze(program).expect("values[0] must specialize integer_only as i32");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the tuple-driven specialization should lower to MIR");
+    }
+
+    #[test]
+    fn tuple_struct_field_aliases_and_destructuring_preserve_call_types() {
+        let source = r#"
+struct Holder:
+  values: (i32, f32) = (1, 2.0)
+
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+init:
+  holder = Holder()
+
+sample:
+  alias = holder.values
+  (first, second) = holder.values
+  selected: i32 = classify(alias[0])
+  out1 = f32(integer_only(alias[0]) + integer_only(first) + selected) + second
+"#;
+        let program = parse_program(source).expect("tuple field alias source should parse");
+        let typed = analyze(program)
+            .expect("tuple field aliases and destructuring must retain their element types");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("tuple field aliases should lower with concrete call types");
+    }
+
+    #[test]
+    fn def_tuple_aliases_preserve_parameter_and_return_element_types() {
+        let source = r#"
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+def make_pair() -> (i32, f32):
+  return (1, 2.0)
+
+def relay(values: (i32, f32)) -> i32:
+  alias = values
+  (first, second) = alias
+  return integer_only(alias[0]) + integer_only(first) + i32(second)
+
+sample:
+  pair = make_pair()
+  out1 = f32(relay(pair) + integer_only(pair[0]))
+"#;
+        let program = parse_program(source).expect("def tuple alias source should parse");
+        let typed = analyze(program)
+            .expect("tuple aliases must preserve element types in defs and executable scopes");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("tuple parameter and return aliases should lower to MIR");
+    }
+
+    #[test]
+    fn inferred_returns_use_contextual_literal_types() {
+        let source = r#"
+def choose(x: f32) -> f32:
+  return x
+
+def choose(x: f64) -> f64:
+  return x
+
+def computed(x: f32):
+  return x + 2147483648
+
+sample:
+  out1 = choose(computed(1.0))
+"#;
+        let program = parse_program(source).expect("contextual return source should parse");
+        let typed = analyze(program)
+            .expect("return inference and overload resolution must agree on f32 context");
+        assert!(typed.defs.iter().any(|function| {
+            function.name == "computed"
+                && function.return_ty == ReturnType::Scalar(PrimitiveType::F32)
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("contextually typed inferred returns should lower to MIR");
+    }
+
+    #[test]
+    fn inferred_scalar_and_tuple_returns_share_literal_defaulting_rules() {
+        let source = r#"
+def scalar():
+  return PI
+
+def tuple():
+  return (PI, 1)
+
+sample:
+  values = tuple()
+  out1 = scalar() + values[0] + f32(values[1])
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("scalar and tuple return inference should use the same defaults");
+        assert!(typed.defs.iter().any(|function| {
+            function.name == "scalar"
+                && function.return_ty == ReturnType::Scalar(PrimitiveType::F32)
+        }));
+        assert!(typed.defs.iter().any(|function| {
+            function.name == "tuple"
+                && function.return_ty
+                    == ReturnType::Tuple(vec![PrimitiveType::F32, PrimitiveType::I32])
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("consistently defaulted inferred returns should lower to MIR");
+    }
+
+    #[test]
+    fn tuple_destructuring_publishes_inferred_return_types() {
+        let source = r#"
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+def pair() -> (i32, f32):
+  return (1, 2.0)
+
+def first():
+  (value, ignored) = pair()
+  return value
+
+sample:
+  out1 = f32(integer_only(first()))
+"#;
+        let program = parse_program(source).expect("destructured return source should parse");
+        let typed =
+            analyze(program).expect("destructured tuple elements must feed nested specialization");
+        assert!(typed.defs.iter().any(|function| {
+            function.name == "first" && function.return_ty == ReturnType::Scalar(PrimitiveType::I32)
+        }));
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("destructured inferred returns should lower to MIR");
+    }
+
+    #[test]
+    fn struct_aggregate_fields_publish_inferred_return_types() {
+        let source = r#"
+struct Values:
+  samples: i32[2]
+  count: i32
+
+struct Voice:
+  values: Values
+
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+def read_array(holder):
+  return holder.samples[0]
+
+def read_nested(voice):
+  return voice.values.count
+
+init:
+  holder = Values()
+  voice = Voice()
+
+sample:
+  out1 = f32(integer_only(read_array(holder)) + integer_only(read_nested(voice)))
+"#;
+        let program = parse_program(source).expect("struct aggregate return source should parse");
+        let typed =
+            analyze(program).expect("concrete struct field paths must feed nested specialization");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("struct aggregate inferred returns should lower to MIR");
+    }
+
+    #[test]
+    fn generic_calls_in_parameter_defaults_are_monomorphized() {
+        let source = r#"
+def identity<T>(x: T) -> T:
+  return x
+
+def consume(value: i32 = identity(1)) -> i32:
+  return value
+
+def with_default<T>(value: T = identity(T(1))) -> T:
+  return value
+
+sample:
+  out1 = f32(consume() + with_default<i32>())
+"#;
+        let program = parse_program(source).expect("generic default source should parse");
+        let typed = analyze(program).expect("the generic default call should specialize");
+        let specialized_name = "identity.__onda_mono__g_i32";
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == specialized_name));
+        let consume = typed
+            .defs
+            .iter()
+            .find(|function| function.name == "consume")
+            .expect("missing consume definition");
+        assert!(matches!(
+            consume.param_defaults.as_slice(),
+            [Some(Expr::UserCall { name, .. })] if name == specialized_name
+        ));
+        let with_default = typed
+            .defs
+            .iter()
+            .find(|function| function.name.contains("with_default.__onda_mono__g_i32"))
+            .expect("missing specialized with_default definition");
+        assert!(matches!(
+            with_default.param_defaults.as_slice(),
+            [Some(Expr::UserCall { name, .. })] if name == specialized_name
+        ));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the rewritten default should lower without an unresolved call");
+    }
+
+    #[test]
+    fn generic_type_arguments_in_parameter_defaults_are_validated_before_specialization() {
+        let source = r#"
+def identity<T>(value: T) -> T:
+  return value
+
+def consume(value: f32 = identity<bool>(true)) -> f32:
+  return value
+
+sample:
+  out1 = consume()
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("bool must not be accepted as a generic default type argument");
+        assert!(errors.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("'bool' is not valid as a generic type argument for 'identity'")
+        }));
+    }
+
+    #[test]
+    fn overload_calls_in_slice_assignment_targets_are_rewritten() {
+        let source = r#"
+def pick(value: i32) -> i32:
+  return value
+
+def pick(value: f32) -> i32:
+  return i32(value)
+
+sample:
+  index: i32 = 0
+  values = [0.0, 0.0]
+  values[pick(index):] = 1.0
+  out1 = values[0]
+"#;
+        let program = parse_program(source).expect("slice target overload source should parse");
+        let typed = analyze(program).expect("the i32 slice-bound overload should resolve");
+        lower_program_to_optimized_mir(&typed)
+            .expect("the rewritten slice target should lower to MIR");
+    }
+
+    #[test]
+    fn dependent_generic_scalar_calls_defer_until_the_owner_is_concrete() {
+        let source = r#"
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+def relay<T>(x: T) -> T:
+  return integer_only(x)
+
+sample:
+  out1 = f32(relay(1))
+"#;
+        let program = parse_program(source).expect("dependent scalar source should parse");
+        let typed = analyze(program).expect("dependent scalar call should specialize as i32");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
+    }
+
+    #[test]
+    fn untyped_scalar_owners_defer_dependent_generic_calls_until_specialization() {
+        let source = r#"
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+def relay(x):
+  return integer_only(x)
+
+sample:
+  out1 = f32(relay(1))
+"#;
+        let program = parse_program(source).expect("dependent untyped source should parse");
+        let typed = analyze(program)
+            .expect("the nested generic call should use the owner's concrete i32 type");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "integer_only.__onda_mono__g_i32"));
+        assert!(!typed
+            .defs
+            .iter()
+            .any(|function| function.name == "integer_only.__onda_mono__g_f32"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the deferred nested specialization should lower to MIR");
+    }
+
+    #[test]
+    fn dependent_call_returns_do_not_select_overloads_before_specialization() {
+        let source = r#"
+def identity<T>(x: T) -> T:
+  return x
+
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+def relay<T>(x: T) -> T:
+  value = identity(x)
+  return classify(value)
+
+sample:
+  out1 = f32(relay(1))
+"#;
+        let program = parse_program(source).expect("dependent return source should parse");
+        let typed = analyze(program).expect("the concrete i32 return must select classify(i32)");
+        let relay = typed
+            .defs
+            .iter()
+            .find(|function| function.name.contains("relay.__onda_mono__g_i32"))
+            .expect("missing i32 relay specialization");
+        assert_eq!(relay.return_ty, ReturnType::Scalar(PrimitiveType::I32));
+        assert!(relay.body.iter().any(|statement| {
+            matches!(
+                statement,
+                Stmt::Return {
+                    expr: Expr::UserCall { name, .. },
+                    ..
+                } if name.starts_with("__onda_ovl_classify") && name.ends_with("_1")
+            )
+        }));
+    }
+
+    #[test]
+    fn concrete_owners_defer_nested_generic_calls_to_the_fixed_point() {
+        let source = r#"
+def identity<T>(x: T) -> T:
+  return x
+
+def relay<T>(x: T):
+  return identity(x)
+
+def passthrough<T>(x: T) -> T:
+  return x
+
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+def concrete(x: i32) -> i32:
+  return classify(passthrough(relay(x)))
+
+sample:
+  out1 = f32(concrete(1))
+"#;
+        let program = parse_program(source).expect("concrete dependent source should parse");
+        let typed = analyze(program)
+            .expect("a concrete owner must wait for nested generic return specialization");
+        for name in [
+            "identity.__onda_mono__g_i32",
+            "relay.__onda_mono__g_i32",
+            "passthrough.__onda_mono__g_i32",
+        ] {
+            assert!(
+                typed.defs.iter().any(|function| function.name == name),
+                "missing i32 specialization '{name}'"
+            );
+        }
+        assert!(!typed
+            .defs
+            .iter()
+            .any(|function| function.name == "passthrough.__onda_mono__g_f32"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the converged concrete wrapper should lower to MIR");
+    }
+
+    #[test]
+    fn terminating_if_branch_preserves_the_continuing_branch_call_types() {
+        let source = r#"
+def identity<T>(x: T) -> T:
+  return x
+
+def classify(x: i64) -> i64:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+def generic_after_return(flag: bool) -> i64:
+  if flag:
+    return i64(1)
+  else:
+    value: i64 = 2
+  return identity(value)
+
+def overload_after_return(flag: bool) -> i64:
+  if flag:
+    return i64(3)
+  else:
+    value: i64 = 4
+  return classify(value)
+
+sample:
+  out1 = f32(generic_after_return(true) + overload_after_return(false))
+"#;
+        let program = parse_program(source).expect("early-return branch source should parse");
+        let typed = analyze(program)
+            .expect("only the continuing branch should constrain calls after the join");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "identity.__onda_mono__g_i64"));
+        let overload = typed
+            .defs
+            .iter()
+            .find(|function| function.name == "overload_after_return")
+            .expect("missing overload wrapper");
+        assert!(overload.body.iter().any(|statement| {
+            matches!(
+                statement,
+                Stmt::Return {
+                    expr: Expr::UserCall { name, .. },
+                    ..
+                } if name.starts_with("__onda_ovl_classify") && name.ends_with("_1")
+            )
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("reachability-aware call typing should lower to MIR");
+    }
+
+    #[test]
+    fn continuing_loop_branch_retains_types_after_continue() {
+        let source = r#"
+def identity<T>(x: T) -> T:
+  return x
+
+def accumulate() -> i64:
+  total: i64 = 0
+  for i in 0..2:
+    if i == 0:
+      continue
+    else:
+      value: i64 = i64(i)
+    total = total + identity(value)
+  return total
+
+sample:
+  out1 = f32(accumulate())
+"#;
+        let program = parse_program(source).expect("continue branch source should parse");
+        let typed = analyze(program)
+            .expect("the continuing loop branch should retain its concrete local type");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "identity.__onda_mono__g_i64"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("continue-aware call typing should lower to MIR");
+    }
+
+    #[test]
+    fn runtime_loop_branch_retains_locals_after_continue() {
+        let source = r#"
+sample:
+  for i in 0..2:
+    if i == 0:
+      continue
+    else:
+      value: f32 = f32(i)
+    out1 = value
+"#;
+        let program = parse_program(source).expect("runtime continue branch source should parse");
+        let typed = analyze(program)
+            .expect("the continuing runtime branch should retain its local binding");
+        lower_program_to_optimized_mir(&typed)
+            .expect("runtime continue-aware bindings should lower to MIR");
+    }
+
+    #[test]
+    fn unresolved_bindings_do_not_publish_reassignment_types_before_specialization() {
+        let source = r#"
+def identity<T>(x: T) -> T:
+  return x
+
+def replace_param(x):
+  x = 1
+  return x
+
+def replace_local<T>(x: T):
+  value = identity(x)
+  value = 1
+  return value
+
+def replace_typed_local<T>(x: T):
+  value: T = 1
+  return value
+
+def replace_typed_array<T>(x: T):
+  values: T[2] = [x, x]
+  return values[0]
+
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f64) -> f64:
+  return x
+
+params:
+  source: f64 = 4.0
+
+sample:
+  out1 = f32(classify(replace_param(source)) + classify(replace_local(source)) + classify(replace_typed_local(source)) + classify(replace_typed_array(source)))
+"#;
+        let program = parse_program(source).expect("unresolved reassignment source should parse");
+        let typed = analyze(program)
+            .expect("reassignments must retain the concrete specialization binding type");
+        for name in [
+            "replace_param.__onda_mono__scalar_f64",
+            "replace_local.__onda_mono__g_f64",
+            "replace_typed_local.__onda_mono__g_f64",
+            "replace_typed_array.__onda_mono__g_f64",
+        ] {
+            let function = typed
+                .defs
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap_or_else(|| panic!("missing f64 specialization '{name}'"));
+            assert_eq!(function.return_ty, ReturnType::Scalar(PrimitiveType::F64));
+        }
+        lower_program_to_optimized_mir(&typed)
+            .expect("reassignment specializations should lower to MIR");
+    }
+
+    #[test]
+    fn structural_params_publish_argument_independent_return_types() {
+        let source = r#"
+struct Holder:
+  value: f32
+
+def constant(holder):
+  return 1
+
+def constants(holder):
+  return (1, 2.0)
+
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+def integer_only<T>(x: T) -> T:
+  return ~x
+
+init:
+  holder = Holder()
+
+sample:
+  pair = constants(holder)
+  selected: i32 = classify(constant(holder))
+  out1 = f32(selected + integer_only(constant(holder)) + integer_only(pair[0])) + pair[1]
+"#;
+        let program = parse_program(source).expect("independent return source should parse");
+        let typed = analyze(program)
+            .expect("an open structural parameter must not hide an independent i32 return");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("independent structural-template returns should lower to MIR");
+    }
+
+    #[test]
+    fn structural_param_returns_specialize_per_concrete_struct() {
+        let source = r#"
+struct IntHolder:
+  value: i32 = 1
+
+struct FloatHolder:
+  value: f32 = 2.0
+
+def read(holder):
+  return holder.value
+
+def classify(x: i32) -> i32:
+  return x
+
+def classify(x: f32) -> f32:
+  return x
+
+init:
+  integers = IntHolder()
+  floats = FloatHolder()
+
+sample:
+  integer_value: i32 = classify(read(integers))
+  float_value: f32 = classify(read(floats))
+  out1 = f32(integer_value) + float_value
+"#;
+        let program = parse_program(source).expect("structural return source should parse");
+        let typed = analyze(program)
+            .expect("each concrete struct call must publish its own field-derived return type");
+        for struct_name in ["IntHolder", "FloatHolder"] {
+            assert!(typed.defs.iter().any(|function| {
+                function.name.contains("read.__onda_mono") && function.name.contains(struct_name)
+            }));
+        }
+        lower_program_to_optimized_mir(&typed)
+            .expect("concrete structural return specializations should lower to MIR");
+    }
+
+    #[test]
+    fn concrete_f32_untyped_calls_have_concrete_nested_call_types() {
+        let source = r#"
+def classify(x: i32) -> f32:
+  return 1.0
+
+def classify(x: f32) -> f32:
+  return 2.0
+
+def relay(x):
+  return classify(x)
+
+sample:
+  out1 = relay(1.0)
+"#;
+        let program = parse_program(source).expect("f32 relay source should parse");
+        let typed = analyze(program).expect("the concrete f32 call must select classify(f32)");
+        let relay = typed
+            .defs
+            .iter()
+            .find(|function| function.name == "relay.__onda_mono__scalar_f32")
+            .expect("missing concrete f32 relay specialization");
+        assert!(matches!(
+            relay.param_kinds.as_slice(),
+            [TypedFnParam::Scalar {
+                ty: Some(PrimitiveType::F32)
+            }]
+        ));
+        assert!(relay.body.iter().any(|statement| {
+            matches!(
+                statement,
+                Stmt::Return {
+                    expr: Expr::UserCall { name, .. },
+                    ..
+                } if name.starts_with("__onda_ovl_classify") && name.ends_with("_2")
+            )
+        }));
+    }
+
+    #[test]
+    fn explicit_type_arguments_filter_overload_candidates() {
+        let source = r#"
+def choose<T>(x: T) -> T:
+  return x
+
+def choose(x: f32) -> f32:
+  return x
+
+sample:
+  out1 = f32(choose<i32>(1))
+"#;
+        let program = parse_program(source).expect("generic overload source should parse");
+        let typed = analyze(program).expect("explicit type args must select the generic overload");
+        assert!(typed.defs.iter().any(|function| {
+            function.name.starts_with("__onda_ovl_choose")
+                && function.name.contains(".__onda_mono__g_i32")
+                && function.return_ty == ReturnType::Scalar(PrimitiveType::I32)
+        }));
+    }
+
+    #[test]
+    fn inferred_bool_generic_type_arguments_are_rejected() {
+        let source = r#"
+def identity<T>(x: T) -> T:
+  return x
+
+sample:
+  if identity(true):
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+        let program = parse_program(source).expect("bool generic source should parse");
+        let errors = analyze(program).expect_err("inferred bool must obey the generic domain");
+        assert!(errors.iter().any(|diagnostic| {
+            diagnostic.message.contains("inferred as bool")
+                && diagnostic
+                    .message
+                    .contains("generic type arguments must be numeric")
+        }));
+    }
+
+    #[test]
+    fn unresolved_monomorphized_calls_keep_source_call_diagnostics() {
+        let source = r#"
+def first(values: []):
+  return values[0]
+
+sample:
+  out1 = first()
+"#;
+        let program = parse_program(source).expect("missing-argument source should parse");
+        let errors = analyze(program).expect_err("the missing array argument must be rejected");
+        assert!(errors.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("missing required argument 'values'")
+        }));
+        assert!(!errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown function 'first'")));
+    }
+
+    #[test]
+    fn unresolved_monomorphized_calls_fail_before_mir_lowering() {
+        let source = r#"
+def first(values: []):
+  return values[0]
+
+sample:
+  out1 = first([])
+"#;
+        let program = parse_program(source).expect("underconstrained source should parse");
+        let errors = analyze(program)
+            .expect_err("an underconstrained specialization must be a semantic error");
+        assert!(errors.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("does not provide concrete argument types required for specialization")
+        }));
+        assert!(!errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown function 'first'")));
+    }
+
+    #[test]
+    fn unresolved_monomorphized_array_arguments_validate_their_elements() {
+        let source = r#"
+def first(values: []):
+  return values[0]
+
+sample:
+  out1 = first([missing])
+"#;
+        let program = parse_program(source).expect("unknown-element source should parse");
+        let errors = analyze(program).expect_err("the unknown array element must be rejected");
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown symbol 'missing'")));
+        assert!(!errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unknown function 'first'")));
+    }
+
+    #[test]
+    fn dependent_generic_array_calls_defer_until_the_owner_is_concrete() {
+        let source = r#"
+const Values: i32[1] = [1]
+
+def integer_first<T>(xs: T[]) -> T:
+  return ~xs[0]
+
+def relay(xs: []):
+  return integer_first(xs)
+
+sample:
+  out1 = f32(relay(Values))
+"#;
+        let program = parse_program(source).expect("dependent array source should parse");
+        let typed = analyze(program).expect("dependent array call should specialize as i32");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("integer_first.__onda_mono__arr_i32")));
+    }
+
+    #[test]
+    fn argument_free_generic_type_parameters_still_default_to_f32() {
+        let source = r#"
+def zero<T>() -> T:
+  return T(0)
+
+sample:
+  out1 = zero()
+"#;
+        let program = parse_program(source).expect("argument-free generic source should parse");
+        let typed = analyze(program).expect("argument-free T should retain its f32 default");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.contains("zero.__onda_mono__g_f32")));
+    }
+
+    #[test]
+    fn loop_index_shadows_same_named_aggregate_for_call_inference() {
+        let source = r#"
+def classify(x: i32) -> f32:
+  return 1.0
+
+def classify(x: f32) -> f32:
+  return 2.0
+
+ins:
+  i: f32[2] = [0.0, 0.0]
+
+sample:
+  total = 0.0
+  for i in 0..2:
+    total = total + classify(i)
+  out1 = total
+"#;
+        let program = parse_program(source).expect("loop shadowing source should parse");
+        analyze(program).expect("the i32 loop index should shadow the outer array");
+    }
+
+    #[test]
     fn repeated_generic_scalar_constraints_choose_one_widened_type() {
         let src = r#"
 outs:
@@ -5938,7 +7914,7 @@ sample:
         let choose = typed
             .defs
             .iter()
-            .find(|function| function.name.starts_with("choose.__mono__g_f64"))
+            .find(|function| function.name.starts_with("choose.__onda_mono__g_f64"))
             .expect("missing widened f64 specialization");
         assert!(
             choose.param_kinds.iter().all(|kind| matches!(
@@ -6001,12 +7977,30 @@ sample:
         let typed = analyze(program).expect("generic return annotation should analyze");
         assert!(
             typed.defs.iter().any(|def| {
-                def.name.contains("id.__mono")
+                def.name.contains("id.__onda_mono")
                     && def.return_ty == ReturnType::Scalar(PrimitiveType::F32)
             }),
             "expected monomorphized id def with f32 return, got {:#?}",
             typed.defs
         );
+    }
+
+    #[test]
+    fn specialized_return_diagnostics_use_source_function_names() {
+        let src = r#"
+def invalid<T>(value: T) -> T:
+  return true
+
+sample:
+  out1 = f32(invalid(1))
+"#;
+        let errors = analyze(parse_program(src).expect("source should parse"))
+            .expect_err("the specialized return type must reject bool");
+        let diagnostic = errors
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("return in function 'invalid'"))
+            .unwrap_or_else(|| panic!("missing source-like return diagnostic: {errors:?}"));
+        assert!(!diagnostic.message.contains("__onda_"), "{diagnostic:?}");
     }
 
     #[test]
@@ -6046,7 +8040,7 @@ sample:
         let typed = analyze(program).expect("generic tuple return annotation should analyze");
         assert!(
             typed.defs.iter().any(|def| {
-                def.name.contains("pair.__mono")
+                def.name.contains("pair.__onda_mono")
                     && def.return_ty
                         == ReturnType::Tuple(vec![PrimitiveType::F32, PrimitiveType::I32])
             }),
@@ -6187,16 +8181,46 @@ sample:
     }
 
     #[test]
-    fn tuple_tracking_clears_after_scalar_reassignment() {
-        let src = "outs:\n  out1\nsample:\n  vals = (0.5, 1)\n  vals = 0.5\n  out1 = vals[0]\n";
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("stale tuple tracking should be rejected");
-        assert!(
-            errors.iter().any(|diag| diag
-                .message
-                .contains("indexed expression 'vals[...]' is not a array/buffer symbol")),
-            "expected stale tuple indexing diagnostic, got {errors:?}"
-        );
+    fn tuple_bindings_reject_shape_changing_reassignment_during_semantics() {
+        let cases = [
+            (
+                "outs:\n  out1\nsample:\n  vals = (0.5, 1)\n  vals = 0.5\n  out1 = 0.0\n",
+                "assignment to tuple local 'vals' requires a tuple value",
+            ),
+            (
+                "outs:\n  out1\nsample:\n  vals = 1\n  vals = (0.5, 1)\n  out1 = 0.0\n",
+                "cannot assign a tuple value to scalar local 'vals'",
+            ),
+            (
+                "def broken():\n  vals = (0.5, 1)\n  vals = 0.5\n  return vals[0]\nsample:\n  out1 = broken()\n",
+                "assignment to tuple local 'vals' requires a tuple value",
+            ),
+            (
+                "def broken():\n  vals = 1\n  vals = (0.5, 1)\n  return 0.0\nsample:\n  out1 = broken()\n",
+                "cannot assign a tuple value to scalar local 'vals'",
+            ),
+            (
+                "outs:\n  out1\nsample:\n  vals = (0.5, 1)\n  vals = (0.25, 2, true)\n  out1 = 0.0\n",
+                "tuple assignment to 'vals' has arity 3, expected 2",
+            ),
+            (
+                "outs:\n  out1\nsample:\n  vals = (1, 2)\n  vals = (0.5, 2)\n  out1 = 0.0\n",
+                "tuple assignment to 'vals' element 0 type mismatch",
+            ),
+            (
+                "outs:\n  out1\ninit:\n  vals = (1, 2)\nsample:\n  vals = (0.5, 2)\n  out1 = 0.0\n",
+                "tuple assignment to 'vals' element 0 type mismatch",
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let program = parse_program(source).expect("shape-change source should parse");
+            let errors = analyze(program).expect_err("binding shape changes must be rejected");
+            assert!(
+                errors.iter().any(|diag| diag.message.contains(expected)),
+                "expected '{expected}', got {errors:?}"
+            );
+        }
     }
 
     #[test]
@@ -6207,6 +8231,65 @@ sample:
     }
 
     #[test]
+    fn proc_array_broadcast_constructor_reuses_top_level_scalar_arguments() {
+        let src = r#"
+proc Filter:
+  params:
+    cutoff = 1000.0
+    q = 0.707
+  outs:
+    out1
+  sample:
+    out1 = cutoff + q
+
+params:
+  cutoff = 920.0
+  resonance = 1.5
+outs:
+  out1
+init:
+  filters: Filter[2] = Filter(cutoff = cutoff, q = resonance)
+sample:
+  out1 = filters[0]() + filters[1]()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("scalar constructor arguments should broadcast to every slot");
+    }
+
+    #[test]
+    fn nested_proc_array_broadcast_constructor_reuses_owner_scalar_arguments() {
+        let src = r#"
+proc Filter:
+  params:
+    cutoff = 1000.0
+  outs:
+    out1
+  sample:
+    out1 = cutoff
+
+proc Bank:
+  params:
+    cutoff = 920.0
+  init:
+    filters: Filter[2] = Filter(cutoff = cutoff)
+  outs:
+    out1
+  sample:
+    out1 = filters[0]() + filters[1]()
+
+outs:
+  out1
+init:
+  bank = Bank()
+sample:
+  out1 = bank()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program)
+            .expect("owner scalar constructor arguments should broadcast to nested proc arrays");
+    }
+
+    #[test]
     fn def_accepts_proc_array_param_for_indexed_init_events() {
         let src = "import std/osc\nouts:\n  out1\ndef init_voices(voices):\n  for i in 0..2:\n    voices[i].init(freq = 110.0)\ninit:\n  voices: std::osc::Sine[2]\n  init_voices(voices)\nsample:\n  out1 = voices[0]() + voices[1]()\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -6214,7 +8297,7 @@ sample:
         let def = typed
             .defs
             .iter()
-            .find(|def| def.name == "init_voices")
+            .find(|def| def.name.starts_with("init_voices"))
             .expect("missing typed def");
         assert!(
             matches!(
@@ -6268,7 +8351,7 @@ sample:
         let def = typed
             .defs
             .iter()
-            .find(|def| def.name == "set_and_sum")
+            .find(|def| def.name.starts_with("set_and_sum"))
             .expect("missing typed def");
         assert!(
             matches!(
@@ -6374,7 +8457,7 @@ sample:
         let def = typed
             .defs
             .iter()
-            .find(|def| def.name == "sum_pairs")
+            .find(|def| def.name.starts_with("sum_pairs"))
             .expect("missing typed def");
         assert!(
             matches!(
@@ -6394,7 +8477,7 @@ sample:
         let def = typed
             .defs
             .iter()
-            .find(|def| def.name == "set_and_sum")
+            .find(|def| def.name.starts_with("set_and_sum"))
             .expect("missing typed def");
         assert!(
             matches!(
@@ -6414,7 +8497,7 @@ sample:
         let def = typed
             .defs
             .iter()
-            .find(|def| def.name == "seed_pairs")
+            .find(|def| def.name.starts_with("seed_pairs"))
             .expect("missing typed def");
         assert!(
             matches!(
@@ -6435,7 +8518,7 @@ sample:
             let def = typed
                 .defs
                 .iter()
-                .find(|def| def.name == def_name)
+                .find(|def| def.name.starts_with(def_name))
                 .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
             assert!(
                 matches!(
@@ -6471,7 +8554,7 @@ sample:
             let def = typed
                 .defs
                 .iter()
-                .find(|def| def.name == def_name)
+                .find(|def| def.name.starts_with(def_name))
                 .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
             assert!(
                 matches!(
@@ -6493,7 +8576,7 @@ sample:
             let def = typed
                 .defs
                 .iter()
-                .find(|def| def.name == def_name)
+                .find(|def| def.name.starts_with(def_name))
                 .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
             assert!(
                 matches!(
@@ -6662,7 +8745,7 @@ sample:
             let def = typed
                 .defs
                 .iter()
-                .find(|def| def.name == def_name)
+                .find(|def| def.name.starts_with(def_name))
                 .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
             assert!(
                 matches!(
@@ -8813,5 +10896,718 @@ block:
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn generic_buffer_specialization_preserves_declared_channel_contract() {
+        let src = r#"
+def channels<T>(buf: buffer<T>):
+  return 1
+
+buffers:
+  stereo: f32[2]
+
+sample:
+  out1 = f32(channels(stereo))
+"#;
+        let program = parse_program(src).expect("source should parse");
+        let errors = analyze(program).expect_err("mono buffer contract should reject stereo");
+        assert!(errors.iter().any(|diagnostic| {
+            diagnostic.message.contains("expects mono buffer")
+                && diagnostic.message.contains("stereo")
+        }));
+
+        let symbolic = r#"
+const Channels = 2
+
+def read_right<T>(buf: buffer<T[Channels]>):
+  return buf[1, 0]
+
+buffers:
+  stereo: f32[2]
+
+sample:
+  out1 = read_right(stereo)
+"#;
+        let typed = analyze(parse_program(symbolic).expect("source should parse"))
+            .expect("symbolic channel contract should specialize");
+        let specialization = typed
+            .defs
+            .iter()
+            .find(|function| function.name.starts_with("read_right.__onda_mono"))
+            .expect("missing symbolic buffer specialization");
+        assert!(matches!(
+            specialization.param_kinds.as_slice(),
+            [TypedFnParam::Buffer {
+                elem_ty: PrimitiveType::F32,
+                channels: TypedBufferChannels::Static(2),
+            }]
+        ));
+    }
+
+    #[test]
+    fn structural_buffer_collection_specialization_preserves_collection_length() {
+        let src = r#"
+def collection_len(buffers):
+  return buffers.len()
+
+buffers:
+  bank: f32 {3}
+
+sample:
+  out1 = f32(collection_len(bank))
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("buffer collection should specialize as a collection");
+        let specialization = typed
+            .defs
+            .iter()
+            .find(|function| function.name.starts_with("collection_len.__onda_mono"))
+            .expect("missing buffer collection specialization");
+        assert!(matches!(
+            specialization.param_kinds.as_slice(),
+            [TypedFnParam::BufferArray {
+                elem_ty: PrimitiveType::F32,
+                channels: TypedBufferChannels::Mono,
+                len: 3,
+            }]
+        ));
+        lower_program_to_optimized_mir(&typed)
+            .expect("buffer collection specialization should lower to MIR");
+    }
+
+    #[test]
+    fn nested_struct_array_return_type_selects_scalar_overload() {
+        let src = r#"
+struct Item:
+  value: i32
+
+def read_first(items):
+  return items[0].value
+
+def classify(value: f32):
+  return 1
+
+def classify(value: i32):
+  return 2
+
+init:
+  items: Item[1] = [Item(value = 7)]
+
+sample:
+  out1 = f32(classify(read_first(items)))
+"#;
+        let program = parse_program(src).expect("source should parse");
+        analyze(program).expect("struct-array specialization should publish its return type");
+    }
+
+    #[test]
+    fn indexed_nominal_elements_specialize_structural_parameters() {
+        let src = r#"
+struct Item:
+  value: i32
+
+def read(item):
+  return item.value
+
+def read_first(items):
+  item = items[0]
+  return read(item)
+
+init:
+  items: Item[2] = [Item(value = 1), Item(value = 2)]
+
+sample:
+  item = items[1]
+  out1 = f32(read(item) + read_first(items))
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("indexed nominal arguments should specialize structurally");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name.starts_with("read.__onda_mono")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed nominal specialization should lower to MIR");
+    }
+
+    #[test]
+    fn nested_proc_array_return_type_selects_scalar_overload() {
+        let src = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+def read_at(voices, index: i32):
+  return voices[index].gain
+
+def read_at(values: f32[], index: i32):
+  return values[index]
+
+def classify(value: f32):
+  return 1
+
+def classify(value: i32):
+  return 2
+
+init:
+  voices: Voice[2] = Voice()
+
+sample:
+  out1 = f32(classify(read_at(voices, 1)))
+"#;
+        let program = parse_program(src).expect("source should parse");
+        let typed =
+            analyze(program).expect("proc-array specialization should publish its return type");
+        lower_program_to_optimized_mir(&typed)
+            .expect("dynamic proc-array field reads should lower to MIR");
+    }
+
+    #[test]
+    fn explicitly_typed_proc_array_views_specialize_for_each_capacity() {
+        let src = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+def read_first(voices: Voice[]):
+  return voices[0].gain
+
+def read_outer(voices: Voice[]):
+  return read_first(voices)
+
+init:
+  pair: Voice[2] = Voice(gain = 1.0)
+  trio: Voice[3] = Voice(gain = 2.0)
+
+sample:
+  out1 = read_outer(pair) + read_outer(trio)
+"#;
+        let program = parse_program(src).expect("typed proc-array source should parse");
+        let typed = analyze(program)
+            .expect("a proc-array view should specialize independently for each capacity");
+        for base in ["read_first", "read_outer"] {
+            let capacities = typed
+                .defs
+                .iter()
+                .filter(|function| function.name.starts_with(&format!("{base}.__onda_mono")))
+                .filter_map(|function| match function.param_kinds.first() {
+                    Some(TypedFnParam::ProcArray { len, .. }) => Some(*len),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            assert_eq!(capacities, HashSet::from([2, 3]), "{base}");
+        }
+        lower_program_to_optimized_mir(&typed)
+            .expect("capacity-specialized proc-array calls should lower to MIR");
+    }
+
+    #[test]
+    fn fixed_proc_array_parameters_are_concrete_without_monomorphization() {
+        let src = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+def read_pair(voices: Voice[2]):
+  return voices[0].gain + voices[1].gain
+
+init:
+  voices: Voice[2] = Voice(gain = 1.0)
+
+sample:
+  out1 = read_pair(voices)
+"#;
+        let program = parse_program(src).expect("fixed proc-array source should parse");
+        let typed = analyze(program)
+            .expect("a fixed proc-array signature should have a complete source ABI");
+        let function = typed
+            .defs
+            .iter()
+            .find(|function| function.name == "read_pair")
+            .expect("the concrete function should retain its source name");
+        assert!(matches!(
+            function.param_kinds.first(),
+            Some(TypedFnParam::ProcArray {
+                proc_name,
+                len: 2,
+            }) if proc_name == "Voice"
+        ));
+        assert!(!typed
+            .defs
+            .iter()
+            .any(|function| function.name.starts_with("read_pair.__onda_mono")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the concrete proc-array function should lower to MIR");
+    }
+
+    #[test]
+    fn structural_data_array_specialization_is_independent_of_runtime_length() {
+        let src = r#"
+struct Item:
+  value: f32
+
+def read_first(items):
+  return items[0].value
+
+init:
+  pair: Item[2] = [Item(value = 1.0), Item(value = 2.0)]
+  trio: Item[3] = [Item(value = 3.0), Item(value = 4.0), Item(value = 5.0)]
+
+sample:
+  out1 = read_first(pair) + read_first(trio)
+"#;
+        let program = parse_program(src).expect("struct-array source should parse");
+        let typed = analyze(program)
+            .expect("data-struct array views should share one structural specialization");
+        let specializations = typed
+            .defs
+            .iter()
+            .filter(|function| function.name.starts_with("read_first.__onda_mono"))
+            .collect::<Vec<_>>();
+        assert_eq!(specializations.len(), 1, "{specializations:#?}");
+        assert!(matches!(
+            specializations[0].param_kinds.first(),
+            Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Item"
+        ));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the shared struct-array specialization should lower to MIR");
+    }
+
+    #[test]
+    fn sized_array_overloads_match_length_and_have_source_like_diagnostics() {
+        let valid = r#"
+def choose(values: f32[2]):
+  return 2
+
+def choose(values: f32[3]):
+  return 3
+
+init:
+  values: f32[2] = [1.0, 2.0]
+
+sample:
+  out1 = f32(choose(values))
+"#;
+        analyze(parse_program(valid).expect("source should parse"))
+            .expect("fixed array length should select a unique overload");
+
+        let invalid = valid.replace(
+            "values: f32[2] = [1.0, 2.0]",
+            "values: f32[4] = [1.0, 2.0, 3.0, 4.0]",
+        );
+        let errors = analyze(parse_program(&invalid).expect("source should parse"))
+            .expect_err("an unmatched fixed length should fail");
+        let message = errors
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("no matching overload"))
+            .map(|diagnostic| diagnostic.message.as_str())
+            .expect("missing overload diagnostic");
+        assert!(message.contains("f32[2]") && message.contains("f32[3]"));
+        assert!(!message.contains("Span") && !message.contains("Expr::"));
+    }
+
+    #[test]
+    fn concrete_array_overload_outranks_generic_array_overload() {
+        let src = r#"
+def choose<T>(values: T[]):
+  return 1
+
+def choose(values: f32[]):
+  return 2
+
+init:
+  values: f32[2] = [1.0, 2.0]
+
+sample:
+  out1 = f32(choose(values))
+"#;
+        analyze(parse_program(src).expect("source should parse"))
+            .expect("the concrete array overload should win without ambiguity");
+    }
+
+    #[test]
+    fn sized_array_overload_outranks_unsized_array_overload() {
+        for generic in [false, true] {
+            let type_params = if generic { "<T>" } else { "" };
+            let elem = if generic { "T" } else { "f32" };
+            let src = format!(
+                r#"
+def choose{type_params}(values: {elem}[]):
+  return 1
+
+def choose{type_params}(values: {elem}[2]):
+  return 2
+
+init:
+  values: f32[2] = [1.0, 2.0]
+
+sample:
+  out1 = f32(choose(values))
+"#
+            );
+            analyze(parse_program(&src).expect("source should parse"))
+                .expect("the fixed-shape overload should win without ambiguity");
+        }
+    }
+
+    #[test]
+    fn overload_matching_unifies_repeated_generic_type_parameters() {
+        let src = r#"
+def choose<T>(left: T, right: T):
+  return 1
+
+def choose(left: bool, right: bool):
+  return 2
+
+sample:
+  out1 = f32(choose(f64(1.0), true))
+"#;
+        let errors = analyze(parse_program(src).expect("source should parse"))
+            .expect_err("the generic candidate has no consistent type binding");
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("no matching overload")));
+
+        let aggregate_constraint = r#"
+def choose<T>(values: T[], fallback: T):
+  return fallback
+
+def choose(values: bool[], fallback: bool):
+  return fallback
+
+init:
+  values: f32[2] = [1.0, 2.0]
+
+sample:
+  out1 = choose(values, 1)
+"#;
+        analyze(parse_program(aggregate_constraint).expect("source should parse"))
+            .expect("an exact aggregate binding should contextually convert scalar literals");
+    }
+
+    #[test]
+    fn monomorphized_nominal_symbols_do_not_collide_after_sanitization() {
+        let src = r#"
+namespace A:
+  struct B:
+    value: i32
+
+struct A__B:
+  value: i32
+
+def read(item):
+  return item.value
+
+init:
+  left = A::B(value = 1)
+  right = A__B(value = 2)
+
+sample:
+  out1 = f32(read(left) + read(right))
+"#;
+        analyze(parse_program(src).expect("source should parse"))
+            .expect("distinct nominal types should have distinct mono symbols");
+    }
+
+    #[test]
+    fn direct_array_calls_enforce_element_type_and_fixed_length_semantically() {
+        let wrong_element = r#"
+def first(values: f32[]):
+  return values[0]
+
+init:
+  values: i32[2] = [1, 2]
+
+sample:
+  out1 = f32(first(values))
+"#;
+        let errors = analyze(parse_program(wrong_element).expect("source should parse"))
+            .expect_err("array element mismatch should fail semantic analysis");
+        assert!(errors.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("expects f32 array elements, got i32")));
+
+        let wrong_length = r#"
+def first<T>(values: T[2]):
+  return values[0]
+
+init:
+  values: f32[3] = [1.0, 2.0, 3.0]
+
+sample:
+  out1 = first(values)
+"#;
+        let errors = analyze(parse_program(wrong_length).expect("source should parse"))
+            .expect_err("specialized fixed-array length mismatch should fail semantic analysis");
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expects array length 2, got 3")));
+
+        let wrong_nominal_kind = r#"
+struct Item:
+  value: f32
+
+def first(values: Item[]):
+  return values[0].value
+
+init:
+  values: f32[1] = [1.0]
+
+sample:
+  out1 = first(values)
+"#;
+        let errors = analyze(parse_program(wrong_nominal_kind).expect("source should parse"))
+            .expect_err("primitive arrays must not satisfy nominal array parameters");
+        assert!(errors.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("expects Item array elements, got f32")));
+
+        let unknown_nested_length = r#"
+struct Item:
+  value: f32
+
+def exactly_one(values: Item[1]):
+  return values[0].value
+
+def forward(values: Item[]):
+  return exactly_one(values)
+
+init:
+  values: Item[2] = [Item(value = 1.0), Item(value = 2.0)]
+
+sample:
+  out1 = forward(values)
+"#;
+        let errors = analyze(parse_program(unknown_nested_length).expect("source should parse"))
+            .expect_err("an unsized nominal view must not satisfy a fixed-length contract");
+        assert!(errors.iter().any(|diagnostic| diagnostic.message.contains(
+            "expects fixed array length 1, but the argument length is not statically known"
+        )));
+    }
+
+    #[test]
+    fn untyped_array_literal_specialization_merges_all_element_types() {
+        for values in ["[1, 2.5]", "[2.5, 1]"] {
+            let source = format!(
+                r#"
+def first(values: []):
+  return values[0]
+
+sample:
+  out1 = first({values})
+"#
+            );
+            let typed = analyze(parse_program(&source).expect("source should parse"))
+                .unwrap_or_else(|errors| {
+                    panic!("array literal '{values}' should infer f32 elements: {errors:?}")
+                });
+            assert!(typed
+                .defs
+                .iter()
+                .any(|function| function.name == "first.__onda_mono__arr_f32"));
+            lower_program_to_optimized_mir(&typed)
+                .expect("the common array element type should lower to MIR");
+        }
+    }
+
+    #[test]
+    fn fixed_primitive_array_lengths_survive_def_forwarding() {
+        let src = r#"
+def first(values: f32[2]):
+  return values[0]
+
+def forward(values: f32[2]):
+  return first(values)
+
+init:
+  values: f32[2] = [1.0, 2.0]
+
+sample:
+  out1 = forward(values)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("fixed primitive array contracts should survive forwarding");
+        lower_program_to_optimized_mir(&typed)
+            .expect("forwarded fixed primitive arrays should lower to MIR");
+    }
+
+    #[test]
+    fn compile_time_call_shapes_are_resolved_before_overload_inference() {
+        let arrays = r#"
+def classify(values: f32[1 + 1]):
+  return 2
+
+def classify(values: f32[1 + 2]):
+  return 3
+
+def forward(values: f32[1 + 1]):
+  return classify(values)
+
+def local():
+  values: f32[1 + 1] = [0.0, 0.0]
+  return classify(values)
+
+init:
+  held = 0
+  values: f32[2] = [1.0, 2.0]
+
+events:
+  update(event_values: f32[1 + 1]):
+    held = classify(event_values)
+
+sample:
+  out1 = f32(forward(values) + local() + held)
+"#;
+        let typed = analyze(parse_program(arrays).expect("array source should parse"))
+            .expect("array size expressions should participate in overload resolution");
+        lower_program_to_optimized_mir(&typed)
+            .expect("resolved array call shapes should lower to MIR");
+
+        let buffers = r#"
+def channel_count(buf: buffer<f32[1 + 1]>):
+  return 2
+
+def channel_count(buf: buffer<f32[1 + 2]>):
+  return 3
+
+buffers:
+  stereo: f32[2]
+
+sample:
+  out1 = f32(channel_count(stereo))
+"#;
+        let typed = analyze(parse_program(buffers).expect("buffer source should parse"))
+            .expect("buffer channel expressions should participate in overload resolution");
+        lower_program_to_optimized_mir(&typed)
+            .expect("resolved buffer call shapes should lower to MIR");
+    }
+
+    #[test]
+    fn unsized_primitive_views_do_not_satisfy_fixed_array_contracts() {
+        let forwarded = r#"
+def exactly_one(values: f32[1]):
+  return values[0]
+
+def forward(values: f32[]):
+  return exactly_one(values)
+
+init:
+  values: f32[2] = [1.0, 2.0]
+
+sample:
+  out1 = forward(values)
+"#;
+        let errors = analyze(parse_program(forwarded).expect("source should parse"))
+            .expect_err("an unsized parameter must not become a one-element fixed array");
+        assert!(errors.iter().any(|diagnostic| diagnostic.message.contains(
+            "expects fixed array length 1, but the argument length is not statically known"
+        )));
+
+        let sliced = r#"
+def exactly_one(values: f32[1]):
+  return values[0]
+
+params:
+  end: i32 = 1
+
+init:
+  values: f32[2] = [1.0, 2.0]
+
+sample:
+  view = values[0:end]
+  out1 = exactly_one(view)
+"#;
+        let errors = analyze(parse_program(sliced).expect("source should parse"))
+            .expect_err("a slice alias must remain an unsized view");
+        assert!(errors.iter().any(|diagnostic| diagnostic.message.contains(
+            "expects fixed array length 1, but the argument length is not statically known"
+        )));
+    }
+
+    #[test]
+    fn branch_local_array_lengths_do_not_become_arbitrary_fixed_contracts() {
+        let source = r#"
+def exactly_two(values: f32[2]):
+  return values[0]
+
+params:
+  select: bool = true
+
+sample:
+  if select:
+    values: f32[2] = [1.0, 2.0]
+  else:
+    values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = exactly_two(values)
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("one branch's array length must not become the joined fixed contract");
+        assert!(errors.iter().any(|diagnostic| diagnostic.message.contains(
+            "binding 'values' has incompatible branch types: arrays have different element types or fixed lengths"
+        )));
+    }
+
+    #[test]
+    fn identical_branch_local_array_shapes_survive_with_their_element_type() {
+        let source = r#"
+def first(values: []):
+  return values[0]
+
+params:
+  select: bool = true
+
+sample:
+  if select:
+    values = [PI]
+  else:
+    values = [1.0]
+  out1 = first(values)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("identical branch-local arrays should retain one concrete shape");
+        assert!(typed
+            .defs
+            .iter()
+            .any(|function| function.name == "first.__onda_mono__arr_f32"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("compatible branch-local arrays should lower through their merged binding");
+    }
+
+    #[test]
+    fn branch_local_struct_element_aliases_preserve_the_selected_element() {
+        let source = r#"
+struct Item:
+  value: f32
+
+params:
+  select: bool = true
+
+init:
+  items: Item[2] = [Item(value = 1.0), Item(value = 2.0)]
+
+sample:
+  if select:
+    item = items[0]
+  else:
+    item = items[1]
+  out1 = item.value
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("a branch-local struct alias should retain its nominal type");
+        lower_program_to_optimized_mir(&typed)
+            .expect("a branch-local struct alias should retain its selected runtime element");
     }
 }

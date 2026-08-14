@@ -105,6 +105,21 @@ Use `.ondaproject` when data is part of a patch's identity:
 | [Score-driven Resonator](https://github.com/onda-lang/onda/blob/main/examples/projects/score_driven_resonator/score-driven-resonator.ondaproject) | Typed note, timing, velocity, and pan buffers |
 | [Embedded Room](https://github.com/onda-lang/onda/blob/main/examples/projects/embedded_room/embedded-room.ondaproject) | A file-backed stereo `impulse.wav` loaded into zero-latency partitioned convolvers |
 
+These links open the repository because the hosted `?example=` catalog contains source workspaces,
+not `.ondaproject` manifests and their buffer assets. To open a showcase in the browser playground,
+download or clone the repository, ZIP the complete project contents, and select the ZIP with
+**Open project**. The browser picker does not accept a bare `.ondaproject`: selecting only the
+manifest would not give the page access to its referenced `code/` and `assets/` files.
+
+For example:
+
+```bash
+cd examples/projects/embedded_room
+zip -r embedded-room.zip embedded-room.ondaproject code assets
+```
+
+The native CLI and run hosts have filesystem access and can open the manifest directly:
+
 ```bash
 onda run examples/projects/embedded_room/embedded-room.ondaproject
 ```

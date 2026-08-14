@@ -38,8 +38,8 @@ proc Reverb:
         impulse = 0.0
 
         pre_buf: f32[REVERB_PRE_BUF_CAP]
-        pre_idx: i32 = 0
-        pre_len: i32 = 0
+        pre_idx = 0
+        pre_len = 0
 
         diff_buf: f32[REVERB_DIFF_BUF_CAP]
         diff_idx: i32[REVERB_DIFF_STAGES]

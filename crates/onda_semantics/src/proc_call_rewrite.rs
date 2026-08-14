@@ -822,7 +822,7 @@ pub(super) fn select_proc_array_initializer_expr_for_slot(
     slot_idx: usize,
     slot_count: usize,
     context: &str,
-    allow_symbol_index: bool,
+    array_symbols: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> Expr {
     if slot_count <= 1 {
@@ -846,7 +846,7 @@ pub(super) fn select_proc_array_initializer_expr_for_slot(
                 .or_else(|| values.last().cloned())
                 .unwrap_or(Expr::number(0.0))
         }
-        Expr::Var { name: base, .. } if allow_symbol_index => Expr::Index {
+        Expr::Var { name: base, .. } if array_symbols.contains(base) => Expr::Index {
             loc: Default::default(),
             base: base.clone(),
             index: Box::new(Expr::int(slot_idx as i64)),
@@ -4786,6 +4786,174 @@ pub(super) fn rewrite_proc_calls_in_stmts(
         proc_api,
         errors,
     );
+}
+
+/// Processor-array parameters use a structure-of-arrays ABI. Rewrite readable
+/// parameter fields to that ABI before the ordinary processor-call rewriter,
+/// which otherwise resolves fixed indices to top-level instance slot names.
+pub(super) fn rewrite_proc_array_param_field_reads(
+    stmts: &mut [Stmt],
+    proc_arrays: &HashMap<String, ProcNestedArrayState>,
+    proc_api: &HashMap<String, ProcApi>,
+) {
+    fn rewrite_expr(
+        expr: &mut Expr,
+        proc_arrays: &HashMap<String, ProcNestedArrayState>,
+        proc_api: &HashMap<String, ProcApi>,
+    ) {
+        match expr {
+            Expr::Index { index, .. } => rewrite_expr(index, proc_arrays, proc_api),
+            Expr::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for nested in [selector, channel, start, end].into_iter().flatten() {
+                    rewrite_expr(nested, proc_arrays, proc_api);
+                }
+            }
+            Expr::ArrayCtor { spec, init, .. } => {
+                rewrite_expr(&mut spec.size, proc_arrays, proc_api);
+                if let Some(values) = init {
+                    for value in values {
+                        rewrite_expr(value, proc_arrays, proc_api);
+                    }
+                }
+            }
+            Expr::Compare { lhs, rhs, .. }
+            | Expr::Logical { lhs, rhs, .. }
+            | Expr::Binary { lhs, rhs, .. } => {
+                rewrite_expr(lhs, proc_arrays, proc_api);
+                rewrite_expr(rhs, proc_arrays, proc_api);
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    rewrite_expr(arg, proc_arrays, proc_api);
+                }
+            }
+            Expr::Cast { expr, .. }
+            | Expr::UnaryNot { expr, .. }
+            | Expr::UnaryBitNot { expr, .. } => rewrite_expr(expr, proc_arrays, proc_api),
+            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+                for value in values {
+                    rewrite_expr(value, proc_arrays, proc_api);
+                }
+            }
+            Expr::UserCall { args, .. } => {
+                for arg in &mut *args {
+                    rewrite_expr(&mut arg.expr, proc_arrays, proc_api);
+                }
+            }
+            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        }
+
+        let Expr::UserCall {
+            loc, name, args, ..
+        } = expr
+        else {
+            return;
+        };
+        if name != &format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}") {
+            return;
+        }
+        let Some(Expr::Var { name: base, .. }) = named_call_arg_expr(args, PROC_INDEX_BASE_ARG)
+        else {
+            return;
+        };
+        let Some(array) = proc_arrays.get(base) else {
+            return;
+        };
+        let Some(Expr::Var { name: field, .. }) =
+            named_call_arg_expr(args, PROC_FIELD_SENTINEL_ARG)
+        else {
+            return;
+        };
+        let Some(param) = proc_api
+            .get(&array.proc_name)
+            .and_then(|api| api.params.get(field))
+            .filter(|param| !param.pinned)
+        else {
+            return;
+        };
+        let Some(index) = named_call_arg_expr(args, PROC_INDEX_EXPR_ARG).cloned() else {
+            return;
+        };
+        *expr = Expr::Index {
+            loc: *loc,
+            base: format!("{base}.{}", param.name),
+            index: Box::new(index),
+        };
+    }
+
+    fn rewrite_stmt(
+        stmt: &mut Stmt,
+        proc_arrays: &HashMap<String, ProcNestedArrayState>,
+        proc_api: &HashMap<String, ProcApi>,
+    ) {
+        match stmt {
+            Stmt::Assign { target, expr, .. } => {
+                match target {
+                    AssignTarget::Index { index, .. } => rewrite_expr(index, proc_arrays, proc_api),
+                    AssignTarget::Slice {
+                        selector,
+                        channel,
+                        start,
+                        end,
+                        ..
+                    } => {
+                        for nested in [selector, channel, start, end].into_iter().flatten() {
+                            rewrite_expr(nested, proc_arrays, proc_api);
+                        }
+                    }
+                    AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
+                }
+                rewrite_expr(expr, proc_arrays, proc_api);
+            }
+            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                rewrite_expr(expr, proc_arrays, proc_api)
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                rewrite_expr(cond, proc_arrays, proc_api);
+                for nested in then_branch.iter_mut().chain(else_branch) {
+                    rewrite_stmt(nested, proc_arrays, proc_api);
+                }
+            }
+            Stmt::For {
+                step,
+                start,
+                end,
+                body,
+                ..
+            } => {
+                if let Some(step) = step {
+                    rewrite_expr(step, proc_arrays, proc_api);
+                }
+                rewrite_expr(start, proc_arrays, proc_api);
+                rewrite_expr(end, proc_arrays, proc_api);
+                for nested in body {
+                    rewrite_stmt(nested, proc_arrays, proc_api);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                rewrite_expr(cond, proc_arrays, proc_api);
+                for nested in body {
+                    rewrite_stmt(nested, proc_arrays, proc_api);
+                }
+            }
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+
+    for stmt in stmts {
+        rewrite_stmt(stmt, proc_arrays, proc_api);
+    }
 }
 
 pub(super) fn rewrite_proc_calls_in_stmts_without_hooks(

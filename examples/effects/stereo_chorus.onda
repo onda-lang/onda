@@ -4,7 +4,7 @@ import std/pitch
 import processors/stereo_chorus
 
 params:
-  live_input: i32 = 0 {0, 1, step = 1}
+  live_input = false
   rate = 0.23 {0.03, 4.0, log, "Hz"}
   depth_ms = 5.0 {0.0, 12.0, unit = "ms"}
   width = 0.9 {0.0, 1.0}
@@ -22,7 +22,7 @@ init:
 sample:
   source_l = in1
   source_r = in2
-  if (live_input == 0):
+  if !live_input:
     drift = movement()
     pad_a.freq = std::pitch::note_to_hz(45.0) * (1.0 + drift * 0.0015)
     pad_b.freq = std::pitch::note_to_hz(52.0) * (1.0 - drift * 0.0011)

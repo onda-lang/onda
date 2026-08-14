@@ -20,7 +20,9 @@ impl ScopePolicy {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct PortIndexInfo;
+pub(crate) struct PortIndexInfo {
+    pub(crate) elem_ty: PrimitiveType,
+}
 
 pub(crate) fn uniform_port_index_info_from_names(
     enabled: bool,
@@ -30,7 +32,7 @@ pub(crate) fn uniform_port_index_info_from_names(
     if !enabled || names.is_empty() {
         return None;
     }
-    uniform_port_type_from_names(names, types).map(|_| PortIndexInfo)
+    uniform_port_type_from_names(names, types).map(|elem_ty| PortIndexInfo { elem_ty })
 }
 
 pub(crate) fn uniform_port_index_info_from_types(
@@ -41,7 +43,7 @@ pub(crate) fn uniform_port_index_info_from_types(
     if !enabled || count == 0 {
         return None;
     }
-    uniform_port_type_from_types(types).map(|_| PortIndexInfo)
+    uniform_port_type_from_types(types).map(|elem_ty| PortIndexInfo { elem_ty })
 }
 
 fn uniform_port_type_from_names(
@@ -98,6 +100,7 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
     param_structs: &'a HashMap<String, String>,
     struct_instances: &'a HashMap<String, String>,
     expr_outputs: &'a HashSet<String>,
+    struct_array_roots: &'a HashMap<String, ArrayStructRootInfo>,
     proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
 ) -> ScopeExprInputs<'a> {
     ScopeExprInputs {
@@ -122,6 +125,7 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
         port_index_outs: common.port_index_outs,
         port_index_params: common.port_index_params,
         port_index_kins: common.port_index_kins,
+        struct_array_roots,
         proc_array_roots,
         proc_event_names: common.proc_event_names,
     }

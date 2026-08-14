@@ -34,6 +34,7 @@ fn infer_runtime_slice_alias_info(
         struct_instances,
         struct_defs,
         errors,
+        false,
     )
 }
 
@@ -431,6 +432,7 @@ pub(crate) fn analyze_runtime_events(
                         param.name.clone(),
                         LocalArrayAliasInfo {
                             len,
+                            static_len: Some(len),
                             elem_ty: elem,
                             elem_struct: None,
                             writable: false,
@@ -443,6 +445,7 @@ pub(crate) fn analyze_runtime_events(
                         param.name.clone(),
                         LocalArrayAliasInfo {
                             len: 1,
+                            static_len: None,
                             elem_ty: elem,
                             elem_struct: None,
                             writable: false,
@@ -539,7 +542,9 @@ fn analyze_runtime_scope<'a>(
     loop_depth: usize,
     scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> crate::def_semantics::call_types::StatementFlow {
+    use crate::def_semantics::call_types::{statement_flow, StatementFlow};
+
     let stmts = stmts.into_iter().collect::<Vec<_>>();
     if scope_depth == 0 {
         register_scope_state(
@@ -573,7 +578,11 @@ fn analyze_runtime_scope<'a>(
             scope_depth,
             errors,
         );
+        if statement_flow(stmt) == StatementFlow::Terminates {
+            return StatementFlow::Terminates;
+        }
     }
+    StatementFlow::Continues
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -614,14 +623,17 @@ fn analyze_runtime_stmt_inner(
     with_stmt_diag_context(stmt, |diag| {
         let array_vars = merged_data_vars_for_runtime(state_arrays, &state.local_array_aliases);
         let empty_param_structs = HashMap::<String, String>::new();
+        let mut visible_struct_instances = struct_instances.clone();
+        visible_struct_instances.extend(state.local_struct_aliases.clone());
         let expr_inputs = build_scope_analysis_expr_inputs(
             common,
             locals,
             state_scalars,
             declared_symbols,
             &empty_param_structs,
-            struct_instances,
+            &visible_struct_instances,
             &expr_output_names,
+            state_array_struct_roots,
             proc_array_roots,
         );
         match stmt {
@@ -659,6 +671,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.local_struct_aliases,
                     &mut state.local_buffer_aliases,
                     &mut state.tuple_vars,
                     locals,
@@ -720,7 +733,7 @@ fn analyze_runtime_stmt_inner(
                 cond,
                 then_branch,
                 else_branch,
-                ..
+                loc,
             } => {
                 let cond = rewrite_proc_alias_calls_for_validation(cond, &state.local_proc_aliases);
                 require_validated_bool_stmt_expr(
@@ -734,10 +747,11 @@ fn analyze_runtime_stmt_inner(
                     &state.local_aliases,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
+                    &state.local_struct_aliases,
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
-                analyze_runtime_scope(
+                let then_flow = analyze_runtime_scope(
                     then_branch.iter(),
                     locals,
                     state_scalars,
@@ -752,10 +766,11 @@ fn analyze_runtime_stmt_inner(
                     &state.local_aliases,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
+                    &state.local_struct_aliases,
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
-                analyze_runtime_scope(
+                let else_flow = analyze_runtime_scope(
                     else_branch.iter(),
                     locals,
                     state_scalars,
@@ -765,15 +780,20 @@ fn analyze_runtime_stmt_inner(
                     scope_depth + 1,
                     errors,
                 );
-                merge_branch_scope_flow_state(
+                merge_reachable_branch_scope_flow_state(
                     &mut state.known_scalars,
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.local_struct_aliases,
                     &mut state.local_buffer_aliases,
                     &mut state.tuple_vars,
                     then_state,
+                    then_flow,
                     else_state,
+                    else_flow,
+                    (*loc).into(),
+                    errors,
                 );
             }
             Stmt::For {
@@ -814,6 +834,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_aliases,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
+                    &state.local_struct_aliases,
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
@@ -832,6 +853,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.local_struct_aliases,
                     &mut state.local_buffer_aliases,
                     &mut state.tuple_vars,
                     loop_state,
@@ -850,6 +872,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_aliases,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
+                    &state.local_struct_aliases,
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
@@ -868,6 +891,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.local_struct_aliases,
                     &mut state.local_buffer_aliases,
                     &mut state.tuple_vars,
                     loop_state,
@@ -891,6 +915,7 @@ fn analyze_assign_sample(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    local_struct_aliases: &mut HashMap<String, String>,
     local_buffer_aliases: &mut LocalBufferAliases,
     tuple_vars: &mut HashMap<String, usize>,
     locals: &HashSet<String>,
@@ -926,12 +951,14 @@ fn analyze_assign_sample(
 ) {
     let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
     let empty_param_structs = HashMap::<String, String>::new();
+    let mut visible_struct_instances = struct_instances.clone();
+    visible_struct_instances.extend(local_struct_aliases.clone());
     let expr_inputs = ScopeExprInputs {
         locals,
         state_scalars,
         declared_symbols,
         param_structs: &empty_param_structs,
-        struct_instances,
+        struct_instances: &visible_struct_instances,
         input_names,
         output_names,
         output_array_names,
@@ -948,6 +975,7 @@ fn analyze_assign_sample(
         port_index_outs,
         port_index_params,
         port_index_kins,
+        struct_array_roots: state_array_struct_roots,
         proc_array_roots,
         proc_event_names,
     };
@@ -985,6 +1013,15 @@ fn analyze_assign_sample(
         AssignTarget::Index { base, index } => {
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+            let lexical_root = base.split('.').next().unwrap_or(base);
+            if locals.contains(lexical_root) {
+                target_error!(format!(
+                    "loop variable '{lexical_root}' is scalar and cannot be indexed"
+                ));
+                validate_expr(index, scope_expr_env!(), errors);
+                validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                return;
+            }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 target_error!("typed declaration is only supported for plain scalar variables",);
             }
@@ -1170,6 +1207,17 @@ fn analyze_assign_sample(
         } => {
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+            let lexical_root = base.split('.').next().unwrap_or(base);
+            if locals.contains(lexical_root) {
+                target_error!(format!(
+                    "loop variable '{lexical_root}' is scalar and cannot be sliced"
+                ));
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    validate_expr(coordinate, scope_expr_env!(), errors);
+                }
+                validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                return;
+            }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 target_error!("typed declaration is only supported for plain scalar variables",);
             }
@@ -1465,6 +1513,7 @@ fn analyze_assign_sample(
                                 name.clone(),
                                 LocalArrayAliasInfo {
                                     len: size_value,
+                                    static_len: Some(size_value),
                                     elem_ty: *elem_ty,
                                     elem_struct: None,
                                     writable: true,
@@ -1586,8 +1635,7 @@ fn analyze_assign_sample(
                     proc_array_roots,
                     errors,
                 );
-                let elem_ty = untyped_literal_type(&values[0])
-                    .or(inferred_first)
+                let elem_ty = effective_untyped_assignment_type(&values[0], inferred_first)
                     .unwrap_or(PrimitiveType::F32);
                 for (idx, value) in values.iter().enumerate() {
                     let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
@@ -1618,6 +1666,7 @@ fn analyze_assign_sample(
                     name.clone(),
                     LocalArrayAliasInfo {
                         len: values.len(),
+                        static_len: Some(values.len()),
                         elem_ty,
                         elem_struct: None,
                         writable: true,
@@ -1686,7 +1735,7 @@ fn analyze_assign_sample(
                 return;
             }
 
-            if local_aliases.contains_key(name) {
+            if name.contains('.') && local_aliases.contains_key(name) {
                 let expr_for_validation =
                     rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                 if matches!(expr, Expr::ArrayCtor { .. }) {
@@ -1721,8 +1770,6 @@ fn analyze_assign_sample(
                     &format!("alias assignment to '{name}'"),
                     errors,
                 );
-                let tuple_arity = infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types);
-                track_tuple_var_assignment(tuple_vars, name, tuple_arity);
                 known_scalars.insert(name.clone());
                 return;
             }
@@ -1857,6 +1904,10 @@ fn analyze_assign_sample(
                                         index_expr: index.as_ref().clone(),
                                     },
                                 );
+                                if let Some(proc_array) = proc_array_roots.get(base) {
+                                    local_struct_aliases
+                                        .insert(name.clone(), proc_array.proc_name.clone());
+                                }
                                 return;
                             }
                             IndexedBindingKind::StructElementAlias(struct_name) => {
@@ -1872,6 +1923,7 @@ fn analyze_assign_sample(
                                 ) {
                                     return;
                                 }
+                                local_struct_aliases.insert(name.clone(), struct_name);
                                 return;
                             }
                             IndexedBindingKind::PrimitiveScalar => {
@@ -1932,6 +1984,92 @@ fn analyze_assign_sample(
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+            let can_track_local = !output_names.contains(name)
+                && !state_scalars.contains_key(name)
+                && !state_arrays.contains_key(name)
+                && !state_array_struct_roots.contains_key(name)
+                && !struct_instances.contains_key(name)
+                && !input_names.contains(name)
+                && !param_names.contains(name)
+                && !local_array_aliases.contains_key(name)
+                && !locals.contains(name)
+                && !is_builtin_constant_name(name);
+            let tuple_types = infer_tracked_tuple_types(
+                &expr_for_validation,
+                tuple_vars,
+                local_aliases,
+                Some(state_tuples),
+                struct_instances,
+                struct_defs,
+                fn_return_types,
+                |value| {
+                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                        value,
+                        state_scalars,
+                        declared_symbols,
+                        None,
+                        local_aliases,
+                        local_array_aliases,
+                        locals,
+                        input_names,
+                        output_names,
+                        param_names,
+                        struct_instances,
+                        struct_defs,
+                        proc_array_roots,
+                        errors,
+                    )
+                },
+            );
+            let existing_tuple_types = state_tuples
+                .get(name)
+                .cloned()
+                .or_else(|| tracked_local_tuple_types(name, tuple_vars, local_aliases));
+            if let Some(tuple_types) = tuple_types.as_ref() {
+                if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
+                    target_error!(format!(
+                        "typed scalar declaration for '{name}' cannot use a tuple value"
+                    ));
+                    return;
+                }
+                if let Some(existing_types) = existing_tuple_types.as_ref() {
+                    require_tuple_expr_assignable_types(
+                        name,
+                        &expr_for_validation,
+                        tuple_types,
+                        existing_types,
+                        errors,
+                    );
+                    if !state_tuples.contains_key(name) {
+                        replace_tracked_tuple_types(local_aliases, name, Some(existing_types));
+                        track_tuple_var_assignment(tuple_vars, name, Some(existing_types.len()));
+                        known_scalars.insert(name.clone());
+                    }
+                    return;
+                }
+                if state_scalars.contains_key(name)
+                    || known_scalars.contains(name)
+                    || local_aliases.contains_key(name)
+                {
+                    target_error!(format!(
+                        "cannot assign a tuple value to scalar local '{name}'"
+                    ));
+                    return;
+                }
+            }
+            if let Some(tuple_types) = tuple_types.filter(|_| can_track_local) {
+                local_aliases.remove(name);
+                replace_tracked_tuple_types(local_aliases, name, Some(&tuple_types));
+                track_tuple_var_assignment(tuple_vars, name, Some(tuple_types.len()));
+                known_scalars.insert(name.clone());
+                return;
+            }
+            if existing_tuple_types.is_some() {
+                target_error!(format!(
+                    "assignment to tuple local '{name}' requires a tuple value"
+                ));
+                return;
+            }
             let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 &expr_for_validation,
                 state_scalars,
@@ -1948,16 +2086,6 @@ fn analyze_assign_sample(
                 proc_array_roots,
                 errors,
             );
-            let can_track_local = !output_names.contains(name)
-                && !state_scalars.contains_key(name)
-                && !state_arrays.contains_key(name)
-                && !state_array_struct_roots.contains_key(name)
-                && !struct_instances.contains_key(name)
-                && !input_names.contains(name)
-                && !param_names.contains(name)
-                && !local_array_aliases.contains_key(name)
-                && !locals.contains(name)
-                && !is_builtin_constant_name(name);
             let target_ty = if output_names.contains(name) {
                 Some(
                     declared_symbol_scalar_type(declared_symbols, name)
@@ -1989,6 +2117,7 @@ fn analyze_assign_sample(
             // Track local tuple variables for indexing validation
             let tuple_arity = infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types);
             track_tuple_var_assignment(tuple_vars, name, tuple_arity);
+            replace_tracked_tuple_types(local_aliases, name, None);
 
             if output_names.contains(name) || can_track_local {
                 known_scalars.insert(name.clone());
@@ -2007,15 +2136,38 @@ fn analyze_assign_sample(
                     errors,
                 );
             }
-            // Validate destructuring arity against the RHS tuple length
-            let rhs_arity =
-                infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types).or_else(|| {
-                    if let Expr::Var { name, .. } = expr {
-                        state_tuples.get(name).map(|tys| tys.len())
-                    } else {
-                        None
-                    }
-                });
+            let destructured_types = infer_tracked_tuple_types(
+                &expr_for_validation,
+                tuple_vars,
+                local_aliases,
+                Some(state_tuples),
+                struct_instances,
+                struct_defs,
+                fn_return_types,
+                |value| {
+                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                        value,
+                        state_scalars,
+                        declared_symbols,
+                        None,
+                        local_aliases,
+                        local_array_aliases,
+                        locals,
+                        input_names,
+                        output_names,
+                        param_names,
+                        struct_instances,
+                        struct_defs,
+                        proc_array_roots,
+                        errors,
+                    )
+                },
+            );
+            // Validate destructuring arity against the RHS tuple length.
+            let rhs_arity = destructured_types
+                .as_ref()
+                .map(Vec::len)
+                .or_else(|| infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types));
             if let Some(expected) = rhs_arity {
                 if targets.len() != expected {
                     errors.push(Diagnostic::semantic(
@@ -2033,11 +2185,17 @@ fn analyze_assign_sample(
                 return;
             }
             clear_tuple_var_bindings(tuple_vars, targets.iter());
-            for target_name in targets {
+            for (index, target_name) in targets.iter().enumerate() {
+                let target_ty = destructured_types
+                    .as_ref()
+                    .and_then(|types| types.get(index))
+                    .copied()
+                    .unwrap_or(PrimitiveType::F32);
+                replace_tracked_tuple_types(local_aliases, target_name, None);
                 known_scalars.insert(target_name.clone());
                 local_aliases
                     .entry(target_name.clone())
-                    .or_insert(PrimitiveType::F32);
+                    .or_insert(target_ty);
             }
         }
     }

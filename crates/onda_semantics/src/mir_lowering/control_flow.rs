@@ -1,4 +1,5 @@
 use super::*;
+use crate::def_semantics::call_types::StatementFlow;
 
 impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_statements(
@@ -6,9 +7,9 @@ impl<'a> FunctionLowerer<'a> {
         statements: &[Stmt],
         block: &mut MirBlock,
         continue_mode: ContinueMode,
-    ) -> Result<(), MirLoweringError> {
+    ) -> Result<StatementFlow, MirLoweringError> {
         for statement in statements {
-            match statement {
+            let flow = match statement {
                 Stmt::Const { .. } => {
                     return Err(self.error(
                         "runtime local const declaration survived semantic constant folding",
@@ -120,6 +121,7 @@ impl<'a> FunctionLowerer<'a> {
                             unreachable!("slice assignments are lowered before scalar/tuple values")
                         }
                     }
+                    StatementFlow::Continues
                 }
                 Stmt::Expr { expr, .. } => {
                     if let Expr::UserCall {
@@ -143,6 +145,7 @@ impl<'a> FunctionLowerer<'a> {
                     } else {
                         let _ = self.lower_expr(expr, block)?;
                     }
+                    StatementFlow::Continues
                 }
                 Stmt::Return { expr, loc } => {
                     if !self.function.returns_value {
@@ -175,6 +178,7 @@ impl<'a> FunctionLowerer<'a> {
                         StatementKind::Return { values: returned },
                         (*loc).into(),
                     );
+                    StatementFlow::Terminates
                 }
                 Stmt::If {
                     cond,
@@ -189,25 +193,44 @@ impl<'a> FunctionLowerer<'a> {
                     let outer_bindings = self.bindings.clone();
                     let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
                     let mut then_block = MirBlock::default();
-                    self.lower_statements(then_branch, &mut then_block, continue_mode)?;
+                    let then_flow =
+                        self.lower_statements(then_branch, &mut then_block, continue_mode)?;
                     let then_bindings = self.bindings.clone();
                     let then_nested_proc_aliases = self.nested_proc_aliases.clone();
                     self.bindings = outer_bindings.clone();
                     self.nested_proc_aliases = outer_nested_proc_aliases.clone();
                     let mut else_block = MirBlock::default();
-                    self.lower_statements(else_branch, &mut else_block, continue_mode)?;
+                    let else_flow =
+                        self.lower_statements(else_branch, &mut else_block, continue_mode)?;
                     let else_bindings = self.bindings.clone();
                     let else_nested_proc_aliases = self.nested_proc_aliases.clone();
-                    self.merge_branch_scopes(
-                        outer_bindings,
-                        then_bindings,
-                        else_bindings,
-                        outer_nested_proc_aliases,
-                        then_nested_proc_aliases,
-                        else_nested_proc_aliases,
-                        &mut else_block,
-                        (*loc).into(),
-                    );
+                    match (then_flow, else_flow) {
+                        (StatementFlow::Continues, StatementFlow::Terminates) => {
+                            self.bindings = then_bindings;
+                            self.nested_proc_aliases = then_nested_proc_aliases;
+                        }
+                        (StatementFlow::Terminates, StatementFlow::Continues) => {
+                            self.bindings = else_bindings;
+                            self.nested_proc_aliases = else_nested_proc_aliases;
+                        }
+                        (StatementFlow::Continues, StatementFlow::Continues) => {
+                            self.merge_branch_scopes(
+                                outer_bindings,
+                                then_bindings,
+                                else_bindings,
+                                outer_nested_proc_aliases,
+                                then_nested_proc_aliases,
+                                else_nested_proc_aliases,
+                                &mut then_block,
+                                &mut else_block,
+                                (*loc).into(),
+                            )?;
+                        }
+                        (StatementFlow::Terminates, StatementFlow::Terminates) => {
+                            self.bindings = outer_bindings;
+                            self.nested_proc_aliases = outer_nested_proc_aliases;
+                        }
+                    }
                     self.push_statement(
                         block,
                         StatementKind::If {
@@ -217,6 +240,13 @@ impl<'a> FunctionLowerer<'a> {
                         },
                         (*loc).into(),
                     );
+                    if then_flow == StatementFlow::Terminates
+                        && else_flow == StatementFlow::Terminates
+                    {
+                        StatementFlow::Terminates
+                    } else {
+                        StatementFlow::Continues
+                    }
                 }
                 Stmt::While { cond, body, loc } => {
                     self.stop_prezeroed_init_state_proof();
@@ -246,6 +276,7 @@ impl<'a> FunctionLowerer<'a> {
                         StatementKind::Loop { body: loop_body },
                         (*loc).into(),
                     );
+                    StatementFlow::Continues
                 }
                 Stmt::For {
                     var,
@@ -255,21 +286,25 @@ impl<'a> FunctionLowerer<'a> {
                     end_inclusive,
                     body,
                     loc,
-                } => self.lower_for(
-                    var,
-                    step.as_ref(),
-                    start,
-                    end,
-                    *end_inclusive,
-                    body,
-                    (*loc).into(),
-                    block,
-                )?,
+                } => {
+                    self.lower_for(
+                        var,
+                        step.as_ref(),
+                        start,
+                        end,
+                        *end_inclusive,
+                        body,
+                        (*loc).into(),
+                        block,
+                    )?;
+                    StatementFlow::Continues
+                }
                 Stmt::Break { loc } => {
                     if matches!(continue_mode, ContinueMode::None) {
                         return Err(self.error("break reached MIR outside a loop", (*loc).into()));
                     }
                     self.push_statement(block, StatementKind::Break, (*loc).into());
+                    StatementFlow::Terminates
                 }
                 Stmt::Continue { loc } => {
                     match continue_mode {
@@ -286,10 +321,14 @@ impl<'a> FunctionLowerer<'a> {
                         } => self.emit_for_increment(block, index, step, source),
                     }
                     self.push_statement(block, StatementKind::Continue, (*loc).into());
+                    StatementFlow::Terminates
                 }
+            };
+            if flow == StatementFlow::Terminates {
+                return Ok(flow);
             }
         }
-        Ok(())
+        Ok(StatementFlow::Continues)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -349,7 +388,7 @@ impl<'a> FunctionLowerer<'a> {
             end_inclusive,
             location,
         );
-        self.lower_statements(
+        let body_flow = self.lower_statements(
             body,
             &mut loop_body,
             ContinueMode::For {
@@ -358,7 +397,9 @@ impl<'a> FunctionLowerer<'a> {
                 source: location,
             },
         )?;
-        self.emit_for_increment(&mut loop_body, index, step_value.value, location);
+        if body_flow == StatementFlow::Continues {
+            self.emit_for_increment(&mut loop_body, index, step_value.value, location);
+        }
 
         self.bindings = outer_bindings;
         self.nested_proc_aliases = outer_nested_proc_aliases;
@@ -379,9 +420,10 @@ impl<'a> FunctionLowerer<'a> {
         outer_nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
         then_nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
         else_nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
+        then_block: &mut MirBlock,
         else_block: &mut MirBlock,
         location: SourceLoc,
-    ) {
+    ) -> Result<(), MirLoweringError> {
         let mut merged_binding_names = then_bindings
             .keys()
             .filter(|name| !outer_bindings.contains_key(*name) && else_bindings.contains_key(*name))
@@ -397,9 +439,14 @@ impl<'a> FunctionLowerer<'a> {
             let Some(else_binding) = else_bindings.get(&name).cloned() else {
                 continue;
             };
-            if let Some(binding) =
-                self.reconcile_branch_binding(then_binding, else_binding, else_block, location)
-            {
+            if let Some(binding) = self.reconcile_branch_binding(
+                &name,
+                then_binding,
+                else_binding,
+                then_block,
+                else_block,
+                location,
+            )? {
                 self.bindings.insert(name, binding);
             }
         }
@@ -430,22 +477,25 @@ impl<'a> FunctionLowerer<'a> {
                 self.nested_proc_aliases.insert(name, then_alias);
             }
         }
+        Ok(())
     }
 
     pub(super) fn reconcile_branch_binding(
         &mut self,
+        name: &str,
         then_binding: Binding,
         else_binding: Binding,
+        then_block: &mut MirBlock,
         else_block: &mut MirBlock,
         location: SourceLoc,
-    ) -> Option<Binding> {
+    ) -> Result<Option<Binding>, MirLoweringError> {
         match (then_binding, else_binding) {
-            (Binding::Local(then_local, then_ty), Binding::Local(else_local, else_ty))
-                if then_ty == else_ty && self.local_types_match(then_local, else_local) =>
-            {
-                self.copy_branch_local(else_block, then_local, else_local, location);
-                Some(Binding::Local(then_local, then_ty))
-            }
+            (Binding::Local(then_local, then_ty), Binding::Local(else_local, else_ty)) => self
+                .reconcile_branch_scalar(
+                    name, then_local, then_ty, else_local, else_ty, then_block, else_block,
+                    location,
+                )
+                .map(|binding| binding.map(|(local, ty)| Binding::Local(local, ty))),
             (
                 Binding::Array(then_local, then_element, then_len),
                 Binding::Array(else_local, else_element, else_len),
@@ -454,7 +504,7 @@ impl<'a> FunctionLowerer<'a> {
                 && self.local_types_match(then_local, else_local) =>
             {
                 self.copy_branch_local(else_block, then_local, else_local, location);
-                Some(Binding::Array(then_local, then_element, then_len))
+                Ok(Some(Binding::Array(then_local, then_element, then_len)))
             }
             (
                 Binding::Slice(then_local, then_element, then_access),
@@ -464,20 +514,37 @@ impl<'a> FunctionLowerer<'a> {
                 && self.local_types_match(then_local, else_local) =>
             {
                 self.copy_branch_local(else_block, then_local, else_local, location);
-                Some(Binding::Slice(then_local, then_element, then_access))
+                Ok(Some(Binding::Slice(then_local, then_element, then_access)))
             }
             (Binding::Tuple(then_values), Binding::Tuple(else_values))
                 if then_values.len() == else_values.len()
                     && then_values.iter().zip(&else_values).all(
-                        |((then_local, then_ty), (else_local, else_ty))| {
-                            then_ty == else_ty && self.local_types_match(*then_local, *else_local)
+                        |((_, then_ty), (_, else_ty))| {
+                            merge_inferred_return_types(*then_ty, *else_ty).is_some()
                         },
                     ) =>
             {
-                for ((then_local, _), (else_local, _)) in then_values.iter().zip(&else_values) {
-                    self.copy_branch_local(else_block, *then_local, *else_local, location);
+                let mut joined = Vec::with_capacity(then_values.len());
+                for (index, ((then_local, then_ty), (else_local, else_ty))) in
+                    then_values.into_iter().zip(else_values).enumerate()
+                {
+                    let component_name = format!("{name}.{index}");
+                    let Some(component) = self.reconcile_branch_scalar(
+                        &component_name,
+                        then_local,
+                        then_ty,
+                        else_local,
+                        else_ty,
+                        then_block,
+                        else_block,
+                        location,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    joined.push(component);
                 }
-                Some(Binding::Tuple(then_values))
+                Ok(Some(Binding::Tuple(joined)))
             }
             (
                 Binding::TupleSliceElementAlias(then_values),
@@ -497,7 +564,7 @@ impl<'a> FunctionLowerer<'a> {
                     self.copy_branch_local(else_block, *then_slice, *else_slice, location);
                     self.copy_branch_local(else_block, *then_index, *else_index, location);
                 }
-                Some(Binding::TupleSliceElementAlias(then_values))
+                Ok(Some(Binding::TupleSliceElementAlias(then_values)))
             }
             (
                 Binding::SliceElementAlias {
@@ -516,11 +583,11 @@ impl<'a> FunctionLowerer<'a> {
             {
                 self.copy_branch_local(else_block, then_slice, else_slice, location);
                 self.copy_branch_local(else_block, then_index, else_index, location);
-                Some(Binding::SliceElementAlias {
+                Ok(Some(Binding::SliceElementAlias {
                     slice: then_slice,
                     element: then_element,
                     index: then_index,
-                })
+                }))
             }
             (
                 Binding::StructArrayElementAlias {
@@ -529,9 +596,9 @@ impl<'a> FunctionLowerer<'a> {
                 Binding::StructArrayElementAlias {
                     struct_name: else_struct,
                 },
-            ) if then_struct == else_struct => Some(Binding::StructArrayElementAlias {
+            ) if then_struct == else_struct => Ok(Some(Binding::StructArrayElementAlias {
                 struct_name: then_struct,
-            }),
+            })),
             (
                 Binding::StructArrayParameter {
                     struct_name: then_struct,
@@ -558,14 +625,57 @@ impl<'a> FunctionLowerer<'a> {
                 {
                     self.copy_branch_local(else_block, *then_local, *else_local, location);
                 }
-                Some(Binding::StructArrayParameter {
+                Ok(Some(Binding::StructArrayParameter {
                     struct_name: then_struct,
                     length: StructArrayLength::Fixed(then_len),
                     fields: then_fields,
-                })
+                }))
             }
-            _ => None,
+            _ => Ok(None),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconcile_branch_scalar(
+        &mut self,
+        name: &str,
+        then_local: LocalId,
+        then_ty: PrimitiveType,
+        else_local: LocalId,
+        else_ty: PrimitiveType,
+        then_block: &mut MirBlock,
+        else_block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> Result<Option<(LocalId, PrimitiveType)>, MirLoweringError> {
+        if then_ty == else_ty && self.local_types_match(then_local, else_local) {
+            self.copy_branch_local(else_block, then_local, else_local, location);
+            return Ok(Some((then_local, then_ty)));
+        }
+        let Some(joined_ty) = merge_inferred_return_types(then_ty, else_ty) else {
+            return Ok(None);
+        };
+        let joined_local = self.new_local(Some(name.to_owned()), joined_ty);
+        let then_value = self.coerce(
+            LoweredValue {
+                value: Value::Local(then_local),
+                ty: then_ty,
+            },
+            joined_ty,
+            then_block,
+            location,
+        )?;
+        self.assign_value(then_block, joined_local, then_value.value, location);
+        let else_value = self.coerce(
+            LoweredValue {
+                value: Value::Local(else_local),
+                ty: else_ty,
+            },
+            joined_ty,
+            else_block,
+            location,
+        )?;
+        self.assign_value(else_block, joined_local, else_value.value, location);
+        Ok(Some((joined_local, joined_ty)))
     }
 
     pub(super) fn local_types_match(&self, lhs: LocalId, rhs: LocalId) -> bool {

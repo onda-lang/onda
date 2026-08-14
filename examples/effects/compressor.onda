@@ -5,8 +5,8 @@ import std/osc
 import processors/compressor
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  live_input: i32 = 0 {0, 1, step = 1}
+  auto_play = true
+  live_input = false
   threshold_db = -18.0 {-48.0, 0.0, unit = "dB"}
   ratio = 4.0 {1.0, 20.0}
   attack_ms = 8.0 {0.1, 100.0, log, "ms"}
@@ -23,8 +23,8 @@ init:
   noise_tone = std::filter::OnePole(cutoff = 4800.0)
   low_tone = std::filter::OnePole(cutoff = 900.0)
   envelope = std::env::DecayEnv(decay_s = 0.023)
-  tick: i32 = 0
-  step: i32 = 0
+  tick = 0
+  step = 0
   pending_bang = false
 
 event bang():
@@ -32,7 +32,7 @@ event bang():
 
 sample:
   interval = max(i32(SR * 0.25), 1)
-  if auto_play != 0 && tick == 0:
+  if auto_play && tick == 0:
     pending_bang = true
 
   if pending_bang:
@@ -47,13 +47,14 @@ sample:
   if ((step & 1) == 1):
     transient = transient + noise_tone(noise()) * env_level * env_level * 0.32
   bed = 0.0
-  if auto_play != 0:
+  if auto_play:
     bed = low_tone(noise()) * 0.05
   audition_source = transient + bed
 
-  dry_l = in1
-  dry_r = in2
-  if live_input == 0:
+  if live_input:
+    dry_l = in1
+    dry_r = in2
+  else:
     dry_l = audition_source
     dry_r = audition_source
 

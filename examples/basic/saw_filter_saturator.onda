@@ -9,41 +9,42 @@ proc Saturator:
   sample 4:
     out1 = tanh(in1 * amount)
 
-outs 2
-
 params:
-  note = 45.0 {24.0, 84.0, step = 1.0}
-  cutoff = 920.0 {80.0, 9000.0, log, "Hz"}
-  resonance = 1.4 {0.5, 6.0}
-  motion = 0.52 {0.0, 1.0}
-  drive = 1.8 {1.0, 6.0}
+  note = 45 {24, 84}
+  cutoff = 1000.0 {80.0, 9000.0, log, "Hz"}
+  resonance = 1.5 {0.5, 10.0}
+  motion = 0.5 {0.0, 1.0}
+  drive = 2.0 {1.0, 6.0}
   level = 0.5 {0.0, 1.0}
 
 init:
   saw_a = std::osc::Saw()
   saw_b = std::osc::Saw()
   sub = std::osc::Square()
-  lfo = std::osc::Sine(freq = 0.09)
-  filter_l = std::filter::Svf(cutoff = cutoff, q = resonance)
-  filter_r = std::filter::Svf(cutoff = cutoff, q = resonance)
+  lfo = std::osc::KSine(freq = 0.1)
+  filter_l = std::filter::Svf()
+  filter_r = std::filter::Svf()
   saturator_l = Saturator()
   saturator_r = Saturator()
 
-sample:
-  freq = std::pitch::note_to_hz(note)
+block:
+  freq = std::pitch::note_to_hz(f32(note))
   saw_a.freq = freq * 0.997
   saw_b.freq = freq * 1.503
   sub.freq = freq * 0.5
-  movement = 0.5 + 0.5 * lfo()
-  cutoff_l = clamp(cutoff * (1.0 + movement * motion * 5.0), 40.0, SR * 0.44)
-  cutoff_r = clamp(cutoff * (1.0 + (1.0 - movement) * motion * 5.0), 40.0, SR * 0.44)
+
+  movement = lfo() * 0.5 + 0.5
+  max_cutoff = SAMPLE_RATE * 0.5
+  cutoff_l = clamp(cutoff * (1.0 + movement * motion * 5.0), 40.0, max_cutoff)
+  cutoff_r = clamp(cutoff * (1.0 + (1.0 - movement) * motion * 5.0), 40.0, max_cutoff)
   filter_l.update_coeffs(cutoff_l, resonance)
   filter_r.update_coeffs(cutoff_r, resonance)
 
-  a = saw_a()
-  b = saw_b()
-  bass = sub()
-  left = filter_l(a * 0.62 + b * 0.24 + bass * 0.14)
-  right = filter_r(a * 0.38 - b * 0.46 + bass * 0.16)
-  out1 = saturator_l(left, amount = drive) * level
-  out2 = saturator_r(right, amount = drive) * level
+  sample:
+    bass = sub()
+    a = saw_a()
+    b = saw_b()
+    left = filter_l(a * 0.62 + b * 0.24 + bass * 0.14)
+    right = filter_r(a * 0.38 - b * 0.46 + bass * 0.16)
+    out1 = saturator_l(left, amount = drive) * level
+    out2 = saturator_r(right, amount = drive) * level

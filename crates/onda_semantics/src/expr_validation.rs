@@ -351,6 +351,22 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             if is_builtin_constant_name(name) {
                 return;
             }
+            // `locals` contains lexical loop binders. Resolve them before any
+            // outer aggregate/resource namespace so a loop index fully
+            // shadows a same-named array, buffer, or struct.
+            if env.locals.contains(name) {
+                return;
+            }
+            if let Some((root, field)) = name.split_once('.') {
+                if env.locals.contains(root) {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!("loop variable '{root}' is scalar and has no field '{field}'"),
+                    );
+                    return;
+                }
+            }
             if let Some((base, field)) = split_field_path(name, errors) {
                 if let Some((struct_name, owner_kind)) = env
                     .param_structs
@@ -438,6 +454,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
                 if !env.known_scalars.contains(&flat)
+                    && !env.state_scalars.contains_key(&flat)
                     && !env.local_aliases.contains_key(&flat)
                     && !env.locals.contains(&flat)
                 {
@@ -526,6 +543,16 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             }
         }
         Expr::Index { base, index, .. } => {
+            let lexical_root = base.split('.').next().unwrap_or(base);
+            if env.locals.contains(lexical_root) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("loop variable '{lexical_root}' is scalar and cannot be indexed"),
+                );
+                validate_expr(index, env, errors);
+                return;
+            }
             if let Some((root, field)) = split_field_path(base, errors) {
                 if let Some((struct_name, owner_kind)) = env
                     .param_structs
@@ -752,6 +779,18 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             end,
             ..
         } => {
+            let lexical_root = base.split('.').next().unwrap_or(base);
+            if env.locals.contains(lexical_root) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("loop variable '{lexical_root}' is scalar and cannot be sliced"),
+                );
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    validate_expr(coordinate, env, errors);
+                }
+                return;
+            }
             if let Some((root, field)) = split_field_path(base, errors) {
                 if let Some((struct_name, owner_kind)) = env
                     .param_structs
@@ -1032,6 +1071,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 return;
             }
             if let Some(sig) = env.fn_signatures.get(name) {
+                let display_name = sig.display_name.as_deref().unwrap_or(name);
                 if sig.type_params.is_empty() {
                     if !type_args.is_empty() {
                         push_expr_error(
@@ -1039,7 +1079,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             expr,
                             format!(
                                 "function '{}' is not generic and cannot take type arguments",
-                                name
+                                display_name
                             ),
                         );
                     }
@@ -1050,7 +1090,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             expr,
                             format!(
                                 "function '{}' expects {} type arguments, got {}",
-                                name,
+                                display_name,
                                 sig.type_params.len(),
                                 type_args.len()
                             ),
@@ -1063,7 +1103,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 expr,
                                 format!(
                                     "'bool' is not valid as a generic type argument for '{}'; use f32, f64, i32, or i64",
-                                    name
+                                    display_name
                                 ),
                             );
                         }
@@ -1071,16 +1111,23 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
 
                 let forbid_self_named = sig.params.first().map(String::as_str) == Some("self");
+                let mut binding_errors = Vec::new();
                 let resolved = resolve_call_args_at(
                     args,
                     &sig.params,
                     &sig.defaults,
                     forbid_self_named,
                     false,
-                    &format!("function '{name}' call"),
+                    &format!("function '{display_name}' call"),
                     expr.loc(),
-                    errors,
+                    &mut binding_errors,
                 );
+                let call_binding_is_valid = binding_errors.is_empty();
+                for diagnostic in binding_errors {
+                    if !errors.contains(&diagnostic) {
+                        errors.push(diagnostic);
+                    }
+                }
                 for (idx, arg) in resolved.into_iter().enumerate() {
                     if let Some(arg) = arg {
                         let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
@@ -1090,7 +1137,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             .is_some_and(|param| sig.readonly_array_params.contains(param));
                         if let Some(FnParamType::BufferArray { buffer, len }) = param_ty {
                             validate_buffer_array_param_call_arg(
-                                name,
+                                display_name,
                                 idx,
                                 &sig.params,
                                 buffer,
@@ -1104,7 +1151,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         }
                         if let Some(FnParamType::Buffer(buffer_ty)) = param_ty {
                             validate_buffer_param_call_arg(
-                                name,
+                                display_name,
                                 idx,
                                 &sig.params,
                                 buffer_ty,
@@ -1117,7 +1164,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         }
                         if is_function_array_param(param_ty) {
                             if reject_protected_array_pointer_call_arg(
-                                name,
+                                display_name,
                                 &sig.params[idx],
                                 arg,
                                 env,
@@ -1127,7 +1174,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 continue;
                             }
                             if reject_immutable_array_call_arg(
-                                name,
+                                display_name,
                                 &sig.params[idx],
                                 param_readonly,
                                 arg,
@@ -1137,7 +1184,23 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             ) {
                                 continue;
                             }
+                            if let Some(param_ty) = param_ty {
+                                validate_array_param_call_arg(
+                                    display_name,
+                                    &sig.params[idx],
+                                    param_ty,
+                                    arg,
+                                    env,
+                                    errors,
+                                );
+                            }
                             if matches!(arg, Expr::Slice { .. }) {
+                                validate_expr(arg, env, errors);
+                            } else if let Expr::ArrayLiteral { values, .. } = arg {
+                                for value in values {
+                                    validate_expr(value, env, errors);
+                                }
+                            } else if matches!(arg, Expr::ArrayCtor { .. }) {
                                 validate_expr(arg, env, errors);
                             }
                             // Array params accept data-like args.
@@ -1149,7 +1212,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         }
                         if param_ty.is_none() && is_by_ref_call_arg_expr(arg, env) {
                             if reject_protected_array_pointer_call_arg(
-                                name,
+                                display_name,
                                 &sig.params[idx],
                                 arg,
                                 env,
@@ -1159,7 +1222,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 continue;
                             }
                             if reject_immutable_array_call_arg(
-                                name,
+                                display_name,
                                 &sig.params[idx],
                                 param_readonly,
                                 arg,
@@ -1198,23 +1261,97 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         {
                             continue;
                         }
-                        if let Some(FnParamType::Primitive(expected)) = param_ty {
-                            let actual = infer_call_argument_scalar_type(arg, env);
-                            require_expr_assignable_type(
+                        if let Some(FnParamType::Tuple(expected)) = param_ty {
+                            validate_tuple_param_call_arg(
+                                display_name,
+                                &sig.params[idx],
+                                expected,
                                 arg,
-                                actual,
-                                *expected,
-                                &format!("function '{name}' argument '{}'", sig.params[idx]),
+                                env,
                                 errors,
                             );
+                        }
+                        if let Some(FnParamType::Primitive(expected)) = param_ty {
+                            if infer_call_argument_tuple_types(arg, env).is_some()
+                                || call_array_arg_info(arg, env).is_some()
+                            {
+                                push_expr_error(
+                                    errors,
+                                    arg,
+                                    format!(
+                                        "function '{display_name}' parameter '{}' expects a scalar value",
+                                        sig.params[idx]
+                                    ),
+                                );
+                            } else {
+                                let actual = infer_call_argument_scalar_type(arg, env);
+                                require_expr_assignable_type(
+                                    arg,
+                                    actual,
+                                    *expected,
+                                    &format!(
+                                        "function '{display_name}' argument '{}'",
+                                        sig.params[idx]
+                                    ),
+                                    errors,
+                                );
+                            }
                         }
                         validate_expr(arg, env, errors);
                     } else if let Some(default) = sig.defaults.get(idx).and_then(|d| d.as_ref()) {
                         validate_default_expr(
                             default,
                             errors,
-                            &format!("function '{name}' default '{}'", sig.params[idx]),
+                            &format!("function '{display_name}' default '{}'", sig.params[idx]),
                         );
+                        let param_ty = sig.param_types.get(idx).and_then(|ty| ty.as_ref());
+                        match param_ty {
+                            Some(FnParamType::Primitive(expected)) => {
+                                let actual = infer_call_argument_scalar_type(default, env);
+                                require_expr_assignable_type(
+                                    default,
+                                    actual,
+                                    *expected,
+                                    &format!(
+                                        "function '{display_name}' default '{}'",
+                                        sig.params[idx]
+                                    ),
+                                    errors,
+                                );
+                            }
+                            Some(FnParamType::Tuple(expected)) => {
+                                validate_tuple_param_call_arg(
+                                    display_name,
+                                    &sig.params[idx],
+                                    expected,
+                                    default,
+                                    env,
+                                    errors,
+                                );
+                            }
+                            Some(param_ty) if is_function_array_param(Some(param_ty)) => {
+                                validate_array_param_call_arg(
+                                    display_name,
+                                    &sig.params[idx],
+                                    param_ty,
+                                    default,
+                                    env,
+                                    errors,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if sig.requires_call_specialization && call_binding_is_valid {
+                    let diagnostic = Diagnostic::semantic_span(
+                        format!(
+                            "function '{display_name}' call does not provide concrete argument types required for specialization"
+                        ),
+                        expr.loc(),
+                    );
+                    if !errors.contains(&diagnostic) {
+                        errors.push(diagnostic);
                     }
                 }
                 return;
@@ -1455,6 +1592,398 @@ fn is_function_array_param(param_ty: Option<&FnParamType>) -> bool {
             | Some(FnParamType::ArrayGeneric(_))
             | Some(FnParamType::SizedArray { .. })
     )
+}
+
+fn infer_call_argument_tuple_types(expr: &Expr, env: ExprEnv<'_>) -> Option<Vec<PrimitiveType>> {
+    match expr {
+        Expr::Tuple { values, .. } => values
+            .iter()
+            .map(|value| {
+                let inferred = infer_call_argument_scalar_type(value, env);
+                effective_untyped_assignment_type(value, inferred).or(inferred)
+            })
+            .collect(),
+        Expr::Var { name, .. } => {
+            let lexical_root = name.split('.').next().unwrap_or(name);
+            if env.locals.contains(lexical_root) {
+                return None;
+            }
+            if let Some(types) = tracked_local_tuple_types(name, env.tuple_vars, env.local_aliases)
+            {
+                return Some(types);
+            }
+            let (root, field) = split_simple_field_path(name)?;
+            let struct_name = env
+                .struct_instances
+                .get(root)
+                .or_else(|| env.param_structs.get(root))?;
+            match &resolve_struct_field_decl(struct_name, field, env.struct_defs)?.ty {
+                TypedFieldType::Tuple(types) => Some(types.clone()),
+                TypedFieldType::Scalar(_) | TypedFieldType::Struct | TypedFieldType::Array(_) => {
+                    None
+                }
+            }
+        }
+        Expr::UserCall { name, .. } => match env
+            .fn_signatures
+            .get(name)
+            .and_then(|signature| signature.return_type.as_ref())
+        {
+            Some(ReturnType::Tuple(types)) => Some(types.clone()),
+            Some(ReturnType::Scalar(_)) | None => None,
+        },
+        _ => None,
+    }
+}
+
+fn validate_tuple_param_call_arg(
+    function_name: &str,
+    param_name: &str,
+    expected: &[PrimitiveType],
+    arg: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(actual) = infer_call_argument_tuple_types(arg, env) else {
+        if is_definitely_scalar_call_arg(arg, env) || call_array_arg_info(arg, env).is_some() {
+            push_expr_error(
+                errors,
+                arg,
+                format!(
+                    "function '{function_name}' parameter '{param_name}' expects a tuple value"
+                ),
+            );
+        }
+        return;
+    };
+    if actual.len() != expected.len() {
+        push_expr_error(
+            errors,
+            arg,
+            format!(
+                "function '{function_name}' parameter '{param_name}' expects tuple arity {}, got {}",
+                expected.len(),
+                actual.len()
+            ),
+        );
+        return;
+    }
+
+    if let Expr::Tuple { values, .. } = arg {
+        for ((value, actual), expected) in values.iter().zip(&actual).zip(expected) {
+            require_expr_assignable_type(
+                value,
+                Some(*actual),
+                *expected,
+                &format!("function '{function_name}' argument '{param_name}'"),
+                errors,
+            );
+        }
+        return;
+    }
+
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        if actual == expected || can_implicitly_assign(*actual, *expected) {
+            continue;
+        }
+        push_expr_error(
+            errors,
+            arg,
+            format!(
+                "function '{function_name}' parameter '{param_name}' tuple element {index} type mismatch: cannot assign {} to {}",
+                actual.name(),
+                expected.name()
+            ),
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CallArrayArgInfo {
+    elem: CallArrayArgElem,
+    len: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+enum CallArrayArgElem {
+    Primitive(PrimitiveType),
+    Nominal(String),
+    /// Empty literals carry a length but no element constraint.
+    Unknown,
+    NominalUnknown,
+}
+
+fn call_array_value_elem(value: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgElem> {
+    if let Some(elem) = infer_call_argument_scalar_type(value, env) {
+        return Some(CallArrayArgElem::Primitive(elem));
+    }
+    match value {
+        Expr::Var { name, .. } => env
+            .struct_instances
+            .get(name)
+            .or_else(|| env.param_structs.get(name))
+            .cloned()
+            .map(CallArrayArgElem::Nominal),
+        Expr::Index { base, .. } => {
+            call_array_symbol_info(base, env).and_then(|info| match info.elem {
+                CallArrayArgElem::Nominal(name) => Some(CallArrayArgElem::Nominal(name)),
+                CallArrayArgElem::Primitive(_)
+                | CallArrayArgElem::Unknown
+                | CallArrayArgElem::NominalUnknown => None,
+            })
+        }
+        Expr::UserCall { name, .. } if env.struct_defs.contains_key(name) => {
+            Some(CallArrayArgElem::Nominal(name.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+    let lexical_root = name.split('.').next().unwrap_or(name);
+    if env.locals.contains(lexical_root) {
+        return None;
+    }
+    if let Some(proc_array) = env.proc_array_roots.get(name) {
+        return Some(CallArrayArgInfo {
+            elem: CallArrayArgElem::Nominal(proc_array.proc_name.clone()),
+            len: crate::def_semantics::const_positive_usize_for_call_type(&proc_array.size_expr),
+        });
+    }
+    if let Some(struct_array) = env.struct_array_roots.get(name) {
+        return Some(CallArrayArgInfo {
+            elem: CallArrayArgElem::Nominal(struct_array.struct_name.clone()),
+            len: struct_array.static_len,
+        });
+    }
+    if is_struct_array_root(env.declared_symbols, name) {
+        return Some(CallArrayArgInfo {
+            elem: env
+                .local_array_aliases
+                .get(name)
+                .and_then(|alias| alias.elem_struct.clone())
+                .map(CallArrayArgElem::Nominal)
+                .unwrap_or(CallArrayArgElem::NominalUnknown),
+            len: env
+                .local_array_aliases
+                .get(name)
+                .and_then(|alias| alias.static_len)
+                .or_else(|| env.array_vars.get(name).copied()),
+        });
+    }
+    if let Some(alias) = env.local_array_aliases.get(name) {
+        let elem = alias
+            .elem_struct
+            .clone()
+            .map(CallArrayArgElem::Nominal)
+            .unwrap_or(CallArrayArgElem::Primitive(alias.elem_ty));
+        return Some(CallArrayArgInfo {
+            elem,
+            len: alias.static_len,
+        });
+    }
+    if !env.array_vars.contains_key(name)
+        && !env.output_arrays.contains(name)
+        && !is_declared_struct_array_root_symbol(env.declared_symbols, name)
+    {
+        return None;
+    }
+    let elem = declared_symbol_scalar_type(env.declared_symbols, name)
+        .map(CallArrayArgElem::Primitive)
+        .or_else(|| {
+            env.struct_instances
+                .get(name)
+                .cloned()
+                .map(CallArrayArgElem::Nominal)
+        })?;
+    Some(CallArrayArgInfo {
+        elem,
+        len: env.array_vars.get(name).copied(),
+    })
+}
+
+fn call_array_arg_info(expr: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+    match expr {
+        Expr::Var { name, .. } => call_array_symbol_info(name, env),
+        Expr::Slice { base, .. } => call_array_symbol_info(base, env).map(|mut info| {
+            info.len = None;
+            info
+        }),
+        Expr::ArrayLiteral { values, .. } => {
+            let elem = values
+                .first()
+                .and_then(|value| call_array_value_elem(value, env))
+                .unwrap_or(CallArrayArgElem::Unknown);
+            Some(CallArrayArgInfo {
+                elem,
+                len: Some(values.len()),
+            })
+        }
+        Expr::ArrayCtor { spec, .. } => Some(CallArrayArgInfo {
+            elem: match &spec.elem {
+                ArrayElemType::Primitive(elem) => CallArrayArgElem::Primitive(*elem),
+                ArrayElemType::Struct(name) => CallArrayArgElem::Nominal(name.clone()),
+            },
+            len: crate::def_semantics::const_positive_usize_for_call_type(&spec.size),
+        }),
+        _ => None,
+    }
+}
+
+fn validate_array_param_call_arg(
+    function_name: &str,
+    param_name: &str,
+    param_ty: &FnParamType,
+    arg: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(actual) = call_array_arg_info(arg, env) else {
+        if is_definitely_scalar_call_arg(arg, env)
+            || infer_call_argument_tuple_types(arg, env).is_some()
+        {
+            push_expr_error(
+                errors,
+                arg,
+                format!(
+                    "function '{function_name}' parameter '{param_name}' expects an array value"
+                ),
+            );
+        }
+        return;
+    };
+
+    let (expected_elem, expected_len) = match param_ty {
+        FnParamType::Array(Some(elem)) => (Some(CallArrayArgElem::Primitive(*elem)), None),
+        FnParamType::ArrayGeneric(name) => (Some(CallArrayArgElem::Nominal(name.clone())), None),
+        FnParamType::SizedArray {
+            elem,
+            generic_name,
+            size,
+        } => {
+            let elem = elem
+                .map(CallArrayArgElem::Primitive)
+                .or_else(|| generic_name.clone().map(CallArrayArgElem::Nominal));
+            (
+                elem,
+                crate::def_semantics::const_positive_usize_for_call_type(size),
+            )
+        }
+        FnParamType::Array(None) => (None, None),
+        _ => return,
+    };
+
+    let literal_elements_match = match (expected_elem.as_ref(), arg) {
+        (Some(CallArrayArgElem::Primitive(expected)), Expr::ArrayLiteral { values, .. }) => {
+            Some(values.iter().all(|value| {
+                infer_call_argument_scalar_type(value, env)
+                    .is_some_and(|actual| can_assign_expr_to_type(value, actual, *expected))
+            }))
+        }
+        (Some(CallArrayArgElem::Nominal(expected)), Expr::ArrayLiteral { values, .. }) => {
+            Some(values.iter().all(|value| {
+                matches!(
+                    call_array_value_elem(value, env),
+                    Some(CallArrayArgElem::Nominal(actual)) if actual == *expected
+                )
+            }))
+        }
+        _ => None,
+    };
+    let elem_matches =
+        literal_elements_match.unwrap_or_else(|| match (expected_elem.as_ref(), &actual.elem) {
+            (None, _) => true,
+            (Some(_), CallArrayArgElem::Unknown) => true,
+            (Some(CallArrayArgElem::Primitive(expected)), CallArrayArgElem::Primitive(actual)) => {
+                expected == actual
+            }
+            (Some(CallArrayArgElem::Nominal(expected)), CallArrayArgElem::Nominal(actual)) => {
+                expected == actual
+            }
+            (Some(CallArrayArgElem::Nominal(_)), CallArrayArgElem::NominalUnknown) => true,
+            _ => false,
+        });
+    if !elem_matches {
+        let expected = match expected_elem.expect("mismatched typed array element") {
+            CallArrayArgElem::Primitive(elem) => elem.name().to_owned(),
+            CallArrayArgElem::Nominal(name) => name,
+            CallArrayArgElem::Unknown => "unknown".to_owned(),
+            CallArrayArgElem::NominalUnknown => "nominal".to_owned(),
+        };
+        let actual = match &actual.elem {
+            CallArrayArgElem::Primitive(elem) => elem.name().to_owned(),
+            CallArrayArgElem::Nominal(name) => name.clone(),
+            CallArrayArgElem::Unknown => "unknown".to_owned(),
+            CallArrayArgElem::NominalUnknown => "nominal".to_owned(),
+        };
+        push_expr_error(
+            errors,
+            arg,
+            format!(
+                "function '{function_name}' parameter '{param_name}' expects {expected} array elements, got {actual}"
+            ),
+        );
+        return;
+    }
+
+    if let Some(expected) = expected_len {
+        match actual.len {
+            Some(actual) if actual == expected => {}
+            Some(actual) => push_expr_error(
+                errors,
+                arg,
+                format!(
+                    "function '{function_name}' parameter '{param_name}' expects array length {expected}, got {actual}"
+                ),
+            ),
+            None => push_expr_error(
+                errors,
+                arg,
+                format!(
+                    "function '{function_name}' parameter '{param_name}' expects fixed array length {expected}, but the argument length is not statically known"
+                ),
+            ),
+        }
+    }
+}
+
+fn is_definitely_scalar_call_arg(expr: &Expr, env: ExprEnv<'_>) -> bool {
+    match expr {
+        Expr::Number { .. }
+        | Expr::Int { .. }
+        | Expr::Bool { .. }
+        | Expr::Compare { .. }
+        | Expr::Call { .. }
+        | Expr::Cast { .. }
+        | Expr::UnaryNot { .. }
+        | Expr::UnaryBitNot { .. }
+        | Expr::Logical { .. }
+        | Expr::Binary { .. } => true,
+        Expr::Var { name, .. } => {
+            env.locals.contains(name)
+                || env.local_aliases.contains_key(name)
+                || env.state_scalars.contains_key(name)
+                || matches!(
+                    env.declared_symbols.get(name),
+                    Some(
+                        DeclaredSymbolInfo::Input { .. }
+                            | DeclaredSymbolInfo::Output { .. }
+                            | DeclaredSymbolInfo::Param { .. }
+                            | DeclaredSymbolInfo::FunctionReturn { .. }
+                    )
+                )
+        }
+        Expr::UserCall { name, .. } => env
+            .fn_signatures
+            .get(name)
+            .and_then(|signature| signature.return_type.as_ref())
+            .is_some_and(|return_type| matches!(return_type, ReturnType::Scalar(_))),
+        Expr::Index { .. }
+        | Expr::Slice { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::ArrayCtor { .. }
+        | Expr::Tuple { .. } => false,
+    }
 }
 
 fn protected_array_pointer_arg_name<'a>(expr: &'a Expr, env: ExprEnv<'_>) -> Option<&'a str> {

@@ -1449,8 +1449,8 @@ fn semantic_tokens_work_for_convolution_onda() {
         "td should be highlighted"
     );
     assert!(
-        !find_tokens_named(&tokens, &source, "tail").is_empty(),
-        "tail should be highlighted"
+        !find_tokens_named(&tokens, &source, "final").is_empty(),
+        "final should be highlighted"
     );
 
     let set_impulse = find_tokens_named(&tokens, &source, "set_impulse");

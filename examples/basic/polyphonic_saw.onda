@@ -38,7 +38,7 @@ proc Voice:
     out1 = sig
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
+  auto_play = true
   freq_min = 110.0 {20.0, 4000.0}
   freq_max = 880.0 {20.0, 4000.0}
   cutoff_min = 300.0 {20.0, 20000.0}
@@ -50,10 +50,10 @@ params:
 
 init:
   voices: Voice[NumVoices] = Voice()
-  next_voice: i32 = 0
-  rng = std::random::Rng<f32>()
+  next_voice = 0
+  rng = std::random::Rng()
   voice_pan: f32[NumVoices]
-  clock: i32 = 0
+  clock = 0
   pending_bang = false
 
 event bang():
@@ -61,7 +61,7 @@ event bang():
 
 sample:
   period = max(i32(SR * 15.0 / bpm), 1)
-  if auto_play != 0 && clock == 0:
+  if auto_play && clock == 0:
     pending_bang = true
   clock = (clock + 1) % period
 

@@ -19,8 +19,8 @@ proc Drive:
     out1 = tanh(in1 * amount)
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  root_note = 36.0 {24.0, 60.0, step = 1.0}
+  auto_play = true
+  root_note = 36 {24, 60}
   bpm = 126.0 {55.0, 190.0, unit = "BPM"}
   cutoff = 520.0 {70.0, 7000.0, log, "Hz"}
   resonance = 3.8 {0.5, 9.0}
@@ -31,18 +31,19 @@ params:
   level = 0.5 {0.0, 1.0}
 
 init:
-  saw = std::osc::Saw(freq = std::pitch::note_to_hz(root_note))
-  sub = std::osc::Square(freq = std::pitch::note_to_hz(root_note) * 0.5)
+  root_frequency = std::pitch::note_to_hz(f32(root_note))
+  saw = std::osc::Saw(freq = root_frequency)
+  sub = std::osc::Square(freq = root_frequency * 0.5)
   glide = std::smoothing::Lag(time_s = 0.003)
   filter = std::filter::Svf(cutoff = cutoff, q = resonance)
   saturator = Drive(amount = drive)
   delay_l = std::delay::Delay(delay_s = 0.238, feedback = 0.38, mix = 1.0)
   delay_r = std::delay::Delay(delay_s = 0.357, feedback = 0.34, mix = 1.0)
-  target_freq = std::pitch::note_to_hz(root_note)
+  target_freq = root_frequency
   amplitude = std::env::DecayEnv(decay_s = decay_s)
   filter_sweep = std::env::DecayEnv(decay_s = decay_s * 0.62)
-  clock: i32 = 0
-  step: i32 = 0
+  clock = 0
+  step = 0
   pending_bang = false
 
 event bang():
@@ -52,7 +53,7 @@ block:
   step_samples = max(i32(SR * 15.0 / bpm), 1)
 
   sample:
-    auto_step = auto_play != 0 && clock == 0
+    auto_step = auto_play && clock == 0
 
     if pending_bang:
       while Gates[step] == 0:

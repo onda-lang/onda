@@ -1020,7 +1020,7 @@ def read_at(buf, i: i32) {
   return buf[i]
 }
 sample {
-  out1 = read_at(a, 0) + read_at(b, 0)
+  out1 = read_at(a, 0) + f32(read_at(b, 0))
 }
 "#;
 

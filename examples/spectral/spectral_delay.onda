@@ -21,7 +21,7 @@ namespace SpectralDelay<N = 1024, HistoryFrames = 64>:
       spectrum_im_l: f32[N]
       spectrum_re_r: f32[N]
       spectrum_im_r: f32[N]
-      write_frame: i32 = 0
+      write_frame = 0
 
     block:
       hop_size = f32(N >> 1)
@@ -43,7 +43,7 @@ namespace SpectralDelay<N = 1024, HistoryFrames = 64>:
             spectrum_im_r[k] = 0.0
 
           for k in 1..half:
-            position = f32(k) / f32(half)
+            position = f32(k) / half
             delay_shape = 1.0 - spectral_slope + position * spectral_slope
             left_delay = max(i32(delay_hops * delay_shape + 0.5), 1)
             stereo_offset = i32(position * stereo_spread * 7.0 + 0.5)
@@ -79,8 +79,8 @@ const PatternLength = 6
 const Notes: f32[PatternLength] = [45.0, 52.0, 57.0, 48.0, 55.0, 62.0]
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  live_input = 0.0 {0.0, 1.0, step = 1.0}
+  auto_play = true
+  live_input = false
   delay_s = 0.34 {0.03, 0.64, log, unit = "s"}
   slope = 0.78 {0.0, 1.0}
   feedback = 0.42 {0.0, 0.9}
@@ -94,8 +94,8 @@ init:
   saw_b = std::osc::Saw(amp = 0.28)
   saw_c = std::osc::Saw(amp = 0.18)
   envelope = std::env::DecayEnv(decay_s = 0.24)
-  clock: i32 = 0
-  step: i32 = 0
+  clock = 0
+  step = 0
   frequency = std::pitch::note_to_hz(Notes[0])
   pending_bang = false
 
@@ -104,7 +104,7 @@ event bang():
 
 sample:
   period = max(i32(SR * 0.58), 1)
-  if auto_play != 0 && clock == 0:
+  if auto_play && clock == 0:
     pending_bang = true
 
   if pending_bang:
@@ -117,11 +117,13 @@ sample:
     pending_bang = false
   clock = (clock + 1) % period
 
-  audition = saw_a(freq = frequency)
-  audition = audition + saw_b(freq = frequency * 1.4983)
-  audition = audition + saw_c(freq = frequency * 2.006)
-  audition = audition * envelope() * 0.28
-  source = audition * (1.0 - live_input) + (in1 + in2) * 0.5 * live_input
+  if live_input:
+    source = in1
+  else:
+    audition = saw_a(freq = frequency)
+    audition = audition + saw_b(freq = frequency * 1.4983)
+    audition = audition + saw_c(freq = frequency * 2.006)
+    source = audition * envelope() * 0.28
 
   spectral_delay(
     source,

@@ -5,11 +5,44 @@ use crate::*;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FnSignature {
+    /// Stable source-level name used after internal call rewrites.
+    pub(crate) display_name: Option<String>,
+    /// The source declaration has no lowerable standalone ABI and must be
+    /// replaced by a concrete call-site specialization before MIR lowering.
+    pub(crate) requires_call_specialization: bool,
     pub(crate) params: Vec<String>,
     pub(crate) defaults: Vec<Option<Expr>>,
     pub(crate) param_types: Vec<Option<FnParamType>>,
     pub(crate) type_params: Vec<String>,
+    pub(crate) return_type: Option<ReturnType>,
     pub(crate) readonly_array_params: HashSet<String>,
+}
+
+impl FnSignature {
+    pub(crate) fn from_def(def: &FunctionDef) -> Self {
+        Self {
+            display_name: None,
+            requires_call_specialization: false,
+            params: def.params.iter().map(|param| param.name.clone()).collect(),
+            defaults: def
+                .params
+                .iter()
+                .map(|param| param.default.clone())
+                .collect(),
+            param_types: def.params.iter().map(|param| param.ty.clone()).collect(),
+            type_params: def.type_params.clone(),
+            return_type: None,
+            readonly_array_params: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn sync_defaults_from_def(&mut self, def: &FunctionDef) {
+        self.defaults = def
+            .params
+            .iter()
+            .map(|param| param.default.clone())
+            .collect();
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +75,7 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) port_index_params: Option<PortIndexInfo>,
     pub(crate) port_index_kins: Option<PortIndexInfo>,
     pub(crate) tuple_vars: &'a HashMap<String, usize>,
+    pub(crate) struct_array_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub(crate) proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub(crate) proc_event_names: &'a HashSet<String>,
 }
@@ -69,6 +103,7 @@ pub(crate) struct ScopeExprInputs<'a> {
     pub(crate) port_index_outs: Option<PortIndexInfo>,
     pub(crate) port_index_params: Option<PortIndexInfo>,
     pub(crate) port_index_kins: Option<PortIndexInfo>,
+    pub(crate) struct_array_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub(crate) proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub(crate) proc_event_names: &'a HashSet<String>,
 }
@@ -81,6 +116,8 @@ static EMPTY_LOCAL_ALIASES: std::sync::LazyLock<LocalAliasTypes> =
 static EMPTY_LOCAL_ARRAY_ALIASES: std::sync::LazyLock<HashMap<String, LocalArrayAliasInfo>> =
     std::sync::LazyLock::new(HashMap::new);
 static EMPTY_PROC_ARRAY_ROOTS: std::sync::LazyLock<HashMap<String, ProcNestedArrayState>> =
+    std::sync::LazyLock::new(HashMap::new);
+static EMPTY_STRUCT_ARRAY_ROOTS: std::sync::LazyLock<HashMap<String, ArrayStructRootInfo>> =
     std::sync::LazyLock::new(HashMap::new);
 static EMPTY_PROC_EVENT_NAMES: std::sync::LazyLock<HashSet<String>> =
     std::sync::LazyLock::new(HashSet::new);
@@ -134,6 +171,7 @@ pub(crate) fn build_expr_env<'a>(
         port_index_params: None,
         port_index_kins: None,
         tuple_vars: &EMPTY_TUPLE_VARS,
+        struct_array_roots: &EMPTY_STRUCT_ARRAY_ROOTS,
         proc_array_roots: &EMPTY_PROC_ARRAY_ROOTS,
         proc_event_names: &EMPTY_PROC_EVENT_NAMES,
     }
@@ -173,6 +211,7 @@ pub(crate) fn build_scope_expr_env<'a>(
     env.port_index_outs = inputs.port_index_outs;
     env.port_index_params = inputs.port_index_params;
     env.port_index_kins = inputs.port_index_kins;
+    env.struct_array_roots = inputs.struct_array_roots;
     env.proc_array_roots = inputs.proc_array_roots;
     env.proc_event_names = inputs.proc_event_names;
     env

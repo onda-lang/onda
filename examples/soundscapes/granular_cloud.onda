@@ -11,47 +11,47 @@ const SourcePatternLength = 7
 const SourceNotes: i32[SourcePatternLength] = [45, 52, 57, 64, 55, 69, 60]
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  live_input = 0.0 {0.0, 1.0, step = 1.0}
-  freeze: i32 = 0 {0, 1, step = 1}
+  auto_play = true
+  live_input = false
+  freeze = false
   density = 18.0 {2.0, 70.0, log, unit = "grains/s"}
   grain_size = 0.34 {0.025, 1.4, log, unit = "s"}
   scatter = 0.76 {0.0, 1.0}
   pitch = 0.0 {-24.0, 24.0, unit = "st"}
   pitch_jitter = 0.08 {0.0, 0.5}
   feedback = 0.18 {0.0, 0.92}
-  dry = 0.18 {0.0, 1.0}
-  level = 0.8 {0.0, 1.0}
+  dry = 0.2 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   tape: f32[TapeFrames]
-  write_index: i32 = 0
-  recorded_frames: i32 = 0
+  write_index = 0
+  recorded_frames = 0
 
   grain_position: f32[GrainCount]
   grain_speed: f32[GrainCount]
   grain_pan: f32[GrainCount]
   grain_age: i32[GrainCount]
   grain_length: i32[GrainCount]
-  next_grain: i32 = 0
-  spawn_clock: i32 = 0
+  next_grain = 0
+  spawn_clock = 0
 
   source_a = std::osc::Sine(amp = 0.62)
   source_b = std::osc::Sine(amp = 0.24)
   source_c = std::osc::Sine(amp = 0.14)
   source_envelope = std::env::DecayEnv(decay_s = 0.32)
-  source_clock: i32 = 0
-  source_step: i32 = 0
+  source_clock = 0
+  source_step = 0
   source_frequency = std::pitch::note_to_hz(f32(SourceNotes[0]))
   pending_bang = false
-  rng = std::random::Rng<f32>()
+  rng = std::random::Rng()
 
 event bang():
   pending_bang = true
 
 sample:
   source_period = max(i32(SR * 0.63), 1)
-  if auto_play != 0 && source_clock == 0:
+  if auto_play && source_clock == 0:
     pending_bang = true
 
   if pending_bang:
@@ -64,24 +64,26 @@ sample:
     pending_bang = false
   source_clock = (source_clock + 1) % source_period
 
-  audition = source_a(freq = source_frequency)
-  audition = audition + source_b(freq = source_frequency * 1.4983)
-  audition = audition + source_c(freq = source_frequency * 2.006)
-  audition = audition * source_envelope() * 0.42
-  input_signal = audition * (1.0 - live_input) + (in1 + in2) * 0.5 * live_input
+  if live_input:
+    source = in1
+  else:
+    audition = source_a(freq = source_frequency)
+    audition = audition + source_b(freq = source_frequency * 1.4983)
+    audition = audition + source_c(freq = source_frequency * 2.006)
+    source = audition * source_envelope() * 0.42
 
-  if freeze == 0:
-    tape[write_index] = input_signal + tape[write_index] * feedback
+  if !freeze:
+    tape[write_index] = source + tape[write_index] * feedback
     write_index = (write_index + 1) % TapeFrames
     recorded_frames = min(recorded_frames + 1, TapeFrames)
 
   if spawn_clock <= 0 && recorded_frames > i32(SR * 0.12):
     available = max(recorded_frames - 4, 1)
     history = (0.08 + rng.next() * scatter * 3.6) * SR
-    history = min(history, f32(available))
-    position = f32(write_index) - history
+    history = min(history, available)
+    position = write_index - history
     if position < 0.0:
-      position = position + f32(TapeFrames)
+      position = position + TapeFrames
 
     grain_position[next_grain] = position
     grain_speed[next_grain] = std::pitch::ratio_between(0.0, pitch) * rng.range(1.0 - pitch_jitter, 1.0 + pitch_jitter)
@@ -96,15 +98,15 @@ sample:
   cloud_r = 0.0
   for i in 0..GrainCount:
     if grain_age[i] < grain_length[i]:
-      progress = f32(grain_age[i]) / f32(max(grain_length[i], 1))
+      progress = grain_age[i] / f32(max(grain_length[i], 1))
       window = 0.5 - 0.5 * cos(progress * TWO_PI)
       grain_signal = std::lookup::readCW(tape, grain_position[i]) * window
       (gain_l, gain_r) = std::levels::pan_3db(grain_pan[i])
       cloud_l = cloud_l + grain_signal * gain_l
       cloud_r = cloud_r + grain_signal * gain_r
-      grain_position[i] = wrap(grain_position[i] + grain_speed[i], 0.0, f32(TapeFrames))
+      grain_position[i] = wrap(grain_position[i] + grain_speed[i], 0.0, TapeFrames)
       grain_age[i] = grain_age[i] + 1
 
   normalization = 1.0 / sqrt(max(density * grain_size, 1.0))
-  out1 = tanh((cloud_l * normalization + input_signal * dry) * level)
-  out2 = tanh((cloud_r * normalization + input_signal * dry) * level)
+  out1 = tanh((cloud_l * normalization + source * dry) * level)
+  out2 = tanh((cloud_r * normalization + source * dry) * level)

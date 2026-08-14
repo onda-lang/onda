@@ -8,8 +8,8 @@ const VoiceCount = 6
 
 proc GlassVoice:
   params:
-    decay_s = 2.8
-    hardness = 0.62
+    decay_s = 2.0
+    hardness = 0.6
 
   init:
     frequency = 440.0
@@ -42,23 +42,23 @@ buffers:
   pans: f32
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  root_note = 55.0 {36.0, 76.0, step = 1.0}
+  auto_play = true
+  root_note = 55 {36, 76}
   bpm = 76.0 {35.0, 160.0, unit = "BPM"}
-  decay_s = 3.4 {0.6, 10.0, unit = "s"}
-  hardness = 0.68 {0.0, 1.0}
-  space = 0.48 {0.0, 0.8}
+  decay_s = 2.0 {0.1, 10.0, unit = "s"}
+  hardness = 0.7 {0.0, 1.0}
+  space = 0.5 {0.0, 1.0}
   level = 0.5 {0.0, 0.7}
 
 init:
   voices: GlassVoice[VoiceCount] = GlassVoice()
-  delay_l = std::delay::Delay(delay_s = 0.407, feedback = 0.44, mix = 1.0)
-  delay_r = std::delay::Delay(delay_s = 0.613, feedback = 0.39, mix = 1.0)
+  delay_l = std::delay::Delay(delay_s = 0.4, feedback = 0.5, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = 0.6, feedback = 0.5, mix = 1.0)
   voice_pans: f32[VoiceCount]
-  clock: i32 = 0
-  next_step: i32 = 1
-  step: i32 = 0
-  next_voice: i32 = 0
+  clock = 0
+  next_step = 1
+  step = 0
+  next_voice = 0
   pending_bang = false
 
 event bang():
@@ -68,14 +68,14 @@ block:
   score_length = min(min(notes.len(), velocities.len()), min(beats.len(), pans.len()))
 
   sample:
-    if auto_play != 0 && clock >= next_step:
+    if auto_play && clock >= next_step:
       pending_bang = true
 
     if pending_bang:
       velocity = clamp(velocities[step], 0.0, 1.0)
       voices[next_voice].decay_s = decay_s
       voices[next_voice].hardness = hardness
-      voices[next_voice].strike(root_note + f32(notes[step]), velocity)
+      voices[next_voice].strike(root_note + notes[step], velocity)
       voice_pans[next_voice] = clamp(pans[step], -1.0, 1.0)
       next_voice = (next_voice + 1) % VoiceCount
       beat_count = max(beats[step], 0.125)
@@ -93,7 +93,7 @@ block:
       dry_l = dry_l + voice * gain_l
       dry_r = dry_r + voice * gain_r
 
-    wet_l = delay_l(dry_l + dry_r * 0.17)
-    wet_r = delay_r(dry_r + dry_l * 0.17)
+    wet_l = delay_l(dry_l + dry_r * 0.2)
+    wet_r = delay_r(dry_r + dry_l * 0.2)
     out1 = tanh((dry_l + wet_l * space) * level)
     out2 = tanh((dry_r + wet_r * space) * level)

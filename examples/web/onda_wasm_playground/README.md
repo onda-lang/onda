@@ -64,11 +64,13 @@ Use **Share** to copy a URL-fragment snapshot containing every project source fi
 files, sample rate, and block size. The fragment stays in the browser and is compressed when supported.
 Selected buffer files remain local and are not embedded in the URL.
 
-Use **Open project** to replace the editor contents with a single `.onda` file or a project ZIP.
-A project ZIP has one `.ondaproject` file at its root and may include all supported typed buffer assets.
-Use **Download project** to package the current in-memory sources and bound buffers into the same
-portable ZIP. After extraction, its `.ondaproject` file can be passed directly to `onda compile`,
-`onda run`, or either native run GUI.
+Use **Open project** to replace the editor contents with a single `.onda` or `.on` file, or a project
+ZIP. The browser picker intentionally excludes bare `.ondaproject` files because selecting a manifest
+does not also give the page access to its referenced source and asset files. Package the manifest,
+sources, and assets together in the ZIP instead. An archive may contain more than one
+`.ondaproject`; the playground asks which one to open. Use **Download project** to package the current
+in-memory sources and bound buffers into the same portable ZIP. After extraction, its `.ondaproject`
+file can be passed directly to `onda compile`, `onda run`, or either native run GUI.
 
 Without `-Serve`/`--serve`, the scripts only prepare the static assets:
 

@@ -564,7 +564,7 @@ sample:
     let choose = mir
         .functions
         .iter()
-        .find(|function| function.name.starts_with("choose.__mono__g_f64"))
+        .find(|function| function.name.starts_with("choose.__onda_mono__g_f64"))
         .expect("missing widened choose specialization");
     assert_eq!(choose.params.len(), 3);
     assert!(choose
@@ -2163,11 +2163,11 @@ sample:
     let mir = lower_test_program(&typed)
         .expect("semantic monomorphization should make the signature concrete");
     let dump = format_program(&mir);
-    assert!(dump.contains("identity.__mono__scalar_f64"));
+    assert!(dump.contains("identity.__onda_mono__scalar_f64"));
     let identity = mir
         .functions
         .iter()
-        .find(|function| function.name == "identity.__mono__scalar_f64")
+        .find(|function| function.name == "identity.__onda_mono__scalar_f64")
         .expect("missing concrete f64 identity function");
     assert!(matches!(
         mir.types[identity.params[0].ty.index()],
@@ -2870,7 +2870,7 @@ sample:
     let leaf_index = mir
         .functions
         .iter()
-        .position(|function| function.name == "step_at")
+        .position(|function| function.name.starts_with("step_at"))
         .expect("missing step_at function");
     let leaf = &mir.functions[leaf_index];
     let normalize_index = mir
@@ -2881,7 +2881,7 @@ sample:
     let relay = mir
         .functions
         .iter()
-        .find(|function| function.name == "relay")
+        .find(|function| function.name.starts_with("relay"))
         .expect("missing relay function");
     for function in [leaf, relay] {
         assert!(matches!(

@@ -3051,10 +3051,13 @@ pub(super) fn compute_proc_shape(
             proc_fn_signatures.insert(
                 instance_name.clone(),
                 FnSignature {
+                    display_name: None,
+                    requires_call_specialization: false,
                     params,
                     defaults,
                     param_types: Vec::new(),
                     type_params: Vec::new(),
+                    return_type: None,
                     readonly_array_params: HashSet::new(),
                 },
             );

@@ -894,11 +894,23 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
             let op_loc = stmt_loc_from_pair(&op);
             let loc = SourceLoc::spanning(op_loc.as_ref(), rhs.loc());
             match op.as_str() {
-                "-" => Expr::Binary {
-                    loc: loc.into(),
-                    op: BinaryOp::Sub,
-                    lhs: Box::new(Expr::number(0.0)),
-                    rhs: Box::new(rhs),
+                "-" => match rhs {
+                    Expr::Int { value, .. } => match value.checked_neg() {
+                        Some(value) => Expr::int(value).with_loc(loc),
+                        None => Expr::Binary {
+                            loc: loc.into(),
+                            op: BinaryOp::Sub,
+                            lhs: Box::new(Expr::int(0)),
+                            rhs: Box::new(Expr::int(value)),
+                        },
+                    },
+                    Expr::Number { value, .. } => Expr::number(-value).with_loc(loc),
+                    rhs => Expr::Binary {
+                        loc: loc.into(),
+                        op: BinaryOp::Sub,
+                        lhs: Box::new(Expr::int(0)),
+                        rhs: Box::new(rhs),
+                    },
                 },
                 "!" => Expr::UnaryNot {
                     loc: loc.into(),

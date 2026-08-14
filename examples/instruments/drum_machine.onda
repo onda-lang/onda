@@ -3,10 +3,10 @@ import std/env
 import std/osc
 import std/random
 
-const KickPattern: i32 = 5137
-const SnarePattern: i32 = 4112
-const HatPattern: i32 = 21845
-const OpenHatPattern: i32 = 32896
+const KickPattern = 5137
+const SnarePattern = 4112
+const HatPattern = 21845
+const OpenHatPattern = 32896
 
 struct StepClock:
   clock: i32
@@ -21,12 +21,12 @@ struct StepClock:
       self.step = (self.step + 1) & 15
 
   def begin_step(self, bpm: f32, swing: f32):
-    straight: i32 = max(i32(SR * 15.0 / bpm), 1)
+    straight = max(i32(SR * 15.0 / bpm), 1)
     self.length = straight
     if ((self.step & 1) == 0):
-      self.length = i32(f32(straight) * (1.0 + swing))
+      self.length = i32(straight * (1.0 + swing))
     else:
-      self.length = i32(f32(straight) * (1.0 - swing))
+      self.length = i32(straight * (1.0 - swing))
     self.step = (self.step + 1) & 15
 
   def tick(self):
@@ -53,7 +53,7 @@ proc Kick:
 
 proc Snare:
   init:
-    rng = std::random::Rng<f32>()
+    rng = std::random::Rng()
     noise_hp = std::filter::OnePole(cutoff = 1100.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
     oscillator = std::osc::Sine(freq = 185.0)
     amplitude = std::env::DecayEnv()
@@ -93,7 +93,7 @@ proc Hat:
     out1 = hp(metal * 0.33) * amplitude()
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
+  auto_play = true
   bpm = 118.0 {55.0, 190.0, unit = "BPM"}
   kick_decay = 0.34 {0.08, 1.2, unit = "s"}
   snare_decay = 0.16 {0.04, 0.8, unit = "s"}
@@ -113,7 +113,7 @@ event bang():
   pending_bang = true
 
 sample:
-  auto_step = auto_play != 0 && sequencer.clock == 0
+  auto_step = auto_play && sequencer.clock == 0
 
   if pending_bang:
     sequencer.advance_to_hit()

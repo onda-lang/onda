@@ -16,61 +16,60 @@ buffers:
   room_ir: f32[2]
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  live_input: i32 = 0 {0, 1, step = 1}
+  auto_play = true
+  live_input = false
   mix = 1.0 {0.0, 1.0}
   damping = 12000.0 {500.0, 20000.0, log, "Hz"}
-  impulse_gain = 0.012 {0.001, 0.08, log}
+  impulse_gain = 0.02 {0.001, 1.0, log}
   level = 0.8 {0.0, 1.0}
 
 init:
   room = ConvolutionRoom()
   impulse_loaded = false
   audition_frequency = std::pitch::note_to_hz(f32(AuditionNotes[0]))
-  audition_trigger = 0.0
-  audition_osc_1 = std::osc::Sine(freq = audition_frequency, amp = 0.62)
-  audition_osc_2 = std::osc::Sine(freq = audition_frequency * 1.4983, amp = 0.25)
-  audition_osc_3 = std::osc::Sine(freq = audition_frequency * 2.006, amp = 0.13)
+  audition_osc_1 = std::osc::Sine(freq = audition_frequency, amp = 0.7)
+  audition_osc_2 = std::osc::Sine(freq = audition_frequency * 1.5, amp = 0.25)
+  audition_osc_3 = std::osc::Sine(freq = audition_frequency * 2, amp = 0.125)
   audition_env = std::env::DecayEnv(decay_s = 0.18, trigger = 0.0)
-  audition_clock: i32 = 0
-  audition_step: i32 = 0
+  audition_period = max(i32(SR * 0.5), 1)
+  audition_clock = 0
+  audition_step = 0
   pending_bang = false
 
 event bang():
   pending_bang = true
 
 block:
-  if (!impulse_loaded):
+  if !impulse_loaded:
     room.load_impulse(room_ir[0, :], room_ir[1, :])
     impulse_loaded = true
-
-  audition_period = max(i32(SR * 0.72), 1)
-
+  
   sample:
-    if auto_play != 0 && audition_clock == 0:
+    if auto_play && audition_clock == 0:
       pending_bang = true
 
     if pending_bang:
       audition_frequency = std::pitch::note_to_hz(f32(AuditionNotes[audition_step]))
-      audition_trigger = 1.0
       audition_step = (audition_step + 1) % AuditionPatternLength
+      audition_env.trigger = 1.0
       pending_bang = false
     audition_clock = (audition_clock + 1) % audition_period
     audition_osc_1.freq = audition_frequency
-    audition_osc_2.freq = audition_frequency * 1.4983
-    audition_osc_3.freq = audition_frequency * 2.006
-    audition_env.trigger = audition_trigger
-    audition_source = (audition_osc_1() + audition_osc_2() + audition_osc_3()) * audition_env() * 0.42
-    audition_trigger = 0.0
+    audition_osc_2.freq = audition_frequency * 1.5
+    audition_osc_3.freq = audition_frequency * 2
+    audition_source = (audition_osc_1() + audition_osc_2() + audition_osc_3()) * audition_env() * 0.5
+    audition_env.trigger = 0.0
 
-    dry_l = in1
-    dry_r = in2
-    if live_input == 0:
+    if live_input:
+      dry_l = in1
+      dry_r = in2
+    else:
       dry_l = audition_source
       dry_r = audition_source
 
     room.damping = damping
     room.impulse_gain = impulse_gain
     room(dry_l, dry_r)
+    
     out1 = tanh(parallel_mix(dry_l, room.out1, mix) * level)
     out2 = tanh(parallel_mix(dry_r, room.out2, mix) * level)

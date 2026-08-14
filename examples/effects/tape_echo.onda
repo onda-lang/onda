@@ -10,8 +10,8 @@ import std/pitch
 import processors/tape_echo
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  live_input: i32 = 0 {0, 1, step = 1}
+  auto_play = true
+  live_input = false
   time_s = 0.36 {0.04, 1.2, log, "s"}
   feedback = 0.58 {0.0, 0.92}
   tone = 3600.0 {250.0, 14000.0, log, "Hz"}
@@ -25,8 +25,8 @@ init:
   saw = std::osc::Saw(freq = std::pitch::note_to_hz(45.0))
   filter = std::filter::OnePole(cutoff = 1300.0)
   envelope = std::env::DecayEnv(decay_s = 0.075)
-  clock: i32 = 0
-  step: i32 = 0
+  clock = 0
+  step = 0
   pending_bang = false
 
 event bang():
@@ -34,7 +34,7 @@ event bang():
 
 sample:
   beat_samples = max(i32(SR * 0.42), 1)
-  if auto_play != 0 && clock == 0:
+  if auto_play && clock == 0:
     pending_bang = true
 
   if pending_bang:
@@ -53,9 +53,11 @@ sample:
   clock = (clock + 1) % beat_samples
 
   source = filter(saw()) * envelope() * 0.34
-  source_l = in1
-  source_r = in2
-  if live_input == 0:
+
+  if live_input:
+    source_l = in1
+    source_r = in2
+  else:
     source_l = source
     source_r = source
 

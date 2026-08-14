@@ -41,8 +41,8 @@ proc Chime:
     out1 = tone
 
 params:
-  auto_play: i32 = 1 {0, 1, step = 1}
-  root_note = 67.0 {48.0, 88.0, step = 1.0}
+  auto_play = true
+  root_note = 67 {48, 88}
   density = 0.48 {0.05, 1.0}
   decay_s = 4.2 {0.8, 12.0, unit = "s"}
   shimmer = 0.72 {0.0, 1.0}
@@ -52,15 +52,15 @@ params:
 
 init:
   voices: Chime[VoiceCount] = Chime()
-  rng = std::random::Rng<f32>()
+  rng = std::random::Rng()
   air = std::noise::Pink(amp = 1.0)
   air_hp = std::filter::OnePole(cutoff = 420.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
   air_lp = std::filter::OnePole(cutoff = 4400.0)
   space_l = std::delay::Delay(delay_s = 0.37, feedback = 0.46, mix = 1.0)
   space_r = std::delay::Delay(delay_s = 0.53, feedback = 0.42, mix = 1.0)
-  clock: i32 = 0
-  next_hit: i32 = 1
-  next_voice: i32 = 0
+  clock = 0
+  next_hit = 1
+  next_voice = 0
   pans: f32[VoiceCount]
   pending_bang = false
 
@@ -68,11 +68,11 @@ event bang():
   pending_bang = true
 
 sample:
-  if auto_play != 0 && clock >= next_hit:
+  if auto_play && clock >= next_hit:
     pending_bang = true
 
   if pending_bang:
-    degree = i32(rng.next() * f32(ScaleLength))
+    degree = i32(rng.next() * ScaleLength)
     if (degree >= ScaleLength):
       degree = ScaleLength - 1
     velocity = rng.range(0.32, 0.92)

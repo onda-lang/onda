@@ -1,17 +1,17 @@
 import std/convolution
 import std/filter
 
-const RoomFFTSize = 2048
-const RoomMaxImpulseFrames = 400000
+const RoomFFTSize = 16384
+const RoomMaxImpulseFrames = 480000
 
 proc ConvolutionRoom:
   params:
     damping = 12000.0
-    impulse_gain = 0.012
+    impulse_gain = 0.02
 
   init:
-    convolver_l = std::convolution<RoomFFTSize, RoomMaxImpulseFrames>::ZeroLatencyConvolver<f32>()
-    convolver_r = std::convolution<RoomFFTSize, RoomMaxImpulseFrames>::ZeroLatencyConvolver<f32>()
+    convolver_l = std::convolution<RoomFFTSize, RoomMaxImpulseFrames>::ZeroLatencyConvolver()
+    convolver_r = std::convolution<RoomFFTSize, RoomMaxImpulseFrames>::ZeroLatencyConvolver()
     tone_l = std::filter::OnePole(cutoff = damping)
     tone_r = std::filter::OnePole(cutoff = damping)
 
@@ -22,6 +22,6 @@ proc ConvolutionRoom:
   sample:
     excitation = (in1 + in2) * 0.5
     tone_l.cutoff = damping
-    tone_r.cutoff = damping * 0.94
+    tone_r.cutoff = damping * 0.9
     out1 = tone_l(convolver_l(excitation) * impulse_gain)
     out2 = tone_r(convolver_r(excitation) * impulse_gain)

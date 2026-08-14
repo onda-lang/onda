@@ -1,7 +1,7 @@
 import std/filter
 import std/osc
 
-const TapeLineSamples: i32 = i32(SR * 3)
+const TapeLineSamples = i32(SR * 3)
 
 proc TapeLine:
   params:
@@ -14,7 +14,7 @@ proc TapeLine:
 
   init:
     line: f32[TapeLineSamples]
-    write: i32 = 0
+    write = 0
     wow_lfo = std::osc::Sine(freq = wow_rate)
     flutter_lfo = std::osc::Sine(freq = wow_rate * 7.31)
     feedback_filter = std::filter::OnePole(cutoff = tone)
@@ -22,12 +22,12 @@ proc TapeLine:
   sample:
     drift = wow_lfo(freq = wow_rate) + flutter_lfo(freq = wow_rate * 7.31) * 0.18
     moving_delay = clamp(delay_s * (1.0 + wow * drift), 0.002, 2.95)
-    read_pos = wrap(f32(write) - moving_delay * SR, 0.0, f32(TapeLineSamples))
+    read_pos = wrap(write - moving_delay * SR, 0.0, TapeLineSamples)
     i0 = i32(read_pos)
     i1 = i0 + 1
     if (i1 >= TapeLineSamples):
       i1 = 0
-    delayed = lerp(line[i0], line[i1], read_pos - f32(i0))
+    delayed = lerp(line[i0], line[i1], read_pos - i0)
 
     feedback_filter.cutoff = tone
     dark_repeat = feedback_filter(delayed)

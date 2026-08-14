@@ -107,7 +107,9 @@ fn module_imports(source: &str) -> Vec<String> {
 }
 
 fn is_public(name: &str) -> bool {
-    !name.starts_with('_')
+    name.rsplit("::")
+        .next()
+        .is_some_and(|component| !component.starts_with('_'))
 }
 
 fn public_surface_names(program: &Program) -> Vec<String> {
@@ -118,7 +120,7 @@ fn public_surface_names(program: &Program) -> Vec<String> {
             Block::Def(def) if is_public(&def.name) => names.push(def.name.clone()),
             Block::Struct(def) if is_public(&def.name) => names.push(def.name.clone()),
             Block::Proc(def) if is_public(&def.name) => names.push(def.name.clone()),
-            Block::Namespace(namespace) => {
+            Block::Namespace(namespace) if is_public(&namespace.name) => {
                 names.extend(public_namespace_item_names(&namespace.items));
             }
             _ => {}
@@ -463,5 +465,6 @@ mod tests {
         assert!(docs.contains("freq: T = 440.0 => update_freq"));
         assert!(docs.contains("## `std/prelude`"));
         assert!(!docs.contains("def _hann_window"));
+        assert!(!docs.contains("Namespace: `std::_"));
     }
 }

@@ -1166,60 +1166,12 @@ impl<'a> FunctionLowerer<'a> {
             &lowered.iter().map(|value| value.ty).collect::<Vec<_>>(),
         );
 
-        let result_ty = match function {
-            BuiltinFn::Abs => adapted_types.first().copied().unwrap_or(PrimitiveType::F32),
-            BuiltinFn::Min | BuiltinFn::Max => {
-                let left = adapted_types
-                    .first()
-                    .copied()
-                    .ok_or_else(|| self.error("missing first intrinsic argument", location))?;
-                let right = adapted_types
-                    .get(1)
-                    .copied()
-                    .ok_or_else(|| self.error("missing second intrinsic argument", location))?;
-                self.merge_numeric(left, right, "numeric intrinsic", location)?
-            }
-            BuiltinFn::RangeClamp => {
-                let value = adapted_types
-                    .first()
-                    .copied()
-                    .ok_or_else(|| self.error("missing range-clamp value", location))?;
-                adapted_types
-                    .iter()
-                    .copied()
-                    .skip(1)
-                    .try_fold(value, |merged, bound| {
-                        self.merge_numeric(merged, bound, "range clamp", location)
-                    })?
-            }
-            BuiltinFn::Pow => {
-                if adapted_types.contains(&PrimitiveType::F64) {
-                    PrimitiveType::F64
-                } else {
-                    PrimitiveType::F32
-                }
-            }
-            BuiltinFn::Sin
-            | BuiltinFn::Cos
-            | BuiltinFn::Tan
-            | BuiltinFn::Tanh
-            | BuiltinFn::Atan
-            | BuiltinFn::Atan2
-            | BuiltinFn::Exp
-            | BuiltinFn::Log
-            | BuiltinFn::Sqrt
-            | BuiltinFn::Floor
-            | BuiltinFn::Ceil
-            | BuiltinFn::Round
-            | BuiltinFn::Trunc
-            | BuiltinFn::Fma => {
-                if adapted_types.contains(&PrimitiveType::F64) {
-                    PrimitiveType::F64
-                } else {
-                    PrimitiveType::F32
-                }
-            }
-        };
+        let result_ty = intrinsic_result_type(function, &adapted_types).ok_or_else(|| {
+            self.error(
+                "intrinsic has invalid operand types after semantic analysis",
+                location,
+            )
+        })?;
 
         let mut values = Vec::with_capacity(lowered.len());
         for (arg, value) in args.iter().zip(lowered) {

@@ -19,11 +19,11 @@ proc RunglerCore:
     pulse_a = std::osc::Pulse(width = 0.5)
     triangle_b = std::osc::Triangle()
     pulse_b = std::osc::Pulse(width = 0.5)
-    shift_register: i32 = 173
+    shift_register = 173
     previous_clock = false
 
   sample:
-    dac = f32(shift_register & 255) / 255.0
+    dac = (shift_register & 255) / 255.0
     bipolar = dac * 2.0 - 1.0
     rungler_note = 20.0 + clamp(scale, 0.0, 1.0) * dac * 100.0
     rungler_hz = std::pitch::note_to_hz(rungler_note)
@@ -37,7 +37,7 @@ proc RunglerCore:
 
     clock = square_b > 0.0
     if (clock && !previous_clock):
-      comparator_bit: i32 = 0
+      comparator_bit = 0
       if (tri_a + tri_b > 0.0):
         comparator_bit = 1
       feedback_bit = ((shift_register >> 5) ^ (shift_register >> 7)) & 1
@@ -79,9 +79,9 @@ proc Benjolin:
     feedback_loop = 0.82
     filter_frequency = 90.0
     resonance = 3.7
-    filter_mode: i32 = 0
-    output_signal_l: i32 = 6
-    output_signal_r: i32 = 6
+    filter_mode = 0
+    output_signal_l = 6
+    output_signal_r = 6
 
   init:
     core = RunglerCore()
@@ -123,9 +123,9 @@ params:
   feedback_loop = 0.82 {0.0, 1.0}
   filter_frequency = 90.0 {20.0, 20000.0, log, "Hz"}
   resonance = 3.7 {0.5, 8.0}
-  filter_mode: i32 = 0 {0, 5, step = 1}
-  output_signal_l: i32 = 6 {0, 6, step = 1}
-  output_signal_r: i32 = 6 {0, 6, step = 1}
+  filter_mode = 0 {0, 5}
+  output_signal_l = 6 {0, 6}
+  output_signal_r = 6 {0, 6}
   space = 0.24 {0.0, 0.7}
   level = 0.5 {0.0, 1.0}
 
@@ -153,7 +153,7 @@ sample:
   )
   dry_l = dc_l(benjolin.out1)
   dry_r = dc_r(benjolin.out2)
-  wet_l = echo_l(dry_l + dry_r * 0.11)
-  wet_r = echo_r(dry_r + dry_l * 0.11)
+  wet_l = echo_l(dry_l + dry_r * 0.15)
+  wet_r = echo_r(dry_r + dry_l * 0.15)
   out1 = tanh((dry_l + wet_l * space) * level)
   out2 = tanh((dry_r + wet_r * space) * level)

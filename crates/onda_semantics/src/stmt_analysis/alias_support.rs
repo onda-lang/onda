@@ -23,6 +23,7 @@ pub(crate) fn seed_top_level_array_aliases(
             name.clone(),
             LocalArrayAliasInfo {
                 len: info.len,
+                static_len: Some(info.len),
                 elem_ty: info.elem_ty,
                 elem_struct: None,
                 writable,
@@ -41,6 +42,7 @@ pub(crate) fn infer_scope_slice_alias_info(
     owner_structs: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
+    preserve_static_len: bool,
 ) -> Option<LocalArrayAliasInfo> {
     if let Some(alias) = local_array_aliases.get(base) {
         if alias.elem_struct.is_some() {
@@ -53,6 +55,11 @@ pub(crate) fn infer_scope_slice_alias_info(
         }
         return Some(LocalArrayAliasInfo {
             len: infer_static_slice_len_hint(Some(alias.len), start, end),
+            static_len: if preserve_static_len {
+                alias.static_len
+            } else {
+                None
+            },
             elem_ty: alias.elem_ty,
             elem_struct: None,
             writable: alias.writable,
@@ -62,6 +69,7 @@ pub(crate) fn infer_scope_slice_alias_info(
         if let Some(len) = state_arrays.get(base).copied() {
             return Some(LocalArrayAliasInfo {
                 len: infer_static_slice_len_hint(Some(len), start, end),
+                static_len: preserve_static_len.then_some(len),
                 elem_ty: declared_symbol_scalar_type(declared_symbols, base)
                     .unwrap_or(PrimitiveType::F32),
                 elem_struct: None,
@@ -72,6 +80,7 @@ pub(crate) fn infer_scope_slice_alias_info(
     if let Some((elem_ty, _)) = declared_buffer_info(declared_symbols, base) {
         return Some(LocalArrayAliasInfo {
             len: 1,
+            static_len: None,
             elem_ty,
             elem_struct: None,
             writable: true,
@@ -107,6 +116,14 @@ pub(crate) fn infer_scope_slice_alias_info(
             start,
             end,
         ),
+        static_len: if preserve_static_len {
+            match field_decl.ty {
+                TypedFieldType::Array(len) => Some(len),
+                _ => None,
+            }
+        } else {
+            None
+        },
         elem_ty: field_decl.array_elem_ty.unwrap_or(PrimitiveType::F32),
         elem_struct: None,
         writable: true,
@@ -133,6 +150,7 @@ pub(crate) fn infer_scope_data_like_info(
             owner_structs,
             struct_defs,
             errors,
+            true,
         ),
         Expr::Slice {
             base, start, end, ..
@@ -146,6 +164,7 @@ pub(crate) fn infer_scope_data_like_info(
             owner_structs,
             struct_defs,
             errors,
+            false,
         ),
         _ => None,
     }

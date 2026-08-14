@@ -444,7 +444,7 @@ impl<'a> FunctionLowerer<'a> {
             self.begin_audio_output_frame(&mut sample_block, process_location)?;
             let result = self
                 .lower_statements(sample, &mut sample_block, ContinueMode::None)
-                .and_then(|()| {
+                .and_then(|_| {
                     self.commit_audio_output_frame(
                         &mut sample_block,
                         Value::Local(logical_frame),

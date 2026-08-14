@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
+use super::call_types::const_positive_usize_for_call_type;
+
 use onda_frontend::{
-    AssignTarget, BufferChannels, BufferElemType, BuiltinFn, CallArg, DiagCtx, Diagnostic, Expr,
-    FnParamType, FunctionDef, PrimitiveType, Stmt,
+    AssignTarget, BufferChannels, BufferElemType, CallArg, DiagCtx, Diagnostic, Expr, FnParamType,
+    FunctionDef, PrimitiveType, Stmt,
 };
 
 mod return_inference;
@@ -12,9 +14,8 @@ use call_inference::infer_stmt_calls;
 pub(crate) use call_inference::{resolve_call_args, resolve_call_args_at};
 
 use crate::builtins::{
-    builtin_constant_type, eval_data_size_expr, is_builtin_constant_name, is_internal_buffer_2d_fn,
-    parse_array_len_instance_base, parse_buffer_chans_instance_base,
-    parse_buffer_samplerate_instance_base, validate_buffer_static_channels,
+    builtin_constant_type, eval_data_size_expr, is_builtin_constant_name,
+    validate_buffer_static_channels,
 };
 use crate::{
     push_semantic, resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context,
@@ -83,17 +84,29 @@ pub(crate) fn infer_def_param_kinds(
     fn_signatures: &HashMap<String, FnSignature>,
     method_self_struct: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    proc_types: &HashSet<String>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> (
     HashMap<String, Vec<TypedFnParam>>,
     HashMap<String, Vec<TypedStructField>>,
 ) {
-    let declared_struct_params =
-        collect_declared_struct_param_types(defs, method_self_struct, struct_defs, errors);
-    let declared_buffer_params = collect_declared_buffer_param_types(defs, options, errors);
-    let field_usage =
-        collect_def_param_field_usage(defs, &declared_struct_params, struct_defs, errors);
+    let declared_struct_params = collect_declared_struct_param_types(
+        defs,
+        fn_signatures,
+        method_self_struct,
+        struct_defs,
+        errors,
+    );
+    let declared_buffer_params =
+        collect_declared_buffer_param_types(defs, fn_signatures, options, errors);
+    let field_usage = collect_def_param_field_usage(
+        defs,
+        fn_signatures,
+        &declared_struct_params,
+        struct_defs,
+        errors,
+    );
 
     let mut kinds = HashMap::new();
     for def in defs {
@@ -320,6 +333,10 @@ pub(crate) fn infer_def_param_kinds(
     let mut synthesized = HashMap::new();
 
     for def in defs {
+        let display_name = fn_signatures
+            .get(&def.name)
+            .and_then(|signature| signature.display_name.as_deref())
+            .unwrap_or(&def.name);
         let mut typed = Vec::with_capacity(def.params.len());
         let inferred = kinds.get(&def.name);
         let explicit = declared_struct_params
@@ -364,13 +381,13 @@ pub(crate) fn infer_def_param_kinds(
                 || (inferred_kind.saw_seeded_buffer && !has_struct_usage);
             let inferred_struct_array = infer_struct_array_observation_from_param_slot(
                 &inferred_kind,
-                &def.name,
+                display_name,
                 param_name,
                 errors,
             );
             let inferred_proc_array = infer_proc_array_observation_from_param_slot(
                 &inferred_kind,
-                &def.name,
+                display_name,
                 param_name,
                 errors,
             );
@@ -414,9 +431,50 @@ pub(crate) fn infer_def_param_kinds(
             }
             if let Some(FnParamType::SizedArray {
                 generic_name: Some(ref param_ty),
+                size,
                 ..
             }) = def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
+                if proc_types.contains(param_ty) {
+                    let Some(len) = const_positive_usize_for_call_type(size) else {
+                        push_semantic(
+                            param_diag,
+                            errors,
+                            format!(
+                                "function '{}' parameter '{}' processor-array length must be a positive compile-time integer",
+                                display_name, param_name
+                            ),
+                        );
+                        typed.push(TypedFnParam::ProcArray {
+                            proc_name: param_ty.clone(),
+                            len: 1,
+                        });
+                        continue;
+                    };
+                    typed.push(TypedFnParam::ProcArray {
+                        proc_name: param_ty.clone(),
+                        len,
+                    });
+                    continue;
+                }
+                if let Some(proc_array) = inferred_proc_array
+                    .as_ref()
+                    .filter(|array| array.proc_name == *param_ty)
+                    .cloned()
+                    .or_else(|| {
+                        let len = const_positive_usize_for_call_type(size)?;
+                        proc_array_roots
+                            .values()
+                            .find(|array| array.proc_name == *param_ty && array.len == len)
+                            .cloned()
+                    })
+                {
+                    typed.push(TypedFnParam::ProcArray {
+                        proc_name: proc_array.proc_name,
+                        len: proc_array.len,
+                    });
+                    continue;
+                }
                 if !def.type_params.contains(param_ty) && struct_defs.contains_key(param_ty) {
                     typed.push(TypedFnParam::StructArray {
                         struct_name: param_ty.clone(),
@@ -428,7 +486,7 @@ pub(crate) fn infer_def_param_kinds(
                     errors,
                     format!(
                         "function '{}' parameter '{}' uses unresolved generic array element type '{}'",
-                        def.name, param_name, param_ty
+                        display_name, param_name, param_ty
                     ),
                 );
                 typed.push(TypedFnParam::Array {
@@ -439,6 +497,16 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(FnParamType::ArrayGeneric(param_ty)) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
+                if let Some(proc_array) = inferred_proc_array
+                    .as_ref()
+                    .filter(|array| array.proc_name == *param_ty)
+                {
+                    typed.push(TypedFnParam::ProcArray {
+                        proc_name: proc_array.proc_name.clone(),
+                        len: proc_array.len,
+                    });
+                    continue;
+                }
                 if !def.type_params.contains(param_ty) && struct_defs.contains_key(param_ty) {
                     typed.push(TypedFnParam::StructArray {
                         struct_name: param_ty.clone(),
@@ -450,7 +518,7 @@ pub(crate) fn infer_def_param_kinds(
                     errors,
                     format!(
                         "function '{}' parameter '{}' uses unresolved generic array element type '{}'",
-                        def.name, param_name, param_ty
+                        display_name, param_name, param_ty
                     ),
                 );
                 typed.push(TypedFnParam::Array {
@@ -464,7 +532,7 @@ pub(crate) fn infer_def_param_kinds(
                 // Fall through to buffer inference below by marking as buffer-like
                 // If inference found buffer observations, use them; otherwise default
                 let inferred_buffer = infer_untyped_buffer_from_observations(
-                    &def.name,
+                    display_name,
                     param_name,
                     &inferred_kind,
                     true,
@@ -484,7 +552,7 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(FnParamType::Array(None)) = def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
                 let inferred_array = infer_untyped_array_from_observations(
-                    &def.name,
+                    display_name,
                     param_name,
                     &inferred_kind,
                     true,
@@ -507,7 +575,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as array",
-                            def.name,
+                            display_name,
                             param_name,
                             format_buffer_type_name(*elem_ty, channels)
                         ),
@@ -519,7 +587,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as scalar",
-                            def.name,
+                            display_name,
                             param_name,
                             format_buffer_type_name(*elem_ty, channels)
                         ),
@@ -531,7 +599,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as struct",
-                            def.name,
+                            display_name,
                             param_name,
                             format_buffer_type_name(*elem_ty, channels)
                         ),
@@ -551,12 +619,12 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as struct and buffer",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
                 let inferred_buffer = infer_untyped_buffer_from_observations(
-                    &def.name,
+                    display_name,
                     param_name,
                     &inferred_kind,
                     true,
@@ -580,7 +648,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as scalar",
-                            def.name, param_name, struct_name
+                            display_name, param_name, struct_name
                         ),
                     );
                 }
@@ -590,7 +658,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as array",
-                            def.name, param_name, struct_name
+                            display_name, param_name, struct_name
                         ),
                     );
                 }
@@ -601,7 +669,7 @@ pub(crate) fn infer_def_param_kinds(
                             errors,
                             format!(
                                 "function '{}' parameter '{}' is explicitly '{}' but is called with '{}'",
-                                def.name, param_name, struct_name, observed
+                                display_name, param_name, struct_name, observed
                             ),
                         );
                     }
@@ -619,7 +687,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as scalar and struct array",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
@@ -629,7 +697,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as primitive array and struct array",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
@@ -639,7 +707,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as buffer and struct array",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
@@ -649,7 +717,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as struct and struct array",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
@@ -666,7 +734,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as scalar and processor array",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
@@ -676,7 +744,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as primitive array and processor array",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
@@ -686,7 +754,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as buffer and processor array",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
@@ -696,7 +764,7 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as struct and processor array",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
@@ -714,14 +782,14 @@ pub(crate) fn infer_def_param_kinds(
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as scalar and struct",
-                            def.name, param_name
+                            display_name, param_name
                         ),
                     );
                 }
 
                 let synthetic_name = synthetic_struct_param_name(&def.name, idx, param_name);
                 let fields = build_structural_param_fields(
-                    &def.name,
+                    display_name,
                     param_name,
                     &usage_for_param,
                     &inferred_kind.saw_structs,
@@ -1148,12 +1216,17 @@ fn propagate_expr_callee_buffer_requirements_to_params(
 
 fn collect_declared_struct_param_types(
     defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
     method_self_struct: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, Vec<Option<String>>> {
     let mut out = HashMap::new();
     for def in defs {
+        let display_name = fn_signatures
+            .get(&def.name)
+            .and_then(|signature| signature.display_name.as_deref())
+            .unwrap_or(&def.name);
         let mut param_structs = vec![None; def.params.len()];
         for (idx, param) in def.params.iter().enumerate() {
             if let Some(FnParamType::Struct(struct_name)) = &param.ty {
@@ -1163,7 +1236,7 @@ fn collect_declared_struct_param_types(
                     errors.push(Diagnostic::semantic_span(
                         format!(
                             "function '{}' parameter '{}' references unknown struct '{}'",
-                            def.name, param.name, struct_name
+                            display_name, param.name, struct_name
                         ),
                         param.ty_loc.or(param.loc),
                     ));
@@ -1180,7 +1253,7 @@ fn collect_declared_struct_param_types(
                         errors.push(Diagnostic::semantic_span(
                             format!(
                                 "method '{}' self parameter is '{}' but annotation declares '{}'",
-                                def.name, method_struct, existing
+                                display_name, method_struct, existing
                             ),
                             def.params[0].ty_loc.or(def.params[0].loc),
                         ));
@@ -1197,11 +1270,16 @@ fn collect_declared_struct_param_types(
 
 fn collect_declared_buffer_param_types(
     defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, Vec<Option<(PrimitiveType, TypedBufferChannels)>>> {
     let mut out = HashMap::new();
     for def in defs {
+        let display_name = fn_signatures
+            .get(&def.name)
+            .and_then(|signature| signature.display_name.as_deref())
+            .unwrap_or(&def.name);
         let mut param_buffers = vec![None; def.params.len()];
         for (idx, param) in def.params.iter().enumerate() {
             if let Some(buffer_ty) = match &param.ty {
@@ -1217,7 +1295,7 @@ fn collect_declared_buffer_param_types(
                     BufferChannels::Static(expr) => {
                         let context = format!(
                             "function '{}' parameter '{}' buffer channels",
-                            def.name, param.name
+                            display_name, param.name
                         );
                         let Some(channels) = eval_data_size_expr(expr, options, &context, errors)
                         else {
@@ -1249,7 +1327,7 @@ fn collect_declared_buffer_param_types(
                         errors.push(Diagnostic::semantic_span(
                             format!(
                                 "function '{}' parameter '{}' uses unresolved generic buffer element type '{}'",
-                                def.name, param.name, param_ty
+                                display_name, param.name, param_ty
                             ),
                             param.ty_loc.or(param.loc),
                         ));
@@ -1281,12 +1359,17 @@ fn format_buffer_type_name(elem_ty: PrimitiveType, channels: &TypedBufferChannel
 
 fn collect_def_param_field_usage(
     defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
     declared_struct_params: &HashMap<String, Vec<Option<String>>>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, Vec<HashMap<String, StructFieldUsage>>> {
     let mut out = HashMap::new();
     for def in defs {
+        let display_name = fn_signatures
+            .get(&def.name)
+            .and_then(|signature| signature.display_name.as_deref())
+            .unwrap_or(&def.name);
         let mut by_param = vec![HashMap::new(); def.params.len()];
         let param_index = def
             .params
@@ -1301,7 +1384,7 @@ fn collect_def_param_field_usage(
         for stmt in &def.body {
             collect_stmt_field_usage(
                 stmt,
-                &def.name,
+                display_name,
                 &param_index,
                 &param_structs,
                 struct_defs,

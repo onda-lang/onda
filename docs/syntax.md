@@ -674,7 +674,12 @@ When no context exists, first assignment uses Onda defaults:
 sample:
   x = 0.5  # f32
   n = 5    # i32 when it fits, otherwise i64
+  m = -5   # i32 when it fits, otherwise i64
 ```
+
+Unary minus preserves the selected numeric type: it works for `f32`, `f64`,
+`i32`, and `i64`, including generic code specialized to those types. It is not
+defined for `bool`.
 
 Pure numeric expressions adapt directly to their surrounding context:
 
@@ -732,6 +737,11 @@ sample:
   coeffs = [0.5, 0.25, 0.125]
   out1 = coeffs[0]
 ```
+
+An untyped array assignment takes its element type from the first element
+using the ordinary first-assignment defaults, then checks every remaining
+element against that type. An array literal used directly as a call argument
+can instead acquire its element type from the parameter context.
 
 Primitive array and buffer slices use Python-style syntax:
 
@@ -871,6 +881,13 @@ Rules:
 - `loop N` is shorthand for `for _ in 0..N`.
 - Loop variables are local to the loop body.
 - Fresh symbols created inside loops do not escape the loop.
+- A fresh symbol created in every continuing branch of an `if` is available
+  afterward. Numeric scalar and tuple-element types join to the smallest type
+  that accepts every branch without narrowing (for example, `i32` with `i64`
+  becomes `i64`, while `f32` with `i64` becomes `f64`).
+- Branch-local arrays must have the same element type and fixed length.
+  Supported aggregate aliases must likewise have one compatible runtime
+  shape; a branch-dependent shape is a semantic error at the `if`.
 - `break` and `continue` are supported in loops.
 - `return` is valid in `def` bodies, not in top-level `sample`.
 
@@ -1012,6 +1029,7 @@ Rules:
 `def` params support:
 
 - Primitive scalars.
+- Untyped scalars inferred and specialized from each call site.
 - Explicit struct types.
 - Typed arrays such as `arr: f32[]`.
 - Untyped arrays such as `arr: []`.
@@ -1577,9 +1595,16 @@ Runtime defs are specialized from call sites. This applies both to explicit
 generic defs such as `def id<T>(x: T) -> T` and to polymorphic parameter shapes
 that do not need a named type parameter:
 
+- Untyped scalar params such as `value`, specialized to the concrete primitive
+  type at each call site (including `bool`). Pure numeric expressions use the
+  ordinary untyped `f32`/`i32` defaults, while explicit casts preserve their
+  requested numeric type.
 - Untyped arrays such as `arr: []`.
 - Bare buffers such as `buf: buffer`.
 - Generic struct and proc params supplied by concrete arguments.
+- Unsized processor-array params such as `voices: Voice[]`; specialization
+  records the concrete capacity supplied at each call site. A fixed
+  `voices: Voice[N]` parameter already has a complete source-level ABI.
 - Untyped tuple params inferred from tuple literals.
 - Untyped structural params inferred from field or method usage.
 

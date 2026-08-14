@@ -366,10 +366,13 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
     }
 
     FnSignature {
+        display_name: None,
+        requires_call_specialization: false,
         params,
         defaults,
         param_types,
         type_params: Vec::new(),
+        return_type: None,
         readonly_array_params: HashSet::new(),
     }
 }
@@ -912,16 +915,20 @@ fn build_proc_lowering_env(
         pre_desugar_fn_signatures
             .entry(def.name.clone())
             .or_insert_with(|| FnSignature {
+                display_name: None,
+                requires_call_specialization: false,
                 params: def.params.iter().map(|p| p.name.clone()).collect(),
                 defaults: def.params.iter().map(|p| p.default.clone()).collect(),
                 param_types: def.params.iter().map(|p| p.ty.clone()).collect(),
                 type_params: def.type_params.clone(),
+                return_type: None,
                 readonly_array_params: HashSet::new(),
             });
     }
     let pre_desugar_def_return_types = infer_def_return_types(
         &pre_desugar_defs,
         &pre_desugar_fn_signatures,
+        &crate::def_semantics::CallTypeEnv::default(),
         &HashMap::new(),
     );
     for proc in &mut proc_defs {
@@ -1380,9 +1387,9 @@ sample:
         );
         assert!(
             init_calls.iter().any(|(name, call_name)| {
-                name == "tail" && call_name.contains("::BlockConvolver.__gen__f32")
+                name == "final" && call_name.contains("::BlockConvolver.__gen__f32")
             }),
-            "expected tail ctor to be specialized, got {init_calls:?}"
+            "expected final-stage ctor to be specialized, got {init_calls:?}"
         );
     }
 
@@ -1431,8 +1438,8 @@ sample:
             shape.state.nested_procs.keys().collect::<Vec<_>>()
         );
         assert!(
-            shape.state.nested_procs.contains_key("tail"),
-            "expected tail nested proc, got {:?}",
+            shape.state.nested_procs.contains_key("final"),
+            "expected final-stage nested proc, got {:?}",
             shape.state.nested_procs.keys().collect::<Vec<_>>()
         );
     }

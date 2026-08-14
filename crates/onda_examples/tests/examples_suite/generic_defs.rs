@@ -298,8 +298,8 @@ sample {
     // backend-specific LLVM symbol spelling.
 
     let mir = lower_test_mir(src);
-    assert_mir_scalar_specialization(&mir, "double.__mono__g_f32", onda_mir::ScalarType::F32);
-    assert_mir_scalar_specialization(&mir, "double.__mono__g_f64", onda_mir::ScalarType::F64);
+    assert_mir_scalar_specialization(&mir, "double.__onda_mono__g_f32", onda_mir::ScalarType::F32);
+    assert_mir_scalar_specialization(&mir, "double.__onda_mono__g_f64", onda_mir::ScalarType::F64);
 
     let frames = 4;
 
@@ -715,8 +715,8 @@ sample {
     // specializations use integer values rather than floating-point ones.
 
     let mir = lower_test_mir(src);
-    assert_mir_scalar_specialization(&mir, "triple.__mono__g_i32", onda_mir::ScalarType::I32);
-    assert_mir_scalar_specialization(&mir, "triple.__mono__g_i64", onda_mir::ScalarType::I64);
+    assert_mir_scalar_specialization(&mir, "triple.__onda_mono__g_i32", onda_mir::ScalarType::I32);
+    assert_mir_scalar_specialization(&mir, "triple.__onda_mono__g_i64", onda_mir::ScalarType::I64);
 
     let frames = 4;
 
@@ -757,7 +757,7 @@ sample {
     // MIR must show the f64 specialization inferred from the f64() cast.
 
     let mir = lower_test_mir(src);
-    assert_mir_scalar_specialization(&mir, "id.__mono__g_f64", onda_mir::ScalarType::F64);
+    assert_mir_scalar_specialization(&mir, "id.__onda_mono__g_f64", onda_mir::ScalarType::F64);
 
     let frames = 4;
 
@@ -799,7 +799,7 @@ sample {
     // default literal inference.
 
     let mir = lower_test_mir(src);
-    assert_mir_scalar_specialization(&mir, "id.__mono__g_f64", onda_mir::ScalarType::F64);
+    assert_mir_scalar_specialization(&mir, "id.__onda_mono__g_f64", onda_mir::ScalarType::F64);
 
     let frames = 4;
 
@@ -2767,7 +2767,7 @@ sample {
     // MIR: the monomorphized def must retain an f64 parameter and result.
 
     let mir = lower_test_mir(src);
-    assert_mir_scalar_specialization(&mir, "double.__mono__g_f64", onda_mir::ScalarType::F64);
+    assert_mir_scalar_specialization(&mir, "double.__onda_mono__g_f64", onda_mir::ScalarType::F64);
 
     // Runtime output.
 

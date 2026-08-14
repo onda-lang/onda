@@ -26,6 +26,28 @@ struct PersistentBufferAlias {
     source: PersistentBufferAliasSource,
 }
 
+fn proc_constructor_array_symbols(shape: &ProcLoweringShape) -> HashSet<String> {
+    shape
+        .field_array_slots
+        .keys()
+        .chain(shape.in_array_slots.keys())
+        .chain(shape.state.data.keys())
+        .cloned()
+        .collect()
+}
+
+fn nested_wrapper_constructor_array_symbols(
+    shape: &ProcLoweringShape,
+    nested_path: &str,
+) -> HashSet<String> {
+    shape
+        .field_array_slots
+        .keys()
+        .chain(shape.state.data.keys())
+        .map(|name| format!("self.{}", nested_field_name(nested_path, name)))
+        .collect()
+}
+
 fn persistent_proc_buffer_aliases(
     stmts: &[Stmt],
     buffer_specs: &[ProcBufferSpec],
@@ -715,6 +737,8 @@ fn generate_nested_wrapper_defs(
 
         let mut nested_init_body = Vec::<Stmt>::new();
         let mut constructor_setup_indices = HashSet::<usize>::new();
+        let constructor_array_symbols =
+            nested_wrapper_constructor_array_symbols(&callee_shape, &nested_path);
         let mut callee_init_stmts = callee_proc.init.clone();
         lower_named_proc_param_calls_in_stmts(
             &mut callee_init_stmts,
@@ -900,6 +924,7 @@ fn generate_nested_wrapper_defs(
                             &nested_callee_shape.param_specs,
                             &nested_callee_shape.buffer_specs,
                             proc_array_slot,
+                            &constructor_array_symbols,
                             errors,
                         );
                         if let Some(instance) = callee_nested_instances.get_mut(slot_name) {
@@ -1000,6 +1025,7 @@ fn generate_nested_wrapper_defs(
                         &nested_callee_shape.param_specs,
                         &nested_callee_shape.buffer_specs,
                         None,
+                        &constructor_array_symbols,
                         errors,
                     );
                     if let Some(instance) = callee_nested_instances.get_mut(var) {
@@ -1974,6 +2000,7 @@ pub(super) fn generate_lowered_proc_blocks(
 
         let mut init_body = Vec::<Stmt>::new();
         let mut constructor_setup_indices = HashSet::<usize>::new();
+        let constructor_array_symbols = proc_constructor_array_symbols(&shape);
         let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
         let proc_ns = namespace_of_symbol(&proc.name);
         let mut proc_init_stmts = proc.init.clone();
@@ -2140,6 +2167,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &callee_shape.param_specs,
                             &callee_shape.buffer_specs,
                             proc_array_slot,
+                            &constructor_array_symbols,
                             errors,
                         );
                         if let Some(instance) = nested_instances.get_mut(slot_name) {
@@ -2318,6 +2346,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         &callee_shape.param_specs,
                         &callee_shape.buffer_specs,
                         None,
+                        &constructor_array_symbols,
                         errors,
                     );
                     if let Some(instance) = nested_instances.get_mut(var) {

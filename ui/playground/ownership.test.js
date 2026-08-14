@@ -113,7 +113,11 @@ test("the shared run view offers a device-cached knob layout", async () => {
     /<div class="section-heading">\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"[\s\S]*?<\/button>\s*<div class="params-title">Params<\/div>\s*<button[^>]+id="reset-params"[\s\S]*?<\/div>\s*<div class="param-layout-toggle"/,
   );
   assert.match(runView, /classList\.add\("param-knob-ring-value"\)/);
-  assert.match(runView, /valueArc\.style\.strokeDasharray = `\$\{ratio\} 1`/);
+  assert.match(runView, /valueArc\.setAttribute\("stroke-dasharray", `\$\{ratio\} 1`\)/);
+  assert.match(
+    runView,
+    /indicator\.setAttribute\("transform", `rotate\(\$\{-135 \+ ratio \* 270\} 29 29\)`\)/,
+  );
   assert.doesNotMatch(runView, /conic-gradient\(/);
 });
 

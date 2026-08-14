@@ -10,49 +10,48 @@ params:
   density = 0.42 {0.0, 1.0}
   damp = 0.09 {0.01, 0.35}
   cutoff = 6200.0 {200.0, 19000.0}
-  ping: i32 = 2200 {64, 12000}
+  ping = 2200 {64, 12000}
 
 def sat(x):
   return clamp(x - 0.18 * x * x * x, -1.0, 1.0)
 
 init:
-  o1 = std::osc::Saw<f32>(freq = 9.0)
-  o2 = std::osc::Saw<f32>(freq = 17.0)
-  o3 = std::osc::Sine<f32>(freq = 21.0)
-  o4 = std::osc::Sine<f32>(freq = 23.0)
+  o1 = std::osc::Saw(freq = 9.0)
+  o2 = std::osc::Saw(freq = 17.0)
+  o3 = std::osc::Sine(freq = 21.0)
+  o4 = std::osc::Sine(freq = 23.0)
 
-  m1 = std::osc::Phasor<f32>(freq = 0.013)
-  m2 = std::osc::Phasor<f32>(freq = 0.021)
-  m3 = std::osc::Phasor<f32>(freq = 0.034)
+  m1 = std::osc::Phasor(freq = 0.013)
+  m2 = std::osc::Phasor(freq = 0.021)
+  m3 = std::osc::Phasor(freq = 0.034)
 
-  d1 = std::delay::Delay<f32>(delay_s = 0.041, feedback = 0.68, mix = 1.0)
-  d2 = std::delay::Delay<f32>(delay_s = 0.053, feedback = 0.67, mix = 1.0)
-  d3 = std::delay::Delay<f32>(delay_s = 0.067, feedback = 0.66, mix = 1.0)
-  d4 = std::delay::Delay<f32>(delay_s = 0.079, feedback = 0.65, mix = 1.0)
+  d1 = std::delay::Delay(delay_s = 0.041, feedback = 0.68, mix = 1.0)
+  d2 = std::delay::Delay(delay_s = 0.053, feedback = 0.67, mix = 1.0)
+  d3 = std::delay::Delay(delay_s = 0.067, feedback = 0.66, mix = 1.0)
+  d4 = std::delay::Delay(delay_s = 0.079, feedback = 0.65, mix = 1.0)
 
-  lp_l = std::filter::OnePole<f32>(cutoff = 7600.0)
-  lp_r = std::filter::OnePole<f32>(cutoff = 6800.0)
+  lp_l = std::filter::OnePole(cutoff = 7600.0)
+  lp_r = std::filter::OnePole(cutoff = 6800.0)
 
-  fb1: f32 = 0.0
-  fb2: f32 = 0.0
-  fb3: f32 = 0.0
-  fb4: f32 = 0.0
-  fb1_lp: f32 = 0.0
-  fb2_lp: f32 = 0.0
-  fb3_lp: f32 = 0.0
-  fb4_lp: f32 = 0.0
-  burst_left: i32 = 0
-  burst_env: f32 = 0.0
-  n: i32 = 0
+  fb1 = 0.0
+  fb2 = 0.0
+  fb3 = 0.0
+  fb4 = 0.0
+  fb1_lp = 0.0
+  fb2_lp = 0.0
+  fb3_lp = 0.0
+  fb4_lp = 0.0
+  burst_left = 0
+  burst_env = 0.0
+  n = 0
 
 sample:
-  tau = f32(TWO_PI)
   p1 = m1()
   p2 = m2()
   p3 = m3()
-  ma = sin(p1 * tau)
-  mb = sin((p1 + p2 * 0.7) * tau * 1.37 + 1.2)
-  mc = sin((p3 + p2 * 0.3) * tau * 2.11 + 2.4)
+  ma = sin(p1 * TWO_PI)
+  mb = sin((p1 + p2 * 0.7) * TWO_PI * 1.37 + 1.2)
+  mc = sin((p3 + p2 * 0.3) * TWO_PI * 2.11 + 2.4)
 
   mod_a = 0.5 + 0.5 * ma
   mod_b = 0.5 + 0.5 * mb
@@ -61,7 +60,7 @@ sample:
   o1.freq = 44.0 + 122.0 * mod_a
   o2.freq = 57.0 + 111.0 * mod_b
   o3.freq = 71.0 + 104.0 * mod_c
-  o4.freq = 88.0 + 95.0 * (0.5 + 0.5 * sin((p1 + p2 + p3) * tau))
+  o4.freq = 88.0 + 95.0 * (0.5 + 0.5 * sin((p1 + p2 + p3) * TWO_PI))
 
   d1.feedback = 0.58 + 0.16 * mod_a
   d2.feedback = 0.56 + 0.16 * mod_b
@@ -73,9 +72,9 @@ sample:
   d3.delay_s = 0.045 + 0.022 * mod_b
   d4.delay_s = 0.053 + 0.020 * (1.0 - mod_c)
 
-  stride_a: i32 = ping / 3 + 17
-  stride_b: i32 = ping / 5 + 29
-  hit: f32 = 0.0
+  stride_a = ping / 3 + 17
+  stride_b = ping / 5 + 29
+  hit = 0.0
   if ((n % ping) == 0):
     hit = hit + spray
   if ((n % stride_a) == 0 && (ma + mb * 0.7 > 1.18)):

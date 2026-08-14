@@ -18,7 +18,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | --- | --- |
 | [`std/math`](#stdmath) | `ampdb`, `clamp`, `cpsmidi`, `cpsoct`, `cubic_interp`, `dbamp`, `expexp`, `explin`, `fract`, `inverse_lerp`, `lerp`, `linexp`, `linlin`, `map`, `midicps`, `midiratio`, `octcps`, `ratiomidi`, `sign`, `smoothstep`, `wrap` |
 | [`std/complex`](#stdcomplex) | `Complex` |
-| [`std/osc`](#stdosc) | `Phasor`, `Pulse`, `Saw`, `SawDown`, `Sine`, `Square`, `Triangle`, `poly_blep` |
+| [`std/osc`](#stdosc) | `KSine`, `Phasor`, `Pulse`, `Saw`, `SawDown`, `Sine`, `Square`, `Triangle`, `poly_blep` |
 | [`std/filter`](#stdfilter) | `DCBlock`, `OnePole`, `Resonator`, `Svf`, `mode` |
 | [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `DecayEnv`, `decay_coefficient`, `stage` |
 | [`std/reverb`](#stdreverb) | `Schroeder` |
@@ -32,7 +32,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/delay`](#stddelay) | `Delay` |
 | [`std/data`](#stddata) | `Data` |
 | [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `Rectangular`, `STFT` |
-| [`std/convolution`](#stdconvolution) | `BlockConvolver`, `FFTStorageSize`, `HopSize`, `MaxPartitions`, `TailStart`, `TimeDomainConvolver`, `ZeroLatencyConvolver` |
+| [`std/convolution`](#stdconvolution) | `BlockConvolver`, `DirectTaps`, `FinalStageCapacity`, `HeadFFTSize`, `HeadStageCapacity`, `HeadStageEnd`, `HopSize`, `LargeFFTSize`, `LargeStageCapacity`, `LargeStageEnd`, `MidFFTSize`, `MidStageCapacity`, `MidStageEnd`, `TailStart`, `TimeDomainConvolver`, `ZeroLatencyConvolver` |
 | [`std/lookup`](#stdlookup) | `calcIdx`, `read`, `readC`, `readCW`, `readL`, `readLW`, `wrapIdx`, `write` |
 | [`std/random`](#stdrandom) | `RNG_INC`, `RNG_MASK`, `RNG_MULT`, `Rng`, `seed_state`, `step_state` |
 | [`std/prelude`](#stdprelude) | Automatically imports `std/math`, `std/lookup`, `std/random` |
@@ -164,6 +164,19 @@ proc Sine<T>:
   outs<T> 1
   params:
     freq: T = 440.0
+    amp: T = 1.0
+    phase_offset: T = 0.0
+  events:
+    reset(phase_cycles: T = 0.0):
+```
+
+### Processor `KSine<T>`
+
+```onda
+proc KSine<T>:
+  kouts<T> 1
+  params:
+    freq: T = 1.0
     amp: T = 1.0
     phase_offset: T = 0.0
   events:
@@ -907,9 +920,18 @@ Namespace: `std::convolution<FFTSize = 256, MaxImpulseLen = 16384>`.
 
 ```onda
 const HopSize = FFTSize / 2
-const MaxPartitions = (MaxImpulseLen + HopSize - 1) / HopSize
-const FFTStorageSize = MaxPartitions * FFTSize
-const TailStart = HopSize
+const HeadFFTSize = min(FFTSize, 256)
+const MidFFTSize = min(FFTSize, 1024)
+const LargeFFTSize = min(FFTSize, 4096)
+const DirectTaps = HeadFFTSize / 2
+const TailStart = DirectTaps
+const HeadStageEnd = MidFFTSize / 2
+const MidStageEnd = LargeFFTSize / 2
+const LargeStageEnd = HopSize
+const HeadStageCapacity = max(HeadStageEnd - DirectTaps, 1)
+const MidStageCapacity = max(MidStageEnd - HeadStageEnd, 1)
+const LargeStageCapacity = max(LargeStageEnd - MidStageEnd, 1)
+const FinalStageCapacity = max(MaxImpulseLen - LargeStageEnd, 1)
 ```
 
 ### Processor `TimeDomainConvolver<T>`
@@ -930,6 +952,7 @@ proc BlockConvolver<T>:
   ins<T> 1
   outs<T> 1
   events:
+    set_offset(value: i32 = -1):
     set_impulse(values: T[]):
     reset():
 ```
@@ -941,6 +964,7 @@ proc ZeroLatencyConvolver<T>:
   ins<T> 1
   outs<T> 1
   events:
+    set_offset(value: i32 = -1):
     set_impulse(values: T[]):
     reset():
 ```

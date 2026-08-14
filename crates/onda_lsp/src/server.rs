@@ -5205,12 +5205,12 @@ sample:
         }
 
         assert_eq!(
-            &labels[..7],
-            ["Phasor", "Pulse", "Saw", "SawDown", "Sine", "Square", "Triangle"],
+            &labels[..8],
+            ["KSine", "Phasor", "Pulse", "Saw", "SawDown", "Sine", "Square", "Triangle"],
             "constructors should lead the qualified list: {items:?}"
         );
         assert!(
-            items[..7].iter().all(|item| {
+            items[..8].iter().all(|item| {
                 item["sortText"]
                     .as_str()
                     .is_some_and(|sort_text| sort_text.starts_with("00_01_"))

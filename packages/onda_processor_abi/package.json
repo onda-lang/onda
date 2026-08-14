@@ -1,6 +1,6 @@
 {
   "name": "@onda-lang/processor-abi",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "type": "module",
   "description": "Shared Onda processor artifact schema, validation, and integrity helpers",
   "license": "MIT",

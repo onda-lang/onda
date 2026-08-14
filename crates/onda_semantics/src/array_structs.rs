@@ -201,6 +201,7 @@ fn register_data_struct_root_inner(
         .or_insert(ArrayStructRootInfo {
             struct_name: struct_name.to_owned(),
             len,
+            static_len: Some(len),
         });
     // Mark the root symbol so index validation can recognize `base[idx]` even
     // when the struct has no scalar/array fields to contribute `base.*` keys.
@@ -319,6 +320,7 @@ pub(crate) fn add_struct_element_alias_bindings(
                     format!("{alias_name}.{}", field.name),
                     LocalArrayAliasInfo {
                         len,
+                        static_len: Some(len),
                         elem_ty: elem_ty.unwrap_or(PrimitiveType::F32),
                         elem_struct,
                         writable: true,
@@ -333,6 +335,7 @@ pub(crate) fn add_struct_element_alias_bindings(
 pub(crate) fn register_struct_array_param_bindings(
     base: &str,
     struct_name: &str,
+    len: Option<usize>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     declared_symbols: &mut DeclaredSymbolMap,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
@@ -352,7 +355,8 @@ pub(crate) fn register_struct_array_param_bindings(
     register_struct_array_param_bindings_inner(
         base,
         struct_name,
-        1,
+        len.unwrap_or(1),
+        len,
         struct_defs,
         declared_symbols,
         local_array_aliases,
@@ -368,6 +372,7 @@ fn register_struct_array_param_bindings_inner(
     base: &str,
     struct_name: &str,
     len_factor: usize,
+    static_len_factor: Option<usize>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     declared_symbols: &mut DeclaredSymbolMap,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
@@ -405,11 +410,13 @@ fn register_struct_array_param_bindings_inner(
         .or_insert(ArrayStructRootInfo {
             struct_name: struct_name.to_owned(),
             len: len_factor.max(1),
+            static_len: static_len_factor,
         });
     local_array_aliases
         .entry(base.to_owned())
         .or_insert(LocalArrayAliasInfo {
             len: len_factor.max(1),
+            static_len: static_len_factor,
             elem_ty: PrimitiveType::F32,
             elem_struct: Some(struct_name.to_owned()),
             writable: true,
@@ -432,6 +439,7 @@ fn register_struct_array_param_bindings_inner(
                     .entry(flat.clone())
                     .or_insert(LocalArrayAliasInfo {
                         len: len_factor.max(1),
+                        static_len: static_len_factor,
                         elem_ty: prim,
                         elem_struct: None,
                         writable: true,
@@ -451,6 +459,7 @@ fn register_struct_array_param_bindings_inner(
                         .entry(elem_flat.clone())
                         .or_insert(LocalArrayAliasInfo {
                             len: len_factor.max(1),
+                            static_len: static_len_factor,
                             elem_ty: *prim,
                             elem_struct: None,
                             writable: true,
@@ -477,11 +486,14 @@ fn register_struct_array_param_bindings_inner(
                     return false;
                 };
                 let nested_factor = nested_factor.max(1);
+                let nested_static_len =
+                    static_len_factor.and_then(|len| len.checked_mul(field_len));
                 if let Some(elem_struct) = &field.array_elem_struct {
                     if !register_struct_array_param_bindings_inner(
                         &flat,
                         elem_struct,
                         nested_factor,
+                        nested_static_len,
                         struct_defs,
                         declared_symbols,
                         local_array_aliases,
@@ -499,6 +511,7 @@ fn register_struct_array_param_bindings_inner(
                         .entry(flat.clone())
                         .or_insert(LocalArrayAliasInfo {
                             len: nested_factor,
+                            static_len: nested_static_len,
                             elem_ty,
                             elem_struct: None,
                             writable: true,

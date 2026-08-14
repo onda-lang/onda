@@ -1935,6 +1935,30 @@ fn stdlib_convolution_time_domain_event_compile_and_run() {
 
 #[test]
 
+fn stdlib_convolution_time_domain_mirrored_history_wraps_at_capacity() {
+    let frames = 12;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_TIME_DOMAIN_WRAP_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = [
+        1.0_f32, -0.5, 0.25, 2.0, -1.0, 0.75, 0.125, -0.25, 1.5, -2.0, 0.5, 1.0,
+    ];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for frame in 0..frames {
+        let previous = frame.checked_sub(1).map_or(0.0, |previous| input[previous]);
+        let expected = input[frame] * 0.75 - previous * 0.25;
+        assert_near(output[frame], expected, 1e-6);
+    }
+}
+
+#[test]
+
 fn stdlib_convolution_block_compile_and_run() {
     let frames = 8;
 
@@ -1971,6 +1995,49 @@ fn stdlib_convolution_block_compile_and_run() {
 
 #[test]
 
+fn stdlib_convolution_block_spreads_multi_partition_work_without_changing_output() {
+    let frames = 40;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_BLOCK_SPREAD_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let mut input = vec![0.0_f32; frames];
+    input[..8].copy_from_slice(&[0.75, -0.25, 0.5, 0.125, -0.4, 0.2, 0.1, -0.05]);
+
+    let impulse = [
+        1.0_f32, -0.5, 0.25, 0.125, -0.75, 0.3, -0.2, 0.1, 0.05, -0.04, 0.03, -0.02, 0.01,
+    ];
+    let mut expected = vec![0.0_f32; frames];
+    let latency = 4;
+    for output_frame in latency..frames {
+        let convolution_frame = output_frame - latency;
+        for (tap, coefficient) in impulse.iter().copied().enumerate() {
+            if tap <= convolution_frame {
+                expected[output_frame] += input[convolution_frame - tap] * coefficient;
+            }
+        }
+    }
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for (frame, (actual, expected)) in output
+        .iter()
+        .copied()
+        .zip(expected.iter().copied())
+        .enumerate()
+    {
+        assert_near(actual, expected, 2e-4);
+        assert!(actual.is_finite(), "frame {frame} must be finite");
+    }
+}
+
+#[test]
+
 fn stdlib_convolution_zero_latency_compile_and_run() {
     let frames = 8;
 
@@ -2001,6 +2068,67 @@ fn stdlib_convolution_zero_latency_compile_and_run() {
     for sample in output.iter().skip(5) {
         assert_near(*sample, 0.0, 1e-4);
     }
+}
+
+#[test]
+
+fn stdlib_convolution_zero_latency_aligns_every_non_uniform_stage() {
+    let frames = 8_304;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_ZERO_LATENCY_MULTISTAGE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let mut input = vec![0.0_f32; frames];
+    input[0] = 1.0;
+
+    let mut expected = vec![0.0_f32; frames];
+    for (frame, value) in [
+        (0, 0.75),
+        (127, -0.5),
+        (128, 0.375),
+        (511, -0.25),
+        (512, 0.2),
+        (2_047, -0.15),
+        (2_048, 0.125),
+        (8_191, -0.1),
+        (8_192, 0.075),
+        (8_199, -0.05),
+    ] {
+        expected[frame] = value;
+    }
+
+    let assert_matches = |output: &[f32]| {
+        for (frame, (actual, expected)) in output
+            .iter()
+            .copied()
+            .zip(expected.iter().copied())
+            .enumerate()
+        {
+            let error = (actual - expected).abs();
+            assert!(
+                error < 2e-3,
+                "frame {frame}: expected {expected}, got {actual}, error {error}"
+            );
+        }
+    };
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_matches(&output);
+
+    let reset = instance
+        .event_index("reset_conv")
+        .expect("reset_conv event must exist");
+    trigger_event_by_index(&mut instance, reset, &[]).expect("reset event should succeed");
+
+    output.fill(0.0);
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("processing after reset should succeed");
+    assert_matches(&output);
 }
 
 #[test]

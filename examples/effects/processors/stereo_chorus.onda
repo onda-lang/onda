@@ -1,6 +1,6 @@
 import std/osc
 
-const ChorusLineSamples: i32 = i32(SR / 10)
+const ChorusLineSamples = i32(SR / 10)
 
 proc ChorusTap:
   params:
@@ -11,19 +11,19 @@ proc ChorusTap:
 
   init:
     line: f32[ChorusLineSamples]
-    write: i32 = 0
+    write = 0
     lfo = std::osc::Sine(freq = rate)
 
   sample:
     line[write] = in1
     modulation = lfo(freq = rate, phase_offset = phase_offset * TWO_PI)
     delay_samples = (base_ms + depth_ms * modulation) * SR * 0.001
-    read_pos = wrap(f32(write) - delay_samples, 0.0, f32(ChorusLineSamples))
+    read_pos = wrap(write - delay_samples, 0.0, ChorusLineSamples)
     i0 = i32(read_pos)
     i1 = i0 + 1
     if (i1 >= ChorusLineSamples):
       i1 = 0
-    delayed = lerp(line[i0], line[i1], read_pos - f32(i0))
+    delayed = lerp(line[i0], line[i1], read_pos - i0)
     write = (write + 1) % ChorusLineSamples
     out1 = delayed
 

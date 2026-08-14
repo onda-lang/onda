@@ -376,13 +376,14 @@ fn infer_expr_calls(
         }
         Expr::UserCall { name, args, .. } => {
             if let Some(sig) = fn_signatures.get(name) {
+                let display_name = sig.display_name.as_deref().unwrap_or(name);
                 let resolved = resolve_call_args_at(
                     args,
                     &sig.params,
                     &sig.defaults,
                     false,
                     false,
-                    &format!("function '{name}' call"),
+                    &format!("function '{display_name}' call"),
                     expr.loc(),
                     errors,
                 );

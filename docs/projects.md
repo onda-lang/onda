@@ -180,12 +180,24 @@ currently bound buffers into a new portable project directory. Existing inline p
 preserved, and file bindings selected in the host replace the corresponding packaged assets. The
 destination must be new or empty so publication remains atomic.
 
-The browser playground provides **Open project** and **Download project** controls. It opens a
-single `.onda` file or a project ZIP containing one or more `.ondaproject` files. When an
-archive contains several projects, the playground asks which manifest to open. Downloading creates
-a ZIP from the current in-memory source files and bound buffers. Buffer payloads are canonicalized
-as `.ondabuffer`, including `bool`, `i32`, `i64`, `f32`, and `f64` data. The ZIP is only a browser
-transport: after extraction, open any `.ondaproject` file with the native CLI or run hosts.
+The browser playground provides **Open project** and **Download project** controls. **Open project**
+accepts a single `.onda` or `.on` file, or a project ZIP containing one or more `.ondaproject`
+files. It intentionally does not offer bare `.ondaproject` files in the browser picker: a selected
+manifest alone does not grant a web page access to the sibling sources and assets that it names.
+ZIP the manifest together with every referenced source and asset, then select that ZIP. When an
+archive contains several projects, the playground asks which manifest to open.
+
+For example, package the checked-in Embedded Room showcase with:
+
+```bash
+cd examples/projects/embedded_room
+zip -r embedded-room.zip embedded-room.ondaproject code assets
+```
+
+**Download project** creates the same kind of portable ZIP from the current in-memory source files
+and bound buffers. Buffer payloads are canonicalized as `.ondabuffer`, including `bool`, `i32`,
+`i64`, `f32`, and `f64` data. The ZIP is only a browser transport: after extraction, open its
+`.ondaproject` file directly with the native CLI or run hosts.
 
 ## Immutable project images
 

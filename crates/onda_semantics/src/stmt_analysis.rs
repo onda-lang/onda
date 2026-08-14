@@ -32,6 +32,7 @@ pub(crate) struct ScopeFlowState {
     pub(crate) local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     pub(crate) local_buffer_aliases: LocalBufferAliases,
     pub(crate) local_proc_aliases: HashMap<String, ProcArrayAliasInfo>,
+    pub(crate) local_struct_aliases: HashMap<String, String>,
     pub(crate) tuple_vars: HashMap<String, usize>,
 }
 
@@ -48,6 +49,7 @@ impl ScopeFlowState {
             local_array_aliases,
             local_buffer_aliases: HashMap::new(),
             local_proc_aliases,
+            local_struct_aliases: HashMap::new(),
             tuple_vars: HashMap::new(),
         }
     }
@@ -94,6 +96,7 @@ pub(crate) fn fork_scope_flow_state_with_tuples(
     local_aliases: &LocalAliasTypes,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
+    local_struct_aliases: &HashMap<String, String>,
     local_buffer_aliases: &LocalBufferAliases,
     tuple_vars: &HashMap<String, usize>,
 ) -> ScopeFlowState {
@@ -105,6 +108,7 @@ pub(crate) fn fork_scope_flow_state_with_tuples(
     );
     st.tuple_vars = tuple_vars.clone();
     st.local_buffer_aliases = local_buffer_aliases.clone();
+    st.local_struct_aliases = local_struct_aliases.clone();
     st
 }
 
@@ -113,76 +117,305 @@ pub(crate) fn merge_branch_scope_flow_state(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    local_struct_aliases: &mut HashMap<String, String>,
     local_buffer_aliases: &mut LocalBufferAliases,
     tuple_vars: &mut HashMap<String, usize>,
     then_state: ScopeFlowState,
     else_state: ScopeFlowState,
+    location: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
 ) {
+    let base_known_scalars = known_scalars.clone();
+    let base_local_aliases = local_aliases.clone();
     let base_array_aliases = local_array_aliases.clone();
     let base_proc_aliases = local_proc_aliases.clone();
+    let base_struct_aliases = local_struct_aliases.clone();
     let base_buffer_aliases = local_buffer_aliases.clone();
-    let mut merged = known_scalars.clone();
-    for name in &then_state.known_scalars {
-        if else_state.known_scalars.contains(name) {
-            merged.insert(name.clone());
+    let base_tuple_vars = tuple_vars.clone();
+    let then_binding_names = tracked_branch_binding_names(&then_state);
+    let else_binding_names = tracked_branch_binding_names(&else_state);
+    let common_branch_bindings = then_binding_names
+        .intersection(&else_binding_names)
+        .cloned()
+        .collect::<HashSet<_>>();
+    *known_scalars = base_known_scalars.clone();
+    *local_aliases = base_local_aliases.clone();
+    *local_array_aliases = base_array_aliases;
+    *local_proc_aliases = base_proc_aliases;
+    *local_struct_aliases = base_struct_aliases;
+    *local_buffer_aliases = base_buffer_aliases;
+    *tuple_vars = base_tuple_vars;
+
+    let mut incompatible = |name: &str, detail: String| {
+        errors.push(Diagnostic::semantic_span(
+            format!("binding '{name}' has incompatible branch types: {detail}"),
+            location,
+        ));
+    };
+
+    for name in common_branch_bindings {
+        if base_known_scalars.contains(&name) {
+            continue;
+        }
+        let then_kind = tracked_branch_binding_kind(&then_state, &name);
+        let else_kind = tracked_branch_binding_kind(&else_state, &name);
+        if then_kind != else_kind {
+            incompatible(
+                &name,
+                format!(
+                    "{} and {}",
+                    then_kind
+                        .map(TrackedBranchBindingKind::name)
+                        .unwrap_or("unresolved"),
+                    else_kind
+                        .map(TrackedBranchBindingKind::name)
+                        .unwrap_or("unresolved")
+                ),
+            );
+            continue;
+        }
+
+        let joined = match then_kind {
+            Some(TrackedBranchBindingKind::Scalar) => {
+                let then_ty = then_state.local_aliases[&name];
+                let else_ty = else_state.local_aliases[&name];
+                let Some(ty) = merge_inferred_return_types(then_ty, else_ty) else {
+                    incompatible(&name, format!("{} and {}", then_ty.name(), else_ty.name()));
+                    continue;
+                };
+                local_aliases.insert(name.clone(), ty);
+                true
+            }
+            Some(TrackedBranchBindingKind::Tuple) => {
+                let then_arity = then_state.tuple_vars[&name];
+                let else_arity = else_state.tuple_vars[&name];
+                if then_arity != else_arity {
+                    incompatible(
+                        &name,
+                        format!("tuple arities {then_arity} and {else_arity}"),
+                    );
+                    continue;
+                }
+                let mut element_types = Vec::with_capacity(then_arity);
+                for index in 0..then_arity {
+                    let element = format!("{name}[{index}]");
+                    let Some((then_ty, else_ty)) = then_state
+                        .local_aliases
+                        .get(&element)
+                        .zip(else_state.local_aliases.get(&element))
+                    else {
+                        element_types.clear();
+                        break;
+                    };
+                    let Some(ty) = merge_inferred_return_types(*then_ty, *else_ty) else {
+                        element_types.clear();
+                        break;
+                    };
+                    element_types.push(ty);
+                }
+                if element_types.len() != then_arity {
+                    incompatible(
+                        &name,
+                        "tuple element types do not have a common type".into(),
+                    );
+                    continue;
+                }
+                tuple_vars.insert(name.clone(), then_arity);
+                replace_tracked_tuple_types(local_aliases, &name, Some(&element_types));
+                true
+            }
+            Some(TrackedBranchBindingKind::Array) => {
+                let then_info = &then_state.local_array_aliases[&name];
+                let else_info = &else_state.local_array_aliases[&name];
+                if then_info.elem_ty != else_info.elem_ty
+                    || then_info.elem_struct != else_info.elem_struct
+                    || then_info.static_len != else_info.static_len
+                {
+                    incompatible(
+                        &name,
+                        "arrays have different element types or fixed lengths".into(),
+                    );
+                    continue;
+                }
+                let mut info = then_info.clone();
+                info.len = then_info.len.max(else_info.len);
+                info.writable = then_info.writable && else_info.writable;
+                local_array_aliases.insert(name.clone(), info);
+                true
+            }
+            Some(TrackedBranchBindingKind::Proc) => {
+                let then_alias = &then_state.local_proc_aliases[&name];
+                let else_alias = &else_state.local_proc_aliases[&name];
+                let then_struct = then_state.local_struct_aliases.get(&name);
+                let else_struct = else_state.local_struct_aliases.get(&name);
+                if then_alias.array_base != else_alias.array_base || then_struct != else_struct {
+                    incompatible(&name, "processor aliases use different arrays".into());
+                    continue;
+                }
+                local_proc_aliases.insert(name.clone(), then_alias.clone());
+                if let Some(struct_name) = then_struct {
+                    local_struct_aliases.insert(name.clone(), struct_name.clone());
+                }
+                copy_matching_root_aliases(
+                    local_aliases,
+                    &then_state.local_aliases,
+                    &else_state.local_aliases,
+                    &name,
+                );
+                true
+            }
+            Some(TrackedBranchBindingKind::Struct) => {
+                let then_struct = &then_state.local_struct_aliases[&name];
+                let else_struct = &else_state.local_struct_aliases[&name];
+                if then_struct != else_struct {
+                    incompatible(
+                        &name,
+                        format!("structs '{then_struct}' and '{else_struct}'"),
+                    );
+                    continue;
+                }
+                local_struct_aliases.insert(name.clone(), then_struct.clone());
+                copy_matching_root_aliases(
+                    local_aliases,
+                    &then_state.local_aliases,
+                    &else_state.local_aliases,
+                    &name,
+                );
+                true
+            }
+            Some(TrackedBranchBindingKind::Buffer) => {
+                incompatible(
+                    &name,
+                    "buffer aliases created inside branches cannot escape the branch".into(),
+                );
+                false
+            }
+            None => false,
+        };
+        if joined {
+            known_scalars.insert(name);
         }
     }
-    *known_scalars = merged;
-    *local_aliases = then_state.local_aliases;
-    local_aliases.extend(else_state.local_aliases);
-    local_aliases.retain(|name, _| known_scalars.contains(name));
-    let then_array_names = then_state
-        .local_array_aliases
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    let else_array_names = else_state
-        .local_array_aliases
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    *local_array_aliases = then_state.local_array_aliases;
-    for (k, v) in else_state.local_array_aliases {
-        local_array_aliases.entry(k).or_insert(v);
+}
+
+fn tracked_branch_binding_names(state: &ScopeFlowState) -> HashSet<String> {
+    let mut names = state.known_scalars.clone();
+    names.extend(state.local_array_aliases.keys().cloned());
+    names.extend(state.local_proc_aliases.keys().cloned());
+    names.extend(state.local_struct_aliases.keys().cloned());
+    names.extend(state.local_buffer_aliases.keys().cloned());
+    names.extend(state.tuple_vars.keys().cloned());
+    names
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TrackedBranchBindingKind {
+    Scalar,
+    Tuple,
+    Array,
+    Proc,
+    Struct,
+    Buffer,
+}
+
+impl TrackedBranchBindingKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Scalar => "scalar",
+            Self::Tuple => "tuple",
+            Self::Array => "array",
+            Self::Proc => "proc",
+            Self::Struct => "struct",
+            Self::Buffer => "buffer",
+        }
     }
-    local_array_aliases.retain(|name, _| {
-        base_array_aliases.contains_key(name)
-            || (then_array_names.contains(name) && else_array_names.contains(name))
-    });
-    let then_proc_names = then_state
-        .local_proc_aliases
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    let else_proc_names = else_state
-        .local_proc_aliases
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
-    *local_proc_aliases = then_state.local_proc_aliases;
-    for (k, v) in else_state.local_proc_aliases {
-        local_proc_aliases.entry(k).or_insert(v);
+}
+
+fn tracked_branch_binding_kind(
+    state: &ScopeFlowState,
+    name: &str,
+) -> Option<TrackedBranchBindingKind> {
+    if state.local_proc_aliases.contains_key(name) {
+        Some(TrackedBranchBindingKind::Proc)
+    } else if state.tuple_vars.contains_key(name) {
+        Some(TrackedBranchBindingKind::Tuple)
+    } else if state.local_array_aliases.contains_key(name) {
+        Some(TrackedBranchBindingKind::Array)
+    } else if state.local_struct_aliases.contains_key(name) {
+        Some(TrackedBranchBindingKind::Struct)
+    } else if state.local_buffer_aliases.contains_key(name) {
+        Some(TrackedBranchBindingKind::Buffer)
+    } else if state.local_aliases.contains_key(name) {
+        Some(TrackedBranchBindingKind::Scalar)
+    } else {
+        None
     }
-    local_proc_aliases.retain(|name, _| {
-        base_proc_aliases.contains_key(name)
-            || (then_proc_names.contains(name) && else_proc_names.contains(name))
-    });
-    *local_buffer_aliases = then_state.local_buffer_aliases;
-    for (name, info) in else_state.local_buffer_aliases {
-        local_buffer_aliases.entry(name).or_insert(info);
-    }
-    local_buffer_aliases.retain(|name, _| base_buffer_aliases.contains_key(name));
-    *tuple_vars = then_state
-        .tuple_vars
-        .into_iter()
-        .filter_map(|(name, arity)| {
-            else_state
-                .tuple_vars
-                .get(&name)
-                .filter(|other_arity| **other_arity == arity && known_scalars.contains(&name))
-                .map(|_| (name, arity))
-        })
-        .collect();
+}
+
+fn copy_matching_root_aliases(
+    destination: &mut LocalAliasTypes,
+    then_aliases: &LocalAliasTypes,
+    else_aliases: &LocalAliasTypes,
+    root: &str,
+) {
+    let field_prefix = format!("{root}.");
+    let index_prefix = format!("{root}[");
+    destination.extend(
+        then_aliases
+            .iter()
+            .filter(|(name, ty)| {
+                (name.starts_with(&field_prefix) || name.starts_with(&index_prefix))
+                    && else_aliases.get(*name) == Some(*ty)
+            })
+            .map(|(name, ty)| (name.clone(), *ty)),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn merge_reachable_branch_scope_flow_state(
+    known_scalars: &mut HashSet<String>,
+    local_aliases: &mut LocalAliasTypes,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    local_struct_aliases: &mut HashMap<String, String>,
+    local_buffer_aliases: &mut LocalBufferAliases,
+    tuple_vars: &mut HashMap<String, usize>,
+    then_state: ScopeFlowState,
+    then_flow: crate::def_semantics::call_types::StatementFlow,
+    else_state: ScopeFlowState,
+    else_flow: crate::def_semantics::call_types::StatementFlow,
+    location: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) {
+    use crate::def_semantics::call_types::StatementFlow;
+
+    let continuing_state = match (then_flow, else_flow) {
+        (StatementFlow::Continues, StatementFlow::Terminates) => then_state,
+        (StatementFlow::Terminates, StatementFlow::Continues) => else_state,
+        (StatementFlow::Continues, StatementFlow::Continues)
+        | (StatementFlow::Terminates, StatementFlow::Terminates) => {
+            return merge_branch_scope_flow_state(
+                known_scalars,
+                local_aliases,
+                local_array_aliases,
+                local_proc_aliases,
+                local_struct_aliases,
+                local_buffer_aliases,
+                tuple_vars,
+                then_state,
+                else_state,
+                location,
+                errors,
+            );
+        }
+    };
+    *known_scalars = continuing_state.known_scalars;
+    *local_aliases = continuing_state.local_aliases;
+    *local_array_aliases = continuing_state.local_array_aliases;
+    *local_proc_aliases = continuing_state.local_proc_aliases;
+    *local_struct_aliases = continuing_state.local_struct_aliases;
+    *local_buffer_aliases = continuing_state.local_buffer_aliases;
+    *tuple_vars = continuing_state.tuple_vars;
 }
 
 pub(crate) fn adopt_loop_scope_flow_state(
@@ -190,23 +423,37 @@ pub(crate) fn adopt_loop_scope_flow_state(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    local_struct_aliases: &mut HashMap<String, String>,
     local_buffer_aliases: &mut LocalBufferAliases,
     tuple_vars: &mut HashMap<String, usize>,
     loop_state: ScopeFlowState,
 ) {
     let base_array_aliases = local_array_aliases.clone();
     let base_proc_aliases = local_proc_aliases.clone();
+    let base_struct_aliases = local_struct_aliases.clone();
     let base_buffer_aliases = local_buffer_aliases.clone();
+    *tuple_vars = loop_state.tuple_vars;
+    tuple_vars.retain(|name, _| known_scalars.contains(name));
     *local_aliases = loop_state.local_aliases;
-    local_aliases.retain(|name, _| known_scalars.contains(name));
+    local_aliases.retain(|name, _| {
+        known_scalars.contains(name)
+            || tracked_tuple_element_root(name).is_some_and(|root| tuple_vars.contains_key(root))
+    });
     *local_array_aliases = loop_state.local_array_aliases;
     local_array_aliases.retain(|name, _| base_array_aliases.contains_key(name));
     *local_proc_aliases = loop_state.local_proc_aliases;
     local_proc_aliases.retain(|name, _| base_proc_aliases.contains_key(name));
+    *local_struct_aliases = loop_state.local_struct_aliases;
+    local_struct_aliases
+        .retain(|name, struct_name| base_struct_aliases.get(name) == Some(struct_name));
     *local_buffer_aliases = loop_state.local_buffer_aliases;
     local_buffer_aliases.retain(|name, _| base_buffer_aliases.contains_key(name));
-    *tuple_vars = loop_state.tuple_vars;
-    tuple_vars.retain(|name, _| known_scalars.contains(name));
+}
+
+fn tracked_tuple_element_root(binding: &str) -> Option<&str> {
+    let without_bracket = binding.strip_suffix(']')?;
+    let (root, index) = without_bracket.rsplit_once('[')?;
+    index.parse::<usize>().ok().map(|_| root)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -312,6 +559,135 @@ pub(crate) fn infer_tracked_tuple_arity(
         Expr::Var { name, .. } => tuple_vars.get(name).copied(),
         _ => None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn infer_tracked_tuple_types(
+    expr: &Expr,
+    tuple_vars: &HashMap<String, usize>,
+    local_aliases: &LocalAliasTypes,
+    state_tuples: Option<&HashMap<String, Vec<PrimitiveType>>>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    fn_return_types: &HashMap<String, ReturnType>,
+    mut infer_scalar: impl FnMut(&Expr) -> Option<PrimitiveType>,
+) -> Option<Vec<PrimitiveType>> {
+    match expr {
+        Expr::Tuple { values, .. } => values
+            .iter()
+            .map(|value| {
+                let inferred = infer_scalar(value);
+                effective_untyped_assignment_type(value, inferred).or(inferred)
+            })
+            .collect(),
+        Expr::UserCall { name, .. } => match fn_return_types.get(name) {
+            Some(ReturnType::Tuple(types)) => Some(types.clone()),
+            _ => None,
+        },
+        Expr::Var { name, .. } => {
+            if let Some(types) = state_tuples.and_then(|tuples| tuples.get(name)) {
+                return Some(types.clone());
+            }
+            if let Some(arity) = tuple_vars.get(name).copied() {
+                let types = (0..arity)
+                    .map(|index| {
+                        local_aliases
+                            .get(&format!("{name}[{index}]"))
+                            .copied()
+                            .or_else(|| {
+                                infer_scalar(&Expr::Index {
+                                    loc: expr.loc().into(),
+                                    base: name.clone(),
+                                    index: Box::new(Expr::int(index as i64)),
+                                })
+                            })
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if types.is_some() {
+                    return types;
+                }
+            }
+            let (root, field) = split_simple_field_path(name)?;
+            let struct_name = struct_instances.get(root)?;
+            match &resolve_struct_field_decl(struct_name, field, struct_defs)?.ty {
+                TypedFieldType::Tuple(types) => Some(types.clone()),
+                TypedFieldType::Scalar(_) | TypedFieldType::Struct | TypedFieldType::Array(_) => {
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn replace_tracked_tuple_types(
+    local_aliases: &mut LocalAliasTypes,
+    name: &str,
+    types: Option<&[PrimitiveType]>,
+) {
+    let element_prefix = format!("{name}[");
+    local_aliases.retain(|binding, _| !binding.starts_with(&element_prefix));
+    if let Some(types) = types {
+        local_aliases.extend(
+            types
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| (format!("{name}[{index}]"), *ty)),
+        );
+    }
+}
+
+pub(crate) fn tracked_local_tuple_types(
+    name: &str,
+    tuple_vars: &HashMap<String, usize>,
+    local_aliases: &LocalAliasTypes,
+) -> Option<Vec<PrimitiveType>> {
+    let arity = tuple_vars.get(name).copied()?;
+    (0..arity)
+        .map(|index| local_aliases.get(&format!("{name}[{index}]")).copied())
+        .collect()
+}
+
+pub(crate) fn require_tuple_expr_assignable_types(
+    name: &str,
+    expr: &Expr,
+    source_types: &[PrimitiveType],
+    target_types: &[PrimitiveType],
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    if source_types.len() != target_types.len() {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "tuple assignment to '{name}' has arity {}, expected {}",
+                source_types.len(),
+                target_types.len()
+            ),
+            expr.loc(),
+        ));
+        return false;
+    }
+
+    let tuple_values = match expr {
+        Expr::Tuple { values, .. } => Some(values.as_slice()),
+        _ => None,
+    };
+    let mut compatible = true;
+    for (index, (source, target)) in source_types.iter().zip(target_types).enumerate() {
+        let component_expr = tuple_values
+            .and_then(|values| values.get(index))
+            .unwrap_or(expr);
+        if !can_assign_expr_to_type(component_expr, *source, *target) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "tuple assignment to '{name}' element {index} type mismatch: cannot assign {:?} to {:?}",
+                    source, target
+                ),
+                component_expr.loc(),
+            ));
+            compatible = false;
+        }
+    }
+    compatible
 }
 
 pub(crate) fn track_tuple_var_assignment(

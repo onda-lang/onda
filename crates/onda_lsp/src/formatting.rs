@@ -1282,7 +1282,7 @@ sample:
         );
         assert!(
             formatted.contains(
-                r#"mix = 0.5 {0, 1, curve = 0.0 - 4, unit = "gain \"curve\"\\\n", step = 0.25}"#
+                r#"mix = 0.5 {0, 1, curve = -4, unit = "gain \"curve\"\\\n", step = 0.25}"#
             ),
             "formatted curved stepped domain was {formatted:?}"
         );

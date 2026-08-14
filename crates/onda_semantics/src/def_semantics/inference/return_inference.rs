@@ -1,5 +1,9 @@
+use super::super::call_types::{
+    infer_scalar_expr_type, infer_tuple_arg_types, join_branch_envs,
+    update_call_type_env_after_assign, CallTypeContext, CallTypeEnv, StatementFlow,
+};
 use super::*;
-use crate::{adapt_numeric_argument_types, require_expr_assignable_type, ReturnType};
+use crate::{effective_untyped_assignment_type, require_expr_assignable_type, ReturnType};
 use onda_frontend::{
     ast::{FnReturnScalarType, FnReturnType},
     SourceLoc,
@@ -80,6 +84,7 @@ fn try_resolve_declared_return_type(def: &FunctionDef) -> Option<ReturnType> {
 
 fn validate_declared_return_type(
     def: &FunctionDef,
+    display_name: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ReturnType> {
     fn resolve_scalar(
@@ -109,14 +114,14 @@ fn validate_declared_return_type(
     let loc = def.return_ty_loc.or(def.loc).into();
     match return_ty {
         FnReturnType::Scalar(scalar) => {
-            let prim = resolve_scalar(scalar, &def.type_params, &def.name, loc, errors)?;
+            let prim = resolve_scalar(scalar, &def.type_params, display_name, loc, errors)?;
             Some(ReturnType::Scalar(prim))
         }
         FnReturnType::Array { .. } => {
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "function '{}' array return types are only supported for const defs",
-                    def.name
+                    display_name
                 ),
                 loc,
             ));
@@ -125,7 +130,7 @@ fn validate_declared_return_type(
         FnReturnType::Tuple(elems) => {
             let mut resolved = Vec::with_capacity(elems.len());
             for elem in elems {
-                let prim = resolve_scalar(elem, &def.type_params, &def.name, loc, errors)?;
+                let prim = resolve_scalar(elem, &def.type_params, display_name, loc, errors)?;
                 resolved.push(prim);
             }
             Some(ReturnType::Tuple(resolved))
@@ -133,415 +138,203 @@ fn validate_declared_return_type(
     }
 }
 
-fn infer_expr_type_for_def_return_inference_with_call_overrides(
+fn infer_return_scalar_type(
     expr: &Expr,
-    locals: &HashMap<String, PrimitiveType>,
-    fn_return_types: &HashMap<String, PrimitiveType>,
-    call_return_type_overrides: Option<&HashMap<String, PrimitiveType>>,
+    env: &CallTypeEnv,
+    context: CallTypeContext<'_>,
+    require_known_calls: bool,
 ) -> Option<PrimitiveType> {
-    match expr {
-        Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
-            PrimitiveType::I32
-        } else {
-            PrimitiveType::I64
-        }),
-        Expr::Bool { .. } => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral { .. }
-        | Expr::ArrayCtor { .. }
-        | Expr::Slice { .. }
-        | Expr::Tuple { .. } => None,
-        Expr::Var { name, .. } => builtin_constant_type(name).or_else(|| locals.get(name).copied()),
-        Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
-        Expr::Cast { to, .. } => Some(*to),
-        Expr::UnaryNot { .. } | Expr::Compare { .. } | Expr::Logical { .. } => {
-            Some(PrimitiveType::Bool)
-        }
-        Expr::UnaryBitNot { expr, .. } => {
-            let inner = infer_expr_type_for_def_return_inference_with_call_overrides(
-                expr,
-                locals,
-                fn_return_types,
-                call_return_type_overrides,
-            )?;
-            match inner {
-                PrimitiveType::I32 | PrimitiveType::I64 => Some(inner),
-                _ => None,
-            }
-        }
-        Expr::Binary { op, lhs, rhs, .. } => {
-            let l = infer_expr_type_for_def_return_inference_with_call_overrides(
-                lhs,
-                locals,
-                fn_return_types,
-                call_return_type_overrides,
-            )?;
-            let r = infer_expr_type_for_def_return_inference_with_call_overrides(
-                rhs,
-                locals,
-                fn_return_types,
-                call_return_type_overrides,
-            )?;
-            match op {
-                onda_frontend::BinaryOp::BitAnd
-                | onda_frontend::BinaryOp::BitOr
-                | onda_frontend::BinaryOp::BitXor
-                | onda_frontend::BinaryOp::ShiftLeft
-                | onda_frontend::BinaryOp::ShiftRight => match (l, r) {
-                    (PrimitiveType::I64, PrimitiveType::I32)
-                    | (PrimitiveType::I32, PrimitiveType::I64)
-                    | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
-                    (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
-                    _ => None,
-                },
-                _ => merge_inferred_return_types(l, r),
-            }
-        }
-        Expr::Call { func, args, .. } => {
-            let arg_tys = args
-                .iter()
-                .filter_map(|arg| {
-                    infer_expr_type_for_def_return_inference_with_call_overrides(
-                        arg,
-                        locals,
-                        fn_return_types,
-                        call_return_type_overrides,
-                    )
-                })
-                .collect::<Vec<_>>();
-            if arg_tys.len() != args.len() {
-                return None;
-            }
-            let arg_tys = adapt_numeric_argument_types(args, &arg_tys);
-            match func {
-                BuiltinFn::Abs => arg_tys.first().copied(),
-                BuiltinFn::Min | BuiltinFn::Max => {
-                    let lhs = arg_tys.first().copied().unwrap_or(PrimitiveType::F32);
-                    let rhs = arg_tys.get(1).copied().unwrap_or(PrimitiveType::F32);
-                    merge_inferred_return_types(lhs, rhs)
-                }
-                BuiltinFn::RangeClamp => {
-                    let value = *arg_tys.first()?;
-                    arg_tys
-                        .iter()
-                        .copied()
-                        .skip(1)
-                        .try_fold(value, merge_inferred_return_types)
-                }
-                BuiltinFn::Pow => Some(if arg_tys.contains(&PrimitiveType::F64) {
-                    PrimitiveType::F64
-                } else {
-                    PrimitiveType::F32
-                }),
-                _ => Some(if arg_tys.contains(&PrimitiveType::F64) {
-                    PrimitiveType::F64
-                } else {
-                    PrimitiveType::F32
-                }),
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            if let Some(base) = parse_array_len_instance_base(name) {
-                if is_builtin_receiver_for_return_inference(base, locals) {
-                    return Some(PrimitiveType::I32);
-                }
-            }
-            if let Some(base) = parse_buffer_chans_instance_base(name) {
-                if is_builtin_receiver_for_return_inference(base, locals) {
-                    return Some(PrimitiveType::I32);
-                }
-            }
-            if let Some(base) = parse_buffer_samplerate_instance_base(name) {
-                if is_builtin_receiver_for_return_inference(base, locals) {
-                    return Some(PrimitiveType::F32);
-                }
-            }
-            if is_internal_buffer_2d_fn(name) {
-                if let Some(CallArg {
-                    expr: Expr::Var { name: base, .. },
-                    ..
-                }) = args.first()
-                {
-                    if let Some(ty) = locals.get(base).copied() {
-                        return Some(ty);
-                    }
-                }
-            }
-            if let Some(overrides) = call_return_type_overrides {
-                if let Some(ty) = overrides.get(name).copied() {
-                    return Some(ty);
-                }
-            }
-            fn_return_types
-                .get(name)
-                .copied()
-                .or(Some(PrimitiveType::F32))
-        }
-    }
+    let inferred = infer_scalar_expr_type(expr, env, context);
+    effective_untyped_assignment_type(expr, inferred)
+        .or(inferred)
+        .or_else(|| (!require_known_calls).then_some(PrimitiveType::F32))
 }
 
-pub(crate) fn infer_expr_type_for_def_return_inference(
+fn infer_return_tuple_type(
     expr: &Expr,
-    locals: &HashMap<String, PrimitiveType>,
-    fn_return_types: &HashMap<String, PrimitiveType>,
-) -> Option<PrimitiveType> {
-    infer_expr_type_for_def_return_inference_with_call_overrides(
-        expr,
-        locals,
-        fn_return_types,
-        None,
-    )
-}
-
-fn is_builtin_receiver_for_return_inference(
-    base: &str,
-    locals: &HashMap<String, PrimitiveType>,
-) -> bool {
-    if locals.contains_key(base) {
-        return true;
-    }
-    let mut parts = base.split('.');
-    let Some(root) = parts.next() else {
-        return false;
-    };
-    let Some(_field) = parts.next() else {
-        return false;
-    };
-    if parts.next().is_some() {
-        return false;
-    }
-    locals.contains_key(root)
-}
-
-fn infer_tuple_type_from_expr(
-    expr: &Expr,
-    locals: &HashMap<String, PrimitiveType>,
-    fn_return_types: &HashMap<String, PrimitiveType>,
-    full_return_types: &HashMap<String, ReturnType>,
-    tuple_locals: &HashMap<String, Vec<PrimitiveType>>,
+    env: &CallTypeEnv,
+    context: CallTypeContext<'_>,
+    require_known_calls: bool,
 ) -> Option<Vec<PrimitiveType>> {
+    if let Some(types) = infer_tuple_arg_types(expr, env, context) {
+        return Some(types);
+    }
+    if require_known_calls {
+        return None;
+    }
     match expr {
-        Expr::Tuple { values, .. } => Some(
-            values
-                .iter()
-                .map(|v| {
-                    infer_expr_type_for_def_return_inference(v, locals, fn_return_types)
-                        .unwrap_or(PrimitiveType::F32)
-                })
-                .collect(),
-        ),
-        Expr::UserCall { name, .. } => match full_return_types.get(name.as_str()) {
-            Some(ReturnType::Tuple(tys)) => Some(tys.clone()),
-            _ => None,
-        },
-        Expr::Var { name, .. } => tuple_locals.get(name).cloned(),
+        Expr::Tuple { values, .. } => Some(vec![PrimitiveType::F32; values.len()]),
         _ => None,
     }
 }
 
 fn infer_stmt_returns_for_def_return_inference<'a>(
     stmts: &'a [Stmt],
-    locals: &mut HashMap<String, PrimitiveType>,
-    fn_return_types: &HashMap<String, PrimitiveType>,
-    full_return_types: &HashMap<String, ReturnType>,
-    tuple_locals: &mut HashMap<String, Vec<PrimitiveType>>,
+    env: &mut CallTypeEnv,
+    context: CallTypeContext<'_>,
     out: &mut Vec<ObservedReturn<'a>>,
-) {
+    require_known_calls: bool,
+    complete: &mut bool,
+) -> StatementFlow {
     for stmt in stmts {
-        match stmt {
-            Stmt::Const { .. } => {}
+        let flow = match stmt {
+            Stmt::Const { .. } => StatementFlow::Continues,
             Stmt::Assign {
-                target: AssignTarget::Var(name),
+                target,
                 decl_ty,
+                generic_decl_ty,
                 expr,
                 ..
             } => {
-                if split_simple_field_path(name).is_some() {
-                    continue;
-                }
-                if matches!(expr, Expr::ArrayCtor { .. }) {
-                    continue;
-                }
-                // Check if this assigns a tuple to a variable
-                if let Some(tys) = infer_tuple_type_from_expr(
+                update_call_type_env_after_assign(
+                    target,
+                    *decl_ty,
+                    generic_decl_ty.as_deref(),
                     expr,
-                    locals,
-                    fn_return_types,
-                    full_return_types,
-                    tuple_locals,
-                ) {
-                    tuple_locals.insert(name.clone(), tys);
-                    continue;
+                    env,
+                    context,
+                );
+                if !require_known_calls {
+                    match target {
+                        AssignTarget::Var(name)
+                            if !name.contains('.') && !env.has_binding(name) =>
+                        {
+                            let ty = infer_return_scalar_type(expr, env, context, false)
+                                .unwrap_or(PrimitiveType::F32);
+                            env.scalar_types.insert(name.clone(), ty);
+                        }
+                        AssignTarget::Tuple(names) => {
+                            for name in names {
+                                if !env.has_binding(name) {
+                                    env.scalar_types.insert(name.clone(), PrimitiveType::F32);
+                                }
+                            }
+                        }
+                        AssignTarget::Var(_)
+                        | AssignTarget::Index { .. }
+                        | AssignTarget::Slice { .. } => {}
+                    }
                 }
-                let inferred =
-                    infer_expr_type_for_def_return_inference(expr, locals, fn_return_types);
-                let target_ty = (*decl_ty)
-                    .or_else(|| locals.get(name).copied())
-                    .or(inferred)
-                    .unwrap_or(PrimitiveType::F32);
-                locals.entry(name.clone()).or_insert(target_ty);
+                StatementFlow::Continues
             }
-            Stmt::Assign {
-                target: AssignTarget::Tuple(_),
-                ..
-            } => {}
-            Stmt::Assign {
-                target: AssignTarget::Index { .. },
-                ..
-            }
-            | Stmt::Assign {
-                target: AssignTarget::Slice { .. },
-                ..
-            } => {}
-            Stmt::Expr { .. } => {}
+            Stmt::Expr { .. } => StatementFlow::Continues,
             Stmt::Return { expr, .. } => {
-                if let Some(elem_tys) = infer_tuple_type_from_expr(
-                    expr,
-                    locals,
-                    fn_return_types,
-                    full_return_types,
-                    tuple_locals,
-                ) {
+                if let Some(elem_tys) =
+                    infer_return_tuple_type(expr, env, context, require_known_calls)
+                {
                     out.push(ObservedReturn {
                         expr,
                         ty: ReturnType::Tuple(elem_tys),
                     });
                 } else {
-                    let ty =
-                        infer_expr_type_for_def_return_inference(expr, locals, fn_return_types)
-                            .unwrap_or(PrimitiveType::F32);
-                    out.push(ObservedReturn {
-                        expr,
-                        ty: ReturnType::Scalar(ty),
-                    });
+                    let ty = infer_return_scalar_type(expr, env, context, require_known_calls);
+                    if let Some(ty) = ty {
+                        out.push(ObservedReturn {
+                            expr,
+                            ty: ReturnType::Scalar(ty),
+                        });
+                    } else {
+                        *complete = false;
+                    }
                 }
+                StatementFlow::Terminates
             }
             Stmt::If {
                 then_branch,
                 else_branch,
                 ..
             } => {
-                let mut then_locals = locals.clone();
-                let mut else_locals = locals.clone();
-                let mut then_tuple_locals = tuple_locals.clone();
-                let mut else_tuple_locals = tuple_locals.clone();
-                infer_stmt_returns_for_def_return_inference(
+                let mut then_env = env.clone();
+                let mut else_env = env.clone();
+                let then_flow = infer_stmt_returns_for_def_return_inference(
                     then_branch,
-                    &mut then_locals,
-                    fn_return_types,
-                    full_return_types,
-                    &mut then_tuple_locals,
+                    &mut then_env,
+                    context,
                     out,
+                    require_known_calls,
+                    complete,
                 );
-                infer_stmt_returns_for_def_return_inference(
+                let else_flow = infer_stmt_returns_for_def_return_inference(
                     else_branch,
-                    &mut else_locals,
-                    fn_return_types,
-                    full_return_types,
-                    &mut else_tuple_locals,
+                    &mut else_env,
+                    context,
                     out,
+                    require_known_calls,
+                    complete,
                 );
-                let mut merged = locals.clone();
-                for (name, then_ty) in &then_locals {
-                    if let Some(else_ty) = else_locals.get(name) {
-                        if then_ty == else_ty {
-                            merged.insert(name.clone(), *then_ty);
-                        }
-                    }
-                }
-                *locals = merged;
-                for (name, then_tys) in &then_tuple_locals {
-                    if let Some(else_tys) = else_tuple_locals.get(name) {
-                        if then_tys == else_tys {
-                            tuple_locals.insert(name.clone(), then_tys.clone());
-                        }
-                    }
-                }
+                let (joined, flow) = join_branch_envs(then_env, then_flow, else_env, else_flow);
+                *env = joined;
+                flow
             }
             Stmt::For { var, body, .. } => {
-                let mut loop_locals = locals.clone();
-                loop_locals.insert(var.clone(), PrimitiveType::I32);
-                let mut loop_tuple_locals = tuple_locals.clone();
+                let mut loop_env = env.clone();
+                loop_env.shadow_binding(var);
+                loop_env
+                    .scalar_types
+                    .insert(var.clone(), PrimitiveType::I32);
                 infer_stmt_returns_for_def_return_inference(
                     body,
-                    &mut loop_locals,
-                    fn_return_types,
-                    full_return_types,
-                    &mut loop_tuple_locals,
+                    &mut loop_env,
+                    context,
                     out,
+                    require_known_calls,
+                    complete,
                 );
+                StatementFlow::Continues
             }
             Stmt::While { body, .. } => {
-                let mut loop_locals = locals.clone();
-                let mut loop_tuple_locals = tuple_locals.clone();
+                let mut loop_env = env.clone();
                 infer_stmt_returns_for_def_return_inference(
                     body,
-                    &mut loop_locals,
-                    fn_return_types,
-                    full_return_types,
-                    &mut loop_tuple_locals,
+                    &mut loop_env,
+                    context,
                     out,
+                    require_known_calls,
+                    complete,
                 );
+                StatementFlow::Continues
             }
-            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
+        };
+        if flow == StatementFlow::Terminates {
+            return flow;
         }
     }
+    StatementFlow::Continues
 }
 
 fn collect_def_return_observations<'a>(
     def: &'a FunctionDef,
     sig: &FnSignature,
-    fn_return_types: &HashMap<String, PrimitiveType>,
+    env_seed: &CallTypeEnv,
     full_return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) -> Vec<ObservedReturn<'a>> {
-    let mut locals = HashMap::<String, PrimitiveType>::new();
-    let mut tuple_locals = HashMap::<String, Vec<PrimitiveType>>::new();
-    for (idx, param) in sig.params.iter().enumerate() {
-        match sig.param_types.get(idx).and_then(|ty| ty.as_ref()) {
-            Some(FnParamType::Primitive(prim)) => {
-                locals.insert(param.clone(), *prim);
-            }
-            Some(FnParamType::Struct(struct_name)) => {
-                if let Some(fields) = struct_defs.get(struct_name) {
-                    for field in fields {
-                        if let TypedFieldType::Scalar(prim) = field.ty {
-                            locals.insert(format!("{param}.{}", field.name), prim);
-                        }
-                    }
-                }
-                locals.insert(param.clone(), PrimitiveType::F32);
-            }
-            Some(FnParamType::Buffer(_))
-            | Some(FnParamType::BufferArray { .. })
-            | Some(FnParamType::BareBuffer) => {
-                locals.insert(param.clone(), PrimitiveType::F32);
-            }
-            Some(FnParamType::Array(Some(prim))) => {
-                locals.insert(param.clone(), *prim);
-            }
-            Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
-                locals.insert(param.clone(), PrimitiveType::F32);
-            }
-            Some(FnParamType::Tuple(elem_tys)) => {
-                tuple_locals.insert(param.clone(), elem_tys.clone());
-            }
-            Some(FnParamType::Array(None)) | None => {
-                locals.insert(param.clone(), PrimitiveType::F32);
-            }
-        }
+    require_known_calls: bool,
+) -> (Vec<ObservedReturn<'a>>, bool) {
+    let mut env = env_seed.clone();
+    env.set_owner_type_params(&sig.type_params);
+    for (index, param) in sig.params.iter().enumerate() {
+        env.bind_function_param_type(
+            param,
+            sig.param_types.get(index).and_then(Option::as_ref),
+            &sig.type_params,
+        );
     }
 
     let mut returns = Vec::<ObservedReturn>::new();
+    let mut complete = true;
     infer_stmt_returns_for_def_return_inference(
         &def.body,
-        &mut locals,
-        fn_return_types,
-        full_return_types,
-        &mut tuple_locals,
+        &mut env,
+        CallTypeContext {
+            return_types: full_return_types,
+            struct_defs,
+        },
         &mut returns,
+        require_known_calls,
+        &mut complete,
     );
-    returns
+    (returns, complete)
 }
 
 fn merge_return_types(a: ReturnType, b: ReturnType) -> Option<ReturnType> {
@@ -564,26 +357,36 @@ fn merge_return_types(a: ReturnType, b: ReturnType) -> Option<ReturnType> {
 fn infer_def_return_type(
     def: &FunctionDef,
     sig: &FnSignature,
-    fn_return_types: &HashMap<String, PrimitiveType>,
+    env_seed: &CallTypeEnv,
     full_return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) -> ReturnType {
+    require_known_calls: bool,
+) -> Option<ReturnType> {
     if let Some(declared) = try_resolve_declared_return_type(def) {
-        return declared;
+        return Some(declared);
     }
-    let returns =
-        collect_def_return_observations(def, sig, fn_return_types, full_return_types, struct_defs);
+    let (returns, complete) = collect_def_return_observations(
+        def,
+        sig,
+        env_seed,
+        full_return_types,
+        struct_defs,
+        require_known_calls,
+    );
+    if require_known_calls && !complete {
+        return None;
+    }
     let mut it = returns.into_iter().map(|ret| ret.ty);
     let Some(mut out) = it.next() else {
-        return ReturnType::Scalar(PrimitiveType::F32);
+        return (!require_known_calls).then_some(ReturnType::Scalar(PrimitiveType::F32));
     };
     for ty in it {
         let Some(merged) = merge_return_types(out, ty) else {
-            return ReturnType::Scalar(PrimitiveType::F32);
+            return (!require_known_calls).then_some(ReturnType::Scalar(PrimitiveType::F32));
         };
         out = merged;
     }
-    out
+    Some(out)
 }
 
 fn format_primitive_type(ty: PrimitiveType) -> &'static str {
@@ -679,14 +482,22 @@ fn statements_contain_return(statements: &[Stmt]) -> bool {
 /// functions must return a value on every structurally reachable fallthrough
 /// path; functions with no return and no annotation remain ordinary no-result
 /// functions.
-pub(crate) fn validate_def_return_control_flow(defs: &[FunctionDef], errors: &mut Vec<Diagnostic>) {
+pub(crate) fn validate_def_return_control_flow(
+    defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
+    errors: &mut Vec<Diagnostic>,
+) {
     for def in defs {
         let returns_value = def.return_ty.is_some() || statements_contain_return(&def.body);
         if returns_value && !statements_must_return_value(&def.body) {
+            let display_name = fn_signatures
+                .get(&def.name)
+                .and_then(|signature| signature.display_name.as_deref())
+                .unwrap_or(&def.name);
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "function '{}' returns a value, but not all reachable paths return a value",
-                    def.name
+                    display_name
                 ),
                 def.loc,
             ));
@@ -742,24 +553,18 @@ fn validate_return_observation(
 pub(crate) fn validate_def_return_types(
     defs: &[FunctionDef],
     fn_signatures: &HashMap<String, FnSignature>,
+    env_seed: &CallTypeEnv,
     full_return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let scalar_return_types = full_return_types
-        .iter()
-        .filter_map(|(name, ty)| match ty {
-            ReturnType::Scalar(ty) => Some((name.clone(), *ty)),
-            ReturnType::Tuple(_) => None,
-        })
-        .collect::<HashMap<_, _>>();
-
     for def in defs {
         let Some(sig) = fn_signatures.get(&def.name) else {
             continue;
         };
+        let display_name = sig.display_name.as_deref().unwrap_or(&def.name);
         let expected = if def.return_ty.is_some() {
-            let Some(expected) = validate_declared_return_type(def, errors) else {
+            let Some(expected) = validate_declared_return_type(def, display_name, errors) else {
                 continue;
             };
             expected
@@ -769,46 +574,50 @@ pub(crate) fn validate_def_return_types(
             };
             expected
         };
-        let observed_returns = collect_def_return_observations(
+        let (observed_returns, _) = collect_def_return_observations(
             def,
             sig,
-            &scalar_return_types,
+            env_seed,
             full_return_types,
             struct_defs,
+            false,
         );
         for observed in &observed_returns {
-            validate_return_observation(&def.name, observed, &expected, errors);
+            validate_return_observation(display_name, observed, &expected, errors);
         }
     }
 }
 
-pub(crate) fn infer_def_return_types(
+fn infer_def_return_types_impl(
     defs: &[FunctionDef],
     fn_signatures: &HashMap<String, FnSignature>,
+    env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    require_known_calls: bool,
 ) -> HashMap<String, ReturnType> {
-    // Internal scalar-only map used for expression type inference (UserCall lookups).
-    // Tuple-returning defs don't participate in scalar expression inference.
-    let mut scalar_out = defs
-        .iter()
-        .map(|d| (d.name.clone(), PrimitiveType::F32))
-        .collect::<HashMap<_, _>>();
-    let mut out: HashMap<String, ReturnType> = defs
-        .iter()
-        .map(|d| (d.name.clone(), ReturnType::Scalar(PrimitiveType::F32)))
-        .collect();
+    let mut out = if require_known_calls {
+        defs.iter()
+            .filter_map(|def| {
+                try_resolve_declared_return_type(def).map(|ty| (def.name.clone(), ty))
+            })
+            .collect::<HashMap<_, _>>()
+    } else {
+        defs.iter()
+            .map(|def| (def.name.clone(), ReturnType::Scalar(PrimitiveType::F32)))
+            .collect::<HashMap<_, _>>()
+    };
     for _ in 0..defs.len().saturating_add(1) {
         let mut changed = false;
         for def in defs {
             let Some(sig) = fn_signatures.get(&def.name) else {
                 continue;
             };
-            let inferred = infer_def_return_type(def, sig, &scalar_out, &out, struct_defs);
+            let Some(inferred) =
+                infer_def_return_type(def, sig, env_seed, &out, struct_defs, require_known_calls)
+            else {
+                continue;
+            };
             if out.get(&def.name) != Some(&inferred) {
-                // Update scalar map for expression inference
-                if let ReturnType::Scalar(s) = &inferred {
-                    scalar_out.insert(def.name.clone(), *s);
-                }
                 out.insert(def.name.clone(), inferred);
                 changed = true;
             }
@@ -818,4 +627,25 @@ pub(crate) fn infer_def_return_types(
         }
     }
     out
+}
+
+pub(crate) fn infer_def_return_types(
+    defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
+    env_seed: &CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> HashMap<String, ReturnType> {
+    infer_def_return_types_impl(defs, fn_signatures, env_seed, struct_defs, false)
+}
+
+/// Infers only return types whose complete expression dependencies are known.
+/// This is the call-rewrite contract: an unresolved call must defer its caller
+/// instead of silently publishing the ordinary untyped f32 fallback.
+pub(crate) fn infer_known_def_return_types(
+    defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
+    env_seed: &CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> HashMap<String, ReturnType> {
+    infer_def_return_types_impl(defs, fn_signatures, env_seed, struct_defs, true)
 }

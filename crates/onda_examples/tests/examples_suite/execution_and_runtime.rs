@@ -149,6 +149,27 @@ sample {
 }
 "#;
 
+const STDLIB_OSC_KSINE_EXAMPLE: &str = r#"
+import std/osc
+
+outs { out1 }
+
+init {
+  lfo = std::osc::KSine<f64>(
+    freq = f64(SR) / f64(BS * 4),
+    amp = f64(0.25),
+  )
+}
+
+block {
+  held = f32(lfo())
+
+  sample {
+    out1 = held
+  }
+}
+"#;
+
 const STDLIB_OSC_SAW_AMP_EXAMPLE: &str = r#"
 import std/osc
 
@@ -666,6 +687,29 @@ fn stdlib_square_supports_f64_and_stays_bounded() {
         output.iter().all(|sample| sample.abs() <= 0.3),
         "expected square output to stay within amp bounds, got {output:?}"
     );
+}
+
+#[test]
+fn stdlib_ksine_supports_f64_and_advances_once_per_block() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_OSC_KSINE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process first block");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process second block");
+    for sample in &output {
+        assert_near(*sample, 0.25, 1e-6);
+    }
 }
 
 #[test]
@@ -4798,6 +4842,108 @@ fn first_assignment_from_int_literal_stays_i32() {
         result.is_err(),
         "semantic analysis should reject implicit f32 assignment after x = 0 infers i32"
     );
+}
+
+#[test]
+
+fn negative_literals_and_generic_negation_preserve_scalar_types() {
+    let parsed = parse_program(NEGATIVE_SCALAR_INFERENCE_EXAMPLE).expect("parse should succeed");
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+
+    assert_eq!(
+        state_type_of(&typed, "inferred_i32"),
+        Some(PrimitiveType::I32)
+    );
+    assert_eq!(
+        state_type_of(&typed, "inferred_i64"),
+        Some(PrimitiveType::I64)
+    );
+    assert_eq!(
+        state_type_of(&typed, "explicit_i32"),
+        Some(PrimitiveType::I32)
+    );
+    assert_eq!(
+        state_type_of(&typed, "explicit_i64"),
+        Some(PrimitiveType::I64)
+    );
+    assert_eq!(
+        state_type_of(&typed, "explicit_f32"),
+        Some(PrimitiveType::F32)
+    );
+    assert_eq!(
+        state_type_of(&typed, "explicit_f64"),
+        Some(PrimitiveType::F64)
+    );
+
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NEGATIVE_SCALAR_INFERENCE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, -18.0, 1e-6);
+    }
+
+    let invalid_bool = parse_program("init { value = -true }\nsample { out1 = 0.0 }")
+        .expect("boolean negation should parse before type checking");
+    assert!(
+        analyze(invalid_bool).is_err(),
+        "unary minus must remain invalid for bool"
+    );
+
+    let declarations = parse_program(
+        r#"
+ins:
+  inferred_input = -1
+  i32_input: i32 = -1
+  i64_input: i64 = -1
+  f32_input: f32 = -1
+  f64_input: f64 = -1
+
+params:
+  inferred_param = -1
+  i32_param: i32 = -1
+  i64_param: i64 = -1
+  f32_param: f32 = -1
+  f64_param: f64 = -1
+
+sample:
+  out1 = 0.0
+"#,
+    )
+    .expect("negative input and parameter defaults should parse");
+    let declarations =
+        analyze(declarations).expect("negative input and parameter defaults should analyze");
+
+    assert_eq!(
+        declarations.in_types.get("inferred_input"),
+        Some(&PrimitiveType::F32),
+        "untyped inputs retain the language's f32 input default"
+    );
+    for (name, expected) in [
+        ("i32_input", PrimitiveType::I32),
+        ("i64_input", PrimitiveType::I64),
+        ("f32_input", PrimitiveType::F32),
+        ("f64_input", PrimitiveType::F64),
+    ] {
+        assert_eq!(declarations.in_types.get(name), Some(&expected));
+    }
+    assert_eq!(
+        declarations.param_types.get("inferred_param"),
+        Some(&PrimitiveType::I32),
+        "untyped parameter defaults infer from the negative integer literal"
+    );
+    for (name, expected) in [
+        ("i32_param", PrimitiveType::I32),
+        ("i64_param", PrimitiveType::I64),
+        ("f32_param", PrimitiveType::F32),
+        ("f64_param", PrimitiveType::F64),
+    ] {
+        assert_eq!(declarations.param_types.get(name), Some(&expected));
+    }
 }
 
 #[test]

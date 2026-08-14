@@ -5,9 +5,9 @@ import std/pitch
 import processors/spectral_freeze
 
 params:
-  live_input: i32 = 0 {0, 1, step = 1}
-  freeze: i32 = 1 {0, 1, step = 1}
-  transpose = 0.0 {-24.0, 24.0, step = 1.0, unit = "st"}
+  live_input = false
+  freeze = true
+  transpose = 0 {-24, 24, unit = "st"}
   smear = 0.22 {0.0, 1.0}
   width = 0.72 {0.0, 1.0}
   mix = 0.86 {0.0, 1.0}
@@ -32,7 +32,7 @@ block:
   sample:
     dry_l = in1
     dry_r = in2
-    if (live_input == 0):
+    if !live_input:
       source = filter(saw())
       dry_l = source
       dry_r = source

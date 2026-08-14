@@ -576,6 +576,69 @@ fn reject_explicit_oversampled_child_calls_in_context(
     }
 }
 
+fn top_level_constructor_array_symbols(program: &Program) -> HashSet<String> {
+    let mut symbols = HashSet::new();
+    for block in &program.blocks {
+        match block {
+            Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
+                for port in ports.iter() {
+                    if matches!(
+                        port.ty,
+                        Some(DeclType::Array { .. } | DeclType::ArrayGeneric { .. })
+                    ) || matches!(port.default, Some(Expr::ArrayLiteral { .. }))
+                    {
+                        symbols.insert(port.name.clone());
+                    }
+                }
+            }
+            Block::Params(params) => {
+                for param in params.iter() {
+                    if matches!(
+                        param.ty,
+                        Some(DeclType::Array { .. } | DeclType::ArrayGeneric { .. })
+                    ) || matches!(param.default, Some(Expr::ArrayLiteral { .. }))
+                    {
+                        symbols.insert(param.name.clone());
+                    }
+                }
+            }
+            Block::Const(decl) => {
+                if matches!(
+                    decl.ty,
+                    Some(ConstType::Array { .. } | ConstType::Slice { .. })
+                ) || matches!(decl.expr, Expr::ArrayLiteral { .. })
+                {
+                    symbols.insert(decl.name.clone());
+                }
+            }
+            Block::Init(init) => {
+                for stmt in &init.body {
+                    match stmt {
+                        Stmt::Const { decl, .. }
+                            if matches!(
+                                decl.ty,
+                                Some(ConstType::Array { .. } | ConstType::Slice { .. })
+                            ) || matches!(decl.expr, Expr::ArrayLiteral { .. }) =>
+                        {
+                            symbols.insert(decl.name.clone());
+                        }
+                        Stmt::Assign {
+                            target: AssignTarget::Var(name),
+                            expr: Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. },
+                            ..
+                        } => {
+                            symbols.insert(name.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    symbols
+}
+
 pub(super) fn rewrite_top_level_proc_calls(
     program: &mut Program,
     options: AnalysisOptions,
@@ -584,6 +647,7 @@ pub(super) fn rewrite_top_level_proc_calls(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> TopLevelProcRewriteMeta {
+    let constructor_array_symbols = top_level_constructor_array_symbols(program);
     let mut global_proc_instances = HashMap::<String, ProcCallInstance>::new();
     let mut global_proc_array_slots = HashMap::<String, Vec<String>>::new();
     let mut global_proc_instance_oversample_factors = HashMap::<String, usize>::new();
@@ -828,6 +892,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 &shape.param_specs,
                                 &shape.buffer_specs,
                                 proc_array_slot,
+                                &constructor_array_symbols,
                                 errors,
                             );
                             global_proc_instances.insert(

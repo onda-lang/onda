@@ -1,5 +1,3 @@
-import std/lookup
-
 proc MorphOscillator:
   buffers:
     waves: f32 {4}
@@ -16,11 +14,11 @@ proc MorphOscillator:
   block:
     shape_position = clamp(morph, 0.0, 1.0) * 3.0
     shape_a = min(i32(shape_position), 2)
-    shape_mix = shape_position - f32(shape_a)
+    shape_mix = shape_position - shape_a
     wave_a = waves[shape_a]
     wave_b = waves[shape_a + 1]
-    frames_a = f32(wave_a.len())
-    frames_b = f32(wave_b.len())
+    frames_a = wave_a.len()
+    frames_b = wave_b.len()
 
     sample:
       phase = wrap(phase + frequency / SR, 0.0, 1.0)

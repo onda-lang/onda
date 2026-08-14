@@ -23,15 +23,15 @@ block:
     right = 0.0
 
     if playing:
-      if playhead >= f32(clip_frames):
+      if playhead >= clip_frames:
         playing = false
       else:
         clip_frame = i32(playhead)
         if clip_channels > 0:
-          left = clip[0, clip_frame]
+          left = clip.readC(0, playhead)
           right = left
         if clip_channels > 1:
-          right = clip[1, clip_frame]
+          right = clip.readC(1, playhead)
         playhead = playhead + clip_step
 
     out1 = left
