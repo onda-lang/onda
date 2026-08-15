@@ -2012,11 +2012,11 @@ fn stdlib_convolution_block_spreads_multi_partition_work_without_changing_output
     ];
     let mut expected = vec![0.0_f32; frames];
     let latency = 4;
-    for output_frame in latency..frames {
+    for (output_frame, expected_sample) in expected.iter_mut().enumerate().skip(latency) {
         let convolution_frame = output_frame - latency;
         for (tap, coefficient) in impulse.iter().copied().enumerate() {
             if tap <= convolution_frame {
-                expected[output_frame] += input[convolution_frame - tap] * coefficient;
+                *expected_sample += input[convolution_frame - tap] * coefficient;
             }
         }
     }

@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.7.4]
+
+### Fixed
+
+- Fixed web parameter-knob range arcs ending away from their indicators and bleeding accent color
+  into the inactive side of the range.
+
 ## [0.7.3]
 
 ### Added
@@ -425,6 +432,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.7.4]: https://github.com/onda-lang/onda/compare/0.7.3...0.7.4
 [0.7.3]: https://github.com/onda-lang/onda/compare/0.7.2...0.7.3
 [0.7.2]: https://github.com/onda-lang/onda/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/onda-lang/onda/compare/0.7.0...0.7.1
