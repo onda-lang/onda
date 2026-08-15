@@ -836,16 +836,17 @@
       .param-knob-ring-value {
         fill: none;
         stroke-width: 2.5;
-        stroke-linecap: round;
         vector-effect: non-scaling-stroke;
       }
 
       .param-knob-ring-track {
         stroke: color-mix(in srgb, var(--text) 14%, transparent);
+        stroke-linecap: round;
       }
 
       .param-knob-ring-value {
         stroke: var(--accent);
+        stroke-linecap: butt;
       }
 
       .param-knob-indicator {
@@ -1666,6 +1667,31 @@
         return Math.min(max, Math.max(min, value));
       }
 
+      const KNOB_ARC_CENTER = 29;
+      const KNOB_ARC_RADIUS = 25;
+      const KNOB_ARC_START_DEGREES = 135;
+      const KNOB_ARC_SWEEP_DEGREES = 270;
+
+      function knobValueArcPath(normalized) {
+        const ratio = clamp(normalized, 0, 1);
+        if (ratio === 0) {
+          return "";
+        }
+
+        const startRadians = KNOB_ARC_START_DEGREES * Math.PI / 180;
+        const endRadians = (
+          KNOB_ARC_START_DEGREES + ratio * KNOB_ARC_SWEEP_DEGREES
+        ) * Math.PI / 180;
+        const point = (radians) => [
+          KNOB_ARC_CENTER + KNOB_ARC_RADIUS * Math.cos(radians),
+          KNOB_ARC_CENTER + KNOB_ARC_RADIUS * Math.sin(radians),
+        ];
+        const [startX, startY] = point(startRadians);
+        const [endX, endY] = point(endRadians);
+        const largeArc = ratio * KNOB_ARC_SWEEP_DEGREES > 180 ? 1 : 0;
+        return `M ${startX} ${startY} A ${KNOB_ARC_RADIUS} ${KNOB_ARC_RADIUS} 0 ${largeArc} 1 ${endX} ${endY}`;
+      }
+
       function decimalPlaces(step) {
         const [coefficient, exponentText] = String(step).toLowerCase().split("e");
         const fractionDigits = coefficient.split(".")[1]?.length ?? 0;
@@ -1918,14 +1944,12 @@
         track.setAttribute("d", ringPath);
         const valueArc = document.createElementNS("http://www.w3.org/2000/svg", "path");
         valueArc.classList.add("param-knob-ring-value");
-        valueArc.setAttribute("d", ringPath);
-        valueArc.setAttribute("pathLength", "1");
         const indicator = document.createElementNS("http://www.w3.org/2000/svg", "line");
         indicator.classList.add("param-knob-indicator");
-        indicator.setAttribute("x1", "29");
-        indicator.setAttribute("y1", "18");
-        indicator.setAttribute("x2", "29");
-        indicator.setAttribute("y2", "6");
+        indicator.setAttribute("x1", String(KNOB_ARC_CENTER));
+        indicator.setAttribute("y1", String(KNOB_ARC_CENTER - 11));
+        indicator.setAttribute("x2", String(KNOB_ARC_CENTER));
+        indicator.setAttribute("y2", String(KNOB_ARC_CENTER - 23));
         ring.append(track, valueArc, indicator);
         dial.appendChild(ring);
         knob.appendChild(dial);
@@ -1934,9 +1958,15 @@
           currentValue,
           constrainValue: (value) => constrainParamPlain(param, value),
           renderValue: (value) => {
-            const ratio = paramPlainToNormalized(param, value);
-            valueArc.setAttribute("stroke-dasharray", `${ratio} 1`);
-            indicator.setAttribute("transform", `rotate(${-135 + ratio * 270} 29 29)`);
+            const ratio = clamp(paramPlainToNormalized(param, value), 0, 1);
+            valueArc.setAttribute("d", knobValueArcPath(ratio));
+            const indicatorDegrees = (
+              KNOB_ARC_START_DEGREES + 90 + ratio * KNOB_ARC_SWEEP_DEGREES
+            );
+            indicator.setAttribute(
+              "transform",
+              `rotate(${indicatorDegrees} ${KNOB_ARC_CENTER} ${KNOB_ARC_CENTER})`,
+            );
             knob.setAttribute("aria-valuenow", String(value));
             knob.dataset.value = String(value);
           },

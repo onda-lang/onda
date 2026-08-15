@@ -1,10 +1,4 @@
-# Live Tape Looper
-# Sound: a captured phrase repeats from a virtual tape with varispeed, reverse, wow, and overdub.
-# Demonstrates: event-controlled recording, circular buffers, cubic lookup, and stdlib modulation.
-# Try: call `reverse()`, change `speed`, or set `live_input` to 1 before `recapture()`.
-
 import std/env
-import std/lookup
 import std/osc
 import std/pitch
 

@@ -113,10 +113,16 @@ test("the shared run view offers a device-cached knob layout", async () => {
     /<div class="section-heading">\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"[\s\S]*?<\/button>\s*<div class="params-title">Params<\/div>\s*<button[^>]+id="reset-params"[\s\S]*?<\/div>\s*<div class="param-layout-toggle"/,
   );
   assert.match(runView, /classList\.add\("param-knob-ring-value"\)/);
-  assert.match(runView, /valueArc\.setAttribute\("stroke-dasharray", `\$\{ratio\} 1`\)/);
+  assert.match(runView, /function knobValueArcPath\(normalized\)/);
+  assert.match(runView, /valueArc\.setAttribute\("d", knobValueArcPath\(ratio\)\)/);
   assert.match(
     runView,
-    /indicator\.setAttribute\("transform", `rotate\(\$\{-135 \+ ratio \* 270\} 29 29\)`\)/,
+    /\.param-knob-ring-value \{[\s\S]*?stroke-linecap: butt;/,
+  );
+  assert.doesNotMatch(runView, /valueArc\.setAttribute\("stroke-dasharray"/);
+  assert.match(
+    runView,
+    /KNOB_ARC_START_DEGREES \+ 90 \+ ratio \* KNOB_ARC_SWEEP_DEGREES/,
   );
   assert.doesNotMatch(runView, /conic-gradient\(/);
 });

@@ -1,6 +1,5 @@
 import std/env
 import std/levels
-import std/lookup
 import std/osc
 import std/pitch
 import std/random

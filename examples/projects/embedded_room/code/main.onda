@@ -1,6 +1,3 @@
-# Embedded Convolution Room
-# A file-backed stereo WAV impulse is loaded once into two partitioned zero-latency convolvers.
-
 import std/env
 import std/osc
 import std/pitch

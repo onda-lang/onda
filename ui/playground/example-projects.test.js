@@ -39,7 +39,8 @@ test("every documented playground example exists in the generated catalog", asyn
   ]);
   const linked = new Set(
     documents.flatMap((document) =>
-      [...document.matchAll(/example=([^' }]+)/g)].map((match) => match[1])
+      [...document.matchAll(/[?&]example=([^'"\s}&)]+\.(?:onda|on))(?=['"\s}&)])/g)]
+        .map((match) => match[1])
     ),
   );
   assert.notEqual(linked.size, 0);

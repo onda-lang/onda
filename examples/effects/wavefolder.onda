@@ -1,8 +1,3 @@
-# Stereo Wavefolder
-# Sound: two clean sines unfold into animated metallic harmonics and asymmetric stereo motion.
-# Demonstrates: a reusable nonlinear processor, local oversampling, and a built-in audition source.
-# Try: raise `folds`, offset `bias`, then set `live_input` to 1 for external audio.
-
 import std/osc
 import processors/wavefolder
 
