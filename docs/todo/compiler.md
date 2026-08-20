@@ -23,6 +23,14 @@ while moving avoidable work earlier in the pipeline.
   - Pass an explicit instance-state view instead of baking physical state names into each helper.
   - Preserve specialization by processor type, compile context, and genuinely distinct constants.
 
+- Make MIR unused-parameter pruning see through scalar parameter materialization.
+  - Lowering currently emits a `local = load @parameter` assignment for every scalar and tuple
+    component, so the load itself makes an otherwise unused parameter appear live.
+  - Remove the canonical materialization together with the parameter when its destination local is
+    otherwise dead, including after forwarding arguments disappear in a later pruning round.
+  - Continue preserving source argument evaluation whenever preparing an argument can fail or has
+    observable effects.
+
 - Evaluate compact typed state-region references in MIR.
   - Represent a processor or aggregate state region with one reference plus validated field access,
     rather than hundreds of independent scalar/array reference parameters.
