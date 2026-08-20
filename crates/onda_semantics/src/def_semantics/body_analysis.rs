@@ -92,6 +92,7 @@ pub(crate) fn analyze_def_stmt(
     with_stmt_diag_context(stmt, |_stmt_diag| {
         let known_scalars = &mut st.known_scalars;
         let local_aliases = &mut st.local_aliases;
+        let integer_ranges = &mut st.integer_ranges;
         let local_array_aliases = &mut st.local_array_aliases;
         let local_proc_aliases = &mut st.local_proc_aliases;
         let local_struct_aliases = &mut st.local_struct_aliases;
@@ -111,6 +112,7 @@ pub(crate) fn analyze_def_stmt(
         let resolved_scalar_locals = ctx.resolved_scalar_locals;
         let options = common.options;
         let empty_data = HashMap::<String, usize>::new();
+        track_integer_range_declaration(stmt, integer_ranges);
         // In def analysis, struct-typed parameters (for example `self`) should be
         // visible to expression type inference, including indexed array field reads.
         let mut struct_instance_bindings = param_structs.clone();
@@ -734,7 +736,9 @@ pub(crate) fn analyze_def_stmt(
                         && !param_names.contains(name)
                         && !state_scalars.contains_key(name)
                     {
-                        if let Expr::Index { base, index, .. } = expr {
+                        if let Some(source) = indexed_read_source(expr) {
+                            let base = source.base;
+                            let index = source.index;
                             if let Some(binding_kind) = classify_def_indexed_binding(
                                 base,
                                 local_array_aliases,
@@ -773,8 +777,9 @@ pub(crate) fn analyze_def_stmt(
                                         local_proc_aliases.insert(
                                             name.clone(),
                                             ProcArrayAliasInfo {
-                                                array_base: base.clone(),
-                                                index_expr: index.as_ref().clone(),
+                                                array_base: base.to_owned(),
+                                                index_expr: index.clone(),
+                                                access: source.access,
                                             },
                                         );
                                         if let Some(proc_array) = proc_array_roots.get(base) {
@@ -1612,7 +1617,7 @@ pub(crate) fn analyze_def_stmt(
             }),
             Stmt::Expr { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-                analyze_stmt_expr(&expr, stmt_expr_env!(ScopeKind::Def), errors);
+                analyze_standalone_stmt_expr(&expr, stmt_expr_env!(ScopeKind::Def), errors);
             }
             Stmt::Return { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
@@ -1633,6 +1638,7 @@ pub(crate) fn analyze_def_stmt(
                 let mut then_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
+                    integer_ranges,
                     local_array_aliases,
                     local_proc_aliases,
                     local_struct_aliases,
@@ -1644,6 +1650,7 @@ pub(crate) fn analyze_def_stmt(
                 let mut else_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
+                    integer_ranges,
                     local_array_aliases,
                     local_proc_aliases,
                     local_struct_aliases,
@@ -1655,6 +1662,7 @@ pub(crate) fn analyze_def_stmt(
                 merge_reachable_branch_scope_flow_state(
                     known_scalars,
                     local_aliases,
+                    integer_ranges,
                     local_array_aliases,
                     local_proc_aliases,
                     local_struct_aliases,
@@ -1694,6 +1702,7 @@ pub(crate) fn analyze_def_stmt(
                 let mut loop_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
+                    integer_ranges,
                     local_array_aliases,
                     local_proc_aliases,
                     local_struct_aliases,
@@ -1726,6 +1735,7 @@ pub(crate) fn analyze_def_stmt(
                 let mut loop_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
+                    integer_ranges,
                     local_array_aliases,
                     local_proc_aliases,
                     local_struct_aliases,

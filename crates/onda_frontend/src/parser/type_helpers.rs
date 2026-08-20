@@ -88,6 +88,133 @@ pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, V
     Ok(DeclRange { min, max })
 }
 
+pub(super) fn parse_binding_range_pair(
+    pair: Pair<'_, Rule>,
+) -> Result<(BuiltinFn, Expr, Expr), Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::binding_range {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "internal parser error: expected binding range",
+        )]);
+    }
+    let loc = stmt_loc_from_pair(&pair);
+    let mut positional = Vec::new();
+    let mut begin = None;
+    let mut end = None;
+    let mut mode = None;
+    let mut saw_named_or_mode = false;
+    for item in pair.into_inner() {
+        let Some(value) = item.into_inner().next() else {
+            continue;
+        };
+        match value.as_rule() {
+            Rule::expr => {
+                if saw_named_or_mode {
+                    return Err(vec![syntax_at_pair(
+                        &value,
+                        "positional binding range bounds must precede named fields and mode",
+                    )]);
+                }
+                positional.push(value);
+            }
+            Rule::binding_range_named_bound => {
+                saw_named_or_mode = true;
+                let field_loc = stmt_loc_from_pair(&value);
+                let mut fields = value.into_inner();
+                let Some(name) = fields.next() else {
+                    return Err(vec![syntax_at_loc(
+                        field_loc.as_ref(),
+                        "missing binding range field name",
+                    )]);
+                };
+                let Some(expr) = fields.next() else {
+                    return Err(vec![syntax_at_loc(
+                        field_loc.as_ref(),
+                        format!("missing value for binding range field '{}'", name.as_str()),
+                    )]);
+                };
+                let target = match name.as_str() {
+                    "begin" => &mut begin,
+                    "end" => &mut end,
+                    _ => unreachable!("binding range grammar restricts bound field names"),
+                };
+                if target.replace(parse_expr_inner(expr)).is_some() {
+                    return Err(vec![syntax_at_loc(
+                        field_loc.as_ref(),
+                        format!("duplicate binding range field '{}'", name.as_str()),
+                    )]);
+                }
+            }
+            Rule::binding_range_named_mode => {
+                saw_named_or_mode = true;
+                let mode_loc = stmt_loc_from_pair(&value);
+                let mode_value = value
+                    .into_inner()
+                    .next()
+                    .expect("named binding range mode has a value");
+                if mode.replace(mode_value.as_str().to_owned()).is_some() {
+                    return Err(vec![syntax_at_loc(
+                        mode_loc.as_ref(),
+                        "duplicate binding range field 'mode'",
+                    )]);
+                }
+            }
+            Rule::binding_range_mode => {
+                saw_named_or_mode = true;
+                if mode.replace(value.as_str().to_owned()).is_some() {
+                    return Err(vec![syntax_at_pair(&value, "duplicate binding range mode")]);
+                }
+            }
+            _ => unreachable!("binding range item grammar returned an unexpected rule"),
+        }
+    }
+    if positional.len() > 2 {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range accepts at most two positional bounds",
+        )]);
+    }
+    let positional_len = positional.len();
+    for (index, value) in positional.into_iter().enumerate() {
+        let target = if positional_len == 1 && end.is_none() {
+            &mut end
+        } else if index == 0 {
+            &mut begin
+        } else {
+            &mut end
+        };
+        if target.is_some() {
+            return Err(vec![syntax_at_pair(
+                &value,
+                if index == 0 {
+                    "duplicate binding range field 'begin'"
+                } else {
+                    "duplicate binding range field 'end'"
+                },
+            )]);
+        }
+        *target = Some(parse_expr_inner(value));
+    }
+    let Some(end) = end else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range requires an 'end' value",
+        )]);
+    };
+    let begin = begin.unwrap_or_else(|| Expr::int(0));
+    let func = match mode.as_deref().unwrap_or("clamp") {
+        "clamp" => BuiltinFn::BindingRangeClamp,
+        "wrap" => BuiltinFn::BindingRangeWrap,
+        other => {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                format!("unknown binding range mode '{other}'"),
+            )]);
+        }
+    };
+    Ok((func, begin, end))
+}
+
 #[derive(Default)]
 struct ParsedParamDomain {
     min: Option<Expr>,

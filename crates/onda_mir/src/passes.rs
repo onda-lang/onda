@@ -7,7 +7,9 @@ use crate::{
     ValidatedProgram, ValidationError, Value,
 };
 
+mod bounds_proofs;
 mod cse;
+pub(crate) mod parameter_pruning;
 mod state_promotion;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -24,6 +26,8 @@ pub struct PassStats {
     pub promoted_state_slots: u64,
     pub eliminated_common_subexpressions: u64,
     pub algebraic_simplifications: u64,
+    pub eliminated_bounds_checks: u64,
+    pub removed_function_parameters: u64,
 }
 
 /// A validated MIR program brought to the backend-neutral optimization fixed
@@ -91,6 +95,12 @@ impl PassStats {
         self.algebraic_simplifications = self
             .algebraic_simplifications
             .saturating_add(other.algebraic_simplifications);
+        self.eliminated_bounds_checks = self
+            .eliminated_bounds_checks
+            .saturating_add(other.eliminated_bounds_checks);
+        self.removed_function_parameters = self
+            .removed_function_parameters
+            .saturating_add(other.removed_function_parameters);
     }
 
     fn changed(self) -> bool {
@@ -105,6 +115,8 @@ impl PassStats {
             || self.promoted_state_slots != 0
             || self.eliminated_common_subexpressions != 0
             || self.algebraic_simplifications != 0
+            || self.eliminated_bounds_checks != 0
+            || self.removed_function_parameters != 0
     }
 }
 
@@ -112,14 +124,14 @@ impl PassStats {
 pub fn canonicalize(
     program: ValidatedProgram,
 ) -> Result<(ValidatedProgram, PassStats), Vec<ValidationError>> {
-    let unchecked_bounds = program.unchecked_bounds_proof();
+    let producer_proofs = program.producer_proofs();
     let mut program = program.into_program();
     let mut stats = PassStats {
         iterations: 1,
         ..PassStats::default()
     };
     canonicalize_program(&mut program, &mut stats);
-    crate::validate::revalidate_owned(program, unchecked_bounds).map(|program| (program, stats))
+    crate::validate::revalidate_owned(program, producer_proofs).map(|program| (program, stats))
 }
 
 fn canonicalize_program(program: &mut crate::Program, stats: &mut PassStats) {
@@ -148,20 +160,22 @@ fn canonicalize_program(program: &mut crate::Program, stats: &mut PassStats) {
 pub fn optimize(
     program: ValidatedProgram,
 ) -> Result<(OptimizedProgram, PassStats), Vec<ValidationError>> {
-    let unchecked_bounds = program.unchecked_bounds_proof();
+    let mut producer_proofs = program.producer_proofs();
     let mut raw = program.into_program();
-    let mut total = PassStats::default();
-    // Structural transforms run once before the monotonic cleanup fixed point.
-    // They may add locals or statements, while the rounds below only replace
-    // values or remove structure.
+    let mut total = PassStats {
+        removed_function_parameters: parameter_pruning::prune(&mut raw),
+        ..PassStats::default()
+    };
+    // State promotion may add locals or statements, so run it once before the
+    // monotonic cleanup fixed point.
     state_promotion::promote_process_scalar_state(&mut raw, &mut total);
-    // Every round is monotonic: it only replaces values/rvalues with their
-    // canonical constants or removes branches, statements, and locals. No
-    // pass adds executable structure, so the finite program must reach a
-    // fixed point without an arbitrary iteration cap. These are one trusted
-    // internal pipeline, so retain the input proof during the fixed point and
-    // validate the completed program once rather than rescanning a large MIR
-    // after each cleanup round.
+    // Every round is monotonic: it only replaces values, rvalues, or bounds
+    // modes with stronger canonical forms, or removes branches, statements,
+    // and locals. No pass adds executable structure, so the finite program
+    // must reach a fixed point without an arbitrary iteration cap. These are
+    // one trusted internal pipeline, so retain the proof status during the
+    // fixed point and validate the completed program once rather than
+    // rescanning a large MIR after each cleanup round.
     loop {
         let mut stats = PassStats {
             iterations: 1,
@@ -177,10 +191,16 @@ pub fn optimize(
         for function in &mut raw.functions {
             remove_dead_pure_locals(function, &mut stats);
         }
+        // Cleanup can remove assignments that widened a whole-function range
+        // or expose constant indices. Prove bounds afterward in every round so
+        // those opportunities are not permanently missed.
+        if bounds_proofs::eliminate_proven_bounds_checks(&mut raw, &mut stats) {
+            producer_proofs = crate::validate::ProducerProofStatus::Trusted;
+        }
         let changed = stats.changed();
         total.merge(stats);
         if !changed {
-            let program = crate::validate::revalidate_owned(raw, unchecked_bounds)?;
+            let program = crate::validate::revalidate_owned(raw, producer_proofs)?;
             return Ok((OptimizedProgram(program), total));
         }
     }
@@ -2367,9 +2387,10 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
 mod tests {
     use crate::{
         process_function_params, AccessMode, Block, BoundsMode, CallArgument, CompileConfig,
-        Function, FunctionAttributes, FunctionId, FunctionKind, Local, Place, PlaceBase, Program,
-        Projection, Rvalue, ScalarType, ScalarValue, SliceSource, SourceSpan, StateId,
-        StatePersistence, StateSlot, Statement, StatementKind, Type, TypeId, Value,
+        ConstData, ConstDataId, Function, FunctionAttributes, FunctionId, FunctionKind, Local,
+        Place, PlaceBase, Program, Projection, Rvalue, ScalarType, ScalarValue, SliceSource,
+        SourceSpan, StateId, StatePersistence, StateSlot, Statement, StatementKind, Type, TypeId,
+        Value,
     };
 
     use super::*;
@@ -2409,6 +2430,7 @@ mod tests {
         let f32_ty = TypeId::new(program.types.len() as u32);
         program.types.push(Type::Scalar(ScalarType::F32));
         program.state.push(StateSlot {
+            integer_range: None,
             name: "phase".to_owned(),
             ty: f32_ty,
             persistence: StatePersistence::Snapshot,
@@ -2421,6 +2443,7 @@ mod tests {
             inline: crate::InlineHint::Always,
         };
         helper.params.push(crate::FunctionParam {
+            integer_range: None,
             name: "phase".to_owned(),
             ty: f32_ty,
             mode: PassingMode::ReadWriteReference,
@@ -2455,6 +2478,7 @@ mod tests {
         aliased_program.functions[helper_id.index()]
             .locals
             .push(Local {
+                integer_range: None,
                 name: Some("direct_state_alias".to_owned()),
                 ty: f32_ty,
             });
@@ -2684,6 +2708,7 @@ mod tests {
         program.types.push(Type::Scalar(ScalarType::Bool));
         let mut user = function("branch_constants", FunctionKind::User);
         user.params.push(crate::FunctionParam {
+            integer_range: None,
             name: "condition".to_owned(),
             ty: TypeId::new(1),
             mode: PassingMode::Value,
@@ -2691,18 +2716,22 @@ mod tests {
         user.results.push(TypeId::new(0));
         user.locals.extend([
             Local {
+                integer_range: None,
                 name: Some("condition".to_owned()),
                 ty: TypeId::new(1),
             },
             Local {
+                integer_range: None,
                 name: Some("seed".to_owned()),
                 ty: TypeId::new(0),
             },
             Local {
+                integer_range: None,
                 name: Some("merged".to_owned()),
                 ty: TypeId::new(0),
             },
             Local {
+                integer_range: None,
                 name: Some("result".to_owned()),
                 ty: TypeId::new(0),
             },
@@ -2781,12 +2810,14 @@ mod tests {
         let mut program = empty_program();
         let mut user = function("repeated_expression", FunctionKind::User);
         user.params.push(crate::FunctionParam {
+            integer_range: None,
             name: "value".to_owned(),
             ty: TypeId::new(0),
             mode: PassingMode::Value,
         });
         user.results.push(TypeId::new(0));
         user.locals.extend((0..3).map(|_| Local {
+            integer_range: None,
             name: None,
             ty: TypeId::new(0),
         }));
@@ -2848,6 +2879,7 @@ mod tests {
         let mut user = function("loop_mutation", FunctionKind::User);
         user.results.push(TypeId::new(0));
         user.locals.push(Local {
+            integer_range: None,
             name: Some("value".to_owned()),
             ty: TypeId::new(0),
         });
@@ -2921,6 +2953,7 @@ mod tests {
         let mut program = empty_program();
         let mut mutate = function("mutate", FunctionKind::User);
         mutate.params.push(crate::FunctionParam {
+            integer_range: None,
             name: "value".to_owned(),
             ty: TypeId::new(0),
             mode: PassingMode::ReadWriteReference,
@@ -2940,6 +2973,7 @@ mod tests {
         let mut caller = function("caller", FunctionKind::User);
         caller.results.push(TypeId::new(0));
         caller.locals.push(Local {
+            integer_range: None,
             name: Some("value".to_owned()),
             ty: TypeId::new(0),
         });
@@ -2980,6 +3014,97 @@ mod tests {
     }
 
     #[test]
+    fn bounds_proofs_see_ranges_exposed_by_control_flow_cleanup() {
+        let mut program = empty_program();
+        program.const_data.push(ConstData {
+            name: "table".to_owned(),
+            element: ScalarType::I32,
+            values: vec![
+                ScalarValue::I32(10),
+                ScalarValue::I32(20),
+                ScalarValue::I32(30),
+                ScalarValue::I32(40),
+            ],
+        });
+
+        let mut user = function("clean_bounds", FunctionKind::User);
+        user.results.push(TypeId::new(0));
+        user.locals.extend([
+            Local {
+                integer_range: None,
+                name: Some("index".to_owned()),
+                ty: TypeId::new(0),
+            },
+            Local {
+                integer_range: None,
+                name: Some("result".to_owned()),
+                ty: TypeId::new(0),
+            },
+        ]);
+        let assign_index = |value| Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(value))),
+            },
+            source: SourceSpan::UNKNOWN,
+        };
+        user.body.statements.extend([
+            assign_index(1),
+            Statement {
+                kind: StatementKind::If {
+                    condition: Value::Constant(ScalarValue::Bool(false)),
+                    then_block: Block {
+                        statements: vec![assign_index(99)],
+                    },
+                    else_block: Block::default(),
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+            Statement {
+                kind: StatementKind::Assign {
+                    destination: Place::local(LocalId::new(1)),
+                    value: Rvalue::ConstDataLoad {
+                        data: ConstDataId::new(0),
+                        index: Value::Local(LocalId::new(0)),
+                        bounds: BoundsMode::Clamp,
+                    },
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+            Statement {
+                kind: StatementKind::Return {
+                    values: vec![Value::Local(LocalId::new(1))],
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+        ]);
+        program.functions.push(user);
+
+        let validated = crate::validate_owned(program).expect("fixture is valid before cleanup");
+        let (optimized, stats) =
+            super::optimize(validated).expect("cleanup should expose the bounds proof");
+        assert_eq!(stats.simplified_branches, 1);
+        assert_eq!(stats.eliminated_bounds_checks, 1);
+
+        let load = optimized.functions[2]
+            .body
+            .statements
+            .iter()
+            .find_map(|statement| match &statement.kind {
+                StatementKind::Assign {
+                    value: Rvalue::ConstDataLoad { index, bounds, .. },
+                    ..
+                } => Some((*index, *bounds)),
+                _ => None,
+            })
+            .expect("optimized function should retain the table load");
+        assert_eq!(
+            load,
+            (Value::Constant(ScalarValue::I32(1)), BoundsMode::Unchecked)
+        );
+    }
+
+    #[test]
     fn optimize_simplifies_structured_control_flow_and_reindexes_locals() {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
@@ -2987,14 +3112,17 @@ mod tests {
         user.results.push(TypeId::new(1));
         user.locals.extend([
             Local {
+                integer_range: None,
                 name: Some("dead".to_owned()),
                 ty: TypeId::new(1),
             },
             Local {
+                integer_range: None,
                 name: Some("result".to_owned()),
                 ty: TypeId::new(1),
             },
             Local {
+                integer_range: None,
                 name: Some("unreachable".to_owned()),
                 ty: TypeId::new(1),
             },
@@ -3062,12 +3190,151 @@ mod tests {
     }
 
     #[test]
+    fn parameter_pruning_reaches_forwarding_call_chains() {
+        let mut program = empty_program();
+        let reference_param = |name: &str| crate::FunctionParam {
+            name: name.to_owned(),
+            ty: TypeId::new(0),
+            mode: PassingMode::ReadOnlyReference,
+            integer_range: None,
+        };
+
+        let mut leaf = function("leaf", FunctionKind::User);
+        leaf.params.push(reference_param("unused"));
+        leaf.body.statements.push(Statement {
+            kind: StatementKind::Return { values: Vec::new() },
+            source: SourceSpan::UNKNOWN,
+        });
+        program.functions.push(leaf);
+
+        let mut middle = function("middle", FunctionKind::User);
+        middle.params.push(reference_param("forwarded"));
+        middle.body.statements.push(Statement {
+            kind: StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(2),
+                args: vec![CallArgument::Place(Place {
+                    base: PlaceBase::Parameter(crate::ParameterId::new(0)),
+                    projections: Vec::new(),
+                })],
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+        program.functions.push(middle);
+
+        let mut root = function("root", FunctionKind::User);
+        root.params.push(reference_param("forwarded_twice"));
+        root.body.statements.push(Statement {
+            kind: StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(3),
+                args: vec![CallArgument::Place(Place {
+                    base: PlaceBase::Parameter(crate::ParameterId::new(0)),
+                    projections: Vec::new(),
+                })],
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+        program.functions.push(root);
+
+        assert_eq!(crate::prune_unused_function_parameters(&mut program), 3);
+        assert!(program.functions[2..]
+            .iter()
+            .all(|function| function.params.is_empty()));
+        assert!(program.functions[3..].iter().all(|function| {
+            matches!(
+                &function.body.statements[0].kind,
+                StatementKind::Call { args, .. } if args.is_empty()
+            )
+        }));
+        crate::validate_owned(program).expect("pruned forwarding calls remain valid");
+    }
+
+    #[test]
+    fn parameter_pruning_reindexes_retained_parameters_and_arguments() {
+        let mut program = empty_program();
+        let mut helper = function("uses_second", FunctionKind::User);
+        helper
+            .params
+            .extend(["unused", "used"].map(|name| crate::FunctionParam {
+                name: name.to_owned(),
+                ty: TypeId::new(0),
+                mode: PassingMode::ReadOnlyReference,
+                integer_range: None,
+            }));
+        helper.locals.push(Local {
+            name: Some("value".to_owned()),
+            ty: TypeId::new(0),
+            integer_range: None,
+        });
+        helper.body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::Parameter(crate::ParameterId::new(1)),
+                    projections: Vec::new(),
+                }),
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+        program.functions.push(helper);
+        program
+            .state
+            .extend(["first", "second"].map(|name| StateSlot {
+                name: name.to_owned(),
+                ty: TypeId::new(0),
+                persistence: StatePersistence::Snapshot,
+                integer_range: None,
+            }));
+        program.functions[1].body.statements.push(Statement {
+            kind: StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(2),
+                args: vec![
+                    CallArgument::Place(Place {
+                        base: PlaceBase::State(StateId::new(0)),
+                        projections: Vec::new(),
+                    }),
+                    CallArgument::Place(Place {
+                        base: PlaceBase::State(StateId::new(1)),
+                        projections: Vec::new(),
+                    }),
+                ],
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        assert_eq!(crate::prune_unused_function_parameters(&mut program), 1);
+        assert_eq!(program.functions[2].params[0].name, "used");
+        assert!(matches!(
+            &program.functions[2].body.statements[0].kind,
+            StatementKind::Assign {
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::Parameter(parameter),
+                    ..
+                }),
+                ..
+            } if parameter.index() == 0
+        ));
+        assert!(matches!(
+            &program.functions[1].body.statements[0].kind,
+            StatementKind::Call { args, .. }
+                if matches!(args.as_slice(), [CallArgument::Place(Place {
+                    base: PlaceBase::State(state),
+                    ..
+                })] if state.index() == 1)
+        ));
+        crate::validate_owned(program).expect("reindexed parameters remain valid");
+    }
+
+    #[test]
     fn copy_propagation_collapses_long_dead_chains_before_the_fixed_point() {
         const PURE_CHAIN_LEN: u32 = 32;
 
         let mut program = empty_program();
         for index in 0..=PURE_CHAIN_LEN {
             program.functions[1].locals.push(Local {
+                integer_range: None,
                 name: Some(format!("chain_{index}")),
                 ty: TypeId::new(0),
             });
@@ -3134,17 +3401,20 @@ mod tests {
         ]);
         program.state.extend([
             StateSlot {
+                integer_range: None,
                 name: "scalar".to_owned(),
                 ty: TypeId::new(1),
                 persistence: StatePersistence::Snapshot,
             },
             StateSlot {
+                integer_range: None,
                 name: "array".to_owned(),
                 ty: TypeId::new(2),
                 persistence: StatePersistence::Snapshot,
             },
         ]);
         program.functions[0].locals.push(Local {
+            integer_range: None,
             name: Some("array_view".to_owned()),
             ty: TypeId::new(3),
         });
@@ -3235,6 +3505,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.state.push(StateSlot {
+            integer_range: None,
             name: "value".to_owned(),
             ty: TypeId::new(1),
             persistence: StatePersistence::Snapshot,

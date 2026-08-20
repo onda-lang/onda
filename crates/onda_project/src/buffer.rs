@@ -1,5 +1,6 @@
 use std::fmt;
-use std::io::Cursor;
+use std::fs;
+use std::io::{Cursor, Read};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -226,6 +227,16 @@ pub struct BufferAsset {
     pub samples: BufferSamples,
 }
 
+/// Shape and storage information available without decoding sample payloads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BufferAssetMetadata {
+    pub element: BufferElement,
+    pub frames: u32,
+    pub channels: u32,
+    pub sample_rate: f32,
+    pub payload_bytes: usize,
+}
+
 impl BufferAsset {
     pub fn new(
         frames: u32,
@@ -251,6 +262,16 @@ impl BufferAsset {
         self.samples
             .len()
             .saturating_mul(self.element().byte_size())
+    }
+
+    pub fn metadata(&self) -> BufferAssetMetadata {
+        BufferAssetMetadata {
+            element: self.element(),
+            frames: self.frames,
+            channels: self.channels,
+            sample_rate: self.sample_rate,
+            payload_bytes: self.payload_bytes(),
+        }
     }
 
     pub fn validate(&self, limits: &ProjectLimits) -> Result<(), ProjectError> {
@@ -368,6 +389,44 @@ pub fn validate_ondabuffer(
     bytes: &[u8],
     limits: ProjectLimits,
 ) -> Result<ValidatedOndabuffer<'_>, ProjectError> {
+    let header = parse_ondabuffer_header(bytes, bytes.len(), &limits)?;
+    let payload = &bytes[ONDA_BUFFER_HEADER_BYTES..];
+    if header.metadata.element == BufferElement::Bool && payload.iter().any(|value| *value > 1) {
+        return Err(ProjectError::new(
+            "Onda bool buffer payload contains a value other than 0 or 1",
+        ));
+    }
+    let mut hasher = buffer_content_hasher(
+        header.metadata.element,
+        header.metadata.frames,
+        header.metadata.channels,
+        header.metadata.sample_rate,
+    );
+    hasher.update(payload);
+    let content_digest: [u8; 32] = hasher.finalize().into();
+    if header.expected_digest != content_digest {
+        return Err(ProjectError::new("Onda buffer content digest mismatch"));
+    }
+    Ok(ValidatedOndabuffer {
+        element: header.metadata.element,
+        frames: header.metadata.frames,
+        channels: header.metadata.channels,
+        sample_rate: header.metadata.sample_rate,
+        payload,
+        content_digest,
+    })
+}
+
+struct OndabufferHeader {
+    metadata: BufferAssetMetadata,
+    expected_digest: [u8; 32],
+}
+
+fn parse_ondabuffer_header(
+    bytes: &[u8],
+    file_len: usize,
+    limits: &ProjectLimits,
+) -> Result<OndabufferHeader, ProjectError> {
     if bytes.len() < ONDA_BUFFER_HEADER_BYTES || &bytes[..8] != ONDA_BUFFER_MAGIC {
         return Err(ProjectError::new("file is not an Onda buffer asset"));
     }
@@ -398,13 +457,12 @@ pub fn validate_ondabuffer(
     let expected_total = ONDA_BUFFER_HEADER_BYTES
         .checked_add(payload_len)
         .ok_or_else(|| ProjectError::new("Onda buffer file length overflows"))?;
-    if bytes.len() != expected_total {
+    if file_len != expected_total {
         return Err(ProjectError::new(format!(
             "Onda buffer file declares {payload_len} payload bytes but has {}",
-            bytes.len().saturating_sub(ONDA_BUFFER_HEADER_BYTES)
+            file_len.saturating_sub(ONDA_BUFFER_HEADER_BYTES)
         )));
     }
-    let payload = &bytes[ONDA_BUFFER_HEADER_BYTES..];
     if !payload_len.is_multiple_of(element.byte_size()) {
         return Err(ProjectError::new(
             "Onda buffer payload is not aligned to its element type",
@@ -417,27 +475,134 @@ pub fn validate_ondabuffer(
         channels,
         sample_rate,
         element_count,
-        &limits,
+        limits,
     )?;
-    if element == BufferElement::Bool && payload.iter().any(|value| *value > 1) {
-        return Err(ProjectError::new(
-            "Onda bool buffer payload contains a value other than 0 or 1",
-        ));
+    let mut expected_digest = [0_u8; 32];
+    expected_digest.copy_from_slice(&bytes[36..68]);
+    Ok(OndabufferHeader {
+        metadata: BufferAssetMetadata {
+            element,
+            frames,
+            channels,
+            sample_rate,
+            payload_bytes: payload_len,
+        },
+        expected_digest,
+    })
+}
+
+/// Inspects a supported buffer file without decoding or hashing its samples.
+///
+/// This validates the encoded container, declared shape, supported sample
+/// representation, and project resource limits. Full payload integrity remains
+/// the responsibility of [`load_buffer_file`] when the asset is used.
+pub fn inspect_buffer_file(
+    path: impl AsRef<Path>,
+    limits: ProjectLimits,
+) -> Result<BufferAssetMetadata, ProjectError> {
+    let path = path.as_ref();
+    let file_metadata = fs::metadata(path).map_err(|error| {
+        ProjectError::new(format!(
+            "failed to inspect buffer asset '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if !file_metadata.is_file() {
+        return Err(ProjectError::new(format!(
+            "buffer asset '{}' is not a file",
+            path.display()
+        )));
     }
-    let mut hasher = buffer_content_hasher(element, frames, channels, sample_rate);
-    hasher.update(payload);
-    let content_digest: [u8; 32] = hasher.finalize().into();
-    let expected_digest = &bytes[36..68];
-    if expected_digest != content_digest {
-        return Err(ProjectError::new("Onda buffer content digest mismatch"));
+    let file_len = usize::try_from(file_metadata.len())
+        .map_err(|_| ProjectError::new("buffer asset file length does not fit this host"))?;
+    let encoded_limit = limits
+        .max_asset_bytes
+        .saturating_add(ONDA_BUFFER_HEADER_BYTES);
+    if file_len > encoded_limit {
+        return Err(ProjectError::new(format!(
+            "buffer asset '{}' has {file_len} encoded bytes, exceeding the {encoded_limit} byte limit",
+            path.display()
+        )));
     }
-    Ok(ValidatedOndabuffer {
-        element,
+
+    let mut file = fs::File::open(path).map_err(|error| {
+        ProjectError::new(format!(
+            "failed to open buffer asset '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let mut prefix = [0_u8; ONDA_BUFFER_HEADER_BYTES];
+    file.read_exact(&mut prefix[..ONDA_BUFFER_MAGIC.len()])
+        .map_err(|error| {
+            ProjectError::new(format!(
+                "failed to read buffer asset '{}': {error}",
+                path.display()
+            ))
+        })?;
+    if prefix[..ONDA_BUFFER_MAGIC.len()] == *ONDA_BUFFER_MAGIC {
+        file.read_exact(&mut prefix[ONDA_BUFFER_MAGIC.len()..])
+            .map_err(|error| {
+                ProjectError::new(format!(
+                    "failed to read Onda buffer header '{}': {error}",
+                    path.display()
+                ))
+            })?;
+        return Ok(parse_ondabuffer_header(&prefix, file_len, &limits)?.metadata);
+    }
+
+    inspect_wav(path, limits)
+}
+
+fn inspect_wav(path: &Path, limits: ProjectLimits) -> Result<BufferAssetMetadata, ProjectError> {
+    let reader = hound::WavReader::open(path).map_err(|error| {
+        ProjectError::new(format!(
+            "unsupported buffer file '{}': expected .ondabuffer or WAV ({error})",
+            path.display()
+        ))
+    })?;
+    let spec = reader.spec();
+    let channels = u32::from(spec.channels);
+    if channels == 0 {
+        return Err(ProjectError::new(format!(
+            "WAV '{}' has zero channels",
+            path.display()
+        )));
+    }
+    if !matches!(
+        (spec.sample_format, spec.bits_per_sample),
+        (hound::SampleFormat::Float, 32) | (hound::SampleFormat::Int, 8 | 16 | 24 | 32)
+    ) {
+        return Err(ProjectError::new(format!(
+            "unsupported WAV encoding in '{}': {:?} {} bits",
+            path.display(),
+            spec.sample_format,
+            spec.bits_per_sample
+        )));
+    }
+    let sample_count = usize::try_from(reader.len())
+        .map_err(|_| ProjectError::new("WAV sample count does not fit this host"))?;
+    if sample_count == 0 || !sample_count.is_multiple_of(channels as usize) {
+        return Err(ProjectError::new(format!(
+            "WAV '{}' contains invalid interleaved sample data",
+            path.display()
+        )));
+    }
+    let frames = u32::try_from(sample_count / channels as usize)
+        .map_err(|_| ProjectError::new("WAV frame count exceeds u32"))?;
+    validate_buffer_shape(
+        BufferElement::F32,
         frames,
         channels,
-        sample_rate,
-        payload,
-        content_digest,
+        spec.sample_rate as f32,
+        sample_count,
+        &limits,
+    )?;
+    Ok(BufferAssetMetadata {
+        element: BufferElement::F32,
+        frames,
+        channels,
+        sample_rate: spec.sample_rate as f32,
+        payload_bytes: sample_count * std::mem::size_of::<f32>(),
     })
 }
 

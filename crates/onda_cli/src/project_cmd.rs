@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use onda_project::{
-    resolve_project_input, validate_buffer_assets, BufferAsset, ProjectInput, ProjectLimits,
+    resolve_project_input, validate_buffer_asset_metadata, BufferAsset, ProjectInput, ProjectLimits,
 };
 use onda_semantics::TypedProgram;
 
@@ -46,13 +46,11 @@ pub(crate) fn validate_compile_project(
         return Ok(());
     };
     let assets = project_file
-        .load_buffer_assets(ProjectLimits::default())
+        .inspect_buffer_assets(ProjectLimits::default())
         .map_err(|error| error.to_string())?;
     let declarations = onda_run::project_buffer_declarations(typed)?;
-    validate_buffer_assets(
-        assets
-            .iter()
-            .map(|(name, (asset, _))| (name.as_str(), asset)),
+    validate_buffer_asset_metadata(
+        assets.iter().map(|(name, asset)| (name.as_str(), asset)),
         &declarations,
     )
     .map_err(|error| error.to_string())

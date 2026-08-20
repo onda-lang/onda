@@ -5287,6 +5287,62 @@ class MirCompiler {
               arg(0),
             ),
           );
+        case "range_wrap": { // Bounds are validator-required integer constants.
+          const lowerLiteral = data.args[1]?.data;
+          const upperLiteral = data.args[2]?.data;
+          if (
+            data.args[1]?.kind !== "constant"
+            || data.args[2]?.kind !== "constant"
+            || lowerLiteral?.type !== scalar
+            || upperLiteral?.type !== scalar
+          ) {
+            this.fail("range_wrap requires constant bounds matching its integer operand");
+          }
+          const lower = scalar === "i64"
+            ? decodeI64Literal(lowerLiteral.value, this)
+            : BigInt(lowerLiteral.value);
+          const upper = scalar === "i64"
+            ? decodeI64Literal(upperLiteral.value, this)
+            : BigInt(upperLiteral.value);
+          const bits = scalar === "i64" ? 64n : 32n;
+          const width = upper - lower + 1n;
+          if (width === (1n << bits)) return arg(0);
+          const encodedWidth = BigInt.asIntN(Number(bits), width);
+          const widthValue = scalar === "i64"
+            ? this.module.i64.const(encodedWidth)
+            : this.module.i32.const(Number(encodedWidth));
+          const encodedSpan = BigInt.asIntN(Number(bits), width - 1n);
+          const spanValue = scalar === "i64"
+            ? this.module.i64.const(encodedSpan)
+            : this.module.i32.const(Number(encodedSpan));
+          const one = scalar === "i64"
+            ? this.module.i64.const(1n)
+            : this.module.i32.const(1);
+          const distanceFromLower = lower === 0n
+            ? arg(0)
+            : wasm.sub(arg(0), arg(1));
+          return this.module.if(
+            wasm.le_u(distanceFromLower, spanValue),
+            arg(0),
+            this.module.if(
+              wasm.lt_s(arg(0), arg(1)),
+              wasm.sub(
+                arg(2),
+                wasm.rem_u(
+                  wasm.sub(wasm.sub(arg(1), one), arg(0)),
+                  widthValue,
+                ),
+              ),
+              wasm.add(
+                arg(1),
+                wasm.rem_u(
+                  wasm.sub(arg(0), wasm.add(arg(2), one)),
+                  widthValue,
+                ),
+              ),
+            ),
+          );
+        }
         default:
           this.fail(`intrinsic '${data.intrinsic}' requires f32 or f64 operands`);
       }
@@ -5809,6 +5865,19 @@ class MirCompiler {
         packed_snapshot_byte_offset: byteOffset,
         physical_state_byte_offset: layout.offset,
         byte_size: layout.size,
+        integer_range: slot.integer_range === undefined || slot.integer_range === null
+          ? null
+          : {
+              min: {
+                type: slot.integer_range.min.type,
+                value: String(slot.integer_range.min.value),
+              },
+              max: {
+                type: slot.integer_range.max.type,
+                value: String(slot.integer_range.max.value),
+              },
+              mode: slot.integer_range.mode,
+            },
       });
       byteOffset += layout.size;
     }

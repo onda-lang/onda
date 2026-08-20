@@ -8,14 +8,14 @@ mod manifest;
 mod materialize;
 
 pub use buffer::{
-    decode_buffer_bytes, decode_ondabuffer, encode_ondabuffer, encode_wav_f32, is_ondabuffer,
-    load_buffer_file, validate_ondabuffer, BufferAsset, BufferElement, BufferSamples,
-    ValidatedOndabuffer, ONDA_BUFFER_FORMAT_VERSION,
+    decode_buffer_bytes, decode_ondabuffer, encode_ondabuffer, encode_wav_f32, inspect_buffer_file,
+    is_ondabuffer, load_buffer_file, validate_ondabuffer, BufferAsset, BufferAssetMetadata,
+    BufferElement, BufferSamples, ValidatedOndabuffer, ONDA_BUFFER_FORMAT_VERSION,
 };
 pub use image::{
-    current_stdlib_digest, validate_buffer_assets, AssetId, ProjectBufferChannels,
-    ProjectBufferDeclaration, ProjectImage, SourceDocument, SourceImage, SourceReferenceKind,
-    SourceReplayError, SourceResolution, ONDA_PROJECT_IMAGE_FORMAT_VERSION,
+    current_stdlib_digest, validate_buffer_asset_metadata, validate_buffer_assets, AssetId,
+    ProjectBufferChannels, ProjectBufferDeclaration, ProjectImage, SourceDocument, SourceImage,
+    SourceReferenceKind, SourceReplayError, SourceResolution, ONDA_PROJECT_IMAGE_FORMAT_VERSION,
 };
 pub use manifest::{
     is_project_file_path, resolve_project_input, resolve_project_watch_paths, InlineBuffer,

@@ -55,7 +55,7 @@ pub fn to_json_pretty(program: &Program) -> Result<String, MirJsonError> {
 }
 
 /// Encodes MIR that already carries a validation proof, including trusted
-/// producer proofs for unchecked operations.
+/// producer proofs for unchecked accesses and declared integer invariants.
 pub fn to_json_validated(program: &ValidatedProgram) -> Result<String, MirJsonError> {
     Ok(serde_json::to_string(program.as_program())?)
 }
@@ -86,12 +86,15 @@ pub fn from_json_validated(json: &str) -> Result<ValidatedProgram, MirJsonError>
 }
 
 /// Decodes serialized MIR emitted by a trusted producer and retains its
-/// unchecked-bounds proof.
+/// unchecked-access and integer-invariant proofs.
 ///
 /// # Safety
 ///
 /// The serialized program must come from a producer that proved every
-/// `BoundsMode::Unchecked` operation for all executions reaching it.
+/// `BoundsMode::Unchecked` operation is in bounds for all executions reaching
+/// it. Every declared `IntegerRangeInvariant` must contain every value
+/// observable from that storage, including values supplied by callers or
+/// restored from external state.
 pub unsafe fn from_json_with_producer_proofs(json: &str) -> Result<ValidatedProgram, MirJsonError> {
     let program = serde_json::from_str(json)?;
     unsafe { crate::validate_owned_with_producer_proofs(program) }.map_err(MirJsonError::Invalid)
@@ -221,11 +224,13 @@ mod tests {
         ]);
         program.state.extend([
             StateSlot {
+                integer_range: None,
                 name: "meter_storage".to_owned(),
                 ty: TypeId::new(1),
                 persistence: StatePersistence::ControlMirror,
             },
             StateSlot {
+                integer_range: None,
                 name: "values".to_owned(),
                 ty: TypeId::new(2),
                 persistence: StatePersistence::Snapshot,
@@ -246,6 +251,7 @@ mod tests {
         };
         process.params = process_function_params(TypeId::new(0));
         process.locals.push(Local {
+            integer_range: None,
             name: Some("view".to_owned()),
             ty: TypeId::new(3),
         });

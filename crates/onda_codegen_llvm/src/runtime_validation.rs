@@ -461,8 +461,11 @@ impl JitProgram {
                 "initial and live physical state layouts differ",
             ));
         }
-        state.bytes_mut().copy_from_slice(initial_state.bytes());
-        let state_bytes = state.bytes_mut();
+        // SAFETY: restore immediately normalizes every ranged slot below.
+        unsafe { state.bytes_mut() }.copy_from_slice(initial_state.bytes());
+        // SAFETY: the only externally supplied bytes are copied and normalized
+        // before this function returns the state to its caller.
+        let state_bytes = unsafe { state.bytes_mut() };
         for segment in self.snapshot_segments.iter() {
             let state_end = segment
                 .state_offset
@@ -477,6 +480,12 @@ impl JitProgram {
                 &mut state_bytes[segment.state_offset..state_end],
                 segment.element_size,
             );
+            if let Some(range) = segment.integer_range {
+                normalize_integer_snapshot_value(
+                    &mut state_bytes[segment.state_offset..state_end],
+                    range,
+                );
+            }
         }
         Ok(())
     }
@@ -762,6 +771,41 @@ fn copy_snapshot_segment(source: &[u8], destination: &mut [u8], element_size: us
     }
 }
 
+fn normalize_integer_snapshot_value(bytes: &mut [u8], range: onda_mir::IntegerRangeInvariant) {
+    use onda_mir::{IntegerRangeMode, ScalarValue};
+
+    fn normalize(value: i128, min: i128, max: i128, mode: IntegerRangeMode) -> i128 {
+        match mode {
+            IntegerRangeMode::Clamp => value.clamp(min, max),
+            IntegerRangeMode::Wrap => min + (value - min).rem_euclid(max - min + 1),
+        }
+    }
+
+    match (range.min, range.max) {
+        (ScalarValue::I32(min), ScalarValue::I32(max)) => {
+            let raw = i32::from_ne_bytes(bytes.try_into().expect("validated i32 state size"));
+            let value = normalize(
+                i128::from(raw),
+                i128::from(min),
+                i128::from(max),
+                range.mode,
+            );
+            bytes.copy_from_slice(&(value as i32).to_ne_bytes());
+        }
+        (ScalarValue::I64(min), ScalarValue::I64(max)) => {
+            let raw = i64::from_ne_bytes(bytes.try_into().expect("validated i64 state size"));
+            let value = normalize(
+                i128::from(raw),
+                i128::from(min),
+                i128::from(max),
+                range.mode,
+            );
+            bytes.copy_from_slice(&(value as i64).to_ne_bytes());
+        }
+        _ => unreachable!("validated integer storage range has matching integer endpoints"),
+    }
+}
+
 impl RuntimeState {
     pub fn byte_size(&self) -> usize {
         self.state_size_bytes
@@ -781,7 +825,14 @@ impl RuntimeState {
         }
     }
 
-    pub fn bytes_mut(&mut self) -> &mut [u8] {
+    /// Returns the physical state image without preserving compiler-declared
+    /// integer storage invariants.
+    ///
+    /// # Safety
+    ///
+    /// Before the next processor entry, the caller must ensure every ranged
+    /// state slot contains a value inside its declared inclusive interval.
+    pub unsafe fn bytes_mut(&mut self) -> &mut [u8] {
         if self.state_size_bytes == 0 {
             return &mut [];
         }
@@ -795,7 +846,13 @@ impl RuntimeState {
         }
     }
 
-    pub fn copy_from_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
+    /// Replaces the physical state image without normalizing ranged slots.
+    ///
+    /// # Safety
+    ///
+    /// `bytes` must satisfy every compiler-declared state invariant before the
+    /// next processor entry. Snapshot restoration should normally be used.
+    pub unsafe fn copy_from_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         if bytes.len() != self.state_size_bytes {
             return Err(Diagnostic::runtime(
                 format!(
@@ -807,7 +864,7 @@ impl RuntimeState {
                 0,
             ));
         }
-        self.bytes_mut().copy_from_slice(bytes);
+        unsafe { self.bytes_mut() }.copy_from_slice(bytes);
         Ok(())
     }
 

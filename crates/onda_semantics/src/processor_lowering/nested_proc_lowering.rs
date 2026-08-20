@@ -182,6 +182,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         array_base,
                         index_expr,
                         slots,
+                        access,
                     } => {
                         let Some((proc_name, api, slot_instances)) =
                             resolve_proc_array_dispatch_context(
@@ -214,6 +215,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                             &slot_instances,
                             &array_base,
                             &index_expr,
+                            access,
                             errors,
                         );
                         *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
@@ -223,7 +225,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 }
             }
             if let Some(var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
-                let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                 let var = if var_raw == PROC_INDEX_CALL_SENTINEL {
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
@@ -239,8 +241,9 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                             array_base,
                             index_expr,
                             slots,
+                            access,
                         } => {
-                            dynamic_index = Some((array_base, index_expr, slots));
+                            dynamic_index = Some((array_base, index_expr, slots, access));
                             String::new()
                         }
                     }
@@ -274,7 +277,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     return;
                 };
 
-                if let Some((array_base, index_expr, slots)) = dynamic_index {
+                if let Some((array_base, index_expr, slots, access)) = dynamic_index {
                     let Some((proc_name, api, slot_instances)) =
                         resolve_proc_array_dispatch_context(
                             &slots,
@@ -301,6 +304,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         &slot_instances,
                         &array_base,
                         &index_expr,
+                        access,
                         errors,
                     );
                     *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
@@ -409,7 +413,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             }
 
             if let Some((base_raw, event_name)) = split_dot_path(name) {
-                let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                 let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
                     if proc_index_base_name(args)
                         .is_some_and(|base| !proc_array_slots.contains_key(base))
@@ -430,8 +434,9 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                             array_base,
                             index_expr,
                             slots,
+                            access,
                         } => {
-                            dynamic_index = Some((array_base, index_expr, slots));
+                            dynamic_index = Some((array_base, index_expr, slots, access));
                             String::new()
                         }
                     }
@@ -455,7 +460,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     }
                 }
 
-                if let Some((array_base, _, slots)) = &dynamic_index {
+                if let Some((array_base, _, slots, _)) = &dynamic_index {
                     let Some((_proc_name, api, _slot_instances)) =
                         resolve_proc_array_dispatch_context(
                             slots,
@@ -503,7 +508,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     }
                 }
 
-                if let Some((array_base, index_expr, slots)) = dynamic_index {
+                if let Some((array_base, index_expr, slots, _access)) = dynamic_index {
                     let Some((proc_name, api, _slot_instances)) =
                         resolve_proc_array_dispatch_context(
                             &slots,
@@ -706,6 +711,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                             array_base,
                             index_expr,
                             slots,
+                            access,
                         } => {
                             let Some((proc_name, api, slot_instances)) =
                                 resolve_proc_array_dispatch_context(
@@ -724,6 +730,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                                 &slot_instances,
                                 &array_base,
                                 &index_expr,
+                                access,
                                 errors,
                             );
                             *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
@@ -787,7 +794,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                         }
                     }
 
-                    let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                    let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                     let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
                         let Some(index_target) = resolve_proc_index_target_mut(
                             args,
@@ -803,8 +810,9 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                                 array_base,
                                 index_expr,
                                 slots,
+                                access,
                             } => {
-                                dynamic_index = Some((array_base, index_expr, slots));
+                                dynamic_index = Some((array_base, index_expr, slots, access));
                                 String::new()
                             }
                         }
@@ -812,7 +820,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                         base_raw.to_owned()
                     };
 
-                    if let Some((array_base, index_expr, slots)) = dynamic_index {
+                    if let Some((array_base, index_expr, slots, access)) = dynamic_index {
                         let Some((proc_name, api, _slot_instances)) =
                             resolve_proc_array_dispatch_context(
                                 &slots,
@@ -849,11 +857,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                         let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::Index {
-                                loc: Default::default(),
-                                base: array_base.clone(),
-                                index: Box::new(index_expr.clone()),
-                            },
+                            expr: proc_index_selector_expr(&array_base, &index_expr, access),
                         });
                         rewritten.extend(expanded);
                         *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");

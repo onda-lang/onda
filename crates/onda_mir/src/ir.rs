@@ -1,8 +1,8 @@
 use crate::{
     AccessMode, BufferChannels, BufferId, ConstDataId, ConstantValue, ControlOutputId, EventId,
-    EventParamId, FieldId, FunctionId, InputId, LocalId, OutputId, ParamControl, ParamId,
-    ParameterId, ScalarType, ScalarValue, SourceFileId, StateId, Type, TypeId, ValueRange,
-    MIR_SCHEMA_VERSION,
+    EventParamId, FieldId, FunctionId, InputId, IntegerRangeInvariant, LocalId, OutputId,
+    ParamControl, ParamId, ParameterId, ScalarType, ScalarValue, SourceFileId, StateId, Type,
+    TypeId, ValueRange, MIR_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -416,6 +416,8 @@ pub struct StateSlot {
     pub name: String,
     pub ty: TypeId,
     pub persistence: StatePersistence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integer_range: Option<IntegerRangeInvariant>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -497,6 +499,8 @@ pub struct FunctionParam {
     pub name: String,
     pub ty: TypeId,
     pub mode: PassingMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integer_range: Option<IntegerRangeInvariant>,
 }
 
 /// Builds the canonical segmented-process entry signature.
@@ -507,6 +511,7 @@ pub fn process_function_params(i32_ty: TypeId) -> Vec<FunctionParam> {
             name: name.to_owned(),
             ty: i32_ty,
             mode: PassingMode::Value,
+            integer_range: None,
         })
         .collect()
 }
@@ -523,6 +528,8 @@ pub enum PassingMode {
 pub struct Local {
     pub name: Option<String>,
     pub ty: TypeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integer_range: Option<IntegerRangeInvariant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -875,4 +882,7 @@ pub enum Intrinsic {
     /// Clamps the first operand to the inclusive bounds in the second and
     /// third operands. Floating-point NaN maps to the lower bound.
     RangeClamp,
+    /// Wraps an i32 or i64 first operand into the inclusive constant bounds in
+    /// the second and third operands using mathematical Euclidean modulo.
+    RangeWrap,
 }

@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PROCESSOR_ABI_VERSION,
+  PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_SNAPSHOT_FORMAT_VERSION,
+} from "@onda-lang/processor-abi";
+
+import {
   ONDA_AUDIO_WORKLET_PROCESSOR_NAME,
   OndaAudioProcessor,
   compileOndaProcessorModule,
@@ -9,7 +15,7 @@ import {
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
-const FIXTURE_MIR_SCHEMA_VERSION = 4;
+const FIXTURE_MIR_SCHEMA_VERSION = 5;
 
 function artifact() {
   const port = (name, arrayLen) => ({
@@ -43,8 +49,8 @@ function artifact() {
     ]),
     metadata: {
       format: "onda-processor",
-      format_version: 3,
-      abi_version: 3,
+      format_version: PROCESSOR_ARTIFACT_FORMAT_VERSION,
+      abi_version: PROCESSOR_ABI_VERSION,
       artifact_kind: "webassembly_module",
       backend: "test",
       mir_schema_version: FIXTURE_MIR_SCHEMA_VERSION,
@@ -80,7 +86,7 @@ function artifact() {
         param_align_bytes: 1,
         snapshot_size_bytes: 0,
         state_initialization: "zeroed",
-        snapshot_format_version: 1,
+        snapshot_format_version: PROCESSOR_SNAPSHOT_FORMAT_VERSION,
         snapshot_byte_order: "little_endian",
         snapshot_restore_base: "post_init_physical_state_image",
         requires_full_blocks: false,

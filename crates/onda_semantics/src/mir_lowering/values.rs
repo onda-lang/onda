@@ -338,7 +338,13 @@ impl<'a> FunctionLowerer<'a> {
                 ty: to,
             });
         }
-        Ok(self.emit_temp(
+        let integer_range = match value.value {
+            Value::Local(local) => self.locals[local.index()]
+                .integer_range
+                .and_then(|range| cast_integer_range_invariant(range, to)),
+            Value::Constant(_) => None,
+        };
+        let result = self.emit_temp(
             block,
             to,
             Rvalue::Cast {
@@ -346,7 +352,11 @@ impl<'a> FunctionLowerer<'a> {
                 to: scalar_type(to),
             },
             location,
-        ))
+        );
+        if let (Value::Local(local), Some(range)) = (result.value, integer_range) {
+            self.locals[local.index()].integer_range = Some(range);
+        }
+        Ok(result)
     }
 
     pub(super) fn merge_numeric(
@@ -859,20 +869,46 @@ impl<'a> FunctionLowerer<'a> {
         value: Value,
         location: SourceLoc,
     ) {
+        let value = self.local_assignment_rvalue(local, value);
         self.push_statement(
             block,
             StatementKind::Assign {
                 destination: Place::local(local),
-                value: Rvalue::Use(value),
+                value,
             },
             location,
         );
     }
 
+    fn local_assignment_rvalue(&self, local: LocalId, value: Value) -> Rvalue {
+        let Some(range) = self.locals[local.index()].integer_range else {
+            return Rvalue::Use(value);
+        };
+        if value_is_within_integer_range(value, range, &self.locals) {
+            return Rvalue::Use(value);
+        }
+
+        Rvalue::Intrinsic {
+            intrinsic: match range.mode {
+                onda_mir::IntegerRangeMode::Clamp => Intrinsic::RangeClamp,
+                onda_mir::IntegerRangeMode::Wrap => Intrinsic::RangeWrap,
+            },
+            args: vec![
+                value,
+                Value::Constant(range.min),
+                Value::Constant(range.max),
+            ],
+        }
+    }
+
     pub(super) fn new_local(&mut self, name: Option<String>, ty: PrimitiveType) -> LocalId {
         let id = LocalId::new(self.locals.len() as u32);
         let type_id = self.scalar_type_id(ty);
-        self.locals.push(onda_mir::Local { name, ty: type_id });
+        self.locals.push(onda_mir::Local {
+            name,
+            ty: type_id,
+            integer_range: None,
+        });
         id
     }
 
@@ -884,7 +920,11 @@ impl<'a> FunctionLowerer<'a> {
     ) -> LocalId {
         let id = LocalId::new(self.locals.len() as u32);
         let ty = intern_array_type(self.types, element, len);
-        self.locals.push(onda_mir::Local { name, ty });
+        self.locals.push(onda_mir::Local {
+            name,
+            ty,
+            integer_range: None,
+        });
         id
     }
 
@@ -896,7 +936,11 @@ impl<'a> FunctionLowerer<'a> {
     ) -> LocalId {
         let id = LocalId::new(self.locals.len() as u32);
         let ty = intern_slice_type(self.types, element, access);
-        self.locals.push(onda_mir::Local { name, ty });
+        self.locals.push(onda_mir::Local {
+            name,
+            ty,
+            integer_range: None,
+        });
         id
     }
 
@@ -1100,4 +1144,61 @@ impl<'a> FunctionLowerer<'a> {
     ) -> MirLoweringError {
         MirLoweringError::new(message, location)
     }
+}
+
+fn value_is_within_integer_range(
+    value: Value,
+    destination: onda_mir::IntegerRangeInvariant,
+    locals: &[onda_mir::Local],
+) -> bool {
+    let (source_min, source_max) = match value {
+        Value::Constant(value) => (value, value),
+        Value::Local(local) => match locals[local.index()].integer_range {
+            Some(range) => (range.min, range.max),
+            None => return false,
+        },
+    };
+    match (destination.min, destination.max, source_min, source_max) {
+        (
+            ScalarValue::I32(destination_min),
+            ScalarValue::I32(destination_max),
+            ScalarValue::I32(source_min),
+            ScalarValue::I32(source_max),
+        ) => source_min >= destination_min && source_max <= destination_max,
+        (
+            ScalarValue::I64(destination_min),
+            ScalarValue::I64(destination_max),
+            ScalarValue::I64(source_min),
+            ScalarValue::I64(source_max),
+        ) => source_min >= destination_min && source_max <= destination_max,
+        _ => false,
+    }
+}
+
+fn cast_integer_range_invariant(
+    range: onda_mir::IntegerRangeInvariant,
+    to: PrimitiveType,
+) -> Option<onda_mir::IntegerRangeInvariant> {
+    let (min, max) = match (range.min, range.max, to) {
+        (ScalarValue::I32(min), ScalarValue::I32(max), PrimitiveType::I64) => (
+            ScalarValue::I64(i64::from(min)),
+            ScalarValue::I64(i64::from(max)),
+        ),
+        (ScalarValue::I64(min), ScalarValue::I64(max), PrimitiveType::I32) => (
+            ScalarValue::I32(i32::try_from(min).ok()?),
+            ScalarValue::I32(i32::try_from(max).ok()?),
+        ),
+        (ScalarValue::I32(min), ScalarValue::I32(max), PrimitiveType::I32) => {
+            (ScalarValue::I32(min), ScalarValue::I32(max))
+        }
+        (ScalarValue::I64(min), ScalarValue::I64(max), PrimitiveType::I64) => {
+            (ScalarValue::I64(min), ScalarValue::I64(max))
+        }
+        _ => return None,
+    };
+    Some(onda_mir::IntegerRangeInvariant {
+        min,
+        max,
+        mode: range.mode,
+    })
 }

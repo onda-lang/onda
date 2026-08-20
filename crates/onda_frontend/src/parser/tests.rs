@@ -4441,6 +4441,82 @@ sample {
 }
 
 #[test]
+fn parses_inferred_integer_binding_ranges_with_default_and_explicit_modes() {
+    let src = r#"
+params:
+  test = 0
+
+sample:
+  clamped = 0 {1000}
+  wrapped = 0 {1000, wrap}
+  explicit = 10 {10, 1000}
+  named = 10 {begin = 10, end = 1000, mode = wrap}
+  named_end = 0 {end = 1000, mode = clamp}
+  mixed = 10 {10, end = 1000}
+  from_binding = test {0, 1000}
+"#;
+    let program = parse_program(src).expect("inferred integer binding ranges should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(block) => Some(&block.body),
+            _ => None,
+        })
+        .expect("sample block");
+    let expected = [
+        (BuiltinFn::BindingRangeClamp, 0, 1000),
+        (BuiltinFn::BindingRangeWrap, 0, 1000),
+        (BuiltinFn::BindingRangeClamp, 10, 1000),
+        (BuiltinFn::BindingRangeWrap, 10, 1000),
+        (BuiltinFn::BindingRangeClamp, 0, 1000),
+        (BuiltinFn::BindingRangeClamp, 10, 1000),
+        (BuiltinFn::BindingRangeClamp, 0, 1000),
+    ];
+    for (statement, (expected_func, expected_begin, expected_end)) in sample.iter().zip(expected) {
+        let Stmt::Assign {
+            decl_ty,
+            is_typed_decl,
+            expr: Expr::Call { func, args, .. },
+            ..
+        } = statement
+        else {
+            panic!("expected an inferred ranged declaration");
+        };
+        assert_eq!(*decl_ty, Some(PrimitiveType::I32));
+        assert!(*is_typed_decl);
+        assert_eq!(*func, expected_func);
+        assert_eq!(args.len(), 3);
+        assert!(matches!(args[1], Expr::Int { value, .. } if value == expected_begin));
+        assert!(matches!(args[2], Expr::Int { value, .. } if value == expected_end));
+    }
+}
+
+#[test]
+fn rejects_incomplete_and_duplicate_named_binding_ranges() {
+    for (range, expected) in [
+        ("{begin = 1}", "requires an 'end' value"),
+        (
+            "{end = 10, end = 20}",
+            "duplicate binding range field 'end'",
+        ),
+        (
+            "{10, wrap, 20}",
+            "positional binding range bounds must precede",
+        ),
+    ] {
+        let source = format!("sample:\n  value = 0 {range}\n");
+        let errors = parse_program(&source).expect_err("invalid binding range should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(expected)),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
 fn parses_indexed_member_assignment_target_as_flat_index_target() {
     let src = r#"
 outs { out1 }

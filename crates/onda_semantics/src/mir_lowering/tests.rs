@@ -125,6 +125,70 @@ sample:
 }
 
 #[test]
+fn def_local_ranges_do_not_become_same_named_state_invariants() {
+    let source = r#"
+ins 3
+outs 1
+
+init:
+  selected: i32 = 99
+
+def unrelated() -> i32:
+  selected: i32 = 0 {3, wrap}
+  return selected
+
+sample:
+  out1 = ins[selected] + f32(unrelated())
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("same-named bindings should analyze independently");
+    let mir = lower_test_program(&typed).expect("same-named bindings should lower safely");
+    validate(&mir).expect("same-named range bindings should produce valid MIR");
+
+    let selected = mir
+        .state
+        .iter()
+        .find(|state| state.name == "selected")
+        .expect("selected state should exist");
+    assert_eq!(selected.integer_range, None);
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    assert!(
+        process.contains("intrinsic range_clamp("),
+        "the unbounded state index must retain runtime normalization:\n{process}"
+    );
+}
+
+#[test]
+fn tuple_destructuring_preserves_integer_storage_ranges() {
+    let source = r#"
+sample:
+  values: f32[4] = [10.0, 20.0, 30.0, 40.0]
+  clamped: i32 = 0 {4}
+  wrapped: i32 = 0 {4, wrap}
+  (clamped, wrapped) = (100, -1)
+  out1 = values[clamped] + values[wrapped]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("ranged destructuring should analyze");
+    let mir = lower_test_program(&typed).expect("ranged destructuring should lower");
+    validate(&mir).expect("ranged destructuring MIR should validate");
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    assert!(
+        !process.contains("[i32(100)] unchecked") && !process.contains("[i32(-1)] unchecked"),
+        "raw destructured values must not reach proven-unchecked indexing:\n{process}"
+    );
+    assert!(
+        process.contains("intrinsic range_clamp(i32(100), i32(0), i32(3))")
+            && process.contains("intrinsic range_wrap(i32(-1), i32(0), i32(3))"),
+        "destructuring should enforce both destination storage invariants:\n{process}"
+    );
+}
+
+#[test]
 fn dynamic_input_and_param_reads_use_entry_point_range_clamps() {
     let source = r#"
 ins:
@@ -148,9 +212,20 @@ sample:
     let dump = format_program(&mir);
     let process = formatted_function(&dump, "onda_process");
     assert_eq!(
-        process.matches("intrinsic range_clamp(").count(),
+        process
+            .lines()
+            .filter(|line| line.contains("intrinsic range_clamp(") && line.contains("f32("))
+            .count(),
         4,
         "each ranged dynamic endpoint should be clamped once:\n{process}"
+    );
+    assert_eq!(
+        process
+            .lines()
+            .filter(|line| line.contains("intrinsic range_clamp(") && line.contains("i32("))
+            .count(),
+        2,
+        "each unproven dynamic interface selector should be clamped once:\n{process}"
     );
     for raw_endpoint in [
         "load_input @in0",
@@ -870,6 +945,40 @@ sample:
     let dump = format_program(&mir);
     assert!(!dump.contains("logical_and"));
     assert!(dump.matches("  if ").count() >= 2);
+}
+
+#[test]
+fn rejects_incompatible_branch_integer_ranges_if_semantic_metadata_is_corrupted() {
+    let source = r#"
+params:
+  select: bool = true
+
+sample:
+  if select:
+    chosen: i32 = 5 {0, 10}
+  else:
+    chosen: i32 = 6 {0, 10}
+  out1 = f32(chosen)
+"#;
+    let mut typed = analyze(parse_program(source).expect("source should parse"))
+        .expect("matching branch ranges should analyze");
+    let Stmt::If { else_branch, .. } = &mut typed.sample[0] else {
+        panic!("sample should start with the conditional");
+    };
+    let Stmt::Assign {
+        expr: Expr::Call { args, .. },
+        ..
+    } = &mut else_branch[0]
+    else {
+        panic!("else branch should contain the ranged declaration");
+    };
+    args[2] = Expr::int(19);
+
+    let errors = lower_test_program(&typed)
+        .expect_err("MIR lowering must defend the branch storage-contract invariant");
+    assert!(errors.iter().any(|error| error.message.contains(
+        "binding 'chosen' reached MIR lowering with incompatible branch integer range contracts"
+    )));
 }
 
 #[test]
@@ -1684,7 +1793,7 @@ block:
 }
 
 #[test]
-fn lowers_schema_v4_segmented_process_parameters_and_logical_frames() {
+fn lowers_current_schema_segmented_process_parameters_and_logical_frames() {
     let source = r#"
 ins:
   in1 = 0.0
@@ -1873,15 +1982,14 @@ block:
     }
 
     let dump = format_program(&mir);
-    assert!(dump.contains("load_input @in0[i32(0)] clamp["));
-    assert!(dump.contains("load_input @in0[i32(1)] clamp["));
+    assert!(dump.contains("load_input @in0[i32(0)] unchecked["));
+    assert!(dump.contains("load_input @in0[i32(1)] unchecked["));
     assert!(dump.contains("store_output @out0[i32(0)]"));
     assert!(dump.contains("store_output @out0[i32(1)]"));
-    assert!(dump.contains("store_control_output @kout0[i32(0)] clamp"));
-    assert!(dump.contains("store_control_output @kout0[i32(1)] clamp"));
-    assert!(dump.contains("load @param0[i32(0)] clamp"));
-    assert!(dump.contains("load @param0[i32(1)] clamp"));
-    assert!(dump.contains("] clamp"));
+    assert!(dump.contains("store_control_output @kout0[i32(0)] unchecked"));
+    assert!(dump.contains("store_control_output @kout0[i32(1)] unchecked"));
+    assert!(dump.contains("load @param0[i32(0)] unchecked"));
+    assert!(dump.contains("load @param0[i32(1)] unchecked"));
 }
 
 #[test]
@@ -1994,16 +2102,11 @@ block:
     let dump = format_program(&mir);
     assert_eq!(dump.matches(&format!("call @fn{pick}")).count(), 5);
     assert_eq!(dump.matches(&format!("call @fn{value_once}")).count(), 2);
-    assert_eq!(dump.matches("intrinsic max(").count(), 5);
-    assert_eq!(dump.matches("intrinsic min(").count(), 5);
+    assert_eq!(dump.matches("intrinsic range_clamp(").count(), 5);
     assert!(dump
         .lines()
-        .filter(|line| line.contains("intrinsic max("))
-        .all(|line| line.contains("i32(0)")));
-    assert!(dump
-        .lines()
-        .filter(|line| line.contains("intrinsic min("))
-        .all(|line| line.contains("i32(2)")));
+        .filter(|line| line.contains("intrinsic range_clamp("))
+        .all(|line| line.contains("i32(0)") && line.contains("i32(2)")));
 
     for endpoint in [
         "load_input @in0",
@@ -2083,8 +2186,157 @@ sample:
     assert_eq!(dump.matches("load @param0").count(), 2);
     assert_eq!(dump.matches("load @param1[i32(0)] unchecked").count(), 2);
     assert_eq!(dump.matches("load @param1[i32(1)] unchecked").count(), 2);
-    assert_eq!(dump.matches("intrinsic max(").count(), 2);
-    assert_eq!(dump.matches("intrinsic min(").count(), 2);
+    assert_eq!(dump.matches("intrinsic range_clamp(").count(), 2);
+}
+
+#[test]
+fn unsafe_dynamic_interface_access_supports_free_and_receiver_syntax() {
+    let source = r#"
+ins 2
+kins 2
+outs 2
+kouts 2
+
+init:
+  selected: i32 = 1
+
+block:
+  kouts.write_unsafe(selected, params.read_unsafe(selected))
+  sample:
+    write_unsafe(outs, selected, read_unsafe(ins, selected) + kins.read_unsafe(selected))
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("unsafe dynamic interface access should analyze");
+    let mir = lower_test_program(&typed).expect("unsafe dynamic interface access should lower");
+    validate(&mir).expect("unsafe dynamic interface MIR should validate");
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    assert!(!process.contains("intrinsic range_clamp("), "{process}");
+    for endpoint in [
+        "load_input @in0",
+        "load_input @in1",
+        "load @param0",
+        "load @param1",
+        "store_output @out0",
+        "store_output @out1",
+        "store_control_output @kout0",
+        "store_control_output @kout1",
+    ] {
+        assert!(process.contains(endpoint), "missing {endpoint}:\n{process}");
+    }
+}
+
+#[test]
+fn unsafe_named_interface_arrays_preserve_host_output_stores() {
+    let source = r#"
+ins:
+  source: f32[2]
+outs:
+  sink: f32[2]
+kouts:
+  leds: f32[2]
+params:
+  controls: f32[2] = [0.25, 0.75]
+
+init:
+  selected: i32 = 1
+
+block:
+  leds.write_unsafe(selected, controls.read_unsafe(selected))
+  sample:
+    write_unsafe(sink, selected, source.read_unsafe(selected))
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("unsafe interface array access should analyze");
+    let mir = lower_test_program(&typed).expect("unsafe interface array access should lower");
+    validate(&mir).expect("unsafe interface array MIR should validate");
+
+    let process = formatted_function(&format_program(&mir), "onda_process").to_owned();
+    assert!(process.contains("load_input @in0["), "{process}");
+    assert!(process.contains("load @param0["), "{process}");
+    assert!(process.contains("store_output @out0["), "{process}");
+    assert!(
+        process.contains("store_control_output @kout0["),
+        "{process}"
+    );
+    assert!(!process.contains("] clamp"), "{process}");
+}
+
+#[test]
+fn ranged_indices_remove_dynamic_interface_normalization() {
+    let source = r#"
+ins 3
+params 3
+outs 3
+kouts 3
+
+init:
+  selected: i32 = 0 {3, wrap}
+
+block:
+  kouts[selected] = params[selected]
+  sample:
+    outs[selected] = ins[selected]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("ranged dynamic interfaces should analyze");
+    let mir = lower_test_program(&typed).expect("ranged dynamic interfaces should lower");
+    validate(&mir).expect("ranged dynamic-interface MIR should validate");
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    assert!(
+        !process.contains("intrinsic range_clamp("),
+        "an in-range selector should not be normalized again:\n{process}"
+    );
+    for endpoint in [
+        "load_input @in0",
+        "load_input @in1",
+        "load_input @in2",
+        "load @param0",
+        "load @param1",
+        "load @param2",
+        "store_output @out0",
+        "store_output @out1",
+        "store_output @out2",
+        "store_control_output @kout0",
+        "store_control_output @kout1",
+        "store_control_output @kout2",
+    ] {
+        assert!(
+            process.contains(endpoint),
+            "missing dynamic endpoint {endpoint}:\n{process}"
+        );
+    }
+}
+
+#[test]
+fn ranged_indices_remove_fixed_proc_array_normalization() {
+    let source = r#"
+proc Voice:
+  outs 1
+  sample:
+    out1 = 1.0
+
+init:
+  voices: Voice[4] = Voice()
+  selected: i32 = 0 {4, wrap}
+
+sample:
+  out1 = voices[selected]()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("ranged proc-array indexing should analyze");
+    let mir = lower_test_program(&typed).expect("ranged proc-array indexing should lower");
+    validate(&mir).expect("ranged proc-array MIR should validate");
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    assert!(
+        !process.contains("intrinsic range_clamp("),
+        "an in-range proc selector should not be normalized again:\n{process}"
+    );
 }
 
 #[test]
@@ -2105,8 +2357,7 @@ sample 2:
     validate(&mir).expect("oversampled dynamic port MIR should validate");
 
     let dump = format_program(&mir);
-    assert_eq!(dump.matches("intrinsic max(").count(), 2);
-    assert_eq!(dump.matches("intrinsic min(").count(), 2);
+    assert_eq!(dump.matches("intrinsic range_clamp(").count(), 2);
     assert_eq!(dump.matches("load_input ").count(), 2);
     assert_eq!(dump.matches("store_output ").count(), 2);
     assert!(dump.contains("$oversample.input.in1.current"));
@@ -2243,9 +2494,8 @@ sample:
         Some(onda_mir::ConstantValue::Aggregate(ref values)) if values.len() == 2
     ));
     let dump = format_program(&mir);
-    assert!(dump.contains("load @event_param0[i32(0)] clamp"));
-    assert!(dump.contains("load @event_param0[i32(1)] clamp"));
-    assert!(dump.contains("] clamp"));
+    assert!(dump.contains("load @event_param0[i32(0)] unchecked"));
+    assert!(dump.contains("load @event_param0[i32(1)] unchecked"));
     assert!(dump.contains("i32(2)"));
 }
 
@@ -2531,8 +2781,8 @@ sample:
     let mir = lower_test_program(&typed).expect("buffer collection slices should lower");
     validate(&mir).expect("buffer collection slice MIR should validate");
     let dump = format_program(&mir);
-    assert!(dump.contains("make_slice @buffer_array(first=0, len=2)[i32(1)] clamp"));
-    assert!(dump.contains("make_slice @buffer_array(first=2, len=3)[i32(2)] clamp"));
+    assert!(dump.contains("make_slice @buffer_array(first=0, len=2)[i32(1)] unchecked"));
+    assert!(dump.contains("make_slice @buffer_array(first=2, len=3)[i32(2)] unchecked"));
     assert!(dump.contains("slice_fill"));
     for name in ["select", "right_channel", "first_frame"] {
         assert!(
@@ -2542,6 +2792,47 @@ sample:
             "slice-coordinate def '{name}' should remain reachable"
         );
     }
+}
+
+#[test]
+fn unsafe_buffer_access_composes_with_collection_selection_and_aliases() {
+    let source = r#"
+buffers:
+  bank: f32 {2}
+  layers: f32[2] {2}
+
+init:
+  slot: i32 = 1
+  channel: i32 = 1
+  frame: i32 = 0
+
+sample:
+  selected = bank[slot]
+  selected.write_unsafe(frame, 0.25)
+  a = selected.read_unsafe(frame)
+  b = bank[slot].read_unsafe(frame)
+  c = read_unsafe(bank[slot], frame)
+  d = bank.read_unsafe(slot, frame)
+  layers[slot].write_unsafe(channel, frame, 0.5)
+  e = layers[slot].read_unsafe(channel, frame)
+  out1 = a + b + c + d + e
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("unsafe selected buffer access should analyze");
+    let mir = lower_test_program(&typed).expect("unsafe selected buffer access should lower");
+    validate(&mir).expect("unsafe selected buffer MIR should validate");
+
+    let process = formatted_function(&format_program(&mir), "onda_process").to_owned();
+    assert!(
+        process.contains("@buffer_array(first=0, len=2)"),
+        "{process}"
+    );
+    assert!(
+        process.contains("@buffer_array(first=2, len=2)"),
+        "{process}"
+    );
+    assert!(process.contains("] clamp["), "{process}");
+    assert!(process.contains("] unchecked["), "{process}");
 }
 
 #[test]
@@ -2740,7 +3031,7 @@ sample:
             .iter()
             .map(|param| param.name.as_str())
             .collect::<Vec<_>>(),
-        ["holder.leaves.value", "holder.leaves.bins", "holder.armed",]
+        ["holder.leaves.value", "holder.leaves.bins"]
     );
     assert!(inspect
         .params
@@ -2811,6 +3102,58 @@ sample:
     assert!(dump.contains("slice_window"));
     assert!(dump.contains("place @state"));
     assert!(dump.contains("make_slice @state"));
+}
+
+#[test]
+fn unsafe_struct_and_proc_array_reads_preserve_reference_semantics_without_clamps() {
+    let source = r#"
+outs:
+  out1
+
+struct Cell:
+  value: f32 = 1.0
+  taps: f32[2]
+
+def read_cell(cell: Cell):
+  return cell.value + cell.taps[0]
+
+proc Voice:
+  params:
+    gain = 0.25
+
+  init:
+    phase = 0.0
+
+  sample:
+    phase = phase + gain
+    out1 = phase
+
+init:
+  cells: Cell[2]
+  voices: Voice[2] = Voice()
+  cursor: i32 = 1
+
+sample:
+  cell = cells.read_unsafe(cursor)
+  voice = read_unsafe(voices, cursor)
+  out1 = read_cell(cell) + read_cell(cells.read_unsafe(cursor)) + voice(gain = 0.5)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("unsafe aggregate reads should analyze");
+    let mir = lower_test_program(&typed).expect("unsafe aggregate reads should lower");
+    validate(&mir).expect("unsafe aggregate-read MIR should validate");
+
+    let process = formatted_function(&format_program(&mir), "onda_process").to_owned();
+    assert!(process.contains("load @state"), "{process}");
+    assert!(process.contains("slice_window"), "{process}");
+    assert!(
+        process.contains("place @state3[") && process.contains("] unchecked"),
+        "{process}"
+    );
+    assert!(
+        !process.contains("intrinsic range_clamp("),
+        "unsafe aggregate selectors must not be normalized:\n{process}"
+    );
 }
 
 #[test]
@@ -3175,6 +3518,42 @@ sample:
 }
 
 #[test]
+fn ranged_indices_remove_fixed_buffer_collection_selector_clamps() {
+    let source = r#"
+params:
+  slot: i32 = 0 {0, 3}
+buffers:
+  bank: f32 {4}
+sample:
+  out1 = bank[slot][0]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("ranged buffer collection indexing should analyze");
+    assert!(
+        typed
+            .state_integer_ranges
+            .contains_key("__onda_clamped_param__slot"),
+        "the generated range-clamp alias should retain its semantic range"
+    );
+    let mir = lower_test_program(&typed).expect("ranged buffer collection indexing should lower");
+    validate(&mir).expect("ranged buffer collection MIR should validate");
+    assert!(
+        mir.state
+            .iter()
+            .find(|state| state.name == "__onda_clamped_param__slot")
+            .and_then(|state| state.integer_range)
+            .is_some(),
+        "the generated range-clamp alias state should retain its range"
+    );
+
+    let dump = format_program(&mir);
+    assert!(
+        dump.contains("@buffer_array(first=0, len=4)") && dump.contains("] unchecked[i32(0)] clamp"),
+        "the fixed collection selector should be unchecked while its runtime frame remains clamped:\n{dump}"
+    );
+}
+
+#[test]
 fn lowers_processor_block_buffer_aliases_across_generated_runtime_functions() {
     let source = r#"
 buffers:
@@ -3226,7 +3605,7 @@ sample:
     let typed = analyze(parsed).expect("indexed buffer receiver should analyze");
     let mir = lower_test_program(&typed).expect("indexed buffer receiver should lower");
     validate(&mir).expect("indexed buffer receiver MIR should validate");
-    assert!(format_program(&mir).contains("@buffer_array(first=0, len=2)[i32(1)] clamp"));
+    assert!(format_program(&mir).contains("@buffer_array(first=0, len=2)[i32(1)] unchecked"));
 }
 
 #[test]

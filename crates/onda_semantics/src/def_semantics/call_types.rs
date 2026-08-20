@@ -561,13 +561,19 @@ pub(crate) fn infer_scalar_expr_type(
                 }
             }
             if is_internal_buffer_2d_fn(name) {
-                if let Some(CallArg {
-                    expr: Expr::Var { name: base, .. },
-                    ..
-                }) = args.first()
-                {
+                if is_builtin_buffer_write_function_name(name) {
+                    return None;
+                }
+                if let Some(first) = args.first() {
+                    let base = match &first.expr {
+                        Expr::Var { name: base, .. } | Expr::Index { base, .. } => base,
+                        _ => return None,
+                    };
                     if let Some((elem_ty, _)) = env.buffer_types.get(base) {
                         return Some(*elem_ty);
+                    }
+                    if let Some(elem_ty) = infer_array_symbol_elem_type(base, env, context) {
+                        return Some(elem_ty);
                     }
                 }
             }

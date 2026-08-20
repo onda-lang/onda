@@ -9,7 +9,7 @@ use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
 use onda_frontend::{Diagnostic, PrimitiveType};
-use onda_mir::{ParamControl, ScalarValue, ValueRange};
+use onda_mir::{IntegerRangeInvariant, ParamControl, ScalarValue, ValueRange};
 pub use onda_mir::{ParamDomain, ParamScale, ScalarType as ParamScalarType};
 
 mod aot_artifact;
@@ -83,6 +83,7 @@ struct StateSnapshotSegment {
     state_offset: usize,
     byte_size: usize,
     element_size: usize,
+    integer_range: Option<IntegerRangeInvariant>,
 }
 
 #[derive(Clone, Copy)]
@@ -375,6 +376,7 @@ pub struct DeclaredState {
     is_array: bool,
     byte_offset: usize,
     storage_byte_offset: usize,
+    integer_range: Option<IntegerRangeInvariant>,
 }
 
 #[derive(Debug, Clone)]
@@ -543,6 +545,7 @@ fn build_snapshot_segments(entries: &[DeclaredState]) -> Vec<StateSnapshotSegmen
             state_offset: entry.storage_byte_offset,
             byte_size: entry.byte_size(),
             element_size: primitives::primitive_type_bytes(entry.elem_ty),
+            integer_range: entry.integer_range,
         })
         .collect()
 }
@@ -800,11 +803,44 @@ sample:
         let mut live = initial
             .try_clone_with_allocator(None)
             .expect("state should clone");
-        live.bytes_mut().fill(0xff);
+        unsafe { live.bytes_mut() }.fill(0xff);
         program
             .restore_state_snapshot(&mut live, &initial, &snapshot)
             .expect("snapshot should restore");
         assert_eq!(live.bytes(), initial.bytes());
+    }
+
+    #[test]
+    fn snapshot_restore_normalizes_ranged_i32_and_i64_state() {
+        let typed = typed_program(
+            r#"
+init:
+  wrapped: i32 = 0 {0, 4, wrap}
+  clamped: i64 = 10 {10, 21}
+
+sample:
+  out1 = 0.0
+"#,
+        );
+        let program = lower_and_jit(typed).expect("ranged source should lower to JIT");
+        let params = program.default_param_bytes();
+        let initial = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut live = initial
+            .try_clone_with_allocator(None)
+            .expect("state should clone");
+        let mut snapshot = vec![0_u8; program.state_size_bytes()];
+        snapshot[0..8].copy_from_slice(&(99_i64).to_le_bytes());
+        snapshot[8..12].copy_from_slice(&(-1_i32).to_le_bytes());
+        program
+            .restore_state_snapshot(&mut live, &initial, &snapshot)
+            .expect("snapshot should restore");
+        program
+            .write_state_snapshot(&live, &mut snapshot)
+            .expect("normalized state should snapshot");
+        assert_eq!(i64::from_le_bytes(snapshot[0..8].try_into().unwrap()), 20);
+        assert_eq!(i32::from_le_bytes(snapshot[8..12].try_into().unwrap()), 3);
     }
 
     #[test]

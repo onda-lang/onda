@@ -577,6 +577,7 @@ struct ModuleEmitter<'a> {
     functions: Vec<FunctionDecl>,
     const_globals: Vec<LLVMValueRef>,
     host_alias_scopes: HostAliasScopes,
+    range_metadata_kind: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -615,6 +616,7 @@ impl<'a> ModuleEmitter<'a> {
         let const_globals = build_const_globals(program, context, module)?;
         let functions = declare_functions(program, &effects, context, module, types, layouts)?;
         let host_alias_scopes = build_host_alias_scopes(context);
+        let range_metadata_kind = LLVMGetMDKindIDInContext(context, c"range".as_ptr(), 5);
         Ok(Self {
             program,
             effects,
@@ -628,6 +630,7 @@ impl<'a> ModuleEmitter<'a> {
             functions,
             const_globals,
             host_alias_scopes,
+            range_metadata_kind,
         })
     }
 
@@ -813,18 +816,11 @@ unsafe fn declare_functions(
                     else {
                         continue;
                     };
-                    if range.scalar() != onda_mir::ScalarType::I32
-                        || range.min() < 0
-                        || range.max() >= i64::from(i32::MAX)
-                    {
-                        continue;
-                    }
-                    add_i32_range_attribute(
+                    add_integer_range_attribute(
                         context,
                         value,
                         llvm_index,
-                        range.min() as u64,
-                        (range.max() + 1) as u64,
+                        analyzed_integer_value_range(range),
                     )?;
                 }
             }
@@ -841,6 +837,14 @@ unsafe fn declare_functions(
                     let llvm_index = index as u32 + 2;
                     add_enum_param_attribute(context, value, llvm_index, "noundef")?;
                     if parameter.mode == onda_mir::PassingMode::Value {
+                        if let Some(range) = parameter.integer_range {
+                            add_integer_range_attribute(
+                                context,
+                                value,
+                                llvm_index,
+                                invariant_value_range(range),
+                            )?;
+                        }
                         continue;
                     }
                     add_enum_param_attribute(context, value, llvm_index, "nonnull")?;
@@ -872,13 +876,64 @@ unsafe fn declare_functions(
     Ok(declarations)
 }
 
-unsafe fn add_i32_range_attribute(
+fn analyzed_integer_value_range(range: onda_mir::IntegerRange) -> onda_mir::ValueRange {
+    match range.scalar() {
+        onda_mir::ScalarType::I32 => onda_mir::ValueRange {
+            min: onda_mir::ScalarValue::I32(range.min() as i32),
+            max: onda_mir::ScalarValue::I32(range.max() as i32),
+        },
+        onda_mir::ScalarType::I64 => onda_mir::ValueRange {
+            min: onda_mir::ScalarValue::I64(range.min()),
+            max: onda_mir::ScalarValue::I64(range.max()),
+        },
+        _ => unreachable!("integer analysis only produces integer scalar ranges"),
+    }
+}
+
+fn invariant_value_range(range: onda_mir::IntegerRangeInvariant) -> onda_mir::ValueRange {
+    onda_mir::ValueRange {
+        min: range.min,
+        max: range.max,
+    }
+}
+
+fn llvm_integer_range_encoding(
+    range: onda_mir::ValueRange,
+) -> Option<(onda_mir::ScalarType, u64, u64)> {
+    match (range.min, range.max) {
+        (onda_mir::ScalarValue::I32(min), onda_mir::ScalarValue::I32(max)) => {
+            if min == i32::MIN && max == i32::MAX {
+                return None;
+            }
+            Some((
+                onda_mir::ScalarType::I32,
+                u64::from(min as u32),
+                u64::from(max.wrapping_add(1) as u32),
+            ))
+        }
+        (onda_mir::ScalarValue::I64(min), onda_mir::ScalarValue::I64(max)) => {
+            if min == i64::MIN && max == i64::MAX {
+                return None;
+            }
+            Some((
+                onda_mir::ScalarType::I64,
+                min as u64,
+                max.wrapping_add(1) as u64,
+            ))
+        }
+        _ => None,
+    }
+}
+
+unsafe fn add_integer_range_attribute(
     context: LLVMContextRef,
     function: LLVMValueRef,
     index: u32,
-    lower: u64,
-    upper: u64,
+    range: onda_mir::ValueRange,
 ) -> Result<(), MirCodegenError> {
+    let Some((scalar, lower, upper)) = llvm_integer_range_encoding(range) else {
+        return Ok(());
+    };
     let name = "range";
     let kind = LLVMGetEnumAttributeKindForName(name.as_ptr().cast(), name.len());
     if kind == 0 {
@@ -886,7 +941,12 @@ unsafe fn add_i32_range_attribute(
             "failed to resolve LLVM 'range' attribute",
         ));
     }
-    let attribute = LLVMCreateConstantRangeAttribute(context, kind, 32, &lower, &upper);
+    let bit_width = match scalar {
+        onda_mir::ScalarType::I32 => 32,
+        onda_mir::ScalarType::I64 => 64,
+        _ => unreachable!("range attributes are only emitted for integer scalars"),
+    };
+    let attribute = LLVMCreateConstantRangeAttribute(context, kind, bit_width, &lower, &upper);
     LLVMAddAttributeAtIndex(function, index, attribute);
     Ok(())
 }
@@ -2064,8 +2124,12 @@ impl FunctionEmitter<'_, '_> {
         match rvalue {
             Rvalue::Use(value) => self.lower_value(*value),
             Rvalue::Load(place) => {
-                let place = self.lower_place(place)?;
-                Ok(self.load(place))
+                let lowered = self.lower_place(place)?;
+                let load = self.load(lowered);
+                if let Some(range) = self.direct_place_integer_range(place) {
+                    self.mark_integer_range(load, range);
+                }
+                Ok(load)
             }
             Rvalue::Unary { op, operand } => self.lower_unary(*op, *operand),
             Rvalue::Binary { op, lhs, rhs } => self.lower_binary(*op, *lhs, *rhs),
@@ -2552,6 +2616,164 @@ impl FunctionEmitter<'_, '_> {
                 "range_clamp_upper",
             );
         }
+        if intrinsic == onda_mir::Intrinsic::RangeWrap {
+            if !matches!(
+                scalar,
+                onda_mir::ScalarType::I32 | onda_mir::ScalarType::I64
+            ) {
+                return Err(MirCodegenError::invalid(
+                    "range_wrap requires an i32 or i64 value",
+                ));
+            }
+            let scalar_ty = llvm_scalar_type(self.module.context, scalar);
+            let full_domain = match (args[1], args[2]) {
+                (
+                    onda_mir::Value::Constant(onda_mir::ScalarValue::I32(lower)),
+                    onda_mir::Value::Constant(onda_mir::ScalarValue::I32(upper)),
+                ) => lower == i32::MIN && upper == i32::MAX,
+                (
+                    onda_mir::Value::Constant(onda_mir::ScalarValue::I64(lower)),
+                    onda_mir::Value::Constant(onda_mir::ScalarValue::I64(upper)),
+                ) => lower == i64::MIN && upper == i64::MAX,
+                _ => unreachable!("range_wrap bounds were validated as matching constants"),
+            };
+            if full_domain {
+                return Ok(lowered[0]);
+            }
+            // In two's-complement arithmetic, this unsigned distance check is
+            // equivalent to `lower <= value && value <= upper`, including
+            // ranges whose inclusive span crosses the signed midpoint. It
+            // gives the hot path one subtraction, one comparison, and a
+            // predictable branch.
+            let distance_from_lower = LLVMBuildSub(
+                self.builder,
+                lowered[0],
+                lowered[1],
+                c_name("range_wrap_distance")?.as_ptr(),
+            );
+            let range_span = LLVMBuildSub(
+                self.builder,
+                lowered[2],
+                lowered[1],
+                c_name("range_wrap_span_narrow")?.as_ptr(),
+            );
+            let in_range = LLVMBuildICmp(
+                self.builder,
+                LLVMIntPredicate::LLVMIntULE,
+                distance_from_lower,
+                range_span,
+                c_name("range_wrap_in_range")?.as_ptr(),
+            );
+            let preheader = LLVMGetInsertBlock(self.builder);
+            let wrap_block = append_block(
+                self.module.context,
+                self.declaration.value,
+                "range_wrap_slow",
+            )?;
+            let merge_block = append_block(
+                self.module.context,
+                self.declaration.value,
+                "range_wrap_merge",
+            )?;
+            LLVMBuildCondBr(self.builder, in_range, merge_block, wrap_block);
+
+            LLVMPositionBuilderAtEnd(self.builder, wrap_block);
+            let below = LLVMBuildICmp(
+                self.builder,
+                LLVMIntPredicate::LLVMIntSLT,
+                lowered[0],
+                lowered[1],
+                c_name("range_wrap_below")?.as_ptr(),
+            );
+            // For a non-full-domain inclusive range, its width is representable
+            // as a non-zero unsigned value of the source type. Splitting values
+            // below and above the range lets both distances remain exact under
+            // modular arithmetic, avoiding a widened remainder operation.
+            let one = LLVMConstInt(scalar_ty, 1, 0);
+            let width = LLVMBuildAdd(
+                self.builder,
+                range_span,
+                one,
+                c_name("range_wrap_width")?.as_ptr(),
+            );
+            let below_block = append_block(
+                self.module.context,
+                self.declaration.value,
+                "range_wrap_below",
+            )?;
+            let above_block = append_block(
+                self.module.context,
+                self.declaration.value,
+                "range_wrap_above",
+            )?;
+            LLVMBuildCondBr(self.builder, below, below_block, above_block);
+
+            LLVMPositionBuilderAtEnd(self.builder, below_block);
+            let distance_below = LLVMBuildSub(
+                self.builder,
+                LLVMBuildSub(
+                    self.builder,
+                    lowered[1],
+                    one,
+                    c_name("range_wrap_before_lower")?.as_ptr(),
+                ),
+                lowered[0],
+                c_name("range_wrap_distance_below")?.as_ptr(),
+            );
+            let below_remainder = LLVMBuildURem(
+                self.builder,
+                distance_below,
+                width,
+                c_name("range_wrap_remainder_below")?.as_ptr(),
+            );
+            let wrapped_below = LLVMBuildSub(
+                self.builder,
+                lowered[2],
+                below_remainder,
+                c_name("range_wrapped_below")?.as_ptr(),
+            );
+            LLVMBuildBr(self.builder, merge_block);
+
+            LLVMPositionBuilderAtEnd(self.builder, above_block);
+            let distance_above = LLVMBuildSub(
+                self.builder,
+                lowered[0],
+                LLVMBuildAdd(
+                    self.builder,
+                    lowered[2],
+                    one,
+                    c_name("range_wrap_after_upper")?.as_ptr(),
+                ),
+                c_name("range_wrap_distance_above")?.as_ptr(),
+            );
+            let above_remainder = LLVMBuildURem(
+                self.builder,
+                distance_above,
+                width,
+                c_name("range_wrap_remainder_above")?.as_ptr(),
+            );
+            let wrapped_above = LLVMBuildAdd(
+                self.builder,
+                lowered[1],
+                above_remainder,
+                c_name("range_wrapped_above")?.as_ptr(),
+            );
+            LLVMBuildBr(self.builder, merge_block);
+
+            LLVMPositionBuilderAtEnd(self.builder, merge_block);
+            let result = LLVMBuildPhi(
+                self.builder,
+                scalar_ty,
+                c_name("range_wrap_value_or_wrapped")?.as_ptr(),
+            );
+            LLVMAddIncoming(
+                result,
+                [lowered[0], wrapped_below, wrapped_above].as_mut_ptr(),
+                [preheader, below_block, above_block].as_mut_ptr(),
+                3,
+            );
+            return Ok(result);
+        }
         if matches!(
             scalar,
             onda_mir::ScalarType::I32 | onda_mir::ScalarType::I64
@@ -2608,6 +2830,9 @@ impl FunctionEmitter<'_, '_> {
             onda_mir::Intrinsic::Fma => "llvm.fma",
             onda_mir::Intrinsic::RangeClamp => {
                 unreachable!("range clamp lowers before ordinary float intrinsics")
+            }
+            onda_mir::Intrinsic::RangeWrap => {
+                unreachable!("range wrap lowers before ordinary intrinsics")
             }
         };
         let name = if base.starts_with("llvm.") {
@@ -4946,6 +5171,44 @@ impl FunctionEmitter<'_, '_> {
         load
     }
 
+    fn direct_place_integer_range(&self, place: &Place) -> Option<onda_mir::ValueRange> {
+        if !place.projections.is_empty() {
+            return None;
+        }
+        match place.base {
+            onda_mir::PlaceBase::Local(local) => self.function.locals[local.index()]
+                .integer_range
+                .map(invariant_value_range),
+            onda_mir::PlaceBase::Parameter(parameter) => self.function.params[parameter.index()]
+                .integer_range
+                .map(invariant_value_range),
+            onda_mir::PlaceBase::State(state) => self.module.program.state[state.index()]
+                .integer_range
+                .map(invariant_value_range),
+            onda_mir::PlaceBase::Param(param) => {
+                self.module.program.interface.params[param.index()].range
+            }
+            onda_mir::PlaceBase::EventParam(_) => None,
+        }
+    }
+
+    unsafe fn mark_integer_range(&self, instruction: LLVMValueRef, range: onda_mir::ValueRange) {
+        let Some((scalar, lower, upper)) = llvm_integer_range_encoding(range) else {
+            return;
+        };
+        let ty = llvm_scalar_type(self.module.context, scalar);
+        let mut operands = [
+            LLVMValueAsMetadata(LLVMConstInt(ty, lower, 0)),
+            LLVMValueAsMetadata(LLVMConstInt(ty, upper, 0)),
+        ];
+        let node = LLVMMDNodeInContext2(self.module.context, operands.as_mut_ptr(), operands.len());
+        LLVMSetMetadata(
+            instruction,
+            self.module.range_metadata_kind,
+            LLVMMetadataAsValue(self.module.context, node),
+        );
+    }
+
     unsafe fn store(&self, place: PlaceRef, value: LLVMValueRef) {
         let store = LLVMBuildStore(self.builder, value, place.ptr);
         LLVMSetAlignment(store, place.alignment as u32);
@@ -6875,12 +7138,20 @@ mod tests {
     }
 
     fn run_native_outputs(source: &str, block_size: usize) -> Vec<Vec<f32>> {
+        run_native_outputs_with_opt_level(source, block_size, TargetOptLevel::O0)
+    }
+
+    fn run_native_outputs_with_opt_level(
+        source: &str,
+        block_size: usize,
+        opt_level: TargetOptLevel,
+    ) -> Vec<Vec<f32>> {
         let (_, mir) = source_program(source, block_size);
         let native = lower_mir_and_jit_with_options(
             mir,
             MirCompileOptions {
                 fast_math: false,
-                opt_level: TargetOptLevel::O0,
+                opt_level,
             },
         )
         .expect("native MIR LLVM backend should compile");
@@ -7142,6 +7413,156 @@ sample:
     }
 
     #[test]
+    fn tuple_destructuring_normalizes_ranged_indices_before_unchecked_access() {
+        let source = r#"
+sample:
+  values: f32[4] = [10.0, 20.0, 30.0, 40.0]
+  clamped: i32 = 0 {4}
+  wrapped: i32 = 0 {4, wrap}
+  (clamped, wrapped) = (100, -1)
+  out1 = values[clamped] + values[wrapped]
+"#;
+        let outputs = run_native_outputs_with_opt_level(source, 4, TargetOptLevel::O3);
+        assert_eq!(outputs, [vec![80.0; 4]]);
+    }
+
+    #[test]
+    fn for_induction_does_not_wrap_at_i32_endpoints() {
+        let source = r#"
+const I32_MIN = -2147483647 - 1
+const I32_MIN_PLUS_ONE = -2147483647
+
+sample:
+  visits = 0
+  for i in 2147483647..=2147483647:
+    visits += 1
+    continue
+  for i @ 2 in 2147483646..=2147483647:
+    visits += 1
+    continue
+  for i @ -1 in I32_MIN..=I32_MIN:
+    visits += 1
+    continue
+  for i @ -2 in I32_MIN_PLUS_ONE..=I32_MIN:
+    visits += 1
+    continue
+  total = 0
+  for i @ 3 in 0..=10:
+    total += i
+  for i @ -3 in 10..=0:
+    total += i
+  out1 = f32(visits)
+  out2 = f32(total)
+"#;
+        let (_, mir) = source_program(source, 1);
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("constant loops should emit LLVM IR");
+        assert!(
+            !ir.contains("trunc i64"),
+            "constant loops should keep an i32 induction path even at O0: {ir}"
+        );
+        let outputs = run_native_outputs_with_opt_level(source, 1, TargetOptLevel::O0);
+        assert_eq!(outputs, [vec![4.0], vec![40.0]]);
+    }
+
+    #[test]
+    fn dynamic_for_induction_stays_i32_without_truncation() {
+        let source = r#"
+params:
+  count: i32 = 4
+
+sample:
+  total = 0
+  for i in 0..count:
+    total += i
+  out1 = f32(total)
+"#;
+        let (_, mir) = source_program(source, 1);
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("dynamic loops should emit LLVM IR");
+        assert!(
+            !ir.contains("trunc i64"),
+            "dynamic loops must stay i32: {ir}"
+        );
+        assert!(
+            ir.contains("add i32"),
+            "dynamic induction must use i32: {ir}"
+        );
+        let outputs = run_native_outputs_with_opt_level(source, 1, TargetOptLevel::O0);
+        assert_eq!(outputs, [vec![6.0]]);
+    }
+
+    #[test]
+    fn llvm_receives_declared_integer_ranges_on_loads() {
+        let (_, mut mir) = source_program(
+            r#"
+params:
+  selector: i32 = 0 {min = 0, max = 3}
+
+init:
+  cursor: i32 = 0 {-4, 4, wrap}
+
+def preserve(index: i32) -> i32:
+  return index
+
+sample:
+  out1 = f32(preserve(selector) + cursor)
+"#,
+            1,
+        );
+        let preserve = mir
+            .functions
+            .iter_mut()
+            .find(|function| {
+                function
+                    .params
+                    .iter()
+                    .any(|parameter| parameter.name == "index")
+            })
+            .expect("preserve function");
+        preserve.params[0].integer_range = Some(onda_mir::IntegerRangeInvariant {
+            min: onda_mir::ScalarValue::I32(0),
+            max: onda_mir::ScalarValue::I32(3),
+            mode: onda_mir::IntegerRangeMode::Clamp,
+        });
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("ranged storage should emit LLVM IR");
+
+        assert!(
+            ir.lines()
+                .filter(|line| line.contains("load i32"))
+                .filter(|line| line.contains("!range"))
+                .count()
+                >= 2,
+            "ranged parameter and state loads should carry !range metadata: {ir}"
+        );
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("define internal") && line.contains("range(i32 0, 4)")
+            }),
+            "ranged value parameters should carry a range attribute: {ir}"
+        );
+    }
+
+    #[test]
     fn array_window_accepts_equivalent_duplicate_element_type_ids() {
         let i32_ty = onda_mir::TypeId::new(0);
         let source_element = onda_mir::TypeId::new(1);
@@ -7170,6 +7591,7 @@ sample:
             },
         ];
         program.state.push(onda_mir::StateSlot {
+            integer_range: None,
             name: "source".to_owned(),
             ty: source_array,
             persistence: onda_mir::StatePersistence::Snapshot,
@@ -7205,6 +7627,7 @@ sample:
         });
         let mut callee = empty_function("consume_window", FunctionKind::User);
         callee.params.push(onda_mir::FunctionParam {
+            integer_range: None,
             name: "window".to_owned(),
             ty: parameter_array,
             mode: onda_mir::PassingMode::ReadOnlyReference,
@@ -8342,6 +8765,116 @@ sample:
     }
 
     #[test]
+    fn optimized_range_wrap_uses_same_width_unsigned_remainders() {
+        let (_, mir) = source_program(
+            r#"
+params:
+  step: i32 = 1
+
+init:
+  index: i32 = 0 {0, 1001, wrap}
+
+sample:
+  index += step
+  out1 = f32(index)
+"#,
+            1,
+        );
+        let ir = lower_mir_to_llvm_ir_with_options(
+            &mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("range-wrapped state should emit optimized LLVM IR");
+        assert!(ir.contains("range_wrap_slow"), "{ir}");
+        assert!(ir.contains("urem i32"), "{ir}");
+        assert!(!ir.contains("srem"), "{ir}");
+        assert!(!ir.contains("urem i128"), "{ir}");
+        assert!(ir.contains("icmp ult i32"), "{ir}");
+        assert!(
+            !ir.contains("%range_wrap_distance ="),
+            "the zero lower bound should eliminate the distance subtraction: {ir}"
+        );
+        let branch = ir
+            .find("br i1 %range_wrap_in_range")
+            .expect("range check branch");
+        let remainder = ir.find("urem i32").expect("slow-path remainder");
+        assert!(
+            branch < remainder,
+            "the range check must dominate the remainder: {ir}"
+        );
+
+        let (_, i64_mir) = source_program(
+            r#"
+params:
+  step: i64 = 1
+
+init:
+  index: i64 = 0 {-1000, 1001, wrap}
+
+sample:
+  index += step
+  out1 = f32(index)
+"#,
+            1,
+        );
+        let i64_ir = lower_mir_to_llvm_ir_with_options(
+            &i64_mir,
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .expect("i64 range-wrapped state should emit optimized LLVM IR");
+        assert!(i64_ir.contains("urem i64"), "{i64_ir}");
+        assert!(!i64_ir.contains("srem"), "{i64_ir}");
+        assert!(!i64_ir.contains("urem i128"), "{i64_ir}");
+    }
+
+    #[test]
+    fn range_wrap_slow_paths_preserve_inclusive_signed_semantics() {
+        let outputs = run_native_outputs(
+            r#"
+init:
+  descending: i32 = -2 {-2, 3, wrap}
+  ascending: i32 = 2 {-2, 3, wrap}
+
+sample:
+  descending -= 2
+  ascending += 2
+  out1 = f32(descending)
+  out2 = f32(ascending)
+"#,
+            5,
+        );
+        assert_eq!(outputs[0], [1.0, -1.0, 2.0, 0.0, -2.0]);
+        assert_eq!(outputs[1], [-1.0, 1.0, -2.0, 0.0, 2.0]);
+
+        let wide_outputs = run_native_outputs(
+            r#"
+params:
+  below_step: i64 = -9223372036854775807
+  above_step: i64 = 9223372036854775807
+
+init:
+  below: i64 = -1 {-9223372036854775807, 3, wrap}
+  above: i64 = 0 {-9223372036854775807, 3, wrap}
+
+sample:
+  below += below_step
+  above += above_step
+  out1 = f32(below)
+  out2 = f32(above)
+"#,
+            1,
+        );
+        assert_eq!(wide_outputs[0], [2.0]);
+        assert_eq!(wide_outputs[1], [-3.0]);
+    }
+
+    #[test]
     fn fused_index_provenance_counts_read_write_call_arguments() {
         let (_, mut mir) = source_program(
             r#"
@@ -8393,6 +8926,7 @@ sample:
         let mut mutator = mir.functions[function_index].clone();
         mutator.name = "__test_mutate_index_source".to_owned();
         mutator.params = vec![onda_mir::FunctionParam {
+            integer_range: None,
             name: "value".to_owned(),
             ty: source_ty,
             mode: onda_mir::PassingMode::ReadWriteReference,
@@ -9304,21 +9838,25 @@ sample { out1 = phase }
         ];
         mir.state = vec![
             onda_mir::StateSlot {
+                integer_range: None,
                 name: "phase".to_owned(),
                 ty: f32_ty,
                 persistence: onda_mir::StatePersistence::Snapshot,
             },
             onda_mir::StateSlot {
+                integer_range: None,
                 name: "meter".to_owned(),
                 ty: f64_ty,
                 persistence: onda_mir::StatePersistence::ControlMirror,
             },
             onda_mir::StateSlot {
+                integer_range: None,
                 name: "$scratch".to_owned(),
                 ty: i32_ty,
                 persistence: onda_mir::StatePersistence::InstanceScratch,
             },
             onda_mir::StateSlot {
+                integer_range: None,
                 name: "history".to_owned(),
                 ty: f64_ty,
                 persistence: onda_mir::StatePersistence::Snapshot,

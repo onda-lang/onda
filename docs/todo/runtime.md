@@ -2,6 +2,16 @@
 
 ## Optimization / runtime follow-ups
 
+- Non-realtime preparation lifecycle
+  - Add an Onda `prepare` phase that runs after parameters and external buffers are bound but before
+    an instance can process audio.
+  - Permit expensive initialization such as impulse FFTs, wavetable construction, and lookup-table
+    preparation without pretending that an event changes execution threads.
+  - For live buffer rebinding, prepare a replacement instance off the audio thread and swap it only
+    at a block boundary.
+  - Define failure, cancellation, repeated preparation, state reset, and host/plugin activation
+    semantics before exposing the phase in source syntax.
+
 - Proc-array block-hook lowering
   - When a loop over proc-array indices is statically proven to visit a known set of slots, lower those calls like static slot access:
     emit direct `block_pre` / `block_post` calls for the proven slots and remove the runtime active-flag bookkeeping for that path.

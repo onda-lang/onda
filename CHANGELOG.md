@@ -7,6 +7,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.7.5]
+
+### Added
+
+- Added half-open storage ranges for `i32` and `i64` locals and state, with automatic `clamp` or
+  Euclidean `wrap` normalization on initialization and every assignment. Ranges remain ordinary
+  integers in memory while supplying invariants that the compiler can use to remove indexing work.
+- Added explicit `read_unsafe` and `write_unsafe` operations, in free-call and receiver forms, for
+  unchecked access to primitive arrays, slices, ports, dynamic interface views, buffers, and buffer
+  collections. `read_unsafe` also supports reference selection from struct and processor arrays.
+- Added MIR integer-range invariants, exact inclusive `range_wrap` semantics, and a shared bounds
+  proof pass that turns clamped or checked fixed-size accesses into trusted unchecked accesses when
+  the complete index interval is proven valid.
+- Added LSP completion, validation, and semantic highlighting for integer binding ranges and their
+  `clamp` and `wrap` modes, plus contextual completion, hover, and signature help for unchecked
+  `read_unsafe` / `write_unsafe` access.
+
+### Changed
+
+- Ordinary indexing now clamps every coordinate independently for nonempty arrays, ports, buffers,
+  slices, struct arrays, and processor arrays. Empty dynamic-slice element access still reports a
+  runtime safety failure. Proven in-range accesses compile without the normalization.
+- Advanced the MIR schema to version 5 and the processor artifact and ABI formats to version 4.
+  Processor metadata can now describe ranged scalar integer state, and snapshot restoration
+  normalizes those values before generated code may rely on their invariants. The packed snapshot
+  format remains version 1.
+- Reworked the time-domain convolver's active-tap and ring-write state to use integer storage ranges,
+  removing its manual clamp and wrap branches.
+
+### Migration notes
+
+- Code that intentionally supplies out-of-range coordinates to ordinary indexing now observes the
+  nearest valid element instead of a runtime bounds failure. Use `read_unsafe` or `write_unsafe` only
+  when the coordinate is independently proven valid; violating their contract is memory-unsafe.
+- Raw processor ABI hosts must accept format version 4 metadata and normalize ranged integer state
+  after restoring snapshot bytes as described by each state's `integer_range` entry.
+
 ## [0.7.4]
 
 ### Fixed
@@ -432,6 +469,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.7.5]: https://github.com/onda-lang/onda/compare/0.7.4...0.7.5
 [0.7.4]: https://github.com/onda-lang/onda/compare/0.7.3...0.7.4
 [0.7.3]: https://github.com/onda-lang/onda/compare/0.7.2...0.7.3
 [0.7.2]: https://github.com/onda-lang/onda/compare/0.7.1...0.7.2

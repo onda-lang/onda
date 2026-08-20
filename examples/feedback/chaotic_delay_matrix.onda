@@ -13,7 +13,7 @@ params:
   ping = 2200 {64, 12000}
 
 def sat(x):
-  return clamp(x - 0.18 * x * x * x, -1.0, 1.0)
+  return tanh(x - 0.18 * x * x * x)
 
 init:
   o1 = std::osc::Saw(freq = 9.0)
@@ -75,7 +75,7 @@ sample:
   stride_a = ping / 3 + 17
   stride_b = ping / 5 + 29
   hit = 0.0
-  if ((n % ping) == 0):
+  if (n % ping == 0):
     hit = hit + spray
   if ((n % stride_a) == 0 && (ma + mb * 0.7 > 1.18)):
     hit = hit + spray * 0.33

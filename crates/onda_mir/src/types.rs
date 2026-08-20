@@ -15,6 +15,22 @@ pub enum ScalarType {
     Bool,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegerRangeMode {
+    Clamp,
+    Wrap,
+}
+
+/// A storage invariant for an integer scalar. Every value written to the
+/// storage is normalized into this inclusive interval using `mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct IntegerRangeInvariant {
+    pub min: ScalarValue,
+    pub max: ScalarValue,
+    pub mode: IntegerRangeMode,
+}
+
 impl ScalarType {
     pub const ALL: [Self; 5] = [Self::F32, Self::F64, Self::I32, Self::I64, Self::Bool];
 

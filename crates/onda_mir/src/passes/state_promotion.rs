@@ -71,6 +71,7 @@ pub(super) fn promote_process_scalar_state(program: &mut Program, stats: &mut Pa
         process.locals.push(Local {
             name: Some(format!("$promoted.state.{}", slot.name)),
             ty: slot.ty,
+            integer_range: slot.integer_range,
         });
         mapping[state.index()] = Some(local);
         // Initializing write-only references too keeps reference formation

@@ -82,6 +82,7 @@ Non-crate directories of note:
 - Analysis cores:
   - `expr_validation.rs`, `expr_typing.rs`, `expr_analysis/` — expression validation, typing, and environment construction.
   - `stmt_analysis/` — init / runtime / alias / indexed-binding statement analysis.
+  - `index_access.rs` — canonical source indexing access modes and unsafe receiver-call rewriting.
   - `port_coercion.rs` — port and parameter coercion.
   - `declaration_coercion.rs` — struct field, param, and buffer coercion.
   - `namespacing.rs` — namespace, `use`, and qualified-path resolution.
@@ -116,8 +117,9 @@ Non-crate directories of note:
   range facts.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
 - `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked bounds.
-- `passes.rs`, `passes/{cse,state_promotion}.rs` — fixed-point backend-neutral canonicalization,
-  pure-expression value numbering, bounded alias-safe scalar-state promotion, and cleanup.
+- `passes.rs`, `passes/{bounds_proofs,cse,state_promotion}.rs` — fixed-point backend-neutral
+  canonicalization, integer-range-based bounds proofs, pure-expression value numbering, bounded
+  alias-safe scalar-state promotion, and cleanup.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
 - The production MIR contract is documented in `docs/mir.md`.
 
@@ -182,7 +184,10 @@ Non-crate directories of note:
 - `server.rs` — JSON-RPC transport, document and watched-file notification state, dependency-aware
   cache invalidation, snapshot-replayed diagnostic workers, request dispatch, and integration tests;
   the server does not own an OS filesystem watcher.
-- `server/diagnostics.rs`, `server/completion.rs`, `server/navigation.rs` — diagnostics, completion, hover, and definition handling.
+- `server/diagnostics.rs`, `server/completion.rs`, `server/navigation.rs` — diagnostics, contextual
+  completion, hover, signature help, and definition handling.
+- `server/param_domain.rs` — parameter-domain and integer-binding-range completion/token contexts.
+- `server/unsafe_index.rs` — shared unchecked-intrinsic signatures and safety documentation.
 - `server/namespace_resolution.rs`, `server/position.rs`, `server/path_utils.rs` — namespace, source-position, and path support.
 - `server/semantic_tokens/{mod,ast_index,source_fallback,tests}.rs` — semantic-token indexing, incomplete-source fallback, and tests.
 - `formatting.rs` — source formatting shared with the CLI.
@@ -279,6 +284,11 @@ Non-crate directories of note:
   range minimum at these generated clamp boundaries. Host-triggered events run synchronously via
   index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous
   element bytes).
+- Ordinary source indexing clamps each coordinate independently for every nonempty indexable
+  surface. Integer storage ranges preserve `i32`/`i64` interval facts through MIR, and the shared
+  bounds-proof pass removes clamping or checks when the complete coordinate interval is known to
+  fit. Explicit `read_unsafe` / `write_unsafe` calls instead establish a programmer-owned unchecked
+  boundary and are memory-unsafe when any coordinate is invalid.
 
 ## Browser build and verification
 

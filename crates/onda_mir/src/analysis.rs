@@ -925,8 +925,18 @@ struct RangeSummary {
 pub fn analyze_integer_ranges(program: &Program, function: FunctionId) -> FunctionRangeAnalysis {
     let function = &program.functions[function.index()];
     let parameters = function_parameter_ranges(program, function);
-    let mut environment = vec![None; function.locals.len()];
-    let mut summary = vec![RangeSummary::default(); function.locals.len()];
+    let mut environment = function
+        .locals
+        .iter()
+        .map(|local| local.integer_range.and_then(integer_range_from_invariant))
+        .collect::<Vec<_>>();
+    let mut summary = environment
+        .iter()
+        .map(|range| RangeSummary {
+            seen: range.is_some(),
+            range: *range,
+        })
+        .collect::<Vec<_>>();
     analyze_range_block(
         program,
         function,
@@ -946,6 +956,11 @@ fn function_parameter_ranges(
     function: &crate::Function,
 ) -> Vec<Option<IntegerRange>> {
     let mut ranges = vec![None; function.params.len()];
+    for (range, parameter) in ranges.iter_mut().zip(&function.params) {
+        *range = parameter
+            .integer_range
+            .and_then(integer_range_from_invariant);
+    }
     if function.kind == FunctionKind::Process && ranges.len() >= crate::PROCESS_PARAM_COUNT {
         let maximum = i64::from(program.config.block_size);
         ranges[crate::PROCESS_START_FRAME_PARAM_INDEX] =
@@ -974,7 +989,10 @@ fn analyze_range_block(
                 let PlaceBase::Local(local) = destination.base else {
                     unreachable!()
                 };
-                let range = range_of_rvalue(program, function, value, parameters, environment);
+                let range = function.locals[local.index()]
+                    .integer_range
+                    .and_then(integer_range_from_invariant)
+                    .or_else(|| range_of_rvalue(program, function, value, parameters, environment));
                 environment[local.index()] = range;
                 record_range(&mut summary[local.index()], range);
             }
@@ -984,16 +1002,22 @@ fn analyze_range_block(
                 args,
             } => {
                 for result in results {
-                    environment[result.index()] = None;
-                    record_range(&mut summary[result.index()], None);
+                    let range = function.locals[result.index()]
+                        .integer_range
+                        .and_then(integer_range_from_invariant);
+                    environment[result.index()] = range;
+                    record_range(&mut summary[result.index()], range);
                 }
                 for (index, argument) in args.iter().enumerate() {
                     if program.functions[callee.index()].params[index].mode
                         == crate::PassingMode::ReadWriteReference
                     {
                         if let Some(local) = argument_local(argument) {
-                            environment[local.index()] = None;
-                            record_range(&mut summary[local.index()], None);
+                            let range = function.locals[local.index()]
+                                .integer_range
+                                .and_then(integer_range_from_invariant);
+                            environment[local.index()] = range;
+                            record_range(&mut summary[local.index()], range);
                         }
                     }
                 }
@@ -1028,7 +1052,9 @@ fn analyze_range_block(
                 collect_range_mutations(body, program, &mut mutated);
                 let mut body_environment = environment.to_vec();
                 for local in &mutated {
-                    body_environment[local.index()] = None;
+                    body_environment[local.index()] = function.locals[local.index()]
+                        .integer_range
+                        .and_then(integer_range_from_invariant);
                 }
                 analyze_range_block(
                     program,
@@ -1039,7 +1065,9 @@ fn analyze_range_block(
                     summary,
                 );
                 for local in mutated {
-                    environment[local.index()] = None;
+                    environment[local.index()] = function.locals[local.index()]
+                        .integer_range
+                        .and_then(integer_range_from_invariant);
                 }
             }
             _ => {}
@@ -1057,6 +1085,7 @@ fn range_of_rvalue(
     match value {
         Rvalue::Use(value) => range_of_value(*value, environment),
         Rvalue::Load(place) if place.projections.is_empty() => match place.base {
+            PlaceBase::Local(local) => environment.get(local.index()).copied().flatten(),
             PlaceBase::Parameter(parameter) => parameters.get(parameter.index()).copied().flatten(),
             PlaceBase::Param(param) => program
                 .interface
@@ -1064,6 +1093,11 @@ fn range_of_rvalue(
                 .get(param.index())
                 .and_then(|parameter| parameter.range)
                 .and_then(integer_range_from_value_range),
+            PlaceBase::State(state) => program
+                .state
+                .get(state.index())
+                .and_then(|slot| slot.integer_range)
+                .and_then(integer_range_from_invariant),
             _ => None,
         },
         Rvalue::Unary { op, operand } => {
@@ -1089,7 +1123,10 @@ fn range_of_rvalue(
                 (ScalarType::I32, ScalarType::I64) => {
                     IntegerRange::new(*to, source.min, source.max)
                 }
-                (ScalarType::I64, ScalarType::I32) => IntegerRange::full(*to),
+                (ScalarType::I64, ScalarType::I32) => {
+                    IntegerRange::new(*to, source.min, source.max)
+                        .or_else(|| IntegerRange::full(*to))
+                }
                 (from, to) if from == *to => Some(source),
                 _ => None,
             }
@@ -1114,7 +1151,7 @@ fn range_of_rvalue(
             }
         }
         Rvalue::Intrinsic {
-            intrinsic: crate::Intrinsic::RangeClamp,
+            intrinsic: crate::Intrinsic::RangeClamp | crate::Intrinsic::RangeWrap,
             args,
         } if args.len() == 3 => {
             let lower = range_of_value(args[1], environment)?;
@@ -1207,6 +1244,13 @@ fn integer_range_from_value_range(range: crate::ValueRange) -> Option<IntegerRan
         }
         _ => None,
     }
+}
+
+fn integer_range_from_invariant(range: crate::IntegerRangeInvariant) -> Option<IntegerRange> {
+    integer_range_from_value_range(crate::ValueRange {
+        min: range.min,
+        max: range.max,
+    })
 }
 
 fn range_of_value(value: Value, environment: &[Option<IntegerRange>]) -> Option<IntegerRange> {
@@ -1845,11 +1889,13 @@ mod tests {
     fn effects_follow_reference_arguments_through_calls() {
         let scalar = TypeId::new(0);
         let reference = crate::FunctionParam {
+            integer_range: None,
             name: "value".to_owned(),
             ty: scalar,
             mode: crate::PassingMode::ReadWriteReference,
         };
         let aggregate_reference = crate::FunctionParam {
+            integer_range: None,
             name: "values".to_owned(),
             ty: TypeId::new(1),
             mode: crate::PassingMode::ReadWriteReference,
@@ -1898,6 +1944,7 @@ mod tests {
             params: process_function_params(scalar),
             results: Vec::new(),
             locals: vec![Local {
+                integer_range: None,
                 name: None,
                 ty: scalar,
             }],
@@ -1920,6 +1967,7 @@ mod tests {
             },
         ];
         program.state.push(StateSlot {
+            integer_range: None,
             name: "value".to_owned(),
             ty: scalar,
             persistence: StatePersistence::Snapshot,
@@ -1981,6 +2029,7 @@ mod tests {
         );
         process.kind = FunctionKind::Process;
         process.locals.push(Local {
+            integer_range: None,
             name: Some("buffer_slice".to_owned()),
             ty: slice_ty,
         });
@@ -1988,6 +2037,7 @@ mod tests {
         let write_buffer = function(
             "write_buffer",
             vec![crate::FunctionParam {
+                integer_range: None,
                 name: "buffer".to_owned(),
                 ty: buffer_ty,
                 mode: crate::PassingMode::ReadWriteReference,
@@ -2006,6 +2056,7 @@ mod tests {
         let mut write_slice = function(
             "write_slice",
             vec![crate::FunctionParam {
+                integer_range: None,
                 name: "slice".to_owned(),
                 ty: slice_ty,
                 mode: crate::PassingMode::Value,
@@ -2029,6 +2080,7 @@ mod tests {
             },
         );
         write_slice.locals.push(Local {
+            integer_range: None,
             name: Some("slice_alias".to_owned()),
             ty: slice_ty,
         });
@@ -2157,6 +2209,7 @@ mod tests {
 
         let process = &mut program.functions[1];
         process.locals.push(Local {
+            integer_range: None,
             name: Some("selector".to_owned()),
             ty: i32_ty,
         });
@@ -2207,6 +2260,7 @@ mod tests {
         let parent = function(
             "parent",
             vec![crate::FunctionParam {
+                integer_range: None,
                 name: "bank".to_owned(),
                 ty: parent_span_ty,
                 mode: crate::PassingMode::Value,
@@ -2226,6 +2280,7 @@ mod tests {
         let child = function(
             "child",
             vec![crate::FunctionParam {
+                integer_range: None,
                 name: "clips".to_owned(),
                 ty: child_span_ty,
                 mode: crate::PassingMode::Value,
@@ -2290,11 +2345,13 @@ mod tests {
             },
         );
         pure.params.push(crate::FunctionParam {
+            integer_range: None,
             name: "value".to_owned(),
             ty: TypeId::new(0),
             mode: crate::PassingMode::Value,
         });
         pure.locals.push(Local {
+            integer_range: None,
             name: None,
             ty: TypeId::new(0),
         });
@@ -2349,7 +2406,11 @@ mod tests {
         let slice_ty = TypeId::new(3);
         let expression_function = |name: &str, ty: TypeId, value: Rvalue| {
             let mut function = function(name, Vec::new(), Block::default());
-            function.locals.push(Local { name: None, ty });
+            function.locals.push(Local {
+                integer_range: None,
+                name: None,
+                ty,
+            });
             function
                 .body
                 .statements
@@ -2381,10 +2442,12 @@ mod tests {
             let mut function = function(name, Vec::new(), Block::default());
             function.locals.extend([
                 Local {
+                    integer_range: None,
                     name: None,
                     ty: f32_ty,
                 },
                 Local {
+                    integer_range: None,
                     name: None,
                     ty: array_ty,
                 },
@@ -2409,10 +2472,12 @@ mod tests {
         let mut clamped_slice = function("clamped_slice", Vec::new(), Block::default());
         clamped_slice.locals.extend([
             Local {
+                integer_range: None,
                 name: None,
                 ty: f32_ty,
             },
             Local {
+                integer_range: None,
                 name: None,
                 ty: slice_ty,
             },
@@ -2498,10 +2563,12 @@ mod tests {
             results: Vec::new(),
             locals: vec![
                 Local {
+                    integer_range: None,
                     name: None,
                     ty: i32_ty,
                 },
                 Local {
+                    integer_range: None,
                     name: None,
                     ty: i32_ty,
                 },

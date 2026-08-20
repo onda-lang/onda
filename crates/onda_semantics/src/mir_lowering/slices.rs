@@ -1070,6 +1070,37 @@ impl<'a> FunctionLowerer<'a> {
         Ok(())
     }
 
+    fn dynamic_interface_write_view(
+        &self,
+        base: &str,
+        location: SourceLoc,
+    ) -> Result<Option<RuntimeInterfaceView>, MirLoweringError> {
+        let kind = match base {
+            "outs" => DynamicInterfaceKind::AudioOutputs,
+            "kouts" => DynamicInterfaceKind::ControlOutputs,
+            "ins" | "params" | "kins" => {
+                return Err(self.error(
+                    format!("dynamic interface view '{base}' is read-only"),
+                    location,
+                ));
+            }
+            _ => return Ok(None),
+        };
+        let globals = self.runtime_globals.ok_or_else(|| {
+            self.error(
+                format!("dynamic interface view '{base}' is unavailable outside runtime lowering"),
+                location,
+            )
+        })?;
+        let view = globals.interface_views.get(&kind).cloned().ok_or_else(|| {
+            self.error(
+                format!("semantic analysis did not resolve dynamic interface view '{base}'"),
+                location,
+            )
+        })?;
+        Ok(Some(view))
+    }
+
     pub(super) fn assign_dynamic_interface_index(
         &mut self,
         base: &str,
@@ -1079,32 +1110,13 @@ impl<'a> FunctionLowerer<'a> {
         value_location: SourceLoc,
         statement_location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
-        let kind = match base {
-            "outs" => DynamicInterfaceKind::AudioOutputs,
-            "kouts" => DynamicInterfaceKind::ControlOutputs,
-            "ins" | "params" | "kins" => {
-                return Err(self.error(
-                    format!("dynamic interface view '{base}' is read-only"),
-                    statement_location,
-                ));
-            }
-            _ => return Ok(false),
+        let Some(view) = self.dynamic_interface_write_view(base, statement_location)? else {
+            return Ok(false);
         };
-        let globals = self.runtime_globals.ok_or_else(|| {
-            self.error(
-                format!("dynamic interface view '{base}' is unavailable outside runtime lowering"),
-                statement_location,
-            )
-        })?;
-        let view = globals.interface_views.get(&kind).cloned().ok_or_else(|| {
-            self.error(
-                format!("semantic analysis did not resolve dynamic interface view '{base}'"),
-                statement_location,
-            )
-        })?;
         let value = self.single_global_value(base, values, statement_location)?;
         let value = self.coerce(value, view.element_type, block, value_location)?;
-        let selected = self.lower_dynamic_interface_index(index, view.slots.len(), block)?;
+        let selected =
+            self.lower_dynamic_interface_index(index, view.slots.len(), BoundsMode::Clamp, block)?;
         let dispatch = self.dynamic_interface_write_dispatch(
             &view.slots,
             0,
@@ -1112,6 +1124,35 @@ impl<'a> FunctionLowerer<'a> {
             selected,
             value.value,
             statement_location,
+        )?;
+        block.statements.extend(dispatch.statements);
+        Ok(true)
+    }
+
+    pub(super) fn lower_dynamic_interface_write_call(
+        &mut self,
+        base: &str,
+        index: &Expr,
+        value: &Expr,
+        bounds: BoundsMode,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> Result<bool, MirLoweringError> {
+        let Some(view) = self.dynamic_interface_write_view(base, location)? else {
+            return Ok(false);
+        };
+        let selected =
+            self.lower_dynamic_interface_index(index, view.slots.len(), bounds, block)?;
+        let value_location = value.loc();
+        let value = self.lower_expr(value, block)?;
+        let value = self.coerce(value, view.element_type, block, value_location)?;
+        let dispatch = self.dynamic_interface_write_dispatch(
+            &view.slots,
+            0,
+            view.slots.len(),
+            selected,
+            value.value,
+            location,
         )?;
         block.statements.extend(dispatch.statements);
         Ok(true)

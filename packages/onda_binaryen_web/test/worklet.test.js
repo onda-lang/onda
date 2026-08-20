@@ -584,6 +584,56 @@ test("AudioWorklet snapshots persistent state and restores from a post-init base
   });
 });
 
+test("AudioWorklet restores ranged i32 and i64 state through its invariant", () => {
+  const mir = f64PassthroughMir();
+  mir.types.push({ kind: "scalar", data: "i64" });
+  mir.state = [
+    {
+      name: "wrapped",
+      ty: 1,
+      persistence: "snapshot",
+      integer_range: {
+        min: { type: "i32", value: 0 },
+        max: { type: "i32", value: 3 },
+        mode: "wrap",
+      },
+    },
+    {
+      name: "clamped",
+      ty: 3,
+      persistence: "snapshot",
+      integer_range: {
+        min: { type: "i64", value: "10" },
+        max: { type: "i64", value: "20" },
+        mode: "clamp",
+      },
+    },
+  ];
+  const artifact = compileMir(mir);
+  const processor = new WorkletProcessor({
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+    },
+  });
+  const snapshot = new Uint8Array(artifact.metadata.runtime.snapshot_size_bytes);
+  const snapshotView = new DataView(snapshot.buffer);
+  snapshotView.setInt32(0, -1, true);
+  snapshotView.setBigInt64(4, 99n, true);
+  processor.restoreSnapshot(snapshot);
+
+  const [wrapped, clamped] = artifact.metadata.metadata.states;
+  const state = processor.memoryView();
+  assert.equal(
+    state.getInt32(processor.statePtr + wrapped.physical_state_byte_offset, true),
+    3,
+  );
+  assert.equal(
+    state.getBigInt64(processor.statePtr + clamped.physical_state_byte_offset, true),
+    20n,
+  );
+});
+
 test("AudioWorklet supplies the exact FMA support ABI", () => {
   const mir = f64PassthroughMir();
   const thenStatements =

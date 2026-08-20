@@ -5,11 +5,11 @@ use std::sync::OnceLock;
 
 use onda_frontend::{
     is_reserved_word, language_type_names, parse_program, parse_program_file_with_overlays,
-    stdlib_module_names, ArrayElemType, Block, BufferBlock, BufferDecl, ConstDecl, EventDef,
-    EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef, InitBlock, NamespaceAliasDecl,
-    NamespaceDecl, NamespaceItem, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl,
-    PortBlock, PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, UseDecl, LANGUAGE_KEYWORDS,
-    PARAM_SCALES,
+    stdlib_module_names, ArrayElemType, Block, BufferBlock, BufferDecl, ConstDecl, DeclType,
+    EventDef, EventParamDecl, EventParamType, Expr, FnParamDecl, FnParamType, FunctionDef,
+    InitBlock, NamespaceAliasDecl, NamespaceDecl, NamespaceItem, NamespaceTemplateParam,
+    OutputTiming, ParamBlock, ParamDecl, PortBlock, PortDecl, ProcessorDef, Program, Span, Stmt,
+    StructDef, UseDecl, LANGUAGE_KEYWORDS, PARAM_SCALES, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 use onda_semantics::builtins::{
     builtin_constant_names, public_builtin_function_names, ARRAY_LEN_METHOD,
@@ -29,14 +29,16 @@ use super::namespace_resolution::{
     UseInfo,
 };
 use super::param_domain::{
-    buffer_count_completion_context_at,
-    completion_context_at as param_domain_completion_context_at, BufferCountCompletionKind,
-    ParamDomainCompletionContext, ParamDomainValueKind, PARAM_DOMAIN_FIELDS,
+    binding_range_completion_context_at, buffer_count_completion_context_at,
+    completion_context_at as param_domain_completion_context_at, BindingRangeCompletionContext,
+    BindingRangeValueKind, BufferCountCompletionKind, ParamDomainCompletionContext,
+    ParamDomainValueKind, BINDING_RANGE_FIELDS, PARAM_DOMAIN_FIELDS,
 };
 use super::position::{
     byte_index_for_lsp_character, byte_offset_for_lsp_position, span_end_position,
     span_start_position, LspPosition,
 };
+use super::unsafe_index::{unsafe_index_operation, UNSAFE_INDEX_CONTRACT, UNSAFE_INDEX_OPERATIONS};
 
 const COMPLETION_ITEM_KIND_METHOD: u32 = 2;
 const COMPLETION_ITEM_KIND_FUNCTION: u32 = 3;
@@ -242,6 +244,9 @@ pub(super) fn completion_items_for_document_with_index(
         CompletionContextKind::ParamDomain(domain) => {
             index.param_domain_items(domain, &context.prefix)
         }
+        CompletionContextKind::BindingRange(range) => {
+            index.binding_range_items(range, &context.prefix)
+        }
         CompletionContextKind::BufferCount(kind) => match kind {
             BufferCountCompletionKind::Field => vec![buffer_count_field_item()],
             BufferCountCompletionKind::Expression => index.general_items(&context.prefix),
@@ -334,6 +339,7 @@ enum CompletionContextKind {
     Namespace { namespace: String },
     CallArgs { callee: String },
     ParamDomain(ParamDomainCompletionContext),
+    BindingRange(BindingRangeCompletionContext),
     BufferCount(BufferCountCompletionKind),
     ImportPath { typed: String },
 }
@@ -415,6 +421,14 @@ impl CompletionContext {
             return Self {
                 prefix,
                 kind: CompletionContextKind::BufferCount(kind),
+                in_comment,
+            };
+        }
+
+        if let Some(range) = binding_range_completion_context_at(source, prefix_start) {
+            return Self {
+                prefix,
+                kind: CompletionContextKind::BindingRange(range),
                 in_comment,
             };
         }
@@ -698,8 +712,16 @@ struct FunctionInfo {
 
 #[derive(Debug, Clone)]
 enum InstanceInfo {
-    UserType { type_name: String, is_array: bool },
+    UserType {
+        type_name: String,
+        is_array: bool,
+    },
     Buffer,
+    PrimitiveIndexable {
+        readable: bool,
+        writable: bool,
+        has_len: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -824,6 +846,20 @@ impl CompletionIndex {
                 type_params: Vec::new(),
                 label_detail: Some("(...)".to_owned()),
                 detail: Some(format!("built-in call {name}(...)")),
+            });
+        }
+        for operation in UNSAFE_INDEX_OPERATIONS {
+            self.push_symbol(SymbolInfo {
+                label: operation.name.to_owned(),
+                full_name: operation.name.to_owned(),
+                namespace: String::new(),
+                kind: SymbolKind::Def,
+                type_params: Vec::new(),
+                label_detail: Some(operation.free_parameters.to_owned()),
+                detail: Some(format!(
+                    "unchecked intrinsic {}{}; {UNSAFE_INDEX_CONTRACT}",
+                    operation.name, operation.free_parameters
+                )),
             });
         }
     }
@@ -1080,8 +1116,19 @@ impl CompletionIndex {
                         type_name,
                         is_array: true,
                     }),
-                ArrayElemType::Primitive(_) => None,
+                ArrayElemType::Primitive(_) => Some(InstanceInfo::PrimitiveIndexable {
+                    readable: true,
+                    writable: true,
+                    has_len: true,
+                }),
             },
+            Expr::ArrayLiteral { .. } | Expr::Slice { .. } => {
+                Some(InstanceInfo::PrimitiveIndexable {
+                    readable: true,
+                    writable: true,
+                    has_len: true,
+                })
+            }
             _ => None,
         }
     }
@@ -1159,16 +1206,67 @@ impl CompletionIndex {
                 continue;
             }
             match block {
-                Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
+                Block::Ins(ports) => {
                     extend_span(&mut span, ports.loc);
                     for name in port_block_names(ports) {
                         items.push(port_item(&name, "port"));
+                    }
+                    collect_port_array_instances(ports, true, false, &mut instances);
+                    if port_block_has_index_surface(ports) {
+                        let access = InstanceInfo::PrimitiveIndexable {
+                            readable: true,
+                            writable: false,
+                            has_len: false,
+                        };
+                        instances.insert("ins".to_owned(), access);
+                    }
+                }
+                Block::Outs(ports) => {
+                    extend_span(&mut span, ports.loc);
+                    for name in port_block_names(ports) {
+                        items.push(port_item(&name, "port"));
+                    }
+                    collect_port_array_instances(ports, false, true, &mut instances);
+                    if port_block_has_index_surface(ports) {
+                        let access = InstanceInfo::PrimitiveIndexable {
+                            readable: false,
+                            writable: true,
+                            has_len: false,
+                        };
+                        instances.insert("outs".to_owned(), access);
+                    }
+                }
+                Block::KOuts(ports) => {
+                    extend_span(&mut span, ports.loc);
+                    for name in port_block_names(ports) {
+                        items.push(port_item(&name, "port"));
+                    }
+                    collect_port_array_instances(ports, false, true, &mut instances);
+                    if port_block_has_index_surface(ports) {
+                        instances.insert(
+                            "kouts".to_owned(),
+                            InstanceInfo::PrimitiveIndexable {
+                                readable: false,
+                                writable: true,
+                                has_len: false,
+                            },
+                        );
                     }
                 }
                 Block::Params(params) => {
                     extend_span(&mut span, params.loc);
                     for name in param_block_names(params) {
                         items.push(param_item(&name, "param"));
+                    }
+                    collect_param_array_instances(params, &mut instances);
+                    if param_block_has_index_surface(params) {
+                        let access = InstanceInfo::PrimitiveIndexable {
+                            readable: true,
+                            writable: false,
+                            has_len: false,
+                        };
+                        instances.insert("params".to_owned(), access.clone());
+                        instances.insert("kins".to_owned(), access);
                     }
                 }
                 Block::Buffers(buffers) => {
@@ -1244,6 +1342,19 @@ impl CompletionIndex {
         for name in proc_port_names(&proc_def.ins, proc_def.ins_deferred_count.as_ref(), "in") {
             items.push(port_item(&name, "proc input"));
         }
+        collect_port_decl_array_instances(&proc_def.ins, true, false, &mut instances);
+        if proc_def.ins_deferred_count.is_some()
+            || homogeneous_scalar_declarations(proc_def.ins.iter().map(|decl| decl.ty.as_ref()))
+        {
+            instances.insert(
+                "ins".to_owned(),
+                InstanceInfo::PrimitiveIndexable {
+                    readable: true,
+                    writable: false,
+                    has_len: false,
+                },
+            );
+        }
         for name in proc_port_names(
             &proc_def.outs,
             proc_def.outs_deferred_count.as_ref(),
@@ -1251,8 +1362,34 @@ impl CompletionIndex {
         ) {
             items.push(port_item(&name, "proc output"));
         }
+        collect_port_decl_array_instances(&proc_def.outs, false, true, &mut instances);
+        if proc_def.outs_deferred_count.is_some()
+            || homogeneous_scalar_declarations(proc_def.outs.iter().map(|decl| decl.ty.as_ref()))
+        {
+            instances.insert(
+                "outs".to_owned(),
+                InstanceInfo::PrimitiveIndexable {
+                    readable: false,
+                    writable: true,
+                    has_len: false,
+                },
+            );
+        }
         for decl in &proc_def.params {
             items.push(param_item(&decl.name, "proc param"));
+        }
+        collect_param_decl_array_instances(&proc_def.params, &mut instances);
+        if proc_def.params_deferred_count.is_some()
+            || homogeneous_scalar_declarations(proc_def.params.iter().map(|decl| decl.ty.as_ref()))
+        {
+            instances.insert(
+                "params".to_owned(),
+                InstanceInfo::PrimitiveIndexable {
+                    readable: true,
+                    writable: false,
+                    has_len: false,
+                },
+            );
         }
         for param in
             proc_deferred_param_infos(&proc_def.params, proc_def.params_deferred_count.as_ref())
@@ -1516,6 +1653,24 @@ impl CompletionIndex {
         }
         self.collect_stmt_items(&event.body, "event local", false, &mut items);
         let mut instances = HashMap::<String, InstanceInfo>::new();
+        for param in &event.params {
+            if matches!(
+                param.ty,
+                EventParamType::Array { .. }
+                    | EventParamType::GenericArray { .. }
+                    | EventParamType::Slice { .. }
+                    | EventParamType::GenericSlice { .. }
+            ) {
+                instances.insert(
+                    param.name.clone(),
+                    InstanceInfo::PrimitiveIndexable {
+                        readable: true,
+                        writable: false,
+                        has_len: true,
+                    },
+                );
+            }
+        }
         let scope_namespace = self.child_scope_namespace(Some(parent), "");
         self.collect_stmt_scope_instances(&event.body, &scope_namespace, false, &mut instances);
         let scope_idx = self.push_scope(
@@ -1578,11 +1733,28 @@ impl CompletionIndex {
         if collect_direct_stmt_items {
             self.collect_stmt_items(stmts, "local", false, &mut items);
         }
+        for (name, instance) in self.inherited_scope_instances(parent) {
+            instances.entry(name).or_insert(instance);
+        }
         let scope_namespace = self.child_scope_namespace(parent, "");
         self.collect_stmt_scope_instances(stmts, &scope_namespace, false, &mut instances);
         let scope_idx = self.push_scope(parent, &scope_namespace, span, items, instances)?;
         self.collect_nested_stmt_scopes(scope_idx, stmts);
         Some(scope_idx)
+    }
+
+    fn inherited_scope_instances(&self, parent: Option<usize>) -> HashMap<String, InstanceInfo> {
+        let mut chain = Vec::new();
+        let mut current = parent;
+        while let Some(idx) = current {
+            chain.push(idx);
+            current = self.scopes[idx].parent;
+        }
+        let mut out = HashMap::new();
+        for idx in chain.into_iter().rev() {
+            out.extend(self.scopes[idx].instances.clone());
+        }
+        out
     }
 
     fn collect_flow_local_stmt_items(&self, stmts: &[Stmt], detail: &str) -> Vec<CompletionItem> {
@@ -1713,9 +1885,44 @@ impl CompletionIndex {
                 } => {
                     if self.span_start_is_visible(*target_loc) {
                         if let Some(name) = assign_target_name(target) {
-                            if let Some(instance) =
-                                self.instance_from_expr_in_namespace(expr, namespace)
-                            {
+                            let contextual_instance = match expr {
+                                Expr::Var { name, .. } => out.get(name).cloned(),
+                                Expr::Index { base, .. } => selected_instance(out.get(base)),
+                                Expr::Slice { base, .. } => match out.get(base) {
+                                    Some(InstanceInfo::PrimitiveIndexable {
+                                        readable,
+                                        writable,
+                                        ..
+                                    }) => Some(InstanceInfo::PrimitiveIndexable {
+                                        readable: *readable,
+                                        writable: *writable,
+                                        has_len: true,
+                                    }),
+                                    Some(InstanceInfo::Buffer) => {
+                                        Some(InstanceInfo::PrimitiveIndexable {
+                                            readable: true,
+                                            writable: true,
+                                            has_len: true,
+                                        })
+                                    }
+                                    _ => None,
+                                },
+                                Expr::UserCall {
+                                    name: call_name,
+                                    args,
+                                    ..
+                                } if call_name == READ_UNSAFE_FN => args
+                                    .first()
+                                    .and_then(|arg| match &arg.expr {
+                                        Expr::Var { name, .. } => out.get(name),
+                                        _ => None,
+                                    })
+                                    .and_then(|instance| selected_instance(Some(instance))),
+                                _ => None,
+                            };
+                            let instance = contextual_instance
+                                .or_else(|| self.instance_from_expr_in_namespace(expr, namespace));
+                            if let Some(instance) = instance {
                                 out.insert(name.to_owned(), instance);
                             }
                         }
@@ -1953,6 +2160,30 @@ impl CompletionIndex {
         items
     }
 
+    fn binding_range_items(
+        &self,
+        context: &BindingRangeCompletionContext,
+        prefix: &str,
+    ) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        if context.allow_fields {
+            items.extend(
+                BINDING_RANGE_FIELDS
+                    .iter()
+                    .copied()
+                    .filter(|field| !context.used_fields.contains(field))
+                    .map(binding_range_field_item),
+            );
+        }
+        if context.value_kind == BindingRangeValueKind::Expression {
+            items.extend(self.general_items(prefix));
+        }
+        if context.value_kind == BindingRangeValueKind::Mode || context.allow_bare_mode {
+            items.extend(["clamp", "wrap"].into_iter().map(binding_range_mode_item));
+        }
+        items
+    }
+
     fn namespace_items(&self, namespace: &str, prefix: &str) -> Vec<CompletionItem> {
         let namespace = self.resolve_namespace_key_at_current_position(namespace);
         let mut out = self.raw_namespace_items(&namespace);
@@ -2020,8 +2251,32 @@ impl CompletionIndex {
             return Vec::new();
         };
         if matches!(instance, InstanceInfo::Buffer) {
-            return self
-                .buffer_member_items()
+            let mut items = self.buffer_member_items();
+            items.extend(unsafe_index_method_items(true, true));
+            return items
+                .into_iter()
+                .filter(|item| prefix_matches(&item.label, prefix))
+                .collect();
+        }
+        if let InstanceInfo::PrimitiveIndexable {
+            readable,
+            writable,
+            has_len,
+        } = instance
+        {
+            let mut out = unsafe_index_method_items(*readable, *writable);
+            if *has_len {
+                out.push(
+                    CompletionItem::new(ARRAY_LEN_METHOD, COMPLETION_ITEM_KIND_METHOD)
+                        .detail("built-in call .len()")
+                        .insert_text(format!("{ARRAY_LEN_METHOD}()"))
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::ScopeDef,
+                            ARRAY_LEN_METHOD,
+                        )),
+                );
+            }
+            return out
                 .into_iter()
                 .filter(|item| prefix_matches(&item.label, prefix))
                 .collect();
@@ -2136,6 +2391,7 @@ impl CompletionIndex {
                         ARRAY_LEN_METHOD,
                     )),
             );
+            out.extend(unsafe_index_method_items(true, false));
         }
         out.into_iter()
             .filter(|item| prefix_matches(&item.label, prefix))
@@ -2389,22 +2645,46 @@ impl CompletionIndex {
                         is_array: false,
                     })
             }
-            FnParamType::Buffer(_) | FnParamType::BareBuffer => Some(InstanceInfo::Buffer),
-            FnParamType::ArrayGeneric(name) => self
-                .resolve_type_name_in_namespace(name, namespace)
-                .map(|type_name| InstanceInfo::UserType {
-                    type_name,
-                    is_array: true,
-                }),
+            FnParamType::Buffer(_) | FnParamType::BufferArray { .. } | FnParamType::BareBuffer => {
+                Some(InstanceInfo::Buffer)
+            }
+            FnParamType::Array(_) => Some(InstanceInfo::PrimitiveIndexable {
+                readable: true,
+                writable: true,
+                has_len: true,
+            }),
+            FnParamType::ArrayGeneric(name) => Some(
+                self.resolve_type_name_in_namespace(name, namespace)
+                    .map(|type_name| InstanceInfo::UserType {
+                        type_name,
+                        is_array: true,
+                    })
+                    .unwrap_or(InstanceInfo::PrimitiveIndexable {
+                        readable: true,
+                        writable: true,
+                        has_len: true,
+                    }),
+            ),
             FnParamType::SizedArray {
                 generic_name: Some(name),
                 ..
-            } => self
-                .resolve_type_name_in_namespace(name, namespace)
-                .map(|type_name| InstanceInfo::UserType {
-                    type_name,
-                    is_array: true,
-                }),
+            } => Some(
+                self.resolve_type_name_in_namespace(name, namespace)
+                    .map(|type_name| InstanceInfo::UserType {
+                        type_name,
+                        is_array: true,
+                    })
+                    .unwrap_or(InstanceInfo::PrimitiveIndexable {
+                        readable: true,
+                        writable: true,
+                        has_len: true,
+                    }),
+            ),
+            FnParamType::SizedArray { .. } => Some(InstanceInfo::PrimitiveIndexable {
+                readable: true,
+                writable: true,
+                has_len: true,
+            }),
             _ => None,
         }
     }
@@ -2627,6 +2907,20 @@ fn assign_target_names(target: &onda_frontend::AssignTarget) -> Vec<&str> {
     }
 }
 
+fn selected_instance(instance: Option<&InstanceInfo>) -> Option<InstanceInfo> {
+    match instance {
+        Some(InstanceInfo::Buffer) => Some(InstanceInfo::Buffer),
+        Some(InstanceInfo::UserType {
+            type_name,
+            is_array: true,
+        }) => Some(InstanceInfo::UserType {
+            type_name: type_name.clone(),
+            is_array: false,
+        }),
+        _ => None,
+    }
+}
+
 fn port_block_names(block: &PortBlock) -> Vec<String> {
     explicit_or_deferred_names(
         block.decls.iter().map(|decl| decl.name.as_str()),
@@ -2635,12 +2929,94 @@ fn port_block_names(block: &PortBlock) -> Vec<String> {
     )
 }
 
+fn collect_port_array_instances(
+    block: &PortBlock,
+    readable: bool,
+    writable: bool,
+    out: &mut HashMap<String, InstanceInfo>,
+) {
+    collect_port_decl_array_instances(&block.decls, readable, writable, out);
+}
+
+fn collect_port_decl_array_instances(
+    decls: &[PortDecl],
+    readable: bool,
+    writable: bool,
+    out: &mut HashMap<String, InstanceInfo>,
+) {
+    for decl in decls {
+        if matches!(
+            decl.ty,
+            Some(DeclType::Array { .. } | DeclType::ArrayGeneric { .. })
+        ) {
+            out.insert(
+                decl.name.clone(),
+                InstanceInfo::PrimitiveIndexable {
+                    readable,
+                    writable,
+                    has_len: true,
+                },
+            );
+        }
+    }
+}
+
+fn port_block_has_index_surface(block: &PortBlock) -> bool {
+    block.deferred_count.is_some()
+        || homogeneous_scalar_declarations(block.decls.iter().map(|decl| decl.ty.as_ref()))
+}
+
 fn param_block_names(block: &ParamBlock) -> Vec<String> {
     explicit_or_deferred_names(
         block.decls.iter().map(|decl| decl.name.as_str()),
         block.deferred_count.as_ref(),
         &block.deferred_prefix,
     )
+}
+
+fn collect_param_array_instances(block: &ParamBlock, out: &mut HashMap<String, InstanceInfo>) {
+    collect_param_decl_array_instances(&block.decls, out);
+}
+
+fn collect_param_decl_array_instances(
+    decls: &[ParamDecl],
+    out: &mut HashMap<String, InstanceInfo>,
+) {
+    for decl in decls {
+        if matches!(
+            decl.ty,
+            Some(DeclType::Array { .. } | DeclType::ArrayGeneric { .. })
+        ) {
+            out.insert(
+                decl.name.clone(),
+                InstanceInfo::PrimitiveIndexable {
+                    readable: true,
+                    writable: false,
+                    has_len: true,
+                },
+            );
+        }
+    }
+}
+
+fn param_block_has_index_surface(block: &ParamBlock) -> bool {
+    block.deferred_count.is_some()
+        || homogeneous_scalar_declarations(block.decls.iter().map(|decl| decl.ty.as_ref()))
+}
+
+fn homogeneous_scalar_declarations<'a>(
+    mut types: impl Iterator<Item = Option<&'a DeclType>>,
+) -> bool {
+    let Some(first) = types.next() else {
+        return false;
+    };
+    if !matches!(
+        first,
+        None | Some(DeclType::Scalar(_) | DeclType::Generic(_))
+    ) {
+        return false;
+    }
+    types.all(|ty| ty == first)
 }
 
 fn buffer_block_names(block: &BufferBlock) -> Vec<String> {
@@ -2788,6 +3164,31 @@ fn buffer_count_field_item() -> CompletionItem {
         ))
 }
 
+fn binding_range_field_item(name: &str) -> CompletionItem {
+    let snippet = match name {
+        "begin" | "end" => format!("{name} = $1"),
+        "mode" => "mode = ${1|clamp,wrap|}".to_owned(),
+        _ => unreachable!("unknown integer binding range field"),
+    };
+    CompletionItem::new(name, COMPLETION_ITEM_KIND_PROPERTY)
+        .detail("integer binding range field")
+        .insert_text(format!("{name} = "))
+        .snippet(snippet)
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::LocalVariable,
+            name,
+        ))
+}
+
+fn binding_range_mode_item(mode: &str) -> CompletionItem {
+    CompletionItem::new(mode, COMPLETION_ITEM_KIND_ENUM_MEMBER)
+        .detail("integer binding range mode")
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::LocalVariable,
+            mode,
+        ))
+}
+
 fn variable_item(name: &str, detail: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_VARIABLE)
         .detail(detail)
@@ -2892,6 +3293,33 @@ fn buffer_builtin_method_item(method: BufferBuiltinMethod) -> CompletionItem {
             CompletionSortGroup::ScopeDef,
             method.name,
         ))
+}
+
+fn unsafe_index_method_items(readable: bool, writable: bool) -> Vec<CompletionItem> {
+    let mut out = Vec::with_capacity(usize::from(readable) + usize::from(writable));
+    if readable {
+        out.push(unsafe_index_method_item(READ_UNSAFE_FN, "read_unsafe($1)"));
+    }
+    if writable {
+        out.push(unsafe_index_method_item(
+            WRITE_UNSAFE_FN,
+            "write_unsafe($1)",
+        ));
+    }
+    out
+}
+
+fn unsafe_index_method_item(name: &'static str, snippet: &'static str) -> CompletionItem {
+    let operation = unsafe_index_operation(name).expect("known unsafe index intrinsic");
+    CompletionItem::new(name, COMPLETION_ITEM_KIND_METHOD)
+        .maybe_label_detail(Some(operation.member_parameters.to_owned()))
+        .detail(format!(
+            "unchecked intrinsic .{name}{}; {UNSAFE_INDEX_CONTRACT}",
+            operation.member_parameters
+        ))
+        .insert_text(format!("{name}("))
+        .snippet(snippet)
+        .sort_text(completion_sort_text(CompletionSortGroup::ScopeDef, name))
 }
 
 fn buffer_extension_method_item(symbol: &SymbolInfo) -> CompletionItem {
@@ -4233,6 +4661,134 @@ mod tests {
         assert_eq!(result.items[0]["label"], "count");
     }
 
+    #[test]
+    fn integer_binding_ranges_complete_mode_and_wrap() {
+        let source = "sample:\n  a = 0 {1000, w";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  a = 0 {1000, w".len() as u32,
+            },
+            true,
+        );
+        assert!(result.items.iter().any(|item| item["label"] == "wrap"));
+
+        let source = "sample:\n  a: i32 = 0 {0, 1, m";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  a: i32 = 0 {0, 1, m".len() as u32,
+            },
+            true,
+        );
+        let mode = encoded_item(&result.items, "mode");
+        assert_eq!(mode["insertText"], "mode = ${1|clamp,wrap|}");
+
+        let source = "sample:\n  a: i32 = 0 {0, 16, ";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  a: i32 = 0 {0, 16, ".len() as u32,
+            },
+            true,
+        );
+        assert!(result.items.iter().any(|item| item["label"] == "wrap"));
+        assert!(!result.items.iter().any(|item| item["label"] == "begin"));
+        assert!(!result.items.iter().any(|item| item["label"] == "end"));
+    }
+
+    #[test]
+    fn input_domains_complete_domain_fields_instead_of_binding_ranges() {
+        let source = "ins:\n  cutoff = 440.0 {20, 20000, sc";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  cutoff = 440.0 {20, 20000, sc".len() as u32,
+            },
+            true,
+        );
+        assert!(result.items.iter().any(|item| item["label"] == "scale"));
+        assert!(!result.items.iter().any(|item| item["label"] == "mode"));
+    }
+
+    #[test]
+    fn integer_binding_range_mode_values_complete_clamp_and_wrap() {
+        let source = "sample:\n  a = 0 {0, 1, mode = ";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  a = 0 {0, 1, mode = ".len() as u32,
+            },
+            true,
+        );
+        assert!(result.items.iter().any(|item| item["label"] == "clamp"));
+        assert!(result.items.iter().any(|item| item["label"] == "wrap"));
+        assert!(!result.items.iter().any(|item| item["label"] == "mode"));
+    }
+
+    #[test]
+    fn integer_binding_ranges_complete_named_bounds() {
+        let source = "sample:\n  a = 0 {en";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  a = 0 {en".len() as u32,
+            },
+            true,
+        );
+        let end = encoded_item(&result.items, "end");
+        assert_eq!(end["insertText"], "end = $1");
+
+        let source = "sample:\n  a = 0 {end = BLOCK_SIZE, begin = BL";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  a = 0 {end = BLOCK_SIZE, begin = BL".len() as u32,
+            },
+            true,
+        );
+        assert!(result
+            .items
+            .iter()
+            .any(|item| item["label"] == "BLOCK_SIZE"));
+        assert!(!result.items.iter().any(|item| item["label"] == "mode"));
+    }
+
     fn encoded_item<'a>(items: &'a [Value], label: &str) -> &'a Value {
         items
             .iter()
@@ -4536,6 +5092,140 @@ proc Player:
         let proc_labels = labels(proc_index.member_items("clip", ""));
         assert!(proc_labels.iter().any(|label| label == "samplerate"));
         assert!(proc_labels.iter().any(|label| label == "read"));
+    }
+
+    #[test]
+    fn unsafe_index_completion_respects_known_storage_direction() {
+        let source = r#"ins:
+  source: f32[4]
+outs:
+  destination: f32[4]
+sample:
+  view = source[:]
+  destination[0] = view[0]
+"#;
+        let input_index = index_at(source, "source[:]", "source".len());
+        let input_labels = labels(input_index.member_items("source", ""));
+        assert!(input_labels.iter().any(|label| label == READ_UNSAFE_FN));
+        assert!(!input_labels.iter().any(|label| label == WRITE_UNSAFE_FN));
+
+        let view_index = index_at(source, "view[0]", "view".len());
+        let view_labels = labels(view_index.member_items("view", ""));
+        assert!(view_labels.iter().any(|label| label == READ_UNSAFE_FN));
+        assert!(!view_labels.iter().any(|label| label == WRITE_UNSAFE_FN));
+
+        let incomplete_source =
+            source.replace("destination[0] = view[0]", "destination[0] = view.");
+        let result = completion_items_for_document_with_index(
+            &incomplete_source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            position_at(&incomplete_source, "view.", "view.".len()),
+            true,
+        );
+        assert!(result
+            .items
+            .iter()
+            .any(|item| item["label"] == READ_UNSAFE_FN));
+        assert!(!result
+            .items
+            .iter()
+            .any(|item| item["label"] == WRITE_UNSAFE_FN));
+
+        let output_index = index_at(source, "destination[0]", "destination".len());
+        let output_labels = labels(output_index.member_items("destination", ""));
+        assert!(!output_labels.iter().any(|label| label == READ_UNSAFE_FN));
+        assert!(output_labels.iter().any(|label| label == WRITE_UNSAFE_FN));
+    }
+
+    #[test]
+    fn unsafe_index_completion_covers_primitive_and_aggregate_arrays() {
+        let source = r#"proc Voice:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+init:
+  values: f32[8]
+  voices: Voice[4] = Voice()
+sample:
+  out1 = values[0] + voices[0]()
+"#;
+        let primitive_index = index_at(source, "values[0]", "values".len());
+        let primitive_labels = labels(primitive_index.member_items("values", ""));
+        assert!(primitive_labels.iter().any(|label| label == READ_UNSAFE_FN));
+        assert!(primitive_labels
+            .iter()
+            .any(|label| label == WRITE_UNSAFE_FN));
+
+        let aggregate_index = index_at(source, "voices[0]", "voices".len());
+        let aggregate_labels = labels(aggregate_index.member_items("voices", ""));
+        assert!(aggregate_labels.iter().any(|label| label == READ_UNSAFE_FN));
+        assert!(!aggregate_labels
+            .iter()
+            .any(|label| label == WRITE_UNSAFE_FN));
+    }
+
+    #[test]
+    fn unsafe_index_completion_uses_only_runtime_surface_names() {
+        let source = r#"ins 2
+outs 2
+sample:
+  out1 = 0.0
+"#;
+        let index = index_at(source, "out1 = 0.0", 0);
+
+        let ins_labels = labels(index.member_items("ins", ""));
+        assert!(ins_labels.iter().any(|label| label == READ_UNSAFE_FN));
+        assert!(index.member_items("inputs", "").is_empty());
+
+        let outs_labels = labels(index.member_items("outs", ""));
+        assert!(outs_labels.iter().any(|label| label == WRITE_UNSAFE_FN));
+        assert!(index.member_items("outputs", "").is_empty());
+    }
+
+    #[test]
+    fn unsafe_index_intrinsics_are_available_in_free_call_completion() {
+        let source = "sample:\n  out1 = rea";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  out1 = rea".len() as u32,
+            },
+            true,
+        );
+        assert!(result
+            .items
+            .iter()
+            .any(|item| item["label"] == READ_UNSAFE_FN));
+
+        let source = "sample:\n  write_";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: "  write_".len() as u32,
+            },
+            true,
+        );
+        assert!(result
+            .items
+            .iter()
+            .any(|item| item["label"] == WRITE_UNSAFE_FN));
     }
 
     #[test]

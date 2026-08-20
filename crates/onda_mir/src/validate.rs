@@ -27,22 +27,23 @@ impl fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
-/// An owned MIR program that has passed all backend-neutral schema and
-/// executable-safety checks.
+/// An owned MIR program that has passed backend-neutral structural validation
+/// and carries the provenance of any producer-proved unchecked accesses or
+/// integer invariants.
 ///
 /// Backend-specific capability/legalization checks remain the backend's
 /// responsibility. The inner program is intentionally immutable so this type
 /// cannot silently lose its validation guarantee.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum UncheckedBoundsProof {
-    Rejected,
-    TrustedProducer,
+pub(crate) enum ProducerProofStatus {
+    Absent,
+    Trusted,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatedProgram {
     program: Program,
-    unchecked_bounds: UncheckedBoundsProof,
+    producer_proofs: ProducerProofStatus,
 }
 
 impl ValidatedProgram {
@@ -54,15 +55,15 @@ impl ValidatedProgram {
         self.program
     }
 
-    pub(crate) fn from_validated(program: Program, unchecked_bounds: UncheckedBoundsProof) -> Self {
+    pub(crate) fn from_validated(program: Program, producer_proofs: ProducerProofStatus) -> Self {
         Self {
             program,
-            unchecked_bounds,
+            producer_proofs,
         }
     }
 
-    pub(crate) const fn unchecked_bounds_proof(&self) -> UncheckedBoundsProof {
-        self.unchecked_bounds
+    pub(crate) const fn producer_proofs(&self) -> ProducerProofStatus {
+        self.producer_proofs
     }
 }
 
@@ -89,29 +90,33 @@ impl TryFrom<Program> for ValidatedProgram {
 }
 
 pub fn validate(program: &Program) -> Result<(), Vec<ValidationError>> {
-    validate_with_unchecked_bounds(program, UncheckedBoundsProof::Rejected)
+    validate_with_proof_status(program, ProducerProofStatus::Absent)
 }
 
-/// Validates MIR emitted by a trusted producer that has proved every
-/// `BoundsMode::Unchecked` operation in its source-level lowering logic.
+/// Validates MIR emitted by a trusted producer that has proved its unchecked
+/// accesses and declared integer invariants in its source-level lowering logic.
 ///
 /// # Safety
 ///
 /// Every unchecked index, slice, and reference window in `program` must be in
 /// bounds for every execution reaching it. Backends may lower those operations
-/// without runtime checks.
+/// without runtime checks. Every [`crate::IntegerRangeInvariant`] attached to a
+/// state slot, function parameter, or local must also contain every value
+/// observable from that storage. This includes values supplied by callers or
+/// restored from external state. Backends may use those invariants as hard
+/// optimization assumptions without inserting normalization or checks.
 pub unsafe fn validate_with_producer_proofs(program: &Program) -> Result<(), Vec<ValidationError>> {
-    validate_with_unchecked_bounds(program, UncheckedBoundsProof::TrustedProducer)
+    validate_with_proof_status(program, ProducerProofStatus::Trusted)
 }
 
-fn validate_with_unchecked_bounds(
+fn validate_with_proof_status(
     program: &Program,
-    unchecked_bounds: UncheckedBoundsProof,
+    producer_proofs: ProducerProofStatus,
 ) -> Result<(), Vec<ValidationError>> {
     let mut validator = Validator {
         program,
         errors: Vec::new(),
-        unchecked_bounds,
+        producer_proofs,
     };
     validator.run();
     if validator.errors.is_empty() {
@@ -125,39 +130,42 @@ pub fn validate_owned(program: Program) -> Result<ValidatedProgram, Vec<Validati
     validate(&program)?;
     Ok(ValidatedProgram::from_validated(
         program,
-        UncheckedBoundsProof::Rejected,
+        ProducerProofStatus::Absent,
     ))
 }
 
 /// Takes ownership of MIR emitted by a trusted producer after structural
-/// validation while retaining the producer's unchecked-bounds proof.
+/// validation while retaining the producer's proofs.
 ///
 /// # Safety
 ///
 /// Every unchecked index, slice, and reference window in `program` must be in
-/// bounds for every execution reaching it.
+/// bounds for every execution reaching it. Every
+/// [`crate::IntegerRangeInvariant`] attached to a state slot, function
+/// parameter, or local must contain every value observable from that storage,
+/// including values supplied by callers or restored from external state.
 pub unsafe fn validate_owned_with_producer_proofs(
     program: Program,
 ) -> Result<ValidatedProgram, Vec<ValidationError>> {
     unsafe { validate_with_producer_proofs(&program)? };
     Ok(ValidatedProgram::from_validated(
         program,
-        UncheckedBoundsProof::TrustedProducer,
+        ProducerProofStatus::Trusted,
     ))
 }
 
 pub(crate) fn revalidate_owned(
     program: Program,
-    unchecked_bounds: UncheckedBoundsProof,
+    producer_proofs: ProducerProofStatus,
 ) -> Result<ValidatedProgram, Vec<ValidationError>> {
-    validate_with_unchecked_bounds(&program, unchecked_bounds)?;
-    Ok(ValidatedProgram::from_validated(program, unchecked_bounds))
+    validate_with_proof_status(&program, producer_proofs)?;
+    Ok(ValidatedProgram::from_validated(program, producer_proofs))
 }
 
 struct Validator<'a> {
     program: &'a Program,
     errors: Vec<ValidationError>,
-    unchecked_bounds: UncheckedBoundsProof,
+    producer_proofs: ProducerProofStatus,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -566,6 +574,20 @@ impl Validator<'_> {
                 SourceSpan::UNKNOWN,
                 format!("{storage} '{}'", state.name),
             );
+            if let Some(range) = state.integer_range {
+                if self.producer_proofs == ProducerProofStatus::Absent {
+                    self.program_error(format!(
+                        "{storage} '{}' integer range requires trusted producer validation",
+                        state.name
+                    ));
+                }
+                if let Some(reason) = self.integer_range_validation_error(range, state.ty) {
+                    self.program_error(format!(
+                        "{storage} '{}' integer range {reason}",
+                        state.name
+                    ));
+                }
+            }
         }
         self.validate_control_output_mirrors();
         for buffer in &self.program.interface.buffers {
@@ -984,6 +1006,25 @@ impl Validator<'_> {
         }
         for param in &function.params {
             self.require_type(param.ty, Some(id), function.source);
+            if let Some(range) = param.integer_range {
+                if self.producer_proofs == ProducerProofStatus::Absent {
+                    self.function_error(
+                        id,
+                        function.source,
+                        format!(
+                            "parameter '{}' integer range requires trusted producer validation",
+                            param.name
+                        ),
+                    );
+                }
+                if let Some(reason) = self.integer_range_validation_error(range, param.ty) {
+                    self.function_error(
+                        id,
+                        function.source,
+                        format!("parameter '{}' integer range {reason}", param.name),
+                    );
+                }
+            }
             match self.program.types.get(param.ty.index()) {
                 Some(Type::BufferSpan { .. }) if param.mode != crate::PassingMode::Value => {
                     self.function_error(
@@ -1019,8 +1060,27 @@ impl Validator<'_> {
         }
         for local in &function.locals {
             self.require_type(local.ty, Some(id), function.source);
+            if let Some(range) = local.integer_range {
+                if self.producer_proofs == ProducerProofStatus::Absent {
+                    self.function_error(
+                        id,
+                        function.source,
+                        format!(
+                            "local {:?} integer range requires trusted producer validation",
+                            local.name
+                        ),
+                    );
+                }
+                if let Some(reason) = self.integer_range_validation_error(range, local.ty) {
+                    self.function_error(
+                        id,
+                        function.source,
+                        format!("local {:?} integer range {reason}", local.name),
+                    );
+                }
+            }
         }
-        if self.unchecked_bounds == UncheckedBoundsProof::Rejected {
+        if self.producer_proofs == ProducerProofStatus::Absent {
             self.reject_unchecked_bounds(id, &function.body);
         }
         self.validate_block(id, function, &function.body, 0);
@@ -2489,6 +2549,7 @@ impl Validator<'_> {
                         | crate::Intrinsic::Min
                         | crate::Intrinsic::Max
                         | crate::Intrinsic::RangeClamp
+                        | crate::Intrinsic::RangeWrap
                 );
                 let mut argument_type = None;
                 for (index, arg) in args.iter().enumerate() {
@@ -2504,7 +2565,9 @@ impl Validator<'_> {
                         );
                         continue;
                     };
-                    let domain_matches = if numeric {
+                    let domain_matches = if *intrinsic == crate::Intrinsic::RangeWrap {
+                        matches!(scalar, crate::ScalarType::I32 | crate::ScalarType::I64)
+                    } else if numeric {
                         scalar.is_numeric()
                     } else {
                         matches!(scalar, crate::ScalarType::F32 | crate::ScalarType::F64)
@@ -2533,6 +2596,32 @@ impl Validator<'_> {
                         }
                     } else {
                         argument_type = Some(scalar);
+                    }
+                }
+                if *intrinsic == crate::Intrinsic::RangeWrap && args.len() == 3 {
+                    let bounds = match (args[1], args[2]) {
+                        (
+                            crate::Value::Constant(crate::ScalarValue::I32(lower)),
+                            crate::Value::Constant(crate::ScalarValue::I32(upper)),
+                        ) => Some((i128::from(lower), i128::from(upper))),
+                        (
+                            crate::Value::Constant(crate::ScalarValue::I64(lower)),
+                            crate::Value::Constant(crate::ScalarValue::I64(upper)),
+                        ) => Some((i128::from(lower), i128::from(upper))),
+                        _ => None,
+                    };
+                    match bounds {
+                        Some((lower, upper)) if lower <= upper => {}
+                        Some(_) => self.function_error(
+                            function_id,
+                            source,
+                            "range_wrap lower bound exceeds its upper bound",
+                        ),
+                        None => self.function_error(
+                            function_id,
+                            source,
+                            format!("range_wrap requires constant integer bounds, got {args:?}"),
+                        ),
                     }
                 }
             }
@@ -3808,6 +3897,26 @@ impl Validator<'_> {
         }
     }
 
+    fn integer_range_validation_error(
+        &self,
+        range: crate::IntegerRangeInvariant,
+        ty: crate::TypeId,
+    ) -> Option<String> {
+        if let Some(reason) = self.value_range_validation_error(
+            crate::ValueRange {
+                min: range.min,
+                max: range.max,
+            },
+            ty,
+        ) {
+            return Some(reason);
+        }
+        match range.min.ty() {
+            crate::ScalarType::I32 | crate::ScalarType::I64 => None,
+            _ => Some("requires an i32 or i64 scalar type".to_owned()),
+        }
+    }
+
     fn param_control_validation_error(
         &self,
         param: &crate::Param,
@@ -4786,7 +4895,7 @@ fn intrinsic_arity(intrinsic: crate::Intrinsic) -> usize {
         | crate::Intrinsic::Min
         | crate::Intrinsic::Max => 2,
         crate::Intrinsic::Fma => 3,
-        crate::Intrinsic::RangeClamp => 3,
+        crate::Intrinsic::RangeClamp | crate::Intrinsic::RangeWrap => 3,
     }
 }
 
@@ -4811,6 +4920,7 @@ fn intrinsic_name(intrinsic: crate::Intrinsic) -> &'static str {
         crate::Intrinsic::Max => "max",
         crate::Intrinsic::Fma => "fma",
         crate::Intrinsic::RangeClamp => "range_clamp",
+        crate::Intrinsic::RangeWrap => "range_wrap",
     }
 }
 
@@ -5128,6 +5238,7 @@ mod tests {
     fn rejects_explicit_init_and_event_entry_signatures() {
         let mut program = empty_program();
         program.functions[0].params.push(FunctionParam {
+            integer_range: None,
             name: "hidden".to_owned(),
             ty: TypeId::new(0),
             mode: PassingMode::Value,
@@ -5137,6 +5248,7 @@ mod tests {
         let handler_id = FunctionId::new(2);
         let mut handler = function("onda_event::tick", FunctionKind::Event(EventId::new(0)));
         handler.params.push(FunctionParam {
+            integer_range: None,
             name: "payload".to_owned(),
             ty: TypeId::new(0),
             mode: PassingMode::Value,
@@ -5394,10 +5506,12 @@ mod tests {
         program.functions.push(callee);
         program.functions[1].locals.extend([
             Local {
+                integer_range: None,
                 name: None,
                 ty: test_type(0),
             },
             Local {
+                integer_range: None,
                 name: None,
                 ty: test_type(0),
             },
@@ -5447,6 +5561,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: None,
             ty: test_type(0),
         });
@@ -5470,6 +5585,7 @@ mod tests {
         program.types.push(Type::Scalar(ScalarType::F32));
         let mut callee = function("consume", FunctionKind::User);
         callee.params.push(FunctionParam {
+            integer_range: None,
             name: "value".to_owned(),
             ty: test_type(0),
             mode: PassingMode::Value,
@@ -5506,18 +5622,21 @@ mod tests {
             },
         ]);
         program.state.push(StateSlot {
+            integer_range: None,
             name: "values".to_owned(),
             ty: test_type(2),
             persistence: StatePersistence::Snapshot,
         });
         let mut callee = function("update", FunctionKind::User);
         callee.params.push(FunctionParam {
+            integer_range: None,
             name: "value".to_owned(),
             ty: test_type(0),
             mode: PassingMode::ReadWriteReference,
         });
         program.functions.push(callee);
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("view".to_owned()),
             ty: test_type(3),
         });
@@ -5592,10 +5711,12 @@ mod tests {
             ty: test_type(0),
         });
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("frame".to_owned()),
             ty: TypeId::new(0),
         });
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("current".to_owned()),
             ty: test_type(0),
         });
@@ -5655,6 +5776,7 @@ mod tests {
             ty: test_type(0),
         });
         program.functions[0].locals.push(Local {
+            integer_range: None,
             name: Some("sample".to_owned()),
             ty: test_type(0),
         });
@@ -5701,6 +5823,7 @@ mod tests {
 
         let mut mutator = function("mutate_frame", FunctionKind::User);
         mutator.params.push(FunctionParam {
+            integer_range: None,
             name: "frame".to_owned(),
             ty: TypeId::new(0),
             mode: PassingMode::ReadWriteReference,
@@ -5718,6 +5841,7 @@ mod tests {
         program.functions.push(mutator);
 
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("frame".to_owned()),
             ty: TypeId::new(0),
         });
@@ -5763,6 +5887,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::Bool));
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("comparison".to_owned()),
             ty: test_type(0),
         });
@@ -5866,6 +5991,7 @@ mod tests {
                 mirror: crate::StateId::new(0),
             });
         program.state.push(StateSlot {
+            integer_range: None,
             name: "control_resource_mirror".to_owned(),
             ty: test_type(3),
             persistence: StatePersistence::ControlMirror,
@@ -5923,11 +6049,13 @@ mod tests {
         });
         program.state.extend([
             StateSlot {
+                integer_range: None,
                 name: "saved_view".to_owned(),
                 ty: test_type(2),
                 persistence: StatePersistence::Snapshot,
             },
             StateSlot {
+                integer_range: None,
                 name: "scratch_buffer".to_owned(),
                 ty: test_type(4),
                 persistence: StatePersistence::InstanceScratch,
@@ -5997,17 +6125,20 @@ mod tests {
         let mut callee = function("consume_resources", FunctionKind::User);
         callee.params.extend([
             FunctionParam {
+                integer_range: None,
                 name: "view".to_owned(),
                 ty: test_type(0),
                 mode: PassingMode::Value,
             },
             FunctionParam {
+                integer_range: None,
                 name: "buffer".to_owned(),
                 ty: test_type(1),
                 mode: PassingMode::ReadWriteReference,
             },
         ]);
         callee.locals.push(Local {
+            integer_range: None,
             name: Some("window".to_owned()),
             ty: test_type(0),
         });
@@ -6116,16 +6247,19 @@ mod tests {
             },
         ]);
         program.state.push(StateSlot {
+            integer_range: None,
             name: "values".to_owned(),
             ty: test_type(2),
             persistence: StatePersistence::Snapshot,
         });
         program.functions[1].locals.extend([
             Local {
+                integer_range: None,
                 name: Some("view".to_owned()),
                 ty: test_type(3),
             },
             Local {
+                integer_range: None,
                 name: None,
                 ty: test_type(0),
             },
@@ -6180,6 +6314,7 @@ mod tests {
             access: AccessMode::ReadOnly,
         });
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("view".to_owned()),
             ty: test_type(0),
         });
@@ -6204,6 +6339,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: None,
             ty: test_type(0),
         });
@@ -6229,6 +6365,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: None,
             ty: test_type(0),
         });
@@ -6267,6 +6404,7 @@ mod tests {
             }],
         });
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: None,
             ty: test_type(1),
         });
@@ -6300,6 +6438,7 @@ mod tests {
         });
         let mut callee = function("mutate", FunctionKind::User);
         callee.params.push(FunctionParam {
+            integer_range: None,
             name: "value".to_owned(),
             ty: test_type(0),
             mode: PassingMode::ReadWriteReference,
@@ -6360,6 +6499,7 @@ mod tests {
             access: AccessMode::ReadWrite,
         });
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("frames".to_owned()),
             ty: TypeId::new(0),
         });
@@ -6406,6 +6546,7 @@ mod tests {
             },
         ]);
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("sample".to_owned()),
             ty: test_type(0),
         });
@@ -6478,6 +6619,7 @@ mod tests {
         });
         let mut callee = function("mutate_buffer", FunctionKind::User);
         callee.params.push(FunctionParam {
+            integer_range: None,
             name: "samples".to_owned(),
             ty: test_type(0),
             mode: PassingMode::ReadWriteReference,
@@ -6513,10 +6655,12 @@ mod tests {
         ]);
         program.functions[1].locals.extend([
             Local {
+                integer_range: None,
                 name: Some("view".to_owned()),
                 ty: test_type(1),
             },
             Local {
+                integer_range: None,
                 name: None,
                 ty: test_type(0),
             },
@@ -6543,6 +6687,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::I32));
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: None,
             ty: test_type(0),
         });
@@ -6568,6 +6713,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: None,
             ty: test_type(0),
         });
@@ -6593,6 +6739,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::I32));
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: None,
             ty: test_type(0),
         });
@@ -6625,14 +6772,17 @@ mod tests {
         ]);
         program.functions[1].locals.extend([
             Local {
+                integer_range: None,
                 name: Some("left".to_owned()),
                 ty: test_type(1),
             },
             Local {
+                integer_range: None,
                 name: Some("right".to_owned()),
                 ty: test_type(1),
             },
             Local {
+                integer_range: None,
                 name: None,
                 ty: test_type(0),
             },
@@ -6670,10 +6820,12 @@ mod tests {
         ]);
         program.functions[1].locals.extend([
             Local {
+                integer_range: None,
                 name: Some("destination".to_owned()),
                 ty: test_type(0),
             },
             Local {
+                integer_range: None,
                 name: Some("source".to_owned()),
                 ty: test_type(1),
             },
@@ -6701,14 +6853,17 @@ mod tests {
         ]);
         program.functions[1].locals.extend([
             Local {
+                integer_range: None,
                 name: Some("condition".to_owned()),
                 ty: test_type(0),
             },
             Local {
+                integer_range: None,
                 name: Some("value".to_owned()),
                 ty: test_type(1),
             },
             Local {
+                integer_range: None,
                 name: Some("copy".to_owned()),
                 ty: test_type(1),
             },
@@ -6766,14 +6921,17 @@ mod tests {
         ]);
         program.functions[1].locals.extend([
             Local {
+                integer_range: None,
                 name: Some("condition".to_owned()),
                 ty: test_type(0),
             },
             Local {
+                integer_range: None,
                 name: Some("value".to_owned()),
                 ty: test_type(1),
             },
             Local {
+                integer_range: None,
                 name: Some("copy".to_owned()),
                 ty: test_type(1),
             },
@@ -6830,6 +6988,7 @@ mod tests {
             ty: test_type(0),
         });
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("frame".to_owned()),
             ty: TypeId::new(0),
         });
@@ -6880,14 +7039,17 @@ mod tests {
         ]);
         program.functions[1].locals.extend([
             Local {
+                integer_range: None,
                 name: Some("values".to_owned()),
                 ty: test_type(1),
             },
             Local {
+                integer_range: None,
                 name: Some("index".to_owned()),
                 ty: TypeId::new(0),
             },
             Local {
+                integer_range: None,
                 name: Some("value".to_owned()),
                 ty: test_type(0),
             },
@@ -6955,11 +7117,13 @@ mod tests {
             },
         ]);
         program.state.push(StateSlot {
+            integer_range: None,
             name: "values".to_owned(),
             ty: test_type(1),
             persistence: StatePersistence::Snapshot,
         });
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("view".to_owned()),
             ty: test_type(2),
         });
@@ -7018,6 +7182,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.state.push(StateSlot {
+            integer_range: None,
             name: "different_debug_name".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
@@ -7147,18 +7312,21 @@ mod tests {
             },
         ]);
         program.state.push(StateSlot {
+            integer_range: None,
             name: "values".to_owned(),
             ty: test_type(1),
             persistence: StatePersistence::Snapshot,
         });
         let mut callee = function("consume_pair", FunctionKind::User);
         callee.params.push(FunctionParam {
+            integer_range: None,
             name: "pair".to_owned(),
             ty: test_type(1),
             mode: PassingMode::ReadOnlyReference,
         });
         program.functions.push(callee);
         program.functions[1].locals.push(Local {
+            integer_range: None,
             name: Some("view".to_owned()),
             ty: test_type(2),
         });
@@ -7215,6 +7383,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.state.push(StateSlot {
+            integer_range: None,
             name: "meter".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
@@ -7255,6 +7424,7 @@ mod tests {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.state.push(StateSlot {
+            integer_range: None,
             name: "meter_mirror".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,

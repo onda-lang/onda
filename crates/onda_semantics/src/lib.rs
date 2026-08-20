@@ -16,7 +16,7 @@ use onda_frontend::{
     ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
     SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN,
     INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
-    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 
 pub mod aggregate_layout;
@@ -32,6 +32,7 @@ mod expr_analysis;
 mod expr_typing;
 mod expr_validation;
 mod generic_specialization;
+mod index_access;
 pub mod internal_names;
 mod io_state_helpers;
 mod mir_lowering;
@@ -63,6 +64,7 @@ use expr_analysis::{build_expr_env, build_scope_expr_env, ExprEnv, FnSignature, 
 use expr_typing::*;
 use expr_validation::*;
 use generic_specialization::*;
+use index_access::*;
 pub(crate) use internal_names::runtime_proc_array_active_symbol;
 use io_state_helpers::*;
 pub use mir_lowering::{lower_program_to_optimized_mir, MirLoweringError};
@@ -91,6 +93,7 @@ pub struct TypedProgram {
     pub out_types: HashMap<String, PrimitiveType>,
     pub control_out_types: HashMap<String, PrimitiveType>,
     pub param_types: HashMap<String, PrimitiveType>,
+    pub(crate) state_integer_ranges: HashMap<String, TypedIntegerRange>,
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
     pub(crate) dynamic_input_range_aliases: HashMap<String, String>,
@@ -289,6 +292,10 @@ pub struct TypedFunction {
     /// mutated directly or through calls. MIR uses this to choose the slice
     /// access contract instead of rediscovering mutability from source AST.
     pub readonly_array_params: HashSet<String>,
+    /// Integer range contracts for concrete flattened reference parameters.
+    /// The function boundary supplies the binding identity that source names
+    /// alone cannot provide.
+    pub(crate) integer_range_params: HashMap<String, TypedIntegerRange>,
     pub return_ty: ReturnType,
     /// Whether calls to this function produce the value described by
     /// `return_ty`. Functions with no `return` are represented as no-result
@@ -300,6 +307,40 @@ pub struct TypedFunction {
     /// nested or later bindings.
     pub local_scalar_types: HashMap<String, PrimitiveType>,
     pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct TypedIntegerRange {
+    pub(crate) ty: PrimitiveType,
+    pub(crate) min: i64,
+    pub(crate) max: i64,
+    pub(crate) wrap: bool,
+}
+
+pub(crate) fn typed_integer_range_from_expr(
+    expr: &Expr,
+    declared_ty: Option<PrimitiveType>,
+) -> Option<TypedIntegerRange> {
+    let Expr::Call { func, args, .. } = expr else {
+        return None;
+    };
+    let wrap = match func {
+        BuiltinFn::RangeClamp => false,
+        BuiltinFn::RangeWrap => true,
+        _ => return None,
+    };
+    let [_, Expr::Int { value: min, .. }, Expr::Int { value: max, .. }] = args.as_slice() else {
+        return None;
+    };
+    let ty @ (PrimitiveType::I32 | PrimitiveType::I64) = declared_ty? else {
+        return None;
+    };
+    Some(TypedIntegerRange {
+        ty,
+        min: *min,
+        max: *max,
+        wrap,
+    })
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -613,6 +654,49 @@ mod tests {
         assert!(
             errors.iter().any(|diag| diag.message.contains(expected)),
             "expected diagnostic containing '{expected}', got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn reserves_unsafe_index_operation_names() {
+        for name in [READ_UNSAFE_FN, WRITE_UNSAFE_FN] {
+            assert_analyze_error_contains(
+                &format!(
+                    r#"
+def {name}(value: f32) -> f32:
+  return value
+
+sample:
+  out1 = 0.0
+"#
+                ),
+                &format!("cannot redefine builtin function '{name}'"),
+            );
+        }
+        assert_analyze_error_contains(
+            r#"
+struct Wrapper:
+  def read_unsafe(self) -> f32:
+    return 0.0
+
+sample:
+  out1 = 0.0
+"#,
+            "cannot redefine builtin method 'Wrapper.read_unsafe'",
+        );
+    }
+
+    #[test]
+    fn rejects_write_unsafe_in_value_contexts() {
+        assert_analyze_error_contains(
+            r#"
+init:
+  values: f32[2] = [0.0, 0.0]
+
+sample:
+  out1 = write_unsafe(values, 0, 1.0)
+"#,
+            "'write_unsafe' is a statement and cannot be used as a value",
         );
     }
 
@@ -6226,6 +6310,84 @@ sample:
     }
 
     #[test]
+    fn incompatible_branch_local_integer_ranges_are_semantic_errors() {
+        for (case, then_range, else_range, expected) in [
+            (
+                "bounds",
+                "{0, 10}",
+                "{0, 100}",
+                "clamp i32(0..=9) and clamp i32(0..=99)",
+            ),
+            (
+                "mode",
+                "{0, 10}",
+                "{0, 10, wrap}",
+                "clamp i32(0..=9) and wrap i32(0..=9)",
+            ),
+            ("presence", "{0, 10}", "", "clamp i32(0..=9) and unbounded"),
+        ] {
+            let source = format!(
+                r#"
+params:
+  select: bool = true
+
+sample:
+  if select:
+    chosen: i32 = 5 {then_range}
+  else:
+    chosen: i32 = 6 {else_range}
+  out1 = f32(chosen)
+"#
+            );
+            let errors = analyze(parse_program(&source).expect("source should parse"))
+                .expect_err("branch range mismatch should be rejected");
+            assert!(
+                errors
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(&format!(
+                    "binding 'chosen' has incompatible branch integer range contracts: {expected}"
+                ))),
+                "missing {case} range mismatch diagnostic: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn identical_branch_local_integer_ranges_preserve_the_storage_contract() {
+        let source = r#"
+params:
+  select: bool = true
+
+sample:
+  if select:
+    chosen: i32 = 5 {0, 10, wrap}
+  else:
+    chosen: i32 = 6 {0, 10, wrap}
+  chosen += 10
+  out1 = f32(chosen)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("identical branch range contracts should merge");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("a compatible ranged branch binding should lower to MIR");
+        let expected = onda_mir::IntegerRangeInvariant {
+            min: onda_mir::ScalarValue::I32(0),
+            max: onda_mir::ScalarValue::I32(9),
+            mode: onda_mir::IntegerRangeMode::Wrap,
+        };
+        let process = &mir.functions[mir.entry_points.process.index()];
+        let chosen = process
+            .locals
+            .iter()
+            .filter(|local| local.name.as_deref() == Some("chosen"))
+            .collect::<Vec<_>>();
+        assert!(!chosen.is_empty());
+        assert!(chosen
+            .iter()
+            .all(|local| local.integer_range == Some(expected)));
+    }
+
+    #[test]
     fn first_assignment_defaults_drive_call_specialization() {
         let source = r#"
 def identity(value):
@@ -11609,5 +11771,689 @@ sample:
             .expect("a branch-local struct alias should retain its nominal type");
         lower_program_to_optimized_mir(&typed)
             .expect("a branch-local struct alias should retain its selected runtime element");
+    }
+
+    #[test]
+    fn i32_and_i64_ranged_bindings_reach_mir_storage_and_eliminate_fixed_bounds() {
+        let source = r#"
+init:
+  values: f32[8]
+  index: i32 = 7 {0, 8, wrap}
+  wide: i64 = 9007199254740993 {9007199254740992, 9007199254740996}
+
+sample:
+  values[index] = 1.0
+  index += 1
+  wide += 1
+  out1 = values[index]
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("ranged bindings should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("ranged bindings should lower to optimized MIR");
+        let index = mir
+            .state
+            .iter()
+            .find(|state| state.name == "index")
+            .and_then(|state| state.integer_range)
+            .expect("i32 state should retain its integer range");
+        assert_eq!(index.min, onda_mir::ScalarValue::I32(0));
+        assert_eq!(index.max, onda_mir::ScalarValue::I32(7));
+        assert_eq!(index.mode, onda_mir::IntegerRangeMode::Wrap);
+        let wide = mir
+            .state
+            .iter()
+            .find(|state| state.name == "wide")
+            .and_then(|state| state.integer_range)
+            .expect("i64 state should retain its integer range");
+        assert_eq!(wide.min, onda_mir::ScalarValue::I64(9_007_199_254_740_992));
+        assert_eq!(wide.max, onda_mir::ScalarValue::I64(9_007_199_254_740_995));
+    }
+
+    #[test]
+    fn namespace_template_integer_binding_range_bounds_reach_mir() {
+        let source = r#"
+namespace Ring<Begin = 4, Size = 8>:
+  proc Cursor:
+    outs:
+      out1
+    init:
+      cursor: i32 = Begin {begin = Begin, end = Begin + Size, mode = wrap}
+    sample:
+      cursor += 1
+      out1 = f32(cursor)
+
+outs:
+  out1
+init:
+  cursor = Ring<3, 8>::Cursor()
+sample:
+  out1 = cursor()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("namespace template integers should be valid binding-range bounds");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("namespace template integer bounds should lower to optimized MIR");
+        let ranges = mir
+            .state
+            .iter()
+            .filter_map(|state| state.integer_range)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].min, onda_mir::ScalarValue::I32(3));
+        assert_eq!(ranges[0].max, onda_mir::ScalarValue::I32(10));
+        assert_eq!(ranges[0].mode, onda_mir::IntegerRangeMode::Wrap);
+    }
+
+    #[test]
+    fn inferred_integer_binding_range_defaults_to_i32() {
+        let source = r#"
+params:
+  test = 0
+
+init:
+  clamped = test {0, 10}
+  wrapped = test {0, 10, wrap}
+
+sample:
+  clamped += 1
+  wrapped += 1
+  out1 = f32(clamped + wrapped)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("an inferred integer binding range should analyze");
+        for statement in &typed.init {
+            let Stmt::Assign {
+                decl_ty,
+                is_typed_decl,
+                ..
+            } = statement
+            else {
+                panic!("each init statement should remain a declaration");
+            };
+            assert_eq!(*decl_ty, Some(PrimitiveType::I32));
+            assert!(*is_typed_decl);
+        }
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("inferred i32 binding ranges should lower to optimized MIR");
+        for (name, expected_mode) in [
+            ("clamped", onda_mir::IntegerRangeMode::Clamp),
+            ("wrapped", onda_mir::IntegerRangeMode::Wrap),
+        ] {
+            let state = mir
+                .state
+                .iter()
+                .find(|state| state.name == name)
+                .unwrap_or_else(|| panic!("missing state '{name}'"));
+            let range = state
+                .integer_range
+                .unwrap_or_else(|| panic!("missing integer range for '{name}'"));
+            assert_eq!(range.min, onda_mir::ScalarValue::I32(0));
+            assert_eq!(range.max, onda_mir::ScalarValue::I32(9));
+            assert_eq!(range.mode, expected_mode);
+        }
+
+        assert_analyze_error_contains(
+            r#"
+init:
+  source: i64 = 0
+  clamped = source {0, 10}
+
+sample:
+  out1 = f32(clamped)
+"#,
+            "cannot assign I64 to I32",
+        );
+    }
+
+    #[test]
+    fn single_bound_and_named_binding_ranges_use_zero_begin_and_exclusive_end() {
+        let source = r#"
+init:
+  clamped = 0 {1000}
+  wrapped = 0 {end = 1000, mode = wrap}
+
+sample:
+  clamped += 1
+  wrapped += 1
+  out1 = f32(clamped + wrapped)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("single-bound ranges should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("single-bound ranges should lower to optimized MIR");
+        for (name, expected_mode) in [
+            ("clamped", onda_mir::IntegerRangeMode::Clamp),
+            ("wrapped", onda_mir::IntegerRangeMode::Wrap),
+        ] {
+            let range = mir
+                .state
+                .iter()
+                .find(|state| state.name == name)
+                .and_then(|state| state.integer_range)
+                .unwrap_or_else(|| panic!("missing integer range for {name}"));
+            assert_eq!(range.min, onda_mir::ScalarValue::I32(0));
+            assert_eq!(range.max, onda_mir::ScalarValue::I32(999));
+            assert_eq!(range.mode, expected_mode);
+        }
+    }
+
+    #[test]
+    fn binding_ranges_reject_empty_domains_and_allow_one_past_i32_max_as_the_end() {
+        for domain in ["{0}", "{begin = 5, end = 5}", "{begin = 6, end = 5}"] {
+            assert_analyze_error_contains(
+                &format!("init:\n  value: i32 = 0 {domain}\nsample:\n  out1 = f32(value)\n"),
+                "begin bound must be less than its exclusive end bound",
+            );
+        }
+        assert_analyze_error_contains(
+            r#"
+init:
+  value: i64 = 0 {
+    begin = -9223372036854775807 - 1,
+    end = -9223372036854775807 - 1,
+  }
+
+sample:
+  out1 = f32(value)
+"#,
+            "begin bound must be less than its exclusive end bound",
+        );
+
+        let source = r#"
+init:
+  value: i32 = 2147483647 {begin = 2147483647, end = 2147483648}
+
+sample:
+  out1 = f32(value)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("an exclusive i32 end may be one past the largest stored value");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("the exclusive end should lower to a representable inclusive invariant");
+        let range = mir
+            .state
+            .iter()
+            .find(|state| state.name == "value")
+            .and_then(|state| state.integer_range)
+            .expect("value should retain its integer range");
+        assert_eq!(range.min, onda_mir::ScalarValue::I32(i32::MAX));
+        assert_eq!(range.max, onda_mir::ScalarValue::I32(i32::MAX));
+
+        let source = r#"
+init:
+  value: i64 = -9223372036854775807 - 1 {
+    begin = -9223372036854775807 - 1,
+    end = -9223372036854775807,
+  }
+
+sample:
+  out1 = f32(value)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("an i64 binding range may begin at i64::MIN");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("the minimum i64 range should lower without endpoint underflow");
+        let range = mir
+            .state
+            .iter()
+            .find(|state| state.name == "value")
+            .and_then(|state| state.integer_range)
+            .expect("value should retain its integer range");
+        assert_eq!(range.min, onda_mir::ScalarValue::I64(i64::MIN));
+        assert_eq!(range.max, onda_mir::ScalarValue::I64(i64::MIN));
+    }
+
+    #[test]
+    fn ranged_state_does_not_capture_a_shadowing_function_parameter() {
+        let source = r#"
+init:
+  index: i32 = 0 {0, 4, wrap}
+
+def overwrite(index: i32):
+  index = 100
+  return index
+
+sample:
+  out1 = f32(overwrite(5))
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("a shadowing function parameter should analyze");
+        let overwrite = typed
+            .defs
+            .iter()
+            .find(|function| function.name == "overwrite")
+            .expect("overwrite function");
+        let Stmt::Assign { expr, .. } = &overwrite.body[0] else {
+            panic!("the first function statement should be an assignment");
+        };
+        assert!(
+            matches!(expr, Expr::Int { value: 100, .. }),
+            "the top-level range must not normalize a shadowing parameter: {expr:?}"
+        );
+    }
+
+    #[test]
+    fn processor_ranged_state_normalizes_generated_method_writes() {
+        let source = r#"
+proc Counter:
+  init:
+    position: i32 = 0 {0, 4, wrap}
+
+  sample:
+    position += 1
+    out1 = f32(position)
+
+init:
+  counter = Counter()
+
+sample:
+  out1 = counter()
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("processor range should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("processor range should lower to optimized MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+        assert!(dump.contains("intrinsic range_wrap"));
+        assert!(
+            mir.state
+                .iter()
+                .find(|state| state.name == "counter.position")
+                .and_then(|state| state.integer_range)
+                .is_some(),
+            "{dump}"
+        );
+    }
+
+    #[test]
+    fn nested_generic_processor_ranged_state_survives_flattening() {
+        let source = r#"
+proc Counter<T>:
+  init:
+    position: i32 = 0 {0, 4, wrap}
+    marker: T = T(0)
+
+  sample:
+    position -= 1
+    out1 = f32(position)
+
+proc Wrapper<T>:
+  init:
+    counter = Counter<T>()
+
+  sample:
+    out1 = counter()
+
+init:
+  wrapper = Wrapper<f32>()
+
+sample:
+  out1 = wrapper()
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested generic processor range should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("nested generic processor range should lower to optimized MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+        assert!(dump.contains("intrinsic range_wrap"), "{dump}");
+        assert!(
+            mir.state
+                .iter()
+                .find(|state| state.name == "wrapper.counter__position")
+                .and_then(|state| state.integer_range)
+                .is_some(),
+            "{dump}"
+        );
+    }
+
+    #[test]
+    fn ranged_dynamic_for_bound_eliminates_safe_array_clamps() {
+        let source = r#"
+proc Sum<T>:
+  init:
+    values: T[16]
+    count: i32 = 8 {0, 9}
+    base: i32 = 0 {0, 8, wrap}
+
+  sample:
+    total: T = T(0)
+    for i in 0..count:
+      total += values[base + i]
+    out1 = total
+
+init:
+  count: i32 = 0 {0, 2}
+  sum = Sum<f32>()
+
+sample:
+  out1 = sum()
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("ranged dynamic loop should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("ranged dynamic loop should lower to optimized MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+        let count_range = mir
+            .state
+            .iter()
+            .find(|state| state.name == "sum.count")
+            .and_then(|state| state.integer_range)
+            .expect("nested count state should retain its declared range");
+        assert_eq!(count_range.min, onda_mir::ScalarValue::I32(0), "{dump}");
+        assert_eq!(count_range.max, onda_mir::ScalarValue::I32(8), "{dump}");
+        assert!(
+            mir.functions
+                .iter()
+                .find(|function| function.name.ends_with(".__onda_proc_step"))
+                .and_then(|function| {
+                    function
+                        .params
+                        .iter()
+                        .find(|parameter| parameter.name == "self.count")
+                })
+                .and_then(|parameter| parameter.integer_range)
+                .is_some(),
+            "{dump}"
+        );
+        assert!(dump.contains("] unchecked"), "{dump}");
+        assert!(!dump.contains("] clamp"), "{dump}");
+    }
+
+    #[test]
+    fn constant_for_indices_remove_bounds_normalization_across_surfaces() {
+        let source = r#"
+const N = 4
+
+struct Cell:
+  value: f32
+
+proc Voice:
+  ins 1
+  outs 1
+  params:
+    gain = 0.5
+
+  sample:
+    out1 = in1 * gain
+
+ins N
+outs N
+params N
+
+init:
+  cells: Cell[N]
+  voices: Voice[N] = Voice()
+
+sample:
+  for i in 0..N:
+    cells[i].value = ins[i] + params[i]
+    outs[i] = voices[i](cells[i].value)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("constant indexed surfaces should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("constant indexed surfaces should lower to optimized MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+
+        assert!(dump.contains(".$forward_body"), "{dump}");
+        assert!(
+            dump.contains("integer_range=clamp(i32(0)..=i32(3))"),
+            "{dump}"
+        );
+        assert!(dump.contains("] unchecked"), "{dump}");
+        assert!(!dump.contains("] clamp"), "{dump}");
+        assert!(!dump.contains("intrinsic range_clamp"), "{dump}");
+    }
+
+    #[test]
+    fn loop_variables_are_immutable_in_all_scopes() {
+        for source in [
+            r#"
+sample:
+  for i in 0..4:
+    i = 2
+  out1 = 0.0
+"#,
+            r#"
+init:
+  for i in 0..4:
+    i = 2
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+def bad() -> i32:
+  for i in 0..4:
+    i = 2
+  return 0
+
+sample:
+  out1 = f32(bad())
+"#,
+            r#"
+const def bad() -> i32:
+  for i in 0..4:
+    i = 2
+  return 0
+
+const Result = bad()
+
+sample:
+  out1 = f32(Result)
+"#,
+        ] {
+            assert_analyze_error_contains(source, "cannot assign to loop variable 'i'");
+        }
+    }
+
+    #[test]
+    fn explicit_unsafe_array_access_lowers_to_unchecked_bounds() {
+        let source = r#"
+init:
+  values: f32[4]
+
+sample:
+  write_unsafe(values, 2, 0.5)
+  out1 = read_unsafe(values, 2)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("explicit unsafe operations should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("explicit unsafe operations should lower through trusted source MIR");
+    }
+
+    #[test]
+    fn unsafe_access_rejects_non_numeric_indices_during_analysis() {
+        let source = r#"
+init:
+  values: f32[4]
+
+buffers:
+  bank: f32 { count = 2 }
+
+sample:
+  write_unsafe(values, true, 0.5)
+  out1 = read_unsafe(values, false)
+  selected = read_unsafe(bank[true], 0)
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("unsafe indices must be numeric");
+        let index_errors = errors
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic
+                    .message
+                    .contains("index argument requires numeric type, got Bool")
+            })
+            .count();
+        assert_eq!(index_errors, 3, "{errors:?}");
+    }
+
+    #[test]
+    fn write_unsafe_rejects_incompatible_values_during_analysis() {
+        let source = r#"
+init:
+  values: f32[4]
+
+sample:
+  write_unsafe(values, 0, true)
+  out1 = values[0]
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("unsafe writes must preserve the element type");
+        assert!(
+            errors.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("'write_unsafe' value type mismatch: cannot assign Bool to F32")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn write_unsafe_rejects_read_only_input_arrays_during_analysis() {
+        let source = r#"
+ins:
+  source: f32[2]
+
+sample:
+  write_unsafe(source, 0, 1.0)
+  out1 = source[0]
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("write_unsafe must reject a read-only input array");
+        assert!(
+            errors
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("storage 'source' is read-only")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn write_unsafe_rejects_aggregate_arrays_during_analysis() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+init:
+  cells: Cell[2]
+
+sample:
+  write_unsafe(cells, 0, 1.0)
+  out1 = 0.0
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("write_unsafe must reject aggregate assignment");
+        assert!(
+            errors.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("write_unsafe does not support aggregate array 'cells'")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn aggregate_read_unsafe_rejects_scalar_value_contexts() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+init:
+  cells: Cell[2]
+
+sample:
+  out1 = read_unsafe(cells, 0)
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("an aggregate reference must not become a scalar value");
+        assert!(
+            errors.iter().any(|diagnostic| {
+                diagnostic.message.contains(
+                "aggregate read_unsafe from 'cells' is only valid in an alias or reference argument"
+            )
+            }),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn unsafe_dynamic_interface_access_preserves_direction_permissions() {
+        let source = r#"
+ins 2
+outs 2
+params:
+  controls: f32[2] = [0.0, 1.0]
+
+sample:
+  write_unsafe(ins, 0, 1.0)
+  controls.write_unsafe(0, 1.0)
+  outs.write_unsafe(0, read_unsafe(outs, 0))
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("unsafe interface access must preserve read/write direction");
+        assert!(
+            errors
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("storage 'ins' is read-only")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("storage 'outs' is write-only")),
+            "{errors:?}"
+        );
+        assert!(
+            errors.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("storage 'controls' is read-only")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn unsafe_buffer_access_arity_matches_the_declared_shape() {
+        let source = r#"
+buffers:
+  stereo: f32[2]
+
+sample:
+  out1 = read_unsafe(stereo, 0)
+"#;
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("a stereo buffer requires channel and frame indices");
+        assert!(
+            errors
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("expects 2 index arguments")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_unsafe_buffer_access_lowers_for_resources_and_parameters() {
+        let source = r#"
+def copy_at(src: buffer<f32>, dst: buffer<f32>, index: i32):
+  value = read_unsafe(src, index)
+  write_unsafe(dst, index, value)
+  return value
+
+buffers:
+  source: f32
+  destination: f32
+  stereo: f32[2]
+
+sample:
+  write_unsafe(stereo, 1, 0, 0.25)
+  out1 = copy_at(source, destination, 0) + read_unsafe(stereo, 1, 0)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("explicit unsafe buffer operations should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("unsafe buffer operations should lower through trusted source MIR");
     }
 }

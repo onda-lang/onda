@@ -125,50 +125,17 @@
 - Generics follow-ups
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
 
-- Range declarations follow-ups
-  - Extend the existing inclusive range braces to integer locals and state. Do not extend this
-    feature to top-level or proc `ins`/`params`; their external control and signal domains have
-    separate boundary semantics. Ranges are binding refinements rather than dedicated wrapping or
-    saturating integer types:
-    ```onda
-    init:
-      active_taps: i32 = 0 {0, MaxImpulseLen}
-      write: i32 = 0 {0, MaxImpulseLen - 1, wrap}
-    ```
-    Bounds are compile-time integer expressions. `clamp` is the default mode and `wrap` selects
-    modular normalization across the declared inclusive range. Bare `wrap` and `clamp` are the
-    concise spellings; `mode = wrap` and `mode = clamp` are their equivalent explicit named forms.
-  - Apply the binding's range mode automatically on initialization, direct assignment, compound
-    assignment, and writes through references:
-    ```onda
-    active_taps = values.len() # clamped to 0..MaxImpulseLen
-    write -= 1                # wrapped to 0..MaxImpulseLen - 1
-    ```
-    Normalize once when storing into the ranged binding, never again merely because the value is
-    read or used as an array index.
-  - Keep composition storage-based rather than propagating a range mode through expressions. To
-    advance a wrapped position, mutate the ranged binding directly; to preserve the original,
-    initialize another ranged binding and mutate that:
-    ```onda
-    write += 1
-    sample = ring[write]
-
-    next: i32 = write {0, MaxImpulseLen - 1, wrap}
-    next += 1
-    sample = ring[next]
-    ```
-    An expression such as `write + 1` is still an ordinary integer expression and does not itself
-    wrap. This keeps the behavior attached to the storage whose invariant must be maintained.
-  - Carry conservative range facts from binding reads through integer arithmetic, branches, loop
-    induction, and calls. Arithmetic itself remains ordinary: if both `write` and `i` are known to
-    be between `0` and `N - 1` inclusive, `write + i` is between `0` and `2 * N - 2` inclusive and
-    does not inherit the binding's `wrap` mode.
-  - Permit refined integer function parameters where useful, and infer the induction range of
-    `for i in 0..bounded_end` without requiring an annotation on `i`.
-  - Erase refinements to their underlying `i32` or `i64` physical representation. The range mode is
-    enforced at stores and relevant call boundaries without changing state layout or the processor
-    ABI.
-  - Use the retained proof at fixed-array accesses to select trusted unchecked MIR bounds when the
-    complete index range fits the array. This should let persistent DSP state carry invariants such
-    as convolution tap counts and ring positions without rediscovering them through whole-program
-    state analysis.
+- Range-analysis follow-ups
+  - Evaluate explicit loop-variable types, for example `for i: i32 in ...` and
+    `for i: i64 in ...`, while retaining `i32` as the default. The selected type should be the
+    actual induction type end to end: do not introduce hidden widened counters, per-iteration
+    narrowing, clamping, or overflow checks. Specify endpoint/overflow behavior as ordinary
+    integer arithmetic, leaving progress and termination to the source program, and preserve
+    range facts for bounds-proof elimination at either width.
+  - Add source syntax for refined integer function parameters. Ranged `i32`/`i64` locals and state,
+    normalization on stores, erased physical representation, conservative MIR range propagation,
+    loop induction facts, call-boundary propagation, and fixed-array bounds-check elimination are
+    implemented.
+  - Extend bounds proofs from fixed storage to relational dynamic slice and external-buffer facts,
+    such as an index derived from the same descriptor's `.len()`. Explicit `read_unsafe` and
+    `write_unsafe` are available when the programmer can establish such a proof today.

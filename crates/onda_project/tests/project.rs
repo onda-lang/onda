@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use onda_project::{
-    decode_buffer_bytes, decode_ondabuffer, encode_ondabuffer, encode_wav_f32, load_buffer_file,
-    resolve_project_input, resolve_project_watch_paths, validate_buffer_assets, AssetId,
-    BufferAsset, BufferElement, BufferSamples, InlineBuffer, MaterializationPlan, PlannedFile,
-    ProjectBufferChannels, ProjectBufferDeclaration, ProjectImage, ProjectInput, ProjectLimits,
-    ProjectManifest, SourceDocument, SourceImage, SourceReferenceKind, SourceResolution,
+    decode_buffer_bytes, decode_ondabuffer, encode_ondabuffer, encode_wav_f32, inspect_buffer_file,
+    load_buffer_file, resolve_project_input, resolve_project_watch_paths,
+    validate_buffer_asset_metadata, validate_buffer_assets, AssetId, BufferAsset, BufferElement,
+    BufferSamples, InlineBuffer, MaterializationPlan, PlannedFile, ProjectBufferChannels,
+    ProjectBufferDeclaration, ProjectImage, ProjectInput, ProjectLimits, ProjectManifest,
+    SourceDocument, SourceImage, SourceReferenceKind, SourceResolution,
     ONDA_PROJECT_DEFAULT_FILE_NAME,
 };
 use serde_json::json;
@@ -82,6 +83,64 @@ fn ondabuffer_rejects_content_corruption() {
     let error = decode_ondabuffer(&encoded, ProjectLimits::default())
         .expect_err("corrupt payload must fail");
     assert!(error.to_string().contains("digest mismatch"));
+}
+
+#[test]
+fn buffer_file_inspection_reads_shape_without_validating_payload_content() {
+    let directory = temporary_directory("buffer-metadata");
+    fs::create_dir_all(&directory).expect("create metadata test directory");
+    let asset = BufferAsset::new(2, 2, 44_100.0, BufferSamples::I32(vec![1, 2, 3, 4]))
+        .expect("valid metadata fixture");
+    let mut encoded = encode_ondabuffer(&asset).expect("encode metadata fixture");
+    let last = encoded.len() - 1;
+    encoded[last] ^= 1;
+    let path = directory.join("corrupt-payload.ondabuffer");
+    fs::write(&path, encoded).expect("write metadata fixture");
+
+    assert_eq!(
+        inspect_buffer_file(&path, ProjectLimits::default()).expect("inspect header"),
+        asset.metadata()
+    );
+    load_buffer_file(&path, ProjectLimits::default())
+        .expect_err("runtime loading must still validate the content digest");
+
+    fs::remove_dir_all(directory).expect("remove metadata test directory");
+}
+
+#[test]
+fn wav_file_inspection_reports_decoded_f32_shape() {
+    let directory = temporary_directory("wav-metadata");
+    fs::create_dir_all(&directory).expect("create WAV metadata test directory");
+    let asset = BufferAsset::new(
+        3,
+        2,
+        48_000.0,
+        BufferSamples::F32(vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5]),
+    )
+    .expect("valid WAV metadata fixture");
+    let path = directory.join("sample.wav");
+    fs::write(
+        &path,
+        encode_wav_f32(&asset).expect("encode WAV metadata fixture"),
+    )
+    .expect("write WAV metadata fixture");
+
+    let metadata =
+        inspect_buffer_file(&path, ProjectLimits::default()).expect("inspect WAV metadata");
+    assert_eq!(metadata, asset.metadata());
+    validate_buffer_asset_metadata(
+        [("sample", &metadata)],
+        &[ProjectBufferDeclaration {
+            name: "sample".to_owned(),
+            element: BufferElement::F32,
+            channels: ProjectBufferChannels::Static(2),
+            array_len: 1,
+            is_array: false,
+        }],
+    )
+    .expect("metadata matches declaration");
+
+    fs::remove_dir_all(directory).expect("remove WAV metadata test directory");
 }
 
 #[test]

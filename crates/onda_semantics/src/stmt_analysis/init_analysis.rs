@@ -44,6 +44,7 @@ impl<'a> InitStmtAnalysisCtx<'a> {
 pub(crate) struct InitAnalysisState {
     pub known_scalars: HashSet<String>,
     pub local_aliases: LocalAliasTypes,
+    pub integer_ranges: HashMap<String, TypedIntegerRange>,
     pub local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     pub declared_symbols: DeclaredSymbolMap,
     pub state_scalars: HashMap<String, PrimitiveType>,
@@ -105,17 +106,20 @@ fn infer_init_data_like_info(
 
 impl InitAnalysisState {
     fn flow_state(&self) -> ScopeFlowState {
-        ScopeFlowState::from_parts(
+        let mut flow = ScopeFlowState::from_parts(
             self.known_scalars.clone(),
             self.local_aliases.clone(),
             self.local_array_aliases.clone(),
             HashMap::new(),
-        )
+        );
+        flow.integer_ranges = self.integer_ranges.clone();
+        flow
     }
 
     fn restore_flow_state(&mut self, flow: ScopeFlowState) {
         self.known_scalars = flow.known_scalars;
         self.local_aliases = flow.local_aliases;
+        self.integer_ranges = flow.integer_ranges;
         self.local_array_aliases = flow.local_array_aliases;
     }
 
@@ -243,6 +247,7 @@ pub(crate) fn analyze_init_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, |stmt_diag| {
+        track_integer_range_declaration(stmt, &mut st.integer_ranges);
         let init_ctx = ctx.init;
         let common = init_ctx.common;
         let locals = ctx.locals;
@@ -313,7 +318,7 @@ pub(crate) fn analyze_init_stmt(
                     }
                 }
                 if !handled_proc_event_stmt {
-                    analyze_stmt_expr(expr, stmt_expr_env(common.scope_kind()), errors)
+                    analyze_standalone_stmt_expr(expr, stmt_expr_env(common.scope_kind()), errors)
                 }
             }
             Stmt::Return { .. } => push_semantic(
@@ -366,6 +371,7 @@ pub(crate) fn analyze_init_stmt(
                 merge_reachable_branch_scope_flow_state(
                     &mut st.known_scalars,
                     &mut st.local_aliases,
+                    &mut st.integer_ranges,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
                     &mut struct_aliases,
@@ -1817,7 +1823,9 @@ fn analyze_assign_init(
                 && !st.local_aliases.contains_key(name)
                 && !st.local_array_aliases.contains_key(name)
             {
-                if let Expr::Index { base, index, .. } = expr {
+                if let Some(source) = indexed_read_source(expr) {
+                    let base = source.base;
+                    let index = source.index;
                     let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
                     if let Some(binding_kind) = classify_runtime_like_indexed_binding(
                         base,

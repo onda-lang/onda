@@ -2,8 +2,8 @@ mod run_session;
 
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
-    RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo, RunEventParamInfo,
-    RunEventValue, RunOptions, RunParamInfo, RunSession,
+    InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo,
+    RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo, RunSession,
 };
 
 use std::collections::HashMap;
@@ -99,8 +99,30 @@ impl DaemonSession {
         path: impl AsRef<Path>,
         options: RunOptions,
     ) -> Result<&RunSession, RunBuildError> {
+        self.start_run_with_options_and_initial_buffers(path, options, std::iter::empty())
+    }
+
+    pub fn start_run_with_initial_buffers(
+        &mut self,
+        path: impl AsRef<Path>,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+    ) -> Result<&RunSession, RunBuildError> {
+        self.start_run_with_options_and_initial_buffers(path, self.config.run, initial_buffers)
+    }
+
+    pub fn start_run_with_options_and_initial_buffers(
+        &mut self,
+        path: impl AsRef<Path>,
+        options: RunOptions,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+    ) -> Result<&RunSession, RunBuildError> {
         let normalized = normalize_session_path(path.as_ref());
-        let run = RunSession::build(&self.analysis, &normalized, options)?;
+        let run = RunSession::build_with_initial_buffers(
+            &self.analysis,
+            &normalized,
+            options,
+            initial_buffers,
+        )?;
         self.runs.insert(normalized.clone(), run);
         Ok(self
             .runs
@@ -406,6 +428,53 @@ mod tests {
             .render_run_block(&main)
             .expect("cleared buffers should fall back to neutral descriptors");
         assert!(cleared[0].iter().all(|sample| *sample == 0.0));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_builds_once_with_all_initial_buffer_bindings() {
+        let dir = mk_temp_dir("run_initial_buffers");
+        let main = dir.join("main.onda");
+        let left = dir.join("left.wav");
+        let right = dir.join("right.wav");
+        write_file(
+            &main,
+            "buffers:\n  left: buffer<f32>\n  right: buffer<f32>\nouts:\n  out1\nsample:\n  out1 = left[0] + right[0]\n",
+        );
+        write_wav(&left, 1, 48_000, &[0.25]);
+        write_wav(&right, 1, 48_000, &[0.5]);
+
+        let bindings = [
+            InitialBufferBinding::load_file("left", &left, onda_project::ProjectLimits::default())
+                .expect("load left initial binding"),
+            InitialBufferBinding::load_file(
+                "right",
+                &right,
+                onda_project::ProjectLimits::default(),
+            )
+            .expect("load right initial binding"),
+        ];
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_initial_buffers(&main, bindings)
+            .expect("run should start with all buffers already bound");
+
+        let info = session.run(&main).expect("active run").buffer_info();
+        assert_eq!(
+            info[0].loaded_path.as_deref(),
+            Some(left.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            info[1].loaded_path.as_deref(),
+            Some(right.to_string_lossy().as_ref())
+        );
+        let rendered = session
+            .render_run_block(&main)
+            .expect("initially bound run should render");
+        assert!(rendered[0]
+            .iter()
+            .all(|sample| (*sample - 0.75).abs() < 1e-6));
 
         fs::remove_dir_all(&dir).ok();
     }

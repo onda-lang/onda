@@ -6,12 +6,12 @@ use onda_frontend::{DiagCtx, Diagnostic, PrimitiveType};
 use crate::decl_symbols::{insert_declared_symbol, DeclaredSymbolInfo, DeclaredSymbolMap};
 use crate::proc_state_rewrite::{
     PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG,
-    PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG, SAFI_BASE_ARG, SAFI_FIELD_ARG,
-    SAFI_FIELD_IDX_ARG, SAFI_IDX_ARG, STRUCT_ARRAY_FIELD_INDEX_SENTINEL,
+    PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG, PROC_INDEX_UNCHECKED_ARG, SAFI_BASE_ARG,
+    SAFI_FIELD_ARG, SAFI_FIELD_IDX_ARG, SAFI_IDX_ARG, STRUCT_ARRAY_FIELD_INDEX_SENTINEL,
 };
 use crate::{
-    push_semantic, ArrayStructRootInfo, LocalAliasTypes, LocalArrayAliasInfo, TypedFieldType,
-    TypedStructField,
+    indexed_read_expr, push_semantic, ArrayStructRootInfo, IndexAccess, LocalAliasTypes,
+    LocalArrayAliasInfo, TypedFieldType, TypedStructField,
 };
 
 #[derive(Debug, Clone)]
@@ -610,7 +610,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
             .is_some_and(|raw| raw == PROC_INDEX_CALL_SENTINEL) =>
         {
             let loc = *loc;
-            let Some((base, idx, field)) = extract_proc_index_field_args(args) else {
+            let Some((base, idx, field, access)) = extract_proc_index_field_args(args) else {
                 for arg in args.iter_mut() {
                     rewrite_struct_array_inline_field_expr(&mut arg.expr, roots, defs, errors);
                 }
@@ -642,11 +642,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
 
             match target_field.ty {
                 TypedFieldType::Scalar(_) => {
-                    *expr = Expr::Index {
-                        loc,
-                        base: format!("{base}.{field}"),
-                        index: Box::new(idx),
-                    };
+                    *expr = indexed_read_expr(format!("{base}.{field}"), idx, access, loc);
                 }
                 TypedFieldType::Array(_) => {
                     errors.push(Diagnostic::semantic_span(
@@ -847,10 +843,11 @@ fn extract_safi_args(args: &mut [CallArg]) -> Option<(String, Expr, String, Expr
     Some((base?, idx?, field?, fidx?))
 }
 
-fn extract_proc_index_field_args(args: &[CallArg]) -> Option<(String, Expr, String)> {
+fn extract_proc_index_field_args(args: &[CallArg]) -> Option<(String, Expr, String, IndexAccess)> {
     let mut base = None::<String>;
     let mut idx = None::<Expr>;
     let mut field = None::<String>;
+    let mut access = IndexAccess::Clamp;
     for arg in args {
         match arg.name.as_deref() {
             Some(PROC_INDEX_BASE_ARG) => {
@@ -859,6 +856,7 @@ fn extract_proc_index_field_args(args: &[CallArg]) -> Option<(String, Expr, Stri
                 }
             }
             Some(PROC_INDEX_EXPR_ARG) => idx = Some(arg.expr.clone()),
+            Some(PROC_INDEX_UNCHECKED_ARG) => access = IndexAccess::Unchecked,
             Some(PROC_FIELD_SENTINEL_ARG) => {
                 if let Expr::Var { name, .. } = &arg.expr {
                     field = Some(name.clone());
@@ -867,5 +865,5 @@ fn extract_proc_index_field_args(args: &[CallArg]) -> Option<(String, Expr, Stri
             _ => {}
         }
     }
-    Some((base?, idx?, field?))
+    Some((base?, idx?, field?, access))
 }

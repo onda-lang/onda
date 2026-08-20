@@ -51,8 +51,9 @@ impl<'a> Formatter<'a> {
         self.format_interface();
 
         for (index, slot) in self.program.state.iter().enumerate() {
+            let integer_range = format_integer_range(slot.integer_range);
             self.line(format_args!(
-                "state @state{index} {:?}: {} {}",
+                "state @state{index} {:?}: {} {}{integer_range}",
                 slot.name,
                 type_id(slot.ty),
                 match slot.persistence {
@@ -194,8 +195,9 @@ impl<'a> Formatter<'a> {
             .iter()
             .enumerate()
             .map(|(index, param)| {
+                let integer_range = format_integer_range(param.integer_range);
                 format!(
-                    "@p{index} {:?}: {} {}",
+                    "@p{index} {:?}: {} {}{integer_range}",
                     param.name,
                     type_id(param.ty),
                     format_passing_mode(param.mode)
@@ -225,9 +227,10 @@ impl<'a> Formatter<'a> {
                 .as_ref()
                 .map(|name| format!(" {:?}", name))
                 .unwrap_or_default();
+            let integer_range = format_integer_range(local.integer_range);
             self.line(format_args!(
-                "  local %{index}{name}: {}",
-                type_id(local.ty)
+                "  local %{index}{name}: {}{integer_range}",
+                type_id(local.ty),
             ));
         }
         self.format_block(&function.body, 1);
@@ -855,7 +858,23 @@ fn format_intrinsic(intrinsic: Intrinsic) -> &'static str {
         Intrinsic::Max => "max",
         Intrinsic::Fma => "fma",
         Intrinsic::RangeClamp => "range_clamp",
+        Intrinsic::RangeWrap => "range_wrap",
     }
+}
+
+fn format_integer_range(range: Option<IntegerRangeInvariant>) -> String {
+    let Some(range) = range else {
+        return String::new();
+    };
+    let mode = match range.mode {
+        IntegerRangeMode::Clamp => "clamp",
+        IntegerRangeMode::Wrap => "wrap",
+    };
+    format!(
+        " integer_range={mode}({}..={})",
+        format_scalar(range.min),
+        format_scalar(range.max)
+    )
 }
 
 fn format_source(source: SourceSpan) -> String {
@@ -928,15 +947,73 @@ mod tests {
     }
 
     #[test]
+    fn formats_integer_range_invariants() {
+        let mut program = Program::new(
+            CompileConfig {
+                sample_rate: 48_000.0,
+                block_size: 64,
+            },
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types.push(Type::Scalar(ScalarType::I32));
+        program.state.push(StateSlot {
+            name: "cursor".to_owned(),
+            ty: TypeId::new(0),
+            persistence: StatePersistence::Snapshot,
+            integer_range: Some(IntegerRangeInvariant {
+                min: ScalarValue::I32(0),
+                max: ScalarValue::I32(3),
+                mode: IntegerRangeMode::Wrap,
+            }),
+        });
+        program
+            .functions
+            .push(empty_function("init", FunctionKind::Init));
+        let mut process = empty_function("process", FunctionKind::Process);
+        process.params.push(FunctionParam {
+            name: "index".to_owned(),
+            ty: TypeId::new(0),
+            mode: PassingMode::Value,
+            integer_range: Some(IntegerRangeInvariant {
+                min: ScalarValue::I32(-4),
+                max: ScalarValue::I32(7),
+                mode: IntegerRangeMode::Clamp,
+            }),
+        });
+        process.locals.push(Local {
+            name: Some("wrapped".to_owned()),
+            ty: TypeId::new(0),
+            integer_range: Some(IntegerRangeInvariant {
+                min: ScalarValue::I32(0),
+                max: ScalarValue::I32(3),
+                mode: IntegerRangeMode::Wrap,
+            }),
+        });
+        program.functions.push(process);
+
+        let formatted = format_program(&program);
+        assert!(formatted.contains(
+            "state @state0 \"cursor\": @t0 snapshot integer_range=wrap(i32(0)..=i32(3))"
+        ));
+        assert!(
+            formatted.contains("@p0 \"index\": @t0 value integer_range=clamp(i32(-4)..=i32(7))")
+        );
+        assert!(formatted.contains("local %0 \"wrapped\": @t0 integer_range=wrap(i32(0)..=i32(3))"));
+    }
+
+    #[test]
     fn formats_structured_statements() {
         let mut function = empty_function("choose", FunctionKind::User);
         function.params.push(FunctionParam {
+            integer_range: None,
             name: "condition".to_owned(),
             ty: TypeId::new(0),
             mode: PassingMode::Value,
         });
         function.results.push(TypeId::new(1));
         function.locals.push(Local {
+            integer_range: None,
             name: Some("result".to_owned()),
             ty: TypeId::new(1),
         });

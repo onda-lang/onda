@@ -3,6 +3,7 @@ pub const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str =
 pub const PROC_INDEX_CALL_SENTINEL: &str = crate::proc_state_rewrite::PROC_INDEX_CALL_SENTINEL;
 pub const PROC_INDEX_BASE_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_BASE_ARG;
 pub const PROC_INDEX_EXPR_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_EXPR_ARG;
+pub const PROC_INDEX_UNCHECKED_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_UNCHECKED_ARG;
 pub use onda_frontend::METHOD_RECEIVER_ARG;
 
 pub fn is_compiler_generated_function_name(name: &str) -> bool {
