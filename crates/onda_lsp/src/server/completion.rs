@@ -716,7 +716,9 @@ enum InstanceInfo {
         type_name: String,
         is_array: bool,
     },
-    Buffer,
+    Buffer {
+        is_collection: bool,
+    },
     PrimitiveIndexable {
         readable: bool,
         writable: bool,
@@ -1271,9 +1273,9 @@ impl CompletionIndex {
                 }
                 Block::Buffers(buffers) => {
                     extend_span(&mut span, buffers.loc);
-                    for name in buffer_block_names(buffers) {
+                    for (name, is_collection) in buffer_block_instances(buffers) {
                         items.push(port_item(&name, "buffer"));
-                        instances.insert(name, InstanceInfo::Buffer);
+                        instances.insert(name, InstanceInfo::Buffer { is_collection });
                     }
                 }
                 Block::Events(events) => {
@@ -1398,13 +1400,23 @@ impl CompletionIndex {
         }
         for decl in &proc_def.buffers {
             items.push(port_item(&decl.name, "proc buffer"));
-            instances.insert(decl.name.clone(), InstanceInfo::Buffer);
+            instances.insert(
+                decl.name.clone(),
+                InstanceInfo::Buffer {
+                    is_collection: decl.array_size.is_some(),
+                },
+            );
         }
         for buffer in
             proc_deferred_buffer_infos(&proc_def.buffers, proc_def.buffers_deferred_count.as_ref())
         {
             items.push(port_item(&buffer.name, "proc buffer"));
-            instances.insert(buffer.name, InstanceInfo::Buffer);
+            instances.insert(
+                buffer.name,
+                InstanceInfo::Buffer {
+                    is_collection: false,
+                },
+            );
         }
         for event in &proc_def.events {
             items.push(event_item(event));
@@ -1887,7 +1899,7 @@ impl CompletionIndex {
                         if let Some(name) = assign_target_name(target) {
                             let contextual_instance = match expr {
                                 Expr::Var { name, .. } => out.get(name).cloned(),
-                                Expr::Index { base, .. } => selected_instance(out.get(base)),
+                                Expr::Index { base, .. } => indexed_result_instance(out.get(base)),
                                 Expr::Slice { base, .. } => match out.get(base) {
                                     Some(InstanceInfo::PrimitiveIndexable {
                                         readable,
@@ -1898,7 +1910,7 @@ impl CompletionIndex {
                                         writable: *writable,
                                         has_len: true,
                                     }),
-                                    Some(InstanceInfo::Buffer) => {
+                                    Some(InstanceInfo::Buffer { .. }) => {
                                         Some(InstanceInfo::PrimitiveIndexable {
                                             readable: true,
                                             writable: true,
@@ -1911,13 +1923,9 @@ impl CompletionIndex {
                                     name: call_name,
                                     args,
                                     ..
-                                } if call_name == READ_UNSAFE_FN => args
-                                    .first()
-                                    .and_then(|arg| match &arg.expr {
-                                        Expr::Var { name, .. } => out.get(name),
-                                        _ => None,
-                                    })
-                                    .and_then(|instance| selected_instance(Some(instance))),
+                                } => unsafe_read_receiver(call_name, args)
+                                    .and_then(|receiver| out.get(receiver_root(receiver)))
+                                    .and_then(unsafe_read_result_instance),
                                 _ => None,
                             };
                             let instance = contextual_instance
@@ -2251,7 +2259,7 @@ impl CompletionIndex {
         let Some(instance) = self.resolve_instance(root) else {
             return Vec::new();
         };
-        if matches!(instance, InstanceInfo::Buffer) {
+        if matches!(instance, InstanceInfo::Buffer { .. }) {
             let mut items = self.buffer_member_items();
             items.extend(unsafe_index_method_items(true, true));
             return items
@@ -2646,9 +2654,12 @@ impl CompletionIndex {
                         is_array: false,
                     })
             }
-            FnParamType::Buffer(_) | FnParamType::BufferArray { .. } | FnParamType::BareBuffer => {
-                Some(InstanceInfo::Buffer)
-            }
+            FnParamType::Buffer(_) | FnParamType::BareBuffer => Some(InstanceInfo::Buffer {
+                is_collection: false,
+            }),
+            FnParamType::BufferArray { .. } => Some(InstanceInfo::Buffer {
+                is_collection: true,
+            }),
             FnParamType::Array(_) => Some(InstanceInfo::PrimitiveIndexable {
                 readable: true,
                 writable: true,
@@ -2908,18 +2919,51 @@ fn assign_target_names(target: &onda_frontend::AssignTarget) -> Vec<&str> {
     }
 }
 
-fn selected_instance(instance: Option<&InstanceInfo>) -> Option<InstanceInfo> {
+fn indexed_result_instance(instance: Option<&InstanceInfo>) -> Option<InstanceInfo> {
     match instance {
-        Some(InstanceInfo::Buffer) => Some(InstanceInfo::Buffer),
-        Some(InstanceInfo::UserType {
+        Some(InstanceInfo::Buffer {
+            is_collection: true,
+        }) => Some(InstanceInfo::Buffer {
+            is_collection: false,
+        }),
+        Some(instance) => aggregate_element_instance(instance),
+        _ => None,
+    }
+}
+
+fn unsafe_read_result_instance(instance: &InstanceInfo) -> Option<InstanceInfo> {
+    aggregate_element_instance(instance)
+}
+
+fn aggregate_element_instance(instance: &InstanceInfo) -> Option<InstanceInfo> {
+    match instance {
+        InstanceInfo::UserType {
             type_name,
             is_array: true,
-        }) => Some(InstanceInfo::UserType {
+        } => Some(InstanceInfo::UserType {
             type_name: type_name.clone(),
             is_array: false,
         }),
-        _ => None,
+        InstanceInfo::UserType { .. }
+        | InstanceInfo::Buffer { .. }
+        | InstanceInfo::PrimitiveIndexable { .. } => None,
     }
+}
+
+fn unsafe_read_receiver<'a>(
+    call_name: &'a str,
+    args: &'a [onda_frontend::CallArg],
+) -> Option<&'a str> {
+    if call_name == READ_UNSAFE_FN {
+        return args.first().and_then(|argument| match &argument.expr {
+            Expr::Var { name, .. } => Some(name.as_str()),
+            _ => None,
+        });
+    }
+    call_name
+        .rsplit_once('.')
+        .filter(|(_, method)| *method == READ_UNSAFE_FN)
+        .map(|(receiver, _)| receiver)
 }
 
 fn port_block_names(block: &PortBlock) -> Vec<String> {
@@ -3020,12 +3064,18 @@ fn homogeneous_scalar_declarations<'a>(
     types.all(|ty| ty == first)
 }
 
-fn buffer_block_names(block: &BufferBlock) -> Vec<String> {
-    explicit_or_deferred_names(
-        block.decls.iter().map(|decl| decl.name.as_str()),
-        block.deferred_count.as_ref(),
-        "buf",
-    )
+fn buffer_block_instances(block: &BufferBlock) -> Vec<(String, bool)> {
+    if block.decls.is_empty() {
+        return deferred_count_names(block.deferred_count.as_ref(), "buf")
+            .into_iter()
+            .map(|name| (name, false))
+            .collect();
+    }
+    block
+        .decls
+        .iter()
+        .map(|decl| (decl.name.clone(), decl.array_size.is_some()))
+        .collect()
 }
 
 fn proc_port_names(decls: &[PortDecl], deferred_count: Option<&Expr>, prefix: &str) -> Vec<String> {
@@ -5152,6 +5202,69 @@ sample:
         assert!(!aggregate_labels
             .iter()
             .any(|label| label == WRITE_UNSAFE_FN));
+    }
+
+    #[test]
+    fn buffer_read_results_do_not_inherit_buffer_members() {
+        let source = r#"buffers:
+  source: f32
+  bank: f32 {2}
+outs:
+  out1
+sample:
+  indexed_value = source[0]
+  free_unsafe_value = read_unsafe(source, 0)
+  receiver_unsafe_value = source.read_unsafe(0)
+  selected = bank[0]
+  out1 = indexed_value + free_unsafe_value + receiver_unsafe_value + selected[0]
+"#;
+        let index = index_at(source, "out1 = indexed_value", 0);
+
+        for scalar in [
+            "indexed_value",
+            "free_unsafe_value",
+            "receiver_unsafe_value",
+        ] {
+            assert!(
+                index.member_items(scalar, "").is_empty(),
+                "scalar buffer read '{scalar}' must not inherit buffer members"
+            );
+        }
+
+        let selected_labels = labels(index.member_items("selected", ""));
+        assert!(selected_labels
+            .iter()
+            .any(|label| label == ARRAY_LEN_METHOD));
+        assert!(selected_labels.iter().any(|label| label == READ_UNSAFE_FN));
+        assert!(selected_labels.iter().any(|label| label == WRITE_UNSAFE_FN));
+    }
+
+    #[test]
+    fn unsafe_aggregate_alias_completion_accepts_free_and_receiver_syntax() {
+        let source = r#"proc Voice:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+init:
+  voices: Voice[4] = Voice()
+sample:
+  free_voice = read_unsafe(voices, 0)
+  receiver_voice = voices.read_unsafe(0)
+  out1 = free_voice() + receiver_voice()
+"#;
+        let index = index_at(source, "out1 = free_voice", 0);
+
+        for alias in ["free_voice", "receiver_voice"] {
+            let alias_labels = labels(index.member_items(alias, ""));
+            assert!(
+                alias_labels.iter().any(|label| label == "out1"),
+                "aggregate alias '{alias}' should retain Voice members: {alias_labels:?}"
+            );
+        }
     }
 
     #[test]
