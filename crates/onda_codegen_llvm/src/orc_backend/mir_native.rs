@@ -5185,9 +5185,9 @@ impl FunctionEmitter<'_, '_> {
             onda_mir::PlaceBase::State(state) => self.module.program.state[state.index()]
                 .integer_range
                 .map(invariant_value_range),
-            onda_mir::PlaceBase::Param(param) => {
-                self.module.program.interface.params[param.index()].range
-            }
+            // Interface parameter storage contains raw host values. The generated entry-point
+            // normalization moves ranged parameters into compiler-owned locals before use.
+            onda_mir::PlaceBase::Param(_) => None,
             onda_mir::PlaceBase::EventParam(_) => None,
         }
     }
@@ -7505,14 +7505,14 @@ sample:
     }
 
     #[test]
-    fn llvm_receives_declared_integer_ranges_on_loads() {
+    fn llvm_receives_only_proven_integer_storage_ranges() {
         let (_, mut mir) = source_program(
             r#"
 params:
   selector: i32 = 0 {min = 0, max = 3}
 
 init:
-  cursor: i32 = 0 {-4, 4, wrap}
+  cursor: i32 = 0 {-4..4, wrap}
 
 def preserve(index: i32) -> i32:
   return index
@@ -7547,12 +7547,18 @@ sample:
         .expect("ranged storage should emit LLVM IR");
 
         assert!(
-            ir.lines()
-                .filter(|line| line.contains("load i32"))
-                .filter(|line| line.contains("!range"))
-                .count()
-                >= 2,
-            "ranged parameter and state loads should carry !range metadata: {ir}"
+            ir.lines().any(|line| {
+                line.contains("load i32") && line.contains("%state_slot") && line.contains("!range")
+            }),
+            "ranged state loads should carry !range metadata: {ir}"
+        );
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("load i32")
+                    && line.contains("%param_slot")
+                    && !line.contains("!range")
+            }),
+            "raw interface-parameter loads must not carry !range metadata: {ir}"
         );
         assert!(
             ir.lines().any(|line| {
@@ -8772,7 +8778,7 @@ params:
   step: i32 = 1
 
 init:
-  index: i32 = 0 {0, 1001, wrap}
+  index: i32 = 0 {0..1001, wrap}
 
 sample:
   index += step
@@ -8812,7 +8818,7 @@ params:
   step: i64 = 1
 
 init:
-  index: i64 = 0 {-1000, 1001, wrap}
+  index: i64 = 0 {-1000..1001, wrap}
 
 sample:
   index += step
@@ -8838,8 +8844,8 @@ sample:
         let outputs = run_native_outputs(
             r#"
 init:
-  descending: i32 = -2 {-2, 3, wrap}
-  ascending: i32 = 2 {-2, 3, wrap}
+  descending: i32 = -2 {-2..3, wrap}
+  ascending: i32 = 2 {-2..3, wrap}
 
 sample:
   descending -= 2
@@ -8859,8 +8865,8 @@ params:
   above_step: i64 = 9223372036854775807
 
 init:
-  below: i64 = -1 {-9223372036854775807, 3, wrap}
-  above: i64 = 0 {-9223372036854775807, 3, wrap}
+  below: i64 = -1 {-9223372036854775807..3, wrap}
+  above: i64 = 0 {-9223372036854775807..3, wrap}
 
 sample:
   below += below_step

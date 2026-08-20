@@ -110,10 +110,8 @@ proc Benjolin:
       core.out6,
       filtered,
     ]
-    output_signal_l_clamp = output_signal_l { 0, 6 }
-    output_signal_r_clamp = output_signal_r { 0, 6 }
-    out1 = signals[output_signal_l_clamp]
-    out2 = signals[output_signal_r_clamp]
+    out1 = signals[output_signal_l]
+    out2 = signals[output_signal_r]
 
 params:
   frequency_a = 70.0 {20.0, 14000.0, log, "Hz"}

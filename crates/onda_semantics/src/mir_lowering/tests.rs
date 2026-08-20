@@ -955,9 +955,9 @@ params:
 
 sample:
   if select:
-    chosen: i32 = 5 {0, 10}
+    chosen: i32 = 5 {0..10}
   else:
-    chosen: i32 = 6 {0, 10}
+    chosen: i32 = 6 {0..10}
   out1 = f32(chosen)
 "#;
     let mut typed = analyze(parse_program(source).expect("source should parse"))

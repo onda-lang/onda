@@ -4449,11 +4449,12 @@ params:
 sample:
   clamped = 0 {1000}
   wrapped = 0 {1000, wrap}
-  explicit = 10 {10, 1000}
-  named = 10 {begin = 10, end = 1000, mode = wrap}
-  named_end = 0 {end = 1000, mode = clamp}
-  mixed = 10 {10, end = 1000}
-  from_binding = test {0, 1000}
+  exclusive = 10 {10..1000}
+  inclusive = 10 {10..=1000}
+  named_count = 0 {count = 1000, mode = clamp}
+  named_exclusive = 10 {range = 10..1000, mode = wrap}
+  named_inclusive = 10 {range = 10..=1000}
+  from_binding = test {0..1000}
 "#;
     let program = parse_program(src).expect("inferred integer binding ranges should parse");
     let sample = program
@@ -4465,12 +4466,13 @@ sample:
         })
         .expect("sample block");
     let expected = [
-        (BuiltinFn::BindingRangeClamp, 0, 1000),
-        (BuiltinFn::BindingRangeWrap, 0, 1000),
+        (BuiltinFn::BindingCountClamp, 0, 1000),
+        (BuiltinFn::BindingCountWrap, 0, 1000),
         (BuiltinFn::BindingRangeClamp, 10, 1000),
+        (BuiltinFn::BindingRangeInclusiveClamp, 10, 1000),
+        (BuiltinFn::BindingCountClamp, 0, 1000),
         (BuiltinFn::BindingRangeWrap, 10, 1000),
-        (BuiltinFn::BindingRangeClamp, 0, 1000),
-        (BuiltinFn::BindingRangeClamp, 10, 1000),
+        (BuiltinFn::BindingRangeInclusiveClamp, 10, 1000),
         (BuiltinFn::BindingRangeClamp, 0, 1000),
     ];
     for (statement, (expected_func, expected_begin, expected_end)) in sample.iter().zip(expected) {
@@ -4493,17 +4495,80 @@ sample:
 }
 
 #[test]
+fn parameter_domains_remain_distinct_from_integer_binding_ranges() {
+    let src = r#"
+params:
+  top: i32 = 6 {0, 6, step = 1}
+
+proc Voice:
+  params:
+    selector: i32 = 6 {0, 6}
+  outs:
+    out1
+  sample:
+    index = selector {count = 7}
+    out1 = f32(index)
+"#;
+    let program = parse_program(src).expect("parameter and binding domains should parse");
+
+    let top_param = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Params(params) => params.first(),
+            _ => None,
+        })
+        .expect("top-level parameter");
+    let top_range = top_param.range.as_ref().expect("top-level parameter range");
+    assert!(matches!(top_range.min, Some(Expr::Int { value: 0, .. })));
+    assert!(matches!(top_range.max, Expr::Int { value: 6, .. }));
+    assert!(matches!(
+        top_param.control.step,
+        Some(Expr::Int { value: 1, .. })
+    ));
+
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) => Some(proc),
+            _ => None,
+        })
+        .expect("processor");
+    let proc_param = proc.params.first().expect("processor parameter");
+    let proc_range = proc_param
+        .range
+        .as_ref()
+        .expect("processor parameter range");
+    assert!(matches!(proc_range.min, Some(Expr::Int { value: 0, .. })));
+    assert!(matches!(proc_range.max, Expr::Int { value: 6, .. }));
+    assert!(proc_param.control.step.is_none());
+
+    assert!(matches!(
+        proc.sample.first(),
+        Some(Stmt::Assign {
+            expr: Expr::Call {
+                func: BuiltinFn::BindingCountClamp,
+                ..
+            },
+            ..
+        })
+    ));
+}
+
+#[test]
 fn rejects_incomplete_and_duplicate_named_binding_ranges() {
     for (range, expected) in [
-        ("{begin = 1}", "requires an 'end' value"),
         (
-            "{end = 10, end = 20}",
-            "duplicate binding range field 'end'",
+            "{count = 8, range = 0..8}",
+            "count and range domains are mutually exclusive",
         ),
         (
-            "{10, wrap, 20}",
-            "positional binding range bounds must precede",
+            "{0..8, count = 8}",
+            "count and range domains are mutually exclusive",
         ),
+        ("{0, 8}", "count and range domains are mutually exclusive"),
+        ("{wrap, 8}", "positional binding range domain must precede"),
     ] {
         let source = format!("sample:\n  value = 0 {range}\n");
         let errors = parse_program(&source).expect_err("invalid binding range should fail");

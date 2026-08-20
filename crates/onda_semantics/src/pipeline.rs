@@ -1176,7 +1176,12 @@ macro_rules! eval_float_builtin {
             BuiltinFn::Fma => values[0].mul_add(values[1], values[2]),
             BuiltinFn::RangeClamp => values[0].max(values[1]).min(values[2]),
             BuiltinFn::RangeWrap => unreachable!("range wrap is integer-only"),
-            BuiltinFn::BindingRangeClamp | BuiltinFn::BindingRangeWrap => return None,
+            BuiltinFn::BindingCountClamp
+            | BuiltinFn::BindingRangeClamp
+            | BuiltinFn::BindingRangeInclusiveClamp
+            | BuiltinFn::BindingCountWrap
+            | BuiltinFn::BindingRangeWrap
+            | BuiltinFn::BindingRangeInclusiveWrap => return None,
         }
     }};
 }
@@ -7154,12 +7159,14 @@ struct IntegerBindingRange {
     ty: PrimitiveType,
     normalize: BuiltinFn,
     bounds: IntegerBindingRangeBounds,
+    parser_marker: bool,
     lower: Expr,
     upper: Expr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IntegerBindingRangeBounds {
+    Count,
     HalfOpen,
     Inclusive,
 }
@@ -7187,13 +7194,45 @@ fn integer_binding_range_assignment(stmt: &Stmt) -> Option<(&str, IntegerBinding
     else {
         return None;
     };
-    let (normalize, bounds) = match func {
-        BuiltinFn::BindingRangeClamp => {
-            (BuiltinFn::RangeClamp, IntegerBindingRangeBounds::HalfOpen)
+    let (normalize, bounds, parser_marker) = match func {
+        BuiltinFn::BindingCountClamp => (
+            BuiltinFn::RangeClamp,
+            IntegerBindingRangeBounds::Count,
+            true,
+        ),
+        BuiltinFn::BindingCountWrap => {
+            (BuiltinFn::RangeWrap, IntegerBindingRangeBounds::Count, true)
         }
-        BuiltinFn::BindingRangeWrap => (BuiltinFn::RangeWrap, IntegerBindingRangeBounds::HalfOpen),
-        BuiltinFn::RangeClamp => (BuiltinFn::RangeClamp, IntegerBindingRangeBounds::Inclusive),
-        BuiltinFn::RangeWrap => (BuiltinFn::RangeWrap, IntegerBindingRangeBounds::Inclusive),
+        BuiltinFn::BindingRangeClamp => (
+            BuiltinFn::RangeClamp,
+            IntegerBindingRangeBounds::HalfOpen,
+            true,
+        ),
+        BuiltinFn::BindingRangeWrap => (
+            BuiltinFn::RangeWrap,
+            IntegerBindingRangeBounds::HalfOpen,
+            true,
+        ),
+        BuiltinFn::BindingRangeInclusiveClamp => (
+            BuiltinFn::RangeClamp,
+            IntegerBindingRangeBounds::Inclusive,
+            true,
+        ),
+        BuiltinFn::BindingRangeInclusiveWrap => (
+            BuiltinFn::RangeWrap,
+            IntegerBindingRangeBounds::Inclusive,
+            true,
+        ),
+        BuiltinFn::RangeClamp => (
+            BuiltinFn::RangeClamp,
+            IntegerBindingRangeBounds::Inclusive,
+            false,
+        ),
+        BuiltinFn::RangeWrap => (
+            BuiltinFn::RangeWrap,
+            IntegerBindingRangeBounds::Inclusive,
+            false,
+        ),
         _ => return None,
     };
     (args.len() == 3).then(|| {
@@ -7203,6 +7242,7 @@ fn integer_binding_range_assignment(stmt: &Stmt) -> Option<(&str, IntegerBinding
                 ty: *ty,
                 normalize,
                 bounds,
+                parser_marker,
                 lower: args[1].clone(),
                 upper: args[2].clone(),
             },
@@ -7222,7 +7262,7 @@ fn declared_integer_binding_range(stmt: &Stmt) -> Option<(&str, IntegerBindingRa
     // Processor and generic lowering can turn the original declaration into
     // a plain assignment, but the parser-only marker still identifies it
     // unambiguously until this canonicalization runs.
-    (is_typed_decl || range.bounds == IntegerBindingRangeBounds::HalfOpen).then_some((name, range))
+    (is_typed_decl || range.parser_marker).then_some((name, range))
 }
 
 fn collect_integer_binding_range_assignments(
@@ -7318,6 +7358,7 @@ fn validate_integer_binding_range(
         &range.upper,
         options,
         match range.bounds {
+            IntegerBindingRangeBounds::Count => "integer binding count",
             IntegerBindingRangeBounds::HalfOpen => "integer binding range exclusive end bound",
             IntegerBindingRangeBounds::Inclusive => "integer binding range end bound",
         },
@@ -7327,6 +7368,16 @@ fn validate_integer_binding_range(
         return None;
     };
     let inclusive_end = match range.bounds {
+        IntegerBindingRangeBounds::Count if end > 0 => end
+            .checked_sub(1)
+            .expect("a positive integer binding count is greater than i64::MIN"),
+        IntegerBindingRangeBounds::Count => {
+            errors.push(Diagnostic::semantic_span(
+                "integer binding count must be positive",
+                location,
+            ));
+            return None;
+        }
         IntegerBindingRangeBounds::HalfOpen if begin < end => end
             .checked_sub(1)
             .expect("a non-empty i64 range end is greater than i64::MIN"),
@@ -7379,8 +7430,12 @@ fn canonicalize_integer_binding_range(
 fn wrap_ranged_assignment(expr: &mut Expr, range: &IntegerBindingRange) {
     if let Expr::Call { func, args, .. } = expr {
         let marker_normalize = match func {
-            BuiltinFn::BindingRangeClamp => Some(BuiltinFn::RangeClamp),
-            BuiltinFn::BindingRangeWrap => Some(BuiltinFn::RangeWrap),
+            BuiltinFn::BindingCountClamp
+            | BuiltinFn::BindingRangeClamp
+            | BuiltinFn::BindingRangeInclusiveClamp => Some(BuiltinFn::RangeClamp),
+            BuiltinFn::BindingCountWrap
+            | BuiltinFn::BindingRangeWrap
+            | BuiltinFn::BindingRangeInclusiveWrap => Some(BuiltinFn::RangeWrap),
             _ => None,
         };
         if let (Some(marker_normalize), [_, lower, upper]) = (marker_normalize, args.as_mut_slice())

@@ -21,8 +21,8 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
       # Store the ring twice so the newest-to-oldest history is always one
       # contiguous forward window for the convolution loop.
       delay: T[TimeDelayStorageSize]
-      active_taps: i32 = 0 {0, MaxImpulseLen + 1}
-      write: i32 = 0 {0, MaxImpulseLen, wrap}
+      active_taps: i32 = 0 {0..MaxImpulseLen + 1}
+      write: i32 = 0 {0..MaxImpulseLen, wrap}
 
     def clear_state():
       delay[:] = 0.0

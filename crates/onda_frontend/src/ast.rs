@@ -1677,16 +1677,30 @@ pub enum BuiltinFn {
     /// `ALL` and `from_name`, so it is not part of the source-language
     /// builtin surface.
     RangeClamp,
+    /// Parser-generated zero-based integer binding count clamp. Semantic
+    /// analysis validates the positive count before canonicalizing it to an
+    /// inclusive `RangeClamp` from zero.
+    BindingCountClamp,
     /// Parser-generated half-open integer range clamp. Semantic analysis
     /// validates its exclusive upper bound before canonicalizing it to
     /// `RangeClamp` with inclusive constant bounds.
     BindingRangeClamp,
+    /// Parser-generated inclusive integer range clamp. It remains distinct
+    /// until semantic range validation so declaration rewrites retain the
+    /// binding invariant.
+    BindingRangeInclusiveClamp,
     /// Compiler-generated inclusive integer range wrap. This is intentionally
     /// absent from `ALL` and `from_name`.
     RangeWrap,
+    /// Parser-generated zero-based integer binding count wrap. Like the
+    /// binding range markers, it must not survive semantic validation.
+    BindingCountWrap,
     /// Parser-generated half-open integer range wrap. Like
     /// `BindingRangeClamp`, it must not survive semantic range validation.
     BindingRangeWrap,
+    /// Parser-generated inclusive integer range wrap. Like the other binding
+    /// markers, it must not survive semantic range validation.
+    BindingRangeInclusiveWrap,
 }
 
 impl BuiltinFn {
@@ -1756,9 +1770,13 @@ impl BuiltinFn {
             Self::Max => "max",
             Self::Fma => "fma",
             Self::RangeClamp => "<range-clamp>",
+            Self::BindingCountClamp => "<binding-count-clamp>",
             Self::BindingRangeClamp => "<binding-range-clamp>",
+            Self::BindingRangeInclusiveClamp => "<inclusive-binding-range-clamp>",
             Self::RangeWrap => "<range-wrap>",
+            Self::BindingCountWrap => "<binding-count-wrap>",
             Self::BindingRangeWrap => "<binding-range-wrap>",
+            Self::BindingRangeInclusiveWrap => "<inclusive-binding-range-wrap>",
         }
     }
 
@@ -1780,9 +1798,13 @@ impl BuiltinFn {
             Self::Pow | Self::Atan2 | Self::Min | Self::Max => 2,
             Self::Fma => 3,
             Self::RangeClamp
+            | Self::BindingCountClamp
             | Self::BindingRangeClamp
+            | Self::BindingRangeInclusiveClamp
             | Self::RangeWrap
-            | Self::BindingRangeWrap => 3,
+            | Self::BindingCountWrap
+            | Self::BindingRangeWrap
+            | Self::BindingRangeInclusiveWrap => 3,
         }
     }
 }

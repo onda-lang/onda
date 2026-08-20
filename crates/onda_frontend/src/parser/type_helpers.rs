@@ -98,9 +98,7 @@ pub(super) fn parse_binding_range_pair(
         )]);
     }
     let loc = stmt_loc_from_pair(&pair);
-    let mut positional = Vec::new();
-    let mut begin = None;
-    let mut end = None;
+    let mut domain = None;
     let mut mode = None;
     let mut saw_named_or_mode = false;
     for item in pair.into_inner() {
@@ -108,40 +106,40 @@ pub(super) fn parse_binding_range_pair(
             continue;
         };
         match value.as_rule() {
-            Rule::expr => {
+            Rule::expr | Rule::binding_range_spec => {
                 if saw_named_or_mode {
                     return Err(vec![syntax_at_pair(
                         &value,
-                        "positional binding range bounds must precede named fields and mode",
+                        "positional binding range domain must precede named fields and mode",
                     )]);
                 }
-                positional.push(value);
+                let parsed = parse_binding_range_domain(value)?;
+                if domain.replace(parsed).is_some() {
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
+                        "binding range count and range domains are mutually exclusive",
+                    )]);
+                }
             }
-            Rule::binding_range_named_bound => {
+            Rule::binding_range_named_count | Rule::binding_range_named_range => {
                 saw_named_or_mode = true;
                 let field_loc = stmt_loc_from_pair(&value);
                 let mut fields = value.into_inner();
-                let Some(name) = fields.next() else {
+                let Some(field) = fields.next() else {
                     return Err(vec![syntax_at_loc(
                         field_loc.as_ref(),
-                        "missing binding range field name",
+                        "missing binding range domain",
                     )]);
                 };
-                let Some(expr) = fields.next() else {
+                let parsed = match field.as_rule() {
+                    Rule::expr => BindingRangeDomain::Count(parse_expr_inner(field)),
+                    Rule::binding_range_spec => parse_binding_range_domain(field)?,
+                    _ => unreachable!("binding range field returned an unexpected rule"),
+                };
+                if domain.replace(parsed).is_some() {
                     return Err(vec![syntax_at_loc(
                         field_loc.as_ref(),
-                        format!("missing value for binding range field '{}'", name.as_str()),
-                    )]);
-                };
-                let target = match name.as_str() {
-                    "begin" => &mut begin,
-                    "end" => &mut end,
-                    _ => unreachable!("binding range grammar restricts bound field names"),
-                };
-                if target.replace(parse_expr_inner(expr)).is_some() {
-                    return Err(vec![syntax_at_loc(
-                        field_loc.as_ref(),
-                        format!("duplicate binding range field '{}'", name.as_str()),
+                        "binding range count and range domains are mutually exclusive",
                     )]);
                 }
             }
@@ -168,44 +166,36 @@ pub(super) fn parse_binding_range_pair(
             _ => unreachable!("binding range item grammar returned an unexpected rule"),
         }
     }
-    if positional.len() > 2 {
+    let Some(domain) = domain else {
         return Err(vec![syntax_at_loc(
             loc.as_ref(),
-            "binding range accepts at most two positional bounds",
-        )]);
-    }
-    let positional_len = positional.len();
-    for (index, value) in positional.into_iter().enumerate() {
-        let target = if positional_len == 1 && end.is_none() {
-            &mut end
-        } else if index == 0 {
-            &mut begin
-        } else {
-            &mut end
-        };
-        if target.is_some() {
-            return Err(vec![syntax_at_pair(
-                &value,
-                if index == 0 {
-                    "duplicate binding range field 'begin'"
-                } else {
-                    "duplicate binding range field 'end'"
-                },
-            )]);
-        }
-        *target = Some(parse_expr_inner(value));
-    }
-    let Some(end) = end else {
-        return Err(vec![syntax_at_loc(
-            loc.as_ref(),
-            "binding range requires an 'end' value",
+            "binding range requires a count or range domain",
         )]);
     };
-    let begin = begin.unwrap_or_else(|| Expr::int(0));
-    let func = match mode.as_deref().unwrap_or("clamp") {
-        "clamp" => BuiltinFn::BindingRangeClamp,
-        "wrap" => BuiltinFn::BindingRangeWrap,
-        other => {
+    let (begin, end, domain_kind) = match domain {
+        BindingRangeDomain::Count(count) => (Expr::int(0), count, BindingRangeDomainKind::Count),
+        BindingRangeDomain::Range {
+            begin,
+            end,
+            inclusive,
+        } => (
+            begin,
+            end,
+            if inclusive {
+                BindingRangeDomainKind::Inclusive
+            } else {
+                BindingRangeDomainKind::Exclusive
+            },
+        ),
+    };
+    let func = match (mode.as_deref().unwrap_or("clamp"), domain_kind) {
+        ("clamp", BindingRangeDomainKind::Count) => BuiltinFn::BindingCountClamp,
+        ("clamp", BindingRangeDomainKind::Exclusive) => BuiltinFn::BindingRangeClamp,
+        ("clamp", BindingRangeDomainKind::Inclusive) => BuiltinFn::BindingRangeInclusiveClamp,
+        ("wrap", BindingRangeDomainKind::Count) => BuiltinFn::BindingCountWrap,
+        ("wrap", BindingRangeDomainKind::Exclusive) => BuiltinFn::BindingRangeWrap,
+        ("wrap", BindingRangeDomainKind::Inclusive) => BuiltinFn::BindingRangeInclusiveWrap,
+        (other, _) => {
             return Err(vec![syntax_at_loc(
                 loc.as_ref(),
                 format!("unknown binding range mode '{other}'"),
@@ -213,6 +203,58 @@ pub(super) fn parse_binding_range_pair(
         }
     };
     Ok((func, begin, end))
+}
+
+enum BindingRangeDomain {
+    Count(Expr),
+    Range {
+        begin: Expr,
+        end: Expr,
+        inclusive: bool,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum BindingRangeDomainKind {
+    Count,
+    Exclusive,
+    Inclusive,
+}
+
+fn parse_binding_range_domain(pair: Pair<'_, Rule>) -> Result<BindingRangeDomain, Vec<Diagnostic>> {
+    if pair.as_rule() == Rule::expr {
+        return Ok(BindingRangeDomain::Count(parse_expr_inner(pair)));
+    }
+    let loc = stmt_loc_from_pair(&pair);
+    let mut fields = pair.into_inner();
+    let Some(begin) = fields.next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range is missing its lower bound",
+        )]);
+    };
+    let Some(operator) = fields.next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range is missing its range operator",
+        )]);
+    };
+    let Some(end) = fields.next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range is missing its upper bound",
+        )]);
+    };
+    let inclusive = match operator.as_str() {
+        ".." => false,
+        "..=" => true,
+        _ => unreachable!("binding range grammar restricts range operators"),
+    };
+    Ok(BindingRangeDomain::Range {
+        begin: parse_expr_inner(begin),
+        end: parse_expr_inner(end),
+        inclusive,
+    })
 }
 
 #[derive(Default)]

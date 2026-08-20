@@ -866,30 +866,38 @@ sample:
 Assigning to an existing visible symbol updates it. Assigning to a new symbol
 introduces a symbol according to the storage rules of the current scope.
 
-Integer locals and state may carry a half-open storage domain:
+Integer locals and state may carry a finite storage domain:
 
 ```onda
 const RingSize = 1024
 
 init:
   bank = 0 {8}
-  taps: i32 = 0 {begin = 0, end = 128}
+  taps: i32 = 0 {range = 0..128}
   cursor: i32 = 0 {RingSize, wrap}
-  samples_seen: i64 = 0 {0, 4000000000, mode = clamp}
+  samples_seen: i64 = 0 {range = 0..=3999999999, mode = clamp}
 ```
 
-Ranges are supported for both `i32` and `i64`. The begin and exclusive end bounds must be exact
-compile-time integer expressions, and `begin` must be less than `end`. Every stored value is in
-`[begin, end)`. An omitted type defaults to `i32`, so both `bank = 0 {8}` and
-`bank = selected {8}` are `i32` and follow the regular integer assignment rules. Use an explicit
-`i64` annotation for an `i64` ranged binding.
-One positional bound is the exclusive end and defaults the begin bound to zero: `{1000}` means
-`{0, 1000}`, and `{1000, wrap}` means `{0, 1000, wrap}`. Two positional bounds are
-`{begin, end}`. Bounds and mode can also be named with `begin =`, `end =`, and `mode =`;
-positional bounds must precede named fields.
-`clamp` is the default mode; it clamps to `begin..end - 1`. `wrap` performs modular normalization
-across the same half-open domain.
-Bare `clamp`/`wrap` and the explicit `mode = clamp`/`mode = wrap` spellings are equivalent.
+Domains are supported for both `i32` and `i64`, and every count or range endpoint must be an exact
+compile-time integer expression. A single expression is a zero-based count: `{1000}` and
+`{count = 1000}` both admit `0..1000`, while `{1000, wrap}` uses the same count with wrapping
+normalization. Counts must be positive.
+
+An explicit range uses the same endpoint syntax as `for`: `{begin..end}` is half-open and
+`{begin..=end}` is inclusive. The named forms are `{range = begin..end}` and
+`{range = begin..=end}`. Half-open ranges require `begin < end`; inclusive ranges require
+`begin <= end`. `count` and `range` are mutually exclusive, and a positional count or range must
+precede named fields and mode. Integer binding domains do not use comma-separated endpoints.
+`{min, max}` instead denotes an inclusive parameter domain inside top-level or processor
+`params`. Top-level parameter domains also support `step`, `scale`, and presentation metadata
+fields.
+
+`clamp` is the default mode. `wrap` performs modular normalization across the same finite domain.
+Bare `clamp`/`wrap` and the explicit `mode = clamp`/`mode = wrap` spellings are equivalent. An
+omitted binding type defaults to `i32`, so both `bank = 0 {8}` and `bank = selected {8}` are `i32`
+and follow the regular integer assignment rules. Use an explicit `i64` annotation for an `i64`
+ranged binding. General numeric clamping remains the job of `clamp(value, lower, upper)`; binding
+domains are integer storage invariants intended primarily for indices and wrapping cursors.
 
 Initialization and every later direct or compound assignment normalize once as the value is stored:
 

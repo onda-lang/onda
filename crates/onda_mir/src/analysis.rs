@@ -1087,12 +1087,9 @@ fn range_of_rvalue(
         Rvalue::Load(place) if place.projections.is_empty() => match place.base {
             PlaceBase::Local(local) => environment.get(local.index()).copied().flatten(),
             PlaceBase::Parameter(parameter) => parameters.get(parameter.index()).copied().flatten(),
-            PlaceBase::Param(param) => program
-                .interface
-                .params
-                .get(param.index())
-                .and_then(|parameter| parameter.range)
-                .and_then(integer_range_from_value_range),
+            // Interface parameter storage contains raw host values. Ranged parameters only
+            // acquire their invariant after the generated entry-point normalization.
+            PlaceBase::Param(_) => None,
             PlaceBase::State(state) => program
                 .state
                 .get(state.index())

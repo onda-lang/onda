@@ -815,8 +815,8 @@ sample:
         let typed = typed_program(
             r#"
 init:
-  wrapped: i32 = 0 {0, 4, wrap}
-  clamped: i64 = 10 {10, 21}
+  wrapped: i32 = 0 {0..4, wrap}
+  clamped: i64 = 10 {10..21}
 
 sample:
   out1 = 0.0

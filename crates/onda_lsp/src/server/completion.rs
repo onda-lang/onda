@@ -2172,6 +2172,7 @@ impl CompletionIndex {
                     .iter()
                     .copied()
                     .filter(|field| !context.used_fields.contains(field))
+                    .filter(|field| !context.has_domain || !matches!(*field, "count" | "range"))
                     .map(binding_range_field_item),
             );
         }
@@ -3166,7 +3167,8 @@ fn buffer_count_field_item() -> CompletionItem {
 
 fn binding_range_field_item(name: &str) -> CompletionItem {
     let snippet = match name {
-        "begin" | "end" => format!("{name} = $1"),
+        "count" => "count = $1".to_owned(),
+        "range" => "range = ${1:0}${2|..,..=|}$3".to_owned(),
         "mode" => "mode = ${1|clamp,wrap|}".to_owned(),
         _ => unreachable!("unknown integer binding range field"),
     };
@@ -4678,7 +4680,7 @@ mod tests {
         );
         assert!(result.items.iter().any(|item| item["label"] == "wrap"));
 
-        let source = "sample:\n  a: i32 = 0 {0, 1, m";
+        let source = "sample:\n  a: i32 = 0 {0..1, m";
         let result = completion_items_for_document_with_index(
             source,
             None,
@@ -4687,14 +4689,14 @@ mod tests {
             None,
             CompletionPosition {
                 line: 1,
-                character: "  a: i32 = 0 {0, 1, m".len() as u32,
+                character: "  a: i32 = 0 {0..1, m".len() as u32,
             },
             true,
         );
         let mode = encoded_item(&result.items, "mode");
         assert_eq!(mode["insertText"], "mode = ${1|clamp,wrap|}");
 
-        let source = "sample:\n  a: i32 = 0 {0, 16, ";
+        let source = "sample:\n  a: i32 = 0 {0..16, ";
         let result = completion_items_for_document_with_index(
             source,
             None,
@@ -4703,13 +4705,13 @@ mod tests {
             None,
             CompletionPosition {
                 line: 1,
-                character: "  a: i32 = 0 {0, 16, ".len() as u32,
+                character: "  a: i32 = 0 {0..16, ".len() as u32,
             },
             true,
         );
         assert!(result.items.iter().any(|item| item["label"] == "wrap"));
-        assert!(!result.items.iter().any(|item| item["label"] == "begin"));
-        assert!(!result.items.iter().any(|item| item["label"] == "end"));
+        assert!(!result.items.iter().any(|item| item["label"] == "count"));
+        assert!(!result.items.iter().any(|item| item["label"] == "range"));
     }
 
     #[test]
@@ -4733,7 +4735,7 @@ mod tests {
 
     #[test]
     fn integer_binding_range_mode_values_complete_clamp_and_wrap() {
-        let source = "sample:\n  a = 0 {0, 1, mode = ";
+        let source = "sample:\n  a = 0 {0..1, mode = ";
         let result = completion_items_for_document_with_index(
             source,
             None,
@@ -4742,7 +4744,7 @@ mod tests {
             None,
             CompletionPosition {
                 line: 1,
-                character: "  a = 0 {0, 1, mode = ".len() as u32,
+                character: "  a = 0 {0..1, mode = ".len() as u32,
             },
             true,
         );
@@ -4752,8 +4754,8 @@ mod tests {
     }
 
     #[test]
-    fn integer_binding_ranges_complete_named_bounds() {
-        let source = "sample:\n  a = 0 {en";
+    fn integer_binding_ranges_complete_named_domains() {
+        let source = "sample:\n  a = 0 {ra";
         let result = completion_items_for_document_with_index(
             source,
             None,
@@ -4762,31 +4764,12 @@ mod tests {
             None,
             CompletionPosition {
                 line: 1,
-                character: "  a = 0 {en".len() as u32,
+                character: "  a = 0 {ra".len() as u32,
             },
             true,
         );
-        let end = encoded_item(&result.items, "end");
-        assert_eq!(end["insertText"], "end = $1");
-
-        let source = "sample:\n  a = 0 {end = BLOCK_SIZE, begin = BL";
-        let result = completion_items_for_document_with_index(
-            source,
-            None,
-            &HashMap::new(),
-            None,
-            None,
-            CompletionPosition {
-                line: 1,
-                character: "  a = 0 {end = BLOCK_SIZE, begin = BL".len() as u32,
-            },
-            true,
-        );
-        assert!(result
-            .items
-            .iter()
-            .any(|item| item["label"] == "BLOCK_SIZE"));
-        assert!(!result.items.iter().any(|item| item["label"] == "mode"));
+        let range = encoded_item(&result.items, "range");
+        assert_eq!(range["insertText"], "range = ${1:0}${2|..,..=|}$3");
     }
 
     fn encoded_item<'a>(items: &'a [Value], label: &str) -> &'a Value {

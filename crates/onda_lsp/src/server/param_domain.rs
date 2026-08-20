@@ -46,12 +46,13 @@ pub(super) enum BindingRangeValueKind {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct BindingRangeCompletionContext {
     pub(super) used_fields: BTreeSet<&'static str>,
+    pub(super) has_domain: bool,
     pub(super) allow_fields: bool,
     pub(super) allow_bare_mode: bool,
     pub(super) value_kind: BindingRangeValueKind,
 }
 
-pub(super) const BINDING_RANGE_FIELDS: &[&str] = &["begin", "end", "mode"];
+pub(super) const BINDING_RANGE_FIELDS: &[&str] = &["count", "range", "mode"];
 
 pub(super) fn binding_range_completion_context_at(
     source: &str,
@@ -80,14 +81,12 @@ pub(super) fn binding_range_completion_context_at(
             positional_count += 1;
         }
     }
-    if positional_count >= 2 {
-        used_fields.insert("begin");
-        used_fields.insert("end");
-    }
-
+    let has_domain =
+        positional_count > 0 || used_fields.contains("count") || used_fields.contains("range");
     if let Some(field) = binding_range_named_field(source, current.clone()) {
         return Some(BindingRangeCompletionContext {
             used_fields,
+            has_domain: has_domain || matches!(field, "count" | "range"),
             allow_fields: false,
             allow_bare_mode: false,
             value_kind: if field == "mode" {
@@ -97,13 +96,12 @@ pub(super) fn binding_range_completion_context_at(
             },
         });
     }
-    let has_bound =
-        positional_count > 0 || used_fields.contains("begin") || used_fields.contains("end");
     Some(BindingRangeCompletionContext {
         used_fields,
+        has_domain,
         allow_fields: true,
-        allow_bare_mode: has_bound,
-        value_kind: if !saw_named_or_mode && positional_count < 2 {
+        allow_bare_mode: has_domain,
+        value_kind: if !saw_named_or_mode && positional_count == 0 {
             BindingRangeValueKind::Expression
         } else {
             BindingRangeValueKind::None
@@ -629,14 +627,14 @@ mod tests {
 
     #[test]
     fn recognizes_integer_binding_range_modes() {
-        let positional = "sample:\n  index = 0 {0, 15, wr";
+        let positional = "sample:\n  index = 0 {0..15, wr";
         let positional = binding_range_completion_context_at(positional, positional.len())
             .expect("positional binding range");
         assert!(positional.allow_fields);
         assert!(positional.allow_bare_mode);
         assert_eq!(positional.value_kind, BindingRangeValueKind::None);
 
-        let named = "sample:\n  index: i32 = 0 {0, 15, mode = wr";
+        let named = "sample:\n  index: i32 = 0 {0..15, mode = wr";
         let named = binding_range_completion_context_at(named, named.len())
             .expect("named binding range mode");
         assert!(!named.allow_fields);
@@ -645,32 +643,30 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_named_binding_range_bounds() {
-        let source = "sample:\n  index = 0 {end = SIZE, begin = ";
+    fn recognizes_named_binding_range_domains() {
+        let source = "sample:\n  index = 0 {range = 0..SIZE, mode = ";
         let context = binding_range_completion_context_at(source, source.len())
             .expect("named binding range bound");
-        assert!(context.used_fields.contains("end"));
+        assert!(context.used_fields.contains("range"));
         assert!(!context.allow_fields);
-        assert_eq!(context.value_kind, BindingRangeValueKind::Expression);
+        assert_eq!(context.value_kind, BindingRangeValueKind::Mode);
     }
 
     #[test]
-    fn two_positional_binding_bounds_do_not_offer_duplicate_named_bounds() {
-        let source = "sample:\n  index = 0 {0, 16, ";
+    fn positional_binding_domain_does_not_offer_duplicate_named_domains() {
+        let source = "sample:\n  index = 0 {0..16, ";
         let context = binding_range_completion_context_at(source, source.len())
             .expect("positional binding range");
-        assert!(context.used_fields.contains("begin"));
-        assert!(context.used_fields.contains("end"));
+        assert!(context.used_fields.is_empty());
         assert!(!context.used_fields.contains("mode"));
         assert!(context.allow_bare_mode);
     }
 
     #[test]
     fn classifies_binding_range_fields_and_modes() {
-        let source = "sample:\n  index = 0 {begin = 0, end = 16, mode = wrap}\n";
+        let source = "sample:\n  index = 0 {range = 0..16, mode = wrap}\n";
         for (name, expected) in [
-            ("begin", BindingRangeIdentifierRole::Field),
-            ("end", BindingRangeIdentifierRole::Field),
+            ("range", BindingRangeIdentifierRole::Field),
             ("mode", BindingRangeIdentifierRole::Field),
             ("wrap", BindingRangeIdentifierRole::ModeValue),
         ] {

@@ -220,12 +220,21 @@ pub(crate) fn intrinsic_result_type(
             *adapted_arg_types.get(1)?,
         ),
         BuiltinFn::RangeClamp
+        | BuiltinFn::BindingCountClamp
         | BuiltinFn::BindingRangeClamp
+        | BuiltinFn::BindingRangeInclusiveClamp
         | BuiltinFn::RangeWrap
-        | BuiltinFn::BindingRangeWrap => {
+        | BuiltinFn::BindingCountWrap
+        | BuiltinFn::BindingRangeWrap
+        | BuiltinFn::BindingRangeInclusiveWrap => {
             let value = *adapted_arg_types.first()?;
-            if matches!(function, BuiltinFn::RangeWrap | BuiltinFn::BindingRangeWrap)
-                && !matches!(value, PrimitiveType::I32 | PrimitiveType::I64)
+            if matches!(
+                function,
+                BuiltinFn::RangeWrap
+                    | BuiltinFn::BindingCountWrap
+                    | BuiltinFn::BindingRangeWrap
+                    | BuiltinFn::BindingRangeInclusiveWrap
+            ) && !matches!(value, PrimitiveType::I32 | PrimitiveType::I64)
             {
                 return None;
             }
@@ -543,9 +552,13 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     )
                 }
                 BuiltinFn::RangeClamp
+                | BuiltinFn::BindingCountClamp
                 | BuiltinFn::BindingRangeClamp
+                | BuiltinFn::BindingRangeInclusiveClamp
                 | BuiltinFn::RangeWrap
-                | BuiltinFn::BindingRangeWrap => {
+                | BuiltinFn::BindingCountWrap
+                | BuiltinFn::BindingRangeWrap
+                | BuiltinFn::BindingRangeInclusiveWrap => {
                     let mut merged = arg_types.first().copied().unwrap_or(PrimitiveType::F32);
                     for rhs in arg_types.iter().copied().skip(1) {
                         merged = merge_numeric_types(
@@ -555,8 +568,13 @@ fn infer_scalar_expr_type_with_proc_arrays(
                             errors,
                         )?;
                     }
-                    if matches!(func, BuiltinFn::RangeWrap | BuiltinFn::BindingRangeWrap)
-                        && !matches!(merged, PrimitiveType::I32 | PrimitiveType::I64)
+                    if matches!(
+                        func,
+                        BuiltinFn::RangeWrap
+                            | BuiltinFn::BindingCountWrap
+                            | BuiltinFn::BindingRangeWrap
+                            | BuiltinFn::BindingRangeInclusiveWrap
+                    ) && !matches!(merged, PrimitiveType::I32 | PrimitiveType::I64)
                     {
                         errors.push(Diagnostic::semantic_span(
                             "wrapped binding ranges require i32 or i64 operands",

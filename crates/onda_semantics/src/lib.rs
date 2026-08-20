@@ -6314,17 +6314,17 @@ sample:
         for (case, then_range, else_range, expected) in [
             (
                 "bounds",
-                "{0, 10}",
-                "{0, 100}",
+                "{0..10}",
+                "{0..100}",
                 "clamp i32(0..=9) and clamp i32(0..=99)",
             ),
             (
                 "mode",
-                "{0, 10}",
-                "{0, 10, wrap}",
+                "{0..10}",
+                "{0..10, wrap}",
                 "clamp i32(0..=9) and wrap i32(0..=9)",
             ),
-            ("presence", "{0, 10}", "", "clamp i32(0..=9) and unbounded"),
+            ("presence", "{0..10}", "", "clamp i32(0..=9) and unbounded"),
         ] {
             let source = format!(
                 r#"
@@ -6360,9 +6360,9 @@ params:
 
 sample:
   if select:
-    chosen: i32 = 5 {0, 10, wrap}
+    chosen: i32 = 5 {0..10, wrap}
   else:
-    chosen: i32 = 6 {0, 10, wrap}
+    chosen: i32 = 6 {0..10, wrap}
   chosen += 10
   out1 = f32(chosen)
 "#;
@@ -11778,8 +11778,8 @@ sample:
         let source = r#"
 init:
   values: f32[8]
-  index: i32 = 7 {0, 8, wrap}
-  wide: i64 = 9007199254740993 {9007199254740992, 9007199254740996}
+  index: i32 = 7 {0..8, wrap}
+  wide: i64 = 9007199254740993 {9007199254740992..9007199254740996}
 
 sample:
   values[index] = 1.0
@@ -11818,7 +11818,7 @@ namespace Ring<Begin = 4, Size = 8>:
     outs:
       out1
     init:
-      cursor: i32 = Begin {begin = Begin, end = Begin + Size, mode = wrap}
+      cursor: i32 = Begin {range = Begin..=Begin + Size - 1, mode = wrap}
     sample:
       cursor += 1
       out1 = f32(cursor)
@@ -11854,8 +11854,8 @@ params:
   test = 0
 
 init:
-  clamped = test {0, 10}
-  wrapped = test {0, 10, wrap}
+  clamped = test {0..10}
+  wrapped = test {0..10, wrap}
 
 sample:
   clamped += 1
@@ -11899,7 +11899,7 @@ sample:
             r#"
 init:
   source: i64 = 0
-  clamped = source {0, 10}
+  clamped = source {0..10}
 
 sample:
   out1 = f32(clamped)
@@ -11909,11 +11909,11 @@ sample:
     }
 
     #[test]
-    fn single_bound_and_named_binding_ranges_use_zero_begin_and_exclusive_end() {
+    fn positional_and_named_binding_counts_use_zero_based_domains() {
         let source = r#"
 init:
   clamped = 0 {1000}
-  wrapped = 0 {end = 1000, mode = wrap}
+  wrapped = 0 {count = 1000, mode = wrap}
 
 sample:
   clamped += 1
@@ -11941,8 +11941,42 @@ sample:
     }
 
     #[test]
+    fn exclusive_and_inclusive_binding_ranges_preserve_their_endpoints() {
+        let source = r#"
+init:
+  exclusive = 10 {10..20}
+  inclusive = 10 {range = 10..=20, mode = wrap}
+
+sample:
+  out1 = f32(exclusive + inclusive)
+"#;
+        let typed = analyze(parse_program(source).expect("binding ranges should parse"))
+            .expect("binding ranges should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("binding ranges should lower to optimized MIR");
+        for (name, expected_max, expected_mode) in [
+            ("exclusive", 19, onda_mir::IntegerRangeMode::Clamp),
+            ("inclusive", 20, onda_mir::IntegerRangeMode::Wrap),
+        ] {
+            let range = mir
+                .state
+                .iter()
+                .find(|state| state.name == name)
+                .and_then(|state| state.integer_range)
+                .unwrap_or_else(|| panic!("missing integer range for '{name}'"));
+            assert_eq!(range.min, onda_mir::ScalarValue::I32(10));
+            assert_eq!(range.max, onda_mir::ScalarValue::I32(expected_max));
+            assert_eq!(range.mode, expected_mode);
+        }
+    }
+
+    #[test]
     fn binding_ranges_reject_empty_domains_and_allow_one_past_i32_max_as_the_end() {
-        for domain in ["{0}", "{begin = 5, end = 5}", "{begin = 6, end = 5}"] {
+        assert_analyze_error_contains(
+            "init:\n  value: i32 = 0 {0}\nsample:\n  out1 = f32(value)\n",
+            "integer binding count must be positive",
+        );
+        for domain in ["{range = 5..5}", "{range = 6..5}"] {
             assert_analyze_error_contains(
                 &format!("init:\n  value: i32 = 0 {domain}\nsample:\n  out1 = f32(value)\n"),
                 "begin bound must be less than its exclusive end bound",
@@ -11952,8 +11986,7 @@ sample:
             r#"
 init:
   value: i64 = 0 {
-    begin = -9223372036854775807 - 1,
-    end = -9223372036854775807 - 1,
+    range = (-9223372036854775807 - 1)..(-9223372036854775807 - 1),
   }
 
 sample:
@@ -11964,7 +11997,7 @@ sample:
 
         let source = r#"
 init:
-  value: i32 = 2147483647 {begin = 2147483647, end = 2147483648}
+  value: i32 = 2147483647 {range = 2147483647..2147483648}
 
 sample:
   out1 = f32(value)
@@ -11985,8 +12018,7 @@ sample:
         let source = r#"
 init:
   value: i64 = -9223372036854775807 - 1 {
-    begin = -9223372036854775807 - 1,
-    end = -9223372036854775807,
+    range = (-9223372036854775807 - 1)..(-9223372036854775807),
   }
 
 sample:
@@ -12010,7 +12042,7 @@ sample:
     fn ranged_state_does_not_capture_a_shadowing_function_parameter() {
         let source = r#"
 init:
-  index: i32 = 0 {0, 4, wrap}
+  index: i32 = 0 {0..4, wrap}
 
 def overwrite(index: i32):
   index = 100
@@ -12040,7 +12072,7 @@ sample:
         let source = r#"
 proc Counter:
   init:
-    position: i32 = 0 {0, 4, wrap}
+    position: i32 = 0 {0..4, wrap}
 
   sample:
     position += 1
@@ -12073,7 +12105,7 @@ sample:
         let source = r#"
 proc Counter<T>:
   init:
-    position: i32 = 0 {0, 4, wrap}
+    position: i32 = 0 {0..4, wrap}
     marker: T = T(0)
 
   sample:
@@ -12115,8 +12147,8 @@ sample:
 proc Sum<T>:
   init:
     values: T[16]
-    count: i32 = 8 {0, 9}
-    base: i32 = 0 {0, 8, wrap}
+    count: i32 = 8 {0..9}
+    base: i32 = 0 {0..8, wrap}
 
   sample:
     total: T = T(0)
@@ -12125,7 +12157,7 @@ proc Sum<T>:
     out1 = total
 
 init:
-  count: i32 = 0 {0, 2}
+  count: i32 = 0 {0..2}
   sum = Sum<f32>()
 
 sample:

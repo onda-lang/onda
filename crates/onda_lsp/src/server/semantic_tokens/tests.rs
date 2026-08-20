@@ -1034,12 +1034,12 @@ fn semantic_tokens_distinguish_parameter_domain_fields_and_scale_values() {
 fn semantic_tokens_distinguish_binding_range_fields_and_modes() {
     let source = concat!(
         "sample:\n",
-        "  wrapped: i32 = 0 {begin = 0, end = 16, mode = wrap}\n",
+        "  wrapped: i32 = 0 {range = 0..16, mode = wrap}\n",
         "  clamped: i32 = 0 {16, clamp}\n",
     );
     let tokens = semantic_tokens_for_document(source, None);
 
-    for field in ["begin", "end", "mode"] {
+    for field in ["range", "mode"] {
         assert_eq!(
             token_type_at_text_on_line(&tokens, source, 1, field),
             Some(SEMANTIC_TOKEN_TYPE_STATE),

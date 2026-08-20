@@ -3482,7 +3482,12 @@ fn map_intrinsic(function: BuiltinFn) -> Intrinsic {
         BuiltinFn::Fma => Intrinsic::Fma,
         BuiltinFn::RangeClamp => Intrinsic::RangeClamp,
         BuiltinFn::RangeWrap => Intrinsic::RangeWrap,
-        BuiltinFn::BindingRangeClamp | BuiltinFn::BindingRangeWrap => {
+        BuiltinFn::BindingCountClamp
+        | BuiltinFn::BindingRangeClamp
+        | BuiltinFn::BindingRangeInclusiveClamp
+        | BuiltinFn::BindingCountWrap
+        | BuiltinFn::BindingRangeWrap
+        | BuiltinFn::BindingRangeInclusiveWrap => {
             unreachable!("binding ranges must be canonicalized before MIR lowering")
         }
     }
