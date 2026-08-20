@@ -162,6 +162,10 @@ pub fn optimize(
 ) -> Result<(OptimizedProgram, PassStats), Vec<ValidationError>> {
     let mut producer_proofs = program.producer_proofs();
     let mut raw = program.into_program();
+    // Prune the already-dead ABI surface before state promotion so an unused
+    // reference argument cannot manufacture a promoted load/store pair.
+    // Cleanup may expose more unused parameters later, so pruning also remains
+    // part of the fixed point below.
     let mut total = PassStats {
         removed_function_parameters: parameter_pruning::prune(&mut raw),
         ..PassStats::default()
@@ -197,6 +201,10 @@ pub fn optimize(
         if bounds_proofs::eliminate_proven_bounds_checks(&mut raw, &mut stats) {
             producer_proofs = crate::validate::ProducerProofStatus::Trusted;
         }
+        // Earlier cleanup can remove the final use of a parameter. Pruning it
+        // here can in turn expose dead argument preparation in callers, which
+        // the next round will remove.
+        stats.removed_function_parameters = parameter_pruning::prune(&mut raw);
         let changed = stats.changed();
         total.merge(stats);
         if !changed {
@@ -3409,6 +3417,117 @@ mod tests {
         let (optimized, stats) = super::optimize(validated).expect("optimization should succeed");
         assert_eq!(stats.removed_function_parameters, 0);
         assert_eq!(optimized.functions[2].params.len(), 1);
+    }
+
+    #[test]
+    fn parameter_pruning_participates_in_the_optimization_fixed_point() {
+        let mut program = empty_program();
+        let mut helper = function("conditionally_uses_value", FunctionKind::User);
+        helper.params.push(crate::FunctionParam {
+            name: "value".to_owned(),
+            ty: TypeId::new(0),
+            mode: PassingMode::Value,
+            integer_range: None,
+        });
+        helper.locals.push(Local {
+            name: Some("discarded".to_owned()),
+            ty: TypeId::new(0),
+            integer_range: None,
+        });
+        helper.body.statements.push(Statement {
+            kind: StatementKind::If {
+                condition: Value::Constant(ScalarValue::Bool(false)),
+                then_block: Block {
+                    statements: vec![Statement {
+                        kind: StatementKind::Assign {
+                            destination: Place::local(LocalId::new(0)),
+                            value: Rvalue::Load(Place {
+                                base: PlaceBase::Parameter(crate::ParameterId::new(0)),
+                                projections: Vec::new(),
+                            }),
+                        },
+                        source: SourceSpan::UNKNOWN,
+                    }],
+                },
+                else_block: Block::default(),
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+        program.functions.push(helper);
+        program.functions[1].body.statements.push(Statement {
+            kind: StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(2),
+                args: vec![CallArgument::Value(Value::Constant(ScalarValue::I32(7)))],
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        let validated = crate::validate_owned(program).expect("fixture is valid before cleanup");
+        let (optimized, stats) =
+            super::optimize(validated).expect("cleanup and pruning should converge together");
+        assert_eq!(stats.simplified_branches, 1);
+        assert_eq!(stats.removed_function_parameters, 1);
+        assert!(optimized.functions[2].params.is_empty());
+        assert!(matches!(
+            &optimized.functions[1].body.statements[0].kind,
+            StatementKind::Call { args, .. } if args.is_empty()
+        ));
+
+        let fixed_point = optimized.as_program().clone();
+        let (second, second_stats) = super::optimize(optimized.into_validated())
+            .expect("an optimized program should already be at the fixed point");
+        assert_eq!(second.as_program(), &fixed_point);
+        assert_eq!(second_stats.iterations, 1);
+        assert!(!second_stats.changed());
+    }
+
+    #[test]
+    fn initial_parameter_pruning_prevents_dead_state_promotion() {
+        let mut program = empty_program();
+        program.state.push(StateSlot {
+            name: "unused".to_owned(),
+            ty: TypeId::new(0),
+            persistence: StatePersistence::Snapshot,
+            integer_range: None,
+        });
+
+        let mut helper = function("ignores_state", FunctionKind::User);
+        helper.params.push(crate::FunctionParam {
+            name: "unused".to_owned(),
+            ty: TypeId::new(0),
+            mode: PassingMode::ReadWriteReference,
+            integer_range: None,
+        });
+        program.functions.push(helper);
+        program.functions[1].body.statements.push(Statement {
+            kind: StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(2),
+                args: vec![CallArgument::Place(Place {
+                    base: PlaceBase::State(StateId::new(0)),
+                    projections: Vec::new(),
+                })],
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        let validated = crate::validate_owned(program).expect("fixture is valid before pruning");
+        let (optimized, stats) =
+            super::optimize(validated).expect("pruning and promotion should preserve validity");
+
+        assert_eq!(stats.removed_function_parameters, 1);
+        assert_eq!(stats.promoted_state_slots, 0);
+        assert!(optimized.functions[2].params.is_empty());
+        let process = &optimized.functions[1];
+        assert!(process.locals.is_empty());
+        assert!(matches!(
+            process.body.statements.as_slice(),
+            [Statement {
+                kind: StatementKind::Call { args, .. },
+                ..
+            }] if args.is_empty()
+        ));
     }
 
     #[test]

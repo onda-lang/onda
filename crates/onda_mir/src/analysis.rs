@@ -1660,7 +1660,9 @@ fn scan_buffer_ref(buffer: crate::BufferRef, effects: &mut FunctionEffects) {
     } = buffer
     {
         scan_value(selector, effects);
-        mark_dynamic_bounds(bounds, effects);
+        // Interface buffer collections have a validated, nonzero static
+        // length, so clamping cannot fail. Only explicit checked selection can.
+        mark_checked_bounds(bounds, effects);
     }
 }
 
@@ -2549,6 +2551,22 @@ mod tests {
         assert!(analysis.function(FunctionId::new(4)).may_fail);
         assert!(!analysis.function(FunctionId::new(5)).may_fail);
         assert!(analysis.function(FunctionId::new(6)).may_fail);
+    }
+
+    #[test]
+    fn fixed_buffer_collection_failure_effects_match_bounds_mode() {
+        let argument = |bounds| {
+            CallArgument::Buffer(crate::BufferRef::ArrayElement {
+                first: BufferId::new(0),
+                len: 4,
+                selector: Value::Constant(ScalarValue::I32(-1)),
+                bounds,
+            })
+        };
+
+        assert!(!call_argument_may_fail(&argument(BoundsMode::Clamp)));
+        assert!(call_argument_may_fail(&argument(BoundsMode::Checked)));
+        assert!(!call_argument_may_fail(&argument(BoundsMode::Unchecked)));
     }
 
     #[test]
