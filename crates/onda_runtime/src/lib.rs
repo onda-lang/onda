@@ -397,10 +397,9 @@ fn create_instance_inner(
 }
 
 pub fn reset_instance_state(instance: &mut Instance) {
-    instance
-        .state
-        .bytes_mut()
-        .copy_from_slice(instance.initial_state.bytes());
+    // SAFETY: the initial image was produced by the compiled init entry and
+    // therefore satisfies every declared state invariant.
+    unsafe { instance.state.bytes_mut() }.copy_from_slice(instance.initial_state.bytes());
 }
 
 pub fn set_param_by_index(

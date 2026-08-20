@@ -638,7 +638,9 @@ impl<'a> FunctionLowerer<'a> {
         ) {
             return self.lower_tuple_index(base, index, location, block);
         }
-        if let Some(value) = self.lower_dynamic_interface_read(base, index, location, block)? {
+        if let Some(value) =
+            self.lower_dynamic_interface_read(base, index, BoundsMode::Clamp, location, block)?
+        {
             return Ok(value);
         }
         let state_tuple = self
@@ -785,6 +787,7 @@ impl<'a> FunctionLowerer<'a> {
         &mut self,
         base: &str,
         index: &Expr,
+        bounds: BoundsMode,
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<Option<LoweredValue>, MirLoweringError> {
@@ -808,7 +811,8 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             )
         })?;
-        let selected = self.lower_dynamic_interface_index(index, view.slots.len(), block)?;
+        let selected =
+            self.lower_dynamic_interface_index(index, view.slots.len(), bounds, block)?;
         let result = self.new_local(Some(format!("{base}.selected")), view.element_type);
         let dispatch = self.dynamic_interface_read_dispatch(
             &view.slots,
@@ -829,8 +833,14 @@ impl<'a> FunctionLowerer<'a> {
         &mut self,
         index: &Expr,
         slot_count: usize,
+        bounds: BoundsMode,
         block: &mut MirBlock,
     ) -> Result<Value, MirLoweringError> {
+        let index_value = self.lower_expr(index, block)?;
+        let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
+        if bounds == BoundsMode::Unchecked {
+            return Ok(index_value.value);
+        }
         let upper = slot_count
             .checked_sub(1)
             .and_then(|upper| i32::try_from(upper).ok())
@@ -840,28 +850,12 @@ impl<'a> FunctionLowerer<'a> {
                     index.loc(),
                 )
             })?;
-        let index_value = self.lower_expr(index, block)?;
-        let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
-        let non_negative = self.emit_temp(
+        Ok(Value::Local(self.clamp_index_to_inclusive_upper(
+            index_value.value,
+            Value::Constant(ScalarValue::I32(upper)),
             block,
-            PrimitiveType::I32,
-            Rvalue::Intrinsic {
-                intrinsic: Intrinsic::Max,
-                args: vec![index_value.value, Value::Constant(ScalarValue::I32(0))],
-            },
             index.loc(),
-        );
-        Ok(self
-            .emit_temp(
-                block,
-                PrimitiveType::I32,
-                Rvalue::Intrinsic {
-                    intrinsic: Intrinsic::Min,
-                    args: vec![non_negative.value, Value::Constant(ScalarValue::I32(upper))],
-                },
-                index.loc(),
-            )
-            .value)
+        )))
     }
 
     pub(super) fn dynamic_interface_read_dispatch(
@@ -1177,7 +1171,45 @@ impl<'a> FunctionLowerer<'a> {
         for (arg, value) in args.iter().zip(lowered) {
             values.push(self.coerce(value, result_ty, block, arg.loc())?.value);
         }
-        Ok(self.emit_temp(
+        if matches!(function, BuiltinFn::RangeClamp | BuiltinFn::RangeWrap)
+            && matches!(result_ty, PrimitiveType::I32 | PrimitiveType::I64)
+        {
+            for index in 1..=2 {
+                let mut diagnostics = Vec::new();
+                if let Some(value) = eval_const_expr_i64_exact(
+                    &args[index],
+                    AnalysisOptions {
+                        sample_rate: self.config.sample_rate,
+                        block_size: self.config.block_size as usize,
+                    },
+                    "integer binding range bound during MIR lowering",
+                    &mut diagnostics,
+                ) {
+                    values[index] = Value::Constant(match result_ty {
+                        PrimitiveType::I32 => ScalarValue::I32(value as i32),
+                        PrimitiveType::I64 => ScalarValue::I64(value),
+                        _ => unreachable!(),
+                    });
+                }
+            }
+        }
+        let integer_range = match (function, values.get(1), values.get(2)) {
+            (
+                BuiltinFn::RangeClamp | BuiltinFn::RangeWrap,
+                Some(Value::Constant(min @ (ScalarValue::I32(_) | ScalarValue::I64(_)))),
+                Some(Value::Constant(max @ (ScalarValue::I32(_) | ScalarValue::I64(_)))),
+            ) if min.ty() == max.ty() => Some(onda_mir::IntegerRangeInvariant {
+                min: *min,
+                max: *max,
+                mode: if function == BuiltinFn::RangeWrap {
+                    onda_mir::IntegerRangeMode::Wrap
+                } else {
+                    onda_mir::IntegerRangeMode::Clamp
+                },
+            }),
+            _ => None,
+        };
+        let result = self.emit_temp(
             block,
             result_ty,
             Rvalue::Intrinsic {
@@ -1185,6 +1217,13 @@ impl<'a> FunctionLowerer<'a> {
                 args: values,
             },
             location,
-        ))
+        );
+        if let Some(range) = integer_range {
+            let Value::Local(local) = result.value else {
+                unreachable!("emitted intrinsic result is always a local")
+            };
+            self.locals[local.index()].integer_range = Some(range);
+        }
+        Ok(result)
     }
 }

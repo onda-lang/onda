@@ -2,6 +2,7 @@ use onda_frontend::{
     BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, PrimitiveType, SourceLoc,
     INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
     INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 
 use crate::AnalysisOptions;
@@ -162,6 +163,8 @@ const INTERNAL_BUFFER_2D_FUNCTION_NAMES: &[&str] = &[
     INTERNAL_BUFFER_WRITE_CHANNEL_FN,
     INTERNAL_BUFFER_READ3_FN,
     INTERNAL_BUFFER_WRITE3_FN,
+    READ_UNSAFE_FN,
+    WRITE_UNSAFE_FN,
 ];
 
 pub fn public_builtin_function_names() -> impl Iterator<Item = &'static str> {
@@ -179,8 +182,18 @@ pub fn is_internal_buffer_2d_fn(name: &str) -> bool {
 pub fn is_builtin_buffer_write_function_name(name: &str) -> bool {
     matches!(
         name,
-        INTERNAL_BUFFER_WRITE2_FN | INTERNAL_BUFFER_WRITE3_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
+        INTERNAL_BUFFER_WRITE2_FN
+            | INTERNAL_BUFFER_WRITE3_FN
+            | INTERNAL_BUFFER_WRITE_CHANNEL_FN
+            | WRITE_UNSAFE_FN
     )
+}
+
+/// Internal indexing operations that may also use receiver syntax. These stay
+/// outside the public builtin registry because their signature is resolved
+/// from the receiver's storage shape during semantic analysis.
+pub(crate) fn is_unsafe_index_method_name(name: &str) -> bool {
+    matches!(name, READ_UNSAFE_FN | WRITE_UNSAFE_FN)
 }
 
 pub const ARRAY_LEN_METHOD: &str = "len";
@@ -835,17 +848,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unsafe_buffer_operations_are_not_public_builtins_or_methods() {
+    fn unsafe_index_operations_are_internal_receiver_methods() {
         for name in [
-            "unsafe_read",
-            "unsafe_write",
-            "unsafe_read2",
-            "unsafe_write2",
+            "read_unsafe",
+            "write_unsafe",
+            "read_unsafe2",
+            "write_unsafe2",
         ] {
             assert!(!is_builtin_function_name(name));
             assert!(!is_builtin_instance_method_name(name));
             assert!(!public_builtin_function_names().any(|builtin| builtin == name));
         }
+        assert!(is_unsafe_index_method_name("read_unsafe"));
+        assert!(is_unsafe_index_method_name("write_unsafe"));
+        assert!(!is_unsafe_index_method_name("read_unsafe2"));
+        assert!(!is_unsafe_index_method_name("write_unsafe2"));
     }
 
     #[test]

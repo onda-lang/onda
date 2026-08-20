@@ -989,6 +989,13 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
         } => {
             if is_internal_buffer_2d_fn(name) {
                 validate_internal_buffer_index_call(name, args, env, expr.loc(), errors);
+                if name == WRITE_UNSAFE_FN {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        "'write_unsafe' is a statement and cannot be used as a value",
+                    );
+                }
                 return;
             }
             if validate_indexed_buffer_metadata_call(name, args, env, expr.loc(), errors) {
@@ -1160,6 +1167,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 expr.loc(),
                                 errors,
                             );
+                            continue;
+                        }
+                        if matches!(param_ty, Some(FnParamType::Struct(_)))
+                            && validate_aggregate_unsafe_reference_arg(arg, env, errors)
+                        {
                             continue;
                         }
                         if is_function_array_param(param_ty) {
@@ -1414,6 +1426,20 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
     }
 }
 
+pub(crate) fn validate_standalone_expr_statement(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Expr::UserCall { name, args, .. } = expr {
+        if name == WRITE_UNSAFE_FN {
+            validate_internal_buffer_index_call(name, args, env, expr.loc(), errors);
+            return;
+        }
+    }
+    validate_expr(expr, env, errors);
+}
+
 fn validate_indexed_buffer_metadata_call(
     name: &str,
     args: &[CallArg],
@@ -1490,7 +1516,10 @@ fn is_internal_proc_index_validation_arg(
 ) -> bool {
     if matches!(
         arg_name,
-        Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG) | Some(PROC_FIELD_SENTINEL_ARG)
+        Some(PROC_INDEX_BASE_ARG)
+            | Some(PROC_INDEX_EXPR_ARG)
+            | Some(PROC_INDEX_UNCHECKED_ARG)
+            | Some(PROC_FIELD_SENTINEL_ARG)
     ) {
         return true;
     }
@@ -2563,6 +2592,10 @@ fn validate_internal_buffer_index_call(
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if matches!(name, READ_UNSAFE_FN | WRITE_UNSAFE_FN) {
+        validate_unsafe_index_call(name, args, env, loc, false, errors);
+        return;
+    }
     let is_write = matches!(
         name,
         INTERNAL_BUFFER_WRITE2_FN | INTERNAL_BUFFER_WRITE3_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
@@ -2671,6 +2704,285 @@ fn validate_internal_buffer_index_call(
     }
 }
 
+fn validate_unsafe_index_call(
+    name: &str,
+    args: &[CallArg],
+    env: ExprEnv<'_>,
+    loc: SourceLoc,
+    allow_aggregate_read: bool,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let is_write = name == WRITE_UNSAFE_FN;
+    for argument in args {
+        if argument.name.is_some() {
+            push_loc_error(
+                errors,
+                loc,
+                format!("'{name}' does not support named arguments"),
+            );
+        }
+    }
+    let Some(first) = args.first() else {
+        push_loc_error(errors, loc, format!("'{name}' expects a storage variable"));
+        return;
+    };
+    let storage = match &first.expr {
+        Expr::Var { name: base, .. } => unsafe_storage_shape(base, env).map(|shape| (base, shape)),
+        Expr::Index { base, index, .. } => {
+            validate_expr(index, env, errors);
+            let index_ty = infer_call_argument_scalar_type(index, env);
+            require_expr_numeric_type(index, index_ty, &format!("'{name}' index argument"), errors);
+            unsafe_selected_buffer_shape(base, env).map(|shape| (base, shape))
+        }
+        _ => None,
+    };
+    if let Some((base, shape)) = storage {
+        let expected = 1 + shape.index_count + usize::from(is_write);
+        if args.len() != expected {
+            push_loc_error(
+                errors,
+                loc,
+                format!(
+                    "'{name}' expects {} index argument{}{}, got {} arguments",
+                    shape.index_count,
+                    if shape.index_count == 1 { "" } else { "s" },
+                    if is_write { " and a value" } else { "" },
+                    args.len()
+                ),
+            );
+        }
+        if is_write && !shape.writable {
+            push_loc_error(
+                errors,
+                first.expr.loc().or(loc),
+                if shape.is_aggregate {
+                    format!("write_unsafe does not support aggregate array '{base}'")
+                } else {
+                    format!("write_unsafe storage '{base}' is read-only")
+                },
+            );
+        }
+        if !is_write && !shape.readable {
+            push_loc_error(
+                errors,
+                first.expr.loc().or(loc),
+                format!("read_unsafe storage '{base}' is write-only"),
+            );
+        }
+        if !is_write && shape.is_aggregate && !allow_aggregate_read {
+            push_loc_error(
+                errors,
+                loc,
+                format!(
+                    "aggregate read_unsafe from '{base}' is only valid in an alias or reference argument"
+                ),
+            );
+        }
+        if shape.is_buffer && env.scope == ScopeKind::Init {
+            push_loc_error(
+                errors,
+                first.expr.loc().or(loc),
+                init_buffer_runtime_message(&format!("unsafe buffer access '{base}'")),
+            );
+        }
+        for argument in args.iter().skip(1).take(shape.index_count) {
+            let index_ty = infer_call_argument_scalar_type(&argument.expr, env);
+            require_expr_numeric_type(
+                &argument.expr,
+                index_ty,
+                &format!("'{name}' index argument"),
+                errors,
+            );
+        }
+        if is_write {
+            if let Some((value, expected_ty)) = args.get(1 + shape.index_count).zip(shape.elem_ty) {
+                let actual_ty = infer_call_argument_scalar_type(&value.expr, env);
+                require_expr_assignable_type(
+                    &value.expr,
+                    actual_ty,
+                    expected_ty,
+                    "'write_unsafe' value",
+                    errors,
+                );
+            }
+        }
+    } else {
+        push_loc_error(
+            errors,
+            first.expr.loc().or(loc),
+            format!(
+                "'{name}' first argument must be a collection, aggregate array, or buffer reference"
+            ),
+        );
+    }
+    for argument in args.iter().skip(1) {
+        validate_expr(&argument.expr, env, errors);
+    }
+}
+
+fn validate_aggregate_unsafe_reference_arg(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Expr::UserCall { name, args, .. } = expr else {
+        return false;
+    };
+    if name != READ_UNSAFE_FN {
+        return false;
+    }
+    let Some(Expr::Var { name: base, .. }) = args.first().map(|arg| &arg.expr) else {
+        return false;
+    };
+    if !unsafe_storage_shape(base, env).is_some_and(|shape| shape.is_aggregate) {
+        return false;
+    }
+    validate_unsafe_index_call(name, args, env, expr.loc(), true, errors);
+    true
+}
+
+#[derive(Clone, Copy)]
+struct UnsafeStorageShape {
+    index_count: usize,
+    elem_ty: Option<PrimitiveType>,
+    readable: bool,
+    writable: bool,
+    is_buffer: bool,
+    is_aggregate: bool,
+}
+
+fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageShape> {
+    if let Some(alias) = env.local_array_aliases.get(base) {
+        return Some(UnsafeStorageShape {
+            index_count: 1,
+            elem_ty: alias.elem_struct.is_none().then_some(alias.elem_ty),
+            readable: alias.elem_struct.is_some() || !env.output_arrays.contains(base),
+            writable: alias.elem_struct.is_none() && alias.writable,
+            is_buffer: false,
+            is_aggregate: alias.elem_struct.is_some(),
+        });
+    }
+    if env.local_aliases.contains_key(base) {
+        return None;
+    }
+
+    if let Some(DeclaredSymbolInfo::Buffer {
+        elem_ty,
+        channels,
+        is_array,
+        ..
+    }) = env.declared_symbols.get(base)
+    {
+        let has_channel = matches!(channels, BufferChannelInfo::Dynamic)
+            || matches!(channels, BufferChannelInfo::Static(count) if *count > 1);
+        return Some(UnsafeStorageShape {
+            index_count: 1 + usize::from(*is_array) + usize::from(has_channel),
+            elem_ty: Some(*elem_ty),
+            readable: true,
+            writable: true,
+            is_buffer: true,
+            is_aggregate: false,
+        });
+    }
+
+    if unsafe_aggregate_array(base, env) {
+        return Some(UnsafeStorageShape {
+            index_count: 1,
+            elem_ty: None,
+            readable: true,
+            writable: false,
+            is_buffer: false,
+            is_aggregate: true,
+        });
+    }
+
+    if env.array_vars.contains_key(base) {
+        return Some(UnsafeStorageShape {
+            index_count: 1,
+            elem_ty: declared_symbol_scalar_type(env.declared_symbols, base),
+            readable: !env.output_arrays.contains(base),
+            writable: !env.input_names.contains(base) && !env.param_names.contains(base),
+            is_buffer: false,
+            is_aggregate: false,
+        });
+    }
+
+    let (port, readable, writable) = match base {
+        "ins" => (env.port_index_ins, true, false),
+        "outs" => (
+            env.port_index_outs
+                .filter(|_| env.scope == ScopeKind::Sample),
+            false,
+            true,
+        ),
+        "kouts" => (
+            env.port_index_outs
+                .filter(|_| env.scope == ScopeKind::Block),
+            false,
+            true,
+        ),
+        "params" => (env.port_index_params, true, false),
+        "kins" => (env.port_index_kins, true, false),
+        _ => return None,
+    };
+    port.map(|port| UnsafeStorageShape {
+        index_count: 1,
+        elem_ty: Some(port.elem_ty),
+        readable,
+        writable,
+        is_buffer: false,
+        is_aggregate: false,
+    })
+}
+
+fn unsafe_aggregate_array(base: &str, env: ExprEnv<'_>) -> bool {
+    if env.struct_array_roots.contains_key(base) || env.proc_array_roots.contains_key(base) {
+        return true;
+    }
+
+    let field = if let Some((root, field)) = base.split_once('.') {
+        let Some(struct_name) = env
+            .struct_instances
+            .get(root)
+            .or_else(|| env.param_structs.get(root))
+        else {
+            return false;
+        };
+        resolve_struct_field_decl(struct_name, field, env.struct_defs)
+    } else {
+        let Some(struct_name) = env.param_structs.get("self") else {
+            return false;
+        };
+        resolve_struct_field_decl(struct_name, base, env.struct_defs)
+    };
+
+    field.is_some_and(|field| {
+        matches!(field.ty, TypedFieldType::Array(_)) && field.array_elem_struct.is_some()
+    })
+}
+
+fn unsafe_selected_buffer_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageShape> {
+    let DeclaredSymbolInfo::Buffer {
+        elem_ty,
+        channels,
+        is_array: true,
+        ..
+    } = env.declared_symbols.get(base)?
+    else {
+        return None;
+    };
+    let has_channel = matches!(channels, BufferChannelInfo::Dynamic)
+        || matches!(channels, BufferChannelInfo::Static(count) if *count > 1);
+    Some(UnsafeStorageShape {
+        index_count: 1 + usize::from(has_channel),
+        elem_ty: Some(*elem_ty),
+        readable: true,
+        writable: true,
+        is_buffer: true,
+        is_aggregate: false,
+    })
+}
+
 fn validate_internal_proc_index_call(
     name: &str,
     args: &[CallArg],
@@ -2689,6 +3001,7 @@ fn validate_internal_proc_index_call(
         match arg.name.as_deref() {
             Some(PROC_INDEX_BASE_ARG) => base_expr = Some(&arg.expr),
             Some(PROC_INDEX_EXPR_ARG) => index_expr = Some(&arg.expr),
+            Some(PROC_INDEX_UNCHECKED_ARG) => {}
             Some(PROC_FIELD_SENTINEL_ARG) => field_expr = Some(&arg.expr),
             _ => {}
         }
@@ -2765,6 +3078,7 @@ fn validate_internal_proc_index_call(
         match arg.name.as_deref() {
             Some(PROC_INDEX_BASE_ARG)
             | Some(PROC_INDEX_EXPR_ARG)
+            | Some(PROC_INDEX_UNCHECKED_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG) => {}
             _ => {
                 if !is_by_ref_call_arg_expr(&arg.expr, env) {
@@ -2790,6 +3104,7 @@ fn validate_internal_proc_index_buffer_select_call(
         match arg.name.as_deref() {
             Some(PROC_INDEX_BASE_ARG) => base_expr = Some(&arg.expr),
             Some(PROC_INDEX_EXPR_ARG) => index_expr = Some(&arg.expr),
+            Some(PROC_INDEX_UNCHECKED_ARG) => {}
             Some(other) => {
                 push_loc_error(
                     errors,

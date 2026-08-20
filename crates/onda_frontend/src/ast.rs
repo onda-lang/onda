@@ -614,6 +614,8 @@ pub const INTERNAL_BUFFER_READ_CHANNEL_FN: &str = "__onda_buffer_read_channel";
 pub const INTERNAL_BUFFER_WRITE_CHANNEL_FN: &str = "__onda_buffer_write_channel";
 pub const INTERNAL_BUFFER_READ3_FN: &str = "__onda_buffer_read3";
 pub const INTERNAL_BUFFER_WRITE3_FN: &str = "__onda_buffer_write3";
+pub const READ_UNSAFE_FN: &str = "read_unsafe";
+pub const WRITE_UNSAFE_FN: &str = "write_unsafe";
 /// Preserves the receiver in `value.method(...)` until semantic resolution.
 pub const METHOD_RECEIVER_ARG: &str = "__onda_method_receiver";
 
@@ -1675,6 +1677,30 @@ pub enum BuiltinFn {
     /// `ALL` and `from_name`, so it is not part of the source-language
     /// builtin surface.
     RangeClamp,
+    /// Parser-generated zero-based integer binding count clamp. Semantic
+    /// analysis validates the positive count before canonicalizing it to an
+    /// inclusive `RangeClamp` from zero.
+    BindingCountClamp,
+    /// Parser-generated half-open integer range clamp. Semantic analysis
+    /// validates its exclusive upper bound before canonicalizing it to
+    /// `RangeClamp` with inclusive constant bounds.
+    BindingRangeClamp,
+    /// Parser-generated inclusive integer range clamp. It remains distinct
+    /// until semantic range validation so declaration rewrites retain the
+    /// binding invariant.
+    BindingRangeInclusiveClamp,
+    /// Compiler-generated inclusive integer range wrap. This is intentionally
+    /// absent from `ALL` and `from_name`.
+    RangeWrap,
+    /// Parser-generated zero-based integer binding count wrap. Like the
+    /// binding range markers, it must not survive semantic validation.
+    BindingCountWrap,
+    /// Parser-generated half-open integer range wrap. Like
+    /// `BindingRangeClamp`, it must not survive semantic range validation.
+    BindingRangeWrap,
+    /// Parser-generated inclusive integer range wrap. Like the other binding
+    /// markers, it must not survive semantic range validation.
+    BindingRangeInclusiveWrap,
 }
 
 impl BuiltinFn {
@@ -1744,6 +1770,13 @@ impl BuiltinFn {
             Self::Max => "max",
             Self::Fma => "fma",
             Self::RangeClamp => "<range-clamp>",
+            Self::BindingCountClamp => "<binding-count-clamp>",
+            Self::BindingRangeClamp => "<binding-range-clamp>",
+            Self::BindingRangeInclusiveClamp => "<inclusive-binding-range-clamp>",
+            Self::RangeWrap => "<range-wrap>",
+            Self::BindingCountWrap => "<binding-count-wrap>",
+            Self::BindingRangeWrap => "<binding-range-wrap>",
+            Self::BindingRangeInclusiveWrap => "<inclusive-binding-range-wrap>",
         }
     }
 
@@ -1764,7 +1797,14 @@ impl BuiltinFn {
             | Self::Trunc => 1,
             Self::Pow | Self::Atan2 | Self::Min | Self::Max => 2,
             Self::Fma => 3,
-            Self::RangeClamp => 3,
+            Self::RangeClamp
+            | Self::BindingCountClamp
+            | Self::BindingRangeClamp
+            | Self::BindingRangeInclusiveClamp
+            | Self::RangeWrap
+            | Self::BindingCountWrap
+            | Self::BindingRangeWrap
+            | Self::BindingRangeInclusiveWrap => 3,
         }
     }
 }

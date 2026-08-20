@@ -1,7 +1,7 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 3;
-export const PROCESSOR_ABI_VERSION: 3;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 4;
+export const PROCESSOR_ABI_VERSION: 4;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
@@ -165,13 +165,18 @@ export interface OndaStateMetadata {
   packed_snapshot_byte_offset: number;
   physical_state_byte_offset: number;
   byte_size: number;
+  integer_range?: {
+    min: { type: "i32" | "i64"; value: string };
+    max: { type: "i32" | "i64"; value: string };
+    mode: "clamp" | "wrap";
+  } | null;
 }
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
-  format_version: 3;
+  format_version: 4;
   artifact_kind: OndaArtifactKind;
-  abi_version: 3;
+  abi_version: 4;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;

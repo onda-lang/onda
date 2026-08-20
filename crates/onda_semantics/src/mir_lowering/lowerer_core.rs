@@ -390,6 +390,11 @@ impl<'a> FunctionLowerer<'a> {
                         name: name.clone(),
                         ty: type_id,
                         mode: onda_mir::PassingMode::Value,
+                        integer_range: self
+                            .function
+                            .integer_range_params
+                            .get(name)
+                            .and_then(typed_integer_range_invariant),
                     });
                     scalar_parameters.push((name.clone(), ParameterId::new(next_parameter_id), ty));
                     next_parameter_id += 1;
@@ -405,6 +410,7 @@ impl<'a> FunctionLowerer<'a> {
                         name: name.clone(),
                         ty: type_id,
                         mode: onda_mir::PassingMode::Value,
+                        integer_range: None,
                     });
                     slice_parameters.push((
                         name.clone(),
@@ -423,6 +429,7 @@ impl<'a> FunctionLowerer<'a> {
                             name: format!("{name}.{component_index}"),
                             ty: type_id,
                             mode: onda_mir::PassingMode::Value,
+                            integer_range: None,
                         });
                         components.push((parameter, ty));
                         next_parameter_id += 1;
@@ -447,6 +454,7 @@ impl<'a> FunctionLowerer<'a> {
                         name: name.clone(),
                         ty: type_id,
                         mode: onda_mir::PassingMode::ReadWriteReference,
+                        integer_range: None,
                     });
                     self.bindings
                         .insert(name.clone(), Binding::BufferParameter(parameter, *elem_ty));
@@ -487,6 +495,7 @@ impl<'a> FunctionLowerer<'a> {
                         name: name.clone(),
                         ty: type_id,
                         mode: onda_mir::PassingMode::Value,
+                        integer_range: None,
                     });
                     next_parameter_id += 1;
                     self.bindings.insert(
@@ -506,10 +515,16 @@ impl<'a> FunctionLowerer<'a> {
                             } => {
                                 let type_id = self.scalar_type_id(ty);
                                 let parameter = ParameterId::new(next_parameter_id);
+                                let parameter_name = format!("{name}.{field_name}");
                                 self.params.push(onda_mir::FunctionParam {
-                                    name: format!("{name}.{field_name}"),
+                                    name: parameter_name.clone(),
                                     ty: type_id,
                                     mode: onda_mir::PassingMode::ReadWriteReference,
+                                    integer_range: self
+                                        .function
+                                        .integer_range_params
+                                        .get(&parameter_name)
+                                        .and_then(typed_integer_range_invariant),
                                 });
                                 self.bindings.insert(
                                     format!("{name}.{field_name}"),
@@ -533,6 +548,7 @@ impl<'a> FunctionLowerer<'a> {
                                     name: format!("{name}.{field_name}"),
                                     ty: type_id,
                                     mode: onda_mir::PassingMode::ReadWriteReference,
+                                    integer_range: None,
                                 });
                                 self.bindings.insert(
                                     format!("{name}.{field_name}"),
@@ -777,6 +793,7 @@ impl<'a> FunctionLowerer<'a> {
                         name: format!("{name}.len"),
                         ty: length_type,
                         mode: onda_mir::PassingMode::Value,
+                        integer_range: None,
                     });
                     next_parameter_id += 1;
 
@@ -795,6 +812,7 @@ impl<'a> FunctionLowerer<'a> {
                             name: format!("{name}.{field_name}"),
                             ty,
                             mode: onda_mir::PassingMode::Value,
+                            integer_range: None,
                         });
                         let binding_name = format!("{name}.{field_name}");
                         slice_parameters.push((
@@ -826,6 +844,7 @@ impl<'a> FunctionLowerer<'a> {
                         name: format!("{name}.len"),
                         ty: length_type,
                         mode: onda_mir::PassingMode::Value,
+                        integer_range: None,
                     });
                     next_parameter_id += 1;
 
@@ -840,6 +859,7 @@ impl<'a> FunctionLowerer<'a> {
                         name: active_name.clone(),
                         ty: active_type,
                         mode: onda_mir::PassingMode::Value,
+                        integer_range: None,
                     });
                     slice_parameters.push((
                         active_name,
@@ -864,6 +884,7 @@ impl<'a> FunctionLowerer<'a> {
                             name: format!("{name}.{field_name}"),
                             ty,
                             mode: onda_mir::PassingMode::Value,
+                            integer_range: None,
                         });
                         let binding_name = format!("{name}.{field_name}");
                         slice_parameters.push((

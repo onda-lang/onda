@@ -27,9 +27,6 @@ const USAGE_BODY: &str = r#"Commands:
   
   onda                              Open the interactive run window
 
-  onda project <directory>           Create or package an Onda project
-    [--from <input.onda>] [--buffer <name=path>]
-
   onda compile <input>               Check, inspect, or emit compile artifacts
     
     [--emit <check|mir|mir-json|mir-messagepack|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
@@ -63,6 +60,10 @@ const USAGE_BODY: &str = r#"Commands:
     [--opt-level <0|1|2|3>] [--fast-math]
     [--set <name=value>] [--buffer <name=path>] [--meta]
   
+  onda project <directory>           Create or package an Onda project
+    
+    [--from <input.onda>] [--buffer <name=path>]
+  
   onda daemon diagnose <input>       Run daemon-backed analysis and diagnostics
     
     [--sample-rate <hz>] [--block-size <frames>]
@@ -79,11 +80,6 @@ Shared Options:
   --fast-math            Enable LLVM fast-math flags for floating-point operations
   --meta                 Print available metadata for the selected command
   --help, -h             Show this help
-
-Project Options:
-
-  --from                 Capture an existing Onda entry and its exact reachable source graph
-  --buffer               Package a declared buffer from WAV or .ondabuffer with `name=path`
 
 Compile Options:
   
@@ -112,6 +108,11 @@ Run Options:
   --control-json         Emit run control handshake on stdout and serve param control over localhost
   --theme                Run window theme: `auto`, `dark`, or `light` (default: auto)
   --webview              Use the webview run host instead of egui
+
+Project Options:
+
+  --from                 Capture an existing Onda entry and its exact reachable source graph
+  --buffer               Package a declared buffer from WAV or .ondabuffer with `name=path`
 "#;
 
 static USAGE: LazyLock<String> = LazyLock::new(build_usage);

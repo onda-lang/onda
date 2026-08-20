@@ -6,6 +6,7 @@ pub(crate) const PROC_INDEX_CALL_SENTINEL: &str = "__onda_proc_index_call";
 pub(crate) const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str = "__onda_proc_index_buffer_select";
 pub(crate) const PROC_INDEX_BASE_ARG: &str = "__onda_proc_index_base";
 pub(crate) const PROC_INDEX_EXPR_ARG: &str = "__onda_proc_index_expr";
+pub(crate) const PROC_INDEX_UNCHECKED_ARG: &str = "__onda_proc_index_unchecked";
 pub(crate) const STRUCT_ARRAY_FIELD_INDEX_SENTINEL: &str = "__onda_struct_array_field_index";
 pub(crate) const SAFI_BASE_ARG: &str = "__safi_base";
 pub(crate) const SAFI_IDX_ARG: &str = "__safi_idx";

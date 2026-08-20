@@ -76,6 +76,50 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
+    fn selected_buffer_reference(
+        &mut self,
+        expression: &Expr,
+        bounds: BoundsMode,
+        block: &mut MirBlock,
+    ) -> Result<Option<(MaterializedBufferReference, PrimitiveType)>, MirLoweringError> {
+        let Expr::Index { base, index, .. } = expression else {
+            return Ok(None);
+        };
+        let parameter_array = match self.bindings.get(base).cloned() {
+            Some(Binding::BufferParameterArray(span, element, _)) => Some((span, element)),
+            _ => None,
+        };
+        let interface_array = self
+            .runtime_globals
+            .and_then(|globals| globals.buffer_arrays.get(base).copied());
+        if parameter_array.is_none() && interface_array.is_none() {
+            return Ok(None);
+        }
+        let selector = self.lower_expr(index, block)?;
+        let selector = self.coerce(selector, PrimitiveType::I32, block, index.loc())?;
+        if let Some((span, element)) = parameter_array {
+            return Ok(Some((
+                MaterializedBufferReference::Parameter(onda_mir::BufferParamRef::ArrayElement {
+                    span,
+                    selector: selector.value,
+                    bounds,
+                }),
+                element,
+            )));
+        }
+        Ok(interface_array.map(|(first, element, len)| {
+            (
+                MaterializedBufferReference::Interface(onda_mir::BufferRef::ArrayElement {
+                    first,
+                    len,
+                    selector: selector.value,
+                    bounds,
+                }),
+                element,
+            )
+        }))
+    }
+
     pub(super) fn lower_buffer_alias_assignment(
         &mut self,
         name: &str,
@@ -421,6 +465,7 @@ impl<'a> FunctionLowerer<'a> {
         expected_struct: &str,
         base: &str,
         index: &Expr,
+        access: IndexAccess,
         block: &mut MirBlock,
         location: SourceLoc,
     ) -> Result<Option<LoweredIndexedStructArgument>, MirLoweringError> {
@@ -440,9 +485,10 @@ impl<'a> FunctionLowerer<'a> {
         }
         let raw_index = self.lower_expr(index, block)?;
         let raw_index = self.coerce(raw_index, PrimitiveType::I32, block, index.loc())?;
-        let normalized = self.clamp_index_to_length(
+        let normalized = self.materialize_index_to_length(
             raw_index.value,
             Value::Constant(ScalarValue::I32(array.slots.len() as i32)),
+            access,
             block,
             location,
         );
@@ -510,16 +556,23 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
     ) -> Result<Option<LoweredIndexedStructArgument>, MirLoweringError> {
         let synthesized;
-        let (base, index) = match expression {
-            Expr::Index { base, index, .. } => (base.as_str(), index.as_ref()),
-            Expr::Var { name, .. } => {
-                let Some((base, index)) = self.named_proc_slot_index(name, expected_struct) else {
-                    return Ok(None);
-                };
-                synthesized = (base, Expr::int(index as i64));
-                (synthesized.0.as_str(), &synthesized.1)
+        let access;
+        let (base, index) = if let Some(source) = indexed_read_source(expression) {
+            access = source.access;
+            (source.base, source.index)
+        } else {
+            match expression {
+                Expr::Var { name, .. } => {
+                    let Some((base, index)) = self.named_proc_slot_index(name, expected_struct)
+                    else {
+                        return Ok(None);
+                    };
+                    synthesized = (base, Expr::int(index as i64));
+                    access = IndexAccess::Clamp;
+                    (synthesized.0.as_str(), &synthesized.1)
+                }
+                _ => return Ok(None),
             }
-            _ => return Ok(None),
         };
 
         let shapes = self.struct_field_shapes(expected_struct, expression.loc())?;
@@ -558,6 +611,7 @@ impl<'a> FunctionLowerer<'a> {
                         expected_struct,
                         base,
                         index,
+                        access,
                         block,
                         expression.loc(),
                     )? {
@@ -590,8 +644,13 @@ impl<'a> FunctionLowerer<'a> {
 
         let raw_index = self.lower_expr(index, block)?;
         let raw_index = self.coerce(raw_index, PrimitiveType::I32, block, index.loc())?;
-        let normalized =
-            self.clamp_index_to_length(raw_index.value, length, block, expression.loc());
+        let normalized = self.materialize_index_to_length(
+            raw_index.value,
+            length,
+            access,
+            block,
+            expression.loc(),
+        );
 
         let mut fields = Vec::with_capacity(shapes.len());
         for shape in shapes {
@@ -2697,32 +2756,110 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<Option<LoweredValue>, MirLoweringError> {
-        let (base, operands, syntax_channels, bounds) = if matches!(
+        let unsafe_access = name == READ_UNSAFE_FN;
+        let (base, selected_buffer, operands, syntax_channels, bounds) = if matches!(
             name,
             INTERNAL_BUFFER_READ2_FN | INTERNAL_BUFFER_READ3_FN | INTERNAL_BUFFER_READ_CHANNEL_FN
-        ) {
-            let base = call_resource_base(name, args, location)?;
+        ) || unsafe_access
+        {
+            let first = args.first().ok_or_else(|| {
+                self.error(
+                    format!("resource builtin '{name}' is missing its base argument"),
+                    location,
+                )
+            })?;
+            let (base, selected_buffer) = match &first.expr {
+                Expr::Var { name: base, .. } => (base.clone(), None),
+                Expr::Index { base, .. } if unsafe_access => {
+                    let selected = self
+                        .selected_buffer_reference(&first.expr, BoundsMode::Clamp, block)?
+                        .ok_or_else(|| {
+                            self.error(
+                                format!(
+                                    "resource read '{name}' requires a buffer collection element"
+                                ),
+                                first.expr.loc(),
+                            )
+                        })?;
+                    (base.clone(), Some(selected))
+                }
+                _ => {
+                    return Err(self.error(
+                        format!("resource builtin '{name}' base is not a resource reference"),
+                        first.expr.loc(),
+                    ));
+                }
+            };
             (
                 base,
+                selected_buffer,
                 &args[1..],
                 matches!(
                     name,
                     INTERNAL_BUFFER_READ3_FN | INTERNAL_BUFFER_READ_CHANNEL_FN
                 ),
-                BoundsMode::Clamp,
+                if unsafe_access {
+                    BoundsMode::Unchecked
+                } else {
+                    BoundsMode::Clamp
+                },
             )
         } else {
             return Ok(None);
         };
-        let buffer_array = self
-            .runtime_globals
-            .and_then(|globals| globals.buffer_arrays.get(&base).copied());
-        let buffer_param_array = match self.bindings.get(&base).cloned() {
-            Some(Binding::BufferParameterArray(span, ty, len)) => Some((span, ty, len)),
-            _ => None,
+        if unsafe_access
+            && selected_buffer.is_none()
+            && matches!(base.as_str(), "ins" | "params" | "kins")
+        {
+            let [index] = operands else {
+                return Err(self.error(
+                    format!("resource read '{name}' expected 1 index argument"),
+                    location,
+                ));
+            };
+            return self.lower_dynamic_interface_read(
+                &base,
+                &index.expr,
+                BoundsMode::Unchecked,
+                location,
+                block,
+            );
+        }
+        let buffer_array = if selected_buffer.is_none() {
+            self.runtime_globals
+                .and_then(|globals| globals.buffer_arrays.get(&base).copied())
+        } else {
+            None
+        };
+        let buffer_param_array = if selected_buffer.is_none() {
+            match self.bindings.get(&base).cloned() {
+                Some(Binding::BufferParameterArray(span, ty, len)) => Some((span, ty, len)),
+                _ => None,
+            }
+        } else {
+            None
         };
         let has_selector = buffer_array.is_some() || buffer_param_array.is_some();
-        let has_channel = syntax_channels;
+        let plain_indexed = matches!(
+            self.bindings.get(&base),
+            Some(
+                Binding::ArrayParameter(..)
+                    | Binding::Array(..)
+                    | Binding::Slice(..)
+                    | Binding::EventArrayParameter(..)
+            )
+        ) || self.const_arrays.contains_key(&base)
+            || self.runtime_globals.is_some_and(|globals| {
+                globals.state_arrays.contains_key(&base)
+                    || globals.input_arrays.contains_key(&base)
+                    || globals.output_arrays.contains_key(&base)
+                    || globals.param_arrays.contains_key(&base)
+            });
+        let has_channel = if unsafe_access {
+            !plain_indexed && operands.len() == usize::from(has_selector) + 2
+        } else {
+            syntax_channels
+        };
         let expected = usize::from(has_selector) + usize::from(has_channel) + 1;
         if operands.len() != expected {
             return Err(self.error(
@@ -2944,13 +3081,20 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             )));
         }
-        let Some((reference, ty)) = self.direct_buffer_reference(&base) else {
-            return Err(self.error(
-                format!("resource read '{name}' references unsupported base '{base}'"),
-                location,
-            ));
+        let (reference, ty) = if let Some(selected) = selected_buffer {
+            selected
+        } else {
+            let Some((reference, ty)) = self.direct_buffer_reference(&base) else {
+                return Err(self.error(
+                    format!("resource read '{name}' references unsupported base '{base}'"),
+                    location,
+                ));
+            };
+            (
+                self.materialize_buffer_reference(reference, block, location),
+                ty,
+            )
         };
-        let reference = self.materialize_buffer_reference(reference, block, location);
         let rvalue = match reference {
             MaterializedBufferReference::Interface(buffer) => Rvalue::BufferLoad {
                 buffer,
@@ -2975,34 +3119,108 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<bool, MirLoweringError> {
-        let (base, operands, syntax_channels, bounds) = if matches!(
+        let unsafe_access = name == WRITE_UNSAFE_FN;
+        let (base, selected_buffer, operands, syntax_channels, bounds) = if matches!(
             name,
             INTERNAL_BUFFER_WRITE2_FN
                 | INTERNAL_BUFFER_WRITE3_FN
                 | INTERNAL_BUFFER_WRITE_CHANNEL_FN
-        ) {
-            let base = call_resource_base(name, args, location)?;
+        ) || unsafe_access
+        {
+            let first = args.first().ok_or_else(|| {
+                self.error(
+                    format!("resource builtin '{name}' is missing its base argument"),
+                    location,
+                )
+            })?;
+            let (base, selected_buffer) = match &first.expr {
+                Expr::Var { name: base, .. } => (base.clone(), None),
+                Expr::Index { base, .. } if unsafe_access => {
+                    let selected = self
+                        .selected_buffer_reference(&first.expr, BoundsMode::Clamp, block)?
+                        .ok_or_else(|| {
+                            self.error(
+                                format!(
+                                    "resource write '{name}' requires a buffer collection element"
+                                ),
+                                first.expr.loc(),
+                            )
+                        })?;
+                    (base.clone(), Some(selected))
+                }
+                _ => {
+                    return Err(self.error(
+                        format!("resource builtin '{name}' base is not a resource reference"),
+                        first.expr.loc(),
+                    ));
+                }
+            };
             (
                 base,
+                selected_buffer,
                 &args[1..],
                 matches!(
                     name,
                     INTERNAL_BUFFER_WRITE3_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
                 ),
-                BoundsMode::Clamp,
+                if unsafe_access {
+                    BoundsMode::Unchecked
+                } else {
+                    BoundsMode::Clamp
+                },
             )
         } else {
             return Ok(false);
         };
-        let buffer_array = self
-            .runtime_globals
-            .and_then(|globals| globals.buffer_arrays.get(&base).copied());
-        let buffer_param_array = match self.bindings.get(&base).cloned() {
-            Some(Binding::BufferParameterArray(span, ty, len)) => Some((span, ty, len)),
-            _ => None,
+        if unsafe_access && selected_buffer.is_none() && matches!(base.as_str(), "outs" | "kouts") {
+            let [index, value] = operands else {
+                return Err(self.error(
+                    format!("resource write '{name}' expected 1 index and 1 value argument"),
+                    location,
+                ));
+            };
+            return self.lower_dynamic_interface_write_call(
+                &base,
+                &index.expr,
+                &value.expr,
+                BoundsMode::Unchecked,
+                block,
+                location,
+            );
+        }
+        let buffer_array = if selected_buffer.is_none() {
+            self.runtime_globals
+                .and_then(|globals| globals.buffer_arrays.get(&base).copied())
+        } else {
+            None
+        };
+        let buffer_param_array = if selected_buffer.is_none() {
+            match self.bindings.get(&base).cloned() {
+                Some(Binding::BufferParameterArray(span, ty, len)) => Some((span, ty, len)),
+                _ => None,
+            }
+        } else {
+            None
         };
         let has_selector = buffer_array.is_some() || buffer_param_array.is_some();
-        let has_channel = syntax_channels;
+        let plain_indexed = matches!(
+            self.bindings.get(&base),
+            Some(
+                Binding::ArrayParameter(..)
+                    | Binding::Array(..)
+                    | Binding::Slice(..)
+                    | Binding::EventArrayParameter(..)
+            )
+        ) || self.runtime_globals.is_some_and(|globals| {
+            globals.state_arrays.contains_key(&base)
+                || globals.output_arrays.contains_key(&base)
+                || globals.control_output_arrays.contains_key(&base)
+        });
+        let has_channel = if unsafe_access {
+            !plain_indexed && operands.len() == usize::from(has_selector) + 3
+        } else {
+            syntax_channels
+        };
         let expected = usize::from(has_selector) + usize::from(has_channel) + 2;
         if operands.len() != expected {
             return Err(self.error(
@@ -3078,6 +3296,24 @@ impl<'a> FunctionLowerer<'a> {
                         index,
                         value: value.value,
                         bounds,
+                    },
+                    location,
+                );
+                return Ok(true);
+            }
+            if let Some((output, ty, _)) = self
+                .runtime_globals
+                .and_then(|globals| globals.control_output_arrays.get(&base).copied())
+            {
+                let value = self.lower_expr(value_arg, block)?;
+                let value = self.coerce(value, ty, block, value_arg.loc())?;
+                self.push_statement(
+                    block,
+                    StatementKind::ControlOutputStore {
+                        output,
+                        element: Some(index),
+                        bounds,
+                        value: value.value,
                     },
                     location,
                 );
@@ -3187,13 +3423,20 @@ impl<'a> FunctionLowerer<'a> {
             );
             return Ok(true);
         }
-        let Some((reference, ty)) = self.direct_buffer_reference(&base) else {
-            return Err(self.error(
-                format!("resource write '{name}' references unsupported base '{base}'"),
-                location,
-            ));
+        let (reference, ty) = if let Some(selected) = selected_buffer {
+            selected
+        } else {
+            let Some((reference, ty)) = self.direct_buffer_reference(&base) else {
+                return Err(self.error(
+                    format!("resource write '{name}' references unsupported base '{base}'"),
+                    location,
+                ));
+            };
+            (
+                self.materialize_buffer_reference(reference, block, location),
+                ty,
+            )
         };
-        let reference = self.materialize_buffer_reference(reference, block, location);
         let value = self.lower_expr(value_arg, block)?;
         let value = self.coerce(value, ty, block, value_arg.loc())?;
         let statement = match reference {

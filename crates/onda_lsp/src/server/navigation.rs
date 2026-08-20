@@ -36,6 +36,7 @@ use super::position::{
     fallback_span_start_position, line_at_position, lsp_character_for_byte, span_end_position,
     span_start_position, LspPosition,
 };
+use super::unsafe_index::{unsafe_index_operation, UNSAFE_INDEX_CONTRACT};
 
 const SYMBOL_KIND_NAMESPACE: u32 = 3;
 const SYMBOL_KIND_METHOD: u32 = 6;
@@ -150,6 +151,9 @@ pub(super) fn signature_help_for_document_with_parsed(
     let offset =
         byte_offset_for_lsp_position(source, LspPosition::new(position.line, position.character));
     let (callee, open_paren) = active_call_context(source, offset)?;
+    if let Some(help) = unsafe_index_signature_help(&callee, source, open_paren, offset) {
+        return Some(help);
+    }
     let definition = index.resolve_callee(&callee, position.line, position.character)?;
     let overloads = index
         .definitions
@@ -3050,7 +3054,12 @@ fn import_module_at_token(source: &str, token: &SourceToken) -> Option<String> {
 }
 
 fn builtin_hover(name: &str) -> Option<String> {
-    if is_builtin_function_name(name) {
+    if let Some(operation) = unsafe_index_operation(name) {
+        Some(format!(
+            "```onda\nunchecked intrinsic {name}(...)\n```\n\n{} {UNSAFE_INDEX_CONTRACT}",
+            operation.description
+        ))
+    } else if is_builtin_function_name(name) {
         Some(format!("```onda\nbuilt-in call {name}(...)\n```"))
     } else if builtin_instance_method_names().any(|method| method == name) {
         Some(format!("```onda\nbuilt-in call .{name}(...)\n```"))
@@ -3061,6 +3070,33 @@ fn builtin_hover(name: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn unsafe_index_signature_help(
+    callee: &str,
+    source: &str,
+    open_paren: usize,
+    offset: usize,
+) -> Option<Value> {
+    let callee = normalize_call_callee(callee);
+    let (name, member_call) = split_member_callee(&callee)
+        .map(|(_, member)| (member, true))
+        .unwrap_or((callee.as_str(), false));
+    let operation = unsafe_index_operation(name)?;
+    let parameters = if member_call {
+        operation.member_parameters
+    } else {
+        operation.free_parameters
+    };
+    let signature = format!("{}{parameters}", operation.name);
+    Some(json!({
+        "signatures": [{
+            "label": signature,
+            "documentation": format!("Unchecked access: {UNSAFE_INDEX_CONTRACT}")
+        }],
+        "activeSignature": 0,
+        "activeParameter": active_call_argument_index(source, open_paren, offset),
+    }))
 }
 
 fn format_type_params(type_params: &[String]) -> String {
@@ -4074,6 +4110,50 @@ mod tests {
             Some(&parsed),
             position_at(source, needle, token_offset),
         )
+    }
+
+    fn signature_at(source: &str, needle: &str, token_offset: usize) -> Option<Value> {
+        let parsed = parse_program(source).expect("test source should parse");
+        signature_help_for_document_with_parsed(
+            source,
+            None,
+            &HashMap::new(),
+            Some(&parsed),
+            position_at(source, needle, token_offset),
+        )
+    }
+
+    #[test]
+    fn unsafe_index_intrinsics_have_hover_and_signature_help() {
+        let source = r#"outs:
+  out1
+init:
+  values: f32[8]
+sample:
+  out1 = values.read_unsafe(0)
+  write_unsafe(values, 0, out1)
+"#;
+        let hover = hover_at(source, "values.read_unsafe", "values.".len() + "read".len())
+            .expect("unsafe read hover");
+        let markdown = hover["contents"]["value"].as_str().expect("hover markdown");
+        assert!(markdown.contains("memory-unsafe"), "{markdown}");
+
+        let member = signature_at(source, "read_unsafe(0)", "read_unsafe(0".len())
+            .expect("member unsafe signature");
+        assert_eq!(member["signatures"][0]["label"], "read_unsafe(index, ...)");
+        assert_eq!(member["activeParameter"], 0);
+
+        let free = signature_at(
+            source,
+            "write_unsafe(values, 0, out1)",
+            "write_unsafe(values, 0, ".len(),
+        )
+        .expect("free unsafe signature");
+        assert_eq!(
+            free["signatures"][0]["label"],
+            "write_unsafe(storage, index, ..., value)"
+        );
+        assert_eq!(free["activeParameter"], 2);
     }
 
     #[test]

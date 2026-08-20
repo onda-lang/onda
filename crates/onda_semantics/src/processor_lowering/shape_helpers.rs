@@ -412,13 +412,16 @@ fn proc_alias_from_expr(
     proc_array_slots: &HashMap<String, Vec<String>>,
     aliases: &HashMap<String, ProcArrayAliasInfo>,
 ) -> Option<ProcArrayAliasInfo> {
+    if let Some(source) = indexed_read_source(expr) {
+        return proc_array_slots
+            .contains_key(source.base)
+            .then(|| ProcArrayAliasInfo {
+                array_base: source.base.to_owned(),
+                index_expr: source.index.clone(),
+                access: source.access,
+            });
+    }
     match expr {
-        Expr::Index { base, index, .. } if proc_array_slots.contains_key(base) => {
-            Some(ProcArrayAliasInfo {
-                array_base: base.clone(),
-                index_expr: index.as_ref().clone(),
-            })
-        }
         Expr::Var { name, .. } => aliases.get(name).cloned(),
         _ => None,
     }
@@ -2871,6 +2874,7 @@ pub(super) fn compute_proc_shape(
     let mut init_st = InitAnalysisState {
         known_scalars: HashSet::new(),
         local_aliases: HashMap::new(),
+        integer_ranges: HashMap::new(),
         local_array_aliases: init_local_array_aliases,
         declared_symbols,
         state_scalars: state_type_hints.clone(),

@@ -163,10 +163,21 @@ struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn
 
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
 stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | const_decl | assign_stmt | call_stmt }
-assign_stmt = { typed_assign_stmt | plain_assign_stmt }
+assign_stmt = { typed_assign_stmt | compound_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
 named_type = { (namespace_ref | qualified_ident | ident) ~ generic_type_arg_list? }
 typed_decl_type = { array_type | tuple_type | type_name | named_type }
-typed_assign_stmt = { ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ typed_decl_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? }
+binding_range_mode = { "wrap" | "clamp" }
+binding_range_op = { "..=" | ".." }
+binding_range_spec = { expr ~ NEWLINE* ~ binding_range_op ~ NEWLINE* ~ expr }
+binding_range_named_count = { "count" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
+binding_range_named_range = { "range" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_range_spec }
+binding_range_named_mode = { "mode" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_range_mode }
+binding_range_item = { binding_range_named_count | binding_range_named_range | binding_range_named_mode | binding_range_mode | binding_range_spec | expr }
+binding_range = { "{" ~ NEWLINE* ~ binding_range_item ~ (comma_sep ~ binding_range_item)* ~ comma_sep? ~ NEWLINE* ~ "}" }
+typed_assign_stmt = { ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ typed_decl_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ (NEWLINE* ~ binding_range)? }
+compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" }
+compound_assign_stmt = { path_ident ~ NEWLINE* ~ compound_assign_op ~ NEWLINE* ~ expr }
+inferred_ranged_assign_stmt = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ NEWLINE* ~ binding_range }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }
 assign_target = _{ slice_target | indexed_member_target | index_target | tuple_target | path_ident }
 tuple_target = { "(" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
@@ -242,4 +253,4 @@ keyword = _{
 }
 ident = @{ !"__onda_" ~ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
-number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }
+number = @{ ASCII_DIGIT+ ~ ("." ~ !"." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }

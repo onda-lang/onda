@@ -44,7 +44,7 @@ block:
     bass = sub()
     a = saw_a()
     b = saw_b()
-    left = filter_l(a * 0.62 + b * 0.24 + bass * 0.14)
-    right = filter_r(a * 0.38 - b * 0.46 + bass * 0.16)
+    left = filter_l(a * 0.6 + b * 0.2 + bass * 0.2)
+    right = filter_r(a * 0.2 - b * 0.6 + bass * 0.2)
     out1 = saturator_l(left, amount = drive) * level
     out2 = saturator_r(right, amount = drive) * level

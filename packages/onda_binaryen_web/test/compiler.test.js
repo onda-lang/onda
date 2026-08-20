@@ -439,6 +439,7 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
       packed_snapshot_byte_offset: 0,
       physical_state_byte_offset: 0,
       byte_size: 4,
+      integer_range: null,
     },
   ]);
   assert.equal(artifact.metadata.runtime.requires_full_blocks, false);
@@ -1855,6 +1856,64 @@ test("maps NaN to the lower bound for MIR range clamps", async () => {
   onda_init(params, state);
   callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual([...new Float32Array(memory.buffer, output, 1)], [-1]);
+});
+
+test("wraps i32 and full-domain i64 MIR ranges exactly", async () => {
+  const mir = executableMir();
+  mir.types.push(type("scalar", "i64"));
+  mir.state.push(
+    { name: "wrapped_i32", ty: 2, persistence: "snapshot" },
+    { name: "wrapped_i64", ty: 3, persistence: "snapshot" },
+  );
+  const thenStatements =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block.statements;
+  thenStatements.unshift(
+    assign(place("state", 1), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [
+          constant("i32", 7),
+          constant("i32", 0),
+          constant("i32", 2),
+        ],
+      },
+    }),
+    assign(place("state", 2), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [
+          constant("i64", "-1"),
+          constant("i64", "-9223372036854775808"),
+          constant("i64", "9223372036854775807"),
+        ],
+      },
+    }),
+  );
+
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  const rangeCheck = artifact.wat.indexOf("i32.le_u");
+  const remainder = artifact.wat.indexOf("i32.rem_u");
+  assert.ok(rangeCheck !== -1 && rangeCheck < remainder, artifact.wat);
+  assert.match(
+    artifact.wat,
+    /\(i32\.le_u\s+\(i32\.const 7\)\s+\(i32\.const 2\)\s*\)/,
+    "a zero lower bound should eliminate the distance subtraction",
+  );
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+  const params = Number(__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  const outputTable = state + artifact.metadata.runtime.state_size_bytes;
+  const output = outputTable + 4;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, output, true);
+  onda_init(params, state);
+  callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
+  assert.equal(view.getInt32(state + 4, true), 1);
+  assert.equal(view.getBigInt64(state + 8, true), -1n);
 });
 
 test("makes repeated source local names unique for Binaryen", () => {

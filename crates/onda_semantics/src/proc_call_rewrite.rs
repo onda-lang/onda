@@ -15,6 +15,7 @@ enum ProcNamedArgReceiver {
         array_base: String,
         index: Expr,
         resolved_slot: Option<String>,
+        access: IndexAccess,
     },
 }
 
@@ -417,6 +418,7 @@ pub(super) enum ProcIndexResolution {
         array_base: String,
         index_expr: Expr,
         slots: Vec<String>,
+        access: IndexAccess,
     },
 }
 
@@ -424,7 +426,12 @@ pub(super) fn take_proc_index_base_and_expr_mut(
     args: &mut Vec<CallArg>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
-) -> Option<(String, Expr)> {
+) -> Option<(String, Expr, IndexAccess)> {
+    let access = if take_named_call_arg_expr(args, PROC_INDEX_UNCHECKED_ARG).is_some() {
+        IndexAccess::Unchecked
+    } else {
+        IndexAccess::Clamp
+    };
     let maybe_named_base = take_named_call_arg_expr(args, PROC_INDEX_BASE_ARG);
     let maybe_named_index = take_named_call_arg_expr(args, PROC_INDEX_EXPR_ARG);
     let (base_expr, index_expr) =
@@ -453,7 +460,7 @@ pub(super) fn take_proc_index_base_and_expr_mut(
         );
         return None;
     };
-    Some((array_base, index_expr))
+    Some((array_base, index_expr, access))
 }
 
 pub(super) fn resolve_proc_index_target_mut(
@@ -462,7 +469,8 @@ pub(super) fn resolve_proc_index_target_mut(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcIndexResolution> {
-    let (array_base, index_expr) = take_proc_index_base_and_expr_mut(args, context, errors)?;
+    let (array_base, index_expr, access) =
+        take_proc_index_base_and_expr_mut(args, context, errors)?;
     let Some(slots) = proc_array_slots.get(&array_base) else {
         push_semantic(
             DiagCtx::default(),
@@ -487,6 +495,7 @@ pub(super) fn resolve_proc_index_target_mut(
         array_base,
         index_expr,
         slots: slots.clone(),
+        access,
     })
 }
 
@@ -1040,6 +1049,7 @@ pub(super) fn build_dynamic_proc_array_dispatch_args(
     slot_instances: &[(String, ProcCallInstance)],
     array_base: &str,
     index_expr: &Expr,
+    access: IndexAccess,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<CallArg> {
     let expanded_inputs = expand_proc_call_args(args, api, &format!("{array_base}[...]"), errors);
@@ -1047,17 +1057,22 @@ pub(super) fn build_dynamic_proc_array_dispatch_args(
         dynamic_proc_array_buffer_call_args(slot_instances, api, array_base, index_expr, errors);
     let mut rewritten =
         Vec::<CallArg>::with_capacity(1 + expanded_inputs.len() + dynamic_buffers.len());
+    let selector = proc_index_selector_expr(array_base, index_expr, access);
     rewritten.push(CallArg {
         name: None,
-        expr: Expr::Index {
-            loc: Default::default(),
-            base: array_base.to_owned(),
-            index: Box::new(index_expr.clone()),
-        },
+        expr: selector,
     });
     rewritten.extend(expanded_inputs);
     rewritten.extend(dynamic_buffers);
     rewritten
+}
+
+pub(super) fn proc_index_selector_expr(
+    array_base: &str,
+    index_expr: &Expr,
+    access: IndexAccess,
+) -> Expr {
+    indexed_read_expr(array_base, index_expr.clone(), access, Default::default())
 }
 
 fn proc_named_arg_temp_name(counter: &mut usize) -> String {
@@ -1088,7 +1103,10 @@ fn assign_temp_stmt(name: String, expr: Expr) -> Stmt {
 fn proc_named_arg_is_internal(name: Option<&str>) -> bool {
     matches!(
         name,
-        Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG) | Some(PROC_FIELD_SENTINEL_ARG)
+        Some(PROC_INDEX_BASE_ARG)
+            | Some(PROC_INDEX_EXPR_ARG)
+            | Some(PROC_INDEX_UNCHECKED_ARG)
+            | Some(PROC_FIELD_SENTINEL_ARG)
     )
 }
 
@@ -1221,11 +1239,39 @@ fn proc_named_arg_internal_indices(name: &str, args: &[CallArg]) -> HashSet<usiz
     internal
 }
 
-fn proc_named_arg_assignment_target(
+fn proc_named_arg_assignment_stmt(
     receiver: &ProcNamedArgReceiver,
     slot_name: &str,
-) -> AssignTarget {
-    match receiver {
+    expr: Expr,
+) -> Stmt {
+    if let ProcNamedArgReceiver::Indexed {
+        array_base,
+        index,
+        resolved_slot: None,
+        access: IndexAccess::Unchecked,
+    } = receiver
+    {
+        return Stmt::Expr {
+            loc: Default::default(),
+            expr: Expr::UserCall {
+                loc: Default::default(),
+                name: WRITE_UNSAFE_FN.to_owned(),
+                type_args: Vec::new(),
+                args: vec![
+                    CallArg {
+                        name: None,
+                        expr: Expr::var(format!("{array_base}.{slot_name}")),
+                    },
+                    CallArg {
+                        name: None,
+                        expr: index.clone(),
+                    },
+                    CallArg { name: None, expr },
+                ],
+            },
+        };
+    }
+    let target = match receiver {
         ProcNamedArgReceiver::Direct(receiver) => {
             AssignTarget::Var(format!("{receiver}.{slot_name}"))
         }
@@ -1233,28 +1279,19 @@ fn proc_named_arg_assignment_target(
             array_base,
             index,
             resolved_slot,
-        } => {
-            if let Some(slot) = resolved_slot {
-                AssignTarget::Var(format!("{slot}.{slot_name}"))
-            } else {
-                AssignTarget::Index {
-                    base: format!("{array_base}.{slot_name}"),
-                    index: index.clone(),
-                }
-            }
-        }
-    }
-}
-
-fn proc_named_arg_assignment_stmt(
-    receiver: &ProcNamedArgReceiver,
-    slot_name: &str,
-    expr: Expr,
-) -> Stmt {
+            ..
+        } => resolved_slot.as_ref().map_or_else(
+            || AssignTarget::Index {
+                base: format!("{array_base}.{slot_name}"),
+                index: index.clone(),
+            },
+            |slot| AssignTarget::Var(format!("{slot}.{slot_name}")),
+        ),
+    };
     Stmt::Assign {
         loc: Default::default(),
         target_loc: Default::default(),
-        target: proc_named_arg_assignment_target(receiver, slot_name),
+        target,
         decl_ty: None,
         generic_decl_ty: None,
         is_typed_decl: false,
@@ -1319,7 +1356,7 @@ fn proc_named_arg_call_target_from_parts(
         return None;
     }
 
-    let (array_base, index_expr) =
+    let (array_base, index_expr, access) =
         proc_index_base_and_expr_from_args(args, "processor indexed call", errors)?;
     let slots = proc_array_slots.get(&array_base)?;
     let (proc_name, api, _) = resolve_proc_array_dispatch_context(
@@ -1342,6 +1379,7 @@ fn proc_named_arg_call_target_from_parts(
             array_base,
             index: index_expr,
             resolved_slot,
+            access,
         },
         api: proc_api.get(&proc_name).cloned().unwrap_or(api),
     })
@@ -1351,7 +1389,15 @@ fn proc_index_base_and_expr_from_args(
     args: &[CallArg],
     context: &str,
     errors: &mut Vec<Diagnostic>,
-) -> Option<(String, Expr)> {
+) -> Option<(String, Expr, IndexAccess)> {
+    let access = if args
+        .iter()
+        .any(|arg| arg.name.as_deref() == Some(PROC_INDEX_UNCHECKED_ARG))
+    {
+        IndexAccess::Unchecked
+    } else {
+        IndexAccess::Clamp
+    };
     let named_base = args
         .iter()
         .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG))
@@ -1393,7 +1439,7 @@ fn proc_index_base_and_expr_from_args(
         );
         return None;
     };
-    Some((array_base, index_expr))
+    Some((array_base, index_expr, access))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2145,13 +2191,12 @@ fn proc_array_alias_from_index_expr(
     expr: &Expr,
     proc_array_slots: &HashMap<String, Vec<String>>,
 ) -> Option<ProcArrayAliasInfo> {
-    let Expr::Index { base, index, .. } = expr else {
-        return None;
-    };
-    let array_base = resolve_proc_array_base_key(base, proc_array_slots)?;
+    let source = indexed_read_source(expr)?;
+    let array_base = resolve_proc_array_base_key(source.base, proc_array_slots)?;
     Some(ProcArrayAliasInfo {
         array_base,
-        index_expr: index.as_ref().clone(),
+        index_expr: source.index.clone(),
+        access: source.access,
     })
 }
 
@@ -2799,6 +2844,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                         array_base,
                         index_expr,
                         slots,
+                        access,
                     } => {
                         let Some((proc_name, api, slot_instances)) =
                             resolve_proc_array_dispatch_context(
@@ -2831,6 +2877,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                             &slot_instances,
                             &array_base,
                             &index_expr,
+                            access,
                             errors,
                         );
                         *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
@@ -2841,7 +2888,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
 
             if let Some(proc_var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
-                let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                 let proc_var = if proc_var_raw == PROC_INDEX_CALL_SENTINEL {
                     if !can_resolve_proc_index_base(args, proc_array_slots) {
                         return;
@@ -2860,8 +2907,9 @@ pub(super) fn rewrite_proc_calls_in_expr(
                             array_base,
                             index_expr,
                             slots,
+                            access,
                         } => {
-                            dynamic_index = Some((array_base, index_expr, slots));
+                            dynamic_index = Some((array_base, index_expr, slots, access));
                             String::new()
                         }
                     }
@@ -2895,7 +2943,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     return;
                 };
 
-                if let Some((array_base, index_expr, slots)) = dynamic_index {
+                if let Some((array_base, index_expr, slots, access)) = dynamic_index {
                     let Some((proc_name, api, slot_instances)) =
                         resolve_proc_array_dispatch_context(
                             &slots,
@@ -2932,6 +2980,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                         &slot_instances,
                         &array_base,
                         &index_expr,
+                        access,
                         errors,
                     );
                     *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
@@ -3033,7 +3082,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
 
             if let Some((base_raw, event_name)) = split_dot_path(name) {
-                let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                 let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
                     if !can_resolve_proc_index_base(args, proc_array_slots) {
                         return;
@@ -3052,8 +3101,9 @@ pub(super) fn rewrite_proc_calls_in_expr(
                             array_base,
                             index_expr,
                             slots,
+                            access,
                         } => {
-                            dynamic_index = Some((array_base, index_expr, slots));
+                            dynamic_index = Some((array_base, index_expr, slots, access));
                             String::new()
                         }
                     }
@@ -3061,7 +3111,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     base_raw.to_owned()
                 };
 
-                if let Some((array_base, _, slots)) = &dynamic_index {
+                if let Some((array_base, _, slots, _)) = &dynamic_index {
                     let Some((_proc_name, api, _slot_instances)) =
                         resolve_proc_array_dispatch_context(
                             slots,
@@ -3109,7 +3159,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     }
                 }
 
-                if let Some((array_base, index_expr, slots)) = dynamic_index {
+                if let Some((array_base, index_expr, slots, _access)) = dynamic_index {
                     let Some((proc_name, api, _slot_instances)) =
                         resolve_proc_array_dispatch_context(
                             &slots,
@@ -4487,6 +4537,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                             array_base,
                             index_expr,
                             slots,
+                            access,
                         } => {
                             let Some((proc_name, api, slot_instances)) =
                                 resolve_proc_array_dispatch_context(
@@ -4505,6 +4556,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 &slot_instances,
                                 &array_base,
                                 &index_expr,
+                                access,
                                 errors,
                             );
                             *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
@@ -4539,7 +4591,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                 }
                 if !handled_proc_stmt_call {
                     if let Some((base_raw, event_name)) = split_dot_path(name) {
-                        let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                        let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                         let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
                             if !can_resolve_proc_index_base(args, proc_array_slots) {
                                 return;
@@ -4558,8 +4610,9 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                     array_base,
                                     index_expr,
                                     slots,
+                                    access,
                                 } => {
-                                    dynamic_index = Some((array_base, index_expr, slots));
+                                    dynamic_index = Some((array_base, index_expr, slots, access));
                                     String::new()
                                 }
                             }
@@ -4567,7 +4620,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                             base_raw.to_owned()
                         };
 
-                        if let Some((array_base, index_expr, slots)) = dynamic_index {
+                        if let Some((array_base, index_expr, slots, access)) = dynamic_index {
                             let Some((proc_name, api, _slot_instances)) =
                                 resolve_proc_array_dispatch_context(
                                     &slots,
@@ -4605,11 +4658,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                             let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
                             rewritten.push(CallArg {
                                 name: None,
-                                expr: Expr::Index {
-                                    loc: Default::default(),
-                                    base: array_base.clone(),
-                                    index: Box::new(index_expr.clone()),
-                                },
+                                expr: proc_index_selector_expr(&array_base, &index_expr, access),
                             });
                             rewritten.extend(expanded);
                             *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
@@ -5212,9 +5261,10 @@ pub(super) fn desugar_expr_instance_method_calls(
     current_ns: &str,
     callable_symbols: &HashSet<String>,
 ) {
-    fn extract_indexed_receiver(args: &[CallArg]) -> Option<(&str, Expr)> {
+    fn extract_indexed_receiver(args: &[CallArg]) -> Option<(&str, Expr, IndexAccess)> {
         let mut base = None::<&str>;
         let mut index = None::<Expr>;
+        let mut access = IndexAccess::Clamp;
         for arg in args {
             match arg.name.as_deref() {
                 Some(PROC_INDEX_BASE_ARG) => {
@@ -5225,6 +5275,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                 Some(PROC_INDEX_EXPR_ARG) => {
                     index = Some(arg.expr.clone());
                 }
+                Some(PROC_INDEX_UNCHECKED_ARG) => access = IndexAccess::Unchecked,
                 _ => {}
             }
         }
@@ -5234,7 +5285,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                 index = Some(args[1].expr.clone());
             }
         }
-        Some((base?, index?))
+        Some((base?, index?, access))
     }
 
     match expr {
@@ -5357,6 +5408,15 @@ pub(super) fn desugar_expr_instance_method_calls(
                     }
                 }
             }
+            if is_unsafe_index_method_name(name) {
+                if let Some(receiver) = args
+                    .first_mut()
+                    .filter(|arg| arg.name.as_deref() == Some(METHOD_RECEIVER_ARG))
+                {
+                    receiver.name = None;
+                    return;
+                }
+            }
             if is_builtin_instance_method_name(name) {
                 let indexed_receiver = args.first().and_then(|arg| match &arg.expr {
                     Expr::Index { base, index, .. }
@@ -5401,7 +5461,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                 }
             }
             if let Some(method) = name.strip_prefix(&format!("{PROC_INDEX_CALL_SENTINEL}.")) {
-                if let Some((base, index_expr)) = extract_indexed_receiver(args) {
+                if let Some((base, index_expr, access)) = extract_indexed_receiver(args) {
                     let base = base.to_owned();
                     if let Some(struct_name) = struct_array_roots.get(base.as_str()) {
                         let resolved_method = format!("{}.{}", struct_name, method);
@@ -5410,18 +5470,21 @@ pub(super) fn desugar_expr_instance_method_calls(
                             args.retain(|arg| {
                                 !matches!(
                                     arg.name.as_deref(),
-                                    Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
+                                    Some(PROC_INDEX_BASE_ARG)
+                                        | Some(PROC_INDEX_EXPR_ARG)
+                                        | Some(PROC_INDEX_UNCHECKED_ARG)
                                 )
                             });
                             args.insert(
                                 0,
                                 CallArg {
                                     name: None,
-                                    expr: Expr::Index {
-                                        loc: Default::default(),
+                                    expr: indexed_read_expr(
                                         base,
-                                        index: Box::new(index_expr),
-                                    },
+                                        index_expr,
+                                        access,
+                                        Default::default(),
+                                    ),
                                 },
                             );
                             return;
@@ -5430,6 +5493,18 @@ pub(super) fn desugar_expr_instance_method_calls(
                 }
             }
             if let Some((base, method)) = split_receiver_method_path(name) {
+                if is_unsafe_index_method_name(method) {
+                    let receiver = base.to_owned();
+                    *name = method.to_owned();
+                    args.insert(
+                        0,
+                        CallArg {
+                            name: None,
+                            expr: Expr::var(receiver),
+                        },
+                    );
+                    return;
+                }
                 if let Some(struct_name) = struct_instances.get(base) {
                     let base_name = base.to_owned();
                     let method_name = method.to_owned();

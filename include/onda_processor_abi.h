@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 3u
+#define ONDA_PROCESSOR_ABI_VERSION 4u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,

@@ -9,7 +9,8 @@ mod ast_index;
 mod source_fallback;
 
 use super::param_domain::{
-    identifier_role_at, is_identifier_candidate as is_param_domain_identifier_candidate,
+    binding_range_identifier_role_at, identifier_role_at, is_binding_range_identifier_candidate,
+    is_identifier_candidate as is_param_domain_identifier_candidate, BindingRangeIdentifierRole,
     ParamDomainIdentifierRole,
 };
 use ast_index::{
@@ -401,6 +402,27 @@ fn semantic_tokens_for_document_with_optional_parse(
                         token_type: match role {
                             ParamDomainIdentifierRole::Field => SEMANTIC_TOKEN_TYPE_STATE,
                             ParamDomainIdentifierRole::ScaleValue => {
+                                SEMANTIC_TOKEN_TYPE_ENUM_MEMBER
+                            }
+                        },
+                        token_modifiers: 0,
+                    });
+                    return;
+                }
+            }
+            if is_binding_range_identifier_candidate(name) {
+                let role =
+                    source_offset_for_position(&source_lines, line, start).and_then(|offset| {
+                        binding_range_identifier_role_at(source, offset, offset + name.len())
+                    });
+                if let Some(role) = role {
+                    tokens.push(SemanticToken {
+                        line,
+                        start,
+                        length,
+                        token_type: match role {
+                            BindingRangeIdentifierRole::Field => SEMANTIC_TOKEN_TYPE_STATE,
+                            BindingRangeIdentifierRole::ModeValue => {
                                 SEMANTIC_TOKEN_TYPE_ENUM_MEMBER
                             }
                         },

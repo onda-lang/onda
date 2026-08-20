@@ -6,6 +6,7 @@ impl<'a> FunctionLowerer<'a> {
         alias: &str,
         base: &str,
         index: &Expr,
+        access: IndexAccess,
         block: &mut MirBlock,
         statement_location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
@@ -33,9 +34,10 @@ impl<'a> FunctionLowerer<'a> {
         }
         let raw_index = self.lower_expr(index, block)?;
         let raw_index = self.coerce(raw_index, PrimitiveType::I32, block, index.loc())?;
-        let normalized = self.clamp_index_to_length(
+        let normalized = self.materialize_index_to_length(
             raw_index.value,
             Value::Constant(ScalarValue::I32(array.slots.len() as i32)),
+            access,
             block,
             statement_location,
         );
@@ -65,9 +67,11 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
         statement_location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
-        let Expr::Index { base, index, .. } = expression else {
+        let Some(source) = indexed_read_source(expression) else {
             return Ok(false);
         };
+        let base = source.base;
+        let index = source.index;
 
         let has_direct_source = matches!(
             self.bindings.get(base),
@@ -80,6 +84,7 @@ impl<'a> FunctionLowerer<'a> {
                 alias,
                 base,
                 index,
+                source.access,
                 block,
                 statement_location,
             );
@@ -143,8 +148,13 @@ impl<'a> FunctionLowerer<'a> {
         }
         let raw_index = self.lower_expr(index, block)?;
         let raw_index = self.coerce(raw_index, PrimitiveType::I32, block, index.loc())?;
-        let normalized =
-            self.clamp_index_to_length(raw_index.value, length, block, statement_location);
+        let normalized = self.materialize_index_to_length(
+            raw_index.value,
+            length,
+            source.access,
+            block,
+            statement_location,
+        );
 
         let shapes = self.struct_field_shapes(&struct_name, expression.loc())?;
         for shape in shapes {
@@ -338,43 +348,8 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
         location: SourceLoc,
     ) -> LocalId {
-        let normalized = self.new_local(None, PrimitiveType::I32);
-        self.assign_value(block, normalized, value, location);
-
-        let below_zero = self.compare_value(
+        let upper = self.emit_temp(
             block,
-            CompareOp::Less,
-            Value::Local(normalized),
-            Value::Constant(ScalarValue::I32(0)),
-            location,
-        );
-        let mut clamp_low = MirBlock::default();
-        self.assign_value(
-            &mut clamp_low,
-            normalized,
-            Value::Constant(ScalarValue::I32(0)),
-            location,
-        );
-        self.push_statement(
-            block,
-            StatementKind::If {
-                condition: below_zero,
-                then_block: clamp_low,
-                else_block: MirBlock::default(),
-            },
-            location,
-        );
-
-        let above = self.compare_value(
-            block,
-            CompareOp::GreaterEqual,
-            Value::Local(normalized),
-            length,
-            location,
-        );
-        let mut clamp_high = MirBlock::default();
-        let last = self.emit_temp(
-            &mut clamp_high,
             PrimitiveType::I32,
             Rvalue::Binary {
                 op: MirBinaryOp::Subtract,
@@ -383,16 +358,48 @@ impl<'a> FunctionLowerer<'a> {
             },
             location,
         );
-        self.assign_value(&mut clamp_high, normalized, last.value, location);
-        self.push_statement(
+        self.clamp_index_to_inclusive_upper(value, upper.value, block, location)
+    }
+
+    pub(super) fn materialize_index_to_length(
+        &mut self,
+        value: Value,
+        length: Value,
+        access: IndexAccess,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> LocalId {
+        match access {
+            IndexAccess::Clamp => self.clamp_index_to_length(value, length, block, location),
+            IndexAccess::Unchecked => {
+                let index = self.emit_temp(block, PrimitiveType::I32, Rvalue::Use(value), location);
+                let Value::Local(index) = index.value else {
+                    unreachable!("emitted unchecked index is always a local")
+                };
+                index
+            }
+        }
+    }
+
+    pub(super) fn clamp_index_to_inclusive_upper(
+        &mut self,
+        value: Value,
+        upper: Value,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> LocalId {
+        let normalized = self.emit_temp(
             block,
-            StatementKind::If {
-                condition: above,
-                then_block: clamp_high,
-                else_block: MirBlock::default(),
+            PrimitiveType::I32,
+            Rvalue::Intrinsic {
+                intrinsic: Intrinsic::RangeClamp,
+                args: vec![value, Value::Constant(ScalarValue::I32(0)), upper],
             },
             location,
         );
+        let Value::Local(normalized) = normalized.value else {
+            unreachable!("emitted index clamp result is always a local")
+        };
         normalized
     }
 

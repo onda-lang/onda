@@ -23,13 +23,14 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 test("validates the descriptor fixture shared with the Rust schema", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v3.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v4.json", import.meta.url),
     "utf8",
   ));
   assert.equal(
     validateProcessorMetadata(fixture).format_version,
     PROCESSOR_ARTIFACT_FORMAT_VERSION,
   );
+  assert.equal(fixture.metadata.states[0].integer_range.mode, "wrap");
 
   const missingCanonicalField = structuredClone(fixture);
   delete missingCanonicalField.metadata.inputs[0].default_reprs;
@@ -60,6 +61,35 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
     () => validateProcessorMetadata(grouped),
     /overlaps another buffer array/,
   );
+
+  const rangedState = structuredClone(fixture);
+  rangedState.metadata.states[0] = {
+    ...rangedState.metadata.states[0],
+    type_repr: "i64",
+    scalar: "i64",
+    element_size_bytes: 8,
+    byte_size: 8,
+    integer_range: {
+      min: { type: "i64", value: "-9223372036854775808" },
+      max: { type: "i64", value: "9223372036854775807" },
+      mode: "wrap",
+    },
+  };
+  rangedState.runtime.snapshot_size_bytes = 8;
+  assert.equal(
+    validateProcessorMetadata(rangedState).metadata.states[0].integer_range.mode,
+    "wrap",
+  );
+  for (const mutate of [
+    (range) => { range.min.type = "i32"; },
+    (range) => { range.max.value = "9223372036854775808"; },
+    (range) => { range.min.value = "01"; },
+    (range) => { range.mode = "saturate"; },
+  ]) {
+    const invalid = structuredClone(rangedState);
+    mutate(invalid.metadata.states[0].integer_range);
+    assert.throws(() => validateProcessorMetadata(invalid), /integer_range/);
+  }
 
   const invalidReadOnlyWrite = structuredClone(fixture);
   invalidReadOnlyWrite.metadata.buffers[0].access = "read_only";
@@ -314,7 +344,7 @@ test("rejects i64 control domains that are not exact through host numbers", () =
 
 test("validates parameter-control semantics before accepting a descriptor", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v3.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v4.json", import.meta.url),
     "utf8",
   ));
 
@@ -443,7 +473,7 @@ test("rejects runtime semantics not implemented by the current processor ABI", (
 
 test("rejects metadata layouts outside or overlapping their runtime regions", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v3.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v4.json", import.meta.url),
     "utf8",
   ));
 

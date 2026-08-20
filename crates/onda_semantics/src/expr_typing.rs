@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use onda_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType};
+use onda_frontend::{BuiltinFn, Diagnostic, Expr, PrimitiveType};
 
 use crate::builtins::{
-    builtin_constant_type, builtin_name, is_float_type, is_internal_buffer_2d_fn,
-    parse_array_len_instance_base, parse_buffer_chans_instance_base,
+    builtin_constant_type, builtin_name, is_builtin_buffer_write_function_name, is_float_type,
+    is_internal_buffer_2d_fn, parse_array_len_instance_base, parse_buffer_chans_instance_base,
     parse_buffer_samplerate_instance_base, ARRAY_LEN_METHOD, BUFFER_CHANS_METHOD,
     BUFFER_SAMPLERATE_METHOD,
 };
@@ -219,8 +219,25 @@ pub(crate) fn intrinsic_result_type(
             *adapted_arg_types.first()?,
             *adapted_arg_types.get(1)?,
         ),
-        BuiltinFn::RangeClamp => {
+        BuiltinFn::RangeClamp
+        | BuiltinFn::BindingCountClamp
+        | BuiltinFn::BindingRangeClamp
+        | BuiltinFn::BindingRangeInclusiveClamp
+        | BuiltinFn::RangeWrap
+        | BuiltinFn::BindingCountWrap
+        | BuiltinFn::BindingRangeWrap
+        | BuiltinFn::BindingRangeInclusiveWrap => {
             let value = *adapted_arg_types.first()?;
+            if matches!(
+                function,
+                BuiltinFn::RangeWrap
+                    | BuiltinFn::BindingCountWrap
+                    | BuiltinFn::BindingRangeWrap
+                    | BuiltinFn::BindingRangeInclusiveWrap
+            ) && !matches!(value, PrimitiveType::I32 | PrimitiveType::I64)
+            {
+                return None;
+            }
             adapted_arg_types
                 .iter()
                 .copied()
@@ -534,17 +551,39 @@ fn infer_scalar_expr_type_with_proc_arrays(
                         errors,
                     )
                 }
-                BuiltinFn::RangeClamp => {
+                BuiltinFn::RangeClamp
+                | BuiltinFn::BindingCountClamp
+                | BuiltinFn::BindingRangeClamp
+                | BuiltinFn::BindingRangeInclusiveClamp
+                | BuiltinFn::RangeWrap
+                | BuiltinFn::BindingCountWrap
+                | BuiltinFn::BindingRangeWrap
+                | BuiltinFn::BindingRangeInclusiveWrap => {
                     let mut merged = arg_types.first().copied().unwrap_or(PrimitiveType::F32);
                     for rhs in arg_types.iter().copied().skip(1) {
                         merged = merge_numeric_types(
                             merged,
                             rhs,
-                            "compiler-generated range clamp",
+                            "compiler-generated integer range normalization",
                             errors,
                         )?;
                     }
-                    Some(merged)
+                    if matches!(
+                        func,
+                        BuiltinFn::RangeWrap
+                            | BuiltinFn::BindingCountWrap
+                            | BuiltinFn::BindingRangeWrap
+                            | BuiltinFn::BindingRangeInclusiveWrap
+                    ) && !matches!(merged, PrimitiveType::I32 | PrimitiveType::I64)
+                    {
+                        errors.push(Diagnostic::semantic_span(
+                            "wrapped binding ranges require i32 or i64 operands",
+                            expr.loc(),
+                        ));
+                        None
+                    } else {
+                        Some(merged)
+                    }
                 }
                 BuiltinFn::Pow => {
                     for ty in &arg_types {
@@ -623,13 +662,38 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 }
             }
             if is_internal_buffer_2d_fn(name) {
-                if let Some(CallArg {
-                    expr: Expr::Var { name: base, .. },
-                    ..
-                }) = args.first()
-                {
+                if is_builtin_buffer_write_function_name(name) {
+                    return None;
+                }
+                if let Some(first) = args.first() {
+                    let base = match &first.expr {
+                        Expr::Var { name: base, .. } | Expr::Index { base, .. } => base,
+                        _ => return Some(PrimitiveType::F32),
+                    };
                     if let Some((ty, _)) = declared_buffer_info(declared_symbols, base) {
                         return Some(ty);
+                    }
+                    if let Some(ty) = declared_symbol_scalar_type(declared_symbols, base) {
+                        return Some(ty);
+                    }
+                    if let Some(alias) = local_array_aliases.get(base) {
+                        return Some(alias.elem_ty);
+                    }
+                    let surface_names = match base.as_str() {
+                        "ins" => Some(input_names),
+                        "outs" | "kouts" => Some(output_names),
+                        "params" | "kins" => Some(param_names),
+                        _ => None,
+                    };
+                    if let Some(surface_names) = surface_names {
+                        return Some(
+                            surface_names
+                                .iter()
+                                .find_map(|name| {
+                                    declared_symbol_scalar_type(declared_symbols, name)
+                                })
+                                .unwrap_or(PrimitiveType::F32),
+                        );
                     }
                 }
                 return Some(PrimitiveType::F32);

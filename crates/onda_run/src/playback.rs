@@ -13,10 +13,10 @@ use onda_cpal::{
     SampleConsumer, SampleProducer, StreamErrorState,
 };
 use onda_daemon::{
-    DaemonConfig, DaemonSession, RunBufferInfo, RunEventInfo, RunEventValue, RunOptions,
-    RunParamInfo,
+    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunEventInfo, RunEventValue,
+    RunOptions, RunParamInfo,
 };
-use onda_project::BufferAsset;
+use onda_project::{BufferAsset, ProjectLimits};
 use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -475,7 +475,7 @@ fn wait_for_playback_completion(
 }
 
 fn spawn_run_render_thread(
-    launch: PlaybackLaunch,
+    mut launch: PlaybackLaunch,
     context: RenderThreadContext,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -505,8 +505,30 @@ fn spawn_run_render_thread(
         });
 
         let startup = (|| -> Result<PlaybackStartup, String> {
+            let mut initial_buffers = Vec::with_capacity(
+                launch.project_buffer_bindings.len() + launch.buffer_bindings.len(),
+            );
+            initial_buffers.extend(
+                std::mem::take(&mut launch.project_buffer_bindings)
+                    .into_iter()
+                    .map(|binding| {
+                        InitialBufferBinding::from_asset(
+                            binding.name,
+                            binding.asset,
+                            binding.loaded_path,
+                        )
+                    }),
+            );
+            for (name, path) in &launch.buffer_bindings {
+                initial_buffers.push(
+                    InitialBufferBinding::load_file(name.clone(), path, ProjectLimits::default())
+                        .map_err(|error| {
+                        format!("failed to load buffer asset '{}': {error}", path.display())
+                    })?,
+                );
+            }
             session
-                .start_run(&launch.input)
+                .start_run_with_initial_buffers(&launch.input, initial_buffers)
                 .map_err(|err| format_run_build_error("daemon play start failed", &err))?;
 
             for (name, value) in &launch.param_sets {
@@ -515,32 +537,6 @@ fn spawn_run_render_thread(
                     .expect("run should be active while applying params")
                     .set_param_f64(name, *value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
-            }
-
-            for binding in &launch.project_buffer_bindings {
-                let run = session
-                    .run_mut(&launch.input)
-                    .expect("run should be active while binding project buffers");
-                let result = if let Some(path) = &binding.loaded_path {
-                    run.bind_buffer_asset_at_path(
-                        &binding.name,
-                        binding.asset.clone(),
-                        path.clone(),
-                    )
-                } else {
-                    run.bind_buffer_asset(&binding.name, binding.asset.clone())
-                };
-                result.map_err(|diag| {
-                    format_single_diagnostic("daemon play project buffer failed", &diag)
-                })?;
-            }
-
-            for (name, path) in &launch.buffer_bindings {
-                session
-                    .run_mut(&launch.input)
-                    .expect("run should be active while binding buffers")
-                    .bind_buffer_file_path(name, path)
-                    .map_err(|diag| format_single_diagnostic("daemon play buffer failed", &diag))?;
             }
 
             let run = session

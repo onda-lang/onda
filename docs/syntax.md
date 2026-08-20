@@ -434,7 +434,24 @@ frame boundary and are intended for cyclic tables and loopers.
 All source-level coordinates clamp independently. In `stereo[channel, frame]`, for example, the
 channel clamps to the channel range and the frame clamps to the frame range before the address is
 formed. Fixed buffer-collection selectors likewise clamp and select a descriptor in constant time.
-Only compiler-proven accesses may be unchecked in MIR.
+The compiler removes that normalization when it can prove the complete coordinate range is valid.
+
+Buffers also support the general [unchecked indexed access](#unchecked-indexed-access) operations.
+They make every supplied buffer coordinate an explicit programmer responsibility:
+
+```onda
+sample:
+  x = src.read_unsafe(frame)
+  y = read_unsafe(bus, channel, frame)
+  src.write_unsafe(frame, x)
+  write_unsafe(bus, channel, frame, y)
+```
+
+Free-call and receiver syntax are equivalent. A fixed buffer collection can either be accessed as
+one unchecked operation (`bank.read_unsafe(slot, frame)`) or selected compositionally
+(`bank[slot].read_unsafe(frame)`). In the latter form, `bank[slot]` retains ordinary clamped/proven
+selection and only the frame (and channel, for a multichannel buffer) is unchecked. A buffer
+reference alias made from a collection element supports the same receiver methods.
 
 Rules:
 
@@ -773,6 +790,40 @@ Scalar fill writes the full target slice. Slice copy writes
 `min(dst_len, src_len)` elements. Overlapping slice copies behave as if copied
 through a temporary. Event payload arrays and slices are read-only.
 
+#### Unchecked Indexed Access
+
+`read_unsafe(values, index)` / `values.read_unsafe(index)` and
+`write_unsafe(values, index, value)` / `values.write_unsafe(index, value)` provide unchecked scalar
+access across the language; they are not limited to external buffers. Supported primitive storage
+includes fixed arrays, slices, named input/parameter/output arrays, the uniform dynamic views `ins`,
+`params`/`kins`, `outs`, and `kouts`, selected buffers, and fixed buffer collections. Ordinary
+direction rules still apply: inputs and parameters are read-only, while output views are write-only.
+Buffer forms accept their normal selector, channel, and frame coordinates.
+
+Unchecked coordinates perform no clamp or runtime bounds check. The caller must prove every supplied
+index, collection selector, channel, and frame is valid. Violating that contract is memory-unsafe.
+These operations are an optimization escape hatch for a bound the compiler cannot express or prove,
+not a way to change ordinary clamped indexing semantics. Prefer normal indexing—especially with
+ranged integer selectors—when the compiler can establish the bound itself.
+
+`read_unsafe` also selects references from arrays of structs and processors:
+
+```onda
+sample:
+  cell = cells.read_unsafe(index)
+  voice = read_unsafe(voices, index)
+  out1 = inspect(cell) + voice()
+```
+
+The result has the same alias/reference semantics as `cells[index]` or `voices[index]`; only selector
+normalization is omitted. Struct fields and processor calls, fields, events, and named arguments
+therefore continue to operate on the selected element. An aggregate result is only valid when
+introducing an alias or passing a reference argument; it cannot be used as a scalar value.
+Aggregate assignment is not a language operation, so `write_unsafe` remains limited to primitive
+storage. An invalid unchecked
+aggregate selector has undefined memory-unsafe behavior and may trap, crash, corrupt state, or—for
+a processor array—dispatch through an arbitrary state. There is no defined fallback behavior.
+
 ### Tuples
 
 Tuples are anonymous fixed-length heterogeneous values.
@@ -814,6 +865,74 @@ sample:
 
 Assigning to an existing visible symbol updates it. Assigning to a new symbol
 introduces a symbol according to the storage rules of the current scope.
+
+Integer locals and state may carry a finite storage domain:
+
+```onda
+const RingSize = 1024
+
+init:
+  bank = 0 {8}
+  taps: i32 = 0 {range = 0..128}
+  cursor: i32 = 0 {RingSize, wrap}
+  samples_seen: i64 = 0 {range = 0..=3999999999, mode = clamp}
+```
+
+Domains are supported for both `i32` and `i64`, and every count or range endpoint must be an exact
+compile-time integer expression. A single expression is a zero-based count: `{1000}` and
+`{count = 1000}` both admit `0..1000`, while `{1000, wrap}` uses the same count with wrapping
+normalization. Counts must be positive.
+
+An explicit range uses the same endpoint syntax as `for`: `{begin..end}` is half-open and
+`{begin..=end}` is inclusive. The named forms are `{range = begin..end}` and
+`{range = begin..=end}`. Half-open ranges require `begin < end`; inclusive ranges require
+`begin <= end`. `count` and `range` are mutually exclusive, and a positional count or range must
+precede named fields and mode. Integer binding domains do not use comma-separated endpoints.
+`{min, max}` instead denotes an inclusive parameter domain inside top-level or processor
+`params`. Top-level parameter domains also support `step`, `scale`, and presentation metadata
+fields.
+
+`clamp` is the default mode. `wrap` performs modular normalization across the same finite domain.
+Bare `clamp`/`wrap` and the explicit `mode = clamp`/`mode = wrap` spellings are equivalent. An
+omitted binding type defaults to `i32`, so both `bank = 0 {8}` and `bank = selected {8}` are `i32`
+and follow the regular integer assignment rules. Use an explicit `i64` annotation for an `i64`
+ranged binding. General numeric clamping remains the job of `clamp(value, lower, upper)`; binding
+domains are integer storage invariants intended primarily for indices and wrapping cursors.
+
+Initialization and every later direct or compound assignment normalize once as the value is stored:
+
+```onda
+cursor += 1       # wraps 1023 to 0
+taps = requested  # clamps to 0..127
+```
+
+Reading a ranged binding produces an ordinary `i32` or `i64`; arithmetic does not inherit its
+storage mode. The compiler retains the numeric invariant separately and uses it to remove index
+normalization and bounds checks when the complete derived range is known to fit a statically sized
+collection. This applies to fixed arrays and to selectors for fixed buffer collections, among other
+fixed-size indexed storage:
+
+```onda
+const TapCount = 8
+const VoiceCount = 4
+
+buffers:
+  voices: f32 {VoiceCount}
+
+init:
+  taps: f32[TapCount]
+  tap = 0 {TapCount, wrap}
+  voice = 0 {VoiceCount}
+
+sample:
+  out1 = taps[tap] + voices[voice][0]
+```
+
+Both accesses keep ordinary clamped source semantics, but their selector normalization can disappear
+from generated code because the ranged bindings prove the selectors valid. Dynamic buffer frame
+counts and dynamic slice lengths generally still require ordinary runtime normalization unless the
+compiler can establish their bounds by other means. The physical representation and snapshot layout
+of a ranged binding remain the underlying integer type.
 
 ### Operators
 
@@ -879,7 +998,9 @@ Rules:
 - `@ STEP` defaults to `1`; `@ 0` is invalid.
 - Descending loops use a negative step.
 - `loop N` is shorthand for `for _ in 0..N`.
-- Loop variables are local to the loop body.
+- Loop variables are immutable values local to the loop body. Runtime loop
+  variables are `i32`; assign a new local when an iteration-derived value
+  needs to be changed.
 - Fresh symbols created inside loops do not escape the loop.
 - A fresh symbol created in every continuing branch of an `if` is available
   afterward. Numeric scalar and tuple-element types join to the smallest type

@@ -117,6 +117,41 @@ pub enum RunBuildError {
     Runtime(Diagnostic),
 }
 
+/// An external buffer supplied before a run instance is initialized.
+#[derive(Debug, Clone)]
+pub struct InitialBufferBinding {
+    pub name: String,
+    pub asset: BufferAsset,
+    pub loaded_path: Option<PathBuf>,
+}
+
+impl InitialBufferBinding {
+    pub fn from_asset(
+        name: impl Into<String>,
+        asset: BufferAsset,
+        loaded_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            asset,
+            loaded_path,
+        }
+    }
+
+    pub fn load_file(
+        name: impl Into<String>,
+        path: impl AsRef<Path>,
+        limits: ProjectLimits,
+    ) -> Result<Self, onda_project::ProjectError> {
+        let path = path.as_ref();
+        Ok(Self::from_asset(
+            name,
+            onda_project::load_buffer_file(path, limits)?,
+            Some(path.to_path_buf()),
+        ))
+    }
+}
+
 #[derive(Debug)]
 pub struct RunSession {
     path: PathBuf,
@@ -152,6 +187,15 @@ impl RunSession {
         path: impl AsRef<Path>,
         options: RunOptions,
     ) -> Result<Self, RunBuildError> {
+        Self::build_with_initial_buffers(analysis, path, options, std::iter::empty())
+    }
+
+    pub fn build_with_initial_buffers(
+        analysis: &AnalysisSession,
+        path: impl AsRef<Path>,
+        options: RunOptions,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+    ) -> Result<Self, RunBuildError> {
         let path = normalize_session_path(path.as_ref());
         let snapshot = analysis.analyze_document(&path, options.analysis_options());
         let version = snapshot.version;
@@ -166,52 +210,46 @@ impl RunSession {
         let jit = jit_program_from_optimized_mir_with_options(mir, options.mir_compile_options())
             .map_err(RunBuildError::Diagnostics)?;
 
-        let config = InstanceConfig {
-            sample_rate: options.sample_rate,
-            frames_per_block: options.block_size,
-            in_channels: jit.required_in_channels(),
-            out_channels: jit.required_out_channels(),
-        };
-        let mut instance = create_instance(jit.clone(), config).map_err(RunBuildError::Runtime)?;
-
         let mut input_buffers = jit
             .inputs()
             .iter()
             .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
             .collect::<Vec<_>>();
-        for (index, buffer) in input_buffers.iter_mut().enumerate() {
-            unsafe {
-                bind_input(
-                    &mut instance,
-                    index,
-                    buffer.as_ptr().cast::<u8>(),
-                    std::mem::size_of_val(buffer.as_slice()),
-                )
-            }
-            .map_err(RunBuildError::Runtime)?;
-        }
-
         let mut output_buffers = jit
             .outputs()
             .iter()
             .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
             .collect::<Vec<_>>();
-        for (index, buffer) in output_buffers.iter_mut().enumerate() {
-            unsafe {
-                bind_output(
-                    &mut instance,
-                    index,
-                    buffer.as_mut_ptr().cast::<u8>(),
-                    std::mem::size_of_val(buffer.as_slice()),
-                )
-            }
-            .map_err(RunBuildError::Runtime)?;
-        }
-
-        let buffer_bindings = std::iter::repeat_with(|| None)
+        let mut buffer_bindings = std::iter::repeat_with(|| None)
             .take(jit.buffer_count())
             .collect::<Vec<_>>();
-        prepare_unchecked_process(&mut instance).map_err(RunBuildError::Runtime)?;
+        for binding in initial_buffers {
+            let binding_name = binding.name;
+            let (index, binding) =
+                validated_buffer_binding(&jit, &binding_name, binding.asset, binding.loaded_path)
+                    .map_err(RunBuildError::Runtime)?;
+            if buffer_bindings[index].is_some() {
+                return Err(RunBuildError::Runtime(Diagnostic::runtime(
+                    format!("buffer '{binding_name}' has more than one initial binding"),
+                    0,
+                    0,
+                )));
+            }
+            buffer_bindings[index] = Some(binding);
+        }
+        let param_values = HashMap::new();
+        let param_runtime_values = HashMap::new();
+        let instance = create_bound_instance(
+            &jit,
+            options,
+            &mut input_buffers,
+            &mut output_buffers,
+            &mut buffer_bindings,
+            None,
+            &param_values,
+            &param_runtime_values,
+        )
+        .map_err(RunBuildError::Runtime)?;
 
         Ok(Self {
             path,
@@ -220,8 +258,8 @@ impl RunSession {
             typed,
             jit,
             instance,
-            param_values: HashMap::new(),
-            param_runtime_values: HashMap::new(),
+            param_values,
+            param_runtime_values,
             buffer_bindings,
             input_buffers,
             output_buffers,
@@ -639,41 +677,7 @@ impl RunSession {
         asset: BufferAsset,
         loaded_path: Option<PathBuf>,
     ) -> Result<(), Diagnostic> {
-        let Some(index) = self.jit.buffer_index(name) else {
-            return Err(Diagnostic::runtime(
-                format!("unknown buffer '{name}'"),
-                0,
-                0,
-            ));
-        };
-        let desc = self
-            .jit
-            .buffers()
-            .get(index)
-            .ok_or_else(|| Diagnostic::runtime(format!("unknown buffer '{name}'"), 0, 0))?;
-        asset.validate(&ProjectLimits::default()).map_err(|error| {
-            Diagnostic::runtime(format!("invalid asset for buffer '{name}': {error}"), 0, 0)
-        })?;
-        let elem_ty = primitive_type_for_buffer_element(asset.element());
-        if desc.elem_ty() != elem_ty {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "buffer '{}' expects {}, but its asset contains {}",
-                    name,
-                    desc.type_repr(),
-                    elem_ty.name()
-                ),
-                0,
-                0,
-            ));
-        }
-        let mut binding = RunBufferBinding {
-            samples: asset.samples,
-            frames: asset.frames as usize,
-            channels: asset.channels as usize,
-            sample_rate_hz: asset.sample_rate,
-            loaded_path,
-        };
+        let (index, mut binding) = validated_buffer_binding(&self.jit, name, asset, loaded_path)?;
         let instance = self.build_instance(Some(BufferBindingReplacement {
             index,
             binding: Some(&mut binding),
@@ -691,75 +695,18 @@ impl RunSession {
 
     fn build_instance(
         &mut self,
-        mut replacement: Option<BufferBindingReplacement<'_>>,
+        replacement: Option<BufferBindingReplacement<'_>>,
     ) -> Result<Instance, Diagnostic> {
-        let config = InstanceConfig {
-            sample_rate: self.options.sample_rate,
-            frames_per_block: self.options.block_size,
-            in_channels: self.jit.required_in_channels(),
-            out_channels: self.jit.required_out_channels(),
-        };
-        let mut instance = create_instance(self.jit.clone(), config)?;
-
-        for (index, buffer) in self.input_buffers.iter_mut().enumerate() {
-            unsafe {
-                bind_input(
-                    &mut instance,
-                    index,
-                    buffer.as_ptr().cast::<u8>(),
-                    mem::size_of_val(buffer.as_slice()),
-                )?;
-            }
-        }
-        for (index, buffer) in self.output_buffers.iter_mut().enumerate() {
-            unsafe {
-                bind_output(
-                    &mut instance,
-                    index,
-                    buffer.as_mut_ptr().cast::<u8>(),
-                    mem::size_of_val(buffer.as_slice()),
-                )?;
-            }
-        }
-        for index in 0..self.buffer_bindings.len() {
-            let binding = match replacement.as_mut() {
-                Some(replacement) if replacement.index == index => {
-                    replacement.binding.as_deref_mut()
-                }
-                _ => self.buffer_bindings[index].as_mut(),
-            };
-            let Some(binding) = binding else {
-                continue;
-            };
-            unsafe {
-                bind_buffer(
-                    &mut instance,
-                    index,
-                    binding.samples.as_mut_ptr(),
-                    binding.frames,
-                    binding.channels,
-                    binding.sample_rate_hz,
-                    primitive_type_for_buffer_element(binding.samples.element()),
-                )?;
-            }
-        }
-        for (name, value) in self.param_values.clone() {
-            let Some(index) = self.jit.param_index(&name) else {
-                continue;
-            };
-            let Some(desc) = self.jit.param_descriptor(index) else {
-                continue;
-            };
-            let runtime_value = self
-                .param_runtime_values
-                .get(&name)
-                .copied()
-                .unwrap_or(value);
-            let bytes = scalar_param_bytes(desc.elem_ty(), runtime_value)?;
-            set_param_by_index(&mut instance, index, bytes.as_slice())?;
-        }
-        prepare_unchecked_process(&mut instance)?;
-        Ok(instance)
+        create_bound_instance(
+            &self.jit,
+            self.options,
+            &mut self.input_buffers,
+            &mut self.output_buffers,
+            &mut self.buffer_bindings,
+            replacement,
+            &self.param_values,
+            &self.param_runtime_values,
+        )
     }
 
     fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
@@ -822,6 +769,126 @@ impl RunSession {
         }
         Ok(())
     }
+}
+
+fn validated_buffer_binding(
+    jit: &JitProgram,
+    name: &str,
+    asset: BufferAsset,
+    loaded_path: Option<PathBuf>,
+) -> Result<(usize, RunBufferBinding), Diagnostic> {
+    let Some(index) = jit.buffer_index(name) else {
+        return Err(Diagnostic::runtime(
+            format!("unknown buffer '{name}'"),
+            0,
+            0,
+        ));
+    };
+    let desc = jit
+        .buffers()
+        .get(index)
+        .ok_or_else(|| Diagnostic::runtime(format!("unknown buffer '{name}'"), 0, 0))?;
+    asset.validate(&ProjectLimits::default()).map_err(|error| {
+        Diagnostic::runtime(format!("invalid asset for buffer '{name}': {error}"), 0, 0)
+    })?;
+    let elem_ty = primitive_type_for_buffer_element(asset.element());
+    if desc.elem_ty() != elem_ty {
+        return Err(Diagnostic::runtime(
+            format!(
+                "buffer '{}' expects {}, but its asset contains {}",
+                name,
+                desc.type_repr(),
+                elem_ty.name()
+            ),
+            0,
+            0,
+        ));
+    }
+    Ok((
+        index,
+        RunBufferBinding {
+            samples: asset.samples,
+            frames: asset.frames as usize,
+            channels: asset.channels as usize,
+            sample_rate_hz: asset.sample_rate,
+            loaded_path,
+        },
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_bound_instance(
+    jit: &JitProgram,
+    options: RunOptions,
+    input_buffers: &mut [Vec<f32>],
+    output_buffers: &mut [Vec<f32>],
+    buffer_bindings: &mut [Option<RunBufferBinding>],
+    mut replacement: Option<BufferBindingReplacement<'_>>,
+    param_values: &HashMap<String, f64>,
+    param_runtime_values: &HashMap<String, f64>,
+) -> Result<Instance, Diagnostic> {
+    let config = InstanceConfig {
+        sample_rate: options.sample_rate,
+        frames_per_block: options.block_size,
+        in_channels: jit.required_in_channels(),
+        out_channels: jit.required_out_channels(),
+    };
+    let mut instance = create_instance(jit.clone(), config)?;
+
+    for (index, buffer) in input_buffers.iter_mut().enumerate() {
+        unsafe {
+            bind_input(
+                &mut instance,
+                index,
+                buffer.as_ptr().cast::<u8>(),
+                mem::size_of_val(buffer.as_slice()),
+            )?;
+        }
+    }
+    for (index, buffer) in output_buffers.iter_mut().enumerate() {
+        unsafe {
+            bind_output(
+                &mut instance,
+                index,
+                buffer.as_mut_ptr().cast::<u8>(),
+                mem::size_of_val(buffer.as_slice()),
+            )?;
+        }
+    }
+    for (index, current_binding) in buffer_bindings.iter_mut().enumerate() {
+        let binding = match replacement.as_mut() {
+            Some(replacement) if replacement.index == index => replacement.binding.as_deref_mut(),
+            _ => current_binding.as_mut(),
+        };
+        let Some(binding) = binding else { continue };
+        unsafe {
+            bind_buffer(
+                &mut instance,
+                index,
+                binding.samples.as_mut_ptr(),
+                binding.frames,
+                binding.channels,
+                binding.sample_rate_hz,
+                primitive_type_for_buffer_element(binding.samples.element()),
+            )?;
+        }
+    }
+    for (name, value) in param_values {
+        let Some(index) = jit.param_index(name) else {
+            continue;
+        };
+        let Some(desc) = jit.param_descriptor(index) else {
+            continue;
+        };
+        let runtime_value = param_runtime_values.get(name).copied().unwrap_or(*value);
+        let bytes = scalar_param_bytes(desc.elem_ty(), runtime_value)?;
+        set_param_by_index(&mut instance, index, bytes.as_slice())?;
+    }
+
+    // TODO: Run a future non-realtime Onda `prepare` lifecycle here, after all
+    // external resources are bound and before the instance can process audio.
+    prepare_unchecked_process(&mut instance)?;
+    Ok(instance)
 }
 
 fn should_smooth_run_param(ty: PrimitiveType) -> bool {

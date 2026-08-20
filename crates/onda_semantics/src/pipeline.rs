@@ -1006,11 +1006,13 @@ fn validate_const_def_body_shape(
         })
         .unwrap_or_default();
     let mut local_const_names = HashSet::new();
+    let immutable_loop_vars = HashSet::new();
     validate_const_def_stmt_shapes(
         &def.body,
         &def.name,
         &read_only_arrays,
         &mut local_const_names,
+        &immutable_loop_vars,
         errors,
     );
 }
@@ -1020,6 +1022,7 @@ fn validate_const_def_stmt_shapes(
     def_name: &str,
     read_only_arrays: &HashSet<String>,
     local_const_names: &mut HashSet<String>,
+    immutable_loop_vars: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
     for stmt in stmts {
@@ -1041,7 +1044,12 @@ fn validate_const_def_stmt_shapes(
                 }
                 match target {
                     AssignTarget::Var(name) => {
-                        if local_const_names.contains(name) {
+                        if immutable_loop_vars.contains(name) {
+                            errors.push(Diagnostic::semantic_span(
+                                format!("cannot assign to loop variable '{name}'"),
+                                stmt.assign_target_loc(),
+                            ));
+                        } else if local_const_names.contains(name) {
                             errors.push(Diagnostic::semantic_span(
                                 format!(
                                     "const def '{def_name}' cannot assign to local const '{name}'"
@@ -1102,6 +1110,7 @@ fn validate_const_def_stmt_shapes(
                     def_name,
                     read_only_arrays,
                     &mut then_const_names,
+                    immutable_loop_vars,
                     errors,
                 );
                 let mut else_const_names = local_const_names.clone();
@@ -1110,6 +1119,7 @@ fn validate_const_def_stmt_shapes(
                     def_name,
                     read_only_arrays,
                     &mut else_const_names,
+                    immutable_loop_vars,
                     errors,
                 );
             }
@@ -1121,11 +1131,14 @@ fn validate_const_def_stmt_shapes(
                     ));
                 }
                 let mut loop_const_names = local_const_names.clone();
+                let mut loop_vars = immutable_loop_vars.clone();
+                loop_vars.insert(var.clone());
                 validate_const_def_stmt_shapes(
                     body,
                     def_name,
                     read_only_arrays,
                     &mut loop_const_names,
+                    &loop_vars,
                     errors,
                 );
             }
@@ -1162,6 +1175,13 @@ macro_rules! eval_float_builtin {
             BuiltinFn::Max => values[0].max(values[1]),
             BuiltinFn::Fma => values[0].mul_add(values[1], values[2]),
             BuiltinFn::RangeClamp => values[0].max(values[1]).min(values[2]),
+            BuiltinFn::RangeWrap => unreachable!("range wrap is integer-only"),
+            BuiltinFn::BindingCountClamp
+            | BuiltinFn::BindingRangeClamp
+            | BuiltinFn::BindingRangeInclusiveClamp
+            | BuiltinFn::BindingCountWrap
+            | BuiltinFn::BindingRangeWrap
+            | BuiltinFn::BindingRangeInclusiveWrap => return None,
         }
     }};
 }
@@ -1205,6 +1225,15 @@ fn eval_typed_const_builtin(
                 BuiltinFn::Min => values[0].min(values[1]),
                 BuiltinFn::Max => values[0].max(values[1]),
                 BuiltinFn::RangeClamp => values[0].max(values[1]).min(values[2]),
+                BuiltinFn::RangeWrap => {
+                    let lower = i128::from(values[1]);
+                    let upper = i128::from(values[2]);
+                    let width = upper - lower + 1;
+                    if width <= 0 {
+                        return None;
+                    }
+                    (lower + (i128::from(values[0]) - lower).rem_euclid(width)) as i32
+                }
                 _ => return None,
             };
             Some(TypedConstValue::I32(value))
@@ -1222,6 +1251,15 @@ fn eval_typed_const_builtin(
                 BuiltinFn::Min => values[0].min(values[1]),
                 BuiltinFn::Max => values[0].max(values[1]),
                 BuiltinFn::RangeClamp => values[0].max(values[1]).min(values[2]),
+                BuiltinFn::RangeWrap => {
+                    let lower = i128::from(values[1]);
+                    let upper = i128::from(values[2]);
+                    let width = upper - lower + 1;
+                    if width <= 0 {
+                        return None;
+                    }
+                    (lower + (i128::from(values[0]) - lower).rem_euclid(width)) as i64
+                }
                 _ => return None,
             };
             Some(TypedConstValue::I64(value))
@@ -1291,23 +1329,32 @@ fn eval_const_builtin_call(
     Some(typed_const_expr_with_loc(value, loc))
 }
 
+fn const_eval_array_ref_by_name<'a>(
+    name: &str,
+    local_arrays: &'a HashMap<String, ConstEvalArray>,
+    const_values: &'a HashMap<String, ConstValue>,
+) -> Option<(PrimitiveType, &'a [TypedConstValue])> {
+    if let Some(array) = local_arrays.get(name) {
+        return Some((array.elem_ty, &array.values));
+    }
+    match const_values.get(name) {
+        Some(ConstValue::Array {
+            elem_ty, values, ..
+        }) => Some((*elem_ty, values)),
+        _ => None,
+    }
+}
+
 fn const_eval_array_by_name(
     name: &str,
     local_arrays: &HashMap<String, ConstEvalArray>,
     const_values: &HashMap<String, ConstValue>,
 ) -> Option<ConstEvalArray> {
-    if let Some(array) = local_arrays.get(name) {
-        return Some(array.clone());
-    }
-    match const_values.get(name) {
-        Some(ConstValue::Array {
-            elem_ty, values, ..
-        }) => Some(ConstEvalArray {
-            elem_ty: *elem_ty,
-            values: values.clone(),
-        }),
-        _ => None,
-    }
+    let (elem_ty, values) = const_eval_array_ref_by_name(name, local_arrays, const_values)?;
+    Some(ConstEvalArray {
+        elem_ty,
+        values: values.to_vec(),
+    })
 }
 
 fn fold_const_eval_expr(
@@ -1410,7 +1457,8 @@ fn fold_const_eval_expr(
                 call_stack,
                 errors,
             )?;
-            if let Some(array) = const_eval_array_by_name(base, local_arrays, const_values) {
+            if let Some((_, array)) = const_eval_array_ref_by_name(base, local_arrays, const_values)
+            {
                 if !can_eval_const_expr_exact_int(&folded_index) {
                     errors.push(Diagnostic::semantic_span(
                         format!(
@@ -1436,7 +1484,7 @@ fn fold_const_eval_expr(
                     ));
                     return None;
                 };
-                let Some(value) = array.values.get(idx).copied() else {
+                let Some(value) = array.get(idx).copied() else {
                     errors.push(Diagnostic::semantic_span(
                         format!(
                             "{context}: const array '{base}' index {raw_idx} is out of bounds for length {}",
@@ -2300,7 +2348,9 @@ fn eval_const_array_expr_with_defs(
                 ));
                 return None;
             }
-            let Some(array) = const_eval_array_by_name(base, local_arrays, const_values) else {
+            let Some((elem_ty, array)) =
+                const_eval_array_ref_by_name(base, local_arrays, const_values)
+            else {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: unknown const array '{base}'"),
                     loc,
@@ -2322,8 +2372,8 @@ fn eval_const_array_expr_with_defs(
                 errors,
             )?;
             ConstEvalArray {
-                elem_ty: array.elem_ty,
-                values: array.values[start_idx..end_idx].to_vec(),
+                elem_ty,
+                values: array[start_idx..end_idx].to_vec(),
             }
         }
         _ => {
@@ -7104,6 +7154,403 @@ fn rewrite_executable_call_scopes(
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct IntegerBindingRange {
+    ty: PrimitiveType,
+    normalize: BuiltinFn,
+    bounds: IntegerBindingRangeBounds,
+    parser_marker: bool,
+    lower: Expr,
+    upper: Expr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntegerBindingRangeBounds {
+    Count,
+    HalfOpen,
+    Inclusive,
+}
+
+fn typed_integer_range(range: &IntegerBindingRange) -> Option<TypedIntegerRange> {
+    let (Expr::Int { value: min, .. }, Expr::Int { value: max, .. }) = (&range.lower, &range.upper)
+    else {
+        return None;
+    };
+    Some(TypedIntegerRange {
+        ty: range.ty,
+        min: *min,
+        max: *max,
+        wrap: range.normalize == BuiltinFn::RangeWrap,
+    })
+}
+
+fn integer_binding_range_assignment(stmt: &Stmt) -> Option<(&str, IntegerBindingRange)> {
+    let Stmt::Assign {
+        target: AssignTarget::Var(name),
+        decl_ty: Some(ty @ (PrimitiveType::I32 | PrimitiveType::I64)),
+        expr: Expr::Call { func, args, .. },
+        ..
+    } = stmt
+    else {
+        return None;
+    };
+    let (normalize, bounds, parser_marker) = match func {
+        BuiltinFn::BindingCountClamp => (
+            BuiltinFn::RangeClamp,
+            IntegerBindingRangeBounds::Count,
+            true,
+        ),
+        BuiltinFn::BindingCountWrap => {
+            (BuiltinFn::RangeWrap, IntegerBindingRangeBounds::Count, true)
+        }
+        BuiltinFn::BindingRangeClamp => (
+            BuiltinFn::RangeClamp,
+            IntegerBindingRangeBounds::HalfOpen,
+            true,
+        ),
+        BuiltinFn::BindingRangeWrap => (
+            BuiltinFn::RangeWrap,
+            IntegerBindingRangeBounds::HalfOpen,
+            true,
+        ),
+        BuiltinFn::BindingRangeInclusiveClamp => (
+            BuiltinFn::RangeClamp,
+            IntegerBindingRangeBounds::Inclusive,
+            true,
+        ),
+        BuiltinFn::BindingRangeInclusiveWrap => (
+            BuiltinFn::RangeWrap,
+            IntegerBindingRangeBounds::Inclusive,
+            true,
+        ),
+        BuiltinFn::RangeClamp => (
+            BuiltinFn::RangeClamp,
+            IntegerBindingRangeBounds::Inclusive,
+            false,
+        ),
+        BuiltinFn::RangeWrap => (
+            BuiltinFn::RangeWrap,
+            IntegerBindingRangeBounds::Inclusive,
+            false,
+        ),
+        _ => return None,
+    };
+    (args.len() == 3).then(|| {
+        (
+            name.as_str(),
+            IntegerBindingRange {
+                ty: *ty,
+                normalize,
+                bounds,
+                parser_marker,
+                lower: args[1].clone(),
+                upper: args[2].clone(),
+            },
+        )
+    })
+}
+
+fn declared_integer_binding_range(stmt: &Stmt) -> Option<(&str, IntegerBindingRange)> {
+    let is_typed_decl = matches!(
+        stmt,
+        Stmt::Assign {
+            is_typed_decl: true,
+            ..
+        }
+    );
+    let (name, range) = integer_binding_range_assignment(stmt)?;
+    // Processor and generic lowering can turn the original declaration into
+    // a plain assignment, but the parser-only marker still identifies it
+    // unambiguously until this canonicalization runs.
+    (is_typed_decl || range.parser_marker).then_some((name, range))
+}
+
+fn collect_integer_binding_range_assignments(
+    statements: &[Stmt],
+    ranges: &mut HashMap<String, IntegerBindingRange>,
+) {
+    for statement in statements {
+        if let Some((name, range)) = integer_binding_range_assignment(statement) {
+            ranges.insert(name.to_owned(), range);
+        }
+        match statement {
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_integer_binding_range_assignments(then_branch, ranges);
+                collect_integer_binding_range_assignments(else_branch, ranges);
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                collect_integer_binding_range_assignments(body, ranges);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_flattened_proc_integer_ranges(
+    proc_name: &str,
+    prefix: &str,
+    declarations: &HashMap<String, HashMap<String, IntegerBindingRange>>,
+    shapes: &HashMap<String, ProcLoweringShape>,
+    stack: &mut HashSet<String>,
+    ranges: &mut HashMap<String, IntegerBindingRange>,
+) {
+    if !stack.insert(proc_name.to_owned()) {
+        return;
+    }
+    let declared_proc_name = proc_name
+        .split_once(".__gen__")
+        .map_or(proc_name, |(source_name, _)| source_name);
+    if let Some(declared) = declarations
+        .get(proc_name)
+        .or_else(|| declarations.get(declared_proc_name))
+    {
+        for (name, range) in declared {
+            let field = name.strip_prefix("self.").unwrap_or(name);
+            ranges.insert(format!("self.{prefix}{field}"), range.clone());
+        }
+    }
+    if let Some(shape) = shapes.get(proc_name) {
+        for (field, nested) in &shape.state.nested_procs {
+            collect_flattened_proc_integer_ranges(
+                &nested.proc_name,
+                &format!("{prefix}{field}__"),
+                declarations,
+                shapes,
+                stack,
+                ranges,
+            );
+        }
+        for (field, nested) in &shape.state.nested_proc_arrays {
+            if let Some(slots) = shape.nested_proc_array_slots.get(field) {
+                for slot in slots {
+                    collect_flattened_proc_integer_ranges(
+                        &nested.proc_name,
+                        &format!("{prefix}{slot}__"),
+                        declarations,
+                        shapes,
+                        stack,
+                        ranges,
+                    );
+                }
+            }
+        }
+    }
+    stack.remove(proc_name);
+}
+
+fn validate_integer_binding_range(
+    range: &IntegerBindingRange,
+    location: SourceLoc,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<(i64, i64)> {
+    let begin = eval_const_expr_i64_exact(
+        &range.lower,
+        options,
+        "integer binding range begin bound",
+        errors,
+    );
+    let end = eval_const_expr_i64_exact(
+        &range.upper,
+        options,
+        match range.bounds {
+            IntegerBindingRangeBounds::Count => "integer binding count",
+            IntegerBindingRangeBounds::HalfOpen => "integer binding range exclusive end bound",
+            IntegerBindingRangeBounds::Inclusive => "integer binding range end bound",
+        },
+        errors,
+    );
+    let (Some(begin), Some(end)) = (begin, end) else {
+        return None;
+    };
+    let inclusive_end = match range.bounds {
+        IntegerBindingRangeBounds::Count if end > 0 => end
+            .checked_sub(1)
+            .expect("a positive integer binding count is greater than i64::MIN"),
+        IntegerBindingRangeBounds::Count => {
+            errors.push(Diagnostic::semantic_span(
+                "integer binding count must be positive",
+                location,
+            ));
+            return None;
+        }
+        IntegerBindingRangeBounds::HalfOpen if begin < end => end
+            .checked_sub(1)
+            .expect("a non-empty i64 range end is greater than i64::MIN"),
+        IntegerBindingRangeBounds::HalfOpen => {
+            errors.push(Diagnostic::semantic_span(
+                "integer binding range begin bound must be less than its exclusive end bound",
+                location,
+            ));
+            return None;
+        }
+        IntegerBindingRangeBounds::Inclusive if begin <= end => end,
+        IntegerBindingRangeBounds::Inclusive => {
+            errors.push(Diagnostic::semantic_span(
+                "integer binding range begin bound must not exceed its end bound",
+                location,
+            ));
+            return None;
+        }
+    };
+    if range.ty == PrimitiveType::I32
+        && (i32::try_from(begin).is_err() || i32::try_from(inclusive_end).is_err())
+    {
+        errors.push(Diagnostic::semantic_span(
+            "i32 binding range values must fit i32",
+            location,
+        ));
+        return None;
+    }
+    Some((begin, inclusive_end))
+}
+
+fn canonicalize_integer_binding_range(
+    range: &mut IntegerBindingRange,
+    location: SourceLoc,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Some((lower, upper)) = validate_integer_binding_range(range, location, options, errors)
+    else {
+        return false;
+    };
+    let lower_loc = range.lower.loc();
+    let upper_loc = range.upper.loc();
+    range.lower = Expr::int(lower).with_loc(lower_loc);
+    range.upper = Expr::int(upper).with_loc(upper_loc);
+    range.bounds = IntegerBindingRangeBounds::Inclusive;
+    true
+}
+
+fn wrap_ranged_assignment(expr: &mut Expr, range: &IntegerBindingRange) {
+    if let Expr::Call { func, args, .. } = expr {
+        let marker_normalize = match func {
+            BuiltinFn::BindingCountClamp
+            | BuiltinFn::BindingRangeClamp
+            | BuiltinFn::BindingRangeInclusiveClamp => Some(BuiltinFn::RangeClamp),
+            BuiltinFn::BindingCountWrap
+            | BuiltinFn::BindingRangeWrap
+            | BuiltinFn::BindingRangeInclusiveWrap => Some(BuiltinFn::RangeWrap),
+            _ => None,
+        };
+        if let (Some(marker_normalize), [_, lower, upper]) = (marker_normalize, args.as_mut_slice())
+        {
+            debug_assert_eq!(marker_normalize, range.normalize);
+            *func = range.normalize;
+            *lower = range.lower.clone();
+            *upper = range.upper.clone();
+            return;
+        }
+    }
+    if matches!(
+        expr,
+        Expr::Call { func, args, .. }
+            if *func == range.normalize && args.len() == 3
+    ) {
+        return;
+    }
+    let location: onda_frontend::Span = expr.loc().into();
+    let value = std::mem::replace(expr, Expr::int(0));
+    *expr = Expr::Call {
+        loc: location,
+        func: range.normalize,
+        args: vec![value, range.lower.clone(), range.upper.clone()],
+    };
+}
+
+fn rewrite_integer_binding_ranges_in_list(
+    statements: &mut [Stmt],
+    inherited: &HashMap<String, IntegerBindingRange>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> HashMap<String, IntegerBindingRange> {
+    let mut ranges = inherited.clone();
+    for statement in statements {
+        if let Some((name, mut range)) =
+            declared_integer_binding_range(statement).map(|(name, range)| (name.to_owned(), range))
+        {
+            if canonicalize_integer_binding_range(&mut range, statement.loc(), options, errors) {
+                if let Stmt::Assign {
+                    expr: Expr::Call { func, args, .. },
+                    ..
+                } = statement
+                {
+                    *func = range.normalize;
+                    args[1] = range.lower.clone();
+                    args[2] = range.upper.clone();
+                }
+            }
+            ranges.insert(name, range);
+            continue;
+        }
+        match statement {
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                is_typed_decl,
+                expr,
+                ..
+            } => {
+                if *is_typed_decl {
+                    ranges.remove(name);
+                } else if let Some(range) = ranges.get(name) {
+                    wrap_ranged_assignment(expr, range);
+                }
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                rewrite_integer_binding_ranges_in_list(then_branch, &ranges, options, errors);
+                rewrite_integer_binding_ranges_in_list(else_branch, &ranges, options, errors);
+            }
+            Stmt::For { var, body, .. } => {
+                let mut loop_ranges = ranges.clone();
+                loop_ranges.remove(var);
+                rewrite_integer_binding_ranges_in_list(body, &loop_ranges, options, errors);
+            }
+            Stmt::While { body, .. } => {
+                rewrite_integer_binding_ranges_in_list(body, &ranges, options, errors);
+            }
+            Stmt::Const { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Expr { .. }
+            | Stmt::Return { .. }
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. } => {}
+        }
+    }
+    ranges
+}
+
+fn integer_binding_ranges_outside_params<'a>(
+    inherited: &HashMap<String, IntegerBindingRange>,
+    params: impl IntoIterator<Item = &'a String>,
+) -> HashMap<String, IntegerBindingRange> {
+    let mut ranges = inherited.clone();
+    for param in params {
+        ranges.remove(param);
+    }
+    ranges
+}
+
+fn proc_integer_binding_range_aliases(
+    ranges: &HashMap<String, IntegerBindingRange>,
+) -> HashMap<String, IntegerBindingRange> {
+    let mut aliases = ranges.clone();
+    for (name, range) in ranges {
+        let field = name.strip_prefix("self.").unwrap_or(name);
+        aliases.insert(field.to_owned(), range.clone());
+        aliases.insert(format!("self.{field}"), range.clone());
+    }
+    aliases
+}
+
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     analyze_with_options(program, AnalysisOptions::default())
 }
@@ -7197,6 +7644,25 @@ pub fn analyze_with_options(
         .blocks
         .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
     let const_arrays = const_artifacts.const_arrays;
+    let mut declared_proc_integer_ranges = HashMap::new();
+    for proc_def in program.blocks.iter_mut().filter_map(|block| match block {
+        Block::Proc(proc_def) => Some(proc_def),
+        _ => None,
+    }) {
+        // Canonicalize source processor declarations before desugaring or
+        // specialization clones them into generated initializer functions.
+        rewrite_integer_binding_ranges_in_list(
+            &mut proc_def.init.body,
+            &HashMap::new(),
+            options,
+            &mut errors,
+        );
+        let mut ranges = HashMap::new();
+        collect_integer_binding_range_assignments(&proc_def.init.body, &mut ranges);
+        if !ranges.is_empty() {
+            declared_proc_integer_ranges.insert(proc_def.name.clone(), ranges);
+        }
+    }
     let ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
@@ -7359,7 +7825,6 @@ pub fn analyze_with_options(
             Diagnostic::semantic_span(missing_entry_message, missing_sample_loc).compiler_only(),
         );
     }
-
     {
         let struct_symbols = struct_defs_raw
             .iter()
@@ -7698,6 +8163,70 @@ pub fn analyze_with_options(
     }
     order_struct_defs_for_field_dependencies(&mut struct_defs_raw);
 
+    let init_ranges =
+        rewrite_integer_binding_ranges_in_list(&mut init, &HashMap::new(), options, &mut errors);
+    let runtime_ranges =
+        rewrite_integer_binding_ranges_in_list(&mut block_pre, &init_ranges, options, &mut errors);
+    rewrite_integer_binding_ranges_in_list(&mut sample, &runtime_ranges, options, &mut errors);
+    rewrite_integer_binding_ranges_in_list(&mut block_post, &runtime_ranges, options, &mut errors);
+    for event in &mut events {
+        let inherited = integer_binding_ranges_outside_params(
+            &runtime_ranges,
+            event.params.iter().map(|param| &param.name),
+        );
+        rewrite_integer_binding_ranges_in_list(&mut event.body, &inherited, options, &mut errors);
+    }
+    let mut def_integer_ranges = Vec::with_capacity(defs.len());
+    for def in &mut defs {
+        let inherited = integer_binding_ranges_outside_params(
+            &runtime_ranges,
+            def.params.iter().map(|param| &param.name),
+        );
+        let ranges =
+            rewrite_integer_binding_ranges_in_list(&mut def.body, &inherited, options, &mut errors);
+        def_integer_ranges.push(ranges);
+    }
+    let mut proc_state_ranges = HashMap::new();
+    for owner in lowering_shapes.keys() {
+        let mut ranges = HashMap::new();
+        collect_flattened_proc_integer_ranges(
+            owner,
+            "",
+            &declared_proc_integer_ranges,
+            &lowering_shapes,
+            &mut HashSet::new(),
+            &mut ranges,
+        );
+        if !ranges.is_empty() {
+            proc_state_ranges.insert(owner.clone(), ranges);
+        }
+    }
+    for (def, ranges) in defs.iter().zip(&def_integer_ranges) {
+        let Some(owner) = def.name.strip_suffix(".__onda_proc_init") else {
+            continue;
+        };
+        let proc_ranges = proc_state_ranges.entry(owner.to_owned()).or_default();
+        proc_ranges.extend(ranges.clone());
+        collect_integer_binding_range_assignments(&def.body, proc_ranges);
+    }
+    for (def, ranges) in defs.iter_mut().zip(&mut def_integer_ranges) {
+        let Some((owner, generated_suffix)) = def.name.split_once(".__onda_proc_") else {
+            continue;
+        };
+        if generated_suffix == "init" {
+            continue;
+        }
+        let Some(proc_ranges) = proc_state_ranges.get(owner) else {
+            continue;
+        };
+        let inherited = proc_integer_binding_range_aliases(proc_ranges);
+        let inherited = integer_binding_ranges_outside_params(
+            &inherited,
+            def.params.iter().map(|param| &param.name),
+        );
+        *ranges =
+            rewrite_integer_binding_ranges_in_list(&mut def.body, &inherited, options, &mut errors);
+    }
     check_local_port_duplicates(&raw_ins, "input", &mut errors);
     check_local_port_duplicates(&raw_outs, "output", &mut errors);
     check_local_port_duplicates(&raw_kouts, "control output", &mut errors);
@@ -8082,6 +8611,16 @@ pub fn analyze_with_options(
         seen_struct_defs.insert(s.name.clone(), s.clone());
 
         for method in &s.methods {
+            if is_unsafe_index_method_name(&method.name) {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "cannot redefine builtin method '{}.{}'",
+                        s.name, method.name
+                    ),
+                    method.loc,
+                ));
+                continue;
+            }
             for tp in &method.type_params {
                 if s.type_params.contains(tp) {
                     errors.push(Diagnostic::semantic_span(
@@ -8460,7 +8999,7 @@ pub fn analyze_with_options(
             );
             continue;
         }
-        if is_builtin_function_name(&public_name) {
+        if is_builtin_function_name(&public_name) || is_internal_buffer_2d_fn(&public_name) {
             push_semantic(
                 def_diag,
                 &mut errors,
@@ -8805,7 +9344,6 @@ pub fn analyze_with_options(
                     break;
                 }
             }
-
             // Register generated defs and signatures
             for sig in generated_sigs {
                 fn_signatures.insert(sig.0, sig.1);
@@ -9057,6 +9595,7 @@ pub fn analyze_with_options(
     let mut init_st = InitAnalysisState {
         known_scalars: init_known_scalars,
         local_aliases: init_local_aliases,
+        integer_ranges: HashMap::new(),
         local_array_aliases: init_local_data_aliases,
         declared_symbols,
         state_scalars,
@@ -9850,6 +10389,26 @@ pub fn analyze_with_options(
             }
         };
 
+        // Specialization and nested-state flattening can create additional
+        // generated defs after the first range rewrite. Reapply the storage
+        // contract to every final body before it crosses the TypedProgram
+        // boundary; declarations make this pass idempotent by carrying
+        // canonical inclusive bounds after their first rewrite.
+        for def in &mut defs {
+            let inherited = def
+                .name
+                .split_once(".__onda_proc_")
+                .filter(|(_, generated_suffix)| *generated_suffix != "init")
+                .and_then(|(owner, _)| proc_state_ranges.get(owner))
+                .map(proc_integer_binding_range_aliases)
+                .unwrap_or_else(|| runtime_ranges.clone());
+            let inherited = integer_binding_ranges_outside_params(
+                &inherited,
+                def.params.iter().map(|param| &param.name),
+            );
+            rewrite_integer_binding_ranges_in_list(&mut def.body, &inherited, options, &mut errors);
+        }
+
         reject_non_sample_proc_operator_calls(
             &init,
             &block_pre,
@@ -9864,6 +10423,21 @@ pub fn analyze_with_options(
         if !errors.is_empty() {
             return Err(errors);
         }
+
+        let def_integer_range_params = defs
+            .iter()
+            .filter_map(|def| {
+                let (owner, _) = def.name.split_once(".__onda_proc_")?;
+                let ranges = proc_state_ranges.get(owner)?;
+                let ranges = ranges
+                    .iter()
+                    .filter_map(|(name, range)| {
+                        typed_integer_range(range).map(|range| (name.clone(), range))
+                    })
+                    .collect::<HashMap<_, _>>();
+                (!ranges.is_empty()).then(|| (def.name.clone(), ranges))
+            })
+            .collect::<HashMap<_, _>>();
 
         let all_typed_defs = defs
             .into_iter()
@@ -9882,6 +10456,10 @@ pub fn analyze_with_options(
                     param_defaults: d.params.iter().map(|p| p.default.clone()).collect(),
                     param_kinds,
                     readonly_array_params,
+                    integer_range_params: def_integer_range_params
+                        .get(&d.name)
+                        .cloned()
+                        .unwrap_or_default(),
                     return_ty: def_return_types
                         .get(&d.name)
                         .cloned()
@@ -9967,14 +10545,57 @@ pub fn analyze_with_options(
                 return Err(errors);
             }
         };
-        let dynamic_input_range_aliases = input_aliases
+        let param_range_state_aliases = param_aliases.clone();
+        let dynamic_input_range_aliases: HashMap<String, String> = input_aliases
             .into_iter()
             .filter(|(_, alias)| process_clamp_usage.dynamic_input_aliases.contains(alias))
             .collect();
-        let dynamic_param_range_aliases = param_aliases
+        let dynamic_param_range_aliases: HashMap<String, String> = param_aliases
             .into_iter()
             .filter(|(_, alias)| process_clamp_usage.dynamic_param_aliases.contains(alias))
             .collect();
+        let mut state_integer_ranges = sorted_state
+            .iter()
+            .filter_map(|name| {
+                runtime_ranges
+                    .get(name)
+                    .or_else(|| init_ranges.get(name))
+                    .and_then(typed_integer_range)
+                    .map(|range| (name.clone(), range))
+            })
+            .collect::<HashMap<_, _>>();
+        for (source, alias) in &param_range_state_aliases {
+            let Some(ty @ (PrimitiveType::I32 | PrimitiveType::I64)) =
+                param_types.get(source).copied()
+            else {
+                continue;
+            };
+            let Some(range) = param_ranges.get(source) else {
+                continue;
+            };
+            let exact_integer = |value| match value {
+                TypedConstValue::I32(value) => Some(i64::from(value)),
+                TypedConstValue::I64(value) => Some(value),
+                _ => None,
+            };
+            let Some((min, max)) = exact_integer(range.min).zip(exact_integer(range.max)) else {
+                continue;
+            };
+            if ty == PrimitiveType::I32
+                && (i32::try_from(min).is_err() || i32::try_from(max).is_err())
+            {
+                continue;
+            }
+            state_integer_ranges.insert(
+                alias.clone(),
+                TypedIntegerRange {
+                    ty,
+                    min,
+                    max,
+                    wrap: false,
+                },
+            );
+        }
 
         Ok(TypedProgram {
             analysis_options: options,
@@ -9985,6 +10606,7 @@ pub fn analyze_with_options(
             out_types,
             control_out_types,
             param_types,
+            state_integer_ranges,
             in_defaults,
             in_ranges,
             dynamic_input_range_aliases,

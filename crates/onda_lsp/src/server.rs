@@ -24,6 +24,7 @@ mod param_domain;
 mod path_utils;
 mod position;
 mod semantic_tokens;
+mod unsafe_index;
 
 use completion::{
     completion_items_for_document_with_index, completion_trigger_characters,

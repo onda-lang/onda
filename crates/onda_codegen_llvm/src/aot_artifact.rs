@@ -16,7 +16,8 @@ pub use onda_processor_abi::IntegrationProfile as AotIntegrationProfile;
 use onda_processor_abi::{
     BufferMetadata as AotBufferMetadata, CompileInfo as AotCompileInfo,
     EventMetadata as AotEventMetadata, EventParamMetadata as AotEventParamMetadata,
-    Exports as AotExports, IntegrationInfo as AotIntegrationInfo, IoMetadata as AotIoMetadata,
+    Exports as AotExports, IntegerRangeEndpoint, IntegerRangeMetadata,
+    IntegrationInfo as AotIntegrationInfo, IoMetadata as AotIoMetadata,
     ParamControlMetadata as AotParamControlMetadata, ProgramMetadata as AotProgramMetadata,
     RuntimeInfo as AotRuntimeInfo, TargetInfo as AotTargetInfo,
 };
@@ -300,6 +301,28 @@ fn map_state_metadata(state: &crate::DeclaredState) -> AotStateMetadata {
         packed_snapshot_byte_offset: state.byte_offset(),
         physical_state_byte_offset: state.storage_byte_offset(),
         byte_size: state.byte_size(),
+        integer_range: state.integer_range().map(|range| {
+            let endpoint = |value: ScalarValue| match value {
+                ScalarValue::I32(value) => IntegerRangeEndpoint {
+                    scalar: "i32".to_owned(),
+                    value: value.to_string(),
+                },
+                ScalarValue::I64(value) => IntegerRangeEndpoint {
+                    scalar: "i64".to_owned(),
+                    value: value.to_string(),
+                },
+                _ => unreachable!("validated state integer range is integer-valued"),
+            };
+            IntegerRangeMetadata {
+                min: endpoint(range.min),
+                max: endpoint(range.max),
+                mode: match range.mode {
+                    onda_mir::IntegerRangeMode::Clamp => "clamp",
+                    onda_mir::IntegerRangeMode::Wrap => "wrap",
+                }
+                .to_owned(),
+            }
+        }),
     }
 }
 

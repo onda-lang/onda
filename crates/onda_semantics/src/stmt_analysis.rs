@@ -29,6 +29,7 @@ pub(crate) struct StmtExprAnalysisEnv<'a> {
 pub(crate) struct ScopeFlowState {
     pub(crate) known_scalars: HashSet<String>,
     pub(crate) local_aliases: LocalAliasTypes,
+    pub(crate) integer_ranges: HashMap<String, TypedIntegerRange>,
     pub(crate) local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     pub(crate) local_buffer_aliases: LocalBufferAliases,
     pub(crate) local_proc_aliases: HashMap<String, ProcArrayAliasInfo>,
@@ -46,6 +47,7 @@ impl ScopeFlowState {
         Self {
             known_scalars,
             local_aliases,
+            integer_ranges: HashMap::new(),
             local_array_aliases,
             local_buffer_aliases: HashMap::new(),
             local_proc_aliases,
@@ -94,6 +96,7 @@ pub(crate) fn buffer_reference_expr_info(
 pub(crate) fn fork_scope_flow_state_with_tuples(
     known_scalars: &HashSet<String>,
     local_aliases: &LocalAliasTypes,
+    integer_ranges: &HashMap<String, TypedIntegerRange>,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
     local_struct_aliases: &HashMap<String, String>,
@@ -106,6 +109,7 @@ pub(crate) fn fork_scope_flow_state_with_tuples(
         local_array_aliases.clone(),
         local_proc_aliases.clone(),
     );
+    st.integer_ranges = integer_ranges.clone();
     st.tuple_vars = tuple_vars.clone();
     st.local_buffer_aliases = local_buffer_aliases.clone();
     st.local_struct_aliases = local_struct_aliases.clone();
@@ -115,6 +119,7 @@ pub(crate) fn fork_scope_flow_state_with_tuples(
 pub(crate) fn merge_branch_scope_flow_state(
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
+    integer_ranges: &mut HashMap<String, TypedIntegerRange>,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     local_struct_aliases: &mut HashMap<String, String>,
@@ -127,6 +132,7 @@ pub(crate) fn merge_branch_scope_flow_state(
 ) {
     let base_known_scalars = known_scalars.clone();
     let base_local_aliases = local_aliases.clone();
+    let base_integer_ranges = integer_ranges.clone();
     let base_array_aliases = local_array_aliases.clone();
     let base_proc_aliases = local_proc_aliases.clone();
     let base_struct_aliases = local_struct_aliases.clone();
@@ -140,18 +146,24 @@ pub(crate) fn merge_branch_scope_flow_state(
         .collect::<HashSet<_>>();
     *known_scalars = base_known_scalars.clone();
     *local_aliases = base_local_aliases.clone();
+    *integer_ranges = base_integer_ranges;
     *local_array_aliases = base_array_aliases;
     *local_proc_aliases = base_proc_aliases;
     *local_struct_aliases = base_struct_aliases;
     *local_buffer_aliases = base_buffer_aliases;
     *tuple_vars = base_tuple_vars;
 
-    let mut incompatible = |name: &str, detail: String| {
-        errors.push(Diagnostic::semantic_span(
-            format!("binding '{name}' has incompatible branch types: {detail}"),
-            location,
-        ));
-    };
+    macro_rules! incompatible {
+        ($name:expr, $detail:expr $(,)?) => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "binding '{}' has incompatible branch types: {}",
+                    $name, $detail
+                ),
+                location,
+            ))
+        };
+    }
 
     for name in common_branch_bindings {
         if base_known_scalars.contains(&name) {
@@ -160,7 +172,7 @@ pub(crate) fn merge_branch_scope_flow_state(
         let then_kind = tracked_branch_binding_kind(&then_state, &name);
         let else_kind = tracked_branch_binding_kind(&else_state, &name);
         if then_kind != else_kind {
-            incompatible(
+            incompatible!(
                 &name,
                 format!(
                     "{} and {}",
@@ -177,20 +189,36 @@ pub(crate) fn merge_branch_scope_flow_state(
 
         let joined = match then_kind {
             Some(TrackedBranchBindingKind::Scalar) => {
+                let then_range = then_state.integer_ranges.get(&name);
+                let else_range = else_state.integer_ranges.get(&name);
+                if then_range != else_range {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "binding '{name}' has incompatible branch integer range contracts: {} and {}",
+                            format_integer_range_contract(then_range),
+                            format_integer_range_contract(else_range),
+                        ),
+                        location,
+                    ));
+                    continue;
+                }
                 let then_ty = then_state.local_aliases[&name];
                 let else_ty = else_state.local_aliases[&name];
                 let Some(ty) = merge_inferred_return_types(then_ty, else_ty) else {
-                    incompatible(&name, format!("{} and {}", then_ty.name(), else_ty.name()));
+                    incompatible!(&name, format!("{} and {}", then_ty.name(), else_ty.name()));
                     continue;
                 };
                 local_aliases.insert(name.clone(), ty);
+                if let Some(range) = then_range {
+                    integer_ranges.insert(name.clone(), *range);
+                }
                 true
             }
             Some(TrackedBranchBindingKind::Tuple) => {
                 let then_arity = then_state.tuple_vars[&name];
                 let else_arity = else_state.tuple_vars[&name];
                 if then_arity != else_arity {
-                    incompatible(
+                    incompatible!(
                         &name,
                         format!("tuple arities {then_arity} and {else_arity}"),
                     );
@@ -214,10 +242,7 @@ pub(crate) fn merge_branch_scope_flow_state(
                     element_types.push(ty);
                 }
                 if element_types.len() != then_arity {
-                    incompatible(
-                        &name,
-                        "tuple element types do not have a common type".into(),
-                    );
+                    incompatible!(&name, "tuple element types do not have a common type",);
                     continue;
                 }
                 tuple_vars.insert(name.clone(), then_arity);
@@ -231,9 +256,9 @@ pub(crate) fn merge_branch_scope_flow_state(
                     || then_info.elem_struct != else_info.elem_struct
                     || then_info.static_len != else_info.static_len
                 {
-                    incompatible(
+                    incompatible!(
                         &name,
-                        "arrays have different element types or fixed lengths".into(),
+                        "arrays have different element types or fixed lengths",
                     );
                     continue;
                 }
@@ -249,7 +274,7 @@ pub(crate) fn merge_branch_scope_flow_state(
                 let then_struct = then_state.local_struct_aliases.get(&name);
                 let else_struct = else_state.local_struct_aliases.get(&name);
                 if then_alias.array_base != else_alias.array_base || then_struct != else_struct {
-                    incompatible(&name, "processor aliases use different arrays".into());
+                    incompatible!(&name, "processor aliases use different arrays");
                     continue;
                 }
                 local_proc_aliases.insert(name.clone(), then_alias.clone());
@@ -268,7 +293,7 @@ pub(crate) fn merge_branch_scope_flow_state(
                 let then_struct = &then_state.local_struct_aliases[&name];
                 let else_struct = &else_state.local_struct_aliases[&name];
                 if then_struct != else_struct {
-                    incompatible(
+                    incompatible!(
                         &name,
                         format!("structs '{then_struct}' and '{else_struct}'"),
                     );
@@ -284,9 +309,9 @@ pub(crate) fn merge_branch_scope_flow_state(
                 true
             }
             Some(TrackedBranchBindingKind::Buffer) => {
-                incompatible(
+                incompatible!(
                     &name,
-                    "buffer aliases created inside branches cannot escape the branch".into(),
+                    "buffer aliases created inside branches cannot escape the branch",
                 );
                 false
             }
@@ -375,6 +400,7 @@ fn copy_matching_root_aliases(
 pub(crate) fn merge_reachable_branch_scope_flow_state(
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
+    integer_ranges: &mut HashMap<String, TypedIntegerRange>,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     local_struct_aliases: &mut HashMap<String, String>,
@@ -397,6 +423,7 @@ pub(crate) fn merge_reachable_branch_scope_flow_state(
             return merge_branch_scope_flow_state(
                 known_scalars,
                 local_aliases,
+                integer_ranges,
                 local_array_aliases,
                 local_proc_aliases,
                 local_struct_aliases,
@@ -411,11 +438,49 @@ pub(crate) fn merge_reachable_branch_scope_flow_state(
     };
     *known_scalars = continuing_state.known_scalars;
     *local_aliases = continuing_state.local_aliases;
+    *integer_ranges = continuing_state.integer_ranges;
     *local_array_aliases = continuing_state.local_array_aliases;
     *local_proc_aliases = continuing_state.local_proc_aliases;
     *local_struct_aliases = continuing_state.local_struct_aliases;
     *local_buffer_aliases = continuing_state.local_buffer_aliases;
     *tuple_vars = continuing_state.tuple_vars;
+}
+
+pub(crate) fn track_integer_range_declaration(
+    statement: &Stmt,
+    ranges: &mut HashMap<String, TypedIntegerRange>,
+) {
+    let Stmt::Assign {
+        target: AssignTarget::Var(name),
+        decl_ty,
+        is_typed_decl: true,
+        expr,
+        ..
+    } = statement
+    else {
+        return;
+    };
+    let range = typed_integer_range_from_expr(expr, *decl_ty);
+    if let Some(range) = range {
+        ranges.insert(name.clone(), range);
+    } else {
+        ranges.remove(name);
+    }
+}
+
+fn format_integer_range_contract(range: Option<&TypedIntegerRange>) -> String {
+    range.map_or_else(
+        || "unbounded".into(),
+        |range| {
+            format!(
+                "{} {}({}..={})",
+                if range.wrap { "wrap" } else { "clamp" },
+                range.ty.name(),
+                range.min,
+                range.max,
+            )
+        },
+    )
 }
 
 pub(crate) fn adopt_loop_scope_flow_state(
@@ -717,6 +782,14 @@ pub(crate) fn validate_and_infer_stmt_expr_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     validate_expr(expr, env.expr_env, errors);
+    infer_stmt_expr_type(expr, env, errors)
+}
+
+fn infer_stmt_expr_type(
+    expr: &Expr,
+    env: StmtExprAnalysisEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
     infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
         expr,
         env.state_scalars,
@@ -741,6 +814,17 @@ pub(crate) fn analyze_stmt_expr(
     errors: &mut Vec<Diagnostic>,
 ) {
     let _ = validate_and_infer_stmt_expr_type(expr, env, errors);
+}
+
+pub(crate) fn analyze_standalone_stmt_expr(
+    expr: &Expr,
+    env: StmtExprAnalysisEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    validate_standalone_expr_statement(expr, env.expr_env, errors);
+    if !matches!(expr, Expr::UserCall { name, .. } if name == WRITE_UNSAFE_FN) {
+        let _ = infer_stmt_expr_type(expr, env, errors);
+    }
 }
 
 fn is_bare_array_ref_expr(expr: &Expr, env: StmtExprAnalysisEnv<'_>) -> bool {

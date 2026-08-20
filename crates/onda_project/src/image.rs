@@ -10,7 +10,7 @@ use crate::manifest::{
     parse_buffer_element_name, portable_path_collision_key, validate_project_buffer_name,
     validate_relative_project_path,
 };
-use crate::{BufferAsset, ProjectError, ProjectLimits};
+use crate::{BufferAsset, BufferElement, ProjectError, ProjectLimits};
 
 // Synchronized from format-versions.json; do not edit this copy directly.
 pub const ONDA_PROJECT_IMAGE_FORMAT_VERSION: u32 = 1;
@@ -520,49 +520,73 @@ pub fn validate_buffer_assets<'a>(
         .map(|declaration| (declaration.name.as_str(), declaration))
         .collect::<HashMap<_, _>>();
     for (name, asset) in assets {
-        let (declaration_name, element_index) = parse_buffer_element_name(name)
-            .map_or((name, None), |(base, index)| (base, Some(index)));
-        let declaration = declarations.get(declaration_name).ok_or_else(|| {
-            ProjectError::new(format!(
-                "project binds unknown buffer '{name}'; it is not declared by the entry source"
-            ))
-        })?;
-        match element_index {
-            Some(index) if declaration.is_array && index < declaration.array_len => {}
-            Some(index) => {
-                return Err(ProjectError::new(format!(
-                    "project buffer '{name}' selects slot {index}, but '{}' has length {}",
-                    declaration.name, declaration.array_len
-                )));
-            }
-            None if !declaration.is_array => {}
-            None => {
-                return Err(ProjectError::new(format!(
-                    "project buffer array '{}' must bind individual slots",
-                    declaration.name
-                )));
-            }
-        }
-        if asset.element() != declaration.element {
+        validate_buffer_binding(name, asset.element(), asset.channels, &declarations)?;
+    }
+    Ok(())
+}
+
+/// Checks buffer metadata against declarations without requiring decoded
+/// sample payloads.
+pub fn validate_buffer_asset_metadata<'a>(
+    assets: impl IntoIterator<Item = (&'a str, &'a crate::BufferAssetMetadata)>,
+    declarations: &[ProjectBufferDeclaration],
+) -> Result<(), ProjectError> {
+    let declarations = declarations
+        .iter()
+        .map(|declaration| (declaration.name.as_str(), declaration))
+        .collect::<HashMap<_, _>>();
+    for (name, asset) in assets {
+        validate_buffer_binding(name, asset.element, asset.channels, &declarations)?;
+    }
+    Ok(())
+}
+
+fn validate_buffer_binding(
+    name: &str,
+    element: BufferElement,
+    channels: u32,
+    declarations: &HashMap<&str, &ProjectBufferDeclaration>,
+) -> Result<(), ProjectError> {
+    let (declaration_name, element_index) =
+        parse_buffer_element_name(name).map_or((name, None), |(base, index)| (base, Some(index)));
+    let declaration = declarations.get(declaration_name).ok_or_else(|| {
+        ProjectError::new(format!(
+            "project binds unknown buffer '{name}'; it is not declared by the entry source"
+        ))
+    })?;
+    match element_index {
+        Some(index) if declaration.is_array && index < declaration.array_len => {}
+        Some(index) => {
             return Err(ProjectError::new(format!(
-                "buffer '{name}' requires {}, but its asset contains {}",
-                declaration.element,
-                asset.element()
+                "project buffer '{name}' selects slot {index}, but '{}' has length {}",
+                declaration.name, declaration.array_len
             )));
         }
-        let expected_channels = match declaration.channels {
-            ProjectBufferChannels::Mono => Some(1),
-            ProjectBufferChannels::Static(channels) => Some(channels),
-            ProjectBufferChannels::Dynamic => None,
-        };
-        if let Some(expected_channels) = expected_channels {
-            if asset.channels != expected_channels {
-                return Err(ProjectError::new(format!(
-                    "buffer '{name}' requires {expected_channels} channel{}, but its asset contains {}",
-                    if expected_channels == 1 { "" } else { "s" },
-                    asset.channels
-                )));
-            }
+        None if !declaration.is_array => {}
+        None => {
+            return Err(ProjectError::new(format!(
+                "project buffer array '{}' must bind individual slots",
+                declaration.name
+            )));
+        }
+    }
+    if element != declaration.element {
+        return Err(ProjectError::new(format!(
+            "buffer '{name}' requires {}, but its asset contains {element}",
+            declaration.element
+        )));
+    }
+    let expected_channels = match declaration.channels {
+        ProjectBufferChannels::Mono => Some(1),
+        ProjectBufferChannels::Static(channels) => Some(channels),
+        ProjectBufferChannels::Dynamic => None,
+    };
+    if let Some(expected_channels) = expected_channels {
+        if channels != expected_channels {
+            return Err(ProjectError::new(format!(
+                "buffer '{name}' requires {expected_channels} channel{}, but its asset contains {channels}",
+                if expected_channels == 1 { "" } else { "s" },
+            )));
         }
     }
     Ok(())

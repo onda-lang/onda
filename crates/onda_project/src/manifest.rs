@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use unicode_normalization::{is_nfc, UnicodeNormalization};
 
-use crate::{BufferAsset, BufferElement, BufferSamples, ProjectError, ProjectLimits};
+use crate::{
+    BufferAsset, BufferAssetMetadata, BufferElement, BufferSamples, ProjectError, ProjectLimits,
+};
 
 pub const ONDA_PROJECT_FILE_EXTENSION: &str = "ondaproject";
 pub const ONDA_PROJECT_DEFAULT_FILE_NAME: &str = "project.ondaproject";
@@ -318,13 +320,10 @@ impl ProjectFile {
         // Runtime buffers are independently writable, so repeated bindings may
         // reuse decoding work but every returned payload copy consumes budget.
         let mut resident_bytes = 0usize;
-        for (name, binding) in &self.manifest.buffers {
-            if excluded.contains(name.as_str()) {
-                continue;
-            }
-            match binding {
-                ManifestBufferBinding::File(file) => {
-                    let path = resolve_contained_path(&self.root, &file.file)?;
+        visit_manifest_buffer_bindings(&self.manifest, excluded, |name, source| {
+            match source {
+                ManifestBufferSource::File(file) => {
+                    let path = resolve_contained_path(&self.root, file)?;
                     let asset = clone_or_load_buffer_asset(
                         &path,
                         &loaded_files,
@@ -335,46 +334,95 @@ impl ProjectFile {
                     assets.insert(name.clone(), (asset, Some(path.clone())));
                     loaded_files.entry(path).or_insert_with(|| name.clone());
                 }
-                ManifestBufferBinding::Inline(inline) => {
-                    let asset =
-                        load_inline_buffer_asset(&inline.inline, limits, &mut resident_bytes)?;
+                ManifestBufferSource::Inline(inline) => {
+                    let asset = load_inline_buffer_asset(inline, limits, &mut resident_bytes)?;
                     assets.insert(name.clone(), (asset, None));
                 }
-                ManifestBufferBinding::Array(elements) => {
-                    for (index, element) in elements.iter().enumerate() {
-                        let Some(element) = element else { continue };
-                        let logical_name = format!("{name}[{index}]");
-                        if excluded.contains(logical_name.as_str()) {
-                            continue;
-                        }
-                        match element {
-                            ManifestBufferElementBinding::File(file) => {
-                                let path = resolve_contained_path(&self.root, &file.file)?;
-                                let asset = clone_or_load_buffer_asset(
-                                    &path,
-                                    &loaded_files,
-                                    &assets,
-                                    limits,
-                                    &mut resident_bytes,
-                                )?;
-                                assets.insert(logical_name.clone(), (asset, Some(path.clone())));
-                                loaded_files.entry(path).or_insert(logical_name);
-                            }
-                            ManifestBufferElementBinding::Inline(inline) => {
-                                let asset = load_inline_buffer_asset(
-                                    &inline.inline,
-                                    limits,
-                                    &mut resident_bytes,
-                                )?;
-                                assets.insert(logical_name, (asset, None));
-                            }
+            }
+            Ok(())
+        })?;
+        Ok(assets)
+    }
+
+    /// Inspects project buffer shapes without decoding file-backed samples.
+    pub fn inspect_buffer_assets(
+        &self,
+        limits: ProjectLimits,
+    ) -> Result<BTreeMap<String, BufferAssetMetadata>, ProjectError> {
+        let mut assets = BTreeMap::new();
+        let mut inspected_files = BTreeMap::<PathBuf, BufferAssetMetadata>::new();
+        let mut resident_bytes = 0usize;
+        visit_manifest_buffer_bindings(&self.manifest, &BTreeSet::new(), |name, source| {
+            let metadata = match source {
+                ManifestBufferSource::File(file) => {
+                    let path = resolve_contained_path(&self.root, file)?;
+                    match inspected_files.get(&path).copied() {
+                        Some(metadata) => metadata,
+                        None => {
+                            let metadata = crate::inspect_buffer_file(
+                                &path,
+                                limits.with_remaining_asset_budget(resident_bytes),
+                            )?;
+                            inspected_files.insert(path, metadata);
+                            metadata
                         }
                     }
                 }
-            }
-        }
+                ManifestBufferSource::Inline(inline) => inline
+                    .to_asset(&limits.with_remaining_asset_budget(resident_bytes))?
+                    .metadata(),
+            };
+            reserve_resident_asset_bytes(&mut resident_bytes, metadata.payload_bytes, &limits)?;
+            assets.insert(name, metadata);
+            Ok(())
+        })?;
         Ok(assets)
     }
+}
+
+#[derive(Clone, Copy)]
+enum ManifestBufferSource<'a> {
+    File(&'a str),
+    Inline(&'a InlineBuffer),
+}
+
+fn visit_manifest_buffer_bindings<'a>(
+    manifest: &'a ProjectManifest,
+    excluded: &BTreeSet<&str>,
+    mut visit: impl FnMut(String, ManifestBufferSource<'a>) -> Result<(), ProjectError>,
+) -> Result<(), ProjectError> {
+    for (name, binding) in &manifest.buffers {
+        if excluded.contains(name.as_str()) {
+            continue;
+        }
+        match binding {
+            ManifestBufferBinding::File(file) => {
+                visit(name.clone(), ManifestBufferSource::File(&file.file))?;
+            }
+            ManifestBufferBinding::Inline(inline) => {
+                visit(name.clone(), ManifestBufferSource::Inline(&inline.inline))?;
+            }
+            ManifestBufferBinding::Array(elements) => {
+                for (index, element) in elements.iter().enumerate() {
+                    let Some(element) = element else { continue };
+                    let logical_name = format!("{name}[{index}]");
+                    if excluded.contains(logical_name.as_str()) {
+                        continue;
+                    }
+                    let source = match element {
+                        ManifestBufferElementBinding::File(file) => {
+                            ManifestBufferSource::File(&file.file)
+                        }
+                        ManifestBufferElementBinding::Inline(inline) => {
+                            ManifestBufferSource::Inline(&inline.inline)
+                        }
+                    };
+                    visit(logical_name, source)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn clone_or_load_buffer_asset(

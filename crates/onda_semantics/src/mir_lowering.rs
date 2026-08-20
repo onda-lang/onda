@@ -17,7 +17,7 @@ use onda_frontend::{
     ArrayElemType, AssignTarget, BinaryOp as AstBinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr,
     LogicalOp, ParamScale, PrimitiveType, SourceLoc, Stmt, INTERNAL_BUFFER_READ2_FN,
     INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
-    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 use onda_mir::{
     BinaryOp as MirBinaryOp, Block as MirBlock, BoundsMode, CallArgument, CompareOp,
@@ -26,6 +26,7 @@ use onda_mir::{
     SourceSpan, Statement, StatementKind, Type as MirType, TypeId, UnaryOp, Value,
 };
 
+use crate::indexed_read_source;
 use crate::internal_names::{
     runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol, PROC_INDEX_BASE_ARG,
     PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
@@ -36,11 +37,11 @@ use crate::{
     effective_untyped_assignment_type, eval_const_expr_i64_exact, intrinsic_result_type,
     merge_inferred_return_types, merge_numeric_types, parse_array_len_instance_base,
     parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base, resolve_call_args_at,
-    AggregateLayoutTable, AggregatePathComponent, AnalysisOptions, ProcSincStageStateFields,
-    ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType,
-    TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent, TypedEventParamDefault,
-    TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction, TypedNestedProcArray,
-    TypedParamControl, TypedProgram, TypedStructField, TypedValueRange,
+    AggregateLayoutTable, AggregatePathComponent, AnalysisOptions, IndexAccess,
+    ProcSincStageStateFields, ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView,
+    ReturnType, TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent,
+    TypedEventParamDefault, TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction,
+    TypedNestedProcArray, TypedParamControl, TypedProgram, TypedStructField, TypedValueRange,
 };
 
 const SINC_A1_COEFF: f64 = 0.039_151_597_734_460_045;
@@ -219,7 +220,7 @@ fn lower_scalar_user_functions_to_mir(
     }
 
     let mut types = mir.types.clone();
-    let mut const_data = mir.const_data.clone();
+    let mut pending_const_data = Vec::new();
     let mut const_arrays = HashMap::new();
     for array in &program.const_arrays {
         let len = u32::try_from(array.len).map_err(|_| {
@@ -228,19 +229,20 @@ fn lower_scalar_user_functions_to_mir(
                 SourceLoc::ZERO,
             )]
         })?;
-        let values = array
-            .values
-            .iter()
-            .copied()
-            .map(mir_scalar)
-            .collect::<Vec<_>>();
-        let index = if let Some(index) = const_data
+        let existing = mir
+            .const_data
             .iter()
             .position(|candidate| candidate.name == array.name)
-        {
-            let existing = &const_data[index];
+            .map(|index| (index, &mir.const_data[index]))
+            .or_else(|| {
+                pending_const_data
+                    .iter()
+                    .position(|candidate: &onda_mir::ConstData| candidate.name == array.name)
+                    .map(|index| (mir.const_data.len() + index, &pending_const_data[index]))
+            });
+        let index = if let Some((index, existing)) = existing {
             if existing.element != scalar_type(array.elem_ty)
-                || !scalar_values_exact_equal(&existing.values, &values)
+                || !typed_and_mir_scalar_values_exact_equal(&array.values, &existing.values)
             {
                 return Err(vec![MirLoweringError::new(
                     format!(
@@ -252,11 +254,11 @@ fn lower_scalar_user_functions_to_mir(
             }
             index
         } else {
-            let index = const_data.len();
-            const_data.push(onda_mir::ConstData {
+            let index = mir.const_data.len() + pending_const_data.len();
+            pending_const_data.push(onda_mir::ConstData {
                 name: array.name.clone(),
                 element: scalar_type(array.elem_ty),
-                values,
+                values: array.values.iter().copied().map(mir_scalar).collect(),
             });
             index
         };
@@ -311,7 +313,7 @@ fn lower_scalar_user_functions_to_mir(
         .map(|index| FunctionId::new((function_base + index) as u32))
         .collect::<Vec<_>>();
     mir.types = types;
-    mir.const_data = const_data;
+    mir.const_data.extend(pending_const_data);
     mir.source_files = source_files;
     mir.functions.extend(functions);
     Ok(ids)
@@ -430,6 +432,11 @@ fn lower_program_to_raw_mir(
         &function_indices,
         &function_ids,
     )?;
+    // Processor lowering intentionally begins with uniform flattened ABIs.
+    // Prune unused leaves before whole-program range propagation and initial
+    // validation so every subsequent compiler stage sees only live state.
+    onda_mir::prune_unused_function_parameters(&mut mir);
+    propagate_integer_storage_ranges(&mut mir);
     normalize_mir_source_paths(&mut mir);
     Ok(mir)
 }
@@ -1034,6 +1041,7 @@ fn populate_interface(
                 name: name.clone(),
                 ty: type_id,
                 persistence: onda_mir::StatePersistence::ControlMirror,
+                integer_range: None,
             });
             mir.interface.control_outputs.push(onda_mir::ControlOutput {
                 name: name.clone(),
@@ -1062,6 +1070,7 @@ fn populate_interface(
             name: name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::ControlMirror,
+            integer_range: None,
         });
         mir.interface.control_outputs.push(onda_mir::ControlOutput {
             name: name.clone(),
@@ -1460,6 +1469,13 @@ fn populate_state(
     mir: &mut onda_mir::Program,
     globals: &mut RuntimeGlobals,
 ) -> Result<(), Vec<MirLoweringError>> {
+    let state_integer_ranges = program
+        .state_integer_ranges
+        .iter()
+        .filter_map(|(name, range)| {
+            typed_integer_range_invariant(range).map(|range| (name.as_str(), range))
+        })
+        .collect::<HashMap<_, _>>();
     let proc_array_types = program
         .defs
         .iter()
@@ -1539,7 +1555,11 @@ fn populate_state(
             name: name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::Snapshot,
+            integer_range: state_integer_ranges.get(name.as_str()).copied(),
         });
+        if let Some(range) = mir.state[id.index()].integer_range {
+            globals.integer_ranges.insert(name.clone(), range);
+        }
         globals.states.insert(name.clone(), (id, ty));
     }
     for (name, types) in &program.state_tuples {
@@ -1603,6 +1623,7 @@ fn populate_state(
             name: array.name.clone(),
             ty: type_id,
             persistence,
+            integer_range: None,
         });
         globals
             .state_arrays
@@ -1630,6 +1651,7 @@ fn populate_state(
             name: active_name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::InstanceScratch,
+            integer_range: None,
         });
         globals
             .state_arrays
@@ -1725,6 +1747,7 @@ fn append_mir_sinc_stages(
                     ),
                     ty: intern_scalar_type(&mut mir.types, ty),
                     persistence: onda_mir::StatePersistence::Snapshot,
+                    integer_range: None,
                 });
                 id
             });
@@ -1912,6 +1935,7 @@ fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
         param_defaults: Vec::new(),
         param_kinds: Vec::new(),
         readonly_array_params: std::collections::HashSet::new(),
+        integer_range_params: HashMap::new(),
         return_ty: ReturnType::Scalar(PrimitiveType::F32),
         returns_value: false,
         local_scalar_types: HashMap::new(),
@@ -1954,26 +1978,6 @@ fn missing_interface_type(kind: &str, name: &str) -> MirLoweringError {
     )
 }
 
-fn call_resource_base(
-    name: &str,
-    args: &[onda_frontend::CallArg],
-    location: SourceLoc,
-) -> Result<String, MirLoweringError> {
-    let Some(first) = args.first() else {
-        return Err(MirLoweringError::new(
-            format!("resource builtin '{name}' is missing its base argument"),
-            location,
-        ));
-    };
-    let Expr::Var { name: base, .. } = &first.expr else {
-        return Err(MirLoweringError::new(
-            format!("resource builtin '{name}' base is not a direct resource symbol"),
-            first.expr.loc(),
-        ));
-    };
-    Ok(base.clone())
-}
-
 fn mir_scalar(value: TypedConstValue) -> ScalarValue {
     match value {
         TypedConstValue::F32(value) => ScalarValue::F32(value),
@@ -1984,14 +1988,14 @@ fn mir_scalar(value: TypedConstValue) -> ScalarValue {
     }
 }
 
-fn scalar_values_exact_equal(lhs: &[ScalarValue], rhs: &[ScalarValue]) -> bool {
+fn typed_and_mir_scalar_values_exact_equal(lhs: &[TypedConstValue], rhs: &[ScalarValue]) -> bool {
     lhs.len() == rhs.len()
         && lhs.iter().zip(rhs).all(|(lhs, rhs)| match (lhs, rhs) {
-            (ScalarValue::F32(lhs), ScalarValue::F32(rhs)) => lhs.to_bits() == rhs.to_bits(),
-            (ScalarValue::F64(lhs), ScalarValue::F64(rhs)) => lhs.to_bits() == rhs.to_bits(),
-            (ScalarValue::I32(lhs), ScalarValue::I32(rhs)) => lhs == rhs,
-            (ScalarValue::I64(lhs), ScalarValue::I64(rhs)) => lhs == rhs,
-            (ScalarValue::Bool(lhs), ScalarValue::Bool(rhs)) => lhs == rhs,
+            (TypedConstValue::F32(lhs), ScalarValue::F32(rhs)) => lhs.to_bits() == rhs.to_bits(),
+            (TypedConstValue::F64(lhs), ScalarValue::F64(rhs)) => lhs.to_bits() == rhs.to_bits(),
+            (TypedConstValue::I32(lhs), ScalarValue::I32(rhs)) => lhs == rhs,
+            (TypedConstValue::I64(lhs), ScalarValue::I64(rhs)) => lhs == rhs,
+            (TypedConstValue::Bool(lhs), ScalarValue::Bool(rhs)) => lhs == rhs,
             _ => false,
         })
 }
@@ -2087,6 +2091,7 @@ struct FunctionKey {
 #[derive(Debug, Default)]
 struct RuntimeGlobals {
     states: HashMap<String, (onda_mir::StateId, PrimitiveType)>,
+    integer_ranges: HashMap<String, onda_mir::IntegerRangeInvariant>,
     state_tuples: HashMap<String, Vec<(onda_mir::StateId, PrimitiveType)>>,
     state_arrays: HashMap<String, (onda_mir::StateId, PrimitiveType, u32)>,
     array_struct_roots: HashMap<String, (String, u32)>,
@@ -2657,6 +2662,7 @@ enum ContinueMode {
     For {
         index: LocalId,
         step: Value,
+        last: Option<Value>,
         source: SourceLoc,
     },
 }
@@ -2730,6 +2736,435 @@ fn scalar_type(ty: PrimitiveType) -> ScalarType {
         PrimitiveType::I32 => ScalarType::I32,
         PrimitiveType::I64 => ScalarType::I64,
         PrimitiveType::Bool => ScalarType::Bool,
+    }
+}
+
+fn integer_range_invariant(
+    expr: &Expr,
+    declared_ty: Option<PrimitiveType>,
+) -> Option<onda_mir::IntegerRangeInvariant> {
+    crate::typed_integer_range_from_expr(expr, declared_ty)
+        .as_ref()
+        .and_then(typed_integer_range_invariant)
+}
+
+fn typed_integer_range_invariant(
+    range: &crate::TypedIntegerRange,
+) -> Option<onda_mir::IntegerRangeInvariant> {
+    let (min, max) = match range.ty {
+        PrimitiveType::I32 => (
+            ScalarValue::I32(i32::try_from(range.min).ok()?),
+            ScalarValue::I32(i32::try_from(range.max).ok()?),
+        ),
+        PrimitiveType::I64 => (ScalarValue::I64(range.min), ScalarValue::I64(range.max)),
+        PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::Bool => return None,
+    };
+    Some(onda_mir::IntegerRangeInvariant {
+        min,
+        max,
+        mode: if range.wrap {
+            onda_mir::IntegerRangeMode::Wrap
+        } else {
+            onda_mir::IntegerRangeMode::Clamp
+        },
+    })
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RangeCandidate {
+    Unknown,
+    Known(onda_mir::IntegerRangeInvariant),
+    Conflict,
+}
+
+fn merge_range_candidate(
+    candidate: &mut RangeCandidate,
+    range: onda_mir::IntegerRangeInvariant,
+) -> bool {
+    let next = match *candidate {
+        RangeCandidate::Unknown => RangeCandidate::Known(range),
+        RangeCandidate::Known(existing) if existing == range => *candidate,
+        RangeCandidate::Known(_) => RangeCandidate::Conflict,
+        RangeCandidate::Conflict => RangeCandidate::Conflict,
+    };
+    let changed = next != *candidate;
+    *candidate = next;
+    changed
+}
+
+fn merge_range_candidate_state(candidate: &mut RangeCandidate, incoming: RangeCandidate) -> bool {
+    match incoming {
+        RangeCandidate::Unknown => false,
+        RangeCandidate::Known(range) => merge_range_candidate(candidate, range),
+        RangeCandidate::Conflict => {
+            let changed = *candidate != RangeCandidate::Conflict;
+            *candidate = RangeCandidate::Conflict;
+            changed
+        }
+    }
+}
+
+fn propagate_call_integer_ranges(
+    block: &MirBlock,
+    caller_params: &mut [RangeCandidate],
+    states: &mut [RangeCandidate],
+    callee_ranges: &[Vec<RangeCandidate>],
+) -> bool {
+    let mut changed = false;
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Call { function, args, .. } => {
+                for (argument, incoming) in args.iter().zip(&callee_ranges[function.index()]) {
+                    let CallArgument::Place(place) = argument else {
+                        continue;
+                    };
+                    if !place.projections.is_empty() {
+                        continue;
+                    }
+                    changed |= match place.base {
+                        PlaceBase::Parameter(parameter) => merge_range_candidate_state(
+                            &mut caller_params[parameter.index()],
+                            *incoming,
+                        ),
+                        PlaceBase::State(state) => {
+                            merge_range_candidate_state(&mut states[state.index()], *incoming)
+                        }
+                        _ => false,
+                    };
+                }
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                changed |=
+                    propagate_call_integer_ranges(then_block, caller_params, states, callee_ranges);
+                changed |=
+                    propagate_call_integer_ranges(else_block, caller_params, states, callee_ranges);
+            }
+            StatementKind::Loop { body } => {
+                changed |=
+                    propagate_call_integer_ranges(body, caller_params, states, callee_ranges);
+            }
+            _ => {}
+        }
+    }
+    changed
+}
+
+fn collect_forward_call_integer_ranges(
+    block: &MirBlock,
+    caller: usize,
+    parameter_ranges: &[Vec<RangeCandidate>],
+    state_ranges: &[RangeCandidate],
+    updates: &mut Vec<(usize, usize, RangeCandidate)>,
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Call { function, args, .. } => {
+                for (parameter, argument) in args.iter().enumerate() {
+                    let CallArgument::Place(place) = argument else {
+                        continue;
+                    };
+                    if !place.projections.is_empty() {
+                        continue;
+                    }
+                    let range = match place.base {
+                        PlaceBase::Parameter(parameter) => {
+                            parameter_ranges[caller][parameter.index()]
+                        }
+                        PlaceBase::State(state) => state_ranges[state.index()],
+                        _ => RangeCandidate::Unknown,
+                    };
+                    if range != RangeCandidate::Unknown {
+                        updates.push((function.index(), parameter, range));
+                    }
+                }
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_forward_call_integer_ranges(
+                    then_block,
+                    caller,
+                    parameter_ranges,
+                    state_ranges,
+                    updates,
+                );
+                collect_forward_call_integer_ranges(
+                    else_block,
+                    caller,
+                    parameter_ranges,
+                    state_ranges,
+                    updates,
+                );
+            }
+            StatementKind::Loop { body } => collect_forward_call_integer_ranges(
+                body,
+                caller,
+                parameter_ranges,
+                state_ranges,
+                updates,
+            ),
+            _ => {}
+        }
+    }
+}
+
+fn propagate_integer_storage_ranges(program: &mut onda_mir::Program) {
+    let mut parameter_ranges = program
+        .functions
+        .iter()
+        .map(|function| {
+            function
+                .params
+                .iter()
+                .map(|parameter| {
+                    parameter
+                        .integer_range
+                        .map_or(RangeCandidate::Unknown, RangeCandidate::Known)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut state_ranges = program
+        .state
+        .iter()
+        .map(|state| {
+            state
+                .integer_range
+                .map_or(RangeCandidate::Unknown, RangeCandidate::Known)
+        })
+        .collect::<Vec<_>>();
+    loop {
+        let mut changed = false;
+        let snapshot = parameter_ranges.clone();
+        for (function, ranges) in program.functions.iter().zip(&mut parameter_ranges) {
+            changed |=
+                propagate_call_integer_ranges(&function.body, ranges, &mut state_ranges, &snapshot);
+        }
+        let state_snapshot = state_ranges.clone();
+        let mut updates = Vec::new();
+        for (caller, function) in program.functions.iter().enumerate() {
+            collect_forward_call_integer_ranges(
+                &function.body,
+                caller,
+                &snapshot,
+                &state_snapshot,
+                &mut updates,
+            );
+        }
+        for (function, parameter, range) in updates {
+            changed |=
+                merge_range_candidate_state(&mut parameter_ranges[function][parameter], range);
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (function, ranges) in program.functions.iter_mut().zip(parameter_ranges) {
+        for (parameter, range) in function.params.iter_mut().zip(ranges) {
+            parameter.integer_range = match range {
+                RangeCandidate::Known(range) => Some(range),
+                RangeCandidate::Unknown | RangeCandidate::Conflict => None,
+            };
+        }
+    }
+    for (state, range) in program.state.iter_mut().zip(state_ranges) {
+        state.integer_range = match range {
+            RangeCandidate::Known(range) => Some(range),
+            RangeCandidate::Unknown | RangeCandidate::Conflict => None,
+        };
+    }
+    annotate_structured_for_body_ranges(program);
+}
+
+fn value_integer_interval(
+    value: Value,
+    ranges: &onda_mir::FunctionRangeAnalysis,
+) -> Option<(i64, i64)> {
+    match value {
+        Value::Constant(ScalarValue::I32(value)) => Some((i64::from(value), i64::from(value))),
+        Value::Constant(ScalarValue::I64(value)) => Some((value, value)),
+        Value::Constant(_) => None,
+        Value::Local(local) => ranges.local(local).map(|range| (range.min(), range.max())),
+    }
+}
+
+fn find_for_body_copy(
+    function: &onda_mir::Function,
+    block: &MirBlock,
+) -> Option<(LocalId, LocalId)> {
+    for statement in &block.statements {
+        if let StatementKind::Assign {
+            destination:
+                Place {
+                    base: PlaceBase::Local(body),
+                    projections,
+                },
+            value: Rvalue::Use(Value::Local(counter)),
+        } = &statement.kind
+        {
+            if projections.is_empty()
+                && function.locals[body.index()]
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with(".$forward_body"))
+            {
+                return Some((*body, *counter));
+            }
+        }
+    }
+    None
+}
+
+fn find_positive_for_upper_bound(
+    block: &MirBlock,
+    counter: LocalId,
+    ranges: &onda_mir::FunctionRangeAnalysis,
+) -> Option<i64> {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Assign {
+                value: Rvalue::Compare { op, lhs, rhs },
+                ..
+            } if *lhs == Value::Local(counter)
+                && matches!(op, CompareOp::Less | CompareOp::LessEqual) =>
+            {
+                let (_, upper) = value_integer_interval(*rhs, ranges)?;
+                return if *op == CompareOp::Less {
+                    upper.checked_sub(1)
+                } else {
+                    Some(upper)
+                };
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                if let Some(upper) = find_positive_for_upper_bound(then_block, counter, ranges)
+                    .or_else(|| find_positive_for_upper_bound(else_block, counter, ranges))
+                {
+                    return Some(upper);
+                }
+            }
+            StatementKind::Loop { body } => {
+                if let Some(upper) = find_positive_for_upper_bound(body, counter, ranges) {
+                    return Some(upper);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn collect_for_body_range_annotations(
+    function: &onda_mir::Function,
+    block: &MirBlock,
+    ranges: &onda_mir::FunctionRangeAnalysis,
+    starts: &mut HashMap<LocalId, i64>,
+    annotations: &mut Vec<(LocalId, onda_mir::IntegerRangeInvariant)>,
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Assign {
+                destination:
+                    Place {
+                        base: PlaceBase::Local(local),
+                        projections,
+                    },
+                value,
+            } if projections.is_empty() => {
+                if let Rvalue::Use(value) = value {
+                    if let Some((min, max)) = value_integer_interval(*value, ranges) {
+                        if min == max {
+                            starts.insert(*local, min);
+                            continue;
+                        }
+                    }
+                }
+                starts.remove(local);
+            }
+            StatementKind::Loop { body } => {
+                if let Some((body_local, counter)) = find_for_body_copy(function, body) {
+                    if let Some((start, upper)) = starts
+                        .get(&counter)
+                        .copied()
+                        .zip(find_positive_for_upper_bound(body, counter, ranges))
+                    {
+                        if let (Ok(start), Ok(upper)) = (i32::try_from(start), i32::try_from(upper))
+                        {
+                            if start <= upper {
+                                annotations.push((
+                                    body_local,
+                                    onda_mir::IntegerRangeInvariant {
+                                        min: ScalarValue::I32(start),
+                                        max: ScalarValue::I32(upper),
+                                        mode: onda_mir::IntegerRangeMode::Clamp,
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
+                let mut nested_starts = starts.clone();
+                collect_for_body_range_annotations(
+                    function,
+                    body,
+                    ranges,
+                    &mut nested_starts,
+                    annotations,
+                );
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                let mut then_starts = starts.clone();
+                collect_for_body_range_annotations(
+                    function,
+                    then_block,
+                    ranges,
+                    &mut then_starts,
+                    annotations,
+                );
+                let mut else_starts = starts.clone();
+                collect_for_body_range_annotations(
+                    function,
+                    else_block,
+                    ranges,
+                    &mut else_starts,
+                    annotations,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn annotate_structured_for_body_ranges(program: &mut onda_mir::Program) {
+    for function_index in 0..program.functions.len() {
+        let ranges = onda_mir::analyze_integer_ranges(
+            program,
+            onda_mir::FunctionId::new(function_index as u32),
+        );
+        let mut annotations = Vec::new();
+        collect_for_body_range_annotations(
+            &program.functions[function_index],
+            &program.functions[function_index].body,
+            &ranges,
+            &mut HashMap::new(),
+            &mut annotations,
+        );
+        for (local, range) in annotations {
+            program.functions[function_index].locals[local.index()].integer_range = Some(range);
+        }
     }
 }
 
@@ -3046,6 +3481,15 @@ fn map_intrinsic(function: BuiltinFn) -> Intrinsic {
         BuiltinFn::Max => Intrinsic::Max,
         BuiltinFn::Fma => Intrinsic::Fma,
         BuiltinFn::RangeClamp => Intrinsic::RangeClamp,
+        BuiltinFn::RangeWrap => Intrinsic::RangeWrap,
+        BuiltinFn::BindingCountClamp
+        | BuiltinFn::BindingRangeClamp
+        | BuiltinFn::BindingRangeInclusiveClamp
+        | BuiltinFn::BindingCountWrap
+        | BuiltinFn::BindingRangeWrap
+        | BuiltinFn::BindingRangeInclusiveWrap => {
+            unreachable!("binding ranges must be canonicalized before MIR lowering")
+        }
     }
 }
 

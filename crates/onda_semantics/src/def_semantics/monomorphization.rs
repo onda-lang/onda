@@ -286,23 +286,20 @@ pub(crate) fn refresh_monomorphized_return_types(
     env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> bool {
-    let mut combined_defs = Vec::with_capacity(original_defs.len() + generated_defs.len());
-    combined_defs.extend_from_slice(original_defs);
-    combined_defs.extend_from_slice(generated_defs);
-
-    let mut combined_sigs = fn_signatures.clone();
-    for (name, sig) in generated_sigs {
-        combined_sigs.insert(name.clone(), sig.clone());
-    }
-
     // Strict return inference publishes only results whose complete expression
     // dependencies are known. Keep dependent templates in the input so a
     // result that does not depend on their open parameters (for example
     // `def len(value): return 1`) remains available to nested call inference.
     // A result that actually reads an open parameter or unresolved call is
     // withheld by `infer_known_def_return_types` itself.
-    let refreshed =
-        infer_known_def_return_types(&combined_defs, &combined_sigs, env_seed, struct_defs);
+    let refreshed = infer_known_def_return_types(
+        original_defs,
+        generated_defs,
+        fn_signatures,
+        generated_sigs,
+        env_seed,
+        struct_defs,
+    );
     if *return_types == refreshed {
         return false;
     }
@@ -1839,17 +1836,22 @@ fn monomorphize_calls_in_expr(
                 };
                 let (gen_def, gen_sig) =
                     generate_mono_def(original, sig, &keys, &new_name, *loc, errors);
-                generated_defs.push(gen_def);
-                generated_sigs.insert(new_name.clone(), gen_sig);
-                refresh_monomorphized_return_types(
-                    return_types,
-                    original_defs,
-                    generated_defs,
-                    fn_signatures,
-                    generated_sigs,
+                // The existing map is already at a strict fixed point. Only
+                // the appended specialization is new here; the phase-boundary
+                // refresh below still handles dependencies exposed while
+                // generated bodies are rewritten.
+                let generated_return_type = infer_known_def_return_type(
+                    &gen_def,
+                    &gen_sig,
                     owner.return_type_env,
+                    return_types,
                     struct_defs,
                 );
+                generated_defs.push(gen_def);
+                generated_sigs.insert(new_name.clone(), gen_sig);
+                if let Some(return_type) = generated_return_type {
+                    return_types.insert(new_name.clone(), return_type);
+                }
 
                 mono_cache.insert(cache_key, new_name.clone());
                 new_name

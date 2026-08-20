@@ -59,7 +59,7 @@ Tagged releases attach portable tarballs and publish the four public npm package
 - [docs/stdlib.md](docs/stdlib.md): generated standard-library API reference; after changing
   `stdlib/`, update it with `scripts/update_stdlib_docs.sh` on Unix or
   `scripts/update_stdlib_docs.ps1` on Windows
-- [docs/info.md](docs/info.md): project structure and implementation notes
+- [docs/architecture.md](docs/architecture.md): compiler architecture and codebase navigation
 - [docs/projects.md](docs/projects.md): project manifests, typed buffer assets, and project images
 - [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
 - [docs/processor-abi.md](docs/processor-abi.md): generic processor ABI and target/artifact profiles
@@ -76,34 +76,19 @@ The CLI surface is:
 
 ```text
 onda
-onda project <directory> [--from <input.onda>] [--buffer <name=path>]
 onda compile <input>
-onda lsp
 onda run [input] [--theme <auto|dark|light>]
 onda run play <input>
 onda run render <input>
+onda project <directory> [--from <input.onda>] [--buffer <name=path>]
 onda daemon diagnose <input>
 onda daemon stdio
+onda lsp
 ```
 
 `<input>` may be an `.onda` source file or an `.ondaproject` project file.
 
 For a full list of all commands and their flags, run the help file via `onda --help`.
-
-### `onda project`
-
-Creates an empty, editable Onda project folder with a project file named after the target,
-`code/main.onda`, and an `assets` directory. With `--from`, it instead captures an existing source
-graph and packages supplied buffers into canonical project assets.
-
-```bash
-onda project my-project
-onda run my-project/my-project.ondaproject
-
-onda project portable-sampler \
-  --from sampler.onda \
-  --buffer sample=recording.wav
-```
 
 ### `onda compile`
 
@@ -199,6 +184,21 @@ Useful flags:
 - `--set name=value`
 - `--buffer name=path`
 
+### `onda project`
+
+Creates an empty, editable Onda project folder with a project file named after the target,
+`code/main.onda`, and an `assets` directory. With `--from`, it instead captures an existing source
+graph and packages supplied buffers into canonical project assets.
+
+```bash
+onda project my-project
+onda run my-project/my-project.ondaproject
+
+onda project portable-sampler \
+  --from sampler.onda \
+  --buffer sample=recording.wav
+```
+
 ### `onda daemon diagnose`
 
 Runs daemon-backed analysis for a file and reports diagnostics.
@@ -227,29 +227,8 @@ onda lsp
 Current LSP support includes:
 - open, change, save, and close document tracking
 - immediate diagnostics on open/save and debounced diagnostics while editing
-- context-aware completion, including separate `plugin_midi_*` and `plugin_host_*` event helpers
+- syntax highlighting, hover, context-aware completion including separate `plugin_midi_*` and `plugin_host_*` event helpers
 - semantic tokens for constants, params, ports, and init-scoped variables
-
-## Updating the project version
-
-After changing `[workspace.package].version` in `Cargo.toml`, synchronize `Cargo.lock`, the npm
-package manifests, internal package dependencies, and `package-lock.json`:
-
-```bash
-./scripts/sync-versions.sh
-```
-
-PowerShell:
-
-```powershell
-.\scripts\sync-versions.ps1
-```
-
-Pass `--check` to the Bash script or `-Check` to the PowerShell script to verify without modifying
-files. CI and release workflows run this check automatically.
-
-Wire-format versions are maintained independently in `format-versions.json`. The same sync command
-propagates them to the Rust, JavaScript, TypeScript, C, and example-facing constants.
 
 ## Building `onda` from source
 

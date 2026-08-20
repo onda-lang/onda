@@ -169,6 +169,9 @@ Math intrinsics express Onda semantics, not a target implementation. LLVM may ma
 LLVM IR or libm; WebAssembly may map it to a native instruction or an Onda-supplied math function.
 The compiler-generated `range_clamp(value, min, max)` intrinsic evaluates its three operands once,
 preserves their scalar type, clamps to the inclusive bounds, and maps a floating NaN to `min`.
+`range_wrap(value, min, max)` is the corresponding integer-only operation. It computes exact
+inclusive modular normalization for `i32` and `i64`, including the complete signed domain, without
+overflow in an intermediate operation.
 In particular, `fma` requires one correctly rounded product-plus-add operation: a backend must not
 replace it with separately rounded multiply and add instructions. Because core WebAssembly has no
 scalar FMA or transcendental instructions, the Binaryen backend links the required pure-Wasm
@@ -233,15 +236,19 @@ explicit check. `OptimizedProgram` additionally proves that the shared MIR clean
 its fixed point. Raw `Program` entry points must validate and optimize before delegating to backend
 codegen.
 
-Unchecked bounds are a separate producer proof, not an assertion source code or a serialized
-program may make about itself. The safe `validate`, `validate_owned`, `from_json`, and
-`from_messagepack` entry points reject every reachable `BoundsMode::Unchecked` operation. Source
-buffer access is always clamped. Onda's semantic lowerer may use the explicit unsafe
-trusted-producer constructors only for accesses whose bounds it established while constructing
-MIR. That provenance is retained by `ValidatedProgram` and revalidated without being downgraded
-after every shared pass. Raw LLVM and Binaryen APIs therefore cannot accidentally turn untrusted
-unchecked indexing into memory unsafety; a trusted backend boundary must be named at the call site
-and document the producer whose proof it accepts.
+Unchecked bounds and declared integer-range invariants are producer proofs, not assertions a
+serialized program may make about itself. The safe `validate`, `validate_owned`, `from_json`, and
+`from_messagepack` entry points reject every reachable `BoundsMode::Unchecked` operation and every
+untrusted integer-range invariant. Ordinary source indexing is clamped. The semantic lowerer and
+shared optimizer may use the explicit trusted-producer constructors for accesses proven safe from
+compiler-owned range facts. The trusted contract also requires each integer invariant to contain
+every observable value, including caller-supplied parameters and externally restored state, because
+backends may consume it as a hard optimization assumption. Source `read_unsafe` and `write_unsafe`
+deliberately establish the same trusted boundary from an explicit programmer contract. That
+provenance is retained by `ValidatedProgram` and revalidated without being downgraded after every
+shared pass. Raw LLVM and Binaryen APIs therefore cannot accidentally turn claims in untrusted MIR
+into memory unsafety; a trusted backend boundary must be named at the call site and document the
+producer whose proof it accepts.
 
 Invalid MIR is always a compiler bug and must be reported as an internal diagnostic with source
 context where possible.
@@ -269,9 +276,12 @@ a register local must legalize that case explicitly.
 Loop-written locals and locals passed by read-write reference invalidate propagation facts. Memory
 and descriptor loads remain outside common-subexpression elimination until provenance proves their
 source. The zero-store analysis stops conservatively across calls, structured control flow, or
-unknown aliases. `canonicalize` performs one validated structural round. `optimize` runs its trusted
-monotonic cleanup to a fixed point, validates the completed pipeline once, and returns `PassStats`
-with an opaque `OptimizedProgram`.
+unknown aliases. Unused internal function parameters and their call arguments are removed to a
+fixed point across forwarding chains. A parameter remains when preparing its argument can fail at
+any call site: this preserves checked fixed-range addressing and checked or clamped dynamic-slice
+addressing even when the callee never reads the resulting reference. `canonicalize` performs one
+validated structural round. `optimize` runs its trusted monotonic cleanup to a fixed point,
+validates the completed pipeline once, and returns `PassStats` with an opaque `OptimizedProgram`.
 
 `analysis.rs` exposes call-transitive logical effect summaries, per-interface-buffer reachable-write
 effects, and conservative integer ranges. Buffer-write effects trace direct stores, buffer
@@ -279,7 +289,27 @@ parameters, slice aliases, calls, and all init/process/event roots; they are dis
 buffer's declared read-only/read-write access capability. General effects distinguish state,
 interface parameters, audio I/O, external buffers, constant data, event payloads, indirect
 descriptors, and per-reference reads/writes without encoding a target ABI. Range facts include the
-segmented-process contract, interface declarations, constants, and operations that cannot overflow.
+segmented-process contract, interface declarations, constants, ranged `i32`/`i64` parameters,
+locals and state, and operations that cannot overflow. A ranged storage declaration is represented
+as an optional inclusive `integer_range` invariant while retaining its ordinary scalar physical
+type. Source `[begin, end)` domains lower this invariant to `begin..=end - 1`. State promotion and
+call lowering preserve those facts. The shared bounds-proof pass changes
+`Clamp` or `Checked` to trusted `Unchecked` only when the complete analyzed index interval fits a
+fixed array, fixed interface array, constant-data array, projection, fixed array window, or fixed
+buffer-collection selector. Compiler-generated dispatch over fixed interface, struct, and processor
+surfaces uses the same canonical integer range normalization; the pass removes that normalization
+when the selector interval already fits. Bounds proofs run after structural cleanup in each fixed-point
+round, allowing removed branches, unreachable assignments, and newly exposed constants to tighten
+the ranges used by the next proof.
+Source `for` variables remain `i32`. Constant loops use an `i32` induction counter and a
+compile-time-computed final iteration, so every increment is proven not to overflow without adding
+a checked-arithmetic branch. Dynamic loops also use `i32` directly: lowering does not insert a
+hidden widened counter, a per-iteration truncation, or overflow checks. As with ordinary integer
+arithmetic, source code is responsible for choosing bounds and a step that progress to termination
+without overflowing. The body receives an immutable `i32` copy after the loop guard. Constant loops
+attach their exact body interval to that copy as a producer-proved range fact; this performs no
+runtime clamping and lets the shared bounds-proof pass cover arrays, interface surfaces, data-struct
+arrays, and processor arrays uniformly.
 Failure effects distinguish checked fixed-range access from clamped access, which is non-failing for
 nonempty fixed arrays, ports, constant data, and validated external buffers. Clamped dynamic-slice
 element access may still fail on an empty slice, and slice windows may fail their dynamic shape
@@ -295,7 +325,8 @@ on one backend's optimizer.
 
 LLVM codegen carries MIR facts into function, parameter, and call-site attributes: memory-free or
 read-only functions, reference read/write direction, no-capture/non-null/dereferenceable pointers,
-non-throwing/non-allocating behavior, and constant ranges for process segment arguments. It then
+non-throwing/non-allocating behavior, constant ranges for process and ranged value arguments, and
+`!range` metadata on direct loads from ranged locals, parameters, interface parameters, and state. It then
 applies the standard target-aware O3 pipeline, including LLVM's ordinary loop and SLP vectorization
 decisions. MIR does not inject loop hints or override those target heuristics. The output-transaction
 form and alias metadata expose independent work to the backend, while another backend remains free

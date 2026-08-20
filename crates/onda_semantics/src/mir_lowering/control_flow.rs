@@ -1,6 +1,12 @@
 use super::*;
 use crate::def_semantics::call_types::StatementFlow;
 
+#[derive(Clone, Copy)]
+enum StaticForPlan {
+    Empty,
+    NonEmpty { min: i32, max: i32, last: i32 },
+}
+
 impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_statements(
         &mut self,
@@ -23,6 +29,7 @@ impl<'a> FunctionLowerer<'a> {
                     loc,
                     ..
                 } => {
+                    let declared_integer_range = integer_range_invariant(expr, *decl_ty);
                     if let AssignTarget::Var(name) = target {
                         if self.is_slice_expression(expr) {
                             let slice = self.lower_slice_expression(expr, None, block)?;
@@ -100,6 +107,13 @@ impl<'a> FunctionLowerer<'a> {
                                     block,
                                     (*loc).into(),
                                 )?;
+                                if let Some(range) = declared_integer_range {
+                                    if let Some(Binding::Local(local, _)) =
+                                        self.bindings.get(name).cloned()
+                                    {
+                                        self.locals[local.index()].integer_range = Some(range);
+                                    }
+                                }
                             }
                         }
                         AssignTarget::Tuple(targets) => self.assign_destructured_values(
@@ -317,8 +331,9 @@ impl<'a> FunctionLowerer<'a> {
                         ContinueMode::For {
                             index,
                             step,
+                            last,
                             source,
-                        } => self.emit_for_increment(block, index, step, source),
+                        } => self.emit_for_latch(block, index, step, last, source),
                     }
                     self.push_statement(block, StatementKind::Continue, (*loc).into());
                     StatementFlow::Terminates
@@ -345,27 +360,60 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<(), MirLoweringError> {
         let start_value = self.lower_expr(start, destination)?;
         let start_value = self.coerce(start_value, PrimitiveType::I32, destination, start.loc())?;
-        let start_value = self.snapshot(start_value, destination, start.loc());
 
         let end_value = self.lower_expr(end, destination)?;
         let end_value = self.coerce(end_value, PrimitiveType::I32, destination, end.loc())?;
-        let end_value = self.snapshot(end_value, destination, end.loc());
 
         let step_value = if let Some(step) = step {
             let value = self.lower_expr(step, destination)?;
-            let value = self.coerce(value, PrimitiveType::I32, destination, step.loc())?;
-            self.snapshot(value, destination, step.loc())
+            self.coerce(value, PrimitiveType::I32, destination, step.loc())?
         } else {
             LoweredValue {
                 value: Value::Constant(ScalarValue::I32(1)),
                 ty: PrimitiveType::I32,
             }
         };
+        let forward_unit_step = step_value.value == Value::Constant(ScalarValue::I32(1));
+
+        let static_plan = static_for_plan(
+            start_value.value,
+            end_value.value,
+            step_value.value,
+            end_inclusive,
+        );
+        if matches!(static_plan, Some(StaticForPlan::Empty)) {
+            return Ok(());
+        }
+        let (start_value, end_value, step_value, last, body_range) = match static_plan {
+            Some(StaticForPlan::NonEmpty { min, max, last }) => (
+                start_value,
+                end_value,
+                step_value,
+                Some(Value::Constant(ScalarValue::I32(last))),
+                Some(onda_mir::IntegerRangeInvariant {
+                    min: ScalarValue::I32(min),
+                    max: ScalarValue::I32(max),
+                    mode: onda_mir::IntegerRangeMode::Clamp,
+                }),
+            ),
+            None => {
+                let start_value = self.snapshot(start_value, destination, start.loc());
+                let end_value = self.snapshot(end_value, destination, end.loc());
+                let step_location = step.map_or(location, Expr::loc);
+                let step_value = self.snapshot(step_value, destination, step_location);
+                (start_value, end_value, step_value, None, None)
+            }
+            Some(StaticForPlan::Empty) => unreachable!("empty loops return above"),
+        };
 
         self.stop_prezeroed_init_state_proof();
         let outer_bindings = self.bindings.clone();
         let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
-        let index = self.new_local(Some(variable.to_owned()), PrimitiveType::I32);
+        // The source-language loop variable and its induction counter are i32
+        // end to end. Constant loops stop at their statically computed final
+        // iteration; dynamic loops retain ordinary i32 arithmetic without a
+        // hidden widening/narrowing path in the loop body.
+        let index = self.new_local(Some(format!("{variable}.$induction")), PrimitiveType::I32);
         self.push_statement(
             destination,
             StatementKind::Assign {
@@ -375,18 +423,37 @@ impl<'a> FunctionLowerer<'a> {
             location,
         );
 
+        let mut loop_body = MirBlock::default();
+        if last.is_none() {
+            self.emit_for_guard(
+                &mut loop_body,
+                index,
+                end_value.value,
+                step_value.value,
+                end_inclusive,
+                location,
+            );
+        }
+        let body_index = self.new_local(
+            Some(if forward_unit_step {
+                format!("{variable}.$forward_body")
+            } else {
+                format!("{variable}.$body")
+            }),
+            PrimitiveType::I32,
+        );
+        self.locals[body_index.index()].integer_range = body_range;
+        self.push_statement(
+            &mut loop_body,
+            StatementKind::Assign {
+                destination: Place::local(body_index),
+                value: Rvalue::Use(Value::Local(index)),
+            },
+            location,
+        );
         self.bindings.insert(
             variable.to_owned(),
-            Binding::Local(index, PrimitiveType::I32),
-        );
-        let mut loop_body = MirBlock::default();
-        self.emit_for_guard(
-            &mut loop_body,
-            index,
-            end_value.value,
-            step_value.value,
-            end_inclusive,
-            location,
+            Binding::Local(body_index, PrimitiveType::I32),
         );
         let body_flow = self.lower_statements(
             body,
@@ -394,11 +461,12 @@ impl<'a> FunctionLowerer<'a> {
             ContinueMode::For {
                 index,
                 step: step_value.value,
+                last,
                 source: location,
             },
         )?;
         if body_flow == StatementFlow::Continues {
-            self.emit_for_increment(&mut loop_body, index, step_value.value, location);
+            self.emit_for_latch(&mut loop_body, index, step_value.value, last, location);
         }
 
         self.bindings = outer_bindings;
@@ -647,6 +715,16 @@ impl<'a> FunctionLowerer<'a> {
         else_block: &mut MirBlock,
         location: SourceLoc,
     ) -> Result<Option<(LocalId, PrimitiveType)>, MirLoweringError> {
+        if self.locals[then_local.index()].integer_range
+            != self.locals[else_local.index()].integer_range
+        {
+            return Err(self.error(
+                format!(
+                    "binding '{name}' reached MIR lowering with incompatible branch integer range contracts"
+                ),
+                location,
+            ));
+        }
         if then_ty == else_ty && self.local_types_match(then_local, else_local) {
             self.copy_branch_local(else_block, then_local, else_local, location);
             return Ok(Some((then_local, then_ty)));
@@ -779,15 +857,17 @@ impl<'a> FunctionLowerer<'a> {
         );
     }
 
-    pub(super) fn emit_for_increment(
+    pub(super) fn emit_for_latch(
         &mut self,
         block: &mut MirBlock,
         index: LocalId,
         step: Value,
+        last: Option<Value>,
         location: SourceLoc,
     ) {
+        let mut increment = MirBlock::default();
         self.push_statement(
-            block,
+            &mut increment,
             StatementKind::Assign {
                 destination: Place::local(index),
                 value: Rvalue::Binary {
@@ -798,5 +878,66 @@ impl<'a> FunctionLowerer<'a> {
             },
             location,
         );
+        let Some(last) = last else {
+            block.statements.extend(increment.statements);
+            return;
+        };
+        let at_last =
+            self.compare_value(block, CompareOp::Equal, Value::Local(index), last, location);
+        let mut finished = MirBlock::default();
+        self.push_statement(&mut finished, StatementKind::Break, location);
+        self.push_statement(
+            block,
+            StatementKind::If {
+                condition: at_last,
+                then_block: finished,
+                else_block: increment,
+            },
+            location,
+        );
     }
+}
+
+fn static_for_plan(
+    start: Value,
+    end: Value,
+    step: Value,
+    inclusive: bool,
+) -> Option<StaticForPlan> {
+    let Value::Constant(ScalarValue::I32(start)) = start else {
+        return None;
+    };
+    let Value::Constant(ScalarValue::I32(end)) = end else {
+        return None;
+    };
+    let Value::Constant(ScalarValue::I32(step)) = step else {
+        return None;
+    };
+    if step == 0 {
+        return None;
+    }
+
+    let start = i64::from(start);
+    let end = i64::from(end);
+    let step = i64::from(step);
+    let last = if step > 0 {
+        let upper = if inclusive { end } else { end - 1 };
+        if start > upper {
+            return Some(StaticForPlan::Empty);
+        }
+        start + ((upper - start) / step) * step
+    } else {
+        let lower = if inclusive { end } else { end + 1 };
+        if start < lower {
+            return Some(StaticForPlan::Empty);
+        }
+        start - ((start - lower) / -step) * -step
+    };
+    let last = i32::try_from(last).expect("an i32-bounded loop has an i32 final iteration");
+    let start = start as i32;
+    Some(StaticForPlan::NonEmpty {
+        min: start.min(last),
+        max: start.max(last),
+        last,
+    })
 }

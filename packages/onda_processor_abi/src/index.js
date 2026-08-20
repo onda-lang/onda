@@ -4,8 +4,8 @@ const PARAM_CONTROL = globalThis.__ONDA_PARAM_CONTROL_V2__;
 
 export const PROCESSOR_ARTIFACT_FORMAT = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 3;
-export const PROCESSOR_ABI_VERSION = 3;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 4;
+export const PROCESSOR_ABI_VERSION = 4;
 export const PROCESSOR_EXECUTION_OK = 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
@@ -482,6 +482,38 @@ function validateStateMetadata(value, path) {
   );
   requireInteger(value?.byte_size, `${path}.byte_size`, 1);
   requireScalarLayout(value, path);
+  const range = value?.integer_range;
+  if (range === undefined || range === null) return;
+  if (value.scalar !== "i32" && value.scalar !== "i64") {
+    throw new OndaArtifactError(`${path}.integer_range requires i32 or i64 state`);
+  }
+  if (value.array_len !== 1) {
+    throw new OndaArtifactError(`${path}.integer_range requires scalar state`);
+  }
+  if (range.mode !== "clamp" && range.mode !== "wrap") {
+    throw new OndaArtifactError(`${path}.integer_range.mode must be 'clamp' or 'wrap'`);
+  }
+  const parseEndpoint = (endpoint, endpointPath) => {
+    if (endpoint?.type !== value.scalar) {
+      throw new OndaArtifactError(`${endpointPath}.type must match state scalar '${value.scalar}'`);
+    }
+    requireString(endpoint?.value, `${endpointPath}.value`);
+    if (!/^-?(0|[1-9][0-9]*)$/.test(endpoint.value)) {
+      throw new OndaArtifactError(`${endpointPath}.value must be a canonical decimal integer`);
+    }
+    const parsed = BigInt(endpoint.value);
+    const minimum = value.scalar === "i32" ? -(1n << 31n) : -(1n << 63n);
+    const maximum = value.scalar === "i32" ? (1n << 31n) - 1n : (1n << 63n) - 1n;
+    if (parsed < minimum || parsed > maximum) {
+      throw new OndaArtifactError(`${endpointPath}.value exceeds ${value.scalar}`);
+    }
+    return parsed;
+  };
+  const minimum = parseEndpoint(range.min, `${path}.integer_range.min`);
+  const maximum = parseEndpoint(range.max, `${path}.integer_range.max`);
+  if (minimum > maximum) {
+    throw new OndaArtifactError(`${path}.integer_range minimum exceeds maximum`);
+  }
 }
 
 function validateRuntimeLayouts(descriptor) {

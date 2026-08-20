@@ -29,6 +29,30 @@ sample:
 }
 
 #[test]
+fn ranged_integer_params_normalize_raw_host_values_at_process_entry() {
+    let source = r#"
+params:
+  index: i32 = 0 {min = 0, max = 3}
+
+outs:
+  out1
+
+sample:
+  out1 = f32(index)
+"#;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32];
+    for (raw, expected) in [(100_i32, 3.0_f32), (-100_i32, 0.0_f32)] {
+        set_param_by_index(&mut instance, 0, &raw.to_ne_bytes()).expect("set raw i32 param");
+        process_interleaved(&mut instance, &[], &mut output, 1).expect("process ranged param");
+        assert_eq!(output, [expected]);
+    }
+}
+
+#[test]
 fn mixed_width_stdlib_clamp_and_lerp_preserve_f64_distinctions() {
     let frames = 4;
     let src = r#"

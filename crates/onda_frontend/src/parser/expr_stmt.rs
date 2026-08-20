@@ -385,7 +385,24 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 ty_pair
             };
             let typed_decl_ty_loc = stmt_loc_from_pair(&ty_pair);
-            let expr_pair = typed_inner.next();
+            let next_pair = typed_inner.next();
+            let (expr_pair, range_pair) = match next_pair {
+                Some(pair) if pair.as_rule() == Rule::binding_range => (None, Some(pair)),
+                Some(pair) => (Some(pair), typed_inner.next()),
+                None => (None, None),
+            };
+            if typed_inner.next().is_some() {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "unexpected trailing typed declaration fields",
+                )]);
+            }
+            if range_pair.is_some() && ty_pair.as_rule() != Rule::type_name {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "binding ranges require an i32 or i64 scalar declaration",
+                )]);
+            }
             match ty_pair.as_rule() {
                 Rule::type_name => {
                     let Some(expr_pair) = expr_pair else {
@@ -395,6 +412,23 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         )]);
                     };
                     let decl_ty = parse_primitive_type(ty_pair.as_str()).map_err(|d| vec![d])?;
+                    if range_pair.is_some()
+                        && !matches!(decl_ty, PrimitiveType::I32 | PrimitiveType::I64)
+                    {
+                        return Err(vec![syntax_at_loc(
+                            loc.as_ref(),
+                            "binding ranges require an i32 or i64 declaration",
+                        )]);
+                    }
+                    let mut expr = parse_expr(expr_pair)?;
+                    if let Some(range_pair) = range_pair {
+                        let (func, lower, upper) = parse_binding_range_pair(range_pair)?;
+                        expr = Expr::Call {
+                            loc,
+                            func,
+                            args: vec![expr, lower, upper],
+                        };
+                    }
                     Ok(Stmt::Assign {
                         loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
@@ -403,7 +437,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
-                        expr: parse_expr(expr_pair)?,
+                        expr,
                     })
                 }
                 Rule::array_type => {
@@ -508,6 +542,95 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                     "unexpected typed declaration type",
                 )]),
             }
+        }
+        Rule::compound_assign_stmt => {
+            let mut compound_inner = kind_pair.into_inner();
+            let Some(target_pair) = compound_inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing compound assignment target",
+                )]);
+            };
+            let Some(op_pair) = compound_inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing compound assignment operator",
+                )]);
+            };
+            let Some(rhs_pair) = compound_inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing compound assignment expression",
+                )]);
+            };
+            let op = match op_pair.as_str() {
+                "+=" => BinaryOp::Add,
+                "-=" => BinaryOp::Sub,
+                "*=" => BinaryOp::Mul,
+                "/=" => BinaryOp::Div,
+                "%=" => BinaryOp::Mod,
+                "&=" => BinaryOp::BitAnd,
+                "|=" => BinaryOp::BitOr,
+                "^=" => BinaryOp::BitXor,
+                "<<=" => BinaryOp::ShiftLeft,
+                ">>=" => BinaryOp::ShiftRight,
+                other => {
+                    return Err(vec![syntax_at_pair(
+                        &op_pair,
+                        format!("unknown compound assignment operator '{other}'"),
+                    )]);
+                }
+            };
+            let target_name = target_pair.as_str().to_owned();
+            Ok(Stmt::Assign {
+                loc,
+                target_loc: stmt_loc_from_pair(&target_pair),
+                target: AssignTarget::Var(target_name.clone()),
+                decl_ty: None,
+                generic_decl_ty: None,
+                is_typed_decl: false,
+                typed_decl_ty_loc: Span::ZERO,
+                expr: Expr::Binary {
+                    loc,
+                    op,
+                    lhs: Box::new(Expr::var(target_name)),
+                    rhs: Box::new(parse_expr(rhs_pair)?),
+                },
+            })
+        }
+        Rule::inferred_ranged_assign_stmt => {
+            let mut ranged_inner = kind_pair.into_inner();
+            let Some(name_pair) = ranged_inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing ranged assignment target",
+                )]);
+            };
+            let Some(expr_pair) = ranged_inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing ranged assignment expression",
+                )]);
+            };
+            let Some(range_pair) = ranged_inner.next() else {
+                return Err(vec![syntax_at_loc(loc.as_ref(), "missing binding range")]);
+            };
+            let (func, lower, upper) = parse_binding_range_pair(range_pair)?;
+            let initializer = parse_expr(expr_pair)?;
+            Ok(Stmt::Assign {
+                loc,
+                target_loc: stmt_loc_from_pair(&name_pair),
+                target: AssignTarget::Var(name_pair.as_str().to_owned()),
+                decl_ty: Some(PrimitiveType::I32),
+                generic_decl_ty: None,
+                is_typed_decl: true,
+                typed_decl_ty_loc: Span::ZERO,
+                expr: Expr::Call {
+                    loc,
+                    func,
+                    args: vec![initializer, lower, upper],
+                },
+            })
         }
         Rule::plain_assign_stmt => {
             let mut plain_inner = kind_pair.into_inner();

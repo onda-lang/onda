@@ -88,6 +88,175 @@ pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, V
     Ok(DeclRange { min, max })
 }
 
+pub(super) fn parse_binding_range_pair(
+    pair: Pair<'_, Rule>,
+) -> Result<(BuiltinFn, Expr, Expr), Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::binding_range {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "internal parser error: expected binding range",
+        )]);
+    }
+    let loc = stmt_loc_from_pair(&pair);
+    let mut domain = None;
+    let mut mode = None;
+    let mut saw_named_or_mode = false;
+    for item in pair.into_inner() {
+        let Some(value) = item.into_inner().next() else {
+            continue;
+        };
+        match value.as_rule() {
+            Rule::expr | Rule::binding_range_spec => {
+                if saw_named_or_mode {
+                    return Err(vec![syntax_at_pair(
+                        &value,
+                        "positional binding range domain must precede named fields and mode",
+                    )]);
+                }
+                let parsed = parse_binding_range_domain(value)?;
+                if domain.replace(parsed).is_some() {
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
+                        "binding range count and range domains are mutually exclusive",
+                    )]);
+                }
+            }
+            Rule::binding_range_named_count | Rule::binding_range_named_range => {
+                saw_named_or_mode = true;
+                let field_loc = stmt_loc_from_pair(&value);
+                let mut fields = value.into_inner();
+                let Some(field) = fields.next() else {
+                    return Err(vec![syntax_at_loc(
+                        field_loc.as_ref(),
+                        "missing binding range domain",
+                    )]);
+                };
+                let parsed = match field.as_rule() {
+                    Rule::expr => BindingRangeDomain::Count(parse_expr_inner(field)),
+                    Rule::binding_range_spec => parse_binding_range_domain(field)?,
+                    _ => unreachable!("binding range field returned an unexpected rule"),
+                };
+                if domain.replace(parsed).is_some() {
+                    return Err(vec![syntax_at_loc(
+                        field_loc.as_ref(),
+                        "binding range count and range domains are mutually exclusive",
+                    )]);
+                }
+            }
+            Rule::binding_range_named_mode => {
+                saw_named_or_mode = true;
+                let mode_loc = stmt_loc_from_pair(&value);
+                let mode_value = value
+                    .into_inner()
+                    .next()
+                    .expect("named binding range mode has a value");
+                if mode.replace(mode_value.as_str().to_owned()).is_some() {
+                    return Err(vec![syntax_at_loc(
+                        mode_loc.as_ref(),
+                        "duplicate binding range field 'mode'",
+                    )]);
+                }
+            }
+            Rule::binding_range_mode => {
+                saw_named_or_mode = true;
+                if mode.replace(value.as_str().to_owned()).is_some() {
+                    return Err(vec![syntax_at_pair(&value, "duplicate binding range mode")]);
+                }
+            }
+            _ => unreachable!("binding range item grammar returned an unexpected rule"),
+        }
+    }
+    let Some(domain) = domain else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range requires a count or range domain",
+        )]);
+    };
+    let (begin, end, domain_kind) = match domain {
+        BindingRangeDomain::Count(count) => (Expr::int(0), count, BindingRangeDomainKind::Count),
+        BindingRangeDomain::Range {
+            begin,
+            end,
+            inclusive,
+        } => (
+            begin,
+            end,
+            if inclusive {
+                BindingRangeDomainKind::Inclusive
+            } else {
+                BindingRangeDomainKind::Exclusive
+            },
+        ),
+    };
+    let func = match (mode.as_deref().unwrap_or("clamp"), domain_kind) {
+        ("clamp", BindingRangeDomainKind::Count) => BuiltinFn::BindingCountClamp,
+        ("clamp", BindingRangeDomainKind::Exclusive) => BuiltinFn::BindingRangeClamp,
+        ("clamp", BindingRangeDomainKind::Inclusive) => BuiltinFn::BindingRangeInclusiveClamp,
+        ("wrap", BindingRangeDomainKind::Count) => BuiltinFn::BindingCountWrap,
+        ("wrap", BindingRangeDomainKind::Exclusive) => BuiltinFn::BindingRangeWrap,
+        ("wrap", BindingRangeDomainKind::Inclusive) => BuiltinFn::BindingRangeInclusiveWrap,
+        (other, _) => {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                format!("unknown binding range mode '{other}'"),
+            )]);
+        }
+    };
+    Ok((func, begin, end))
+}
+
+enum BindingRangeDomain {
+    Count(Expr),
+    Range {
+        begin: Expr,
+        end: Expr,
+        inclusive: bool,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum BindingRangeDomainKind {
+    Count,
+    Exclusive,
+    Inclusive,
+}
+
+fn parse_binding_range_domain(pair: Pair<'_, Rule>) -> Result<BindingRangeDomain, Vec<Diagnostic>> {
+    if pair.as_rule() == Rule::expr {
+        return Ok(BindingRangeDomain::Count(parse_expr_inner(pair)));
+    }
+    let loc = stmt_loc_from_pair(&pair);
+    let mut fields = pair.into_inner();
+    let Some(begin) = fields.next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range is missing its lower bound",
+        )]);
+    };
+    let Some(operator) = fields.next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range is missing its range operator",
+        )]);
+    };
+    let Some(end) = fields.next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "binding range is missing its upper bound",
+        )]);
+    };
+    let inclusive = match operator.as_str() {
+        ".." => false,
+        "..=" => true,
+        _ => unreachable!("binding range grammar restricts range operators"),
+    };
+    Ok(BindingRangeDomain::Range {
+        begin: parse_expr_inner(begin),
+        end: parse_expr_inner(end),
+        inclusive,
+    })
+}
+
 #[derive(Default)]
 struct ParsedParamDomain {
     min: Option<Expr>,

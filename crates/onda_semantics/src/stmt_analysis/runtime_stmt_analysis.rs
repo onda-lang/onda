@@ -621,6 +621,7 @@ fn analyze_runtime_stmt_inner(
     let scope = common.scope_kind();
 
     with_stmt_diag_context(stmt, |diag| {
+        track_integer_range_declaration(stmt, &mut state.integer_ranges);
         let array_vars = merged_data_vars_for_runtime(state_arrays, &state.local_array_aliases);
         let empty_param_structs = HashMap::<String, String>::new();
         let mut visible_struct_instances = struct_instances.clone();
@@ -719,7 +720,7 @@ fn analyze_runtime_stmt_inner(
                         }
                     }
                 } else {
-                    analyze_stmt_expr(
+                    analyze_standalone_stmt_expr(
                         &expr,
                         build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                         errors,
@@ -745,6 +746,7 @@ fn analyze_runtime_stmt_inner(
                 let mut then_state = fork_scope_flow_state_with_tuples(
                     &state.known_scalars,
                     &state.local_aliases,
+                    &state.integer_ranges,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
                     &state.local_struct_aliases,
@@ -764,6 +766,7 @@ fn analyze_runtime_stmt_inner(
                 let mut else_state = fork_scope_flow_state_with_tuples(
                     &state.known_scalars,
                     &state.local_aliases,
+                    &state.integer_ranges,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
                     &state.local_struct_aliases,
@@ -783,6 +786,7 @@ fn analyze_runtime_stmt_inner(
                 merge_reachable_branch_scope_flow_state(
                     &mut state.known_scalars,
                     &mut state.local_aliases,
+                    &mut state.integer_ranges,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
                     &mut state.local_struct_aliases,
@@ -832,6 +836,7 @@ fn analyze_runtime_stmt_inner(
                 let mut loop_state = fork_scope_flow_state_with_tuples(
                     &state.known_scalars,
                     &state.local_aliases,
+                    &state.integer_ranges,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
                     &state.local_struct_aliases,
@@ -870,6 +875,7 @@ fn analyze_runtime_stmt_inner(
                 let mut loop_state = fork_scope_flow_state_with_tuples(
                     &state.known_scalars,
                     &state.local_aliases,
+                    &state.integer_ranges,
                     &state.local_array_aliases,
                     &state.local_proc_aliases,
                     &state.local_struct_aliases,
@@ -1865,7 +1871,9 @@ fn analyze_assign_sample(
                 && !input_names.contains(name)
                 && !param_names.contains(name)
             {
-                if let Expr::Index { base, index, .. } = expr {
+                if let Some(source) = indexed_read_source(expr) {
+                    let base = source.base;
+                    let index = source.index;
                     if let Some(binding_kind) = classify_runtime_like_indexed_binding(
                         base,
                         local_array_aliases,
@@ -1900,8 +1908,9 @@ fn analyze_assign_sample(
                                 local_proc_aliases.insert(
                                     name.clone(),
                                     ProcArrayAliasInfo {
-                                        array_base: base.clone(),
-                                        index_expr: index.as_ref().clone(),
+                                        array_base: base.to_owned(),
+                                        index_expr: index.clone(),
+                                        access: source.access,
                                     },
                                 );
                                 if let Some(proc_array) = proc_array_roots.get(base) {

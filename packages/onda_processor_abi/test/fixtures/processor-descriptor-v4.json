@@ -1,10 +1,10 @@
 {
   "format": "onda-processor",
-  "format_version": 3,
+  "format_version": 4,
   "artifact_kind": "webassembly_module",
-  "abi_version": 3,
+  "abi_version": 4,
   "backend": "conformance-fixture",
-  "mir_schema_version": 4,
+  "mir_schema_version": 5,
   "target": {
     "triple": "wasm32-unknown-unknown",
     "cpu": "generic",
@@ -118,14 +118,19 @@
       }]
     }],
     "states": [{
-      "name": "phase",
-      "type_repr": "f32",
-      "scalar": "f32",
+      "name": "index",
+      "type_repr": "i32",
+      "scalar": "i32",
       "array_len": 1,
       "element_size_bytes": 4,
       "packed_snapshot_byte_offset": 0,
       "physical_state_byte_offset": 0,
-      "byte_size": 4
+      "byte_size": 4,
+      "integer_range": {
+        "min": { "type": "i32", "value": "0" },
+        "max": { "type": "i32", "value": "127" },
+        "mode": "wrap"
+      }
     }]
   },
   "required_features": [],

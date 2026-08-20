@@ -105,7 +105,13 @@ onda daemon diagnose examples/basic/sine.onda
 
 `onda daemon stdio` starts the JSON control transport for editor and tool integrations. `onda lsp` starts the language server over stdio.
 
-Current language-server features include document synchronization, immediate and debounced diagnostics, and semantic tokens for important program symbols.
+Current language-server features include document synchronization; immediate and debounced
+diagnostics; context-aware declaration, call, member, parameter-domain, and integer-binding-range
+completion; hover, go-to-definition, and signature help; and semantic tokens for important program
+symbols and domain metadata. Unchecked `read_unsafe` / `write_unsafe` operations are offered only on
+known compatible receivers where possible, with read/write direction reflected in member
+completion; their free-call forms remain available as intrinsic completion. Hover and signature
+help show the memory-safety contract.
 
 ## Editor support
 

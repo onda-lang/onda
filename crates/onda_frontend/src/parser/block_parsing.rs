@@ -1088,7 +1088,11 @@ pub(super) fn infer_struct_field_scalar_type_from_default(expr: &Expr) -> Primit
 
 pub(super) fn infer_expr_primitive_type(expr: &Expr) -> Option<PrimitiveType> {
     match expr {
-        Expr::Int { .. } => Some(PrimitiveType::I32),
+        Expr::Int { value, .. } => Some(if i32::try_from(*value).is_ok() {
+            PrimitiveType::I32
+        } else {
+            PrimitiveType::I64
+        }),
         Expr::Number { .. } => Some(PrimitiveType::F32),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::Cast { to, .. } => Some(*to),

@@ -52,7 +52,10 @@ pub fn from_messagepack(bytes: &[u8]) -> Result<ValidatedProgram, MirMessagePack
 /// # Safety
 ///
 /// The serialized program must come from a producer that proved every
-/// `BoundsMode::Unchecked` operation for all executions reaching it.
+/// `BoundsMode::Unchecked` operation is in bounds for all executions reaching
+/// it. Every declared `IntegerRangeInvariant` must contain every value
+/// observable from that storage, including values supplied by callers or
+/// restored from external state.
 pub unsafe fn from_messagepack_with_producer_proofs(
     bytes: &[u8],
 ) -> Result<ValidatedProgram, MirMessagePackError> {

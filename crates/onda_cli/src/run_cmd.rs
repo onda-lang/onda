@@ -3,7 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use onda_codegen_llvm::TargetOptLevel;
-use onda_daemon::{DaemonConfig, DaemonSession, RunOptions};
+use onda_daemon::{DaemonConfig, DaemonSession, InitialBufferBinding, RunOptions};
+use onda_project::ProjectLimits;
 use onda_run::{
     append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
     ProjectBufferBinding, RunHostOptions,
@@ -230,8 +231,25 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         },
     });
 
+    let mut initial_buffers =
+        Vec::with_capacity(project_buffer_bindings.len() + buffer_bindings.len());
+    initial_buffers.extend(
+        project_buffer_bindings
+            .iter()
+            .map(|(name, asset, loaded_path)| {
+                InitialBufferBinding::from_asset(name.clone(), asset.clone(), loaded_path.clone())
+            }),
+    );
+    for (name, path) in buffer_bindings {
+        initial_buffers.push(
+            InitialBufferBinding::load_file(name.clone(), path, ProjectLimits::default()).map_err(
+                |error| format!("failed to load buffer asset '{}': {error}", path.display()),
+            )?,
+        );
+    }
+
     session
-        .start_run(input)
+        .start_run_with_initial_buffers(input, initial_buffers)
         .map_err(|err| format_run_build_error("daemon run start failed", &err))?;
 
     if show_meta {
@@ -250,27 +268,6 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
             .expect("run should be active while applying params")
             .set_param_f64(name, *value)
             .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
-    }
-
-    for (name, asset, loaded_path) in project_buffer_bindings {
-        let run = session
-            .run_mut(input)
-            .expect("run should be active while binding project buffers");
-        let result = if let Some(path) = loaded_path {
-            run.bind_buffer_asset_at_path(name, asset.clone(), path.clone())
-        } else {
-            run.bind_buffer_asset(name, asset.clone())
-        };
-        result
-            .map_err(|diag| format_single_diagnostic("daemon run project buffer failed", &diag))?;
-    }
-
-    for (name, path) in buffer_bindings {
-        session
-            .run_mut(input)
-            .expect("run should be active while binding buffers")
-            .bind_buffer_file_path(name, path)
-            .map_err(|diag| format_single_diagnostic("daemon run buffer failed", &diag))?;
     }
 
     let total_frames = sample_rate_hz as usize * dur_seconds as usize;

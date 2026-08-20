@@ -352,6 +352,7 @@ fn build_state_entries(
             is_array: shape.is_array,
             byte_offset: snapshot_offset,
             storage_byte_offset: offsets[index],
+            integer_range: slot.integer_range,
         });
         snapshot_offset = snapshot_offset
             .checked_add(byte_size)
@@ -886,21 +887,25 @@ mod tests {
             },
             state: vec![
                 StateSlot {
+                    integer_range: None,
                     name: "phase".to_owned(),
                     ty: onda_mir::TypeId::new(1),
                     persistence: StatePersistence::Snapshot,
                 },
                 StateSlot {
+                    integer_range: None,
                     name: "meter".to_owned(),
                     ty: onda_mir::TypeId::new(0),
                     persistence: StatePersistence::ControlMirror,
                 },
                 StateSlot {
+                    integer_range: None,
                     name: "$scratch".to_owned(),
                     ty: onda_mir::TypeId::new(7),
                     persistence: StatePersistence::InstanceScratch,
                 },
                 StateSlot {
+                    integer_range: None,
                     name: "history".to_owned(),
                     ty: onda_mir::TypeId::new(6),
                     persistence: StatePersistence::Snapshot,

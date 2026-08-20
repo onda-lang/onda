@@ -156,6 +156,12 @@ entry from the packed snapshot. This resets instance scratch while preserving de
 state. A host converting between a big-endian physical target and the portable snapshot must encode
 and decode each scalar according to metadata rather than copying physical bytes wholesale.
 
+Processor ABI version 4 adds optional `integer_range` metadata to scalar `i32` and `i64` state.
+After overlaying each such snapshot entry, the host must normalize it into the inclusive
+`min..=max` interval using the declared `clamp` or Euclidean `wrap` mode. This restores the storage
+invariant before generated code can rely on it to remove bounds checks. The packed snapshot byte
+representation is unchanged, so its format version remains 1.
+
 ## Audio ports
 
 `inputs` and `outputs` point to tables of `Ptr`, one entry per flattened audio channel in metadata

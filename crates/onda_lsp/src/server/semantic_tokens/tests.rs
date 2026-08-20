@@ -1031,6 +1031,32 @@ fn semantic_tokens_distinguish_parameter_domain_fields_and_scale_values() {
 }
 
 #[test]
+fn semantic_tokens_distinguish_binding_range_fields_and_modes() {
+    let source = concat!(
+        "sample:\n",
+        "  wrapped: i32 = 0 {range = 0..16, mode = wrap}\n",
+        "  clamped: i32 = 0 {16, clamp}\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    for field in ["range", "mode"] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 1, field),
+            Some(SEMANTIC_TOKEN_TYPE_STATE),
+            "binding range field '{field}' should match named-field highlighting"
+        );
+    }
+    assert_eq!(
+        token_type_at_nth_text_on_line(&tokens, source, 1, "wrap", 1),
+        Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
+    );
+    assert_eq!(
+        token_type_at_nth_text_on_line(&tokens, source, 2, "clamp", 1),
+        Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
+    );
+}
+
+#[test]
 fn semantic_tokens_mark_block_pre_state_in_nested_sample() {
     let source = concat!(
         "outs:\n",

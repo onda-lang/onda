@@ -389,6 +389,20 @@ fn infer_def_return_type(
     Some(out)
 }
 
+/// Infers one definition against an already-established strict return-type
+/// environment. Appending a specialization cannot invalidate entries in that
+/// environment, so callers can publish its result without rebuilding the
+/// whole-program fixed point.
+pub(crate) fn infer_known_def_return_type(
+    def: &FunctionDef,
+    sig: &FnSignature,
+    env_seed: &CallTypeEnv,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<ReturnType> {
+    infer_def_return_type(def, sig, env_seed, return_types, struct_defs, true)
+}
+
 fn format_primitive_type(ty: PrimitiveType) -> &'static str {
     match ty {
         PrimitiveType::F32 => "f32",
@@ -590,26 +604,36 @@ pub(crate) fn validate_def_return_types(
 
 fn infer_def_return_types_impl(
     defs: &[FunctionDef],
+    generated_defs: &[FunctionDef],
     fn_signatures: &HashMap<String, FnSignature>,
+    generated_signatures: &HashMap<String, FnSignature>,
     env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     require_known_calls: bool,
 ) -> HashMap<String, ReturnType> {
+    let all_defs = || defs.iter().chain(generated_defs);
     let mut out = if require_known_calls {
-        defs.iter()
+        all_defs()
             .filter_map(|def| {
                 try_resolve_declared_return_type(def).map(|ty| (def.name.clone(), ty))
             })
             .collect::<HashMap<_, _>>()
     } else {
-        defs.iter()
+        all_defs()
             .map(|def| (def.name.clone(), ReturnType::Scalar(PrimitiveType::F32)))
             .collect::<HashMap<_, _>>()
     };
-    for _ in 0..defs.len().saturating_add(1) {
+    for _ in 0..defs
+        .len()
+        .saturating_add(generated_defs.len())
+        .saturating_add(1)
+    {
         let mut changed = false;
-        for def in defs {
-            let Some(sig) = fn_signatures.get(&def.name) else {
+        for def in all_defs() {
+            let Some(sig) = generated_signatures
+                .get(&def.name)
+                .or_else(|| fn_signatures.get(&def.name))
+            else {
                 continue;
             };
             let Some(inferred) =
@@ -635,7 +659,15 @@ pub(crate) fn infer_def_return_types(
     env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> HashMap<String, ReturnType> {
-    infer_def_return_types_impl(defs, fn_signatures, env_seed, struct_defs, false)
+    infer_def_return_types_impl(
+        defs,
+        &[],
+        fn_signatures,
+        &HashMap::new(),
+        env_seed,
+        struct_defs,
+        false,
+    )
 }
 
 /// Infers only return types whose complete expression dependencies are known.
@@ -643,9 +675,19 @@ pub(crate) fn infer_def_return_types(
 /// instead of silently publishing the ordinary untyped f32 fallback.
 pub(crate) fn infer_known_def_return_types(
     defs: &[FunctionDef],
+    generated_defs: &[FunctionDef],
     fn_signatures: &HashMap<String, FnSignature>,
+    generated_signatures: &HashMap<String, FnSignature>,
     env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> HashMap<String, ReturnType> {
-    infer_def_return_types_impl(defs, fn_signatures, env_seed, struct_defs, true)
+    infer_def_return_types_impl(
+        defs,
+        generated_defs,
+        fn_signatures,
+        generated_signatures,
+        env_seed,
+        struct_defs,
+        true,
+    )
 }

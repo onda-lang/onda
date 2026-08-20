@@ -119,6 +119,10 @@ impl DeclaredIo {
 }
 
 impl DeclaredState {
+    pub fn integer_range(&self) -> Option<onda_mir::IntegerRangeInvariant> {
+        self.integer_range
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
