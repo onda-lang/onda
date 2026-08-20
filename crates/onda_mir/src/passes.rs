@@ -3328,6 +3328,90 @@ mod tests {
     }
 
     #[test]
+    fn parameter_pruning_preserves_fallible_argument_evaluation() {
+        let mut program = empty_program();
+        let array_ty = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Array {
+            element: TypeId::new(0),
+            len: 1,
+        });
+        let slice_ty = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Slice {
+            element: ScalarType::I32,
+            access: AccessMode::ReadOnly,
+        });
+        program.state.push(StateSlot {
+            name: "values".to_owned(),
+            ty: array_ty,
+            persistence: StatePersistence::Snapshot,
+            integer_range: None,
+        });
+
+        let mut helper = function("ignores_value", FunctionKind::User);
+        helper.params.push(crate::FunctionParam {
+            name: "unused".to_owned(),
+            ty: TypeId::new(0),
+            mode: PassingMode::ReadOnlyReference,
+            integer_range: None,
+        });
+        program.functions.push(helper);
+
+        program.functions[0].locals.push(Local {
+            name: Some("empty".to_owned()),
+            ty: slice_ty,
+            integer_range: None,
+        });
+        program.functions[0].body.statements.extend([
+            Statement {
+                kind: StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value: Rvalue::MakeSlice {
+                        source: SliceSource::Place(Place {
+                            base: PlaceBase::State(StateId::new(0)),
+                            projections: Vec::new(),
+                        }),
+                        start: Value::Constant(ScalarValue::I32(0)),
+                        len: Value::Constant(ScalarValue::I32(0)),
+                        bounds: BoundsMode::Checked,
+                        access: AccessMode::ReadOnly,
+                    },
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+            Statement {
+                kind: StatementKind::Call {
+                    results: Vec::new(),
+                    function: FunctionId::new(2),
+                    args: vec![CallArgument::SliceElement {
+                        slice: Value::Local(LocalId::new(0)),
+                        index: Value::Constant(ScalarValue::I32(0)),
+                        bounds: BoundsMode::Checked,
+                    }],
+                },
+                source: SourceSpan::UNKNOWN,
+            },
+        ]);
+
+        let validated =
+            crate::validate_owned(program.clone()).expect("fixture should be valid before pruning");
+        assert_eq!(crate::prune_unused_function_parameters(&mut program), 0);
+        assert_eq!(program.functions[2].params.len(), 1);
+        assert!(matches!(
+            &program.functions[0].body.statements[1].kind,
+            StatementKind::Call { args, .. }
+                if matches!(args.as_slice(), [CallArgument::SliceElement {
+                    bounds: BoundsMode::Checked,
+                    ..
+                }])
+        ));
+        crate::validate_owned(program).expect("preserved call should remain valid");
+
+        let (optimized, stats) = super::optimize(validated).expect("optimization should succeed");
+        assert_eq!(stats.removed_function_parameters, 0);
+        assert_eq!(optimized.functions[2].params.len(), 1);
+    }
+
+    #[test]
     fn copy_propagation_collapses_long_dead_chains_before_the_fixed_point() {
         const PURE_CHAIN_LEN: u32 = 32;
 

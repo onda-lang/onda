@@ -8,7 +8,7 @@ eyebrow: Contributor guide
 
 # Onda compiler architecture
 
-This document describes the architecture of `onda` and where each piece of the project lives.
+This guide describes the architecture of `onda` and where each piece of the project lives.
 For language syntax and semantics, see the [language guide](https://onda-lang.org/docs/language/).
 For build, CLI usage, and editor integrations, see the [getting-started guide](https://onda-lang.org/docs/getting-started/).
 
@@ -70,8 +70,12 @@ Non-crate directories of note:
 - `grammar.pest` — the PEG grammar.
 
 ### `onda_project` (`crates/onda_project/src`)
-- `manifest.rs` — editable `.ondaproject` parsing, validation, symlink-free contained filesystem resolution, recovery watch paths for missing entries/assets, and inline typed buffers.
-- `buffer.rs` — canonical `.ondabuffer` transport for every primitive buffer type plus the WAV adapter.
+- `manifest.rs` — editable `.ondaproject` parsing, validation, symlink-free contained filesystem
+  resolution, recovery watch paths for missing entries/assets, inline typed buffers, and bounded
+  buffer-shape inspection without decoding file-backed samples.
+- `buffer.rs` — canonical `.ondabuffer` transport for every primitive buffer type plus the WAV
+  adapter, including header-only metadata inspection; payload integrity is validated when an asset
+  is loaded for use.
 - `capture.rs` — portable source-path assignment and syntax-aware graph relocation from an exact frontend manifest.
 - `image.rs` — immutable content-addressed source-and-buffer checkpoints with bounded stable serialization.
 - `materialize.rs` — filesystem-free export and empty `onda project` materialization plans.
@@ -170,7 +174,8 @@ Non-crate directories of note:
 ### `onda_daemon` (`crates/onda_daemon/src`)
 - `lib.rs` — session manager and transport entry points.
 - `analysis_session.rs` — in-memory document overlays and `analyze_document` snapshots.
-- `run_session.rs` — live JIT instance lifecycle, param/buffer binding, `render_block`.
+- `run_session.rs` — live JIT instance lifecycle, validated initial and replacement buffer binding,
+  param updates, and `render_block`.
 
 ### `onda_run` (`crates/onda_run/src`)
 - `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw
@@ -289,6 +294,9 @@ Non-crate directories of note:
   bounds-proof pass removes clamping or checks when the complete coordinate interval is known to
   fit. Explicit `read_unsafe` / `write_unsafe` calls instead establish a programmer-owned unchecked
   boundary and are memory-unsafe when any coordinate is invalid.
+- MIR optimization removes unused internal parameters and forwarding arguments to a fixed point.
+  It retains a parameter when any call site uses fallible argument preparation, preserving checked
+  fixed-range and dynamic-slice addressing even when the callee does not read the reference.
 
 ## Browser build and verification
 

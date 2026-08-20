@@ -276,9 +276,12 @@ a register local must legalize that case explicitly.
 Loop-written locals and locals passed by read-write reference invalidate propagation facts. Memory
 and descriptor loads remain outside common-subexpression elimination until provenance proves their
 source. The zero-store analysis stops conservatively across calls, structured control flow, or
-unknown aliases. `canonicalize` performs one validated structural round. `optimize` runs its trusted
-monotonic cleanup to a fixed point, validates the completed pipeline once, and returns `PassStats`
-with an opaque `OptimizedProgram`.
+unknown aliases. Unused internal function parameters and their call arguments are removed to a
+fixed point across forwarding chains. A parameter remains when preparing its argument can fail at
+any call site: this preserves checked fixed-range addressing and checked or clamped dynamic-slice
+addressing even when the callee never reads the resulting reference. `canonicalize` performs one
+validated structural round. `optimize` runs its trusted monotonic cleanup to a fixed point,
+validates the completed pipeline once, and returns `PassStats` with an opaque `OptimizedProgram`.
 
 `analysis.rs` exposes call-transitive logical effect summaries, per-interface-buffer reachable-write
 effects, and conservative integer ranges. Buffer-write effects trace direct stores, buffer

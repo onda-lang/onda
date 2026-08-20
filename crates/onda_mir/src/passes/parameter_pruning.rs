@@ -6,14 +6,18 @@ use crate::{
 /// Removes unreferenced parameters from internal functions and their call sites.
 ///
 /// The transform runs to a fixed point because a parameter may be used only to
-/// forward an argument to another parameter removed in an earlier round.
+/// forward an argument to another parameter removed in an earlier round. A
+/// parameter is retained when preparing its argument can fail at any call site,
+/// even if the callee never accesses it.
 pub(crate) fn prune(program: &mut crate::Program) -> u64 {
     let mut removed = 0_u64;
     loop {
+        let fallible_arguments = fallible_call_parameters(program);
         let mappings = program
             .functions
             .iter()
-            .map(parameter_mapping)
+            .zip(&fallible_arguments)
+            .map(|(function, fallible_arguments)| parameter_mapping(function, fallible_arguments))
             .collect::<Vec<_>>();
         let round_removed = mappings
             .iter()
@@ -39,14 +43,17 @@ pub(crate) fn prune(program: &mut crate::Program) -> u64 {
     }
 }
 
-fn parameter_mapping(function: &crate::Function) -> Vec<Option<ParameterId>> {
+fn parameter_mapping(
+    function: &crate::Function,
+    fallible_arguments: &[bool],
+) -> Vec<Option<ParameterId>> {
     if function.kind != FunctionKind::User {
         return (0..function.params.len())
             .map(|index| Some(ParameterId::new(index as u32)))
             .collect();
     }
 
-    let mut used = vec![false; function.params.len()];
+    let mut used = fallible_arguments.to_vec();
     collect_block_parameters(&function.body, &mut used);
     let mut next = 0_u32;
     used.into_iter()
@@ -58,6 +65,43 @@ fn parameter_mapping(function: &crate::Function) -> Vec<Option<ParameterId>> {
             })
         })
         .collect()
+}
+
+fn fallible_call_parameters(program: &crate::Program) -> Vec<Vec<bool>> {
+    let mut fallible = program
+        .functions
+        .iter()
+        .map(|function| vec![false; function.params.len()])
+        .collect::<Vec<_>>();
+    for function in &program.functions {
+        collect_fallible_call_parameters(&function.body, &mut fallible);
+    }
+    fallible
+}
+
+fn collect_fallible_call_parameters(block: &Block, fallible: &mut [Vec<bool>]) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Call { function, args, .. } => {
+                let Some(parameters) = fallible.get_mut(function.index()) else {
+                    continue;
+                };
+                for (parameter, argument) in parameters.iter_mut().zip(args) {
+                    *parameter |= crate::analysis::call_argument_may_fail(argument);
+                }
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_fallible_call_parameters(then_block, fallible);
+                collect_fallible_call_parameters(else_block, fallible);
+            }
+            StatementKind::Loop { body } => collect_fallible_call_parameters(body, fallible),
+            _ => {}
+        }
+    }
 }
 
 fn mark_parameter(parameter: ParameterId, used: &mut [bool]) {

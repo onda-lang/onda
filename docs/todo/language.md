@@ -97,7 +97,8 @@
   - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
 
 - Standard library follow-ups
-  - Keep the built-in module inventory in sync as docs evolve across `README.md`, `docs/info.md`, and `docs/syntax.md`:
+  - Keep the built-in module inventory in sync as docs evolve across `README.md`,
+    `docs/architecture.md`, and `docs/syntax.md`:
     `std/prelude`, `std/math`, `std/random`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
     `std/delay`, `std/data`, `std/lookup`, `std/fft`, `std/convolution`.
   - Decide which stdlib modules are considered stable MVP surface versus still-evolving API.

@@ -1647,6 +1647,13 @@ fn scan_call_argument(argument: &CallArgument, effects: &mut FunctionEffects) {
     }
 }
 
+/// Whether preparing one call argument can encounter a runtime safety failure.
+pub(crate) fn call_argument_may_fail(argument: &CallArgument) -> bool {
+    let mut effects = FunctionEffects::default();
+    scan_call_argument(argument, &mut effects);
+    effects.may_fail
+}
+
 fn scan_buffer_ref(buffer: crate::BufferRef, effects: &mut FunctionEffects) {
     if let crate::BufferRef::ArrayElement {
         selector, bounds, ..

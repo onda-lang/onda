@@ -11,15 +11,21 @@ release; earlier releases are available on the
 
 ### Added
 
-- Added half-open storage ranges for `i32` and `i64` locals and state, with automatic `clamp` or
-  Euclidean `wrap` normalization on initialization and every assignment. Ranges remain ordinary
-  integers in memory while supplying invariants that the compiler can use to remove indexing work.
+- Added count, half-open, and inclusive storage ranges for `i32` and `i64` locals and state, with
+  automatic `clamp` or Euclidean `wrap` normalization on initialization and every assignment.
+  Ranges remain ordinary integers in memory while supplying invariants that the compiler can use
+  to remove indexing work.
+- Added `+=`, `-=`, `*=`, `/=`, and `%=` compound assignment for mutable scalar bindings, including
+  the same single storage normalization applied by direct assignment to ranged integers.
 - Added explicit `read_unsafe` and `write_unsafe` operations, in free-call and receiver forms, for
   unchecked access to primitive arrays, slices, ports, dynamic interface views, buffers, and buffer
   collections. `read_unsafe` also supports reference selection from struct and processor arrays.
 - Added MIR integer-range invariants, exact inclusive `range_wrap` semantics, and a shared bounds
   proof pass that turns clamped or checked fixed-size accesses into trusted unchecked accesses when
   the complete index interval is proven valid.
+- Added fixed-point MIR pruning of unused internal function parameters and forwarding arguments.
+  Parameters whose argument preparation can fail remain in the function ABI so optimization
+  preserves checked and dynamic-slice bounds behavior.
 - Added LSP completion, validation, and semantic highlighting for integer binding ranges and their
   `clamp` and `wrap` modes, plus contextual completion, hover, and signature help for unchecked
   `read_unsafe` / `write_unsafe` access.
@@ -35,6 +41,9 @@ release; earlier releases are available on the
   format remains version 1.
 - Reworked the time-domain convolver's active-tap and ring-write state to use integer storage ranges,
   removing its manual clamp and wrap branches.
+- Project compilation now inspects file-backed buffer shape metadata without decoding or hashing
+  sample payloads. Native run sessions can install validated initial buffer bindings while building
+  the prepared instance; full payload validation still occurs when each asset is loaded for use.
 
 ### Migration notes
 

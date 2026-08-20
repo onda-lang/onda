@@ -59,7 +59,7 @@ Tagged releases attach portable tarballs and publish the four public npm package
 - [docs/stdlib.md](docs/stdlib.md): generated standard-library API reference; after changing
   `stdlib/`, update it with `scripts/update_stdlib_docs.sh` on Unix or
   `scripts/update_stdlib_docs.ps1` on Windows
-- [docs/info.md](docs/info.md): project structure and implementation notes
+- [docs/architecture.md](docs/architecture.md): compiler architecture and codebase navigation
 - [docs/projects.md](docs/projects.md): project manifests, typed buffer assets, and project images
 - [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
 - [docs/processor-abi.md](docs/processor-abi.md): generic processor ABI and target/artifact profiles

@@ -29,7 +29,8 @@ pub use passes::{canonicalize, optimize, OptimizedProgram, PassStats};
 
 /// Removes parameters that are not referenced by internal MIR functions and
 /// rewrites all call sites. This producer-side cleanup is safe to run before
-/// validation and reaches a fixed point across forwarding call chains.
+/// validation and reaches a fixed point across forwarding call chains. It
+/// retains parameters whose call-site argument preparation can fail.
 pub fn prune_unused_function_parameters(program: &mut Program) -> u64 {
     passes::parameter_pruning::prune(program)
 }
