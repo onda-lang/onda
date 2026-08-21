@@ -588,6 +588,14 @@ policies and restore the captured values; `retain` affects reset, not snapshot
 semantics. Integer-domain attributes compose with the named reset field, for
 example `{MaxPartitions, wrap, reset = retain}`.
 
+The annotation is valid only on a fresh persistent value binding introduced
+directly by `init`. It applies to the complete state root and supports primitive
+scalars, fixed arrays, tuples, structs, and arrays of structs. Individual fields
+or elements cannot select another policy unless they are separate init roots.
+Proc instances and proc arrays do not accept `{retain}`; their child state owns
+its reset policy. Params, inputs, outputs, buffers, locals, aliases, and constants
+do not accept it either.
+
 ```onda
 init:
   if ready:
@@ -1527,7 +1535,9 @@ voice.init(all = true)
 ### Tasks
 
 The top-level program and procs can declare statically allocated cooperative
-tasks. The standalone and grouped forms are equivalent:
+tasks. They spread divisible preparation work, such as convolution-kernel or
+lookup-table construction, over multiple logical blocks without dynamic
+allocation or worker threads. The standalone and grouped forms are equivalent:
 
 ```onda
 proc Loader:
@@ -1558,10 +1568,12 @@ block:
 Tasks take no arguments and return no values. They implicitly see their
 owner's params, buffers, and init-rooted state, but cannot directly read audio
 inputs, write owner outputs, call processor steps, invoke their owner's event
-handlers, or invoke other tasks. They may synchronously call child-proc events,
-including the child's builtin `init(...)` event.
+handlers, or invoke other tasks. They may call builtins and non-yielding defs
+visible from the owner, and may synchronously call child-proc events, including
+the child's builtin `init(...)` event.
 `yield` suspends the current task; bare `return` or reaching the end completes
-it.
+it. A task runs synchronously on the process thread until one of those points;
+`yield` is a cooperative boundary, not a time budget or preemption point.
 
 The owner advances a task with `await` from block-pre control flow:
 
@@ -1580,11 +1592,42 @@ task completes, execution continues after `await` in the same logical block. A
 task is reset explicitly with `prepare.reset()` from the owner's `init`, event,
 or block-pre scope.
 
+The containing block is not a coroutine. Its block-pre control flow starts from
+the beginning on each activation, so statements and conditions before an
+`await` are evaluated again. Completed tasks fall through without rerunning;
+the first reached task that yields stops the activation. An incomplete task has
+no effect when ordinary control flow bypasses its `await`, leaving the program
+responsible for not exposing partially prepared state.
+
+Each proc instance, including each element of a proc array, owns independent
+task continuations. A statically scheduled instance runs its block-pre activation
+at most once at logical-block begin. A runtime-indexed proc-array element runs it
+lazily on its first call in that logical block. Splitting a logical block into
+process segments never grants additional task resumptions, and a zero-frame
+begin-block segment still advances statically scheduled tasks.
+
 Task continuations are retained state. Ordinary reset and default initialization
-preserve them. Proc `init(all = true)` and the host-level all-state initialization
-operations restore them to not-started. An explicit `prepare.reset()` in an
+preserve them. Proc `init(all = true)` and host-level all-state initialization or
+reset restore them to not-started. An explicit `prepare.reset()` in an
 initializer always runs. Tasks may use both retained and resettable state; after
 an ordinary reset, a suspended task observes the reset values when it resumes.
+Snapshots include task status and continuation storage, so restoring a suspended
+task resumes it from the captured suspension point.
+
+Locals that are live across a `yield`, including fixed aggregates and loop
+control, become statically allocated continuation state. Runtime handles cannot
+cross a suspension point: buffer descriptors, slices, proc aliases, and other
+reference-like values must be dead at `yield` and reacquired after resumption.
+The compiler rejects only references that are live across the boundary.
+
+Tasks read owner params and current buffer mappings whenever they resume.
+Changing a parameter or rebinding a buffer does not reset a task automatically;
+the program must call `reset()` when previously prepared or partially prepared
+state is no longer valid.
+
+A runtime failure reports through the failing process call and leaves the task
+failed. Later reached awaits take the same neutral-output path without reporting
+that failure again. Resetting the task permits another attempt.
 
 Tasks are private to their owner and share that owner's declaration namespace.
 They cannot be used with a `graph` block. `await` is valid only in structured

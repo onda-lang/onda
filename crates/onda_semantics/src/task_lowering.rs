@@ -928,9 +928,7 @@ impl TaskLocalStorage {
     fn reset_stmts(&self, name: String) -> Vec<Stmt> {
         match self {
             Self::Scalar(ty) => vec![assign_var(name, zero_scalar(*ty))],
-            Self::Array { element, len, .. } => (0..*len)
-                .map(|index| assign_index(name.clone(), index, zero_scalar(*element)))
-                .collect(),
+            Self::Array { element, .. } => vec![fill_array(name, zero_scalar(*element))],
         }
     }
 }
@@ -1059,6 +1057,25 @@ fn assign_index(name: impl Into<String>, index: usize, expr: Expr) -> Stmt {
         target: AssignTarget::Index {
             base: name.into(),
             index: Expr::int(index as i64),
+        },
+        decl_ty: None,
+        generic_decl_ty: None,
+        is_typed_decl: false,
+        typed_decl_ty_loc: Default::default(),
+        expr,
+    }
+}
+
+fn fill_array(name: impl Into<String>, expr: Expr) -> Stmt {
+    Stmt::Assign {
+        loc: Default::default(),
+        target_loc: Default::default(),
+        target: AssignTarget::Slice {
+            base: name.into(),
+            selector: None,
+            channel: None,
+            start: None,
+            end: None,
         },
         decl_ty: None,
         generic_decl_ty: None,
@@ -1658,6 +1675,7 @@ fn collect_task_locals(
     owner_types: &TaskOwnerTypes,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     source_names: &HashMap<String, String>,
+    live_across_yield: &HashSet<String>,
     task_name: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, TaskLocalStorage> {
@@ -1668,6 +1686,7 @@ fn collect_task_locals(
         owner_types: &TaskOwnerTypes,
         struct_defs: &HashMap<String, Vec<TypedStructField>>,
         source_names: &HashMap<String, String>,
+        live_across_yield: &HashSet<String>,
         task_name: &str,
         locals: &mut HashMap<String, TaskLocalStorage>,
         errors: &mut Vec<Diagnostic>,
@@ -1711,7 +1730,7 @@ fn collect_task_locals(
                                     len,
                                 })
                             }
-                            _ => {
+                            _ if live_across_yield.contains(name) => {
                                 errors.push(Diagnostic::semantic_span(
                                     format!(
                                         "task local '{}' must have fixed primitive storage",
@@ -1721,6 +1740,7 @@ fn collect_task_locals(
                                 ));
                                 None
                             }
+                            _ => None,
                         }
                     } else {
                         (*decl_ty)
@@ -1736,10 +1756,10 @@ fn collect_task_locals(
                     };
                     if let Some(storage) = storage {
                         locals.insert(name.clone(), storage);
-                    } else if !is_array_ctor {
+                    } else if !is_array_ctor && live_across_yield.contains(name) {
                         errors.push(Diagnostic::semantic_span(
                             format!(
-                                "cannot determine fixed storage type for local '{}' in task '{task_name}'; add an explicit primitive or fixed-array type",
+                                "task local '{}' is live across a yield in task '{task_name}' but has no fixed primitive or fixed-array storage",
                                 source_names.get(name).unwrap_or(name)
                             ),
                             *loc,
@@ -1776,10 +1796,10 @@ fn collect_task_locals(
                     let Some(element_types) =
                         element_types.filter(|types| types.len() == names.len())
                     else {
-                        if names
-                            .iter()
-                            .any(|name| !path_or_ancestor_is_declared(name, owner_roots))
-                        {
+                        if names.iter().any(|name| {
+                            !path_or_ancestor_is_declared(name, owner_roots)
+                                && live_across_yield.contains(name)
+                        }) {
                             errors.push(Diagnostic::semantic_span(
                                 format!(
                                     "cannot determine fixed storage types for tuple locals in task '{task_name}'"
@@ -1809,6 +1829,7 @@ fn collect_task_locals(
                         owner_types,
                         struct_defs,
                         source_names,
+                        live_across_yield,
                         task_name,
                         locals,
                         errors,
@@ -1820,6 +1841,7 @@ fn collect_task_locals(
                         owner_types,
                         struct_defs,
                         source_names,
+                        live_across_yield,
                         task_name,
                         locals,
                         errors,
@@ -1836,6 +1858,7 @@ fn collect_task_locals(
                         owner_types,
                         struct_defs,
                         source_names,
+                        live_across_yield,
                         task_name,
                         locals,
                         errors,
@@ -1848,6 +1871,7 @@ fn collect_task_locals(
                     owner_types,
                     struct_defs,
                     source_names,
+                    live_across_yield,
                     task_name,
                     locals,
                     errors,
@@ -1865,6 +1889,7 @@ fn collect_task_locals(
         owner_types,
         struct_defs,
         source_names,
+        live_across_yield,
         task_name,
         &mut locals,
         errors,
@@ -1924,7 +1949,8 @@ fn rewrite_task_expr(expr: &mut Expr, names: &HashMap<String, String>) {
                 rewrite_task_expr(arg, names);
             }
         }
-        Expr::UserCall { args, .. } => {
+        Expr::UserCall { name, args, .. } => {
+            rewrite_task_callable_name(name, names);
             for arg in args {
                 rewrite_task_expr(&mut arg.expr, names);
             }
@@ -1933,6 +1959,15 @@ fn rewrite_task_expr(expr: &mut Expr, names: &HashMap<String, String>) {
             rewrite_task_expr(expr, names);
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+    }
+}
+
+fn rewrite_task_callable_name(name: &mut String, names: &HashMap<String, String>) {
+    let Some((receiver, member)) = name.rsplit_once('.') else {
+        return;
+    };
+    if let Some(replacement) = names.get(receiver) {
+        *name = format!("{replacement}.{member}");
     }
 }
 
@@ -2048,7 +2083,7 @@ fn expand_task_array_initializers(
                 target: AssignTarget::Var(name),
                 expr: Expr::ArrayCtor { init, .. },
                 ..
-            } => arrays.get(name).map(|(element, len)| {
+            } => arrays.get(name).map(|(element, _len)| {
                 if let Some(values) = init {
                     values
                         .iter()
@@ -2057,9 +2092,7 @@ fn expand_task_array_initializers(
                         .map(|(index, value)| assign_index(name.clone(), index, value))
                         .collect::<Vec<_>>()
                 } else {
-                    (0..*len)
-                        .map(|index| assign_index(name.clone(), index, zero_scalar(*element)))
-                        .collect()
+                    vec![fill_array(name.clone(), zero_scalar(*element))]
                 }
             }),
             _ => None,
@@ -2088,7 +2121,12 @@ fn expand_task_array_initializers(
     *stmts = rewritten;
 }
 
-fn collect_for_frame_fields(stmts: &[Stmt], fields: &mut HashSet<String>) {
+fn collect_for_frame_bindings(
+    task_name: &str,
+    stmts: &[Stmt],
+    next_id: &mut usize,
+    fields: &mut HashMap<String, (String, String)>,
+) {
     for stmt in stmts {
         match stmt {
             Stmt::If {
@@ -2096,15 +2134,26 @@ fn collect_for_frame_fields(stmts: &[Stmt], fields: &mut HashSet<String>) {
                 else_branch,
                 ..
             } => {
-                collect_for_frame_fields(then_branch, fields);
-                collect_for_frame_fields(else_branch, fields);
+                collect_for_frame_bindings(task_name, then_branch, next_id, fields);
+                collect_for_frame_bindings(task_name, else_branch, next_id, fields);
             }
             Stmt::For { var, body, .. } => {
-                fields.insert(format!("{var}__end"));
-                fields.insert(format!("{var}__step"));
-                collect_for_frame_fields(body, fields);
+                if task_stmts_contain_yield(body) {
+                    let id = *next_id;
+                    *next_id += 1;
+                    fields.insert(
+                        var.clone(),
+                        (
+                            format!("{TASK_FIELD_PREFIX}{task_name}_for_{id}_end"),
+                            format!("{TASK_FIELD_PREFIX}{task_name}_for_{id}_step"),
+                        ),
+                    );
+                }
+                collect_for_frame_bindings(task_name, body, next_id, fields);
             }
-            Stmt::While { body, .. } => collect_for_frame_fields(body, fields),
+            Stmt::While { body, .. } => {
+                collect_for_frame_bindings(task_name, body, next_id, fields)
+            }
             _ => {}
         }
     }
@@ -2130,6 +2179,8 @@ enum TaskCfgTerminator {
 
 struct TaskCfgBuilder {
     blocks: Vec<TaskCfgBlock>,
+    for_frame_bindings: HashMap<String, (String, String)>,
+    preserve_structured: bool,
 }
 
 fn collect_expr_uses(expr: &Expr, uses: &mut HashSet<String>) {
@@ -2178,7 +2229,8 @@ fn collect_expr_uses(expr: &Expr, uses: &mut HashSet<String>) {
                 collect_expr_uses(arg, uses);
             }
         }
-        Expr::UserCall { args, .. } => {
+        Expr::UserCall { name, args, .. } => {
+            collect_callable_receiver_use(name, uses);
             for arg in args {
                 collect_expr_uses(&arg.expr, uses);
             }
@@ -2187,6 +2239,16 @@ fn collect_expr_uses(expr: &Expr, uses: &mut HashSet<String>) {
             collect_expr_uses(expr, uses)
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+    }
+}
+
+fn collect_callable_receiver_use(name: &str, uses: &mut HashSet<String>) {
+    let Some((receiver, _)) = name.rsplit_once('.') else {
+        return;
+    };
+    uses.insert(receiver.to_owned());
+    if let Some(root) = receiver.split('.').next() {
+        uses.insert(root.to_owned());
     }
 }
 
@@ -2234,7 +2296,11 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
 }
 
 fn task_locals_live_across_yield(body: &[Stmt], task_locals: &HashSet<String>) -> HashSet<String> {
-    let mut cfg = TaskCfgBuilder { blocks: Vec::new() };
+    let mut cfg = TaskCfgBuilder {
+        blocks: Vec::new(),
+        for_frame_bindings: HashMap::new(),
+        preserve_structured: false,
+    };
     let complete = cfg.push(Vec::new(), TaskCfgTerminator::Complete);
     let _ = cfg.lower_list(body, complete, None);
     let uses_defs = cfg
@@ -2300,8 +2366,24 @@ impl TaskCfgBuilder {
         mut next: usize,
         loop_targets: Option<(usize, usize)>,
     ) -> usize {
+        let mut straight_line = Vec::new();
         for statement in statements.iter().rev() {
+            if self.preserve_structured && task_stmt_can_remain_structured(statement) {
+                straight_line.push(statement.clone());
+                continue;
+            }
+            if !straight_line.is_empty() {
+                straight_line.reverse();
+                next = self.push(
+                    std::mem::take(&mut straight_line),
+                    TaskCfgTerminator::Jump(next),
+                );
+            }
             next = self.lower_stmt(statement, next, loop_targets);
+        }
+        if !straight_line.is_empty() {
+            straight_line.reverse();
+            next = self.push(straight_line, TaskCfgTerminator::Jump(next));
         }
         next
     }
@@ -2354,8 +2436,11 @@ impl TaskCfgBuilder {
                 ..
             } => {
                 let step_expr = step.clone().unwrap_or_else(|| Expr::int(1));
-                let end_field = format!("{var}__end");
-                let step_field = format!("{var}__step");
+                let (end_field, step_field) = self
+                    .for_frame_bindings
+                    .get(var)
+                    .cloned()
+                    .unwrap_or_else(|| (format!("{var}__end"), format!("{var}__step")));
                 let header = self.push(Vec::new(), TaskCfgTerminator::Complete);
                 let latch = self.push(
                     vec![assign_var(
@@ -2427,6 +2512,77 @@ impl TaskCfgBuilder {
     }
 }
 
+fn task_stmt_can_remain_structured(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
+        Stmt::Expr { expr, .. } if is_yield(expr) => false,
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            !task_stmts_contain_resume_terminator(then_branch)
+                && !task_stmts_contain_resume_terminator(else_branch)
+                && !task_stmts_have_unbound_loop_control(then_branch, 0)
+                && !task_stmts_have_unbound_loop_control(else_branch, 0)
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => {
+            !task_stmts_contain_resume_terminator(body)
+        }
+        Stmt::Const { .. } | Stmt::Assign { .. } | Stmt::Expr { .. } => true,
+    }
+}
+
+fn task_stmts_contain_resume_terminator(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Return { .. } => true,
+        Stmt::Expr { expr, .. } => is_yield(expr),
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            task_stmts_contain_resume_terminator(then_branch)
+                || task_stmts_contain_resume_terminator(else_branch)
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => {
+            task_stmts_contain_resume_terminator(body)
+        }
+        _ => false,
+    })
+}
+
+fn task_stmts_contain_yield(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Expr { expr, .. } => is_yield(expr),
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => task_stmts_contain_yield(then_branch) || task_stmts_contain_yield(else_branch),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => task_stmts_contain_yield(body),
+        _ => false,
+    })
+}
+
+fn task_stmts_have_unbound_loop_control(stmts: &[Stmt], loop_depth: usize) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Break { .. } | Stmt::Continue { .. } => loop_depth == 0,
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            task_stmts_have_unbound_loop_control(then_branch, loop_depth)
+                || task_stmts_have_unbound_loop_control(else_branch, loop_depth)
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => {
+            task_stmts_have_unbound_loop_control(body, loop_depth + 1)
+        }
+        _ => false,
+    })
+}
+
 fn cfg_pc(id: usize) -> Expr {
     Expr::int((id + 1) as i64)
 }
@@ -2454,8 +2610,13 @@ fn compile_task_resume_body(
     node: &str,
     result: &str,
     declare_scratch: bool,
+    for_frame_bindings: &HashMap<String, (String, String)>,
 ) -> Vec<Stmt> {
-    let mut cfg = TaskCfgBuilder { blocks: Vec::new() };
+    let mut cfg = TaskCfgBuilder {
+        blocks: Vec::new(),
+        for_frame_bindings: for_frame_bindings.clone(),
+        preserve_structured: true,
+    };
     let complete = cfg.push(Vec::new(), TaskCfgTerminator::Complete);
     let entry = cfg.lower_list(body, complete, None);
     let pc = task_pc_field(task_name);
@@ -2571,6 +2732,7 @@ fn compile_task_resume(
     body: &[Stmt],
     local_initializers: Vec<Stmt>,
     params: Vec<FnParamDecl>,
+    for_frame_bindings: &HashMap<String, (String, String)>,
 ) -> FunctionDef {
     let mut function_body = compile_task_resume_body(
         task_name,
@@ -2579,6 +2741,7 @@ fn compile_task_resume(
         TASK_NODE_LOCAL,
         TASK_RESULT_LOCAL,
         true,
+        for_frame_bindings,
     );
     function_body.push(Stmt::Return {
         loc: Default::default(),
@@ -2603,6 +2766,7 @@ fn compile_inline_task_resume(
     task_name: &str,
     body: &[Stmt],
     local_initializers: Vec<Stmt>,
+    for_frame_bindings: &HashMap<String, (String, String)>,
 ) -> Vec<Stmt> {
     compile_task_resume_body(
         task_name,
@@ -2611,6 +2775,7 @@ fn compile_inline_task_resume(
         &task_inline_node_local(task_name),
         &task_inline_result_local(task_name),
         false,
+        for_frame_bindings,
     )
 }
 
@@ -2746,6 +2911,7 @@ struct PreparedTask {
     init_stmts: Vec<Stmt>,
     reset_stmts: Vec<Stmt>,
     retained_fields: Vec<String>,
+    for_frame_bindings: HashMap<String, (String, String)>,
 }
 
 #[derive(Clone)]
@@ -2767,6 +2933,8 @@ fn prepare_task(
 ) -> PreparedTask {
     let mut body = task.body.clone();
     let source_names = uniquify_task_bindings(&mut body, owner_roots);
+    let task_binding_names = source_names.keys().cloned().collect::<HashSet<_>>();
+    let live_across_yield = task_locals_live_across_yield(&body, &task_binding_names);
     let locals = collect_task_locals(
         &body,
         owner_roots,
@@ -2774,11 +2942,11 @@ fn prepare_task(
         owner_types,
         struct_defs,
         &source_names,
+        &live_across_yield,
         &task.name,
         errors,
     );
     let task_local_names = locals.keys().cloned().collect::<HashSet<_>>();
-    let live_across_yield = task_locals_live_across_yield(&body, &task_local_names);
     let names = locals
         .keys()
         .filter_map(|name| {
@@ -2812,7 +2980,7 @@ fn prepare_task(
     let mut retained_fields = vec![task_pc_field(&task.name)];
     let mut reset_stmts = vec![assign_var(task_pc_field(&task.name), Expr::int(0))];
     let mut resume_local_initializers = Vec::new();
-    let mut inline_scratch_declarations = vec![
+    let inline_scratch_declarations = vec![
         typed_assign(
             task_inline_node_local(&task.name),
             PrimitiveType::I32,
@@ -2841,16 +3009,24 @@ fn prepare_task(
                 }
                 TaskResumePlacement::Inline => {
                     let scratch = names[&local].clone();
-                    inline_scratch_declarations.push(storage.init_stmt(scratch.clone()));
-                    resume_local_initializers.extend(storage.reset_stmts(scratch));
+                    resume_local_initializers.push(storage.init_stmt(scratch));
                 }
             }
         }
     }
 
-    let mut for_frame_fields = HashSet::new();
-    collect_for_frame_fields(&body, &mut for_frame_fields);
-    let mut for_frame_fields = for_frame_fields.into_iter().collect::<Vec<_>>();
+    let mut for_frame_bindings = HashMap::new();
+    let mut next_for_frame_id = 0;
+    collect_for_frame_bindings(
+        &task.name,
+        &body,
+        &mut next_for_frame_id,
+        &mut for_frame_bindings,
+    );
+    let mut for_frame_fields = for_frame_bindings
+        .values()
+        .flat_map(|(end, step)| [end.clone(), step.clone()])
+        .collect::<Vec<_>>();
     for_frame_fields.sort();
     for field in for_frame_fields {
         init_stmts.push(typed_assign(
@@ -2870,6 +3046,7 @@ fn prepare_task(
         init_stmts,
         reset_stmts,
         retained_fields,
+        for_frame_bindings,
     }
 }
 
@@ -2971,6 +3148,7 @@ fn lower_top_level_tasks(
         init_prefix.extend(prepared.init_stmts);
         retained_fields.extend(prepared.retained_fields);
         scratch_declarations.extend(prepared.inline_scratch_declarations);
+        let for_frame_bindings = prepared.for_frame_bindings.clone();
         expansions.insert(
             prepared.name.clone(),
             InlineTaskExpansion {
@@ -2978,6 +3156,7 @@ fn lower_top_level_tasks(
                     &prepared.name,
                     &prepared.body,
                     prepared.resume_local_initializers,
+                    &for_frame_bindings,
                 ),
                 reset: prepared.reset_stmts,
                 result: task_inline_result_local(&prepared.name),
@@ -3229,11 +3408,13 @@ pub(crate) fn lower_tasks(
             );
             init_prefix.extend(prepared.init_stmts);
             retained_task_fields.extend(prepared.retained_fields);
+            let for_frame_bindings = prepared.for_frame_bindings.clone();
             generated_defs.push(compile_task_resume(
                 &prepared.name,
                 &prepared.body,
                 prepared.resume_local_initializers,
                 buffer_params.clone(),
+                &for_frame_bindings,
             ));
             generated_defs.push(FunctionDef {
                 loc: Default::default(),
@@ -3707,6 +3888,149 @@ sample:
     }
 
     #[test]
+    fn task_allows_reference_locals_that_are_dead_before_yield() {
+        let source = r#"
+buffers:
+  data: f32
+
+init:
+  observed: i32 = 0 {retain}
+
+task load():
+  window = data[:]
+  observed = window.len()
+  yield
+
+block:
+  await load()
+
+sample:
+  out1 = f32(observed)
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("a reference local that dies before yield should analyze");
+        assert!(!typed
+            .state_vars
+            .iter()
+            .any(|name| name.contains("__onda_task_load_local_window")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("the ephemeral reference should remain local to one resume arm");
+    }
+
+    #[test]
+    fn task_allows_reference_locals_created_after_yield() {
+        let source = r#"
+buffers:
+  data: f32
+
+init:
+  observed: i32 = 0 {retain}
+
+task load():
+  yield
+  window = data[:]
+  observed = window.len()
+
+block:
+  await load()
+
+sample:
+  out1 = f32(observed)
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("a reference local created after yield should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("the post-yield reference should remain within its resume arm");
+    }
+
+    #[test]
+    fn task_rejects_reference_locals_that_cross_yield() {
+        let source = r#"
+buffers:
+  data: f32
+
+init:
+  observed: i32 = 0 {retain}
+
+task load():
+  window = data[:]
+  yield
+  observed = window.len()
+
+block:
+  await load()
+
+sample:
+  out1 = f32(observed)
+"#;
+        let errors = analyze(parse_program(source).expect("task source should parse"))
+            .expect_err("a reference local cannot be stored in a task frame");
+        assert!(
+            errors.iter().any(|error| {
+                error.message.contains("window") && error.message.contains("live across a yield")
+            }),
+            "unexpected diagnostics: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn task_loop_frame_names_do_not_alias_user_locals() {
+        let source = r#"
+init:
+  result: i32 = 0 {retain}
+
+task prepare():
+  i__end: i32 = 99
+  for i in 0..2:
+    yield
+  result = i__end
+
+block:
+  await prepare()
+
+sample:
+  out1 = f32(result)
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("loop bookkeeping should use collision-free names");
+        assert!(typed
+            .state_vars
+            .iter()
+            .any(|name| name.contains("__onda_task_prepare_local_i__end")));
+        assert!(typed
+            .state_vars
+            .iter()
+            .any(|name| name.contains("__onda_task_prepare_for_0_end")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("distinct user and loop frame fields should lower");
+    }
+
+    #[test]
+    fn large_task_scratch_array_uses_one_body_fill() {
+        let source = r#"
+task prepare():
+  scratch: f32[4096]
+  scratch[0] = 1.0
+
+block:
+  await prepare()
+
+sample:
+  out1 = 0.0
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("large task scratch array should analyze");
+        let mir =
+            lower_program_to_optimized_mir(&typed).expect("large task scratch array should lower");
+        let dump = onda_mir::format_program(mir.as_program());
+        assert_eq!(
+            dump.matches("slice_fill").count(),
+            1,
+            "task initialization should remain one operation rather than one CFG node per element"
+        );
+    }
+
+    #[test]
     fn initialized_task_array_frame_preserves_its_values() {
         let source = r#"
 proc Loader:
@@ -3715,7 +4039,7 @@ proc Loader:
   task load():
     values: i32[2] = [3, 5]
     yield
-    result = values[0] + values[1]
+    result = values[0] + values[1] + values.len()
   block:
     await load()
     sample:

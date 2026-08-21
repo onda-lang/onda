@@ -2,7 +2,7 @@ import std/convolution
 import std/filter
 
 const RoomFFTSize = 16384
-const RoomMaxImpulseFrames = 480000
+const RoomMaxImpulseFrames = i32(SR * 10)
 const RoomImpulseLoadSeconds = 0.5
 
 use std::convolution<RoomFFTSize, RoomMaxImpulseFrames> as RoomConvolution

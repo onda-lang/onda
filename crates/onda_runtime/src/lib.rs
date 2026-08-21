@@ -1912,6 +1912,59 @@ sample { out1 = amp + retained }
     }
 
     #[test]
+    fn reset_preserves_retained_structs_and_struct_arrays() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+struct State:
+  value: i32 = 1
+
+init:
+  one = State() {retain}
+  many: State[2] = State() {retain}
+  ordinary = State()
+
+event mutate():
+  one.value = 10
+  many[0].value = 20
+  many[1].value = 30
+  ordinary.value = 40
+
+sample:
+  out1 = f32(one.value + many[0].value + many[1].value + ordinary.value)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [0.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("initial state should process");
+        assert_eq!(output, [4.0]);
+
+        let mutate = instance.event_index("mutate").expect("mutate event");
+        trigger_event_by_index(&mut instance, mutate, &[]).expect("mutation should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("mutated state should process");
+        assert_eq!(output, [100.0]);
+
+        reset(&mut instance);
+        process_checked(&mut instance, BLOCK_SIZE).expect("ordinary reset should process");
+        assert_eq!(output, [61.0]);
+
+        reset_all(&mut instance);
+        process_checked(&mut instance, BLOCK_SIZE).expect("full reset should process");
+        assert_eq!(output, [4.0]);
+    }
+
+    #[test]
     fn failed_live_init_is_transactional() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
@@ -2311,6 +2364,49 @@ sample:
         }
         process_checked(&mut instance, BLOCK_SIZE).expect("task should complete after the loop");
         assert_eq!(output, [26.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn task_loop_frame_does_not_overwrite_similarly_named_local() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  result: i32 = 0 {retain}
+
+task prepare():
+  i__end: i32 = 99
+  for i in 0..2:
+    yield
+  result = i__end
+
+block:
+  await prepare()
+
+sample:
+  out1 = f32(result)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        for _ in 0..2 {
+            process_checked(&mut instance, BLOCK_SIZE).expect("loop task should yield");
+            assert_eq!(output, [0.0; BLOCK_SIZE]);
+            output.fill(99.0);
+        }
+        process_checked(&mut instance, BLOCK_SIZE).expect("loop task should complete");
+        assert_eq!(output, [99.0; BLOCK_SIZE]);
     }
 
     #[test]

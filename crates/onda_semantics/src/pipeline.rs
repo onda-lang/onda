@@ -30,6 +30,108 @@ fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnos
     Ok(())
 }
 
+fn resolves_to_processor_constructor(
+    name: &str,
+    current_ns: &str,
+    proc_symbols: &HashSet<String>,
+    proc_template_bases: &HashSet<String>,
+) -> bool {
+    if resolve_proc_ctor_symbol_name(name, current_ns, proc_symbols).is_some() {
+        return true;
+    }
+    if name.contains("::") {
+        proc_template_bases.contains(name)
+    } else {
+        resolve_unqualified_symbol_name(name, current_ns, proc_template_bases).is_some()
+    }
+}
+
+fn reject_retained_processor_bindings(program: &Program, errors: &mut Vec<Diagnostic>) {
+    fn validate_init(
+        init: &InitBlock,
+        current_ns: &str,
+        proc_symbols: &HashSet<String>,
+        proc_template_bases: &HashSet<String>,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        let retained = init.retained_roots.iter().collect::<HashSet<_>>();
+        for stmt in &init.body {
+            let Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr,
+                ..
+            } = stmt
+            else {
+                continue;
+            };
+            if !retained.contains(name) {
+                continue;
+            }
+            let retained_processor_kind = match expr {
+                Expr::UserCall {
+                    name: constructor, ..
+                } if resolves_to_processor_constructor(
+                    constructor,
+                    current_ns,
+                    proc_symbols,
+                    proc_template_bases,
+                ) =>
+                {
+                    Some("processor instance")
+                }
+                Expr::ArrayCtor { spec, .. }
+                    if matches!(
+                        &spec.elem,
+                        ArrayElemType::Struct(constructor)
+                            if resolves_to_processor_constructor(
+                                constructor,
+                                current_ns,
+                                proc_symbols,
+                                proc_template_bases,
+                            )
+                    ) =>
+                {
+                    Some("processor array")
+                }
+                _ => None,
+            };
+            if let Some(kind) = retained_processor_kind {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "{{retain}} cannot be applied to {kind} '{name}'; declare reset policy on the processor's own init state"
+                    ),
+                    stmt.loc(),
+                ));
+            }
+        }
+    }
+
+    let proc_symbols = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Proc(proc_def) => Some(proc_def.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let proc_template_bases = specialized_proc_template_bases(&proc_symbols);
+    if let Some(Block::Init(init)) = program.block(BlockKind::Init) {
+        validate_init(init, "", &proc_symbols, &proc_template_bases, errors);
+    }
+    for proc_def in program.blocks.iter().filter_map(|block| match block {
+        Block::Proc(proc_def) => Some(proc_def),
+        _ => None,
+    }) {
+        validate_init(
+            &proc_def.init,
+            &namespace_of_symbol(&proc_def.name),
+            &proc_symbols,
+            &proc_template_bases,
+            errors,
+        );
+    }
+}
+
 fn statements_return_value(statements: &[Stmt]) -> bool {
     statements.iter().any(|statement| match statement {
         Stmt::Return { expr, .. } => !is_bare_return_expr(expr),
@@ -7730,6 +7832,7 @@ pub fn analyze_with_options(
         .blocks
         .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
     validate_task_source_model(&program, &mut errors);
+    reject_retained_processor_bindings(&program, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }

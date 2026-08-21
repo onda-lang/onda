@@ -25,6 +25,7 @@ if ($LASTEXITCODE -ne 0) {
 npm run build --prefix $compilerPackage
 
 Remove-Item $compilerOut, $webAudioOut -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $demoDir "onda-webaudio.js"), (Join-Path $demoDir "onda-wasm-processor.js") -Force -ErrorAction SilentlyContinue
 New-Item $compilerOut, $webAudioOut -ItemType Directory | Out-Null
 Copy-Item (Join-Path $compilerPackage "src") (Join-Path $compilerOut "src") -Recurse
 Copy-Item (Join-Path $compilerPackage "dist") (Join-Path $compilerOut "dist") -Recurse

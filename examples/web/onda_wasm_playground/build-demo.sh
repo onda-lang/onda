@@ -51,6 +51,7 @@ fi
 npm run build --prefix "$compiler_package"
 
 rm -rf "$compiler_out" "$webaudio_out"
+rm -f "$demo_dir/onda-webaudio.js" "$demo_dir/onda-wasm-processor.js"
 mkdir -p "$compiler_out" "$webaudio_out"
 cp -R "$compiler_package/src" "$compiler_out/src"
 cp -R "$compiler_package/dist" "$compiler_out/dist"

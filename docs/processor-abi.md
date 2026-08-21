@@ -152,16 +152,24 @@ target layout and is otherwise opaque.
 
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
 artifact descriptor. Scratch state is deliberately absent from snapshots.
+`runtime.state_reset_ranges` lists the coalesced physical ranges copied from the post-init baseline
+by ordinary reset; retained authored roots and compiler-owned task continuations are outside those
+ranges. An all-state reset restores the complete baseline instead.
+
+`metadata.states` includes every packed snapshot entry. Its `authored` flag is false for
+compiler-owned task frames, allowing snapshot implementations to preserve suspended tasks while
+authored-state reflection omits their implementation storage.
 
 ## Portable snapshots
 
 The packed persistent-state snapshot is target-independent. The current snapshot format encodes
-declared scalar elements in little-endian byte order, in metadata order, without physical padding or
-scratch state. This is distinct from the target-native physical state image, which can use another
-byte order or alignment.
+persistent scalar elements in little-endian byte order, in metadata order, without physical padding
+or scratch state. It includes retained authored roots and compiler-owned task frames. This is
+distinct from the target-native physical state image, which can use another byte order or alignment.
 
 Restore begins with `onda_processor_init(params, state, 1)`, then overlays every persistent entry
-from the packed snapshot. This resets instance scratch while preserving declared persistent state.
+from the packed snapshot. This resets instance scratch while preserving persistent state and task
+continuations.
 A host converting between a big-endian physical target and the portable snapshot must encode
 and decode each scalar according to metadata rather than copying physical bytes wholesale.
 

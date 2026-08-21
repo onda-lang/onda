@@ -2042,12 +2042,16 @@
       // host does not provide it. This is the single code path used by both
       // VS Code and the native window.
 
+      function booleanScalarValue(value) {
+        return typeof value === "boolean" ? value : value !== 0;
+      }
+
       function initialParamValue(param) {
         if (param.type === "bool") {
           if (param.default === null || param.default === undefined) {
             return false;
           }
-          return param.default !== 0;
+          return booleanScalarValue(param.default);
         }
         if (param.default !== null && param.default !== undefined) {
           return param.default;
@@ -2142,14 +2146,14 @@
         }
         if (arg.default !== null && arg.default !== undefined) {
           if (arg.type === "bool") {
-            return Boolean(arg.default);
+            return booleanScalarValue(arg.default);
           }
           const defaultValue = Number(arg.default);
           return Number.isFinite(defaultValue) ? defaultValue : 0;
         }
         if (arg.type === "bool") {
           if (arg.value !== null && arg.value !== undefined) {
-            return arg.value !== 0;
+            return booleanScalarValue(arg.value);
           }
           return false;
         }

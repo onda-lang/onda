@@ -682,6 +682,143 @@ mod tests {
     }
 
     #[test]
+    fn rejects_retain_on_processor_instances_and_arrays() {
+        let cases = [
+            (
+                r#"
+proc Child:
+  sample:
+    out1 = 0.0
+init:
+  child = Child() {retain}
+sample:
+  out1 = child()
+"#,
+                "{retain} cannot be applied to processor instance 'child'",
+            ),
+            (
+                r#"
+proc Child:
+  sample:
+    out1 = 0.0
+proc Parent:
+  init:
+    child = Child() {retain}
+  sample:
+    out1 = child()
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#,
+                "{retain} cannot be applied to processor instance 'child'",
+            ),
+            (
+                r#"
+proc Voice:
+  sample:
+    out1 = 0.0
+init:
+  voices: Voice[2] = Voice() {retain}
+sample:
+  out1 = voices[0]()
+"#,
+                "{retain} cannot be applied to processor array 'voices'",
+            ),
+            (
+                r#"
+proc Voice:
+  sample:
+    out1 = 0.0
+proc Parent:
+  init:
+    voices: Voice[2] = Voice() {retain}
+  sample:
+    out1 = voices[0]()
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#,
+                "{retain} cannot be applied to processor array 'voices'",
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_analyze_error_contains(source, expected);
+        }
+    }
+
+    #[test]
+    fn retain_supports_structs_and_fixed_struct_arrays() {
+        let source = r#"
+struct State:
+  value: i32 = 1
+
+init:
+  one = State() {retain}
+  many: State[2] = State() {retain}
+
+sample:
+  out1 = f32(one.value + many[0].value + many[1].value)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("retained struct aggregates should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("retained struct aggregates should lower");
+        for name in ["one.value", "many.value"] {
+            let state = mir
+                .state
+                .iter()
+                .find(|state| state.name == name)
+                .unwrap_or_else(|| panic!("missing flattened aggregate state '{name}'"));
+            assert_eq!(state.reset, onda_mir::StateResetPolicy::Retain);
+        }
+    }
+
+    #[test]
+    fn convolution_retains_prepared_kernel_but_not_signal_history() {
+        let source = r#"
+import std/convolution
+use std::convolution<256, 1024> as Conv
+
+init:
+  conv = Conv::ZeroLatencyConvolver()
+
+sample:
+  out1 = conv(0.0)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("convolver should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("convolver should lower");
+        let reset_policy = |name: &str| {
+            mir.state
+                .iter()
+                .find(|state| state.name == name)
+                .unwrap_or_else(|| panic!("missing convolver state '{name}'"))
+                .reset
+        };
+
+        for name in [
+            "conv.td__impulse",
+            "conv.td__active_taps",
+            "conv.head__impulse_real",
+            "conv.head__impulse_imag",
+            "conv.head__active_partitions",
+        ] {
+            assert_eq!(reset_policy(name), onda_mir::StateResetPolicy::Retain);
+        }
+        for name in [
+            "conv.td__delay",
+            "conv.head__pending",
+            "conv.head__overlap",
+            "conv.head__input_real",
+        ] {
+            assert_eq!(reset_policy(name), onda_mir::StateResetPolicy::Restore);
+        }
+    }
+
+    #[test]
     fn reserves_unsafe_index_operation_names() {
         for name in [READ_UNSAFE_FN, WRITE_UNSAFE_FN] {
             assert_analyze_error_contains(

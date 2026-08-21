@@ -103,6 +103,10 @@ Non-crate directories of note:
     (call + return), `monomorphization`, and `overloads`.
   - `generic_specialization.rs`, `generic_specialization/proc_specialization.rs` — generic owner specialization.
 - Processor lowering:
+  - `task_lowering.rs` — owner-local task validation and lowering through a typed CFG, backwards
+    live-across-yield analysis, fixed continuation-frame construction, resumable state-machine
+    generation, and structured `await`/`reset` expansion. Proc tasks and top-level tasks share the
+    same preparation path; only their final integration into owner block-pre control differs.
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
   - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
   - `proc_call_rewrite.rs`, `proc_call_support.rs`, `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, aliasing, and state symbol rewriting.
