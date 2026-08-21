@@ -3,7 +3,7 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | const_block | events_block | event_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
+block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | const_block | events_block | event_block | tasks_block | task_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ namespace_any_ref ~ NEWLINE* }
@@ -70,8 +70,12 @@ event_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ event_param_list? ~ NEWLINE* 
 event_param_list = { event_param_decl ~ (comma_sep ~ event_param_decl)* ~ comma_sep? }
 event_param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ event_param_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? }
 event_param_type = { array_type | fn_typed_array_param | type_name | named_type }
+tasks_block = { tasks_kw ~ NEWLINE* ~ "{" ~ NEWLINE* ~ task_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+task_block = { task_kw ~ task_decl ~ NEWLINE* }
+task_list = { task_decl ~ (stmt_sep+ ~ task_decl)* ~ stmt_sep* }
+task_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
-proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
+proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | tasks_block | task_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 def_block = { (const_kw ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
@@ -107,6 +111,11 @@ outs_kw = { "outs" | "outputs" }
 kouts_kw = { "kouts" }
 proc_kw = { "proc" | "processor" }
 const_kw = @{ "const" ~ !ident_char }
+tasks_kw = @{ "tasks" ~ !ident_char }
+task_kw = @{ "task" ~ !ident_char }
+return_kw = @{ "return" ~ !ident_char }
+yield_kw = @{ "yield" ~ !ident_char }
+await_kw = @{ "await" ~ !ident_char }
 section_default_decl_type = { "<" ~ NEWLINE* ~ (type_name | namespace_ref | qualified_ident) ~ NEWLINE* ~ ">" }
 section_default_buffer_type = { "<" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ ">" }
 
@@ -162,7 +171,7 @@ struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ N
 struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block }
 
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
-stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | const_decl | assign_stmt | call_stmt }
+stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | const_decl | assign_stmt | call_stmt }
 assign_stmt = { typed_assign_stmt | compound_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
 named_type = { (namespace_ref | qualified_ident | ident) ~ generic_type_arg_list? }
 typed_decl_type = { array_type | tuple_type | type_name | named_type }
@@ -172,7 +181,10 @@ binding_range_spec = { expr ~ NEWLINE* ~ binding_range_op ~ NEWLINE* ~ expr }
 binding_range_named_count = { "count" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
 binding_range_named_range = { "range" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_range_spec }
 binding_range_named_mode = { "mode" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_range_mode }
-binding_range_item = { binding_range_named_count | binding_range_named_range | binding_range_named_mode | binding_range_mode | binding_range_spec | expr }
+binding_reset_value = { "retain" }
+binding_range_named_reset = { "reset" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_reset_value }
+binding_retain = { "retain" }
+binding_range_item = { binding_range_named_count | binding_range_named_range | binding_range_named_mode | binding_range_named_reset | binding_retain | binding_range_mode | binding_range_spec | expr }
 binding_range = { "{" ~ NEWLINE* ~ binding_range_item ~ (comma_sep ~ binding_range_item)* ~ comma_sep? ~ NEWLINE* ~ "}" }
 typed_assign_stmt = { ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ typed_decl_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ (NEWLINE* ~ binding_range)? }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" }
@@ -184,7 +196,9 @@ tuple_target = { "(" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)+ ~ comma_sep? ~ NE
 indexed_member_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" }
 index_target = { (namespace_ref | path_ident) ~ index_group ~ index_group? }
 slice_target = { (namespace_ref | path_ident) ~ (index_group ~ slice_group | slice_group) }
-return_stmt = { "return" ~ expr }
+return_stmt = { return_kw ~ expr? }
+yield_stmt = { yield_kw }
+await_stmt = { await_kw ~ ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ ")" }
 call_stmt = { call_expr }
 if_cond = { expr }
 if_stmt = { "if" ~ if_cond ~ stmt_block ~ elif_clause* ~ (NEWLINE* ~ "else" ~ stmt_block)? }
@@ -247,6 +261,7 @@ keyword = _{
     | "if" | "elif" | "else"
     | "for" | "in" | "while" | "loop"
     | "break" | "continue" | "return" | "assert"
+    | "tasks" | "task" | "await" | "yield"
     | "use" | "as" | "pub" | "pin"
     | "true" | "false"
   ) ~ !ident_char

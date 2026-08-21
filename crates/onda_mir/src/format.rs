@@ -52,8 +52,12 @@ impl<'a> Formatter<'a> {
 
         for (index, slot) in self.program.state.iter().enumerate() {
             let integer_range = format_integer_range(slot.integer_range);
+            let reset = match slot.reset {
+                crate::StateResetPolicy::Restore => "",
+                crate::StateResetPolicy::Retain => " reset=retain",
+            };
             self.line(format_args!(
-                "state @state{index} {:?}: {} {}{integer_range}",
+                "state @state{index} {:?}: {} {}{reset}{integer_range}",
                 slot.name,
                 type_id(slot.ty),
                 match slot.persistence {
@@ -505,6 +509,7 @@ fn format_rvalue(value: &Rvalue) -> String {
     match value {
         Rvalue::Use(value) => format_value(*value),
         Rvalue::Load(place) => format!("load {}", format_place(place)),
+        Rvalue::InitAll => "init_all".to_owned(),
         Rvalue::Unary { op, operand } => {
             format!("{} {}", format_unary(*op), format_value(*operand))
         }
@@ -961,6 +966,7 @@ mod tests {
             name: "cursor".to_owned(),
             ty: TypeId::new(0),
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
             integer_range: Some(IntegerRangeInvariant {
                 min: ScalarValue::I32(0),
                 max: ScalarValue::I32(3),

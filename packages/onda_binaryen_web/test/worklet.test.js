@@ -67,7 +67,7 @@ function f64PassthroughMir() {
     const_data: [],
     functions: [
       {
-        name: "onda_init",
+        name: "onda_processor_init",
         kind: { kind: "init" },
         attributes: { origin: "compiler_generated", inline: "always" },
         params: [],
@@ -485,7 +485,7 @@ test("AudioWorklet sets scalar and fixed-array params from metadata", () => {
   assert.deepEqual(processor.port.messages, []);
 });
 
-test("AudioWorklet reset zeroes physical state before re-running init", () => {
+test("AudioWorklet reset restores its baseline while preserving retained state", () => {
   const mir = f64PassthroughMir();
   mir.interface.params[0] = {
     name: "initial",
@@ -497,13 +497,28 @@ test("AudioWorklet reset zeroes physical state before re-running init", () => {
     range: null,
   };
   mir.state = [
-    { name: "initialized", ty: 0, persistence: "snapshot" },
+    { name: "initialized", ty: 0, persistence: "snapshot", reset: "restore" },
+    { name: "retained", ty: 0, persistence: "snapshot", reset: "retain" },
     { name: "untouched", ty: 0, persistence: "snapshot" },
   ];
+  mir.functions[0].locals = [{ name: "$init_all", ty: 2 }];
   mir.functions[0].body.statements = [
     assign(place("state", 0), {
       kind: "load",
       data: place("param", 0),
+    }),
+    assign(place("local", 0), { kind: "init_all" }),
+    statement("if", {
+      condition: local(0),
+      then_block: {
+        statements: [
+          assign(place("state", 1), {
+            kind: "use",
+            data: constant("f64", 5),
+          }),
+        ],
+      },
+      else_block: { statements: [] },
     }),
   ];
   const artifact = compileMir(mir);
@@ -514,26 +529,45 @@ test("AudioWorklet reset zeroes physical state before re-running init", () => {
       params: { initial: 2.5 },
     },
   });
-  const [initialized, untouched] = artifact.metadata.metadata.states;
+  const [initialized, retained, untouched] = artifact.metadata.metadata.states;
   const view = processor.memoryView();
   const initializedAddress =
     processor.statePtr + initialized.physical_state_byte_offset;
   const untouchedAddress =
     processor.statePtr + untouched.physical_state_byte_offset;
+  const retainedAddress =
+    processor.statePtr + retained.physical_state_byte_offset;
 
   assert.equal(view.getFloat64(initializedAddress, true), 2.5);
+  assert.equal(view.getFloat64(retainedAddress, true), 5);
   assert.equal(view.getFloat64(untouchedAddress, true), 0);
 
   view.setFloat64(initializedAddress, 100, true);
-  view.setFloat64(untouchedAddress, 200, true);
+  view.setFloat64(retainedAddress, 200, true);
+  view.setFloat64(untouchedAddress, 300, true);
   processor.setParam("initial", 7.25);
   processor.blockCursor = 3;
   processor.port.onmessage({ data: { type: "reset" } });
 
-  assert.equal(view.getFloat64(initializedAddress, true), 7.25);
+  assert.equal(view.getFloat64(initializedAddress, true), 2.5);
+  assert.equal(view.getFloat64(retainedAddress, true), 200);
   assert.equal(view.getFloat64(untouchedAddress, true), 0);
   assert.equal(processor.blockCursor, 0);
   assert.deepEqual(processor.port.messages, []);
+
+  processor.port.onmessage({ data: { type: "init" } });
+  assert.equal(view.getFloat64(initializedAddress, true), 7.25);
+  assert.equal(view.getFloat64(retainedAddress, true), 200);
+
+  view.setFloat64(initializedAddress, 100, true);
+  view.setFloat64(retainedAddress, 300, true);
+  processor.port.onmessage({ data: { type: "reset-all" } });
+  assert.equal(view.getFloat64(initializedAddress, true), 7.25);
+  assert.equal(view.getFloat64(retainedAddress, true), 200);
+
+  processor.port.onmessage({ data: { type: "init-all" } });
+  assert.equal(view.getFloat64(initializedAddress, true), 7.25);
+  assert.equal(view.getFloat64(retainedAddress, true), 5);
 });
 
 test("AudioWorklet snapshots persistent state and restores from a post-init base", () => {
@@ -731,7 +765,7 @@ test("AudioWorklet segments arbitrary callback sizes across compile blocks", () 
   assert.equal(processor.blockCursor, 3);
 });
 
-test("AudioWorklet latches generated execution failures and emits silence", () => {
+test("AudioWorklet reports generated execution failures and permits retry", () => {
   const artifact = compileMir(f64PassthroughMir());
   const processor = new WorkletProcessor({
     processorOptions: {
@@ -742,7 +776,7 @@ test("AudioWorklet latches generated execution failures and emits silence", () =
   let calls = 0;
   processor.invokeProcessSegment = () => {
     calls += 1;
-    return 1;
+    return calls === 1 ? 1 : 0;
   };
   const output = Float32Array.from([1, 1, 1, 1]);
 
@@ -751,7 +785,6 @@ test("AudioWorklet latches generated execution failures and emits silence", () =
     true,
   );
   assert.deepEqual([...output], [0, 0, 0, 0]);
-  assert.equal(processor.executionFailed, true);
   assert.equal(calls, 1);
   assert.deepEqual(processor.port.messages.at(-1), {
     type: "onda-error",
@@ -765,5 +798,5 @@ test("AudioWorklet latches generated execution failures and emits silence", () =
     true,
   );
   assert.deepEqual([...output], [0, 0, 0, 0]);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
 });

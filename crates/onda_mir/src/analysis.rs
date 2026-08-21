@@ -1460,6 +1460,7 @@ fn scan_rvalue(
     effects: &mut FunctionEffects,
 ) {
     match value {
+        Rvalue::InitAll => {}
         Rvalue::Use(value) | Rvalue::SliceLen(value) => scan_value(*value, effects),
         Rvalue::Load(place) => scan_place(place, Access::Read, effects),
         Rvalue::Unary { operand, .. } => scan_value(*operand, effects),
@@ -1977,6 +1978,7 @@ mod tests {
             name: "value".to_owned(),
             ty: scalar,
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
         });
         program.functions = vec![init, process, callee, caller];
 

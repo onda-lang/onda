@@ -246,6 +246,9 @@ pub(crate) fn analyze_init_stmt(
     scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if crate::processor_lowering::is_retained_initializer_marker(stmt) {
+        return;
+    }
     with_stmt_diag_context(stmt, |stmt_diag| {
         track_integer_range_declaration(stmt, &mut st.integer_ranges);
         let init_ctx = ctx.init;

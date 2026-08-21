@@ -150,7 +150,7 @@ initialized from generated metadata and updated with
 `{ type: "set-param", param: "name", value }`. Scalar and fixed-array parameter types are written
 according to their metadata rather than by a name-specific convention. The Params reset restores
 parameter defaults through the same update path, while the Events reset restores only the event
-argument editors. Neither action clears physical processor state or reruns `onda_init`.
+argument editors. Neither action clears physical processor state or reruns processor initialization.
 
 The generic event/control-output ABI accepts
 `{ type: "event", event: "event_name", values: { param: value } }`; scalar, fixed-array, and slice

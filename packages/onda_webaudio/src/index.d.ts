@@ -64,6 +64,9 @@ export class OndaAudioProcessor {
   setParamNormalized(param: string | number, value: number): Promise<any>;
   trigger(event: string | number, values?: Record<string, unknown> | unknown[]): Promise<any>;
   reset(): Promise<any>;
+  resetAll(): Promise<any>;
+  init(): Promise<any>;
+  initAll(): Promise<any>;
   snapshot(): Promise<Uint8Array>;
   restoreSnapshot(snapshot: Uint8Array | ArrayBuffer): Promise<any>;
   readControlOutputs(): Promise<Record<string, unknown>>;

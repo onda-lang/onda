@@ -6,7 +6,8 @@ use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallArg, CallTypeArg,
     ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, LogicalOp, NamespaceItem,
-    OutputTiming, ParamScale, PrimitiveType, Stmt,
+    OutputTiming, ParamScale, PrimitiveType, Stmt, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN,
+    INTERNAL_TASK_YIELD_FN,
 };
 
 use super::{
@@ -1341,6 +1342,7 @@ sample {
   out1 = 0.0
 }
 "#;
+
     let program = parse_program(src).expect("program should parse");
     let sample = program
         .blocks
@@ -1363,6 +1365,130 @@ sample {
     };
     assert!(matches!(then_branch[0], Stmt::Continue { .. }));
     assert!(matches!(else_branch[0], Stmt::Break { .. }));
+}
+
+#[test]
+fn parses_grouped_and_standalone_proc_tasks() {
+    let src = r#"
+proc Loader:
+  tasks:
+    load():
+      for i in 0..4:
+        yield
+      return
+
+  task clear():
+    return
+
+  block:
+    await load()
+    sample:
+      out1 = 0.0
+"#;
+    let program = parse_program(src).expect("tasks should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) => Some(proc),
+            _ => None,
+        })
+        .expect("loader proc");
+
+    assert_eq!(proc.tasks.len(), 2);
+    assert_eq!(proc.tasks[0].name, "load");
+    assert!(matches!(proc.tasks[0].body[0], Stmt::For { .. }));
+    assert!(matches!(
+        proc.tasks[0].body[1],
+        Stmt::Return {
+            expr: Expr::UserCall { ref name, .. },
+            ..
+        } if name == INTERNAL_BARE_RETURN_FN
+    ));
+    assert_eq!(proc.tasks[1].name, "clear");
+    assert!(matches!(
+        proc.block_pre[0],
+        Stmt::Expr {
+            expr: Expr::UserCall { ref name, .. },
+            ..
+        } if name == INTERNAL_TASK_AWAIT_FN
+    ));
+}
+
+#[test]
+fn rejects_duplicate_proc_tasks_across_declaration_forms() {
+    let src = r#"
+proc Loader:
+  tasks:
+    load():
+      yield
+  task load():
+    return
+  sample:
+    out1 = 0.0
+"#;
+    let diagnostics = parse_program(src).expect_err("duplicate tasks should fail");
+    assert!(diagnostics
+        .iter()
+        .any(|diag| diag.message.contains("duplicate task declaration 'load'")));
+}
+
+#[test]
+fn parses_grouped_and_standalone_top_level_tasks() {
+    let src = r#"
+tasks:
+  load():
+    yield
+
+task clear():
+  return
+
+block:
+  await load()
+  sample:
+    out1 = 0.0
+"#;
+    let program = parse_program(src).expect("top-level tasks should parse");
+    let tasks = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Tasks(tasks) => Some(tasks),
+            _ => None,
+        })
+        .expect("top-level task block");
+
+    assert_eq!(tasks.tasks.len(), 2);
+    assert_eq!(tasks.tasks[0].name, "load");
+    assert!(matches!(
+        tasks.tasks[0].body[0],
+        Stmt::Expr {
+            expr: Expr::UserCall { ref name, .. },
+            ..
+        } if name == INTERNAL_TASK_YIELD_FN
+    ));
+    assert_eq!(tasks.tasks[1].name, "clear");
+}
+
+#[test]
+fn rejects_duplicate_top_level_tasks_across_declaration_forms() {
+    let src = r#"
+tasks:
+  load():
+    yield
+task load():
+  return
+"#;
+    let diagnostics = parse_program(src).expect_err("duplicate tasks should fail");
+    assert!(diagnostics
+        .iter()
+        .any(|diag| diag.message.contains("duplicate task declaration 'load'")));
+}
+
+#[test]
+fn rejects_task_parameters() {
+    assert!(parse_program("proc P:\n  task load(x):\n    return\n").is_err());
+    assert!(parse_program("task load(x):\n  return\n").is_err());
 }
 
 #[test]
@@ -1389,8 +1515,9 @@ sample:
 #[test]
 fn rejects_reserved_keywords_as_identifiers() {
     let keywords = [
-        "if", "elif", "else", "for", "in", "while", "loop", "break", "continue", "return",
-        "assert", "import", "include", "use", "as", "pub", "pin", "true", "false",
+        "if", "elif", "else", "for", "in", "while", "loop", "break", "continue", "return", "await",
+        "yield", "task", "tasks", "assert", "import", "include", "use", "as", "pub", "pin", "true",
+        "false",
     ];
 
     for keyword in keywords {
@@ -4492,6 +4619,42 @@ sample:
         assert!(matches!(args[1], Expr::Int { value, .. } if value == expected_begin));
         assert!(matches!(args[2], Expr::Int { value, .. } if value == expected_end));
     }
+}
+
+#[test]
+fn parses_init_retain_reset_policy_independently_from_integer_ranges() {
+    let program = parse_program(
+        r#"
+init:
+  kernel: f32[8] {retain}
+  cursor: i32 = 0 {8, wrap, reset = retain}
+  gain = 1.0 {reset = retain}
+
+sample:
+  out1 = gain
+"#,
+    )
+    .expect("retain reset policies should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("init block");
+    assert_eq!(init.retained_roots, ["kernel", "cursor", "gain"]);
+    assert_eq!(init.body.len(), 3);
+    assert!(matches!(
+        &init.body[1],
+        Stmt::Assign {
+            expr: Expr::Call {
+                func: BuiltinFn::BindingCountWrap,
+                ..
+            },
+            ..
+        }
+    ));
 }
 
 #[test]

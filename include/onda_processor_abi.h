@@ -11,14 +11,14 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 4u
+#define ONDA_PROCESSOR_ABI_VERSION 5u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
   ONDA_PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1u
 };
 
-typedef uint32_t (*onda_processor_init_fn)(const void* params, void* state);
+typedef uint32_t (*onda_processor_init_fn)(const void* params, void* state, uint32_t all);
 
 /* Buffer descriptor tables remain immutable during each call and do not
  * overlap parameter, state, audio, or external-buffer sample storage. A NULL
@@ -423,7 +423,10 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_plain_to_normalized(
  * storage pointers are NULL exactly when the paired descriptor reports that
  * surface count or storage size as zero.
  */
-uint32_t onda_init(const void* params, void* state);
+/* Initializes processor state. When all is nonzero, the complete physical
+   state image is cleared before init executes; otherwise retained state is
+   preserved. */
+uint32_t onda_processor_init(const void* params, void* state, uint32_t all);
 
 uint32_t onda_process(
   void* state,

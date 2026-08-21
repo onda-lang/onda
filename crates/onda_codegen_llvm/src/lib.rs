@@ -72,6 +72,7 @@ pub struct JitProgram {
     buffer_index: Arc<HashMap<String, usize>>,
     state_entries: Arc<Vec<DeclaredState>>,
     snapshot_segments: Arc<Vec<StateSnapshotSegment>>,
+    retained_state_segments: Arc<Vec<PhysicalStateSegment>>,
     snapshot_size_bytes: usize,
     #[cfg(feature = "llvm-orc")]
     compiled: Arc<orc_backend::MirJitProgram>,
@@ -84,6 +85,12 @@ struct StateSnapshotSegment {
     byte_size: usize,
     element_size: usize,
     integer_range: Option<IntegerRangeInvariant>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PhysicalStateSegment {
+    state_offset: usize,
+    byte_size: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -371,6 +378,7 @@ fn allocate_custom_runtime_buffer<T>(
 #[derive(Debug, Clone)]
 pub struct DeclaredState {
     name: String,
+    authored: bool,
     elem_ty: PrimitiveType,
     array_len: usize,
     is_array: bool,
@@ -492,7 +500,7 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
     let event_fixed_sizes = (0..compiled.mir().interface.events.len())
         .map(|index| compiled.event_payload_byte_size(index))
         .collect::<Vec<_>>();
-    let metadata = mir_metadata::build_mir_program_metadata(
+    let mut metadata = mir_metadata::build_mir_program_metadata(
         compiled.mir(),
         mir_metadata::MirMetadataLayoutView {
             state_offsets: compiled.state_byte_offsets(),
@@ -513,6 +521,27 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
     let snapshot_size_bytes = snapshot_segments
         .last()
         .map_or(0, |segment| segment.snapshot_offset + segment.byte_size);
+    let retained_state_segments = compiled
+        .mir()
+        .state
+        .iter()
+        .zip(compiled.state_byte_offsets())
+        .filter(|(slot, _)| slot.reset == onda_mir::StateResetPolicy::Retain)
+        .map(|(slot, state_offset)| {
+            mir_metadata::state_slot_byte_size(compiled.mir(), slot.ty).map(|byte_size| {
+                PhysicalStateSegment {
+                    state_offset: *state_offset,
+                    byte_size,
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            vec![Diagnostic::internal(format!(
+                "MIR state reset metadata failed: {error}"
+            ))]
+        })?;
+    metadata.state_entries.retain(DeclaredState::is_authored);
     Ok(JitProgram {
         sample_rate: compiled.mir().config.sample_rate,
         block_size: compiled.mir().config.block_size as usize,
@@ -531,6 +560,7 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
         buffer_arrays: Arc::new(metadata.buffer_arrays),
         state_entries: Arc::new(metadata.state_entries),
         snapshot_segments: Arc::new(snapshot_segments),
+        retained_state_segments: Arc::new(retained_state_segments),
         snapshot_size_bytes,
         compiled: Arc::new(compiled),
     })

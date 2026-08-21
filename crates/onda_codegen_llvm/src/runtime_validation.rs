@@ -404,6 +404,23 @@ impl JitProgram {
         }
     }
 
+    pub fn reset_state_from_initial(&self, state: &mut RuntimeState, initial: &RuntimeState) {
+        let destination = unsafe { state.bytes_mut() };
+        let source = initial.bytes();
+        debug_assert_eq!(destination.len(), source.len());
+        let mut cursor = 0usize;
+        for segment in self.retained_state_segments.iter() {
+            if cursor < segment.state_offset {
+                destination[cursor..segment.state_offset]
+                    .copy_from_slice(&source[cursor..segment.state_offset]);
+            }
+            cursor = segment.state_offset + segment.byte_size;
+        }
+        if cursor < destination.len() {
+            destination[cursor..].copy_from_slice(&source[cursor..]);
+        }
+    }
+
     pub fn write_state_snapshot(
         &self,
         state: &RuntimeState,
@@ -511,6 +528,25 @@ impl JitProgram {
         #[cfg(not(feature = "llvm-orc"))]
         {
             let _ = (params, allocator);
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
+    pub fn initialize_state_in_place(
+        &self,
+        params: &[u8],
+        state: &mut RuntimeState,
+        all: bool,
+    ) -> Result<(), Diagnostic> {
+        #[cfg(feature = "llvm-orc")]
+        {
+            self.compiled.initialize_state_in_place(params, state, all)
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = (params, state, all);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))

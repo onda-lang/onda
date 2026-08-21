@@ -222,7 +222,7 @@ int main(void) {
     );
   }
 
-  if (!execution_succeeded(onda_init(params, state), "processor init")) {
+  if (!execution_succeeded(onda_processor_init(params, state, 1), "processor init")) {
     goto cleanup;
   }
 

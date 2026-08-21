@@ -3,7 +3,10 @@ use super::super::call_types::{
     update_call_type_env_after_assign, CallTypeContext, CallTypeEnv, StatementFlow,
 };
 use super::*;
-use crate::{effective_untyped_assignment_type, require_expr_assignable_type, ReturnType};
+use crate::{
+    effective_untyped_assignment_type, is_bare_return_expr, require_expr_assignable_type,
+    ReturnType,
+};
 use onda_frontend::{
     ast::{FnReturnScalarType, FnReturnType},
     SourceLoc,
@@ -219,6 +222,9 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
             }
             Stmt::Expr { .. } => StatementFlow::Continues,
             Stmt::Return { expr, .. } => {
+                if is_bare_return_expr(expr) {
+                    return StatementFlow::Terminates;
+                }
                 if let Some(elem_tys) =
                     infer_return_tuple_type(expr, env, context, require_known_calls)
                 {
@@ -450,7 +456,7 @@ fn return_type_is_assignable(src: &ReturnType, dst: &ReturnType) -> bool {
 fn statements_must_return_value(statements: &[Stmt]) -> bool {
     for statement in statements {
         match statement {
-            Stmt::Return { .. } => return true,
+            Stmt::Return { expr, .. } => return !is_bare_return_expr(expr),
             Stmt::If {
                 then_branch,
                 else_branch,
@@ -473,15 +479,38 @@ fn statements_must_return_value(statements: &[Stmt]) -> bool {
     false
 }
 
-fn statements_contain_return(statements: &[Stmt]) -> bool {
+fn statements_contain_value_return(statements: &[Stmt]) -> bool {
     statements.iter().any(|statement| match statement {
-        Stmt::Return { .. } => true,
+        Stmt::Return { expr, .. } => !is_bare_return_expr(expr),
         Stmt::If {
             then_branch,
             else_branch,
             ..
-        } => statements_contain_return(then_branch) || statements_contain_return(else_branch),
-        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_return(body),
+        } => {
+            statements_contain_value_return(then_branch)
+                || statements_contain_value_return(else_branch)
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_value_return(body),
+        Stmt::Const { .. }
+        | Stmt::Assign { .. }
+        | Stmt::Expr { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => false,
+    })
+}
+
+fn statements_contain_bare_return(statements: &[Stmt]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Stmt::Return { expr, .. } => is_bare_return_expr(expr),
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            statements_contain_bare_return(then_branch)
+                || statements_contain_bare_return(else_branch)
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_bare_return(body),
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
@@ -502,12 +531,23 @@ pub(crate) fn validate_def_return_control_flow(
     errors: &mut Vec<Diagnostic>,
 ) {
     for def in defs {
-        let returns_value = def.return_ty.is_some() || statements_contain_return(&def.body);
+        let has_value_return = statements_contain_value_return(&def.body);
+        let has_bare_return = statements_contain_bare_return(&def.body);
+        let returns_value = def.return_ty.is_some() || has_value_return;
+        let display_name = fn_signatures
+            .get(&def.name)
+            .and_then(|signature| signature.display_name.as_deref())
+            .unwrap_or(&def.name);
+        if returns_value && has_bare_return {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "function '{}' cannot mix bare returns with value returns or an explicit return type",
+                    display_name
+                ),
+                def.loc,
+            ));
+        }
         if returns_value && !statements_must_return_value(&def.body) {
-            let display_name = fn_signatures
-                .get(&def.name)
-                .and_then(|signature| signature.display_name.as_deref())
-                .unwrap_or(&def.name);
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "function '{}' returns a value, but not all reachable paths return a value",

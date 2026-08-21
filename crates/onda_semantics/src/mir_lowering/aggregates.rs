@@ -1279,16 +1279,6 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
         location: SourceLoc,
     ) {
-        let whole_state = PrezeroedStateRegion {
-            state,
-            path: Vec::new(),
-        };
-        if scalar_value_is_all_bits_zero(value)
-            && self.prezeroed_init_state_is_known_zero(&whole_state)
-        {
-            return;
-        }
-
         let index = self.new_local(None, PrimitiveType::I32);
         self.assign_value(block, index, Value::Constant(ScalarValue::I32(0)), location);
 

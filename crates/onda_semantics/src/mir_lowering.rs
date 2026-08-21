@@ -380,7 +380,7 @@ fn lower_program_to_raw_mir(
     let (function_indices, function_ids) = runtime_function_ids(program, config, 2);
 
     let init_function = synthetic_runtime_function("onda_init", program.init.clone());
-    let mut init = FunctionLowerer::new_runtime(
+    let mut init_lowerer = FunctionLowerer::new_runtime(
         &init_function,
         &program.defs,
         &function_ids,
@@ -393,10 +393,9 @@ fn lower_program_to_raw_mir(
         &globals,
         &mut mir.types,
         &mut mir.source_files,
-    )
-    .with_prezeroed_init_state()
-    .lower()
-    .map_err(|error| vec![error])?;
+    );
+    init_lowerer.bind_init_all(crate::processor_lowering::TOP_LEVEL_INIT_ALL_NAME);
+    let mut init = init_lowerer.lower().map_err(|error| vec![error])?;
     init.kind = onda_mir::FunctionKind::Init;
 
     let process_function = synthetic_runtime_function("onda_process", Vec::new());
@@ -1041,6 +1040,7 @@ fn populate_interface(
                 name: name.clone(),
                 ty: type_id,
                 persistence: onda_mir::StatePersistence::ControlMirror,
+                reset: onda_mir::StateResetPolicy::Restore,
                 integer_range: None,
             });
             mir.interface.control_outputs.push(onda_mir::ControlOutput {
@@ -1070,6 +1070,7 @@ fn populate_interface(
             name: name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::ControlMirror,
+            reset: onda_mir::StateResetPolicy::Restore,
             integer_range: None,
         });
         mir.interface.control_outputs.push(onda_mir::ControlOutput {
@@ -1555,6 +1556,11 @@ fn populate_state(
             name: name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::Snapshot,
+            reset: if program.retained_state_roots.contains(name) {
+                onda_mir::StateResetPolicy::Retain
+            } else {
+                onda_mir::StateResetPolicy::Restore
+            },
             integer_range: state_integer_ranges.get(name.as_str()).copied(),
         });
         if let Some(range) = mir.state[id.index()].integer_range {
@@ -1623,6 +1629,11 @@ fn populate_state(
             name: array.name.clone(),
             ty: type_id,
             persistence,
+            reset: if program.retained_state_roots.contains(&array.name) {
+                onda_mir::StateResetPolicy::Retain
+            } else {
+                onda_mir::StateResetPolicy::Restore
+            },
             integer_range: None,
         });
         globals
@@ -1651,6 +1662,7 @@ fn populate_state(
             name: active_name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::InstanceScratch,
+            reset: onda_mir::StateResetPolicy::Restore,
             integer_range: None,
         });
         globals
@@ -1747,6 +1759,7 @@ fn append_mir_sinc_stages(
                     ),
                     ty: intern_scalar_type(&mut mir.types, ty),
                     persistence: onda_mir::StatePersistence::Snapshot,
+                    reset: onda_mir::StateResetPolicy::Restore,
                     integer_range: None,
                 });
                 id
@@ -2595,6 +2608,7 @@ enum StructArrayLength {
 
 #[derive(Debug, Clone)]
 enum Binding {
+    InitAll,
     ReferenceParameter(ParameterId, PrimitiveType),
     EventParameter(onda_mir::EventParamId, PrimitiveType),
     EventArrayParameter(onda_mir::EventParamId, PrimitiveType, u32),
@@ -2667,18 +2681,6 @@ enum ContinueMode {
     },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct PrezeroedStateRegion {
-    state: onda_mir::StateId,
-    path: Vec<PrezeroedStateProjection>,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum PrezeroedStateProjection {
-    Field(u32),
-    Index(u32),
-}
-
 struct FunctionLowerer<'a> {
     function: &'a TypedFunction,
     functions: &'a [TypedFunction],
@@ -2710,11 +2712,6 @@ struct FunctionLowerer<'a> {
     bindings: HashMap<String, Binding>,
     nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
     event_slice_parameters: Vec<(String, onda_mir::EventParamId, PrimitiveType)>,
-    /// Exact state regions that are no longer known to contain their
-    /// backend-provided all-bits-zero init image. `Some(empty)` is the
-    /// straight-line prefix of the init entry; `None` disables the proof
-    /// outside init or after an alias/control-flow barrier.
-    prezeroed_init_state_dirty: Option<Vec<PrezeroedStateRegion>>,
 }
 
 fn function_location(function: &TypedFunction) -> SourceLoc {
@@ -3186,79 +3183,7 @@ fn zero_value(ty: PrimitiveType) -> Value {
     })
 }
 
-fn prezeroed_state_region(place: &Place) -> Option<(PrezeroedStateRegion, bool)> {
-    let PlaceBase::State(state) = place.base else {
-        return None;
-    };
-    let mut path = Vec::with_capacity(place.projections.len());
-    for projection in &place.projections {
-        match projection {
-            Projection::Field(field) => {
-                path.push(PrezeroedStateProjection::Field(field.raw()));
-            }
-            Projection::Index { index, .. } => {
-                let Value::Constant(ScalarValue::I32(index)) = index else {
-                    return Some((
-                        PrezeroedStateRegion {
-                            state,
-                            path: Vec::new(),
-                        },
-                        false,
-                    ));
-                };
-                let Ok(index) = u32::try_from(*index) else {
-                    return Some((
-                        PrezeroedStateRegion {
-                            state,
-                            path: Vec::new(),
-                        },
-                        false,
-                    ));
-                };
-                path.push(PrezeroedStateProjection::Index(index));
-            }
-        }
-    }
-    Some((PrezeroedStateRegion { state, path }, true))
-}
-
-fn prezeroed_state_path_is_prefix(
-    prefix: &[PrezeroedStateProjection],
-    path: &[PrezeroedStateProjection],
-) -> bool {
-    prefix.len() <= path.len() && prefix.iter().zip(path).all(|(lhs, rhs)| lhs == rhs)
-}
-
-fn prezeroed_state_regions_overlap(lhs: &PrezeroedStateRegion, rhs: &PrezeroedStateRegion) -> bool {
-    lhs.state == rhs.state
-        && (prezeroed_state_path_is_prefix(&lhs.path, &rhs.path)
-            || prezeroed_state_path_is_prefix(&rhs.path, &lhs.path))
-}
-
-fn mark_prezeroed_state_dirty(dirty: &mut Vec<PrezeroedStateRegion>, region: PrezeroedStateRegion) {
-    if dirty.iter().any(|existing| {
-        existing.state == region.state
-            && prezeroed_state_path_is_prefix(&existing.path, &region.path)
-    }) {
-        return;
-    }
-    dirty.retain(|existing| {
-        existing.state != region.state
-            || !prezeroed_state_path_is_prefix(&region.path, &existing.path)
-    });
-    dirty.push(region);
-}
-
-fn clear_prezeroed_state_region(
-    dirty: &mut Vec<PrezeroedStateRegion>,
-    region: &PrezeroedStateRegion,
-) {
-    dirty.retain(|existing| {
-        existing.state != region.state
-            || !prezeroed_state_path_is_prefix(&region.path, &existing.path)
-    });
-}
-
+#[cfg(test)]
 fn scalar_value_is_all_bits_zero(value: Value) -> bool {
     match value {
         Value::Constant(ScalarValue::F32(value)) => value.to_bits() == 0,

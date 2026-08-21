@@ -4,9 +4,10 @@ use onda_frontend::{
     ConstType, DeclType, EventDef, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp,
     ParamBlock, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program,
-    SampleBlock, Stmt, StructDef, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN,
-    INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN,
-    INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    SampleBlock, Stmt, StructDef, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, INTERNAL_TASK_AWAIT_FN,
+    INTERNAL_TASK_YIELD_FN,
 };
 
 pub fn primitive_type_name(ty: PrimitiveType) -> &'static str {
@@ -68,6 +69,7 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
                 format_event(event, indent + 1, out);
             }
         }
+        Block::Tasks(tasks) => format_tasks(&tasks.tasks, indent, out),
         Block::Buffers(buffers) => format_buffer_block("buffers", buffers, indent, out),
         Block::Assert(assert_decl) => {
             push_line(
@@ -363,16 +365,17 @@ fn format_sample_block(label: &str, sample: &SampleBlock, indent: usize, out: &m
 
 fn format_block_exec(exec: &BlockExec, indent: usize, out: &mut String) {
     push_line(out, indent, "block:");
-    if !exec.pre.is_empty() {
-        push_line(out, indent + 1, "pre:");
-        format_stmt_list(&exec.pre, indent + 2, out);
+    for stmt in &exec.pre {
+        format_stmt(stmt, indent + 1, out);
     }
     if let Some(sample) = &exec.sample {
         format_sample_block("sample", sample, indent + 1, out);
     }
-    if !exec.post.is_empty() {
-        push_line(out, indent + 1, "post:");
-        format_stmt_list(&exec.post, indent + 2, out);
+    for stmt in &exec.post {
+        format_stmt(stmt, indent + 1, out);
+    }
+    if exec.pre.is_empty() && exec.sample.is_none() && exec.post.is_empty() {
+        push_line(out, indent + 1, "pass");
     }
 }
 
@@ -425,6 +428,9 @@ fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
             format_event(event, indent + 2, out);
         }
     }
+    if !proc.tasks.is_empty() {
+        format_tasks(&proc.tasks, indent + 1, out);
+    }
     if !proc.buffers.is_empty() || proc.buffers_deferred_count.is_some() {
         format_buffer_section(
             "buffers",
@@ -442,27 +448,38 @@ fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
     }
     if proc.has_block_block || !proc.block_pre.is_empty() || !proc.block_post.is_empty() {
         push_line(out, indent + 1, "block:");
-        if !proc.block_pre.is_empty() {
-            push_line(out, indent + 2, "pre:");
-            format_stmt_list(&proc.block_pre, indent + 3, out);
+        for stmt in &proc.block_pre {
+            format_stmt(stmt, indent + 2, out);
         }
-        if !proc.block_post.is_empty() {
-            push_line(out, indent + 2, "post:");
-            format_stmt_list(&proc.block_post, indent + 3, out);
+        if proc.has_sample_block || !proc.sample.is_empty() {
+            format_proc_sample(proc, indent + 2, out);
         }
-    }
-    if proc.has_sample_block || !proc.sample.is_empty() {
-        let header = if let Some(factor) = &proc.sample_oversample_factor {
-            format!("sample {}:", format_expr(factor))
-        } else {
-            "sample:".to_owned()
-        };
-        push_line(out, indent + 1, &header);
-        format_stmt_list(&proc.sample, indent + 2, out);
+        for stmt in &proc.block_post {
+            format_stmt(stmt, indent + 2, out);
+        }
+        if proc.block_pre.is_empty()
+            && !proc.has_sample_block
+            && proc.sample.is_empty()
+            && proc.block_post.is_empty()
+        {
+            push_line(out, indent + 2, "pass");
+        }
+    } else if proc.has_sample_block || !proc.sample.is_empty() {
+        format_proc_sample(proc, indent + 1, out);
     }
     for def in &proc.local_defs {
         format_def(def, indent + 1, out);
     }
+}
+
+fn format_proc_sample(proc: &ProcessorDef, indent: usize, out: &mut String) {
+    let header = if let Some(factor) = &proc.sample_oversample_factor {
+        format!("sample {}:", format_expr(factor))
+    } else {
+        "sample:".to_owned()
+    };
+    push_line(out, indent, &header);
+    format_stmt_list(&proc.sample, indent + 1, out);
 }
 
 pub fn format_proc_header(proc: &ProcessorDef) -> String {
@@ -549,6 +566,14 @@ fn format_event(event: &EventDef, indent: usize, out: &mut String) {
     format_stmt_list(&event.body, indent + 1, out);
 }
 
+fn format_tasks(tasks: &[TaskDef], indent: usize, out: &mut String) {
+    push_line(out, indent, "tasks:");
+    for task in tasks {
+        push_line(out, indent + 1, &format!("{}():", task.name));
+        format_stmt_list(&task.body, indent + 2, out);
+    }
+}
+
 pub fn format_event_signature(event: &EventDef) -> String {
     let mut header = format!("{}(", event.name);
     header.push_str(
@@ -615,9 +640,20 @@ fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
             text.push_str(&format_expr(expr));
             push_line(out, indent, &text);
         }
-        Stmt::Expr { expr, .. } => push_line(out, indent, &format_expr(expr)),
+        Stmt::Expr { expr, .. } => {
+            if let Some(control) = format_task_control_stmt(expr) {
+                push_line(out, indent, &control);
+            } else {
+                push_line(out, indent, &format_expr(expr));
+            }
+        }
         Stmt::Return { expr, .. } => {
-            push_line(out, indent, &format!("return {}", format_expr(expr)))
+            if matches!(expr, Expr::UserCall { name, args, .. } if name == INTERNAL_BARE_RETURN_FN && args.is_empty())
+            {
+                push_line(out, indent, "return");
+            } else {
+                push_line(out, indent, &format!("return {}", format_expr(expr)));
+            }
         }
         Stmt::If {
             cond,
@@ -661,6 +697,26 @@ fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
         Stmt::Break { .. } => push_line(out, indent, "break"),
         Stmt::Continue { .. } => push_line(out, indent, "continue"),
     }
+}
+
+fn format_task_control_stmt(expr: &Expr) -> Option<String> {
+    let Expr::UserCall { name, args, .. } = expr else {
+        return None;
+    };
+    if name == INTERNAL_TASK_YIELD_FN && args.is_empty() {
+        return Some("yield".to_owned());
+    }
+    if name != INTERNAL_TASK_AWAIT_FN {
+        return None;
+    }
+    let [CallArg {
+        expr: Expr::Var { name: task, .. },
+        ..
+    }] = args.as_slice()
+    else {
+        return None;
+    };
+    Some(format!("await {task}()"))
 }
 
 fn format_assign_target(target: &AssignTarget) -> String {
@@ -1320,5 +1376,32 @@ sample:
         assert!(formatted.contains("layers[2][1, 0]"));
         assert!(formatted.contains("layers[2][1, 0:8]"));
         parse_program(&formatted).expect("formatted buffer syntax should remain parseable");
+    }
+
+    #[test]
+    fn formatting_preserves_top_level_and_proc_tasks() {
+        let source = r#"
+task prepare():
+  yield
+
+proc Worker:
+  task run():
+    yield
+  sample:
+    out1 = 0.0
+
+block:
+  await prepare()
+  sample:
+    out1 = 1.0
+"#;
+        let program = parse_program(source).expect("task syntax should parse");
+        let formatted = format_program(&program);
+
+        assert!(formatted.contains("tasks:\n  prepare():\n    yield\n"));
+        assert!(formatted.contains("  tasks:\n    run():\n      yield\n"));
+        parse_program(&formatted).unwrap_or_else(|errors| {
+            panic!("formatted task syntax should remain parseable:\n{formatted}\n{errors:?}")
+        });
     }
 }

@@ -320,7 +320,8 @@ fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
         Rvalue::MakeSlice { source, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || slice_source_uses_unchecked_bounds(source)
         }
-        Rvalue::Use(_)
+        Rvalue::InitAll
+        | Rvalue::Use(_)
         | Rvalue::Unary { .. }
         | Rvalue::Binary { .. }
         | Rvalue::Compare { .. }
@@ -2105,6 +2106,7 @@ impl Validator<'_> {
         state: &AssignmentState,
     ) {
         match rvalue {
+            Rvalue::InitAll => {}
             Rvalue::Use(value) => {
                 self.assignment_read_value(function_id, function, *value, source, state)
             }
@@ -2466,6 +2468,15 @@ impl Validator<'_> {
         source: SourceSpan,
     ) {
         match value {
+            Rvalue::InitAll => {
+                if function.kind != FunctionKind::Init {
+                    self.function_error(
+                        function_id,
+                        source,
+                        "init_all is only valid in the init entry point",
+                    );
+                }
+            }
             Rvalue::Use(value) => self.validate_value(function_id, function, *value, source),
             Rvalue::Load(place) => self.validate_place(function_id, function, place, source),
             Rvalue::Unary { operand, .. } => {
@@ -3181,6 +3192,7 @@ impl Validator<'_> {
                         .iter()
                         .all(|arg| self.value_matches_type(function, *arg, expected))
             }
+            Rvalue::InitAll => self.type_is_scalar(expected, crate::ScalarType::Bool),
             Rvalue::ProcessFrame { .. } => self.type_is_scalar(expected, crate::ScalarType::I32),
             Rvalue::InputLoad { input, element, .. } => self
                 .program
@@ -5626,6 +5638,7 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(2),
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
         });
         let mut callee = function("update", FunctionKind::User);
         callee.params.push(FunctionParam {
@@ -5995,6 +6008,7 @@ mod tests {
             name: "control_resource_mirror".to_owned(),
             ty: test_type(3),
             persistence: StatePersistence::ControlMirror,
+            reset: crate::StateResetPolicy::Restore,
         });
         program.interface.params.push(Param {
             name: "parameter_view".to_owned(),
@@ -6053,12 +6067,14 @@ mod tests {
                 name: "saved_view".to_owned(),
                 ty: test_type(2),
                 persistence: StatePersistence::Snapshot,
+                reset: crate::StateResetPolicy::Restore,
             },
             StateSlot {
                 integer_range: None,
                 name: "scratch_buffer".to_owned(),
                 ty: test_type(4),
                 persistence: StatePersistence::InstanceScratch,
+                reset: crate::StateResetPolicy::Restore,
             },
         ]);
 
@@ -6251,6 +6267,7 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(2),
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
         });
         program.functions[1].locals.extend([
             Local {
@@ -7121,6 +7138,7 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(1),
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
         });
         program.functions[1].locals.push(Local {
             integer_range: None,
@@ -7186,6 +7204,7 @@ mod tests {
             name: "different_debug_name".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
+            reset: crate::StateResetPolicy::Restore,
         });
         program
             .interface
@@ -7316,6 +7335,7 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(1),
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
         });
         let mut callee = function("consume_pair", FunctionKind::User);
         callee.params.push(FunctionParam {
@@ -7387,6 +7407,7 @@ mod tests {
             name: "meter".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
+            reset: crate::StateResetPolicy::Restore,
         });
         program
             .interface
@@ -7428,6 +7449,7 @@ mod tests {
             name: "meter_mirror".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
+            reset: crate::StateResetPolicy::Restore,
         });
         program
             .interface

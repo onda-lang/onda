@@ -9,7 +9,7 @@ use onda_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType
 use onda_runtime::{
     bind_buffer as bind_buffer_raw, bind_input as bind_input_raw, bind_output as bind_output_raw,
     create_instance, prepare_unchecked_process, process_checked, process_checked_segment,
-    process_unchecked, process_unchecked_segment, reset_instance_state, set_param_by_index,
+    process_unchecked, process_unchecked_segment, reset, set_param_by_index,
     trigger_event_by_index, validate_bindings, validate_buffers, validate_outputs, Instance,
     InstanceConfig, PROCESS_BEGIN_BLOCK, PROCESS_END_BLOCK, PROCESS_FULL_BLOCK,
 };

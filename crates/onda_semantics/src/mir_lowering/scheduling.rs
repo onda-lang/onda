@@ -1,4 +1,5 @@
 use super::*;
+use crate::def_semantics::call_types::StatementFlow;
 
 impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_oversampled_proc_step(
@@ -389,7 +390,20 @@ impl<'a> FunctionLowerer<'a> {
             process_location,
         );
         let mut block_pre_body = MirBlock::default();
-        self.lower_statements(block_pre, &mut block_pre_body, ContinueMode::None)?;
+        if crate::task_lowering::contains_task_abort(block_pre) {
+            let mut activation = MirBlock::default();
+            let flow = self.lower_statements(block_pre, &mut activation, ContinueMode::None)?;
+            if flow == StatementFlow::Continues {
+                self.push_statement(&mut activation, StatementKind::Break, process_location);
+            }
+            self.push_statement(
+                &mut block_pre_body,
+                StatementKind::Loop { body: activation },
+                process_location,
+            );
+        } else {
+            self.lower_statements(block_pre, &mut block_pre_body, ContinueMode::None)?;
+        }
         self.push_statement(
             &mut body,
             StatementKind::If {

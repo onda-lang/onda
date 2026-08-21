@@ -25,6 +25,7 @@ pub struct Instance {
     pub(crate) params: RuntimeBuffer<u8>,
     pub(crate) state: RuntimeState,
     pub(crate) initial_state: RuntimeState,
+    pub(crate) staging_state: RuntimeState,
     pub(crate) input_bindings: RuntimeBuffer<Option<BoundInput>>,
     pub(crate) output_bindings: RuntimeBuffer<Option<BoundOutput>>,
     pub(crate) buffer_bindings: RuntimeBuffer<Option<BoundBuffer>>,
@@ -348,6 +349,7 @@ fn create_instance_inner(
     configure_current_thread_audio_fp_mode();
     let state = program.initialize_state_with_allocator(&params, allocator)?;
     let initial_state = state.try_clone_with_allocator(allocator)?;
+    let staging_state = state.try_clone_with_allocator(allocator)?;
 
     let input_count = program.input_count();
     let output_count = program.output_count();
@@ -373,6 +375,7 @@ fn create_instance_inner(
         params,
         state,
         initial_state,
+        staging_state,
         input_bindings: RuntimeBuffer::try_from_elem_in(input_count, None, allocator)?,
         output_bindings: RuntimeBuffer::try_from_elem_in(output_count, None, allocator)?,
         buffer_bindings: RuntimeBuffer::try_from_elem_in(buffer_count, None, allocator)?,
@@ -396,10 +399,51 @@ fn create_instance_inner(
     })
 }
 
-pub fn reset_instance_state(instance: &mut Instance) {
+pub fn reset(instance: &mut Instance) {
+    instance
+        .program
+        .reset_state_from_initial(&mut instance.state, &instance.initial_state);
+}
+
+/// Restores the complete post-init physical image, including retained state
+/// and compiler-owned task continuations.
+pub fn reset_all(instance: &mut Instance) {
     // SAFETY: the initial image was produced by the compiled init entry and
     // therefore satisfies every declared state invariant.
     unsafe { instance.state.bytes_mut() }.copy_from_slice(instance.initial_state.bytes());
+}
+
+/// Runs the program init block while preserving retained state, then makes
+/// the resulting state the baseline used by subsequent resets.
+pub fn init(instance: &mut Instance) -> Result<(), Diagnostic> {
+    initialize_instance(instance, false)
+}
+
+/// Runs the program init block after clearing all state, including retained
+/// values and compiler-owned task continuations, then captures a new reset
+/// baseline.
+pub fn init_all(instance: &mut Instance) -> Result<(), Diagnostic> {
+    initialize_instance(instance, true)
+}
+
+fn initialize_instance(instance: &mut Instance, all: bool) -> Result<(), Diagnostic> {
+    // The candidate begins as the live image so ordinary init preserves
+    // retained values. The compiled all-mode entry clears it before executing.
+    // Keeping this image preallocated makes the operation transactional without
+    // adding allocation to the instance lifecycle after construction.
+    unsafe { instance.staging_state.bytes_mut() }.copy_from_slice(instance.state.bytes());
+    configure_current_thread_audio_fp_mode();
+    instance.program.initialize_state_in_place(
+        &instance.params,
+        &mut instance.staging_state,
+        all,
+    )?;
+
+    // Both copies are infallible. Commit the reset baseline before publishing
+    // the candidate as live state so a failed compiled init changes neither.
+    unsafe { instance.initial_state.bytes_mut() }.copy_from_slice(instance.staging_state.bytes());
+    std::mem::swap(&mut instance.state, &mut instance.staging_state);
+    Ok(())
 }
 
 pub fn set_param_by_index(
@@ -1300,6 +1344,30 @@ mod tests {
 
     fn assert_send<T: Send>() {}
 
+    fn compile_test_instance(source: &str, block_size: usize, out_channels: usize) -> Instance {
+        let parsed = parse_program(source).expect("test source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size,
+            },
+        )
+        .expect("test source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("test source should lower");
+        let program = jit_program_from_optimized_mir(mir).expect("test MIR should compile");
+        create_instance(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: block_size,
+                in_channels: 0,
+                out_channels,
+            },
+        )
+        .expect("test instance should initialize")
+    }
+
     #[test]
     fn instance_is_send() {
         assert_send::<Instance>();
@@ -1377,7 +1445,7 @@ mod tests {
         let bound_ptr = instance.buffer_ptrs[0];
         let snapshot = instance.snapshot_state_bytes();
 
-        reset_instance_state(&mut instance);
+        reset(&mut instance);
         assert!(instance.buffers_validated);
         assert_eq!(instance.buffer_ptrs[0], bound_ptr);
 
@@ -1386,6 +1454,1027 @@ mod tests {
             .expect("state should restore");
         assert!(instance.buffers_validated);
         assert_eq!(instance.buffer_ptrs[0], bound_ptr);
+    }
+
+    #[test]
+    fn cooperative_task_yields_gate_audio_and_survive_ordinary_reset() {
+        const BLOCK_SIZE: usize = 8;
+        let parsed = parse_program(
+            r#"
+proc Loader:
+  init:
+    progress: i32 = 0 {retain}
+
+  task load():
+    progress += 1
+    yield
+    progress += 1
+
+  event reload():
+    load.reset()
+
+  block:
+    await load()
+    sample:
+      out1 = f32(progress)
+
+init:
+  loader = Loader()
+
+event reload():
+  loader.reload()
+
+sample:
+  out1 = loader()
+"#,
+        )
+        .expect("task source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: BLOCK_SIZE,
+            },
+        )
+        .expect("task source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("task source should lower");
+        let program = jit_program_from_optimized_mir(mir).expect("task MIR should compile");
+        let mut instance = create_instance(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: BLOCK_SIZE,
+                in_channels: 0,
+                out_channels: 1,
+            },
+        )
+        .expect("task instance should initialize");
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("first task block should process");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("completion block should process");
+        assert_eq!(output, [2.0; BLOCK_SIZE]);
+
+        let reload = instance.event_index("reload").expect("reload event");
+        trigger_event_by_index(&mut instance, reload, &[]).expect("task reset event should run");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("restarted task block should process");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("restarted task should complete");
+        assert_eq!(output, [4.0; BLOCK_SIZE]);
+
+        reset(&mut instance);
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("ordinary reset block should process");
+        assert_eq!(output, [4.0; BLOCK_SIZE]);
+
+        reset_all(&mut instance);
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("all-state reset block should process");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn task_can_call_child_proc_events() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+proc Child:
+  init:
+    value: i32 = 0
+  event add(amount: i32):
+    value += amount
+  sample:
+    out1 = f32(value)
+
+proc Owner:
+  init:
+    child = Child()
+  task prepare():
+    child.add(2)
+    yield
+    child.add(3)
+  block:
+    await prepare()
+    sample:
+      out1 = child()
+
+init:
+  owner = Owner()
+sample:
+  out1 = owner()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("yielding task should process");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("completing task should process");
+        assert_eq!(output, [5.0]);
+    }
+
+    #[test]
+    fn top_level_task_yields_resumes_and_resets() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  progress: i32 = 0 {retain}
+
+task prepare():
+  progress += 1
+  yield
+  progress += 1
+
+event retry():
+  prepare.reset()
+
+block:
+  await prepare()
+  sample:
+    out1 = f32(progress)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("yielding task should process");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("completing task should process");
+        assert_eq!(output, [2.0]);
+
+        let retry = instance.event_index("retry").expect("retry event");
+        trigger_event_by_index(&mut instance, retry, &[]).expect("task reset should run");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("reset task should yield again");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("reset task should complete again");
+        assert_eq!(output, [4.0]);
+
+        reset(&mut instance);
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("ordinary reset should preserve the completed task");
+        assert_eq!(output, [4.0]);
+
+        reset_all(&mut instance);
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("all-state reset should restart the task");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("restarted task should complete from its creation baseline");
+        assert_eq!(output, [2.0]);
+
+        init(&mut instance).expect("default init should preserve retained task state");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("default init should preserve the completed task");
+        assert_eq!(output, [2.0]);
+
+        init_all(&mut instance).expect("all-state init should restart the task");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("all-state init should restart at the first yield");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("all-state initialized task should complete");
+        assert_eq!(output, [2.0]);
+    }
+
+    #[test]
+    fn top_level_init_respects_explicit_task_reset() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  progress: i32 = 0 {retain}
+  load.reset()
+
+task load():
+  progress += 1
+  yield
+  progress += 1
+
+block:
+  await load()
+  sample:
+    out1 = f32(progress)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should yield");
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+        assert_eq!(output, [2.0]);
+
+        init(&mut instance).expect("default init should execute explicit task reset");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("explicitly reset task should yield again");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("explicitly reset task should complete again");
+        assert_eq!(output, [4.0]);
+    }
+
+    #[test]
+    fn top_level_task_neutralizes_control_outputs_while_suspended() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+kouts:
+  ready
+
+init:
+  progress: i32 = 0 {retain}
+
+task load():
+  progress += 1
+  yield
+  progress += 1
+
+event retry():
+  load.reset()
+
+block:
+  await load()
+  ready = f32(progress)
+"#,
+            BLOCK_SIZE,
+            0,
+        );
+        let ready = instance
+            .control_output_index("ready")
+            .expect("ready control output");
+        let read_ready = |instance: &Instance| {
+            let mut bytes = [0_u8; size_of::<f32>()];
+            read_control_output_bytes(instance, ready, &mut bytes)
+                .expect("control output should be readable");
+            f32::from_le_bytes(bytes)
+        };
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should yield");
+        assert_eq!(read_ready(&instance), 0.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+        assert_eq!(read_ready(&instance), 2.0);
+
+        let retry = instance.event_index("retry").expect("retry event");
+        trigger_event_by_index(&mut instance, retry, &[]).expect("task reset should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("reset task should yield");
+        assert_eq!(read_ready(&instance), 0.0);
+    }
+
+    #[test]
+    fn top_level_task_suspension_escapes_nested_block_pre_loops() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  progress: i32 = 0 {retain}
+  activations: i32 = 0 {retain}
+
+task load():
+  progress += 1
+  yield
+  progress += 1
+
+block:
+  for outer in 0..2:
+    for inner in 0..2:
+      await load()
+  activations += 1
+
+  sample:
+    out1 = f32(activations)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should yield inside nested loops");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete on the next block");
+        assert_eq!(output, [1.0]);
+    }
+
+    #[test]
+    fn live_init_preserves_retained_state_and_captures_a_new_reset_baseline() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+outs { out1, out2 }
+init {
+  retained: i32 = 10 {retain}
+  ordinary: i32 = 20
+  retained += 1
+}
+sample {
+  retained += 1
+  ordinary += 1
+  out1 = f32(retained)
+  out2 = f32(ordinary)
+}
+"#,
+            BLOCK_SIZE,
+            2,
+        );
+        let mut retained = [0.0_f32; BLOCK_SIZE];
+        let mut ordinary = [0.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                retained.as_mut_ptr().cast(),
+                std::mem::size_of_val(&retained),
+            )
+            .expect("retained output should bind");
+            bind_output(
+                &mut instance,
+                1,
+                ordinary.as_mut_ptr().cast(),
+                std::mem::size_of_val(&ordinary),
+            )
+            .expect("ordinary output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("initial state should process");
+        assert_eq!((retained[0], ordinary[0]), (12.0, 21.0));
+
+        init(&mut instance).expect("ordinary live init should succeed");
+        process_checked(&mut instance, BLOCK_SIZE).expect("reinitialized state should process");
+        assert_eq!((retained[0], ordinary[0]), (14.0, 21.0));
+        process_checked(&mut instance, BLOCK_SIZE).expect("state should advance");
+        assert_eq!((retained[0], ordinary[0]), (15.0, 22.0));
+
+        reset(&mut instance);
+        process_checked(&mut instance, BLOCK_SIZE).expect("ordinary reset should process");
+        assert_eq!((retained[0], ordinary[0]), (16.0, 21.0));
+
+        reset_all(&mut instance);
+        process_checked(&mut instance, BLOCK_SIZE).expect("full reset should process");
+        assert_eq!((retained[0], ordinary[0]), (14.0, 21.0));
+
+        init_all(&mut instance).expect("full live init should succeed");
+        process_checked(&mut instance, BLOCK_SIZE).expect("fully initialized state should process");
+        assert_eq!((retained[0], ordinary[0]), (12.0, 21.0));
+    }
+
+    #[test]
+    fn live_init_handles_untyped_retained_declarations() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+outs { out1 }
+events {
+  set_amp(value: f32) {
+    amp = value
+    retained = value + 1.0
+  }
+}
+init {
+  amp = 0.0
+  retained = 1.0 {retain}
+}
+sample { out1 = amp + retained }
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [0.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+        let event = instance.event_index("set_amp").expect("set_amp event");
+        trigger_event_by_index(&mut instance, event, &0.5_f32.to_ne_bytes())
+            .expect("event should run");
+        init(&mut instance).expect("live init should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("state should process");
+        assert_eq!(output, [1.5]);
+    }
+
+    #[test]
+    fn failed_live_init_is_transactional() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+params:
+  divisor: i32 = 1
+outs:
+  out1
+init:
+  retained: i32 = 10 {retain}
+  retained += 1
+  quotient: i32 = 10 / divisor
+event set_retained(value: i32):
+  retained = value
+sample:
+  out1 = f32(retained)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [0.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+        let event = instance
+            .event_index("set_retained")
+            .expect("set_retained event");
+        trigger_event_by_index(&mut instance, event, &50_i32.to_ne_bytes())
+            .expect("event should run");
+        set_param_by_index(&mut instance, 0, &0_i32.to_ne_bytes())
+            .expect("divisor parameter should update");
+
+        assert!(init(&mut instance).is_err(), "division by zero should fail");
+        process_checked(&mut instance, BLOCK_SIZE).expect("live state should remain usable");
+        assert_eq!(output, [50.0]);
+
+        reset_all(&mut instance);
+        process_checked(&mut instance, BLOCK_SIZE).expect("baseline should remain unchanged");
+        assert_eq!(output, [11.0]);
+    }
+
+    #[test]
+    fn cooperative_task_resumes_for_loop_control_state() {
+        const BLOCK_SIZE: usize = 4;
+        let parsed = parse_program(
+            r#"
+proc Loader:
+  init:
+    progress: i32 = 0 {retain}
+  task load():
+    for i in 0..3:
+      progress += 1
+      yield
+  block:
+    await load()
+    sample:
+      out1 = f32(progress)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+        )
+        .expect("loop task source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: BLOCK_SIZE,
+            },
+        )
+        .expect("loop task source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("loop task should lower");
+        let program = jit_program_from_optimized_mir(mir).expect("loop task MIR should compile");
+        let mut instance = create_instance(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: BLOCK_SIZE,
+                in_channels: 0,
+                out_channels: 1,
+            },
+        )
+        .expect("loop task instance should initialize");
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+        for _ in 0..3 {
+            process_checked(&mut instance, BLOCK_SIZE).expect("yielding block should process");
+            assert_eq!(output, [0.0; BLOCK_SIZE]);
+            output.fill(99.0);
+        }
+        process_checked(&mut instance, BLOCK_SIZE).expect("completion block should process");
+        assert_eq!(output, [3.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn proc_init_respects_retain_and_explicit_task_reset() {
+        const BLOCK_SIZE: usize = 4;
+        let parsed = parse_program(
+            r#"
+proc Keeper:
+  init:
+    progress: i32 = 10 {retain}
+    scratch: i32 = 20
+  task load():
+    progress += 1
+    scratch += 1
+    yield
+    progress += 100
+    scratch += 100
+  block:
+    await load()
+    sample:
+      out1 = f32(progress + scratch)
+
+proc Resetter:
+  init:
+    progress: i32 = 10 {retain}
+    scratch: i32 = 20
+    load.reset()
+  task load():
+    progress += 1
+    scratch += 1
+    yield
+    progress += 100
+    scratch += 100
+  block:
+    await load()
+    sample:
+      out1 = f32(progress + scratch)
+
+outs:
+  out1
+  out2
+init:
+  keeper = Keeper()
+  resetter = Resetter()
+event default_init():
+  keeper.init()
+  resetter.init()
+event full_init():
+  keeper.init(all = true)
+sample:
+  out1 = keeper()
+  out2 = resetter()
+"#,
+        )
+        .expect("proc init task source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: BLOCK_SIZE,
+            },
+        )
+        .expect("proc init task source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("proc init task should lower");
+        let program = jit_program_from_optimized_mir(mir).expect("task MIR should compile");
+        let mut instance = create_instance(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: BLOCK_SIZE,
+                in_channels: 0,
+                out_channels: 2,
+            },
+        )
+        .expect("task instance should initialize");
+        let mut output1 = [99.0_f32; BLOCK_SIZE];
+        let mut output2 = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output1.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output1),
+            )
+            .expect("first output should bind");
+            bind_output(
+                &mut instance,
+                1,
+                output2.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output2),
+            )
+            .expect("second output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("both tasks should yield");
+        assert_eq!(output1, [0.0; BLOCK_SIZE]);
+        assert_eq!(output2, [0.0; BLOCK_SIZE]);
+
+        let default_init = instance
+            .event_index("default_init")
+            .expect("default init event");
+        trigger_event_by_index(&mut instance, default_init, &[])
+            .expect("default proc init should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("tasks should resume after init");
+        assert_eq!(output1, [231.0; BLOCK_SIZE]);
+        assert_eq!(output2, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("reset task should complete");
+        assert_eq!(output2, [233.0; BLOCK_SIZE]);
+
+        let full_init = instance.event_index("full_init").expect("full init event");
+        trigger_event_by_index(&mut instance, full_init, &[]).expect("forced proc init should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("fully reset task should yield");
+        assert_eq!(output1, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("fully reset task should complete");
+        assert_eq!(output1, [232.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn suspended_task_snapshots_resume_once_across_segmented_processing() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+proc Loader:
+  init:
+    progress: i32 = 0 {retain}
+  task load():
+    progress += 1
+    yield
+    progress += 10
+  block:
+    await load()
+    sample:
+      out1 = f32(progress)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let reflected_state = (0..instance.state_count())
+            .filter_map(|index| instance.state_name(index))
+            .collect::<Vec<_>>();
+        assert!(
+            reflected_state.iter().all(|name| !name.contains("__onda_")),
+            "task frame storage must not appear as authored state: {reflected_state:?}"
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked_segment(&mut instance, 0, 0, PROCESS_BEGIN_BLOCK)
+            .expect("zero-frame begin should advance and yield the task");
+        assert_eq!(output, [99.0; BLOCK_SIZE]);
+        process_checked_segment(&mut instance, 0, 2, 0)
+            .expect("first audio segment should observe the yielded task");
+        assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
+        process_checked_segment(&mut instance, 2, 2, PROCESS_END_BLOCK)
+            .expect("later segments must not resume the task");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+
+        let suspended = instance.snapshot_state_bytes();
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("next block should complete the task");
+        assert_eq!(output, [11.0; BLOCK_SIZE]);
+
+        instance
+            .restore_state_bytes(&suspended)
+            .expect("suspended task snapshot should restore");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("restored task should resume after its yield");
+        assert_eq!(output, [11.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn suspended_task_can_be_bypassed_and_later_resumed() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+proc Loader:
+  init:
+    enabled: bool = false
+    progress: i32 = 0 {retain}
+  event set_enabled(value: bool):
+    enabled = value
+  task load():
+    progress += 1
+    yield
+    progress += 10
+  block:
+    if enabled:
+      await load()
+    sample:
+      out1 = f32(progress)
+init:
+  loader = Loader()
+event set_enabled(value: bool):
+  loader.set_enabled(value)
+sample:
+  out1 = loader()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+        let set_enabled = instance
+            .event_index("set_enabled")
+            .expect("set_enabled event");
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("disabled task should be bypassed");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        trigger_event_by_index(&mut instance, set_enabled, &[1]).expect("enable event should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("enabled task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+
+        trigger_event_by_index(&mut instance, set_enabled, &[0]).expect("disable event should run");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("suspended task should not gate a bypassed block");
+        assert_eq!(output, [1.0; BLOCK_SIZE]);
+
+        trigger_event_by_index(&mut instance, set_enabled, &[1])
+            .expect("re-enable event should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should resume and complete");
+        assert_eq!(output, [11.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn task_fixed_array_and_loop_frame_survive_each_yield() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+proc Loader:
+  init:
+    result: i32 = 0 {retain}
+  task load():
+    values: i32[4] = [3, 5, 7, 11]
+    total: i32 = 0
+    for i in 0..4:
+      total += values[i]
+      yield
+    result = total
+  block:
+    await load()
+    sample:
+      out1 = f32(result)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        for expected_yields in 1..=4 {
+            process_checked(&mut instance, BLOCK_SIZE).expect("task iteration should yield");
+            assert_eq!(
+                output, [0.0; BLOCK_SIZE],
+                "iteration {expected_yields} must remain behind the await barrier"
+            );
+        }
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete after the loop");
+        assert_eq!(output, [26.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn task_bindings_preserve_lexical_shadowing_across_yield() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+proc Loader:
+  init:
+    state_value: i32 = 40 {retain}
+    result: i32 = 0 {retain}
+  task load():
+    state_value: i32 = 2
+    if state_value == 2:
+      carried: i32 = 3
+      yield
+      result = carried
+    state_value: bool = true
+    if state_value:
+      result += 10
+  block:
+    await load()
+    sample:
+      out1 = f32(result + state_value)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+        assert_eq!(output, [53.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn tasks_in_runtime_indexed_proc_arrays_activate_lazily_per_slot() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+proc Child:
+  init:
+    progress: i32 = 0 {retain}
+  task load():
+    progress += 1
+    yield
+    progress += 10
+  block:
+    await load()
+    sample:
+      out1 = f32(progress)
+proc Parent:
+  init:
+    children: Child[2] = Child()
+  sample:
+    out1 = children[0]() + children[1]()
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("both child tasks should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("both child tasks should complete");
+        assert_eq!(output, [22.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn failed_task_reports_once_and_then_takes_neutral_await_path() {
+        const BLOCK_SIZE: usize = 4;
+        let parsed = parse_program(
+            r#"
+proc Loader:
+  init:
+    bad_zero: i32 = 0
+  event retry():
+    load.reset()
+  task load():
+    ignored: i32 = 1 / bad_zero
+    yield
+  block:
+    await load()
+    sample:
+      out1 = 1.0
+init:
+  loader = Loader()
+event retry():
+  loader.retry()
+sample:
+  out1 = loader()
+"#,
+        )
+        .expect("failing task source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: BLOCK_SIZE,
+            },
+        )
+        .expect("failing task source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("failing task should lower");
+        let program = jit_program_from_optimized_mir(mir).expect("failing task MIR should compile");
+        let mut instance = create_instance(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: BLOCK_SIZE,
+                in_channels: 0,
+                out_channels: 1,
+            },
+        )
+        .expect("failing task instance should initialize");
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+        assert!(process_checked(&mut instance, BLOCK_SIZE).is_err());
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("a later await of the failed task should not repeat the failure");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+
+        let retry = instance.event_index("retry").expect("retry event");
+        trigger_event_by_index(&mut instance, retry, &[])
+            .expect("a failed task should remain resettable");
+        assert!(
+            process_checked(&mut instance, BLOCK_SIZE).is_err(),
+            "resetting a failed task should permit another reported attempt"
+        );
     }
 
     #[test]

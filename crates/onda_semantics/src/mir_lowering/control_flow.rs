@@ -1,5 +1,6 @@
 use super::*;
 use crate::def_semantics::call_types::StatementFlow;
+use crate::is_bare_return_expr;
 
 #[derive(Clone, Copy)]
 enum StaticForPlan {
@@ -138,6 +139,10 @@ impl<'a> FunctionLowerer<'a> {
                     StatementFlow::Continues
                 }
                 Stmt::Expr { expr, .. } => {
+                    if crate::task_lowering::is_task_abort_expr(expr) {
+                        self.push_statement(block, StatementKind::Break, expr.loc());
+                        return Ok(StatementFlow::Terminates);
+                    }
                     if let Expr::UserCall {
                         loc,
                         name,
@@ -162,6 +167,20 @@ impl<'a> FunctionLowerer<'a> {
                     StatementFlow::Continues
                 }
                 Stmt::Return { expr, loc } => {
+                    if is_bare_return_expr(expr) {
+                        if self.function.returns_value {
+                            return Err(self.error(
+                                "bare return found in a value-returning function",
+                                (*loc).into(),
+                            ));
+                        }
+                        self.push_statement(
+                            block,
+                            StatementKind::Return { values: Vec::new() },
+                            (*loc).into(),
+                        );
+                        return Ok(StatementFlow::Terminates);
+                    }
                     if !self.function.returns_value {
                         return Err(self.error(
                             "value return found in a function marked as no-result",
@@ -203,7 +222,6 @@ impl<'a> FunctionLowerer<'a> {
                     let condition = self.lower_expr(cond, block)?;
                     let condition =
                         self.coerce(condition, PrimitiveType::Bool, block, cond.loc())?;
-                    self.stop_prezeroed_init_state_proof();
                     let outer_bindings = self.bindings.clone();
                     let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
                     let mut then_block = MirBlock::default();
@@ -263,7 +281,6 @@ impl<'a> FunctionLowerer<'a> {
                     }
                 }
                 Stmt::While { cond, body, loc } => {
-                    self.stop_prezeroed_init_state_proof();
                     let outer_bindings = self.bindings.clone();
                     let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
                     let mut loop_body = MirBlock::default();
@@ -406,7 +423,6 @@ impl<'a> FunctionLowerer<'a> {
             Some(StaticForPlan::Empty) => unreachable!("empty loops return above"),
         };
 
-        self.stop_prezeroed_init_state_proof();
         let outer_bindings = self.bindings.clone();
         let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
         // The source-language loop variable and its induction counter are i32

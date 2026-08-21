@@ -45,6 +45,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.viewsReady = false;
     this.allocationLocked = false;
     this.stateBytes = null;
+    this.initialStateBytes = null;
+    this.initRollbackBytes = null;
     this.inputViews = [];
     this.outputViews = [];
 
@@ -83,6 +85,11 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       ? metadata.metadata.states
       : [];
     this.snapshotSizeBytes = Number(metadata.runtime?.snapshot_size_bytes ?? 0);
+    this.stateResetRanges = Array.isArray(metadata.runtime?.state_reset_ranges)
+      ? metadata.runtime.state_reset_ranges
+      : this.stateSizeBytes > 0
+        ? [{ byte_offset: 0, byte_size: this.stateSizeBytes }]
+        : [];
     this.inputChannels = this.flattenAudioChannels(this.inputInfo, "input");
     this.outputChannels = this.flattenAudioChannels(this.outputInfo, "output");
     this.inputCount = this.inputChannels.length;
@@ -115,7 +122,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.outputPtrs = [];
     this.outputCapacityFrames = 0;
     this.blockCursor = 0;
-    this.executionFailed = false;
 
     const paramBytes = Number(metadata.runtime?.param_size_bytes ?? 0);
     if (!Number.isInteger(paramBytes) || paramBytes < 0) {
@@ -154,7 +160,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.ensureOutputCapacity(this.blockSize);
     this.viewsReady = true;
     this.refreshMemoryCache(true);
-    this.reset();
+    this.initializeState();
     this.allocationLocked = true;
     this.port.onmessage = (event) => this.handleMessage(event.data ?? {});
   }
@@ -349,20 +355,80 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     );
   }
 
-  reset() {
+  initializeState() {
     this.refreshMemoryCache();
     this.stateBytes.fill(0);
     this.blockCursor = 0;
-    this.executionFailed = false;
     this.checkExecutionStatus(
-      this.exports.onda_init(this.paramsPtr, this.statePtr),
+      this.exports.onda_processor_init(this.paramsPtr, this.statePtr, 1),
       "processor init",
     );
+    this.initialStateBytes = this.stateBytes.slice();
+    this.initRollbackBytes = new Uint8Array(this.stateSizeBytes);
+  }
+
+  init() {
+    this.runInit(false);
+  }
+
+  initAll() {
+    this.runInit(true);
+  }
+
+  runInit(all) {
+    this.refreshMemoryCache();
+    this.initRollbackBytes.set(this.stateBytes);
+    try {
+      this.checkExecutionStatus(
+        this.exports.onda_processor_init(
+          this.paramsPtr,
+          this.statePtr,
+          all ? 1 : 0,
+        ),
+        "processor init",
+      );
+    } catch (error) {
+      this.stateBytes.set(this.initRollbackBytes);
+      throw error;
+    }
+    this.initialStateBytes.set(this.stateBytes);
+    this.blockCursor = 0;
+  }
+
+  reset() {
+    this.refreshMemoryCache();
+    for (const range of this.stateResetRanges) {
+      const offset = Number(range.byte_offset);
+      const byteSize = Number(range.byte_size);
+      this.validateStateResetRange(offset, byteSize);
+      this.stateBytes.set(
+        this.initialStateBytes.subarray(offset, offset + byteSize),
+        offset,
+      );
+    }
+    this.blockCursor = 0;
+  }
+
+  resetAll() {
+    this.refreshMemoryCache();
+    this.stateBytes.set(this.initialStateBytes);
+    this.blockCursor = 0;
+  }
+
+  validateStateResetRange(offset, byteSize) {
+    if (
+      !Number.isInteger(offset)
+      || offset < 0
+      || !Number.isInteger(byteSize)
+      || byteSize < 0
+      || offset + byteSize > this.stateSizeBytes
+    ) {
+      throw new Error("invalid Onda state reset range metadata");
+    }
   }
 
   checkExecutionStatus(status, operation) {
     if (status === 0) return;
-    this.executionFailed = true;
     throw new Error(`${operation} failed with Onda execution status ${String(status)}`);
   }
 
@@ -392,7 +458,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     }
     // The ABI restore base is a fresh post-init image, so scratch and
     // control-mirror state never leak across a restore.
-    this.reset();
+    this.resetAll();
     const state = this.stateBytes;
     for (const entry of this.snapshotInfo) {
       const packedOffset = Number(entry.packed_snapshot_byte_offset);
@@ -496,6 +562,15 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "reset") {
         this.reset();
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "reset-all") {
+        this.resetAll();
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "init") {
+        this.init();
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "init-all") {
+        this.initAll();
         this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "event") {
         this.dispatchEvent(
@@ -1221,10 +1296,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
 
   process(inputs, outputs) {
     this.refreshMemoryCache();
-    if (this.executionFailed) {
-      this.clearOutputs(outputs);
-      return true;
-    }
     const frames = this.audioFrameCount(inputs, outputs);
 
     let callbackOffset = 0;
@@ -1251,7 +1322,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         flags,
       );
       if (status !== 0) {
-        this.executionFailed = true;
         this.clearOutputs(outputs);
         this.port.postMessage({
           type: "onda-error",

@@ -1768,7 +1768,7 @@ block:
     assert_eq!(mir.functions[0].kind, onda_mir::FunctionKind::Init);
     assert_eq!(mir.functions[1].kind, onda_mir::FunctionKind::Process);
     assert!(
-        !mir.functions[0].body.statements.iter().any(|statement| {
+        mir.functions[0].body.statements.iter().any(|statement| {
             matches!(
                 &statement.kind,
                 StatementKind::Assign { destination, .. }
@@ -1776,7 +1776,7 @@ block:
                         == PlaceBase::State(onda_mir::StateId::new(phase_state as u32))
             )
         }),
-        "canonical MIR should remove the redundant zero store to pre-zeroed state"
+        "canonical MIR must retain the zero store needed by live init"
     );
 
     let dump = format_program(&mir);
@@ -3408,7 +3408,7 @@ sample:
     assert!(dump.contains("const_data @data0 \"Table\""));
     assert!(dump.contains("load_const_data @data0"));
     assert!(dump.contains("@state") && dump.contains("] clamp"));
-    assert!(!mir.functions[0]
+    assert!(mir.functions[0]
         .body
         .statements
         .iter()
@@ -3416,7 +3416,7 @@ sample:
 }
 
 #[test]
-fn raw_init_omits_large_prezeroed_state_fills_and_zero_elements() {
+fn raw_init_emits_zero_initializers_needed_by_live_reinitialization() {
     let source = r#"
 struct Defaults:
   gain: f32 = 0.0
@@ -3453,12 +3453,12 @@ sample:
 
     let init = &mir.functions[mir.entry_points.init.index()];
     assert!(
-        !block_contains_loop(&init.body),
-        "pre-zeroed state declarations must not synthesize init loops"
+        block_contains_loop(&init.body),
+        "array state declarations must be restored during live init"
     );
     assert!(
-        !block_contains_all_bits_zero_state_store(&init.body),
-        "pre-zeroed state declarations must not emit all-bits-zero state stores"
+        block_contains_all_bits_zero_state_store(&init.body),
+        "zero-valued state declarations must be restored during live init"
     );
 
     let explicit = mir
@@ -3484,7 +3484,7 @@ sample:
             )
         })
         .count();
-    assert_eq!(explicit_stores, 2);
+    assert_eq!(explicit_stores, 4);
 }
 
 #[test]

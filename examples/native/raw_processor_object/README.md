@@ -139,7 +139,7 @@ The application performs the integration itself:
    `metadata.params[*].byte_offset`, ranges, scalar types, and `param_control`.
 5. Build flattened input/output pointer tables in metadata slot order.
 6. Build the four parallel external-buffer tables in `metadata.buffers` order.
-7. Call `onda_init(params, state)` once and reject a nonzero execution status.
+7. Call `onda_processor_init(params, state, 1)` once and reject a nonzero execution status.
 8. Encode fixed event defaults from `metadata.events` and call exports through a generated function
    table.
 9. Call `onda_process` once with `ONDA_PROCESSOR_FULL_BLOCK` for the complete block, stopping

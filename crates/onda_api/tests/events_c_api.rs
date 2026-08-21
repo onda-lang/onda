@@ -1770,7 +1770,7 @@ sample { out1 = gate }
 }
 
 #[test]
-fn c_api_reset_instance_state_restores_initial_state() {
+fn c_api_reset_restores_initial_state() {
     unsafe {
         let frames = 512_i32;
         let program = compile_program(
@@ -1779,10 +1779,14 @@ outs { out1 }
 events {
   set_amp(value: f32) {
     amp = value
+    retained = value + 1.0
   }
 }
-init { amp = 0.0 }
-sample { out1 = amp }
+init {
+  amp = 0.0
+  retained = 1.0 {retain}
+}
+sample { out1 = amp + retained }
 "#,
         );
 
@@ -1818,14 +1822,66 @@ sample { out1 = amp }
         );
         assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
-            assert!((*sample - 0.5).abs() < 1e-6);
+            assert!((*sample - 2.0).abs() < 1e-6, "got {sample}");
         }
 
-        assert_eq!(onda_reset_instance_state(instance.0), 0);
+        assert_eq!(onda_reset(instance.0), 0);
         assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
-            assert!((*sample - 0.0).abs() < 1e-6);
+            assert!((*sample - 1.5).abs() < 1e-6, "got {sample}");
         }
+
+        assert_eq!(onda_reset_all(instance.0), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 1.0).abs() < 1e-6);
+        }
+
+        assert_eq!(
+            onda_trigger_event_by_index(
+                instance.0,
+                0,
+                payload.as_ptr().cast::<c_void>(),
+                payload.len() as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_init(instance.0), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 1.5).abs() < 1e-6, "got {sample}");
+        }
+
+        let changed_payload = 0.25_f32.to_ne_bytes();
+        assert_eq!(
+            onda_trigger_event_by_index(
+                instance.0,
+                0,
+                changed_payload.as_ptr().cast::<c_void>(),
+                changed_payload.len() as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_reset(instance.0), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 1.25).abs() < 1e-6);
+        }
+
+        assert_eq!(onda_reset_all(instance.0), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 1.5).abs() < 1e-6);
+        }
+
+        assert_eq!(onda_init_all(instance.0), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 1.0).abs() < 1e-6);
+        }
+
+        assert_eq!(onda_init(std::ptr::null_mut()), -1);
+        assert_eq!(onda_init_all(std::ptr::null_mut()), -1);
     }
 }
 

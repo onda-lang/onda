@@ -411,6 +411,21 @@ fn append_or_merge_event_block(
     Ok(())
 }
 
+fn append_or_merge_task_block(
+    blocks: &mut Vec<Block>,
+    incoming: TaskBlock,
+) -> Result<(), Vec<Diagnostic>> {
+    for block in blocks.iter_mut() {
+        if let Block::Tasks(existing) = block {
+            existing.loc = Span::spanning(existing.loc, incoming.loc);
+            merge_task_defs(&mut existing.tasks, incoming.tasks)?;
+            return Ok(());
+        }
+    }
+    blocks.push(Block::Tasks(incoming));
+    Ok(())
+}
+
 pub fn parse_program(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let virtual_path = PathBuf::from("<memory>");
     let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(source)
@@ -654,6 +669,12 @@ fn parse_program_preprocessed(
                 }
                 Rule::event_block => {
                     append_or_merge_event_block(&mut blocks, parse_event_block(pair)?)?
+                }
+                Rule::tasks_block => {
+                    append_or_merge_task_block(&mut blocks, parse_tasks_block(pair)?)?
+                }
+                Rule::task_block => {
+                    append_or_merge_task_block(&mut blocks, parse_task_block(pair)?)?
                 }
                 Rule::buffers_block => blocks.push(Block::Buffers(parse_buffers_block(pair)?)),
                 Rule::assert_block => blocks.push(Block::Assert(parse_assert_decl(pair)?)),

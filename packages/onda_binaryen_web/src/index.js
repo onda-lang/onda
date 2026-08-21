@@ -43,6 +43,7 @@ const WASM32_ADDRESS_SPACE_BYTES = MAX_MEMORY_PAGES * PAGE_BYTES;
 const DEFAULT_OPTIMIZE_LEVEL = 4;
 const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
 const RUNTIME_FAILURE_GLOBAL = "$onda.runtime_failure";
+const INIT_ALL_GLOBAL = "$onda.init_all";
 const MATH_KERNEL_INTRINSICS = new Set([
   "sin",
   "cos",
@@ -96,6 +97,12 @@ const TRAPPING_DESCRIPTOR_BINARY_OPS = new Set([
   binaryen.RemUInt32,
   binaryen.RemUInt64,
 ]);
+
+function isCompilerOwnedStateName(name) {
+  return name.startsWith("__onda_")
+    || name.includes(".__onda_")
+    || name.includes("____onda_");
+}
 
 // Compiles MIR emitted by Onda's semantic producer. The producer owns proofs
 // for operations marked `bounds: "unchecked"` and all other validated MIR
@@ -1818,6 +1825,12 @@ class MirCompiler {
       true,
       this.module.i32.const(0),
     );
+    this.module.addGlobal(
+      INIT_ALL_GLOBAL,
+      binaryen.i32,
+      true,
+      this.module.i32.const(0),
+    );
   }
 
   addMathKernel() {
@@ -2317,22 +2330,32 @@ class MirCompiler {
         POINTER_GLOBALS.state,
         this.module.local.get(1, binaryen.i32),
       ),
-      this.module.memory.fill(
-        this.module.local.get(1, binaryen.i32),
-        this.module.i32.const(0),
-        this.module.i32.const(this.stateLayout.byteLength ?? 0),
+      this.module.global.set(
+        INIT_ALL_GLOBAL,
+        this.module.i32.ne(
+          this.module.local.get(2, binaryen.i32),
+          this.module.i32.const(0),
+        ),
+      ),
+      this.module.if(
+        this.module.global.get(INIT_ALL_GLOBAL, binaryen.i32),
+        this.module.memory.fill(
+          this.module.local.get(1, binaryen.i32),
+          this.module.i32.const(0),
+          this.module.i32.const(this.stateLayout.byteLength ?? 0),
+        ),
       ),
       this.module.call(this.functionNames[initId], [], binaryen.none),
       this.executionStatus(initId),
     ], binaryen.i32);
     this.module.addFunction(
       "$onda.abi.init",
-      binaryen.createType([binaryen.i32, binaryen.i32]),
+      binaryen.createType([binaryen.i32, binaryen.i32, binaryen.i32]),
       binaryen.i32,
       [],
       initBody,
     );
-    this.module.addFunctionExport("$onda.abi.init", "onda_init");
+    this.module.addFunctionExport("$onda.abi.init", "onda_processor_init");
 
     const processParams = binaryen.createType(
       Array.from({ length: 11 }, () => binaryen.i32),
@@ -2925,6 +2948,11 @@ class MirCompiler {
         );
       case "intrinsic":
         return this.compileIntrinsic(data, expectedScalar, context);
+      case "init_all":
+        if (context.function.kind?.kind !== "init") {
+          this.fail("init_all is only valid in the init entry point");
+        }
+        return this.module.global.get(INIT_ALL_GLOBAL, binaryen.i32);
       case "process_frame":
         return this.compileProcessFrame(data, context);
       case "input_load":
@@ -5682,13 +5710,14 @@ class MirCompiler {
     const stateSize = this.stateLayout.byteLength ?? 0;
     const paramSize = this.paramLayout.byteLength ?? 0;
     const snapshot = this.stateSnapshotMetadata();
+    const stateResetRanges = this.stateResetRanges();
     const eventExports = this.mir.interface.events.map(
       (_, id) => `onda_event_${id}`,
     );
     const requiredExports = [
       "memory",
       "__heap_base",
-      "onda_init",
+      "onda_processor_init",
       "onda_process",
       ...eventExports,
     ];
@@ -5743,7 +5772,7 @@ class MirCompiler {
       exports: {
         memory: "memory",
         heap_base: "__heap_base",
-        init: "onda_init",
+        init: "onda_processor_init",
         process: "onda_process",
         events: eventExports,
       },
@@ -5751,6 +5780,7 @@ class MirCompiler {
         state_size_bytes: stateSize,
         state_align_bytes: 16,
         state_initialization: "zeroed",
+        state_reset_ranges: stateResetRanges,
         snapshot_size_bytes: snapshot.byteLength,
         snapshot_format_version: PROCESSOR_SNAPSHOT_FORMAT_VERSION,
         snapshot_byte_order: "little_endian",
@@ -5858,6 +5888,8 @@ class MirCompiler {
       const layout = this.stateLayout[id];
       entries.push({
         name: slot.name,
+        authored: !isCompilerOwnedStateName(slot.name),
+        reset: slot.reset ?? "restore",
         type_repr: typeName(this.type(slot.ty), this),
         scalar: shape.scalar,
         array_len: shape.length,
@@ -5882,6 +5914,21 @@ class MirCompiler {
       byteOffset += layout.size;
     }
     return { entries, byteLength: byteOffset };
+  }
+
+  stateResetRanges() {
+    const ranges = [];
+    for (const [id, slot] of this.mir.state.entries()) {
+      if ((slot.reset ?? "restore") === "retain") continue;
+      const layout = this.stateLayout[id];
+      const previous = ranges.at(-1);
+      if (previous && previous.byte_offset + previous.byte_size === layout.offset) {
+        previous.byte_size += layout.size;
+      } else {
+        ranges.push({ byte_offset: layout.offset, byte_size: layout.size });
+      }
+    }
+    return ranges;
   }
 
   portMetadata(ports, layouts) {

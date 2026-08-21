@@ -528,8 +528,10 @@ sample code with per-block work.
 
 ### `init`
 
-`init` runs when an instance is created or reset. It creates persistent state
-and usually constructs structs and processors.
+`init` runs when an instance is created and may be rerun explicitly by the
+host. It creates persistent state and usually constructs structs and
+processors. Ordinary host reset restores the post-init resettable-state
+baseline rather than executing source `init` again.
 
 ```onda
 init:
@@ -546,6 +548,14 @@ Typical uses:
 - Construct proc instances.
 - Perform one-time setup.
 
+Host `init` preserves `{retain}` roots and task continuations while rerunning
+ordinary declaration initializers and every explicit init statement. Host
+`init_all` clears all state first. Either operation atomically captures its
+successful result as the new reset baseline; a runtime failure changes neither
+the live state nor the prior baseline. Instance creation is equivalent to
+allocating zeroed storage, writing parameter defaults, running `init_all`, and
+capturing that first baseline.
+
 Section default scalar types are supported:
 
 ```onda
@@ -561,6 +571,22 @@ Rules:
 - `const` declarations are allowed inside `init`.
 - Declaration order is lexical.
 - A fresh assignment inside nested control flow in `init` is local to that flow, not persistent state.
+
+A direct persistent binding can opt out of ordinary reset with `{retain}` or
+the equivalent named form `{reset = retain}`:
+
+```onda
+init:
+  prepared: f32[4096] {retain}
+  generation: i32 = 0 {reset = retain}
+  history: f32[128]
+```
+
+Ordinary reset preserves `prepared` and `generation` while restoring `history`.
+Fresh construction always initializes every binding. Snapshots include both
+policies and restore the captured values; `retain` affects reset, not snapshot
+semantics. Integer-domain attributes compose with the named reset field, for
+example `{MaxPartitions, wrap, reset = retain}`.
 
 ```onda
 init:
@@ -1104,6 +1130,11 @@ Return rules:
 
 - A `def` can return a primitive scalar.
 - A `def` can return a tuple of primitive scalars.
+- A runtime `def` with no explicit return type and no `return EXPR` is
+  non-value-returning. It may use bare `return` for early exit and can only be
+  called as a statement.
+- Bare and value returns cannot be mixed. A `def` with an explicit return type
+  rejects bare `return`.
 - A value-returning `def` must return a value on every reachable path. A
   return nested only in a `for` or `while` loop is not sufficient because the
   loop may execute zero times.
@@ -1112,6 +1143,7 @@ Return rules:
 - Return checking follows ordinary assignment rules: exact match and implicit widening are allowed; narrowing requires an explicit cast.
 - Runtime def call graphs must be acyclic. Direct and mutual recursion are
   rejected because they do not provide a statically bounded realtime workload.
+- `const def` remains value-returning and does not accept bare `return`.
 
 Top-level `def` bodies are lexical-local. Top-level runtime symbols such as
 inputs, outputs, params, buffers, and `init` state are not in scope unless
@@ -1473,14 +1505,91 @@ Proc-event rules:
 - Generic proc events can use generic primitive placeholders such as `T`, `T[N]`, and `T[]`.
 
 Every proc also gets a reserved builtin `init(...)` event. It mirrors the proc
-params in declaration order, assigns provided values into params, reruns that
-proc instance's `init`, then runs bound param hooks. Omitted args use defaults.
+params in declaration order and adds `all: bool = false`, assigns
+provided values into params, reruns that proc instance's `init`, then runs bound
+param hooks. Omitted args use defaults.
+
+By default the call preserves `{retain}` roots and compiler-owned retained
+state such as task continuations while reinitializing resettable roots. Passing
+`all = true` performs the full initialization used by fresh proc
+construction. Explicit operations in the initializer still run in either
+mode, so a `task.reset()` written there remains effective.
 
 ```onda
 voice.init(0.5)
 voice.init(gain = 0.5)
 voices[i].init(freq = 220.0, amp = 0.1)
+voice.init(all = true)
 ```
+
+`all` is reserved as a proc parameter name.
+
+### Tasks
+
+The top-level program and procs can declare statically allocated cooperative
+tasks. The standalone and grouped forms are equivalent:
+
+```onda
+proc Loader:
+  task prepare():
+    build_header()
+    yield
+    build_body()
+
+  tasks:
+    clear():
+      clear_cache()
+```
+
+The same declarations work at top level:
+
+```onda
+task prepare():
+  build_header()
+  yield
+  build_body()
+
+block:
+  await prepare()
+  sample:
+    out1 = render()
+```
+
+Tasks take no arguments and return no values. They implicitly see their
+owner's params, buffers, and init-rooted state, but cannot directly read audio
+inputs, write owner outputs, call processor steps, invoke their owner's event
+handlers, or invoke other tasks. They may synchronously call child-proc events,
+including the child's builtin `init(...)` event.
+`yield` suspends the current task; bare `return` or reaching the end completes
+it.
+
+The owner advances a task with `await` from block-pre control flow:
+
+```onda
+block:
+  await prepare()
+
+  sample:
+    out1 = process(in1)
+```
+
+If the task yields or has failed, the owner stops that activation and produces
+neutral outputs. For a top-level task those are the program outputs; for a proc
+task only that proc becomes neutral and its parent continues normally. If the
+task completes, execution continues after `await` in the same logical block. A
+task is reset explicitly with `prepare.reset()` from the owner's `init`, event,
+or block-pre scope.
+
+Task continuations are retained state. Ordinary reset and default initialization
+preserve them. Proc `init(all = true)` and the host-level all-state initialization
+operations restore them to not-started. An explicit `prepare.reset()` in an
+initializer always runs. Tasks may use both retained and resettable state; after
+an ordinary reset, a suspended task observes the reset values when it resumes.
+
+Tasks are private to their owner and share that owner's declaration namespace.
+They cannot be used with a `graph` block. `await` is valid only in structured
+block-pre control flow; task reset is valid only in owner `init`, event, and
+block-pre code. Neither operation is a first-class callable value.
 
 ### Proc-Local Defs
 

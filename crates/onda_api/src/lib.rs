@@ -29,8 +29,9 @@ use onda_project::{
 };
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
-    prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
-    process_unchecked_segment, read_control_output_bytes, reset_instance_state, set_param_by_index,
+    init as runtime_init, init_all as runtime_init_all, prepare_unchecked_process, process_checked,
+    process_checked_segment, process_unchecked, process_unchecked_segment,
+    read_control_output_bytes, reset, reset_all, set_param_by_index,
     set_param_normalized as runtime_set_param_normalized,
     set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
     trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
@@ -3088,12 +3089,37 @@ pub unsafe extern "C" fn onda_process_checked_segment(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_reset_instance_state(instance: *mut onda_instance) -> i32 {
+pub unsafe extern "C" fn onda_reset(instance: *mut onda_instance) -> i32 {
     if instance.is_null() {
         return -1;
     }
-    reset_instance_state(&mut (*instance).inner);
+    reset(&mut (*instance).inner);
     0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_reset_all(instance: *mut onda_instance) -> i32 {
+    if instance.is_null() {
+        return -1;
+    }
+    reset_all(&mut (*instance).inner);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_init(instance: *mut onda_instance) -> i32 {
+    if instance.is_null() {
+        return -1;
+    }
+    runtime_init(&mut (*instance).inner).map_or(-2, |()| 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_init_all(instance: *mut onda_instance) -> i32 {
+    if instance.is_null() {
+        return -1;
+    }
+    runtime_init_all(&mut (*instance).inner).map_or(-2, |()| 0)
 }
 
 #[no_mangle]

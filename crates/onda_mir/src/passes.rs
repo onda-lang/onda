@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::Deref;
 
 use crate::{
@@ -21,7 +21,6 @@ pub struct PassStats {
     pub simplified_branches: u64,
     pub removed_unreachable_statements: u64,
     pub removed_dead_assignments: u64,
-    pub removed_redundant_zero_stores: u64,
     pub removed_locals: u64,
     pub promoted_state_slots: u64,
     pub eliminated_common_subexpressions: u64,
@@ -82,9 +81,6 @@ impl PassStats {
         self.removed_dead_assignments = self
             .removed_dead_assignments
             .saturating_add(other.removed_dead_assignments);
-        self.removed_redundant_zero_stores = self
-            .removed_redundant_zero_stores
-            .saturating_add(other.removed_redundant_zero_stores);
         self.removed_locals = self.removed_locals.saturating_add(other.removed_locals);
         self.promoted_state_slots = self
             .promoted_state_slots
@@ -110,7 +106,6 @@ impl PassStats {
             || self.simplified_branches != 0
             || self.removed_unreachable_statements != 0
             || self.removed_dead_assignments != 0
-            || self.removed_redundant_zero_stores != 0
             || self.removed_locals != 0
             || self.promoted_state_slots != 0
             || self.eliminated_common_subexpressions != 0
@@ -189,9 +184,6 @@ pub fn optimize(
         // cleanup share one validation boundary instead of validating the
         // same intermediate program twice.
         canonicalize_program(&mut raw, &mut stats);
-        if let Some(init) = raw.functions.get_mut(raw.entry_points.init.index()) {
-            eliminate_preinitialized_zero_stores(init, &mut stats);
-        }
         for function in &mut raw.functions {
             remove_dead_pure_locals(function, &mut stats);
         }
@@ -211,241 +203,6 @@ pub fn optimize(
             let program = crate::validate::revalidate_owned(raw, producer_proofs)?;
             return Ok((OptimizedProgram(program), total));
         }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct StateRegion {
-    state: crate::StateId,
-    path: Vec<StateProjection>,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum StateProjection {
-    Field(u32),
-    Index(u32),
-}
-
-fn eliminate_preinitialized_zero_stores(function: &mut Function, stats: &mut PassStats) {
-    let mut dirty = Vec::<StateRegion>::new();
-    let mut aliases = HashMap::<LocalId, StateRegion>::new();
-    let mut barrier = false;
-    let statements = std::mem::take(&mut function.body.statements);
-    let mut retained = Vec::with_capacity(statements.len());
-    for statement in statements {
-        if barrier {
-            retained.push(statement);
-            continue;
-        }
-        let mut remove = false;
-        match &statement.kind {
-            StatementKind::Assign { destination, value } => {
-                if let Some((region, exact)) = state_region(destination) {
-                    if !exact {
-                        mark_state_dirty(
-                            &mut dirty,
-                            StateRegion {
-                                state: region.state,
-                                path: Vec::new(),
-                            },
-                        );
-                    } else if rvalue_is_all_bits_zero(value) {
-                        if !dirty
-                            .iter()
-                            .any(|dirty| state_regions_overlap(dirty, &region))
-                        {
-                            remove = true;
-                        } else {
-                            clear_state_region(&mut dirty, &region);
-                        }
-                    } else {
-                        mark_state_dirty(&mut dirty, region);
-                    }
-                }
-
-                if let Place {
-                    base: PlaceBase::Local(local),
-                    projections,
-                } = destination
-                {
-                    if projections.is_empty() {
-                        aliases.remove(local);
-                        if let Rvalue::MakeSlice {
-                            source: crate::SliceSource::Place(place),
-                            ..
-                        } = value
-                        {
-                            if let Some((region, exact)) = state_region(place) {
-                                if exact {
-                                    aliases.insert(*local, region);
-                                }
-                            }
-                        }
-                    } else if let Some(region) = aliases.get(local).cloned() {
-                        mark_state_dirty(
-                            &mut dirty,
-                            StateRegion {
-                                state: region.state,
-                                path: Vec::new(),
-                            },
-                        );
-                    }
-                }
-            }
-            StatementKind::SliceStore { slice, .. } => {
-                if let Some(region) = value_alias_region(*slice, &aliases) {
-                    mark_state_dirty(
-                        &mut dirty,
-                        StateRegion {
-                            state: region.state,
-                            path: Vec::new(),
-                        },
-                    );
-                } else {
-                    barrier = true;
-                }
-            }
-            StatementKind::SliceFill { destination, value } => {
-                if let Some(region) = value_alias_region(*destination, &aliases) {
-                    let whole_state = StateRegion {
-                        state: region.state,
-                        path: Vec::new(),
-                    };
-                    if scalar_is_all_bits_zero(*value)
-                        && !dirty
-                            .iter()
-                            .any(|dirty| state_regions_overlap(dirty, &whole_state))
-                    {
-                        remove = true;
-                    } else {
-                        mark_state_dirty(&mut dirty, whole_state);
-                    }
-                } else {
-                    barrier = true;
-                }
-            }
-            StatementKind::SliceCopy { destination, .. } => {
-                if let Some(region) = value_alias_region(*destination, &aliases) {
-                    mark_state_dirty(
-                        &mut dirty,
-                        StateRegion {
-                            state: region.state,
-                            path: Vec::new(),
-                        },
-                    );
-                } else {
-                    barrier = true;
-                }
-            }
-            StatementKind::Call { .. }
-            | StatementKind::If { .. }
-            | StatementKind::Loop { .. }
-            | StatementKind::Break
-            | StatementKind::Continue => {
-                barrier = true;
-            }
-            StatementKind::Return { .. } => {
-                barrier = true;
-            }
-            StatementKind::OutputStore { .. }
-            | StatementKind::ControlOutputStore { .. }
-            | StatementKind::BufferStore { .. }
-            | StatementKind::BufferParamStore { .. } => {}
-        }
-        if remove {
-            stats.removed_redundant_zero_stores =
-                stats.removed_redundant_zero_stores.saturating_add(1);
-        } else {
-            retained.push(statement);
-        }
-    }
-    function.body.statements = retained;
-}
-
-fn state_region(place: &Place) -> Option<(StateRegion, bool)> {
-    let PlaceBase::State(state) = place.base else {
-        return None;
-    };
-    let mut path = Vec::with_capacity(place.projections.len());
-    for projection in &place.projections {
-        match projection {
-            Projection::Field(field) => path.push(StateProjection::Field(field.raw())),
-            Projection::Index { index, .. } => {
-                let Value::Constant(ScalarValue::I32(index)) = index else {
-                    return Some((
-                        StateRegion {
-                            state,
-                            path: Vec::new(),
-                        },
-                        false,
-                    ));
-                };
-                let Ok(index) = u32::try_from(*index) else {
-                    return Some((
-                        StateRegion {
-                            state,
-                            path: Vec::new(),
-                        },
-                        false,
-                    ));
-                };
-                path.push(StateProjection::Index(index));
-            }
-        }
-    }
-    Some((StateRegion { state, path }, true))
-}
-
-fn state_path_is_prefix(prefix: &[StateProjection], path: &[StateProjection]) -> bool {
-    prefix.len() <= path.len() && prefix.iter().zip(path).all(|(lhs, rhs)| lhs == rhs)
-}
-
-fn state_regions_overlap(lhs: &StateRegion, rhs: &StateRegion) -> bool {
-    lhs.state == rhs.state
-        && (state_path_is_prefix(&lhs.path, &rhs.path)
-            || state_path_is_prefix(&rhs.path, &lhs.path))
-}
-
-fn mark_state_dirty(dirty: &mut Vec<StateRegion>, region: StateRegion) {
-    if dirty.iter().any(|existing| {
-        existing.state == region.state && state_path_is_prefix(&existing.path, &region.path)
-    }) {
-        return;
-    }
-    dirty.retain(|existing| {
-        existing.state != region.state || !state_path_is_prefix(&region.path, &existing.path)
-    });
-    dirty.push(region);
-}
-
-fn clear_state_region(dirty: &mut Vec<StateRegion>, region: &StateRegion) {
-    dirty.retain(|existing| {
-        existing.state != region.state || !state_path_is_prefix(&region.path, &existing.path)
-    });
-}
-
-fn value_alias_region(
-    value: Value,
-    aliases: &HashMap<LocalId, StateRegion>,
-) -> Option<StateRegion> {
-    let Value::Local(local) = value else {
-        return None;
-    };
-    aliases.get(&local).cloned()
-}
-
-fn rvalue_is_all_bits_zero(value: &Rvalue) -> bool {
-    matches!(value, Rvalue::Use(value) if scalar_is_all_bits_zero(*value))
-}
-
-fn scalar_is_all_bits_zero(value: Value) -> bool {
-    match value {
-        Value::Constant(ScalarValue::F32(value)) => value.to_bits() == 0,
-        Value::Constant(ScalarValue::F64(value)) => value.to_bits() == 0,
-        Value::Constant(ScalarValue::I32(value)) => value == 0,
-        Value::Constant(ScalarValue::I64(value)) => value == 0,
-        Value::Constant(ScalarValue::Bool(value)) => !value,
-        Value::Local(_) => false,
     }
 }
 
@@ -983,6 +740,7 @@ fn propagate_place_indices(place: &mut Place, facts: &[Option<Value>], stats: &m
 
 fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: &mut PassStats) {
     match rvalue {
+        Rvalue::InitAll => {}
         Rvalue::Use(value) | Rvalue::SliceLen(value) => {
             propagate_value(value, facts, stats);
         }
@@ -1687,6 +1445,7 @@ fn collect_buffer_param_ref_read(buffer: crate::BufferParamRef, reads: &mut [u32
 
 fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
     match value {
+        Rvalue::InitAll => {}
         Rvalue::Use(value) | Rvalue::SliceLen(value) => mark_value_read(*value, reads),
         Rvalue::Load(place) => collect_place_read(place, reads),
         Rvalue::Unary { operand, .. } => mark_value_read(*operand, reads),
@@ -1919,6 +1678,7 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
     }
     fn rvalue(rvalue: &Rvalue, referenced: &mut HashSet<LocalId>) {
         match rvalue {
+            Rvalue::InitAll => {}
             Rvalue::Use(v) | Rvalue::SliceLen(v) => value(*v, referenced),
             Rvalue::Load(p) => place(p, true, referenced),
             Rvalue::Unary { operand, .. } => value(*operand, referenced),
@@ -2189,6 +1949,7 @@ fn rewrite_place(place: &mut Place, mapping: &[Option<LocalId>]) {
 
 fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
     match value {
+        Rvalue::InitAll => {}
         Rvalue::Use(value) | Rvalue::SliceLen(value) => rewrite_value(value, mapping),
         Rvalue::Load(place) => rewrite_place(place, mapping),
         Rvalue::Unary { operand, .. } => rewrite_value(operand, mapping),
@@ -2442,6 +2203,7 @@ mod tests {
             name: "phase".to_owned(),
             ty: f32_ty,
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
         });
 
         let helper_id = FunctionId::new(program.functions.len() as u32);
@@ -3292,6 +3054,7 @@ mod tests {
                 name: name.to_owned(),
                 ty: TypeId::new(0),
                 persistence: StatePersistence::Snapshot,
+                reset: crate::StateResetPolicy::Restore,
                 integer_range: None,
             }));
         program.functions[1].body.statements.push(Statement {
@@ -3352,6 +3115,7 @@ mod tests {
             name: "values".to_owned(),
             ty: array_ty,
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
             integer_range: None,
         });
 
@@ -3489,6 +3253,7 @@ mod tests {
             name: "unused".to_owned(),
             ty: TypeId::new(0),
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
             integer_range: None,
         });
 
@@ -3584,12 +3349,11 @@ mod tests {
         assert_eq!(second_stats.simplified_branches, 0);
         assert_eq!(second_stats.removed_unreachable_statements, 0);
         assert_eq!(second_stats.removed_dead_assignments, 0);
-        assert_eq!(second_stats.removed_redundant_zero_stores, 0);
         assert_eq!(second_stats.removed_locals, 0);
     }
 
     #[test]
-    fn optimize_removes_only_proven_redundant_zero_before_init_stores() {
+    fn optimize_preserves_zero_init_stores_for_live_reinitialization() {
         let mut program = empty_program();
         program.types.extend([
             Type::Scalar(ScalarType::F32),
@@ -3608,12 +3372,14 @@ mod tests {
                 name: "scalar".to_owned(),
                 ty: TypeId::new(1),
                 persistence: StatePersistence::Snapshot,
+                reset: crate::StateResetPolicy::Restore,
             },
             StateSlot {
                 integer_range: None,
                 name: "array".to_owned(),
                 ty: TypeId::new(2),
                 persistence: StatePersistence::Snapshot,
+                reset: crate::StateResetPolicy::Restore,
             },
         ]);
         program.functions[0].locals.push(Local {
@@ -3671,8 +3437,7 @@ mod tests {
 
         let validated = unsafe { crate::validate_owned_with_producer_proofs(program) }
             .expect("init fixture is valid");
-        let (optimized, stats) = super::optimize(validated).expect("zero DSE preserves validity");
-        assert_eq!(stats.removed_redundant_zero_stores, 5);
+        let (optimized, _) = super::optimize(validated).expect("optimization preserves validity");
         let init = &optimized.functions[0];
         assert!(init.body.statements.iter().any(|statement| {
             matches!(
@@ -3700,11 +3465,11 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(scalar_writes, 3);
+        assert_eq!(scalar_writes, 5);
     }
 
     #[test]
-    fn zero_before_init_elimination_stops_at_calls() {
+    fn zero_init_stores_remain_after_calls() {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.state.push(StateSlot {
@@ -3712,6 +3477,7 @@ mod tests {
             name: "value".to_owned(),
             ty: TypeId::new(1),
             persistence: StatePersistence::Snapshot,
+            reset: crate::StateResetPolicy::Restore,
         });
         program
             .functions
@@ -3738,8 +3504,7 @@ mod tests {
         ]);
 
         let validated = crate::validate_owned(program).expect("call barrier fixture is valid");
-        let (optimized, stats) = super::optimize(validated).expect("optimization should succeed");
-        assert_eq!(stats.removed_redundant_zero_stores, 0);
+        let (optimized, _) = super::optimize(validated).expect("optimization should succeed");
         assert_eq!(optimized.functions[0].body.statements.len(), 2);
     }
 }

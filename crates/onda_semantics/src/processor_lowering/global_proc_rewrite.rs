@@ -925,13 +925,19 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     loc: Default::default(),
                                     name: format!("{ctor_name}{PROC_INIT_FN_SUFFIX}"),
                                     type_args: Vec::new(),
-                                    args: vec![CallArg {
-                                        name: None,
-                                        expr: proc_instance_self_expr(
-                                            var,
-                                            &global_proc_array_slots,
-                                        ),
-                                    }],
+                                    args: vec![
+                                        CallArg {
+                                            name: None,
+                                            expr: proc_instance_self_expr(
+                                                var,
+                                                &global_proc_array_slots,
+                                            ),
+                                        },
+                                        CallArg {
+                                            name: None,
+                                            expr: Expr::var(TOP_LEVEL_INIT_ALL_NAME),
+                                        },
+                                    ],
                                 },
                             });
                         } else {
@@ -941,13 +947,19 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     loc: Default::default(),
                                     name: format!("{ctor_name}{PROC_INIT_FN_SUFFIX}"),
                                     type_args: Vec::new(),
-                                    args: vec![CallArg {
-                                        name: None,
-                                        expr: proc_instance_self_expr(
-                                            var,
-                                            &global_proc_array_slots,
-                                        ),
-                                    }],
+                                    args: vec![
+                                        CallArg {
+                                            name: None,
+                                            expr: proc_instance_self_expr(
+                                                var,
+                                                &global_proc_array_slots,
+                                            ),
+                                        },
+                                        CallArg {
+                                            name: None,
+                                            expr: Expr::var(TOP_LEVEL_INIT_ALL_NAME),
+                                        },
+                                    ],
                                 },
                             });
                         }

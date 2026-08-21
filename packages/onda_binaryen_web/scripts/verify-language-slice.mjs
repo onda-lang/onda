@@ -52,7 +52,7 @@ try {
     artifact.wasm,
     createDefaultImports(),
   );
-  const { memory, __heap_base, onda_init, onda_process, onda_event_0 } =
+  const { memory, __heap_base, onda_processor_init, onda_process, onda_event_0 } =
     instance.exports;
   let heap = Number(__heap_base.value);
   const allocate = (bytes, alignment = 16) => {
@@ -73,7 +73,7 @@ try {
   view.setFloat32(payload + 8, 4, true);
   view.setUint32(outputTable, output, true);
 
-  if (onda_init(params, state) !== 0) {
+  if (onda_processor_init(params, state, 1) !== 0) {
     throw new Error("real-Onda init returned a generated execution failure");
   }
   if (onda_event_0(payload, params, state, 0, 0, 0, 0) !== 0) {

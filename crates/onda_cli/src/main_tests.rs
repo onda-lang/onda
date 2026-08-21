@@ -697,7 +697,10 @@ events {
         metadata["integration"]["profile"]["kind"],
         "native_relocatable_object"
     );
-    assert_eq!(metadata["integration"]["required_symbols"][0], "onda_init");
+    assert_eq!(
+        metadata["integration"]["required_symbols"][0],
+        "onda_processor_init"
+    );
     assert_eq!(metadata["compile"]["sample_rate"], 48_000.0);
     assert_eq!(metadata["compile"]["block_size"], 64);
     assert_eq!(metadata["exports"]["events"][0], "onda_event_0");

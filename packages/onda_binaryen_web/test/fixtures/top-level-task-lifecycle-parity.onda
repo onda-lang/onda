@@ -1,0 +1,19 @@
+init:
+  progress: i32 = 0 {retain}
+  scratch: i32 = 5
+
+task load():
+  progress += 1
+  scratch += 1
+  yield
+  progress += 10
+  scratch += 10
+
+event restart():
+  load.reset()
+
+block:
+  await load()
+
+  sample:
+    out1 = f32(progress + scratch)

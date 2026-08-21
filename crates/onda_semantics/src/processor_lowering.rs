@@ -12,6 +12,9 @@ mod nested_proc_lowering;
 mod proc_local_defs;
 mod shape_helpers;
 use generated_blocks::*;
+pub(crate) use generated_blocks::{
+    guard_retained_initializers, is_retained_initializer_marker, mark_retained_initializers,
+};
 pub(crate) use generic_proc_rewrite::validate_generic_proc_template_forwarded_type_args;
 use generic_proc_rewrite::*;
 use global_proc_rewrite::*;
@@ -22,6 +25,8 @@ use proc_local_defs::*;
 use shape_helpers::*;
 
 const BUILTIN_PROC_INIT_EVENT_NAME: &str = "init";
+const INIT_ALL_PARAM_NAME: &str = "all";
+pub(crate) const TOP_LEVEL_INIT_ALL_NAME: &str = "__onda_init_all";
 
 fn is_builtin_proc_init_event_name(name: &str) -> bool {
     name == BUILTIN_PROC_INIT_EVENT_NAME
@@ -57,6 +62,18 @@ fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagn
                     proc.name, BUILTIN_PROC_INIT_EVENT_NAME
                 ),
             );
+        }
+        for param in &proc.params {
+            if param.name == INIT_ALL_PARAM_NAME {
+                push_semantic(
+                    DiagCtx::new(param.loc),
+                    errors,
+                    format!(
+                        "processor '{}' parameter name '{}' is reserved for the builtin initializer event",
+                        proc.name, INIT_ALL_PARAM_NAME
+                    ),
+                );
+            }
         }
         proc.events
             .retain(|event| !is_builtin_proc_init_event_name(&event.name));
@@ -273,6 +290,41 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) proc_api: HashMap<String, ProcApi>,
     pub(crate) lowering_shapes: HashMap<String, ProcLoweringShape>,
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
+    pub(crate) retained_proc_fields: HashMap<String, HashSet<String>>,
+}
+
+fn collect_flattened_retained_proc_fields(
+    proc_name: &str,
+    prefix: &str,
+    proc_defs: &HashMap<String, ProcessorDef>,
+    shapes: &HashMap<String, ProcLoweringShape>,
+    visiting: &mut HashSet<String>,
+    fields: &mut HashSet<String>,
+) {
+    if !visiting.insert(proc_name.to_owned()) {
+        return;
+    }
+    if let Some(proc) = proc_defs.get(proc_name) {
+        fields.extend(
+            proc.init
+                .retained_roots
+                .iter()
+                .map(|root| format!("{prefix}{root}")),
+        );
+    }
+    if let Some(shape) = shapes.get(proc_name) {
+        for (field, nested) in &shape.state.nested_procs {
+            collect_flattened_retained_proc_fields(
+                &nested.proc_name,
+                &format!("{prefix}{field}__"),
+                proc_defs,
+                shapes,
+                visiting,
+                fields,
+            );
+        }
+    }
+    visiting.remove(proc_name);
 }
 
 const ALLOWED_SAMPLE_OVERSAMPLE_FACTORS: &[i64] = &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
@@ -516,7 +568,7 @@ pub(crate) fn coerce_typed_events(
 }
 
 fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec {
-    let params =
+    let mut params =
         param_specs
             .iter()
             .map(|param| {
@@ -553,7 +605,18 @@ fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec 
                     }
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+    params.push(ProcEventParamSpec {
+        name: INIT_ALL_PARAM_NAME.to_owned(),
+        slots: vec![ProcEventParamSlotSpec {
+            name: INIT_ALL_PARAM_NAME.to_owned(),
+            ty: PrimitiveType::Bool,
+        }],
+        ty: ProcEventParamTypeSpec::Scalar {
+            ty: PrimitiveType::Bool,
+        },
+        default: Some(Expr::bool(false)),
+    });
     ProcEventSpec { params }
 }
 
@@ -1227,6 +1290,14 @@ pub(crate) fn desugar_processors(
     rewrite_and_materialize_generic_processors(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
+    crate::task_lowering::lower_tasks(&mut program, errors);
+    if let Some(Block::Init(init)) = program
+        .blocks
+        .iter_mut()
+        .find(|block| block.kind() == BlockKind::Init)
+    {
+        init.body = mark_retained_initializers(init);
+    }
 
     // Rewrite proc-local defs into hidden ordinary def calls before proc lowering.
     for block in &mut program.blocks {
@@ -1251,6 +1322,7 @@ pub(crate) fn desugar_processors(
             proc_api: HashMap::new(),
             lowering_shapes: HashMap::new(),
             top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
+            retained_proc_fields: HashMap::new(),
         };
     };
     let existing_struct_names = program
@@ -1270,7 +1342,7 @@ pub(crate) fn desugar_processors(
 
     let (
         generated_structs,
-        generated_defs,
+        mut generated_defs,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
     ) = generate_lowered_proc_blocks(
@@ -1281,6 +1353,7 @@ pub(crate) fn desugar_processors(
         &proc_api,
         errors,
     );
+    crate::task_lowering::materialize_task_abort_returns(&mut generated_defs);
     program.blocks.retain(|b| !matches!(b, Block::Proc(_)));
     program
         .blocks
@@ -1299,6 +1372,21 @@ pub(crate) fn desugar_processors(
     let proc_instance_oversample_factors = top_level_proc_rewrite
         .global_proc_instance_oversample_factors
         .clone();
+    let retained_proc_fields = proc_order
+        .iter()
+        .map(|proc_name| {
+            let mut fields = HashSet::new();
+            collect_flattened_retained_proc_fields(
+                proc_name,
+                "",
+                &proc_defs_by_name,
+                &lowering_shapes,
+                &mut HashSet::new(),
+                &mut fields,
+            );
+            (proc_name.clone(), fields)
+        })
+        .collect();
     ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
@@ -1307,6 +1395,7 @@ pub(crate) fn desugar_processors(
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
+        retained_proc_fields,
     }
 }
 
@@ -1666,7 +1755,7 @@ sample:
             })
             .expect("expected generated builtin init event def");
 
-        assert_eq!(init_def.params.len(), 3);
+        assert_eq!(init_def.params.len(), 4);
         assert!(matches!(
             init_def.params[1].ty,
             Some(FnParamType::Primitive(PrimitiveType::I32))
@@ -1678,6 +1767,15 @@ sample:
                 generic_name: None,
                 size,
             }) if matches!(size, Expr::Int { value: 2, .. })
+        ));
+        assert_eq!(init_def.params[3].name, INIT_ALL_PARAM_NAME);
+        assert!(matches!(
+            init_def.params[3].ty,
+            Some(FnParamType::Primitive(PrimitiveType::Bool))
+        ));
+        assert!(matches!(
+            init_def.params[3].default,
+            Some(Expr::Bool { value: false, .. })
         ));
         assert!(init_def.body.iter().any(|stmt| matches!(
             stmt,
@@ -1712,7 +1810,7 @@ sample:
             Stmt::Expr {
                 expr: Expr::UserCall { name, args, .. },
                 ..
-            } if name == "Voice.__onda_proc_init" && args.len() == 1
+            } if name == "Voice.__onda_proc_init" && args.len() == 2
         )));
     }
 
@@ -1863,6 +1961,29 @@ sample:
                 .message
                 .contains("event name 'init' is reserved for the builtin initializer event")),
             "expected builtin init reservation diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_reserves_all_for_builtin_proc_init() {
+        let src = r#"
+proc Voice:
+  params:
+    all = false
+  sample:
+    out1 = 0.0
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("the builtin all option must be reserved");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("parameter name 'all' is reserved for the builtin initializer event")),
+            "expected builtin all reservation diagnostic, got {errors:?}"
         );
     }
 

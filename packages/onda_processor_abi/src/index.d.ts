@@ -1,7 +1,7 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
 export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 4;
-export const PROCESSOR_ABI_VERSION: 4;
+export const PROCESSOR_ABI_VERSION: 5;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
@@ -158,6 +158,8 @@ export interface OndaEventMetadata {
 
 export interface OndaStateMetadata {
   name: string;
+  /** False for compiler-owned snapshot storage omitted from authored-state reflection. */
+  authored?: boolean;
   type_repr: string;
   scalar: OndaScalarType;
   array_len: number;
@@ -176,7 +178,7 @@ export interface OndaProcessorMetadata {
   format: "onda-processor";
   format_version: 4;
   artifact_kind: OndaArtifactKind;
-  abi_version: 4;
+  abi_version: 5;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;
@@ -199,6 +201,7 @@ export interface OndaProcessorMetadata {
     param_size_bytes: number;
     param_align_bytes: number;
     state_initialization: "zeroed";
+    state_reset_ranges?: Array<{ byte_offset: number; byte_size: number }>;
     snapshot_size_bytes: number;
     snapshot_format_version: 1;
     snapshot_byte_order: "little_endian";

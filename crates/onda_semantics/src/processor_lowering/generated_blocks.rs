@@ -255,6 +255,91 @@ fn after_init_bind_hook_stmts(proc_name: &str, param_specs: &[ProcParamSpec]) ->
     after_init_bind_hook_stmts_for_receiver(proc_name, param_specs, Expr::var("self"))
 }
 
+const RETAINED_INIT_BEGIN_MARKER: &str = "__onda_retained_init_begin";
+const RETAINED_INIT_END_MARKER: &str = "__onda_retained_init_end";
+
+fn internal_marker_stmt(name: &str) -> Stmt {
+    Stmt::Expr {
+        loc: Default::default(),
+        expr: Expr::UserCall {
+            loc: Default::default(),
+            name: name.to_owned(),
+            type_args: Vec::new(),
+            args: Vec::new(),
+        },
+    }
+}
+
+fn is_internal_marker(stmt: &Stmt, expected: &str) -> bool {
+    matches!(
+        stmt,
+        Stmt::Expr {
+            expr: Expr::UserCall { name, args, .. },
+            ..
+        } if name == expected && args.is_empty()
+    )
+}
+
+pub(crate) fn is_retained_initializer_marker(stmt: &Stmt) -> bool {
+    is_internal_marker(stmt, RETAINED_INIT_BEGIN_MARKER)
+        || is_internal_marker(stmt, RETAINED_INIT_END_MARKER)
+}
+
+/// Marks the declaration that introduced each retained root. Later explicit
+/// writes remain ordinary init code and therefore still run on re-init.
+pub(crate) fn mark_retained_initializers(init: &InitBlock) -> Vec<Stmt> {
+    let mut pending = init.retained_roots.iter().cloned().collect::<HashSet<_>>();
+    let mut marked = Vec::with_capacity(init.body.len() + pending.len() * 2);
+    for stmt in &init.body {
+        let retained = matches!(
+            stmt,
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                ..
+            } if pending.remove(name)
+        );
+        if retained {
+            marked.push(internal_marker_stmt(RETAINED_INIT_BEGIN_MARKER));
+        }
+        marked.push(stmt.clone());
+        if retained {
+            marked.push(internal_marker_stmt(RETAINED_INIT_END_MARKER));
+        }
+    }
+    marked
+}
+
+/// Converts marked initializer expansions into a single runtime guard. The
+/// markers are inserted before processor/array constructors are expanded, so
+/// every generated write belonging to the declaration is covered.
+pub(crate) fn guard_retained_initializers(stmts: &mut Vec<Stmt>, all_name: &str) {
+    let source = std::mem::take(stmts);
+    let mut source = source.into_iter();
+    let mut lowered = Vec::new();
+    while let Some(stmt) = source.next() {
+        if !is_internal_marker(&stmt, RETAINED_INIT_BEGIN_MARKER) {
+            debug_assert!(!is_internal_marker(&stmt, RETAINED_INIT_END_MARKER));
+            lowered.push(stmt);
+            continue;
+        }
+
+        let mut retained_init = Vec::new();
+        for stmt in source.by_ref() {
+            if is_internal_marker(&stmt, RETAINED_INIT_END_MARKER) {
+                break;
+            }
+            retained_init.push(stmt);
+        }
+        lowered.push(Stmt::If {
+            loc: Default::default(),
+            cond: Expr::var(all_name),
+            then_branch: retained_init,
+            else_branch: Vec::new(),
+        });
+    }
+    *stmts = lowered;
+}
+
 fn build_builtin_proc_init_event_parts<F>(
     receiver_ty: &str,
     param_specs: &[ProcParamSpec],
@@ -339,16 +424,30 @@ where
         }
     }
 
+    event_params.push(onda_frontend::FnParamDecl {
+        loc: Default::default(),
+        name: INIT_ALL_PARAM_NAME.to_owned(),
+        ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
+        ty_loc: Default::default(),
+        default: Some(Expr::bool(false)),
+    });
+
     event_body.push(Stmt::Expr {
         loc: Default::default(),
         expr: Expr::UserCall {
             loc: Default::default(),
             name: init_fn_name,
             type_args: Vec::new(),
-            args: vec![CallArg {
-                name: None,
-                expr: Expr::var("self"),
-            }],
+            args: vec![
+                CallArg {
+                    name: None,
+                    expr: Expr::var("self"),
+                },
+                CallArg {
+                    name: None,
+                    expr: Expr::var(INIT_ALL_PARAM_NAME),
+                },
+            ],
         },
     });
 
@@ -739,7 +838,7 @@ fn generate_nested_wrapper_defs(
         let mut constructor_setup_indices = HashSet::<usize>::new();
         let constructor_array_symbols =
             nested_wrapper_constructor_array_symbols(&callee_shape, &nested_path);
-        let mut callee_init_stmts = callee_proc.init.clone();
+        let mut callee_init_stmts = mark_retained_initializers(&callee_proc.init);
         lower_named_proc_param_calls_in_stmts(
             &mut callee_init_stmts,
             &callee_nested_instances,
@@ -1165,6 +1264,7 @@ fn generate_nested_wrapper_defs(
             errors,
             &constructor_setup_indices,
         );
+        guard_retained_initializers(&mut nested_init_body, INIT_ALL_PARAM_NAME);
         nested_init_body.extend(after_init_nested_bind_hook_stmts(
             &proc.name,
             &nested_path,
@@ -1180,13 +1280,22 @@ fn generate_nested_wrapper_defs(
             is_const: false,
             type_params: Vec::new(),
             name: nested_init_fn_name(&proc.name, &nested_path),
-            params: vec![onda_frontend::FnParamDecl {
-                loc: Default::default(),
-                name: "self".to_owned(),
-                ty: Some(FnParamType::Struct(proc.name.clone())),
-                ty_loc: Default::default(),
-                default: None,
-            }],
+            params: vec![
+                onda_frontend::FnParamDecl {
+                    loc: Default::default(),
+                    name: "self".to_owned(),
+                    ty: Some(FnParamType::Struct(proc.name.clone())),
+                    ty_loc: Default::default(),
+                    default: None,
+                },
+                onda_frontend::FnParamDecl {
+                    loc: Default::default(),
+                    name: INIT_ALL_PARAM_NAME.to_owned(),
+                    ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
+                    ty_loc: Default::default(),
+                    default: None,
+                },
+            ],
             return_ty: None,
             return_ty_loc: Default::default(),
             body: nested_init_body,
@@ -2003,7 +2112,7 @@ pub(super) fn generate_lowered_proc_blocks(
         let constructor_array_symbols = proc_constructor_array_symbols(&shape);
         let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
         let proc_ns = namespace_of_symbol(&proc.name);
-        let mut proc_init_stmts = proc.init.clone();
+        let mut proc_init_stmts = mark_retained_initializers(&proc.init);
         lower_named_proc_param_calls_in_stmts(
             &mut proc_init_stmts,
             &nested_instances,
@@ -2470,6 +2579,7 @@ pub(super) fn generate_lowered_proc_blocks(
             errors,
             &constructor_setup_indices,
         );
+        guard_retained_initializers(&mut init_body, INIT_ALL_PARAM_NAME);
         init_body.extend(after_init_bind_hook_stmts(&proc.name, &shape.param_specs));
         let init_fn_name = format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX);
         def_sample_oversample_factors.insert(init_fn_name.clone(), proc_sample_oversample_factor);
@@ -2478,13 +2588,22 @@ pub(super) fn generate_lowered_proc_blocks(
             is_const: false,
             type_params: Vec::new(),
             name: init_fn_name,
-            params: vec![onda_frontend::FnParamDecl {
-                loc: Default::default(),
-                name: "self".to_owned(),
-                ty: Some(FnParamType::Struct(proc.name.clone())),
-                ty_loc: Default::default(),
-                default: None,
-            }],
+            params: vec![
+                onda_frontend::FnParamDecl {
+                    loc: Default::default(),
+                    name: "self".to_owned(),
+                    ty: Some(FnParamType::Struct(proc.name.clone())),
+                    ty_loc: Default::default(),
+                    default: None,
+                },
+                onda_frontend::FnParamDecl {
+                    loc: Default::default(),
+                    name: INIT_ALL_PARAM_NAME.to_owned(),
+                    ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
+                    ty_loc: Default::default(),
+                    default: None,
+                },
+            ],
             return_ty: None,
             return_ty_loc: Default::default(),
             body: init_body,
@@ -3097,6 +3216,39 @@ pub(super) fn generate_lowered_proc_blocks(
                     expr: Expr::var(buffer.name.clone()),
                 });
             }
+            let mut call_out_body = vec![Stmt::Expr {
+                loc: Default::default(),
+                expr: Expr::UserCall {
+                    loc: Default::default(),
+                    name: step_fn_name.clone(),
+                    type_args: Vec::new(),
+                    args: call_args,
+                },
+            }];
+            if shape
+                .field_names
+                .contains(crate::task_lowering::task_available_field())
+            {
+                call_out_body.push(Stmt::If {
+                    loc: Default::default(),
+                    cond: Expr::UnaryNot {
+                        loc: Default::default(),
+                        expr: Box::new(Expr::var(format!(
+                            "self.{}",
+                            crate::task_lowering::task_available_field()
+                        ))),
+                    },
+                    then_branch: vec![Stmt::Return {
+                        loc: Default::default(),
+                        expr: Expr::int(0),
+                    }],
+                    else_branch: Vec::new(),
+                });
+            }
+            call_out_body.push(Stmt::Return {
+                loc: Default::default(),
+                expr: Expr::var(format!("self.{out_name}")),
+            });
             generated_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
                 is_const: false,
@@ -3105,21 +3257,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 params: step_params.clone(),
                 return_ty: None,
                 return_ty_loc: Default::default(),
-                body: vec![
-                    Stmt::Expr {
-                        loc: Default::default(),
-                        expr: Expr::UserCall {
-                            loc: Default::default(),
-                            name: step_fn_name.clone(),
-                            type_args: Vec::new(),
-                            args: call_args,
-                        },
-                    },
-                    Stmt::Return {
-                        loc: Default::default(),
-                        expr: Expr::var(format!("self.{out_name}")),
-                    },
-                ],
+                body: call_out_body,
             }));
         }
     }

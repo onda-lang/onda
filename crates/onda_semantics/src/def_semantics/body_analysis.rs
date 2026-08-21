@@ -1620,6 +1620,9 @@ pub(crate) fn analyze_def_stmt(
                 analyze_standalone_stmt_expr(&expr, stmt_expr_env!(ScopeKind::Def), errors);
             }
             Stmt::Return { expr, .. } => {
+                if is_bare_return_expr(expr) {
+                    return;
+                }
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                 analyze_stmt_expr(&expr, stmt_expr_env!(ScopeKind::Def), errors);
             }

@@ -66,7 +66,7 @@ fn events_metadata_and_scalar_dispatch_work() {
 
 #[test]
 
-fn reset_instance_state_restores_initial_runtime_state() {
+fn reset_restores_initial_runtime_state() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -94,7 +94,7 @@ fn reset_instance_state_restores_initial_runtime_state() {
         assert_near(*sample, 0.5, 1e-6);
     }
 
-    reset_instance_state(&mut instance);
+    reset(&mut instance);
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 

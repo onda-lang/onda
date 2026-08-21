@@ -40,10 +40,10 @@ function artifact() {
       3, 3, 2, 0, 0,
       5, 3, 1, 0, 1,
       6, 7, 1, 127, 0, 65, 128, 8, 11,
-      7, 51, 4,
+      7, 61, 4,
       6, 109, 101, 109, 111, 114, 121, 2, 0,
       11, 95, 95, 104, 101, 97, 112, 95, 98, 97, 115, 101, 3, 0,
-      9, 111, 110, 100, 97, 95, 105, 110, 105, 116, 0, 0,
+      19, 111, 110, 100, 97, 95, 112, 114, 111, 99, 101, 115, 115, 111, 114, 95, 105, 110, 105, 116, 0, 0,
       12, 111, 110, 100, 97, 95, 112, 114, 111, 99, 101, 115, 115, 0, 1,
       10, 7, 2, 2, 0, 11, 2, 0, 11,
     ]),
@@ -55,7 +55,7 @@ function artifact() {
       backend: "test",
       mir_schema_version: FIXTURE_MIR_SCHEMA_VERSION,
       integration: {
-        required_symbols: ["memory", "__heap_base", "onda_init", "onda_process"],
+        required_symbols: ["memory", "__heap_base", "onda_processor_init", "onda_process"],
         one_processor_per_artifact: true,
         profile: {
           kind: "core_webassembly_module",
@@ -94,7 +94,7 @@ function artifact() {
       exports: {
         memory: "memory",
         heap_base: "__heap_base",
-        init: "onda_init",
+        init: "onda_processor_init",
         process: "onda_process",
         events: [],
       },
@@ -252,6 +252,24 @@ test("correlates control responses and preserves caller snapshot storage", async
   assert.deepEqual([...snapshot], [1, 2, 3]);
   node.port.reply({ type: "onda-ok", requestId: restoreRequest.requestId });
   await restore;
+
+  const resetAll = processor.resetAll();
+  const resetAllRequest = node.port.messages.at(-1);
+  assert.equal(resetAllRequest.type, "reset-all");
+  node.port.reply({ type: "onda-ok", requestId: resetAllRequest.requestId });
+  await resetAll;
+
+  const init = processor.init();
+  const initRequest = node.port.messages.at(-1);
+  assert.equal(initRequest.type, "init");
+  node.port.reply({ type: "onda-ok", requestId: initRequest.requestId });
+  await init;
+
+  const initAll = processor.initAll();
+  const initAllRequest = node.port.messages.at(-1);
+  assert.equal(initAllRequest.type, "init-all");
+  node.port.reply({ type: "onda-ok", requestId: initAllRequest.requestId });
+  await initAll;
   processor.close();
 });
 

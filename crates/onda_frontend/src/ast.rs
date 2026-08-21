@@ -25,6 +25,7 @@ pub enum Block {
     Params(ParamBlock),
     Const(ConstDecl),
     Events(EventBlock),
+    Tasks(TaskBlock),
     Buffers(BufferBlock),
     Assert(AssertDecl),
     Namespace(NamespaceDecl),
@@ -48,6 +49,7 @@ impl Block {
             Self::Params(_) => BlockKind::Params,
             Self::Const(_) => BlockKind::Const,
             Self::Events(_) => BlockKind::Events,
+            Self::Tasks(_) => BlockKind::Tasks,
             Self::Buffers(_) => BlockKind::Buffers,
             Self::Assert(_) => BlockKind::Assert,
             Self::Namespace(_) => BlockKind::Namespace,
@@ -69,6 +71,7 @@ impl Block {
             Self::Params(params) => params.loc.into(),
             Self::Const(decl) => decl.loc.into(),
             Self::Events(events) => events.loc.into(),
+            Self::Tasks(tasks) => tasks.loc.into(),
             Self::Buffers(buffers) => buffers.loc.into(),
             Self::Assert(assert_decl) => assert_decl.loc.into(),
             Self::Namespace(namespace) => namespace.loc.into(),
@@ -93,6 +96,7 @@ pub enum BlockKind {
     Params,
     Const,
     Events,
+    Tasks,
     Buffers,
     Assert,
     Namespace,
@@ -343,6 +347,7 @@ pub struct InitBlock {
     pub loc: Span,
     pub default_ty: Option<DeclType>,
     pub default_ty_loc: Span,
+    pub retained_roots: Vec<String>,
     pub body: Vec<Stmt>,
 }
 
@@ -557,6 +562,7 @@ pub struct ProcessorDef {
     pub params_deferred_count: Option<Expr>,
     pub params_deferred_default_ty: Option<DeclType>,
     pub events: Vec<EventDef>,
+    pub tasks: Vec<TaskDef>,
     pub buffers: Vec<BufferDecl>,
     pub buffers_deferred_count: Option<Expr>,
     pub buffers_deferred_default_ty: Option<BufferType>,
@@ -571,6 +577,33 @@ pub struct ProcessorDef {
     pub block_post: Vec<Stmt>,
     pub graph: Option<GraphBlock>,
     pub local_defs: Vec<FunctionDef>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskDef {
+    pub loc: Span,
+    pub name: String,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskBlock {
+    pub loc: Span,
+    pub tasks: Vec<TaskDef>,
+}
+
+impl Deref for TaskBlock {
+    type Target = Vec<TaskDef>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tasks
+    }
+}
+
+impl DerefMut for TaskBlock {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.tasks
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -612,6 +645,9 @@ pub const INTERNAL_BUFFER_READ2_FN: &str = "__onda_buffer_read2";
 pub const INTERNAL_BUFFER_WRITE2_FN: &str = "__onda_buffer_write2";
 pub const INTERNAL_BUFFER_READ_CHANNEL_FN: &str = "__onda_buffer_read_channel";
 pub const INTERNAL_BUFFER_WRITE_CHANNEL_FN: &str = "__onda_buffer_write_channel";
+pub const INTERNAL_TASK_AWAIT_FN: &str = "__onda_task_await";
+pub const INTERNAL_TASK_YIELD_FN: &str = "__onda_task_yield";
+pub const INTERNAL_BARE_RETURN_FN: &str = "__onda_bare_return";
 pub const INTERNAL_BUFFER_READ3_FN: &str = "__onda_buffer_read3";
 pub const INTERNAL_BUFFER_WRITE3_FN: &str = "__onda_buffer_write3";
 pub const READ_UNSAFE_FN: &str = "read_unsafe";

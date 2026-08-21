@@ -275,6 +275,18 @@ export class OndaAudioProcessor {
     return this.request("reset");
   }
 
+  resetAll() {
+    return this.request("reset-all");
+  }
+
+  init() {
+    return this.request("init");
+  }
+
+  initAll() {
+    return this.request("init-all");
+  }
+
   async snapshot() {
     return (await this.request("snapshot")).bytes;
   }

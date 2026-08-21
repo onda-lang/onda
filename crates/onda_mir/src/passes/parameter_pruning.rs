@@ -148,7 +148,8 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter) => collect_buffer_parameter(*parameter, used),
         Rvalue::MakeSlice { source, .. } => collect_slice_source_parameters(source, used),
-        Rvalue::Use(_)
+        Rvalue::InitAll
+        | Rvalue::Use(_)
         | Rvalue::Unary { .. }
         | Rvalue::Binary { .. }
         | Rvalue::Compare { .. }
@@ -265,7 +266,8 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter) => rewrite_buffer_parameter(parameter, mapping),
         Rvalue::MakeSlice { source, .. } => rewrite_slice_source_parameters(source, mapping),
-        Rvalue::Use(_)
+        Rvalue::InitAll
+        | Rvalue::Use(_)
         | Rvalue::Unary { .. }
         | Rvalue::Binary { .. }
         | Rvalue::Compare { .. }

@@ -228,12 +228,14 @@ mod tests {
                 name: "meter_storage".to_owned(),
                 ty: TypeId::new(1),
                 persistence: StatePersistence::ControlMirror,
+                reset: crate::StateResetPolicy::Restore,
             },
             StateSlot {
                 integer_range: None,
                 name: "values".to_owned(),
                 ty: TypeId::new(2),
                 persistence: StatePersistence::Snapshot,
+                reset: crate::StateResetPolicy::Restore,
             },
         ]);
         program

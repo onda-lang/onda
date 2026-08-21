@@ -42,6 +42,7 @@ use crate::{RuntimeAllocator, RuntimeBuffer, RuntimeState, TargetOptLevel};
 use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_buffer_abi};
 
 const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 13;
+const INIT_ALL_CONTEXT_INDEX: u32 = 16;
 
 struct OwnedLlvm<T: Copy> {
     value: T,
@@ -170,7 +171,7 @@ type NativeProcessFn = unsafe extern "C" fn(
     *const i32,
     *const f32,
 ) -> u32;
-type NativeInitFn = unsafe extern "C" fn(*const u8, *mut u8) -> u32;
+type NativeInitFn = unsafe extern "C" fn(*const u8, *mut u8, u32) -> u32;
 type NativeEventFn = unsafe extern "C" fn(
     *const u8,
     *const u8,
@@ -601,10 +602,11 @@ impl<'a> ModuleEmitter<'a> {
     ) -> Result<Self, MirCodegenError> {
         let i8_ty = LLVMInt8TypeInContext(context);
         let ptr_ty = LLVMPointerType(i8_ty, 0);
+        let i1_ty = LLVMInt1TypeInContext(context);
         let i32_ty = LLVMInt32TypeInContext(context);
         let mut runtime_fields = [
             ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
-            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty,
+            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty, i1_ty,
         ];
         let runtime_context_ty = LLVMStructTypeInContext(
             context,
@@ -657,9 +659,9 @@ unsafe fn declare_functions(
     for (index, function) in program.functions.iter().enumerate() {
         let (name, fn_ty, internal) = match function.kind {
             FunctionKind::Init => {
-                let mut args = [ptr_ty, ptr_ty];
+                let mut args = [ptr_ty, ptr_ty, i32_ty];
                 (
-                    "onda_init".to_owned(),
+                    "onda_processor_init".to_owned(),
                     LLVMFunctionType(i32_ty, args.as_mut_ptr(), args.len() as u32, 0),
                     false,
                 )
@@ -795,6 +797,7 @@ unsafe fn declare_functions(
             FunctionKind::Init => {
                 add_enum_param_attribute(context, value, 1, "readonly")?;
                 add_enum_param_attribute(context, value, 2, "noalias")?;
+                add_enum_param_attribute(context, value, 3, "noundef")?;
             }
             FunctionKind::Process => {
                 add_enum_param_attribute(context, value, 1, "noalias")?;
@@ -2131,6 +2134,13 @@ impl FunctionEmitter<'_, '_> {
                 }
                 Ok(load)
             }
+            Rvalue::InitAll => load_context_field(
+                self.module,
+                self.builder,
+                self.runtime_context,
+                INIT_ALL_CONTEXT_INDEX,
+                "init_all",
+            ),
             Rvalue::Unary { op, operand } => self.lower_unary(*op, *operand),
             Rvalue::Binary { op, lhs, rhs } => self.lower_binary(*op, *lhs, *rhs),
             Rvalue::Compare { op, lhs, rhs } => self.lower_compare(*op, *lhs, *rhs),
@@ -5264,9 +5274,25 @@ unsafe fn build_entry_runtime_context(
     );
     let null = LLVMConstPointerNull(module.ptr_ty);
     let zero = LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0);
+    let false_value = LLVMConstInt(LLVMInt1TypeInContext(module.context), 0, 0);
     let mut fields = [
-        null, null, zero, zero, zero, null, null, null, null, null, null, null, null, zero, null,
         null,
+        null,
+        zero,
+        zero,
+        zero,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        zero,
+        null,
+        null,
+        false_value,
     ];
     let (fallback_read, fallback_write) = allocate_entry_fallback_buffers(module, builder)?;
     fields[14] = fallback_read;
@@ -5275,6 +5301,33 @@ unsafe fn build_entry_runtime_context(
         FunctionKind::Init => {
             fields[5] = LLVMGetParam(function, 0);
             fields[6] = LLVMGetParam(function, 1);
+            let all_value = LLVMGetParam(function, 2);
+            let all = LLVMBuildICmp(
+                builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntNE,
+                all_value,
+                LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0),
+                c_name("init_all")?.as_ptr(),
+            );
+            fields[INIT_ALL_CONTEXT_INDEX as usize] = all;
+            let byte_count = LLVMBuildSelect(
+                builder,
+                all,
+                LLVMConstInt(
+                    LLVMInt64TypeInContext(module.context),
+                    module.layouts.state.size as u64,
+                    0,
+                ),
+                LLVMConstInt(LLVMInt64TypeInContext(module.context), 0, 0),
+                c_name("init_clear_bytes")?.as_ptr(),
+            );
+            LLVMBuildMemSet(
+                builder,
+                fields[6],
+                LLVMConstInt(LLVMInt8TypeInContext(module.context), 0, 0),
+                byte_count,
+                module.layouts.state.alignment as u32,
+            );
         }
         FunctionKind::Process => {
             fields[6] = LLVMGetParam(function, 0);
@@ -5391,6 +5444,7 @@ unsafe fn load_context_field(
 ) -> Result<LLVMValueRef, MirCodegenError> {
     let ptr = context_field_ptr(module, builder, context, index)?;
     let ty = match index {
+        INIT_ALL_CONTEXT_INDEX => LLVMInt1TypeInContext(module.context),
         2..=4 | RUNTIME_FAILURE_CONTEXT_INDEX => LLVMInt32TypeInContext(module.context),
         _ => module.ptr_ty,
     };
@@ -5838,7 +5892,8 @@ fn inspect_place(function_index: usize, place: &Place, errors: &mut Vec<MirCodeg
 fn inspect_rvalue(function_index: usize, value: &Rvalue, errors: &mut Vec<MirCodegenError>) {
     match value {
         Rvalue::Load(place) => inspect_place(function_index, place, errors),
-        Rvalue::Use(_)
+        Rvalue::InitAll
+        | Rvalue::Use(_)
         | Rvalue::Unary { .. }
         | Rvalue::Binary { .. }
         | Rvalue::Compare { .. }
@@ -6077,6 +6132,22 @@ impl MirJitProgram {
         params: &[u8],
         allocator: Option<RuntimeAllocator>,
     ) -> Result<RuntimeState, Diagnostic> {
+        let words = self.layouts.state.size.saturating_add(7) / 8;
+        let state_words = RuntimeBuffer::try_from_elem_in(words, 0_u64, allocator)?;
+        let mut state = RuntimeState {
+            state_words,
+            state_size_bytes: self.layouts.state.size,
+        };
+        self.initialize_state_in_place(params, &mut state, true)?;
+        Ok(state)
+    }
+
+    pub fn initialize_state_in_place(
+        &self,
+        params: &[u8],
+        state: &mut RuntimeState,
+        all: bool,
+    ) -> Result<(), Diagnostic> {
         if params.len() != self.layouts.params.size {
             return Err(Diagnostic::runtime(
                 format!(
@@ -6088,19 +6159,24 @@ impl MirJitProgram {
                 0,
             ));
         }
-        let words = self.layouts.state.size.saturating_add(7) / 8;
-        let mut state_words = RuntimeBuffer::try_from_elem_in(words, 0_u64, allocator)?;
+        if state.state_size_bytes != self.layouts.state.size {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "MIR runtime state storage has {} bytes; expected {}",
+                    state.state_size_bytes, self.layouts.state.size
+                ),
+                0,
+                0,
+            ));
+        }
         let status = unsafe {
             (self.compiled.init)(
                 abi_const_ptr(params),
-                abi_mut_ptr(state_words.as_mut_slice()).cast::<u8>(),
+                abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
+                u32::from(all),
             )
         };
-        crate::check_execution_status(status)?;
-        Ok(RuntimeState {
-            state_words,
-            state_size_bytes: self.layouts.state.size,
-        })
+        crate::check_execution_status(status)
     }
 
     /// Validates the process ABI shape before entering generated code.
@@ -6540,7 +6616,7 @@ fn compile_native_jit(
 
             let process = super::jit_utils::lookup_symbol(lljit, "onda_process", "MIR process")
                 .map_err(codegen_diagnostic)?;
-            let init = super::jit_utils::lookup_symbol(lljit, "onda_init", "MIR init")
+            let init = super::jit_utils::lookup_symbol(lljit, "onda_processor_init", "MIR init")
                 .map_err(codegen_diagnostic)?;
             let mut events = Vec::with_capacity(program.interface.events.len());
             for index in 0..program.interface.events.len() {
@@ -7601,6 +7677,7 @@ sample:
             name: "source".to_owned(),
             ty: source_array,
             persistence: onda_mir::StatePersistence::Snapshot,
+            reset: onda_mir::StateResetPolicy::Restore,
         });
 
         let empty_function = |name: &str, kind| onda_mir::Function {
@@ -9496,7 +9573,7 @@ sample:
     }
 
     #[test]
-    fn redundant_zero_state_initialization_does_not_reappear_in_llvm() {
+    fn live_init_keeps_zero_state_initialization_in_llvm() {
         let (_, mir) = source_program(
             r#"
 init:
@@ -9516,13 +9593,13 @@ sample:
         )
         .expect("zero-initialized state should emit LLVM IR");
         let init = ir
-            .split("define i32 @onda_init")
+            .split("define i32 @onda_processor_init")
             .nth(1)
             .and_then(|tail| tail.split("\n}").next())
-            .expect("onda_init definition");
+            .expect("onda_processor_init definition");
         assert!(
-            !init.contains("state_slot"),
-            "pre-zeroed state must not receive a redundant generated store:\n{init}"
+            init.contains("state_slot"),
+            "live init must restore an explicitly zero-initialized state:\n{init}"
         );
     }
 
@@ -9689,7 +9766,7 @@ events {
         );
         assert_eq!(artifact.metadata.compile.sample_rate, 48_000.0);
         assert_eq!(artifact.metadata.compile.block_size, 64);
-        assert_eq!(artifact.metadata.exports.init, "onda_init");
+        assert_eq!(artifact.metadata.exports.init, "onda_processor_init");
         assert_eq!(artifact.metadata.exports.process, "onda_process");
         assert_eq!(artifact.metadata.target.pointer_model, "native_address");
         assert_eq!(artifact.metadata.target.calling_convention, "c");
@@ -9820,7 +9897,7 @@ sample { out1 = phase }
         ));
         assert_eq!(
             artifact.metadata.integration.required_symbols,
-            ["onda_init", "onda_process"]
+            ["onda_processor_init", "onda_process"]
         );
     }
 
@@ -9848,24 +9925,28 @@ sample { out1 = phase }
                 name: "phase".to_owned(),
                 ty: f32_ty,
                 persistence: onda_mir::StatePersistence::Snapshot,
+                reset: onda_mir::StateResetPolicy::Restore,
             },
             onda_mir::StateSlot {
                 integer_range: None,
                 name: "meter".to_owned(),
                 ty: f64_ty,
                 persistence: onda_mir::StatePersistence::ControlMirror,
+                reset: onda_mir::StateResetPolicy::Restore,
             },
             onda_mir::StateSlot {
                 integer_range: None,
                 name: "$scratch".to_owned(),
                 ty: i32_ty,
                 persistence: onda_mir::StatePersistence::InstanceScratch,
+                reset: onda_mir::StateResetPolicy::Restore,
             },
             onda_mir::StateSlot {
                 integer_range: None,
                 name: "history".to_owned(),
                 ty: f64_ty,
                 persistence: onda_mir::StatePersistence::Snapshot,
+                reset: onda_mir::StateResetPolicy::Restore,
             },
         ];
         mir.interface.control_outputs.push(onda_mir::ControlOutput {

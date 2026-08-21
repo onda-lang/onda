@@ -347,6 +347,7 @@ fn build_state_entries(
             .ok_or_else(|| MirMetadataError::new("snapshot state byte size overflow"))?;
         entries.push(DeclaredState {
             name: slot.name.clone(),
+            authored: !is_compiler_owned_state_name(&slot.name),
             elem_ty: shape.element,
             array_len: shape.len,
             is_array: shape.is_array,
@@ -359,6 +360,10 @@ fn build_state_entries(
             .ok_or_else(|| MirMetadataError::new("snapshot layout byte size overflow"))?;
     }
     Ok(entries)
+}
+
+fn is_compiler_owned_state_name(name: &str) -> bool {
+    name.starts_with("__onda_") || name.contains(".__onda_") || name.contains("____onda_")
 }
 
 fn build_events(
@@ -571,6 +576,16 @@ fn scalar_array_shape(
             id.raw()
         ))),
     }
+}
+
+pub(crate) fn state_slot_byte_size(
+    program: &Program,
+    ty: onda_mir::TypeId,
+) -> Result<usize, MirMetadataError> {
+    let shape = scalar_array_shape(program, ty, "state reset layout")?;
+    primitive_type_bytes(shape.element)
+        .checked_mul(shape.len)
+        .ok_or_else(|| MirMetadataError::new("state reset byte size overflow"))
 }
 
 fn primitive_type(ty: ScalarType) -> PrimitiveType {
@@ -891,24 +906,28 @@ mod tests {
                     name: "phase".to_owned(),
                     ty: onda_mir::TypeId::new(1),
                     persistence: StatePersistence::Snapshot,
+                    reset: onda_mir::StateResetPolicy::Restore,
                 },
                 StateSlot {
                     integer_range: None,
                     name: "meter".to_owned(),
                     ty: onda_mir::TypeId::new(0),
                     persistence: StatePersistence::ControlMirror,
+                    reset: onda_mir::StateResetPolicy::Restore,
                 },
                 StateSlot {
                     integer_range: None,
                     name: "$scratch".to_owned(),
                     ty: onda_mir::TypeId::new(7),
                     persistence: StatePersistence::InstanceScratch,
+                    reset: onda_mir::StateResetPolicy::Restore,
                 },
                 StateSlot {
                     integer_range: None,
                     name: "history".to_owned(),
                     ty: onda_mir::TypeId::new(6),
                     persistence: StatePersistence::Snapshot,
+                    reset: onda_mir::StateResetPolicy::Restore,
                 },
             ],
             const_data: Vec::new(),

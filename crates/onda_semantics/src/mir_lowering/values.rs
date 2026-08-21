@@ -76,7 +76,8 @@ impl<'a> FunctionLowerer<'a> {
                     format!("tuple element alias '{name}' requires component assignment"),
                     location,
                 )),
-                Binding::ReferenceParameter(_, _)
+                Binding::InitAll
+                | Binding::ReferenceParameter(_, _)
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
                 | Binding::BufferParameter(_, _)
@@ -126,7 +127,8 @@ impl<'a> FunctionLowerer<'a> {
         if let Some(binding) = self.bindings.get(name).cloned() {
             return match binding {
                 Binding::Local(local, ty) => Ok((local, ty)),
-                Binding::ReferenceParameter(_, _)
+                Binding::InitAll
+                | Binding::ReferenceParameter(_, _)
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
                 | Binding::BufferParameter(_, _)
@@ -181,7 +183,8 @@ impl<'a> FunctionLowerer<'a> {
         if let Some(binding) = self.bindings.get(name).cloned() {
             return match binding {
                 Binding::Local(local, ty) => Ok((local, ty)),
-                Binding::ReferenceParameter(_, _)
+                Binding::InitAll
+                | Binding::ReferenceParameter(_, _)
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
                 | Binding::BufferParameter(_, _)
@@ -954,162 +957,8 @@ impl<'a> FunctionLowerer<'a> {
         kind: StatementKind,
         location: SourceLoc,
     ) {
-        if self.elide_prezeroed_init_state_statement(&kind) {
-            return;
-        }
         let source = self.source_span(location);
         block.statements.push(Statement { kind, source });
-    }
-
-    pub(super) fn elide_prezeroed_init_state_statement(&mut self, kind: &StatementKind) -> bool {
-        if self.prezeroed_init_state_dirty.is_none() {
-            return false;
-        }
-        match kind {
-            StatementKind::Call { args, .. } => {
-                let Some(regions) = self.potentially_mutated_call_state_regions(args) else {
-                    self.stop_prezeroed_init_state_proof();
-                    return false;
-                };
-                let dirty = self
-                    .prezeroed_init_state_dirty
-                    .as_mut()
-                    .expect("pre-zeroed init proof was checked above");
-                for region in regions {
-                    mark_prezeroed_state_dirty(dirty, region);
-                }
-                return false;
-            }
-            StatementKind::SliceStore { .. }
-            | StatementKind::SliceFill { .. }
-            | StatementKind::SliceCopy { .. }
-            | StatementKind::If { .. }
-            | StatementKind::Loop { .. }
-            | StatementKind::Break
-            | StatementKind::Continue
-            | StatementKind::Return { .. } => {
-                self.stop_prezeroed_init_state_proof();
-                return false;
-            }
-            _ => {}
-        }
-
-        let dirty = self
-            .prezeroed_init_state_dirty
-            .as_mut()
-            .expect("pre-zeroed init proof was checked above");
-        match kind {
-            StatementKind::Assign { destination, value } => {
-                let Some((region, exact)) = prezeroed_state_region(destination) else {
-                    return false;
-                };
-                let zero =
-                    matches!(value, Rvalue::Use(value) if scalar_value_is_all_bits_zero(*value));
-                if !exact {
-                    let whole_state = PrezeroedStateRegion {
-                        state: region.state,
-                        path: Vec::new(),
-                    };
-                    if zero
-                        && !dirty
-                            .iter()
-                            .any(|dirty| prezeroed_state_regions_overlap(dirty, &whole_state))
-                    {
-                        return true;
-                    }
-                    mark_prezeroed_state_dirty(dirty, whole_state);
-                    return false;
-                }
-                if zero {
-                    if !dirty
-                        .iter()
-                        .any(|dirty| prezeroed_state_regions_overlap(dirty, &region))
-                    {
-                        return true;
-                    }
-                    clear_prezeroed_state_region(dirty, &region);
-                } else {
-                    mark_prezeroed_state_dirty(dirty, region);
-                }
-                false
-            }
-            StatementKind::Call { .. }
-            | StatementKind::SliceStore { .. }
-            | StatementKind::SliceFill { .. }
-            | StatementKind::SliceCopy { .. }
-            | StatementKind::If { .. }
-            | StatementKind::Loop { .. }
-            | StatementKind::Break
-            | StatementKind::Continue
-            | StatementKind::Return { .. } => unreachable!("handled before borrowing proof state"),
-            StatementKind::OutputStore { .. }
-            | StatementKind::ControlOutputStore { .. }
-            | StatementKind::BufferStore { .. }
-            | StatementKind::BufferParamStore { .. } => false,
-        }
-    }
-
-    pub(super) fn potentially_mutated_call_state_regions(
-        &self,
-        args: &[CallArgument],
-    ) -> Option<Vec<PrezeroedStateRegion>> {
-        let mut regions = Vec::new();
-        for argument in args {
-            match argument {
-                CallArgument::Value(Value::Constant(_)) => {}
-                CallArgument::Value(Value::Local(local)) => {
-                    if matches!(
-                        self.types[self.locals[local.index()].ty.index()],
-                        MirType::Slice { .. }
-                    ) {
-                        // A value-mode slice may alias arbitrary state. The
-                        // generic MIR call does not retain its source region.
-                        return None;
-                    }
-                }
-                CallArgument::Place(place) => {
-                    if let Some((region, exact)) = prezeroed_state_region(place) {
-                        regions.push(if exact {
-                            region
-                        } else {
-                            PrezeroedStateRegion {
-                                state: region.state,
-                                path: Vec::new(),
-                            }
-                        });
-                    }
-                }
-                CallArgument::ArrayWindow { array, .. } => {
-                    if let Some((region, _)) = prezeroed_state_region(array) {
-                        regions.push(PrezeroedStateRegion {
-                            state: region.state,
-                            path: Vec::new(),
-                        });
-                    }
-                }
-                CallArgument::SliceElement { .. } | CallArgument::SliceWindow { .. } => {
-                    return None;
-                }
-                CallArgument::Buffer(_)
-                | CallArgument::BufferParam(_)
-                | CallArgument::BufferSpan(_) => {}
-            }
-        }
-        Some(regions)
-    }
-
-    pub(super) fn prezeroed_init_state_is_known_zero(&self, region: &PrezeroedStateRegion) -> bool {
-        self.prezeroed_init_state_dirty
-            .as_ref()
-            .is_some_and(|dirty| {
-                !dirty
-                    .iter()
-                    .any(|dirty| prezeroed_state_regions_overlap(dirty, region))
-            })
-    }
-
-    pub(super) fn stop_prezeroed_init_state_proof(&mut self) {
-        self.prezeroed_init_state_dirty = None;
     }
 
     pub(super) fn source_span(&mut self, location: SourceLoc) -> SourceSpan {

@@ -5,14 +5,15 @@ use onda_frontend::Span;
 
 use crate::processor_lowering::{
     coerce_typed_events, collect_runtime_state_roots, desugar_processors,
-    internal_proc_index_call_signature, lower_graph_blocks, nested_call_out_fn_name,
-    nested_step_fn_name, prepare_processors_for_graph_inspection, proc_runtime_analysis_options,
-    validated_sample_oversample_factor, ProcLoweringShape, ProcessorDesugarResult,
-    TopLevelProcRewriteMeta,
+    guard_retained_initializers, internal_proc_index_call_signature, lower_graph_blocks,
+    nested_call_out_fn_name, nested_step_fn_name, prepare_processors_for_graph_inspection,
+    proc_runtime_analysis_options, validated_sample_oversample_factor, ProcLoweringShape,
+    ProcessorDesugarResult, TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
 };
 use crate::*;
 
 mod namespace_flattening;
+use crate::task_lowering::validate_task_source_model;
 use namespace_flattening::flatten_namespaces_for_semantics;
 
 fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnostic>> {
@@ -31,7 +32,7 @@ fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnos
 
 fn statements_return_value(statements: &[Stmt]) -> bool {
     statements.iter().any(|statement| match statement {
-        Stmt::Return { .. } => true,
+        Stmt::Return { expr, .. } => !is_bare_return_expr(expr),
         Stmt::If {
             then_branch,
             else_branch,
@@ -424,6 +425,9 @@ fn fold_host_sr_proc(proc: &mut ProcessorDef, consts: &HashMap<String, TypedCons
     for event in &mut proc.events {
         fold_host_sr_event(event, consts);
     }
+    for task in &mut proc.tasks {
+        fold_host_sr_stmts(&mut task.body, consts);
+    }
     for def in &mut proc.local_defs {
         fold_host_sr_function(def, consts);
     }
@@ -462,6 +466,11 @@ fn fold_host_sr_block(block: &mut Block, consts: &HashMap<String, TypedConstValu
         Block::Events(events) => {
             for event in &mut events.events {
                 fold_host_sr_event(event, consts);
+            }
+        }
+        Block::Tasks(tasks) => {
+            for task in &mut tasks.tasks {
+                fold_host_sr_stmts(&mut task.body, consts);
             }
         }
         Block::Assert(assert_decl) => {
@@ -3747,6 +3756,13 @@ fn reject_forward_const_refs_in_block(
                 reject_forward_const_refs_event(event, visible_consts, future_consts, errors);
             }
         }
+        Block::Tasks(tasks) => {
+            for task in &tasks.tasks {
+                for stmt in &task.body {
+                    reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+                }
+            }
+        }
         Block::Buffers(buffers) => {
             if let Some(count) = &buffers.deferred_count {
                 reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
@@ -3892,6 +3908,11 @@ fn reject_forward_const_refs_in_block(
             if let Some(graph) = &proc.graph {
                 reject_forward_const_refs_graph(graph, visible_consts, future_consts, errors);
             }
+            for task in &proc.tasks {
+                for stmt in &task.body {
+                    reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+                }
+            }
             for def in &proc.local_defs {
                 reject_forward_const_refs_function(def, visible_consts, future_consts, errors);
             }
@@ -3945,6 +3966,13 @@ fn fold_const_array_exprs_in_block(
         Block::Events(events) => {
             for event in &mut events.events {
                 fold_event_const_arrays(event, const_values, options, errors);
+            }
+        }
+        Block::Tasks(tasks) => {
+            for task in &mut tasks.tasks {
+                for stmt in &mut task.body {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
             }
         }
         Block::Buffers(buffers) => {
@@ -4067,6 +4095,11 @@ fn fold_const_array_exprs_in_block(
             }
             if let Some(graph) = &mut proc.graph {
                 fold_graph_const_arrays(graph, const_values, options, errors);
+            }
+            for task in &mut proc.tasks {
+                for stmt in &mut task.body {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
             }
             for def in &mut proc.local_defs {
                 fold_function_const_arrays(def, const_values, options, errors);
@@ -4238,6 +4271,13 @@ fn reject_const_shadowing_in_program(
                     reject_const_shadowing_event(event, &scope_ns, const_values, errors);
                 }
             }
+            Block::Tasks(tasks) => {
+                for task in &tasks.tasks {
+                    for stmt in &task.body {
+                        reject_const_shadowing_stmt(stmt, "", const_values, errors);
+                    }
+                }
+            }
             Block::Init(init) => {
                 for stmt in &init.body {
                     reject_const_shadowing_stmt(stmt, "", const_values, errors);
@@ -4332,6 +4372,11 @@ fn reject_const_shadowing_in_program(
                 for stmt in &proc.block_post {
                     reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
                 }
+                for task in &proc.tasks {
+                    for stmt in &task.body {
+                        reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
+                    }
+                }
                 for def in &proc.local_defs {
                     reject_const_shadowing_function(def, &scope_ns, const_values, errors);
                 }
@@ -4418,6 +4463,13 @@ fn reject_const_assignments_in_program(
                     reject_const_assignments_event(event, const_values, errors);
                 }
             }
+            Block::Tasks(tasks) => {
+                for task in &tasks.tasks {
+                    for stmt in &task.body {
+                        reject_const_assignments_stmt(stmt, const_values, errors);
+                    }
+                }
+            }
             Block::Init(init) => {
                 for stmt in &init.body {
                     reject_const_assignments_stmt(stmt, const_values, errors);
@@ -4462,6 +4514,11 @@ fn reject_const_assignments_in_program(
                 }
                 for stmt in &proc.block_post {
                     reject_const_assignments_stmt(stmt, const_values, errors);
+                }
+                for task in &proc.tasks {
+                    for stmt in &task.body {
+                        reject_const_assignments_stmt(stmt, const_values, errors);
+                    }
                 }
                 for def in &proc.local_defs {
                     reject_const_assignments_function(def, const_values, errors);
@@ -4994,6 +5051,13 @@ fn fold_direct_const_def_calls_in_block(
         Block::Events(events) => {
             for event in &mut events.events {
                 fold_direct_const_def_event(event, artifacts, options, errors);
+            }
+        }
+        Block::Tasks(tasks) => {
+            for task in &mut tasks.tasks {
+                for stmt in &mut task.body {
+                    fold_direct_const_def_stmt(stmt, artifacts, options, errors);
+                }
             }
         }
         Block::Buffers(buffers) => {
@@ -5926,6 +5990,18 @@ fn preprocess_local_consts_in_block(
                 preprocess_local_const_event(event, &empty_consts, artifacts, options, errors);
             }
         }
+        Block::Tasks(tasks) => {
+            for task in &mut tasks.tasks {
+                preprocess_local_const_stmts(
+                    &mut task.body,
+                    &empty_consts,
+                    artifacts,
+                    options,
+                    &format!("top-level task '{}'", task.name),
+                    errors,
+                );
+            }
+        }
         Block::Init(init) => {
             if let Some(default_ty) = &mut init.default_ty {
                 let mut ty = Some(default_ty.clone());
@@ -6130,6 +6206,16 @@ fn preprocess_local_consts_in_block(
                 &format!("processor '{}' block post", proc.name),
                 errors,
             );
+            for task in &mut proc.tasks {
+                preprocess_local_const_stmts(
+                    &mut task.body,
+                    &proc_consts.values,
+                    artifacts,
+                    proc_options,
+                    &format!("task '{}' in processor '{}'", task.name, proc.name),
+                    errors,
+                );
+            }
             if let Some(graph) = &mut proc.graph {
                 preprocess_local_const_graph(graph, &proc_consts.values);
             }
@@ -7643,6 +7729,10 @@ pub fn analyze_with_options(
     program
         .blocks
         .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
+    validate_task_source_model(&program, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     let const_arrays = const_artifacts.const_arrays;
     let mut declared_proc_integer_ranges = HashMap::new();
     for proc_def in program.blocks.iter_mut().filter_map(|block| match block {
@@ -7671,7 +7761,22 @@ pub fn analyze_with_options(
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
+        retained_proc_fields,
     } = desugar_processors(program, options, &const_array_infos, &mut errors);
+    let mut retained_state_roots = program
+        .block(BlockKind::Init)
+        .and_then(|block| match block {
+            Block::Init(init) => Some(init.retained_roots.iter().cloned()),
+            _ => None,
+        })
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+    for (instance, proc_instance) in &top_level_proc_rewrite.global_proc_instances {
+        if let Some(fields) = retained_proc_fields.get(&proc_instance.proc_name) {
+            retained_state_roots.extend(fields.iter().map(|field| format!("{instance}.{field}")));
+        }
+    }
 
     let mut seen_singleton = HashSet::new();
     for block in &program.blocks {
@@ -9550,8 +9655,10 @@ pub fn analyze_with_options(
     let struct_instances = HashMap::new();
     let mut init_known_scalars = param_names.clone();
     init_known_scalars.extend(state_scalars.keys().cloned());
+    init_known_scalars.insert(TOP_LEVEL_INIT_ALL_NAME.to_owned());
     let init_locals = HashSet::new();
-    let init_local_aliases = LocalAliasTypes::new();
+    let mut init_local_aliases = LocalAliasTypes::new();
+    init_local_aliases.insert(TOP_LEVEL_INIT_ALL_NAME.to_owned(), PrimitiveType::Bool);
     let mut init_local_data_aliases = HashMap::new();
     seed_top_level_array_aliases(&mut init_local_data_aliases, &param_arrays, false);
     seed_top_level_array_aliases(&mut init_local_data_aliases, &const_array_infos, false);
@@ -9609,6 +9716,7 @@ pub fn analyze_with_options(
         nested_proc_arrays: HashMap::new(),
     };
     analyze_owner_init_stmts(&init, &init_ctx, &init_locals, &mut init_st, &mut errors);
+    guard_retained_initializers(&mut init, TOP_LEVEL_INIT_ALL_NAME);
     let InitAnalysisState {
         known_scalars: _init_known_scalars,
         local_aliases: _init_local_aliases,
@@ -10607,6 +10715,7 @@ pub fn analyze_with_options(
             control_out_types,
             param_types,
             state_integer_ranges,
+            retained_state_roots,
             in_defaults,
             in_ranges,
             dynamic_input_range_aliases,

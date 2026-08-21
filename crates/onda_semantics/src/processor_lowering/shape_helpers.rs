@@ -1188,7 +1188,7 @@ fn stmt_list_contains_return(stmts: &[Stmt]) -> bool {
 
 fn stmt_contains_return(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Return { .. } => true,
+        Stmt::Return { expr, .. } => !is_bare_return_expr(expr),
         Stmt::If {
             then_branch,
             else_branch,
@@ -2102,13 +2102,15 @@ fn validate_hook_safe_stmts(
                 validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
             }
             Stmt::Return { expr, .. } => {
-                validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
-                if frame.mode == HookBodyMode::ProcLocal {
+                if !is_bare_return_expr(expr) {
+                    validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
+                }
+                if frame.mode == HookBodyMode::ProcLocal && !is_bare_return_expr(expr) {
                     push_semantic(
                         diag,
                         errors,
                         format!(
-                            "bind hook in processor '{}' cannot contain return",
+                            "bind hook in processor '{}' cannot return a value",
                             ctx.owner_proc
                         ),
                     );
@@ -2255,7 +2257,7 @@ fn validate_proc_param_binds(
                     DiagCtx::new(def.loc),
                     errors,
                     format!(
-                        "processor '{}' bind target '{}' must not contain return",
+                        "processor '{}' bind target '{}' must not return a value",
                         proc.name, hook
                     ),
                 );

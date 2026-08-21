@@ -445,6 +445,8 @@ void onda_project_image_destroy(onda_project_image_t* image);
 void onda_program_destroy(onda_program_t* program);
 
 /* Creates a runtime instance for a compiled program, or NULL on failure.
+   Creation writes parameter defaults, runs a full init, and captures the
+   resulting post-init state as the reset baseline.
    Uses compile-time sample_rate and block_size captured in the program handle.
    Programs compiled from filesystem .ondaproject inputs or project images
    automatically bind their immutable project buffer defaults. The instance
@@ -588,8 +590,20 @@ int onda_process_checked_segment(
   int frames,
   int flags
 );
-/* Resets instance DSP/state memory to the initial post-init state captured at instance creation. */
-int onda_reset_instance_state(onda_instance_t* instance);
+/* Restores resettable instance state from the post-init image; retained state and task
+   continuations are preserved. */
+int onda_reset(onda_instance_t* instance);
+/* Restores the complete post-init image, including retained state and task continuations. */
+int onda_reset_all(onda_instance_t* instance);
+/* Runs the Onda init block while preserving retained state and task continuations.
+   On success, the result becomes the new reset baseline. The operation is
+   transactional and not realtime-safe. Returns 0 on success, -1 for an invalid
+   handle, or -2 when init execution fails. */
+int onda_init(onda_instance_t* instance);
+/* Clears all state, then runs the Onda init block and captures a new reset
+   baseline. The operation is transactional and not realtime-safe. Returns 0
+   on success, -1 for an invalid handle, or -2 when init execution fails. */
+int onda_init_all(onda_instance_t* instance);
 /* Returns the byte size of the instance state snapshot, or -1 on invalid instance handle. */
 int onda_instance_state_bytes(const onda_instance_t* instance);
 /*

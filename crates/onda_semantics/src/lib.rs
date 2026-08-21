@@ -14,9 +14,10 @@ use onda_frontend::{
     FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl,
     NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock,
     ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
-    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BARE_RETURN_FN,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 
 pub mod aggregate_layout;
@@ -45,6 +46,7 @@ mod proc_resolution;
 mod proc_state_rewrite;
 mod processor_lowering;
 mod stmt_analysis;
+mod task_lowering;
 pub use aggregate_layout::{
     AggregateLayout, AggregateLayoutArithmeticError, AggregateLayoutError, AggregateLayoutId,
     AggregateLayoutTable, AggregateLeafId, AggregateLeafLayout, AggregatePathComponent,
@@ -94,6 +96,7 @@ pub struct TypedProgram {
     pub control_out_types: HashMap<String, PrimitiveType>,
     pub param_types: HashMap<String, PrimitiveType>,
     pub(crate) state_integer_ranges: HashMap<String, TypedIntegerRange>,
+    pub(crate) retained_state_roots: HashSet<String>,
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
     pub(crate) dynamic_input_range_aliases: HashMap<String, String>,
@@ -260,6 +263,14 @@ pub enum TypedFieldType {
 pub enum ReturnType {
     Scalar(PrimitiveType),
     Tuple(Vec<PrimitiveType>),
+}
+
+pub(crate) fn is_bare_return_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::UserCall { name, type_args, args, .. }
+            if name == INTERNAL_BARE_RETURN_FN && type_args.is_empty() && args.is_empty()
+    )
 }
 
 impl ReturnType {
@@ -1370,7 +1381,7 @@ sample:
             (
                 "target return",
                 "proc Voice:\n  params:\n    gain = 0.0 => update\n  outs:\n    out1\n  def update():\n    return gain\n  sample:\n    out1 = gain\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n",
-                "bind target 'update' must not contain return",
+                "bind target 'update' must not return a value",
             ),
             (
                 "owner param write",
@@ -1500,6 +1511,10 @@ sample:
         let untyped_scalar_local = "def shadow(x):\n  x = x + 1.0\nproc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  outs:\n    out1\n  def update():\n    shadow(gain)\n    cached = gain\n  sample:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n";
         let program = parse_program(untyped_scalar_local).expect("parse should succeed");
         analyze(program).expect("untyped scalar helper local should analyze");
+
+        let bare_return = "proc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  outs:\n    out1\n  def update():\n    if gain == 0.0:\n      return\n    cached = gain\n  sample:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n";
+        let program = parse_program(bare_return).expect("parse should succeed");
+        analyze(program).expect("bare return in bind hook should analyze");
     }
 
     #[test]
@@ -6018,6 +6033,39 @@ sample:
             .find(|def| def.name == "observe")
             .expect("missing observe def");
         assert!(!observe.returns_value);
+    }
+
+    #[test]
+    fn no_result_def_accepts_bare_early_return() {
+        let src = "outs:\n  out1\ndef observe(flag: bool):\n  if flag:\n    return\n  value = 1.0\nsample:\n  observe(false)\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("bare return should analyze");
+        let observe = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "observe")
+            .expect("missing observe def");
+        assert!(!observe.returns_value);
+    }
+
+    #[test]
+    fn rejects_mixed_bare_and_value_returns() {
+        let src = "outs:\n  out1\ndef choose(flag: bool):\n  if flag:\n    return\n  return 1.0\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("mixed returns should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("cannot mix bare returns with value returns")));
+    }
+
+    #[test]
+    fn rejects_bare_return_with_explicit_return_type() {
+        let src = "outs:\n  out1\ndef choose() -> f32:\n  return\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("bare typed return should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("cannot mix bare returns with value returns or an explicit return type")));
     }
 
     #[test]
