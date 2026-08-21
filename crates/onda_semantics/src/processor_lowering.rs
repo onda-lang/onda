@@ -931,6 +931,13 @@ fn build_proc_lowering_env(
             callable_symbols_for_method_sugar.insert(format!("{struct_name}.{}", method.name));
         }
     }
+    for proc in &mut proc_defs {
+        desugar_processor_instance_method_calls(
+            proc,
+            &typed_struct_defs,
+            &callable_symbols_for_method_sugar,
+        );
+    }
     for (struct_name, struct_def) in &struct_defs_by_name {
         for method in &struct_def.methods {
             let mut desugared_method_body = method.body.clone();
@@ -994,13 +1001,6 @@ fn build_proc_lowering_env(
         &crate::def_semantics::CallTypeEnv::default(),
         &HashMap::new(),
     );
-    for proc in &mut proc_defs {
-        desugar_processor_instance_method_calls(
-            proc,
-            &typed_struct_defs,
-            &callable_symbols_for_method_sugar,
-        );
-    }
     for proc in &mut proc_defs {
         let sample_inferred = infer_numbered_io_from_sample(&proc.sample);
         let mut owner_inferred = IoInference::default();
@@ -1290,7 +1290,7 @@ pub(crate) fn desugar_processors(
     rewrite_and_materialize_generic_processors(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
-    crate::task_lowering::lower_tasks(&mut program, errors);
+    crate::task_lowering::lower_tasks(&mut program, options, errors);
     if let Some(Block::Init(init)) = program
         .blocks
         .iter_mut()

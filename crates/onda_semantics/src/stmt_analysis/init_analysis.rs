@@ -254,7 +254,7 @@ pub(crate) fn analyze_init_stmt(
         let init_ctx = ctx.init;
         let common = init_ctx.common;
         let locals = ctx.locals;
-        let array_vars = merged_data_vars_for_runtime(&st.state_arrays, &st.local_array_aliases);
+        let array_vars = merged_data_vars(&st.state_arrays, &st.local_array_aliases);
         let empty_param_structs = HashMap::<String, String>::new();
         let expr_inputs = build_scope_analysis_expr_inputs(
             common,
@@ -511,7 +511,7 @@ fn analyze_assign_init(
     let options = common.options;
     let scope = common.scope_kind();
     let allow_owner_state_intro = scope_depth == 0;
-    let array_vars = merged_data_vars_for_runtime(&st.state_arrays, &st.local_array_aliases);
+    let array_vars = merged_data_vars(&st.state_arrays, &st.local_array_aliases);
     let mut rewritten_expr = expr.clone();
     rewrite_struct_array_inline_field_expr(
         &mut rewritten_expr,

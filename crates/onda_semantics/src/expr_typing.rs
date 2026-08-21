@@ -638,6 +638,15 @@ fn infer_scalar_expr_type_with_proc_arrays(
             if let Some(ty) = declared_symbol_scalar_type(declared_symbols, name) {
                 return Some(ty);
             }
+            if let Some((receiver, method)) = name.rsplit_once('.') {
+                if let Some(struct_name) = struct_instances.get(receiver) {
+                    let resolved_name = format!("{struct_name}.{method}");
+                    if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &resolved_name)
+                    {
+                        return Some(ty);
+                    }
+                }
+            }
             if let Some(base) = parse_array_len_instance_base(name) {
                 if is_data_receiver_symbol_for_builtin(
                     base,

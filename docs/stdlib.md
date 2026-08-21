@@ -32,7 +32,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/delay`](#stddelay) | `Delay` |
 | [`std/data`](#stddata) | `Data` |
 | [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `Rectangular`, `STFT` |
-| [`std/convolution`](#stdconvolution) | `BlockConvolver`, `DirectTaps`, `FinalStageCapacity`, `HeadFFTSize`, `HeadStageCapacity`, `HeadStageEnd`, `HopSize`, `LargeFFTSize`, `LargeStageCapacity`, `LargeStageEnd`, `MidFFTSize`, `MidStageCapacity`, `MidStageEnd`, `TailStart`, `TimeDomainConvolver`, `ZeroLatencyConvolver` |
+| [`std/convolution`](#stdconvolution) | `BlockConvolver`, `DirectTaps`, `FinalStageCapacity`, `HeadFFTSize`, `HeadStageCapacity`, `HeadStageEnd`, `HopSize`, `LargeFFTSize`, `LargeStageCapacity`, `LargeStageEnd`, `MidFFTSize`, `MidStageCapacity`, `MidStageEnd`, `TailStart`, `TimeDomainConvolver`, `ZeroLatencyConvolver`, `impulse_window_count`, `impulse_window_end`, `stage_window_count` |
 | [`std/lookup`](#stdlookup) | `calcIdx`, `read`, `readC`, `readCW`, `readL`, `readLW`, `wrapIdx`, `write` |
 | [`std/random`](#stdrandom) | `RNG_INC`, `RNG_MASK`, `RNG_MULT`, `Rng`, `seed_state`, `step_state` |
 | [`std/prelude`](#stdprelude) | Automatically imports `std/math`, `std/lookup`, `std/random` |
@@ -934,6 +934,14 @@ const LargeStageCapacity = max(LargeStageEnd - MidStageEnd, 1)
 const FinalStageCapacity = max(MaxImpulseLen - LargeStageEnd, 1)
 ```
 
+### Functions
+
+```onda
+def stage_window_count(frames: i32, start: i32, end: i32, window_size: i32) -> i32:
+def impulse_window_count(frames: i32) -> i32:
+def impulse_window_end(start: i32, frames: i32) -> i32:
+```
+
 ### Processor `TimeDomainConvolver<T>`
 
 ```onda
@@ -966,6 +974,8 @@ proc ZeroLatencyConvolver<T>:
   events:
     set_offset(value: i32 = -1):
     set_impulse(values: T[]):
+    begin_impulse(value_count: i32):
+    set_impulse_window(start: i32, values: T[]):
     reset():
 ```
 

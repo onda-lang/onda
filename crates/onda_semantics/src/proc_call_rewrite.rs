@@ -5408,6 +5408,22 @@ pub(super) fn desugar_expr_instance_method_calls(
                     }
                 }
             }
+            if let Some(CallArg {
+                name: receiver_name,
+                expr: Expr::Var { name: receiver, .. },
+            }) = args.first()
+            {
+                if receiver_name.as_deref() == Some(METHOD_RECEIVER_ARG) {
+                    if let Some(struct_name) = struct_instances.get(receiver) {
+                        let resolved_method = format!("{struct_name}.{name}");
+                        if callable_symbols.contains(&resolved_method) {
+                            args[0].name = None;
+                            *name = resolved_method;
+                            return;
+                        }
+                    }
+                }
+            }
             if is_unsafe_index_method_name(name) {
                 if let Some(receiver) = args
                     .first_mut()
@@ -5491,6 +5507,9 @@ pub(super) fn desugar_expr_instance_method_calls(
                         }
                     }
                 }
+            }
+            if callable_symbols.contains(name) {
+                return;
             }
             if let Some((base, method)) = split_receiver_method_path(name) {
                 if is_unsafe_index_method_name(method) {

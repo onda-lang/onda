@@ -2361,6 +2361,50 @@ sample:
     }
 
     #[test]
+    fn task_mutations_of_aggregate_state_accumulate_across_yield() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+struct Accumulator:
+  value: i32 = 0
+
+proc Loader:
+  init:
+    accumulator = Accumulator() {retain}
+  task load():
+    accumulator.value += 1
+    yield
+    accumulator.value += 1
+  block:
+    await load()
+    sample:
+      out1 = f32(accumulator.value)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+        assert_eq!(output, [2.0; BLOCK_SIZE]);
+    }
+
+    #[test]
     fn tasks_in_runtime_indexed_proc_arrays_activate_lazily_per_slot() {
         const BLOCK_SIZE: usize = 4;
         let mut instance = compile_test_instance(

@@ -10337,6 +10337,22 @@ pub fn analyze_with_options(
                 }
             }
         }
+        let mut def_proc_array_roots = param_proc_arrays.clone();
+        for (base, slots) in &def_proc_array_slots {
+            let Some(proc_name) = slots
+                .first()
+                .and_then(|slot| def_proc_vars.get(slot))
+                .map(|instance| instance.proc_name.clone())
+            else {
+                continue;
+            };
+            def_proc_array_roots
+                .entry(base.clone())
+                .or_insert_with(|| ProcNestedArrayState {
+                    proc_name,
+                    size_expr: Expr::int(slots.len() as i64),
+                });
+        }
         if (!def_proc_vars.is_empty() || !def_proc_array_slots.is_empty())
             && !def.name.contains(".__onda_proc_")
         {
@@ -10383,9 +10399,8 @@ pub fn analyze_with_options(
             declared_symbols: &def_declared_symbols,
             param_structs: &param_structs,
             struct_array_roots: &def_param_array_struct_roots,
-            proc_array_roots: &param_proc_arrays,
+            proc_array_roots: &def_proc_array_roots,
             state_scalars: &def_state_scalars,
-            def_return_types: &def_return_types,
             resolved_scalar_locals: &resolved_scalar_locals,
         };
         let mut def_state = DefStmtAnalysisState::from_parts(
@@ -10448,6 +10463,12 @@ pub fn analyze_with_options(
             })
             .collect::<Vec<_>>();
         typed_data.sort_by(|a, b| a.name.cmp(&b.name));
+        let retained_state_roots = sorted_state
+            .iter()
+            .chain(typed_data.iter().map(|array| &array.name))
+            .filter(|name| path_or_ancestor_is_declared(name, &retained_state_roots))
+            .cloned()
+            .collect::<HashSet<_>>();
         let mut typed_data_roots = state_array_struct_roots
             .into_iter()
             .map(|(name, info)| TypedArrayStructRoot {

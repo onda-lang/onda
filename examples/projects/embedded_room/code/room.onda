@@ -3,25 +3,65 @@ import std/filter
 
 const RoomFFTSize = 16384
 const RoomMaxImpulseFrames = 480000
+const RoomImpulseLoadSeconds = 0.5
+
+use std::convolution<RoomFFTSize, RoomMaxImpulseFrames> as RoomConvolution
 
 proc ConvolutionRoom:
+  buffers:
+    room_ir: f32[2]
+
   params:
     damping = 12000.0
     impulse_gain = 0.02
 
   init:
-    convolver_l = std::convolution<RoomFFTSize, RoomMaxImpulseFrames>::ZeroLatencyConvolver()
-    convolver_r = std::convolution<RoomFFTSize, RoomMaxImpulseFrames>::ZeroLatencyConvolver()
+    convolver_l = RoomConvolution::ZeroLatencyConvolver()
+    convolver_r = RoomConvolution::ZeroLatencyConvolver()
     tone_l = std::filter::OnePole(cutoff = damping)
     tone_r = std::filter::OnePole(cutoff = damping)
 
-  event load_impulse(left: f32[], right: f32[]):
-    convolver_l.set_impulse(left)
-    convolver_r.set_impulse(right)
+  task load_impulse():
+    frames = min(room_ir.len(), RoomMaxImpulseFrames)
+    total_transforms = RoomConvolution::impulse_window_count(frames) * 2
+    loading_frames = i32(RoomImpulseLoadSeconds * HOST_SR)
+    loading_blocks = 1 + (loading_frames - 1) / BS
 
-  sample:
-    excitation = (in1 + in2) * 0.5
-    tone_l.cutoff = damping
-    tone_r.cutoff = damping * 0.9
-    out1 = tone_l(convolver_l(excitation) * impulse_gain)
-    out2 = tone_r(convolver_r(excitation) * impulse_gain)
+    convolver_l.begin_impulse(frames)
+    convolver_r.begin_impulse(frames)
+
+    start = 0
+    end = 0
+    channel = 0
+    transform_credit = 0
+    blocks_done = 0
+    
+    while blocks_done < loading_blocks:
+      transform_credit = transform_credit + total_transforms
+      while transform_credit >= loading_blocks && start < frames:
+        if channel == 0:
+          end = RoomConvolution::impulse_window_end(start, frames)
+          convolver_l.set_impulse_window(start, room_ir[0, start:end])
+          channel = 1
+        else:
+          convolver_r.set_impulse_window(start, room_ir[1, start:end])
+          start = end
+          channel = 0
+        transform_credit = transform_credit - loading_blocks
+
+      blocks_done = blocks_done + 1
+      if blocks_done < loading_blocks:
+        yield
+
+  event reload_impulse():
+    load_impulse.reset()
+
+  block:
+    await load_impulse()
+
+    sample:
+      excitation = (in1 + in2) * 0.5
+      tone_l.cutoff = damping
+      tone_r.cutoff = damping * 0.9
+      out1 = tone_l(convolver_l(excitation) * impulse_gain)
+      out2 = tone_r(convolver_r(excitation) * impulse_gain)

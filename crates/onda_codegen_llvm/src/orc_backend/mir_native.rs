@@ -9946,7 +9946,7 @@ sample { out1 = phase }
                 name: "history".to_owned(),
                 ty: f64_ty,
                 persistence: onda_mir::StatePersistence::Snapshot,
-                reset: onda_mir::StateResetPolicy::Restore,
+                reset: onda_mir::StateResetPolicy::Retain,
             },
         ];
         mir.interface.control_outputs.push(onda_mir::ControlOutput {
@@ -10010,6 +10010,20 @@ sample { out1 = phase }
             states[1].physical_state_byte_offset
         );
         assert_eq!(states[1].byte_size, 8);
+        let is_reset = |state: &onda_processor_abi::StateMetadata| {
+            artifact
+                .metadata
+                .runtime
+                .state_reset_ranges
+                .iter()
+                .any(|range| {
+                    range.byte_offset <= state.physical_state_byte_offset
+                        && range.byte_offset + range.byte_size
+                            >= state.physical_state_byte_offset + state.byte_size
+                })
+        };
+        assert!(is_reset(&states[0]));
+        assert!(!is_reset(&states[1]));
         assert!(states
             .iter()
             .all(|state| state.name != "meter" && state.name != "$scratch"));

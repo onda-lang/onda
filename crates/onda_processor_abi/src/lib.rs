@@ -117,11 +117,19 @@ pub struct RuntimeInfo {
     pub param_size_bytes: usize,
     pub param_align_bytes: usize,
     pub state_initialization: String,
+    #[serde(default)]
+    pub state_reset_ranges: Vec<StateResetRange>,
     pub snapshot_size_bytes: usize,
     pub snapshot_format_version: u32,
     pub snapshot_byte_order: String,
     pub snapshot_restore_base: String,
     pub requires_full_blocks: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StateResetRange {
+    pub byte_offset: usize,
+    pub byte_size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +266,13 @@ mod tests {
         ));
         assert_eq!(descriptor.metadata.inputs[0].type_repr, "f32");
         assert!(descriptor.metadata.buffers[0].may_write);
+        assert_eq!(
+            descriptor.runtime.state_reset_ranges,
+            [StateResetRange {
+                byte_offset: 0,
+                byte_size: 4,
+            }]
+        );
         assert_eq!(
             descriptor.metadata.states[0]
                 .integer_range

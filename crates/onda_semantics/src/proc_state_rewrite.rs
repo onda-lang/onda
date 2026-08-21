@@ -215,12 +215,6 @@ pub(crate) fn is_declared_proc_symbol(
         || out.has_any(name)
 }
 
-pub(crate) fn has_use_before_declaration_error(errors: &[Diagnostic]) -> bool {
-    errors
-        .iter()
-        .any(|d| d.message.contains("used before declaration"))
-}
-
 pub(crate) fn validate_proc_expr_decl_order(
     expr: &Expr,
     reserved: &HashSet<String>,

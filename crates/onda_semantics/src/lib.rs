@@ -20,6 +20,19 @@ use onda_frontend::{
     READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 
+pub(crate) fn path_or_ancestor_is_declared(path: &str, roots: &HashSet<String>) -> bool {
+    let mut candidate = path;
+    loop {
+        if roots.contains(candidate) {
+            return true;
+        }
+        let Some((parent, _)) = candidate.rsplit_once('.') else {
+            return false;
+        };
+        candidate = parent;
+    }
+}
+
 pub mod aggregate_layout;
 mod analysis_session;
 mod array_structs;
@@ -8594,7 +8607,7 @@ sample:
         assert!(
             errors.iter().any(|diag| diag
                 .message
-                .contains("struct parameter 'pair' (type 'Pair') has no field 'y'")),
+                .contains("struct instance 'pair' (type 'Pair') has no field 'y'")),
             "expected unreachable explicit struct def diagnostic, got {errors:?}"
         );
     }
@@ -8608,7 +8621,7 @@ sample:
         assert!(
             errors.iter().any(|diag| diag
                 .message
-                .contains("struct parameter 'voice' (type 'Voice') has no field 'missing'")),
+                .contains("struct instance 'voice' (type 'Voice') has no field 'missing'")),
             "expected unreachable explicit proc def diagnostic, got {errors:?}"
         );
     }

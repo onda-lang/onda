@@ -85,7 +85,10 @@ Non-crate directories of note:
 - `pipeline.rs`, `pipeline/` — top-level analysis pipeline and `namespace_flattening`.
 - Analysis cores:
   - `expr_validation.rs`, `expr_typing.rs`, `expr_analysis/` — expression validation, typing, and environment construction.
-  - `stmt_analysis/` — init / runtime / alias / indexed-binding statement analysis.
+  - `stmt_analysis/` — shared executable-flow statement analysis for defs, methods, events,
+    block/sample bodies, and lowered task/proc bodies; init-specific state/resource construction;
+    plus shared alias and indexed-binding helpers. Scope policies express the few legal-context
+    differences without duplicating typing, assignment, or control-flow semantics.
   - `index_access.rs` — canonical source indexing access modes and unsafe receiver-call rewriting.
   - `port_coercion.rs` — port and parameter coercion.
   - `declaration_coercion.rs` — struct field, param, and buffer coercion.
@@ -96,7 +99,8 @@ Non-crate directories of note:
   - `array_structs.rs` — array/struct helpers.
   - `decl_symbols.rs` — declaration symbol tables.
 - `def`/generic machinery:
-  - `def_semantics/` — `def` body analysis, `inference/` (call + return), `monomorphization`, `overloads`.
+  - `def_semantics/` — thin `def` adapters over shared executable-flow analysis, `inference/`
+    (call + return), `monomorphization`, and `overloads`.
   - `generic_specialization.rs`, `generic_specialization/proc_specialization.rs` — generic owner specialization.
 - Processor lowering:
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.

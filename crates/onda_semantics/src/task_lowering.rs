@@ -1115,6 +1115,11 @@ struct TaskOwnerTypes {
     scalars: HashMap<String, PrimitiveType>,
     indexed: HashMap<String, PrimitiveType>,
     tuples: HashMap<String, Vec<PrimitiveType>>,
+    declared_symbols: DeclaredSymbolMap,
+    input_names: HashSet<String>,
+    output_names: HashSet<String>,
+    param_names: HashSet<String>,
+    struct_instances: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -1182,79 +1187,69 @@ fn record_task_owner_decl_type(types: &mut TaskOwnerTypes, name: &str, ty: Optio
     }
 }
 
-fn infer_task_scalar_type(
+fn infer_task_local_storage_type(
     expr: &Expr,
     known: &HashMap<String, TaskLocalStorage>,
     owner_types: &TaskOwnerTypes,
-    return_types: &HashMap<String, PrimitiveType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
-    match expr {
-        Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { value, .. } => Some(if i32::try_from(*value).is_ok() {
-            PrimitiveType::I32
-        } else {
-            PrimitiveType::I64
-        }),
-        Expr::Bool { .. } | Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
-            Some(PrimitiveType::Bool)
-        }
-        Expr::Cast { to, .. } => Some(*to),
-        Expr::Var { name, .. } => match known.get(name) {
-            Some(TaskLocalStorage::Scalar(ty)) => Some(*ty),
-            _ => owner_types.scalars.get(name).copied(),
-        },
-        Expr::Index { base, index, .. } => match known.get(base) {
-            Some(TaskLocalStorage::Array { element, .. }) => Some(*element),
-            _ => owner_types.indexed.get(base).copied().or_else(|| {
-                let Expr::Int { value, .. } = index.as_ref() else {
-                    return None;
-                };
-                usize::try_from(*value)
-                    .ok()
-                    .and_then(|index| owner_types.tuples.get(base)?.get(index).copied())
-            }),
-        },
-        Expr::Binary { lhs, rhs, .. } => {
-            let lhs = infer_task_scalar_type(lhs, known, owner_types, return_types);
-            let rhs = infer_task_scalar_type(rhs, known, owner_types, return_types);
-            match (lhs, rhs) {
-                (Some(PrimitiveType::F64), _) | (_, Some(PrimitiveType::F64)) => {
-                    Some(PrimitiveType::F64)
-                }
-                (Some(PrimitiveType::F32), _) | (_, Some(PrimitiveType::F32)) => {
-                    Some(PrimitiveType::F32)
-                }
-                (Some(PrimitiveType::I64), _) | (_, Some(PrimitiveType::I64)) => {
-                    Some(PrimitiveType::I64)
-                }
-                (Some(ty), _) | (_, Some(ty)) => Some(ty),
-                _ => None,
-            }
-        }
-        Expr::UnaryBitNot { expr, .. } => {
-            infer_task_scalar_type(expr, known, owner_types, return_types)
-        }
-        Expr::Call { args, .. } => args
-            .first()
-            .and_then(|arg| infer_task_scalar_type(arg, known, owner_types, return_types)),
-        Expr::UserCall { name, .. } => return_types.get(name).copied(),
-        Expr::Slice { .. }
-        | Expr::ArrayLiteral { .. }
-        | Expr::ArrayCtor { .. }
-        | Expr::Tuple { .. } => None,
-    }
+    let local_aliases = known
+        .iter()
+        .filter_map(|(name, storage)| match storage {
+            TaskLocalStorage::Scalar(ty) => Some((name.clone(), *ty)),
+            TaskLocalStorage::Array { .. } => None,
+        })
+        .collect::<LocalAliasTypes>();
+    let local_array_aliases = known
+        .iter()
+        .filter_map(|(name, storage)| match storage {
+            TaskLocalStorage::Array { element, len, .. } => Some((
+                name.clone(),
+                LocalArrayAliasInfo {
+                    len: *len,
+                    static_len: Some(*len),
+                    elem_ty: *element,
+                    elem_struct: None,
+                    writable: true,
+                },
+            )),
+            TaskLocalStorage::Scalar(_) => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut inference_errors = Vec::new();
+    let inferred = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+        expr,
+        &owner_types.scalars,
+        &owner_types.declared_symbols,
+        None,
+        &local_aliases,
+        &local_array_aliases,
+        &HashSet::new(),
+        &owner_types.input_names,
+        &owner_types.output_names,
+        &owner_types.param_names,
+        &owner_types.struct_instances,
+        struct_defs,
+        &HashMap::new(),
+        &mut inference_errors,
+    );
+    inference_errors
+        .is_empty()
+        .then(|| effective_untyped_assignment_type(expr, inferred))
+        .flatten()
 }
 
 fn collect_task_owner_types(
     owner: &TaskOwnerSurface,
-    return_types: &HashMap<String, PrimitiveType>,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> TaskOwnerTypes {
     fn record_decl(
         types: &mut TaskOwnerTypes,
         name: &str,
         ty: Option<&DeclType>,
         default: Option<&Expr>,
-        return_types: &HashMap<String, PrimitiveType>,
+        struct_defs: &HashMap<String, Vec<TypedStructField>>,
     ) {
         if ty.is_some() {
             record_task_owner_decl_type(types, name, ty);
@@ -1262,19 +1257,26 @@ fn collect_task_owner_types(
         }
         let empty_locals = HashMap::new();
         let inferred = default
-            .and_then(|expr| infer_task_scalar_type(expr, &empty_locals, types, return_types))
+            .and_then(|expr| infer_task_local_storage_type(expr, &empty_locals, types, struct_defs))
             .unwrap_or(PrimitiveType::F32);
         types.scalars.insert(name.to_owned(), inferred);
     }
 
     let mut types = TaskOwnerTypes::default();
+    for (name, return_type) in return_types {
+        if let Some(ty) = return_type.scalar() {
+            types
+                .declared_symbols
+                .insert(name.clone(), DeclaredSymbolInfo::FunctionReturn { ty });
+        }
+    }
     for decl in &owner.ins {
         record_decl(
             &mut types,
             &decl.name,
             decl.ty.as_ref(),
             decl.default.as_ref(),
-            return_types,
+            struct_defs,
         );
     }
     for decl in &owner.outs {
@@ -1283,7 +1285,7 @@ fn collect_task_owner_types(
             &decl.name,
             decl.ty.as_ref(),
             decl.default.as_ref(),
-            return_types,
+            struct_defs,
         );
     }
     for decl in &owner.params {
@@ -1292,19 +1294,62 @@ fn collect_task_owner_types(
             &decl.name,
             decl.ty.as_ref(),
             decl.default.as_ref(),
-            return_types,
+            struct_defs,
         );
     }
-    for decl in &owner.buffers {
-        if decl.array_size.is_some() {
-            continue;
+    for decl in &owner.ins {
+        if let Some(ty) = types.scalars.get(&decl.name).copied() {
+            types.input_names.insert(decl.name.clone());
+            types
+                .declared_symbols
+                .insert(decl.name.clone(), DeclaredSymbolInfo::Input { ty });
         }
+    }
+    for decl in &owner.outs {
+        if let Some(ty) = types.scalars.get(&decl.name).copied() {
+            types.output_names.insert(decl.name.clone());
+            types
+                .declared_symbols
+                .insert(decl.name.clone(), DeclaredSymbolInfo::Output { ty });
+        }
+    }
+    for decl in &owner.params {
+        if let Some(ty) = types.scalars.get(&decl.name).copied() {
+            types.param_names.insert(decl.name.clone());
+            types
+                .declared_symbols
+                .insert(decl.name.clone(), DeclaredSymbolInfo::Param { ty });
+        }
+    }
+    for decl in &owner.buffers {
         if let Some(BufferType {
-            elem: BufferElemType::Primitive(element),
-            ..
+            elem: BufferElemType::Primitive(elem_ty),
+            channels,
         }) = decl.ty.as_ref()
         {
-            types.indexed.insert(decl.name.clone(), *element);
+            let channels = match channels {
+                BufferChannels::Mono => BufferChannelInfo::Mono,
+                BufferChannels::Static(Expr::Int { value, .. }) => usize::try_from(*value)
+                    .ok()
+                    .filter(|channels| *channels > 0)
+                    .map(BufferChannelInfo::Static)
+                    .unwrap_or(BufferChannelInfo::Dynamic),
+                BufferChannels::Static(_) | BufferChannels::Dynamic => BufferChannelInfo::Dynamic,
+            };
+            let array_len = match decl.array_size.as_ref() {
+                Some(Expr::Int { value, .. }) => usize::try_from(*value).unwrap_or(1),
+                Some(_) | None => 1,
+            };
+            types.indexed.insert(decl.name.clone(), *elem_ty);
+            types.declared_symbols.insert(
+                decl.name.clone(),
+                DeclaredSymbolInfo::Buffer {
+                    elem_ty: *elem_ty,
+                    channels,
+                    array_len,
+                    is_array: decl.array_size.is_some(),
+                },
+            );
         }
     }
 
@@ -1327,19 +1372,53 @@ fn collect_task_owner_types(
         }
         if let Some(ty) = decl_ty {
             types.scalars.insert(name.clone(), *ty);
+        } else if let Expr::UserCall { name: ctor, .. } = expr {
+            if struct_defs.contains_key(ctor) {
+                register_struct_instance_roots(
+                    name,
+                    ctor,
+                    struct_defs,
+                    &mut types.struct_instances,
+                );
+            } else if let Some(ty) =
+                infer_task_local_storage_type(expr, &empty_locals, &types, struct_defs)
+            {
+                types.scalars.insert(name.clone(), ty);
+            }
+        } else if let Expr::Var { name: source, .. } = expr {
+            if let Some(struct_name) = types.struct_instances.get(source).cloned() {
+                register_struct_instance_roots(
+                    name,
+                    &struct_name,
+                    struct_defs,
+                    &mut types.struct_instances,
+                );
+            } else if let Some(ty) =
+                infer_task_local_storage_type(expr, &empty_locals, &types, struct_defs)
+            {
+                types.scalars.insert(name.clone(), ty);
+            }
         } else if let Expr::ArrayCtor { spec, .. } = expr {
             if let ArrayElemType::Primitive(element) = spec.elem {
                 types.indexed.insert(name.clone(), element);
+                types.declared_symbols.insert(
+                    name.clone(),
+                    DeclaredSymbolInfo::DataArray { elem_ty: element },
+                );
             }
         } else if let Expr::Tuple { values, .. } = expr {
             if let Some(elements) = values
                 .iter()
-                .map(|value| infer_task_scalar_type(value, &empty_locals, &types, return_types))
+                .map(|value| {
+                    infer_task_local_storage_type(value, &empty_locals, &types, struct_defs)
+                })
                 .collect::<Option<Vec<_>>>()
             {
                 types.tuples.insert(name.clone(), elements);
             }
-        } else if let Some(ty) = infer_task_scalar_type(expr, &empty_locals, &types, return_types) {
+        } else if let Some(ty) =
+            infer_task_local_storage_type(expr, &empty_locals, &types, struct_defs)
+        {
             types.scalars.insert(name.clone(), ty);
         }
     }
@@ -1467,7 +1546,7 @@ fn uniquify_task_bindings(
                 if let Some(name) = self.visible.get(source_name) {
                     return name.clone();
                 }
-                if self.owner_roots.contains(source_name) {
+                if path_or_ancestor_is_declared(source_name, self.owner_roots) {
                     return source_name.to_owned();
                 }
             }
@@ -1575,8 +1654,9 @@ fn uniquify_task_bindings(
 fn collect_task_locals(
     stmts: &[Stmt],
     owner_roots: &HashSet<String>,
-    return_types: &HashMap<String, PrimitiveType>,
+    return_types: &HashMap<String, ReturnType>,
     owner_types: &TaskOwnerTypes,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     source_names: &HashMap<String, String>,
     task_name: &str,
     errors: &mut Vec<Diagnostic>,
@@ -1584,8 +1664,9 @@ fn collect_task_locals(
     fn visit(
         stmts: &[Stmt],
         owner_roots: &HashSet<String>,
-        return_types: &HashMap<String, PrimitiveType>,
+        return_types: &HashMap<String, ReturnType>,
         owner_types: &TaskOwnerTypes,
+        struct_defs: &HashMap<String, Vec<TypedStructField>>,
         source_names: &HashMap<String, String>,
         task_name: &str,
         locals: &mut HashMap<String, TaskLocalStorage>,
@@ -1599,7 +1680,7 @@ fn collect_task_locals(
                     decl_ty,
                     expr,
                     ..
-                } if !owner_roots.contains(name) => {
+                } if !path_or_ancestor_is_declared(name, owner_roots) => {
                     if locals.contains_key(name) {
                         continue;
                     }
@@ -1644,7 +1725,12 @@ fn collect_task_locals(
                     } else {
                         (*decl_ty)
                             .or_else(|| {
-                                infer_task_scalar_type(expr, locals, owner_types, return_types)
+                                infer_task_local_storage_type(
+                                    expr,
+                                    locals,
+                                    owner_types,
+                                    struct_defs,
+                                )
                             })
                             .map(TaskLocalStorage::Scalar)
                     };
@@ -1660,6 +1746,57 @@ fn collect_task_locals(
                         ));
                     }
                 }
+                Stmt::Assign {
+                    loc,
+                    target: AssignTarget::Tuple(names),
+                    expr,
+                    ..
+                } => {
+                    let element_types = match expr {
+                        Expr::Tuple { values, .. } => values
+                            .iter()
+                            .map(|value| {
+                                infer_task_local_storage_type(
+                                    value,
+                                    locals,
+                                    owner_types,
+                                    struct_defs,
+                                )
+                            })
+                            .collect::<Option<Vec<_>>>(),
+                        Expr::UserCall { name, .. } => {
+                            return_types.get(name).and_then(|ty| match ty {
+                                ReturnType::Tuple(elements) => Some(elements.clone()),
+                                ReturnType::Scalar(_) => None,
+                            })
+                        }
+                        Expr::Var { name, .. } => owner_types.tuples.get(name).cloned(),
+                        _ => None,
+                    };
+                    let Some(element_types) =
+                        element_types.filter(|types| types.len() == names.len())
+                    else {
+                        if names
+                            .iter()
+                            .any(|name| !path_or_ancestor_is_declared(name, owner_roots))
+                        {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "cannot determine fixed storage types for tuple locals in task '{task_name}'"
+                                ),
+                                *loc,
+                            ));
+                        }
+                        continue;
+                    };
+                    for (name, ty) in names.iter().zip(element_types) {
+                        if !path_or_ancestor_is_declared(name, owner_roots) {
+                            locals
+                                .entry(name.clone())
+                                .or_insert(TaskLocalStorage::Scalar(ty));
+                        }
+                    }
+                }
                 Stmt::If {
                     then_branch,
                     else_branch,
@@ -1670,6 +1807,7 @@ fn collect_task_locals(
                         owner_roots,
                         return_types,
                         owner_types,
+                        struct_defs,
                         source_names,
                         task_name,
                         locals,
@@ -1680,6 +1818,7 @@ fn collect_task_locals(
                         owner_roots,
                         return_types,
                         owner_types,
+                        struct_defs,
                         source_names,
                         task_name,
                         locals,
@@ -1695,6 +1834,7 @@ fn collect_task_locals(
                         owner_roots,
                         return_types,
                         owner_types,
+                        struct_defs,
                         source_names,
                         task_name,
                         locals,
@@ -1706,6 +1846,7 @@ fn collect_task_locals(
                     owner_roots,
                     return_types,
                     owner_types,
+                    struct_defs,
                     source_names,
                     task_name,
                     locals,
@@ -1722,6 +1863,7 @@ fn collect_task_locals(
         owner_roots,
         return_types,
         owner_types,
+        struct_defs,
         source_names,
         task_name,
         &mut locals,
@@ -1895,9 +2037,9 @@ fn rewrite_task_stmts(
     }
 }
 
-fn expand_task_array_frame_initializers(
+fn expand_task_array_initializers(
     stmts: &mut Vec<Stmt>,
-    frame_arrays: &HashMap<String, (PrimitiveType, usize)>,
+    arrays: &HashMap<String, (PrimitiveType, usize)>,
 ) {
     let mut rewritten = Vec::with_capacity(stmts.len());
     for mut stmt in std::mem::take(stmts) {
@@ -1906,7 +2048,7 @@ fn expand_task_array_frame_initializers(
                 target: AssignTarget::Var(name),
                 expr: Expr::ArrayCtor { init, .. },
                 ..
-            } => frame_arrays.get(name).map(|(element, len)| {
+            } => arrays.get(name).map(|(element, len)| {
                 if let Some(values) = init {
                     values
                         .iter()
@@ -1933,11 +2075,11 @@ fn expand_task_array_frame_initializers(
                 else_branch,
                 ..
             } => {
-                expand_task_array_frame_initializers(then_branch, frame_arrays);
-                expand_task_array_frame_initializers(else_branch, frame_arrays);
+                expand_task_array_initializers(then_branch, arrays);
+                expand_task_array_initializers(else_branch, arrays);
             }
             Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                expand_task_array_frame_initializers(body, frame_arrays);
+                expand_task_array_initializers(body, arrays);
             }
             _ => {}
         }
@@ -2617,8 +2759,9 @@ struct InlineTaskExpansion {
 fn prepare_task(
     task: &TaskDef,
     owner_roots: &HashSet<String>,
-    return_types: &HashMap<String, PrimitiveType>,
+    return_types: &HashMap<String, ReturnType>,
     owner_types: &TaskOwnerTypes,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     placement: TaskResumePlacement,
     errors: &mut Vec<Diagnostic>,
 ) -> PreparedTask {
@@ -2629,6 +2772,7 @@ fn prepare_task(
         owner_roots,
         return_types,
         owner_types,
+        struct_defs,
         &source_names,
         &task.name,
         errors,
@@ -2648,18 +2792,17 @@ fn prepare_task(
         })
         .collect::<HashMap<_, _>>();
     rewrite_task_stmts(&mut body, &names, &task_local_names);
-    let expanded_arrays = locals
+    let task_arrays = locals
         .iter()
         .filter_map(|(name, storage)| {
             let TaskLocalStorage::Array { element, len, .. } = storage else {
                 return None;
             };
             let lowered_name = names.get(name).cloned().unwrap_or_else(|| name.clone());
-            (live_across_yield.contains(name) || matches!(placement, TaskResumePlacement::Inline))
-                .then_some((lowered_name, (*element, *len)))
+            Some((lowered_name, (*element, *len)))
         })
         .collect::<HashMap<_, _>>();
-    expand_task_array_frame_initializers(&mut body, &expanded_arrays);
+    expand_task_array_initializers(&mut body, &task_arrays);
 
     let mut init_stmts = vec![typed_assign(
         task_pc_field(&task.name),
@@ -2796,7 +2939,8 @@ fn take_top_level_tasks(program: &mut Program) -> Vec<TaskDef> {
 fn lower_top_level_tasks(
     program: &mut Program,
     tasks: &[TaskDef],
-    return_types: &HashMap<String, PrimitiveType>,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     if tasks.is_empty() {
@@ -2804,7 +2948,7 @@ fn lower_top_level_tasks(
     }
 
     let owner_surface = TaskOwnerSurface::from_top_level(program);
-    let owner_types = collect_task_owner_types(&owner_surface, return_types);
+    let owner_types = collect_task_owner_types(&owner_surface, return_types, struct_defs);
     let owner_roots = collect_owner_roots(&owner_surface);
     let mut init_prefix = vec![typed_assign(
         TASK_AVAILABLE_FIELD,
@@ -2820,6 +2964,7 @@ fn lower_top_level_tasks(
             &owner_roots,
             return_types,
             &owner_types,
+            struct_defs,
             TaskResumePlacement::Inline,
             errors,
         );
@@ -2960,24 +3105,71 @@ fn lower_top_level_tasks(
     init.retained_roots.extend(retained_fields);
 }
 
-pub(crate) fn lower_tasks(program: &mut Program, errors: &mut Vec<Diagnostic>) {
-    let return_types = program
+fn declared_task_return_type(def: &FunctionDef) -> Option<(String, ReturnType)> {
+    let return_type = match &def.return_ty {
+        Some(FnReturnType::Scalar(FnReturnScalarType::Primitive(ty))) => ReturnType::Scalar(*ty),
+        Some(FnReturnType::Tuple(elements)) => ReturnType::Tuple(
+            elements
+                .iter()
+                .map(|element| match element {
+                    FnReturnScalarType::Primitive(ty) => Some(*ty),
+                    FnReturnScalarType::Named(_) => None,
+                })
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        _ => return None,
+    };
+    Some((def.name.clone(), return_type))
+}
+
+pub(crate) fn lower_tasks(
+    program: &mut Program,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let raw_struct_defs = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Struct(def) => Some((def.name.clone(), def.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let struct_defs = coerce_struct_defs_for_inference(&raw_struct_defs, options);
+    let mut return_types = program
         .blocks
         .iter()
         .filter_map(|block| match block {
             Block::Def(def) => Some(def),
             _ => None,
         })
-        .filter_map(|def| match &def.return_ty {
-            Some(FnReturnType::Scalar(FnReturnScalarType::Primitive(ty))) => {
-                Some((def.name.clone(), *ty))
-            }
-            _ => None,
-        })
+        .filter_map(declared_task_return_type)
         .collect::<HashMap<_, _>>();
+    return_types.extend(
+        program
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Struct(def) => Some(def),
+                _ => None,
+            })
+            .flat_map(|def| {
+                def.methods.iter().filter_map(|method| {
+                    declared_task_return_type(method).map(|(_, return_type)| {
+                        (format!("{}.{}", def.name, method.name), return_type)
+                    })
+                })
+            }),
+    );
 
     let top_level_tasks = take_top_level_tasks(program);
-    lower_top_level_tasks(program, &top_level_tasks, &return_types, errors);
+    lower_top_level_tasks(
+        program,
+        &top_level_tasks,
+        &return_types,
+        &struct_defs,
+        errors,
+    );
 
     let mut has_tasks = !top_level_tasks.is_empty();
     for proc in program.blocks.iter_mut().filter_map(|block| match block {
@@ -2989,18 +3181,10 @@ pub(crate) fn lower_tasks(program: &mut Program, errors: &mut Vec<Diagnostic>) {
         }
         has_tasks = true;
         let mut proc_return_types = return_types.clone();
-        proc_return_types.extend(
-            proc.local_defs
-                .iter()
-                .filter_map(|def| match &def.return_ty {
-                    Some(FnReturnType::Scalar(FnReturnScalarType::Primitive(ty))) => {
-                        Some((def.name.clone(), *ty))
-                    }
-                    _ => None,
-                }),
-        );
+        proc_return_types.extend(proc.local_defs.iter().filter_map(declared_task_return_type));
         let owner_surface = TaskOwnerSurface::from_proc(proc);
-        let owner_types = collect_task_owner_types(&owner_surface, &proc_return_types);
+        let owner_types =
+            collect_task_owner_types(&owner_surface, &proc_return_types, &struct_defs);
         let owner_roots = collect_owner_roots(&owner_surface);
         let buffer_params = task_buffer_params(&owner_surface, errors);
         let buffer_names = buffer_params
@@ -3039,6 +3223,7 @@ pub(crate) fn lower_tasks(program: &mut Program, errors: &mut Vec<Diagnostic>) {
                 &owner_roots,
                 &proc_return_types,
                 &owner_types,
+                &struct_defs,
                 TaskResumePlacement::HelperFunction,
                 errors,
             );
@@ -3171,6 +3356,97 @@ mod tests {
             "task load():\n  yield\n  return\nevent restart():\n  load.reset()\nblock:\n  await load()\n  sample:\n    out1 = 0.0\n",
         );
         assert!(errors.is_empty(), "unexpected diagnostics: {errors:?}");
+    }
+
+    #[test]
+    fn task_locals_use_shared_expression_typing() {
+        let source = r#"
+struct Counter:
+  value: i32 = 7
+
+  def read(self) -> i32:
+    return self.value
+
+buffers:
+  impulse: f32[2]
+
+def clamp_count(value: i32) -> i32:
+  return max(value, 1)
+
+init:
+  counter = Counter()
+
+task load():
+  frames = min(impulse.len(), 480000)
+  count = clamp_count(frames)
+  field_value = counter.value
+  method_value = counter.read()
+  yield
+  count = count + field_value + method_value
+
+event reload():
+  load.reset()
+
+block:
+  await load()
+  sample:
+    out1 = 0.0
+"#;
+
+        crate::analyze(onda_frontend::parse_program(source).expect("source should parse"))
+            .expect("task locals should follow ordinary expression typing rules");
+    }
+
+    #[test]
+    fn executable_scopes_share_scalar_inference() {
+        let source = r#"
+struct Counter:
+  value: i32 = 7
+
+  def read(self) -> i32:
+    return self.value
+
+def require_i32(value: i32) -> i32:
+  return value
+
+def read_counter(counter: Counter) -> i32:
+  value = counter.read()
+  return require_i32(value)
+
+proc Reader:
+  init:
+    counter = Counter()
+    init_value = counter.read()
+    init_checked = require_i32(init_value)
+
+  task prepare():
+    task_value = counter.read()
+    task_checked = require_i32(task_value)
+    yield
+
+  event restart():
+    event_value = counter.read()
+    event_checked = require_i32(event_value)
+    prepare.reset()
+
+  block:
+    block_value = counter.read()
+    block_checked = require_i32(block_value)
+    await prepare()
+
+    sample:
+      sample_value = counter.read()
+      out1 = f32(require_i32(sample_value) + read_counter(counter))
+
+init:
+  reader = Reader()
+
+sample:
+  out1 = reader()
+"#;
+
+        crate::analyze(onda_frontend::parse_program(source).expect("source should parse"))
+            .expect("all executable scopes should share scalar inference");
     }
 
     #[test]
@@ -3528,5 +3804,139 @@ sample:
         }
         lower_program_to_optimized_mir(&typed)
             .expect("task buffer parameters and inferred frame types should lower");
+    }
+
+    #[test]
+    fn task_aggregate_fields_remain_owner_state_and_inherit_retain() {
+        let source = r#"
+struct Accumulator:
+  value: i32 = 0
+
+proc Loader:
+  init:
+    accumulator = Accumulator() {retain}
+  task load():
+    accumulator.value += 1
+    yield
+    accumulator.value += 1
+  block:
+    await load()
+    sample:
+      out1 = f32(accumulator.value)
+
+init:
+  loader = Loader()
+  top = Accumulator() {retain}
+sample:
+  out1 = loader() + f32(top.value)
+"#;
+        let typed = analyze(parse_program(source).expect("aggregate task source should parse"))
+            .expect("aggregate task state should analyze");
+        assert!(!typed
+            .state_vars
+            .iter()
+            .any(|name| name.contains("__onda_task_load_local_accumulator")));
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("aggregate task state should lower to valid MIR");
+        for name in ["loader.accumulator.value", "top.value"] {
+            let slot = mir
+                .state
+                .iter()
+                .find(|slot| slot.name == name)
+                .unwrap_or_else(|| panic!("missing flattened state slot {name}"));
+            assert_eq!(slot.reset, onda_mir::StateResetPolicy::Retain);
+        }
+    }
+
+    #[test]
+    fn top_level_task_aggregate_fields_remain_owner_state() {
+        let source = r#"
+struct Accumulator:
+  value: i32 = 0
+
+init:
+  accumulator = Accumulator() {retain}
+task load():
+  accumulator.value += 1
+  yield
+  accumulator.value += 1
+block:
+  await load()
+  sample:
+    out1 = f32(accumulator.value)
+"#;
+        let typed = analyze(parse_program(source).expect("aggregate task source should parse"))
+            .expect("top-level aggregate task state should analyze");
+        assert!(!typed
+            .state_vars
+            .iter()
+            .any(|name| name.contains("__onda_task_load_local_accumulator")));
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("top-level aggregate task state should lower");
+        let accumulator = mir
+            .state
+            .iter()
+            .find(|slot| slot.name == "accumulator.value")
+            .expect("flattened accumulator state");
+        assert_eq!(accumulator.reset, onda_mir::StateResetPolicy::Retain);
+    }
+
+    #[test]
+    fn proc_task_supports_non_frame_array_locals() {
+        let source = r#"
+proc Loader:
+  init:
+    result: i32 = 0 {retain}
+  task load():
+    values: i32[2] = [3, 5]
+    result = values[0] + values[1]
+    yield
+  block:
+    await load()
+    sample:
+      out1 = f32(result)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#;
+        let typed = analyze(parse_program(source).expect("array task source should parse"))
+            .expect("non-frame task array should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("non-frame task array should lower to valid MIR");
+    }
+
+    #[test]
+    fn tuple_destructured_task_locals_can_cross_yield() {
+        let source = r#"
+def pair() -> (i32, i32):
+  return (3, 5)
+
+proc Loader:
+  init:
+    result: i32 = 0 {retain}
+  task load():
+    (left, right) = pair()
+    yield
+    result = left + right
+  block:
+    await load()
+    sample:
+      out1 = f32(result)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#;
+        let typed = analyze(parse_program(source).expect("tuple task source should parse"))
+            .expect("tuple task locals should analyze");
+        for local in ["left", "right"] {
+            assert!(typed
+                .state_vars
+                .iter()
+                .any(|name| name.contains(&format!("__onda_task_load_local_{local}"))));
+        }
+        lower_program_to_optimized_mir(&typed)
+            .expect("tuple task locals should lower to valid MIR");
     }
 }

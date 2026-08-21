@@ -43,6 +43,7 @@
     "param_size_bytes": 16,
     "param_align_bytes": 16,
     "state_initialization": "zeroed",
+    "state_reset_ranges": [{ "byte_offset": 0, "byte_size": 4 }],
     "snapshot_size_bytes": 4,
     "snapshot_format_version": 1,
     "snapshot_byte_order": "little_endian",

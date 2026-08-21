@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn merged_data_vars_for_runtime(
+pub(crate) fn merged_data_vars(
     state_arrays: &HashMap<String, usize>,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
 ) -> HashMap<String, usize> {
