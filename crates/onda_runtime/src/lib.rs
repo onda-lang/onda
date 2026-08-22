@@ -2218,6 +2218,47 @@ sample:
     }
 
     #[test]
+    fn task_for_completes_after_yield_at_inclusive_i64_extrema() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  pin result: i32 = 0
+task prepare():
+  for i: i64 in (i64(9223372036854775807))..=(i64(9223372036854775807)):
+    result += 1
+    yield
+  for i: i64 @ -1 in (i64(-9223372036854775807) - i64(1))..=(i64(-9223372036854775807) - i64(1)):
+    result += 2
+    yield
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("maximum iteration should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("minimum iteration should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("extrema-bound task should complete");
+        assert_eq!(output, [3.0; BLOCK_SIZE]);
+    }
+
+    #[test]
     fn proc_task_for_preserves_explicit_i64_induction_across_yields() {
         const BLOCK_SIZE: usize = 4;
         let mut instance = compile_test_instance(

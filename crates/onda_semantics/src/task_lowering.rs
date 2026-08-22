@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::*;
 use onda_frontend::{
     ArrayElemType, ArrayTypeSpec, BinaryOp, CmpOp, FnParamDecl, FnParamType, FnReturnScalarType,
-    FnReturnType, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
+    FnReturnType, LogicalOp, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN,
+    INTERNAL_TASK_YIELD_FN,
 };
 
 const TASK_FIELD_PREFIX: &str = "__onda_task_";
@@ -196,6 +197,18 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
                 .iter()
                 .map(|decl| (decl.name.as_str(), "buffer")),
         )
+        .chain(
+            proc.consts
+                .iter()
+                .map(|decl| (decl.name.as_str(), "constant")),
+        )
+        .chain(proc.init.body.iter().filter_map(|stmt| match stmt {
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                ..
+            } => Some((name.as_str(), "state root")),
+            _ => None,
+        }))
     {
         members.entry(name).or_insert(kind);
     }
@@ -1186,6 +1199,15 @@ fn typed_assign(name: impl Into<String>, ty: PrimitiveType, expr: Expr) -> Stmt 
 
 fn compare(op: CmpOp, lhs: Expr, rhs: Expr) -> Expr {
     Expr::Compare {
+        loc: Default::default(),
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    }
+}
+
+fn logical(op: LogicalOp, lhs: Expr, rhs: Expr) -> Expr {
+    Expr::Logical {
         loc: Default::default(),
         op,
         lhs: Box::new(lhs),
@@ -2533,21 +2555,41 @@ impl TaskCfgBuilder {
                 debug_assert_eq!(frame.ty, induction_ty);
                 let end_field = frame.end;
                 let step_field = frame.step;
+                let positive = compare(CmpOp::Gt, Expr::var(step_field.clone()), Expr::int(0));
+                let negative = compare(CmpOp::Lt, Expr::var(step_field.clone()), Expr::int(0));
+                let advanced = || Expr::Binary {
+                    loc: Default::default(),
+                    op: BinaryOp::Add,
+                    lhs: Box::new(Expr::var(var.clone())),
+                    rhs: Box::new(Expr::var(step_field.clone())),
+                };
                 let header = self.push(Vec::new(), TaskCfgTerminator::Complete);
-                let latch = self.push(
-                    vec![assign_var(
-                        var.clone(),
-                        Expr::Binary {
-                            loc: Default::default(),
-                            op: BinaryOp::Add,
-                            lhs: Box::new(Expr::var(var.clone())),
-                            rhs: Box::new(Expr::var(step_field.clone())),
-                        },
-                    )],
+                let increment = self.push(
+                    vec![assign_var(var.clone(), advanced())],
                     TaskCfgTerminator::Jump(header),
                 );
+                // Stop before signed addition wraps and makes an extrema-bound loop re-enter.
+                let latch = self.push(
+                    Vec::new(),
+                    TaskCfgTerminator::Branch {
+                        condition: logical(
+                            LogicalOp::Or,
+                            logical(
+                                LogicalOp::And,
+                                positive.clone(),
+                                compare(CmpOp::Gt, advanced(), Expr::var(var.clone())),
+                            ),
+                            logical(
+                                LogicalOp::And,
+                                negative.clone(),
+                                compare(CmpOp::Lt, advanced(), Expr::var(var.clone())),
+                            ),
+                        ),
+                        then_block: increment,
+                        else_block: next,
+                    },
+                );
                 let body = self.lower_list(body, latch, Some((next, latch)));
-                let positive = compare(CmpOp::Gt, Expr::var(step_field.clone()), Expr::int(0));
                 let forward = compare(
                     if *end_inclusive { CmpOp::Le } else { CmpOp::Lt },
                     Expr::var(var.clone()),
@@ -2559,26 +2601,11 @@ impl TaskCfgBuilder {
                     Expr::var(end_field.clone()),
                 );
                 self.blocks[header].terminator = TaskCfgTerminator::Branch {
-                    condition: Expr::Logical {
-                        loc: Default::default(),
-                        op: onda_frontend::LogicalOp::Or,
-                        lhs: Box::new(Expr::Logical {
-                            loc: Default::default(),
-                            op: onda_frontend::LogicalOp::And,
-                            lhs: Box::new(positive),
-                            rhs: Box::new(forward),
-                        }),
-                        rhs: Box::new(Expr::Logical {
-                            loc: Default::default(),
-                            op: onda_frontend::LogicalOp::And,
-                            lhs: Box::new(compare(
-                                CmpOp::Lt,
-                                Expr::var(step_field.clone()),
-                                Expr::int(0),
-                            )),
-                            rhs: Box::new(backward),
-                        }),
-                    },
+                    condition: logical(
+                        LogicalOp::Or,
+                        logical(LogicalOp::And, positive, forward),
+                        logical(LogicalOp::And, negative, backward),
+                    ),
                     then_block: body,
                     else_block: next,
                 };
@@ -4097,6 +4124,20 @@ sample:
             .iter()
             .any(|error| error.message.contains("conflicts with proc-local def")));
 
+        let proc_const_conflict = validate(
+            "proc P:\n  const load = 1\n  task load():\n    return\n  sample:\n    out1 = 0.0\n",
+        );
+        assert!(proc_const_conflict
+            .iter()
+            .any(|error| error.message.contains("conflicts with constant")));
+
+        let proc_state_conflict = validate(
+            "proc P:\n  init:\n    load: i32 = 0\n  task load():\n    return\n  sample:\n    out1 = 0.0\n",
+        );
+        assert!(proc_state_conflict
+            .iter()
+            .any(|error| error.message.contains("conflicts with state root")));
+
         let graph =
             validate("proc P:\n  task load():\n    return\n  graph:\n    source() >> out1\n");
         assert!(graph
@@ -4113,6 +4154,28 @@ sample:
         assert!(top_graph.iter().any(|error| error
             .message
             .contains("tasks cannot be declared together with a graph")));
+    }
+
+    #[test]
+    fn rejects_proc_task_constant_conflicts_before_folding_await_markers() {
+        let source = r#"
+proc P:
+  const prepare = 1
+  task prepare():
+    yield
+  block:
+    await prepare()
+    sample:
+      out1 = 0.0
+"#;
+        let errors = analyze(parse_program(source).expect("task source should parse"))
+            .expect_err("task and constant names should conflict");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("task 'prepare' in processor 'P' conflicts with local constant")));
+        assert!(errors.iter().all(|error| !error
+            .message
+            .contains("malformed internal task await marker")));
     }
 
     #[test]

@@ -803,6 +803,7 @@ struct SemanticConstArtifacts {
 
 #[derive(Debug, Clone, Default)]
 struct ProcLocalConstArtifacts {
+    names: HashSet<String>,
     values: HashMap<String, TypedConstValue>,
 }
 
@@ -6036,10 +6037,10 @@ fn reject_proc_local_const_decl_name(
     symbol_kind: &str,
     name: &str,
     loc: Span,
-    proc_consts: &HashMap<String, TypedConstValue>,
+    proc_const_names: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if proc_consts.contains_key(name) {
+    if proc_const_names.contains(name) {
         errors.push(Diagnostic::semantic_span(
             format!(
                 "{symbol_kind} '{name}' in processor '{proc_name}' conflicts with local constant '{name}'"
@@ -6051,16 +6052,26 @@ fn reject_proc_local_const_decl_name(
 
 fn reject_proc_local_const_decl_conflicts(
     proc: &ProcessorDef,
-    proc_consts: &HashMap<String, TypedConstValue>,
+    proc_const_names: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    for task in &proc.tasks {
+        reject_proc_local_const_decl_name(
+            &proc.name,
+            "task",
+            &task.name,
+            task.loc,
+            proc_const_names,
+            errors,
+        );
+    }
     for decl in &proc.ins {
         reject_proc_local_const_decl_name(
             &proc.name,
             "processor input",
             &decl.name,
             decl.loc,
-            proc_consts,
+            proc_const_names,
             errors,
         );
     }
@@ -6070,7 +6081,7 @@ fn reject_proc_local_const_decl_conflicts(
             "processor output",
             &decl.name,
             decl.loc,
-            proc_consts,
+            proc_const_names,
             errors,
         );
     }
@@ -6080,7 +6091,7 @@ fn reject_proc_local_const_decl_conflicts(
             "processor parameter",
             &decl.name,
             decl.loc,
-            proc_consts,
+            proc_const_names,
             errors,
         );
     }
@@ -6090,7 +6101,7 @@ fn reject_proc_local_const_decl_conflicts(
             "processor buffer",
             &decl.name,
             decl.loc,
-            proc_consts,
+            proc_const_names,
             errors,
         );
     }
@@ -6104,9 +6115,8 @@ fn preprocess_proc_local_const_decls(
     errors: &mut Vec<Diagnostic>,
 ) -> ProcLocalConstArtifacts {
     let mut out = ProcLocalConstArtifacts::default();
-    let mut proc_const_names = HashSet::<String>::new();
     for decl in consts {
-        if !proc_const_names.insert(decl.name.clone()) {
+        if !out.names.insert(decl.name.clone()) {
             errors.push(Diagnostic::semantic_span(
                 format!("duplicate proc constant '{}'", decl.name),
                 decl.loc.as_ref(),
@@ -6300,7 +6310,7 @@ fn preprocess_local_consts_in_block(
             );
             let proc_options = proc_runtime_analysis_options(options, sample_oversample_factor);
             let proc_consts = preprocess_proc_local_consts(proc, artifacts, proc_options, errors);
-            reject_proc_local_const_decl_conflicts(proc, &proc_consts.values, errors);
+            reject_proc_local_const_decl_conflicts(proc, &proc_consts.names, errors);
             if let Some(count) = &mut proc.ins_deferred_count {
                 fold_local_scalar_const_expr(count, &proc_consts.values);
             }
