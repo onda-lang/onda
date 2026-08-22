@@ -341,7 +341,7 @@ struct DefinitionInfo {
     detail: String,
     span: Span,
     file_key: Option<String>,
-    pinned: bool,
+    private: bool,
 }
 
 impl DefinitionInfo {
@@ -400,7 +400,7 @@ struct ProcInfo {
     events: HashMap<String, usize>,
     buffers: HashMap<String, usize>,
     local_defs: HashMap<String, usize>,
-    has_pinned_params: bool,
+    has_private_params: bool,
     call_signature: String,
 }
 
@@ -522,7 +522,7 @@ impl NavigationIndex {
             detail: format!("namespace {full_name}"),
             span: ns.loc,
             file_key: file_key_for_span(ns.loc),
-            pinned: false,
+            private: false,
         });
         for param in &ns.params {
             self.add_namespace_param_definition(&full_name, param, ns.loc);
@@ -567,7 +567,7 @@ impl NavigationIndex {
             detail: format!("namespace {} = {target}", alias.name),
             span: alias.loc,
             file_key: file_key_for_span(alias.loc),
-            pinned: false,
+            private: false,
         });
     }
 
@@ -590,7 +590,7 @@ impl NavigationIndex {
             detail: format!("const {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -617,7 +617,7 @@ impl NavigationIndex {
             detail: format!("{const_prefix}{label} {}{type_params}({params})", def.name),
             span: def.loc,
             file_key: file_key_for_span(def.loc),
-            pinned: false,
+            private: false,
         });
 
         let mut param_indices = HashMap::new();
@@ -653,11 +653,11 @@ impl NavigationIndex {
             detail: format!("proc {}{type_params}({args})", proc_def.name),
             span: proc_def.loc,
             file_key: file_key_for_span(proc_def.loc),
-            pinned: false,
+            private: false,
         });
 
         let mut info = ProcInfo {
-            has_pinned_params: proc_def.params.iter().any(|param| param.pinned),
+            has_private_params: proc_def.params.iter().any(|param| param.private),
             call_signature: proc_call_signature(proc_def),
             ..ProcInfo::default()
         };
@@ -668,7 +668,7 @@ impl NavigationIndex {
             detail: format!("event init({})", proc_init_signature(proc_def)),
             span: proc_def.loc,
             file_key: file_key_for_span(proc_def.loc),
-            pinned: false,
+            private: false,
         });
         info.init = Some(init_idx);
         for decl in &proc_def.ins {
@@ -757,7 +757,7 @@ impl NavigationIndex {
             detail: format!("struct {} {{ {fields} }}", struct_def.name),
             span: struct_def.loc,
             file_key: file_key_for_span(struct_def.loc),
-            pinned: false,
+            private: false,
         });
 
         let mut info = StructInfo::default();
@@ -788,7 +788,7 @@ impl NavigationIndex {
             detail: format!("{detail} {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -807,7 +807,7 @@ impl NavigationIndex {
             detail: format!("{detail} {name}"),
             span,
             file_key: file_key_for_span(span),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -844,7 +844,7 @@ impl NavigationIndex {
             detail: format!("{detail} {}", format_param_decl(decl)),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: decl.pinned,
+            private: decl.private,
         })
     }
 
@@ -856,7 +856,7 @@ impl NavigationIndex {
             detail: format!("argument {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -868,7 +868,7 @@ impl NavigationIndex {
             detail: format!("event parameter {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -880,7 +880,7 @@ impl NavigationIndex {
             detail: format!("{detail} {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -899,7 +899,7 @@ impl NavigationIndex {
             detail: format!("event {}({params})", event.name),
             span: event.loc,
             file_key: file_key_for_span(event.loc),
-            pinned: false,
+            private: false,
         });
 
         let mut param_indices = HashMap::new();
@@ -922,7 +922,7 @@ impl NavigationIndex {
             detail: format!("field {}", field.name),
             span: field.loc,
             file_key: file_key_for_span(field.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -934,7 +934,7 @@ impl NavigationIndex {
             detail: format!("local {name}"),
             span,
             file_key: file_key_for_span(span),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -946,7 +946,7 @@ impl NavigationIndex {
             detail: format!("type parameter {name}"),
             span,
             file_key: file_key_for_span(span),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -963,7 +963,7 @@ impl NavigationIndex {
             detail: format!("namespace parameter {}", param.name),
             span,
             file_key: file_key_for_span(span),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -2310,12 +2310,12 @@ impl NavigationIndex {
             }
             if let Some(idx) = proc_info.params.get(member) {
                 let definition = self.definitions.get(*idx)?;
-                if !definition.pinned {
+                if !definition.private {
                     return Some(definition);
                 }
                 return None;
             }
-            if member == "params" && !proc_info.has_pinned_params {
+            if member == "params" && !proc_info.has_private_params {
                 return None;
             }
             if member == "init" {
@@ -2358,7 +2358,7 @@ impl NavigationIndex {
                 }
                 if let Some(idx) = proc_info.params.get(arg) {
                     let definition = self.definitions.get(*idx)?;
-                    if !definition.pinned {
+                    if !definition.private {
                         return Some(definition);
                     }
                 }
@@ -3133,8 +3133,8 @@ fn format_event_param_signature(param: &EventParamDecl) -> String {
 
 fn format_proc_param_signature(param: &ParamDecl) -> String {
     let mut text = String::new();
-    if param.pinned {
-        text.push_str("pin ");
+    if param.private {
+        text.push_str("private ");
     }
     text.push_str(&param.name);
     if let Some(ty) = &param.ty {
@@ -3175,7 +3175,7 @@ fn proc_call_signature(proc_def: &ProcessorDef) -> String {
             proc_def
                 .params
                 .iter()
-                .filter(|param| !param.pinned)
+                .filter(|param| !param.private)
                 .map(format_proc_param_signature),
         )
         .collect::<Vec<_>>()
@@ -4185,10 +4185,10 @@ sample:
     }
 
     #[test]
-    fn hides_pinned_params_from_external_member_navigation() {
+    fn hides_private_params_from_external_member_navigation() {
         let source = r#"proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
   outs:
     out1
   sample:
@@ -4204,11 +4204,11 @@ sample:
 
         assert!(
             definition_at(source, "voice.cutoff", "voice.".len() + 1).is_none(),
-            "external member access should not resolve pinned params"
+            "external member access should not resolve private params"
         );
         assert!(
             definition_at(source, "out1 = cutoff", "out1 = ".len() + 1).is_some(),
-            "pinned params should still resolve inside their owning proc"
+            "private params should still resolve inside their owning proc"
         );
     }
 

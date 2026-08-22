@@ -1779,14 +1779,14 @@ outs { out1 }
 events {
   set_amp(value: f32) {
     amp = value
-    retained = value + 1.0
+    pinned = value + 1.0
   }
 }
 init {
   amp = 0.0
-  retained = 1.0 {retain}
+  pin pinned = 1.0
 }
-sample { out1 = amp + retained }
+sample { out1 = amp + pinned }
 "#,
         );
 

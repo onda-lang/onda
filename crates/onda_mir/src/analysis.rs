@@ -1978,7 +1978,8 @@ mod tests {
             name: "value".to_owned(),
             ty: scalar,
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         program.functions = vec![init, process, callee, caller];
 

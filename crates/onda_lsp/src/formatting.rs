@@ -350,7 +350,20 @@ fn format_init_block(label: &str, init: &InitBlock, indent: usize, out: &mut Str
     } else {
         push_line(out, indent, &format!("{label}:"));
     }
-    format_stmt_list(&init.body, indent + 1, out);
+    if init.body.is_empty() {
+        push_line(out, indent + 1, "pass");
+        return;
+    }
+    for stmt in &init.body {
+        let pinned = matches!(
+            stmt,
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                ..
+            } if init.pinned_roots.contains(name)
+        );
+        format_stmt_with_prefix(stmt, indent + 1, out, if pinned { "pin " } else { "" });
+    }
 }
 
 fn format_sample_block(label: &str, sample: &SampleBlock, indent: usize, out: &mut String) {
@@ -606,6 +619,10 @@ fn format_stmt_list(stmts: &[Stmt], indent: usize, out: &mut String) {
 }
 
 fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
+    format_stmt_with_prefix(stmt, indent, out, "");
+}
+
+fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix: &str) {
     match stmt {
         Stmt::Const { decl, .. } => {
             let mut text = format!("const {}", decl.name);
@@ -626,7 +643,32 @@ fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
             ..
         } => {
             let lhs = format_assign_target(target);
-            let mut text = lhs;
+            let mut text = prefix.to_owned();
+            text.push_str(&lhs);
+            if *is_typed_decl {
+                if let Expr::ArrayCtor { spec, init, .. } = expr {
+                    text.push_str(": ");
+                    text.push_str(&format_array_type_spec(spec));
+                    if let Some(values) = init {
+                        text.push_str(" = ");
+                        if matches!(spec.elem, ArrayElemType::Struct(_)) && values.len() == 1 {
+                            text.push_str(&format_expr(&values[0]));
+                        } else {
+                            text.push('[');
+                            text.push_str(
+                                &values
+                                    .iter()
+                                    .map(format_expr)
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                            );
+                            text.push(']');
+                        }
+                    }
+                    push_line(out, indent, &text);
+                    return;
+                }
+            }
             if *is_typed_decl {
                 if let Some(ty) = decl_ty {
                     text.push_str(": ");
@@ -637,7 +679,13 @@ fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
                 }
             }
             text.push_str(" = ");
-            text.push_str(&format_expr(expr));
+            if let Some((value, range)) = format_binding_range_initializer(expr) {
+                text.push_str(&value);
+                text.push(' ');
+                text.push_str(&range);
+            } else {
+                text.push_str(&format_expr(expr));
+            }
             push_line(out, indent, &text);
         }
         Stmt::Expr { expr, .. } => {
@@ -697,6 +745,42 @@ fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
         Stmt::Break { .. } => push_line(out, indent, "break"),
         Stmt::Continue { .. } => push_line(out, indent, "continue"),
     }
+}
+
+fn format_binding_range_initializer(expr: &Expr) -> Option<(String, String)> {
+    let Expr::Call { func, args, .. } = expr else {
+        return None;
+    };
+    let [value, lower, upper] = args.as_slice() else {
+        return None;
+    };
+    let (domain, wrap) = match func {
+        BuiltinFn::BindingCountClamp => (format_expr(upper), false),
+        BuiltinFn::BindingCountWrap => (format_expr(upper), true),
+        BuiltinFn::BindingRangeClamp => (
+            format!("{}..{}", format_expr(lower), format_expr(upper)),
+            false,
+        ),
+        BuiltinFn::BindingRangeWrap => (
+            format!("{}..{}", format_expr(lower), format_expr(upper)),
+            true,
+        ),
+        BuiltinFn::BindingRangeInclusiveClamp => (
+            format!("{}..={}", format_expr(lower), format_expr(upper)),
+            false,
+        ),
+        BuiltinFn::BindingRangeInclusiveWrap => (
+            format!("{}..={}", format_expr(lower), format_expr(upper)),
+            true,
+        ),
+        _ => return None,
+    };
+    let range = if wrap {
+        format!("{{{domain}, wrap}}")
+    } else {
+        format!("{{{domain}}}")
+    };
+    Some((format_expr(value), range))
 }
 
 fn format_task_control_stmt(expr: &Expr) -> Option<String> {
@@ -1197,8 +1281,8 @@ pub fn format_port_decl(port: &PortDecl) -> String {
 
 pub fn format_param_decl(param: &ParamDecl) -> String {
     let mut text = String::new();
-    if param.pinned {
-        text.push_str("pin ");
+    if param.private {
+        text.push_str("private ");
     }
     text.push_str(&param.name);
     if let Some(ty) = &param.ty {
@@ -1403,5 +1487,36 @@ block:
         parse_program(&formatted).unwrap_or_else(|errors| {
             panic!("formatted task syntax should remain parseable:\n{formatted}\n{errors:?}")
         });
+    }
+
+    #[test]
+    fn formatting_preserves_private_params_and_pinned_state() {
+        let source = r#"
+proc Worker:
+  params:
+    private amount = 1.0
+  init:
+    pin prepared: f32[8]
+    pin cursor: i32 = 0 {8, wrap}
+  sample:
+    out1 = prepared[cursor] * amount
+"#;
+        let program = parse_program(source).expect("modifiers should parse");
+        let formatted = format_program(&program);
+
+        assert!(
+            formatted.contains("    private amount = 1.0\n"),
+            "{formatted}"
+        );
+        assert!(
+            formatted.contains("    pin prepared: f32[8]\n"),
+            "{formatted}"
+        );
+        assert!(
+            formatted.contains("    pin cursor: i32 = 0 {8, wrap}\n"),
+            "{formatted}"
+        );
+        let reparsed = parse_program(&formatted).expect("formatted modifiers should parse");
+        assert_eq!(format_program(&reparsed), formatted);
     }
 }

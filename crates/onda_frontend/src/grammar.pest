@@ -131,10 +131,10 @@ param_domain = { "{" ~ NEWLINE* ~ param_domain_item ~ (comma_sep ~ param_domain_
 port_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? }
 param_list = { param_decl ~ (list_sep+ ~ param_decl)* ~ list_sep* }
 proc_param_list = { proc_param_decl ~ (list_sep+ ~ proc_param_decl)* ~ list_sep* }
-param_pin = @{ "pin" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
+param_private = @{ "private" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 param_bind = { "=>" ~ ident }
 param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ param_domain? ~ param_bind? }
-proc_param_decl = { param_pin? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? ~ param_bind? }
+proc_param_decl = { param_private? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? ~ param_bind? }
 buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_sep* }
 buffer_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ buffer_decl_type)? ~ (NEWLINE* ~ buffer_count)? }
 buffer_decl_type = { buffer_type | buffer_inner }
@@ -171,8 +171,11 @@ struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ N
 struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block }
 
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
-stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | const_decl | assign_stmt | call_stmt }
+stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | const_decl | pinned_assign_stmt | assign_stmt | call_stmt }
 assign_stmt = { typed_assign_stmt | compound_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
+binding_pin = @{ "pin" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
+pinnable_assign_stmt = { typed_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
+pinned_assign_stmt = { binding_pin ~ pinnable_assign_stmt }
 named_type = { (namespace_ref | qualified_ident | ident) ~ generic_type_arg_list? }
 typed_decl_type = { array_type | tuple_type | type_name | named_type }
 binding_range_mode = { "wrap" | "clamp" }
@@ -181,10 +184,7 @@ binding_range_spec = { expr ~ NEWLINE* ~ binding_range_op ~ NEWLINE* ~ expr }
 binding_range_named_count = { "count" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
 binding_range_named_range = { "range" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_range_spec }
 binding_range_named_mode = { "mode" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_range_mode }
-binding_reset_value = { "retain" }
-binding_range_named_reset = { "reset" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_reset_value }
-binding_retain = { "retain" }
-binding_range_item = { binding_range_named_count | binding_range_named_range | binding_range_named_mode | binding_range_named_reset | binding_retain | binding_range_mode | binding_range_spec | expr }
+binding_range_item = { binding_range_named_count | binding_range_named_range | binding_range_named_mode | binding_range_mode | binding_range_spec | expr }
 binding_range = { "{" ~ NEWLINE* ~ binding_range_item ~ (comma_sep ~ binding_range_item)* ~ comma_sep? ~ NEWLINE* ~ "}" }
 typed_assign_stmt = { ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ typed_decl_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ (NEWLINE* ~ binding_range)? }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" }
@@ -262,7 +262,7 @@ keyword = _{
     | "for" | "in" | "while" | "loop"
     | "break" | "continue" | "return" | "assert"
     | "tasks" | "task" | "await" | "yield"
-    | "use" | "as" | "pub" | "pin"
+    | "use" | "as" | "pub" | "private" | "pin"
     | "true" | "false"
   ) ~ !ident_char
 }

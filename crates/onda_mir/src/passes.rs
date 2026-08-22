@@ -2203,7 +2203,8 @@ mod tests {
             name: "phase".to_owned(),
             ty: f32_ty,
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
 
         let helper_id = FunctionId::new(program.functions.len() as u32);
@@ -3054,7 +3055,8 @@ mod tests {
                 name: name.to_owned(),
                 ty: TypeId::new(0),
                 persistence: StatePersistence::Snapshot,
-                reset: crate::StateResetPolicy::Restore,
+                authored: true,
+                pinned: false,
                 integer_range: None,
             }));
         program.functions[1].body.statements.push(Statement {
@@ -3115,7 +3117,8 @@ mod tests {
             name: "values".to_owned(),
             ty: array_ty,
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
             integer_range: None,
         });
 
@@ -3253,7 +3256,8 @@ mod tests {
             name: "unused".to_owned(),
             ty: TypeId::new(0),
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
             integer_range: None,
         });
 
@@ -3372,14 +3376,16 @@ mod tests {
                 name: "scalar".to_owned(),
                 ty: TypeId::new(1),
                 persistence: StatePersistence::Snapshot,
-                reset: crate::StateResetPolicy::Restore,
+                authored: true,
+                pinned: false,
             },
             StateSlot {
                 integer_range: None,
                 name: "array".to_owned(),
                 ty: TypeId::new(2),
                 persistence: StatePersistence::Snapshot,
-                reset: crate::StateResetPolicy::Restore,
+                authored: true,
+                pinned: false,
             },
         ]);
         program.functions[0].locals.push(Local {
@@ -3477,7 +3483,8 @@ mod tests {
             name: "value".to_owned(),
             ty: TypeId::new(1),
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         program
             .functions

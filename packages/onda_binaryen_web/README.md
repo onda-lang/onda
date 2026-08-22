@@ -79,7 +79,7 @@ Emitted metadata distinguishes physical Wasm state storage from the packed persi
 `runtime.state_size_bytes` sizes linear-memory state, while `runtime.snapshot_size_bytes` and
 `metadata.states` describe the deterministic scratch-free snapshot layout shared with native MIR.
 `runtime.state_reset_ranges` gives the coalesced physical ranges restored by ordinary reset;
-retained state remains available for task continuations and other persistent prepared data.
+pinned state remains available for task continuations and other persistent prepared data.
 Snapshot entries carry an `authored` flag so compiler-owned task frames remain serializable without
 being presented as user-authored state reflection.
 

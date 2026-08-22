@@ -794,6 +794,7 @@ fn extract_param_names_from_parens(text: &str) -> Vec<String> {
 }
 
 fn source_assignment_target_name(trimmed: &str) -> Option<&str> {
+    let trimmed = trimmed.strip_prefix("pin ").unwrap_or(trimmed);
     let name = extract_leading_ident(trimmed)?;
     let rest = trimmed[name.len()..].trim_start();
     if (rest.starts_with(':') && !rest.starts_with("::"))
@@ -805,20 +806,20 @@ fn source_assignment_target_name(trimmed: &str) -> Option<&str> {
     }
 }
 
-fn extract_param_decl_name(trimmed: &str, allow_pin: bool) -> Option<&str> {
+fn extract_param_decl_name(trimmed: &str, allow_private: bool) -> Option<&str> {
     let name = extract_leading_ident(trimmed)?;
-    if name != "pin" {
+    if name != "private" {
         return Some(name);
     }
-    if !allow_pin {
+    if !allow_private {
         return None;
     }
     let rest = trimmed[name.len()..].trim_start();
-    let pinned_name = extract_leading_ident(rest)?;
-    if is_reserved_identifier(pinned_name) {
+    let private_name = extract_leading_ident(rest)?;
+    if is_reserved_identifier(private_name) {
         None
     } else {
-        Some(pinned_name)
+        Some(private_name)
     }
 }
 

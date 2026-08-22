@@ -7677,7 +7677,8 @@ sample:
             name: "source".to_owned(),
             ty: source_array,
             persistence: onda_mir::StatePersistence::Snapshot,
-            reset: onda_mir::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
 
         let empty_function = |name: &str, kind| onda_mir::Function {
@@ -9925,28 +9926,32 @@ sample { out1 = phase }
                 name: "phase".to_owned(),
                 ty: f32_ty,
                 persistence: onda_mir::StatePersistence::Snapshot,
-                reset: onda_mir::StateResetPolicy::Restore,
+                authored: true,
+                pinned: false,
             },
             onda_mir::StateSlot {
                 integer_range: None,
                 name: "meter".to_owned(),
                 ty: f64_ty,
                 persistence: onda_mir::StatePersistence::ControlMirror,
-                reset: onda_mir::StateResetPolicy::Restore,
+                authored: true,
+                pinned: false,
             },
             onda_mir::StateSlot {
                 integer_range: None,
                 name: "$scratch".to_owned(),
                 ty: i32_ty,
                 persistence: onda_mir::StatePersistence::InstanceScratch,
-                reset: onda_mir::StateResetPolicy::Restore,
+                authored: false,
+                pinned: false,
             },
             onda_mir::StateSlot {
                 integer_range: None,
                 name: "history".to_owned(),
                 ty: f64_ty,
                 persistence: onda_mir::StatePersistence::Snapshot,
-                reset: onda_mir::StateResetPolicy::Retain,
+                authored: true,
+                pinned: true,
             },
         ];
         mir.interface.control_outputs.push(onda_mir::ControlOutput {

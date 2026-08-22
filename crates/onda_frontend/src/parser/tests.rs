@@ -1516,8 +1516,8 @@ sample:
 fn rejects_reserved_keywords_as_identifiers() {
     let keywords = [
         "if", "elif", "else", "for", "in", "while", "loop", "break", "continue", "return", "await",
-        "yield", "task", "tasks", "assert", "import", "include", "use", "as", "pub", "pin", "true",
-        "false",
+        "yield", "task", "tasks", "assert", "import", "include", "use", "as", "pub", "private",
+        "pin", "true", "false",
     ];
 
     for keyword in keywords {
@@ -1556,16 +1556,16 @@ fn rejects_compiler_reserved_identifier_prefix() {
 #[test]
 fn rejects_pin_keyword_as_identifier() {
     let cases = [
-        "params:\n  pin = 1.0\n",
-        "params:\n  pin gain = 1.0\n",
+        "params:\n  private = 1.0\n",
+        "params:\n  private gain = 1.0\n",
         "sample:\n  pin = 1.0\n",
-        "proc Voice:\n  params:\n    pin = 1.0\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
+        "proc Voice:\n  params:\n    private = 1.0\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
     ];
 
     for src in cases {
         assert!(
             parse_program(src).is_err(),
-            "'pin' should be reserved as a keyword, source parsed: {src}"
+            "modifier keywords should remain reserved, source parsed: {src}"
         );
     }
 }
@@ -4622,19 +4622,19 @@ sample:
 }
 
 #[test]
-fn parses_init_retain_reset_policy_independently_from_integer_ranges() {
+fn parses_pinned_init_state_independently_from_integer_ranges() {
     let program = parse_program(
         r#"
 init:
-  kernel: f32[8] {retain}
-  cursor: i32 = 0 {8, wrap, reset = retain}
-  gain = 1.0 {reset = retain}
+  pin kernel: f32[8]
+  pin cursor: i32 = 0 {8, wrap}
+  pin gain = 1.0
 
 sample:
   out1 = gain
 "#,
     )
-    .expect("retain reset policies should parse");
+    .expect("pinned init state should parse");
     let init = program
         .blocks
         .iter()
@@ -4643,7 +4643,7 @@ sample:
             _ => None,
         })
         .expect("init block");
-    assert_eq!(init.retained_roots, ["kernel", "cursor", "gain"]);
+    assert_eq!(init.pinned_roots, ["kernel", "cursor", "gain"]);
     assert_eq!(init.body.len(), 3);
     assert!(matches!(
         &init.body[1],
@@ -4655,6 +4655,22 @@ sample:
             ..
         }
     ));
+}
+
+#[test]
+fn rejects_pin_outside_direct_init_bindings() {
+    for source in [
+        "sample:\n  pin value = 1\n",
+        "init:\n  if true:\n    pin value = 1\n",
+        "init:\n  value = 1\n  pin value = 2\n",
+        "init:\n  pin value += 1\n",
+        "proc Voice:\n  params:\n    pin gain = 1.0\n",
+    ] {
+        assert!(
+            parse_program(source).is_err(),
+            "pin should be restricted to direct init bindings: {source}"
+        );
+    }
 }
 
 #[test]
@@ -7925,12 +7941,12 @@ sample:
 }
 
 #[test]
-fn parses_proc_pinned_params() {
+fn parses_proc_private_params() {
     let src = r#"
 proc Voice:
   params:
-    pin cutoff = 1000.0
-    pin coeffs: f32[2] = [0.5, 0.25]
+    private cutoff = 1000.0
+    private coeffs: f32[2] = [0.5, 0.25]
   outs:
     out1
   sample:
@@ -7939,7 +7955,7 @@ proc Voice:
 sample:
   out1 = 0.0
 "#;
-    let program = parse_program(src).expect("pinned processor params should parse");
+    let program = parse_program(src).expect("private processor params should parse");
     let proc = program
         .blocks
         .iter()
@@ -7950,9 +7966,9 @@ sample:
         .expect("Voice proc");
 
     assert_eq!(proc.params[0].name, "cutoff");
-    assert!(proc.params[0].pinned);
+    assert!(proc.params[0].private);
     assert_eq!(proc.params[1].name, "coeffs");
-    assert!(proc.params[1].pinned);
+    assert!(proc.params[1].private);
     assert_eq!(proc.params.len(), 2);
 }
 

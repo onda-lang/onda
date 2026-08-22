@@ -98,12 +98,6 @@ const TRAPPING_DESCRIPTOR_BINARY_OPS = new Set([
   binaryen.RemUInt64,
 ]);
 
-function isCompilerOwnedStateName(name) {
-  return name.startsWith("__onda_")
-    || name.includes(".__onda_")
-    || name.includes("____onda_");
-}
-
 // Compiles MIR emitted by Onda's semantic producer. The producer owns proofs
 // for operations marked `bounds: "unchecked"` and all other validated MIR
 // invariants. This backend deliberately does not expose a partial validator
@@ -990,6 +984,12 @@ class MirCompiler {
       "control_mirror",
     ]);
     for (const [stateId, slot] of this.mir.state.entries()) {
+      if (typeof slot?.authored !== "boolean") {
+        this.fail(`state slot ${stateId} has an invalid authored flag`);
+      }
+      if (slot?.pinned !== undefined && typeof slot.pinned !== "boolean") {
+        this.fail(`state slot ${stateId} has an invalid pinned flag`);
+      }
       if (!persistenceKinds.has(slot?.persistence)) {
         this.fail(
           `state slot ${stateId} has invalid persistence '${String(slot?.persistence)}'`,
@@ -5888,8 +5888,7 @@ class MirCompiler {
       const layout = this.stateLayout[id];
       entries.push({
         name: slot.name,
-        authored: !isCompilerOwnedStateName(slot.name),
-        reset: slot.reset ?? "restore",
+        authored: slot.authored,
         type_repr: typeName(this.type(slot.ty), this),
         scalar: shape.scalar,
         array_len: shape.length,
@@ -5919,7 +5918,7 @@ class MirCompiler {
   stateResetRanges() {
     const ranges = [];
     for (const [id, slot] of this.mir.state.entries()) {
-      if ((slot.reset ?? "restore") === "retain") continue;
+      if (slot.pinned ?? false) continue;
       const layout = this.stateLayout[id];
       const previous = ranges.at(-1);
       if (previous && previous.byte_offset + previous.byte_size === layout.offset) {

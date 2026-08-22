@@ -934,31 +934,35 @@ impl TaskLocalStorage {
 }
 
 fn task_pc_field(task: &str) -> String {
-    format!("{TASK_FIELD_PREFIX}{task}_pc")
+    format!("{}_pc", task_symbol_stem(task))
 }
 
 fn task_local_field(task: &str, local: &str) -> String {
-    format!("{TASK_FIELD_PREFIX}{task}_local_{local}")
+    format!("{}_local_{}_{local}", task_symbol_stem(task), local.len())
 }
 
 fn task_resume_def(task: &str) -> String {
-    format!("{TASK_FIELD_PREFIX}{task}_resume")
+    format!("{}_resume", task_symbol_stem(task))
 }
 
 fn task_reset_def(task: &str) -> String {
-    format!("{TASK_FIELD_PREFIX}{task}_reset")
+    format!("{}_reset", task_symbol_stem(task))
 }
 
 fn task_inline_node_local(task: &str) -> String {
-    format!("{TASK_FIELD_PREFIX}{task}_node")
+    format!("{}_node", task_symbol_stem(task))
 }
 
 fn task_inline_result_local(task: &str) -> String {
-    format!("{TASK_FIELD_PREFIX}{task}_result")
+    format!("{}_result", task_symbol_stem(task))
 }
 
 fn task_inline_scratch_local(task: &str, local: &str) -> String {
-    format!("{TASK_FIELD_PREFIX}{task}_scratch_{local}")
+    format!("{}_scratch_{}_{local}", task_symbol_stem(task), local.len())
+}
+
+fn task_symbol_stem(task: &str) -> String {
+    format!("{TASK_FIELD_PREFIX}{}_{task}", task.len())
 }
 
 fn bare_return_expr() -> Expr {
@@ -2144,8 +2148,8 @@ fn collect_for_frame_bindings(
                     fields.insert(
                         var.clone(),
                         (
-                            format!("{TASK_FIELD_PREFIX}{task_name}_for_{id}_end"),
-                            format!("{TASK_FIELD_PREFIX}{task_name}_for_{id}_step"),
+                            format!("{}_for_{id}_end", task_symbol_stem(task_name)),
+                            format!("{}_for_{id}_step", task_symbol_stem(task_name)),
                         ),
                     );
                 }
@@ -2783,14 +2787,13 @@ fn rewrite_task_controls(
     stmts: &mut Vec<Stmt>,
     task_names: &HashSet<String>,
     buffer_names: &[String],
+    unavailable: &[Stmt],
 ) {
     let mut rewritten = Vec::with_capacity(stmts.len());
     for mut stmt in std::mem::take(stmts) {
         match &mut stmt {
             Stmt::Expr { expr, .. } => {
                 if let Some(task) = await_task_name(expr).map(str::to_owned) {
-                    let mut unavailable = vec![assign_var(TASK_AVAILABLE_FIELD, Expr::bool(false))];
-                    unavailable.push(abort_activation_stmt());
                     rewritten.push(Stmt::If {
                         loc: Default::default(),
                         cond: Expr::UnaryNot {
@@ -2800,7 +2803,7 @@ fn rewrite_task_controls(
                                 buffer_names.iter().cloned().map(Expr::var).collect(),
                             )),
                         },
-                        then_branch: unavailable,
+                        then_branch: unavailable.to_vec(),
                         else_branch: Vec::new(),
                     });
                     continue;
@@ -2814,11 +2817,11 @@ fn rewrite_task_controls(
                 else_branch,
                 ..
             } => {
-                rewrite_task_controls(then_branch, task_names, buffer_names);
-                rewrite_task_controls(else_branch, task_names, buffer_names);
+                rewrite_task_controls(then_branch, task_names, buffer_names, unavailable);
+                rewrite_task_controls(else_branch, task_names, buffer_names, unavailable);
             }
             Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                rewrite_task_controls(body, task_names, buffer_names)
+                rewrite_task_controls(body, task_names, buffer_names, unavailable)
             }
             _ => {}
         }
@@ -2910,7 +2913,7 @@ struct PreparedTask {
     inline_scratch_declarations: Vec<Stmt>,
     init_stmts: Vec<Stmt>,
     reset_stmts: Vec<Stmt>,
-    retained_fields: Vec<String>,
+    pinned_fields: Vec<String>,
     for_frame_bindings: HashMap<String, (String, String)>,
 }
 
@@ -2977,7 +2980,7 @@ fn prepare_task(
         PrimitiveType::I32,
         Expr::int(0),
     )];
-    let mut retained_fields = vec![task_pc_field(&task.name)];
+    let mut pinned_fields = vec![task_pc_field(&task.name)];
     let mut reset_stmts = vec![assign_var(task_pc_field(&task.name), Expr::int(0))];
     let mut resume_local_initializers = Vec::new();
     let inline_scratch_declarations = vec![
@@ -3000,7 +3003,7 @@ fn prepare_task(
         if live_across_yield.contains(&local) {
             let field = names[&local].clone();
             init_stmts.push(storage.init_stmt(field.clone()));
-            retained_fields.push(field.clone());
+            pinned_fields.push(field.clone());
             reset_stmts.extend(storage.reset_stmts(field));
         } else {
             match placement {
@@ -3034,7 +3037,7 @@ fn prepare_task(
             PrimitiveType::I32,
             Expr::int(0),
         ));
-        retained_fields.push(field.clone());
+        pinned_fields.push(field.clone());
         reset_stmts.push(assign_var(field, Expr::int(0)));
     }
 
@@ -3045,7 +3048,7 @@ fn prepare_task(
         inline_scratch_declarations,
         init_stmts,
         reset_stmts,
-        retained_fields,
+        pinned_fields,
         for_frame_bindings,
     }
 }
@@ -3132,7 +3135,7 @@ fn lower_top_level_tasks(
         PrimitiveType::Bool,
         Expr::bool(true),
     )];
-    let mut retained_fields = Vec::new();
+    let mut pinned_fields = Vec::new();
     let mut scratch_declarations = Vec::new();
     let mut expansions = HashMap::new();
     for task in tasks {
@@ -3146,7 +3149,7 @@ fn lower_top_level_tasks(
             errors,
         );
         init_prefix.extend(prepared.init_stmts);
-        retained_fields.extend(prepared.retained_fields);
+        pinned_fields.extend(prepared.pinned_fields);
         scratch_declarations.extend(prepared.inline_scratch_declarations);
         let for_frame_bindings = prepared.for_frame_bindings.clone();
         expansions.insert(
@@ -3270,7 +3273,7 @@ fn lower_top_level_tasks(
             loc: Default::default(),
             default_ty: None,
             default_ty_loc: Default::default(),
-            retained_roots: Vec::new(),
+            pinned_roots: Vec::new(),
             body: Vec::new(),
         }));
         match program.blocks.last_mut() {
@@ -3281,7 +3284,7 @@ fn lower_top_level_tasks(
     let mut old_init = std::mem::take(&mut init.body);
     init_prefix.append(&mut old_init);
     init.body = init_prefix;
-    init.retained_roots.extend(retained_fields);
+    init.pinned_roots.extend(pinned_fields);
 }
 
 fn declared_task_return_type(def: &FunctionDef) -> Option<(String, ReturnType)> {
@@ -3394,7 +3397,7 @@ pub(crate) fn lower_tasks(
             PrimitiveType::Bool,
             Expr::bool(true),
         )];
-        let mut retained_task_fields = Vec::new();
+        let mut pinned_task_fields = Vec::new();
         let mut generated_defs = Vec::new();
         for task in &proc.tasks {
             let prepared = prepare_task(
@@ -3407,7 +3410,7 @@ pub(crate) fn lower_tasks(
                 errors,
             );
             init_prefix.extend(prepared.init_stmts);
-            retained_task_fields.extend(prepared.retained_fields);
+            pinned_task_fields.extend(prepared.pinned_fields);
             let for_frame_bindings = prepared.for_frame_bindings.clone();
             generated_defs.push(compile_task_resume(
                 &prepared.name,
@@ -3428,10 +3431,32 @@ pub(crate) fn lower_tasks(
             });
         }
 
-        rewrite_task_controls(&mut proc.init.body, &task_names, &buffer_names);
-        rewrite_task_controls(&mut proc.block_pre, &task_names, &buffer_names);
+        let neutral_outputs = outputs
+            .iter()
+            .map(|name| assign_var(name.clone(), Expr::int(0)))
+            .collect::<Vec<_>>();
+        let mut unavailable = if proc.outs_timing == OutputTiming::Block {
+            neutral_outputs.clone()
+        } else {
+            Vec::new()
+        };
+        unavailable.push(assign_var(TASK_AVAILABLE_FIELD, Expr::bool(false)));
+        unavailable.push(abort_activation_stmt());
+
+        rewrite_task_controls(
+            &mut proc.init.body,
+            &task_names,
+            &buffer_names,
+            &unavailable,
+        );
+        rewrite_task_controls(
+            &mut proc.block_pre,
+            &task_names,
+            &buffer_names,
+            &unavailable,
+        );
         for event in &mut proc.events {
-            rewrite_task_controls(&mut event.body, &task_names, &buffer_names);
+            rewrite_task_controls(&mut event.body, &task_names, &buffer_names, &unavailable);
         }
         let mut old_init = std::mem::take(&mut proc.init.body);
         init_prefix.append(&mut old_init);
@@ -3439,11 +3464,12 @@ pub(crate) fn lower_tasks(
         proc.block_pre
             .insert(0, assign_var(TASK_AVAILABLE_FIELD, Expr::bool(true)));
 
-        let mut unavailable = outputs
-            .iter()
-            .map(|name| assign_var(name.clone(), Expr::int(0)))
-            .collect::<Vec<_>>();
-        unavailable.push(abort_activation_stmt());
+        let mut unavailable_sample = if proc.outs_timing == OutputTiming::Sample {
+            neutral_outputs
+        } else {
+            Vec::new()
+        };
+        unavailable_sample.push(abort_activation_stmt());
         proc.sample.insert(
             0,
             Stmt::If {
@@ -3452,7 +3478,7 @@ pub(crate) fn lower_tasks(
                     loc: Default::default(),
                     expr: Box::new(Expr::var(TASK_AVAILABLE_FIELD)),
                 },
-                then_branch: unavailable,
+                then_branch: unavailable_sample,
                 else_branch: Vec::new(),
             },
         );
@@ -3469,7 +3495,7 @@ pub(crate) fn lower_tasks(
             },
         );
         proc.local_defs.extend(generated_defs);
-        proc.init.retained_roots.extend(retained_task_fields);
+        proc.init.pinned_roots.extend(pinned_task_fields);
         proc.tasks.clear();
     }
     if has_tasks {
@@ -3815,8 +3841,7 @@ proc Loader:
         let source = r#"
 proc Loader:
   init:
-    progress: i32 = 0 {retain}
-
+    pin progress: i32 = 0
   task load():
     progress += 1
     yield
@@ -3839,20 +3864,21 @@ sample:
         assert!(typed
             .defs
             .iter()
-            .any(|def| def.name.contains("__onda_task_load_resume")));
+            .any(|def| def.name.contains(&task_resume_def("load"))));
         assert!(typed
             .state_vars
             .iter()
-            .any(|name| name.contains("__onda_task_load_pc")));
+            .any(|name| name.contains(&task_pc_field("load"))));
         let mir =
             lower_program_to_optimized_mir(&typed).expect("lowered task should produce valid MIR");
-        assert!(mir.state.iter().any(|slot| {
-            slot.name.contains("__onda_task_load_pc")
-                && slot.reset == onda_mir::StateResetPolicy::Retain
-        }));
-        assert!(mir.state.iter().any(|slot| {
-            slot.name == "loader.progress" && slot.reset == onda_mir::StateResetPolicy::Retain
-        }));
+        assert!(mir
+            .state
+            .iter()
+            .any(|slot| { slot.name.contains(&task_pc_field("load")) && slot.pinned }));
+        assert!(mir
+            .state
+            .iter()
+            .any(|slot| { slot.name == "loader.progress" && slot.pinned }));
     }
 
     #[test]
@@ -3860,7 +3886,7 @@ sample:
         let source = r#"
 proc Loader:
   init:
-    result: i32 = 0 {retain}
+    pin result: i32 = 0
   task load():
     scratch: i32 = 10
     carried: i32 = scratch + 1
@@ -3880,11 +3906,11 @@ sample:
         assert!(typed
             .state_vars
             .iter()
-            .any(|name| name.contains("__onda_task_load_local_carried")));
+            .any(|name| name.contains(&task_local_field("load", "carried"))));
         assert!(!typed
             .state_vars
             .iter()
-            .any(|name| name.contains("__onda_task_load_local_scratch")));
+            .any(|name| name.contains(&task_local_field("load", "scratch"))));
     }
 
     #[test]
@@ -3894,8 +3920,7 @@ buffers:
   data: f32
 
 init:
-  observed: i32 = 0 {retain}
-
+  pin observed: i32 = 0
 task load():
   window = data[:]
   observed = window.len()
@@ -3912,7 +3937,7 @@ sample:
         assert!(!typed
             .state_vars
             .iter()
-            .any(|name| name.contains("__onda_task_load_local_window")));
+            .any(|name| name.contains(&task_local_field("load", "window"))));
         lower_program_to_optimized_mir(&typed)
             .expect("the ephemeral reference should remain local to one resume arm");
     }
@@ -3924,8 +3949,7 @@ buffers:
   data: f32
 
 init:
-  observed: i32 = 0 {retain}
-
+  pin observed: i32 = 0
 task load():
   yield
   window = data[:]
@@ -3950,8 +3974,7 @@ buffers:
   data: f32
 
 init:
-  observed: i32 = 0 {retain}
-
+  pin observed: i32 = 0
 task load():
   window = data[:]
   yield
@@ -3977,8 +4000,7 @@ sample:
     fn task_loop_frame_names_do_not_alias_user_locals() {
         let source = r#"
 init:
-  result: i32 = 0 {retain}
-
+  pin result: i32 = 0
 task prepare():
   i__end: i32 = 99
   for i in 0..2:
@@ -3996,11 +4018,11 @@ sample:
         assert!(typed
             .state_vars
             .iter()
-            .any(|name| name.contains("__onda_task_prepare_local_i__end")));
+            .any(|name| name.contains(&task_local_field("prepare", "i__end"))));
         assert!(typed
             .state_vars
             .iter()
-            .any(|name| name.contains("__onda_task_prepare_for_0_end")));
+            .any(|name| name.contains(&format!("{}_for_0_end", task_symbol_stem("prepare")))));
         lower_program_to_optimized_mir(&typed)
             .expect("distinct user and loop frame fields should lower");
     }
@@ -4035,7 +4057,7 @@ sample:
         let source = r#"
 proc Loader:
   init:
-    result: i32 = 0 {retain}
+    pin result: i32 = 0
   task load():
     values: i32[2] = [3, 5]
     yield
@@ -4064,7 +4086,7 @@ sample:
 proc Loader:
   const Width = 2
   init:
-    result: i32 = 0 {retain}
+    pin result: i32 = 0
   task load():
     const Left = 3
     values: i32[Width] = [Left, 5]
@@ -4096,7 +4118,7 @@ proc Loader:
   init:
     scalar: i64 = 3
     values: i32[2] = [5, 11]
-    result = 0.0 {retain}
+    pin result = 0.0
   task load():
     scalar_copy = scalar
     array_copy = values[0]
@@ -4122,7 +4144,7 @@ sample:
                 typed
                     .state_vars
                     .iter()
-                    .any(|name| name.contains(&format!("__onda_task_load_local_{local}"))),
+                    .any(|name| name.contains(&task_local_field("load", local))),
                 "missing frame storage for {local}"
             );
         }
@@ -4131,14 +4153,14 @@ sample:
     }
 
     #[test]
-    fn task_aggregate_fields_remain_owner_state_and_inherit_retain() {
+    fn task_aggregate_fields_remain_owner_state_and_inherit_pinning() {
         let source = r#"
 struct Accumulator:
   value: i32 = 0
 
 proc Loader:
   init:
-    accumulator = Accumulator() {retain}
+    pin accumulator = Accumulator()
   task load():
     accumulator.value += 1
     yield
@@ -4150,7 +4172,7 @@ proc Loader:
 
 init:
   loader = Loader()
-  top = Accumulator() {retain}
+  pin top = Accumulator()
 sample:
   out1 = loader() + f32(top.value)
 "#;
@@ -4159,7 +4181,7 @@ sample:
         assert!(!typed
             .state_vars
             .iter()
-            .any(|name| name.contains("__onda_task_load_local_accumulator")));
+            .any(|name| name.contains(&task_local_field("load", "accumulator"))));
         let mir = lower_program_to_optimized_mir(&typed)
             .expect("aggregate task state should lower to valid MIR");
         for name in ["loader.accumulator.value", "top.value"] {
@@ -4168,7 +4190,7 @@ sample:
                 .iter()
                 .find(|slot| slot.name == name)
                 .unwrap_or_else(|| panic!("missing flattened state slot {name}"));
-            assert_eq!(slot.reset, onda_mir::StateResetPolicy::Retain);
+            assert!(slot.pinned);
         }
     }
 
@@ -4179,7 +4201,7 @@ struct Accumulator:
   value: i32 = 0
 
 init:
-  accumulator = Accumulator() {retain}
+  pin accumulator = Accumulator()
 task load():
   accumulator.value += 1
   yield
@@ -4194,7 +4216,7 @@ block:
         assert!(!typed
             .state_vars
             .iter()
-            .any(|name| name.contains("__onda_task_load_local_accumulator")));
+            .any(|name| name.contains(&task_local_field("load", "accumulator"))));
         let mir = lower_program_to_optimized_mir(&typed)
             .expect("top-level aggregate task state should lower");
         let accumulator = mir
@@ -4202,7 +4224,7 @@ block:
             .iter()
             .find(|slot| slot.name == "accumulator.value")
             .expect("flattened accumulator state");
-        assert_eq!(accumulator.reset, onda_mir::StateResetPolicy::Retain);
+        assert!(accumulator.pinned);
     }
 
     #[test]
@@ -4210,7 +4232,7 @@ block:
         let source = r#"
 proc Loader:
   init:
-    result: i32 = 0 {retain}
+    pin result: i32 = 0
   task load():
     values: i32[2] = [3, 5]
     result = values[0] + values[1]
@@ -4238,7 +4260,7 @@ def pair() -> (i32, i32):
 
 proc Loader:
   init:
-    result: i32 = 0 {retain}
+    pin result: i32 = 0
   task load():
     (left, right) = pair()
     yield
@@ -4258,9 +4280,35 @@ sample:
             assert!(typed
                 .state_vars
                 .iter()
-                .any(|name| name.contains(&format!("__onda_task_load_local_{local}"))));
+                .any(|name| name.contains(&task_local_field("load", local))));
         }
         lower_program_to_optimized_mir(&typed)
             .expect("tuple task locals should lower to valid MIR");
+    }
+
+    #[test]
+    fn proc_block_task_barrier_neutralizes_block_timed_outputs() {
+        let source = r#"
+proc Control:
+  kouts 1
+  init:
+    pin value: i32 = 0
+  task load():
+    yield
+    value += 1
+  block:
+    await load()
+    kout1 = f32(value)
+
+init:
+  control = Control()
+
+block:
+  kout1 = control().kout1
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("a task barrier should support block-timed proc outputs");
+        lower_program_to_optimized_mir(&typed)
+            .expect("block-timed proc task outputs should lower to valid MIR");
     }
 }

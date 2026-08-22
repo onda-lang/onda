@@ -172,7 +172,7 @@ function executableMir() {
       buffers: [],
       events: [],
     },
-    state: [{ name: "phase", ty: 0, persistence: "snapshot" }],
+    state: [{ name: "phase", ty: 0, persistence: "snapshot", authored: true }],
     const_data: [],
     functions: [
       {
@@ -436,7 +436,6 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
     {
       name: "phase",
       authored: true,
-      reset: "restore",
       type_repr: "f32",
       scalar: "f32",
       array_len: 1,
@@ -489,27 +488,27 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
   );
 });
 
-test("marks compiler-owned task snapshot state as non-authored", () => {
+test("preserves explicit state authorship in metadata", () => {
   const mir = executableMir();
+  mir.state[0].name = "foo____onda_bar";
   mir.state.push({
     name: "loader.__onda_task_load_pc",
     ty: 2,
     persistence: "snapshot",
-    reset: "retain",
+    authored: false,
+    pinned: true,
   });
   const artifact = compileMir(mir);
   assert.deepEqual(
-    artifact.metadata.metadata.states.map(({ name, authored, reset }) => ({
+    artifact.metadata.metadata.states.map(({ name, authored }) => ({
       name,
       authored,
-      reset,
     })),
     [
-      { name: "phase", authored: true, reset: "restore" },
+      { name: "foo____onda_bar", authored: true },
       {
         name: "loader.__onda_task_load_pc",
         authored: false,
-        reset: "retain",
       },
     ],
   );
@@ -562,7 +561,7 @@ test("passes an addressable slice element to a reference parameter", async () =>
     type("array", { element: 0, len: 2 }),
     type("slice", { element: "f32", access: "read_write" }),
   );
-  mir.state.push({ name: "values", ty: 3, persistence: "snapshot" });
+  mir.state.push({ name: "values", ty: 3, persistence: "snapshot", authored: true });
   mir.functions[1].locals.push({ name: "values_view", ty: 4 });
   mir.functions[1].body.statements.unshift(
     assign(place("local", 6), {
@@ -790,7 +789,7 @@ test("vectorizes contiguous slice fills with a scalar tail", async () => {
     type("array", { element: 0, len: 10 }),
     type("slice", { element: "f32", access: "read_write" }),
   );
-  mir.state.push({ name: "values", ty: 3, persistence: "snapshot" });
+  mir.state.push({ name: "values", ty: 3, persistence: "snapshot", authored: true });
   mir.functions[1].locals.push({ name: "values_view", ty: 4 });
   mir.functions[1].body.statements.unshift(
     assign(place("local", 6), {
@@ -833,8 +832,8 @@ test("returns failures for invalid checked make_slice and empty-slice access", a
       type("slice", { element: "f32", access: "read_write" }),
     );
     mir.state.push(
-      { name: "values", ty: 3, persistence: "snapshot" },
-      { name: "slice_len", ty: 2, persistence: "snapshot" },
+      { name: "values", ty: 3, persistence: "snapshot", authored: true },
+      { name: "slice_len", ty: 2, persistence: "snapshot", authored: true },
     );
     mir.functions[1].locals.push(
       { name: "view", ty: 4 },
@@ -1153,7 +1152,7 @@ test("lowers current-schema fixed-array and slice reference windows", async () =
     type("array", { element: 0, len: 2 }),
     type("slice", { element: "f32", access: "read_write" }),
   );
-  mir.state.push({ name: "values", ty: 3, persistence: "snapshot" });
+  mir.state.push({ name: "values", ty: 3, persistence: "snapshot", authored: true });
   mir.functions[1].locals.push({ name: "view", ty: 5 });
   mir.functions[1].body.statements.unshift(
     assign(place("local", 6), {
@@ -1374,6 +1373,7 @@ test("rejects compile-time layouts that exceed the wasm32 address space", () => 
     name,
     ty: 3,
     persistence: "snapshot",
+    authored: true,
   }));
   stateMir.functions[0].body.statements = [];
   stateMir.functions[1].body.statements = [];
@@ -1398,6 +1398,7 @@ test("rejects compile-time layouts that exceed the wasm32 address space", () => 
     name: "large_state",
     ty: 3,
     persistence: "snapshot",
+    authored: true,
   }];
   combinedMir.functions[0].locals = [{ name: null, ty: 4 }];
   combinedMir.functions[0].body.statements = [];
@@ -1767,8 +1768,8 @@ test("implements MIR wrapping semantics for signed division overflow", async () 
   const mir = executableMir();
   mir.types.push(type("scalar", "i64"));
   mir.state.push(
-    { name: "wrapped_i32", ty: 2, persistence: "snapshot" },
-    { name: "wrapped_i64", ty: 3, persistence: "snapshot" },
+    { name: "wrapped_i32", ty: 2, persistence: "snapshot", authored: true },
+    { name: "wrapped_i64", ty: 3, persistence: "snapshot", authored: true },
   );
   const thenStatements =
     mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
@@ -1811,9 +1812,9 @@ test("implements MIR saturating float-to-integer casts with NaN mapping to zero"
   const mir = executableMir();
   mir.types.push(type("scalar", "i64"));
   mir.state.push(
-    { name: "nan_i32", ty: 2, persistence: "snapshot" },
-    { name: "negative_i64", ty: 3, persistence: "snapshot" },
-    { name: "positive_i32", ty: 2, persistence: "snapshot" },
+    { name: "nan_i32", ty: 2, persistence: "snapshot", authored: true },
+    { name: "negative_i64", ty: 3, persistence: "snapshot", authored: true },
+    { name: "positive_i32", ty: 2, persistence: "snapshot", authored: true },
   );
   const thenStatements =
     mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
@@ -1893,8 +1894,8 @@ test("wraps i32 and full-domain i64 MIR ranges exactly", async () => {
   const mir = executableMir();
   mir.types.push(type("scalar", "i64"));
   mir.state.push(
-    { name: "wrapped_i32", ty: 2, persistence: "snapshot" },
-    { name: "wrapped_i64", ty: 3, persistence: "snapshot" },
+    { name: "wrapped_i32", ty: 2, persistence: "snapshot", authored: true },
+    { name: "wrapped_i64", ty: 3, persistence: "snapshot", authored: true },
   );
   const thenStatements =
     mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
@@ -2170,6 +2171,7 @@ test("stores control outputs in their state-backed ABI slots", async () => {
     name: "meter_storage",
     ty: 0,
     persistence: "control_mirror",
+    authored: true,
   });
   mir.interface.control_outputs.push({ name: "meter", ty: 0, mirror: 1 });
   const thenStatements =
@@ -2649,7 +2651,7 @@ test("preserves the loop-entry value of a loop-carried buffer selector", async (
       access: "read_write",
     },
   );
-  mir.state.push({ name: "slot", ty: 2, persistence: "snapshot" });
+  mir.state.push({ name: "slot", ty: 2, persistence: "snapshot", authored: true });
   mir.functions[0].body.statements.push(
     assign(place("state", 1), {
       kind: "use",

@@ -347,7 +347,7 @@ pub struct InitBlock {
     pub loc: Span,
     pub default_ty: Option<DeclType>,
     pub default_ty_loc: Span,
-    pub retained_roots: Vec<String>,
+    pub pinned_roots: Vec<String>,
     pub body: Vec<Stmt>,
 }
 
@@ -414,7 +414,7 @@ pub enum OutputTiming {
 pub struct ParamDecl {
     pub loc: Span,
     pub name: String,
-    pub pinned: bool,
+    pub private: bool,
     pub ty: Option<DeclType>,
     pub ty_loc: Span,
     pub default: Option<Expr>,

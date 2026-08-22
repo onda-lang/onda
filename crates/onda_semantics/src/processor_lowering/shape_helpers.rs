@@ -1359,7 +1359,7 @@ fn build_child_proc_surfaces(
             }
         }
         for spec in &param_specs {
-            if spec.is_pinned() {
+            if spec.is_private() {
                 continue;
             }
             surface.params.insert(spec.name.clone());
@@ -1372,7 +1372,7 @@ fn build_child_proc_surfaces(
         }
         if param_specs
             .iter()
-            .filter(|spec| !spec.is_pinned())
+            .filter(|spec| !spec.is_private())
             .map(|spec| spec.slots.len())
             .sum::<usize>()
             > 1

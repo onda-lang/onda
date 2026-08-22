@@ -72,7 +72,7 @@ pub struct JitProgram {
     buffer_index: Arc<HashMap<String, usize>>,
     state_entries: Arc<Vec<DeclaredState>>,
     snapshot_segments: Arc<Vec<StateSnapshotSegment>>,
-    retained_state_segments: Arc<Vec<PhysicalStateSegment>>,
+    pinned_state_segments: Arc<Vec<PhysicalStateSegment>>,
     snapshot_size_bytes: usize,
     #[cfg(feature = "llvm-orc")]
     compiled: Arc<orc_backend::MirJitProgram>,
@@ -521,12 +521,12 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
     let snapshot_size_bytes = snapshot_segments
         .last()
         .map_or(0, |segment| segment.snapshot_offset + segment.byte_size);
-    let retained_state_segments = compiled
+    let pinned_state_segments = compiled
         .mir()
         .state
         .iter()
         .zip(compiled.state_byte_offsets())
-        .filter(|(slot, _)| slot.reset == onda_mir::StateResetPolicy::Retain)
+        .filter(|(slot, _)| slot.pinned)
         .map(|(slot, state_offset)| {
             mir_metadata::state_slot_byte_size(compiled.mir(), slot.ty).map(|byte_size| {
                 PhysicalStateSegment {
@@ -560,7 +560,7 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
         buffer_arrays: Arc::new(metadata.buffer_arrays),
         state_entries: Arc::new(metadata.state_entries),
         snapshot_segments: Arc::new(snapshot_segments),
-        retained_state_segments: Arc::new(retained_state_segments),
+        pinned_state_segments: Arc::new(pinned_state_segments),
         snapshot_size_bytes,
         compiled: Arc::new(compiled),
     })

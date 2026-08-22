@@ -17,9 +17,9 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
     outs<T> 1
 
     init:
-      impulse: T[MaxImpulseLen] {retain}
+      pin impulse: T[MaxImpulseLen]
       delay: T[TimeDelayStorageSize] # Store the ring twice so the newest-to-oldest history is always contiguous
-      active_taps = 0 {0..=MaxImpulseLen, reset = retain}
+      pin active_taps = 0 {0..=MaxImpulseLen}
       write = 0 {0..MaxImpulseLen, wrap}
 
     def clear_state():
@@ -76,12 +76,12 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
 
       spectrum_real: T[SpectrumBins]
       spectrum_imag: T[SpectrumBins]
-      impulse_real: T[FFTStorageSize] {retain}
-      impulse_imag: T[FFTStorageSize] {retain}
+      pin impulse_real: T[FFTStorageSize]
+      pin impulse_imag: T[FFTStorageSize]
       input_real: T[FFTStorageSize]
       input_imag: T[FFTStorageSize]
 
-      active_partitions = 0 {0..=MaxPartitions, reset = retain}
+      pin active_partitions = 0 {0..=MaxPartitions}
       offset = -1
       pending_count = 0
       output_idx = HopSize

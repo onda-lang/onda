@@ -1040,7 +1040,8 @@ fn populate_interface(
                 name: name.clone(),
                 ty: type_id,
                 persistence: onda_mir::StatePersistence::ControlMirror,
-                reset: onda_mir::StateResetPolicy::Restore,
+                authored: true,
+                pinned: false,
                 integer_range: None,
             });
             mir.interface.control_outputs.push(onda_mir::ControlOutput {
@@ -1070,7 +1071,8 @@ fn populate_interface(
             name: name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::ControlMirror,
-            reset: onda_mir::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
             integer_range: None,
         });
         mir.interface.control_outputs.push(onda_mir::ControlOutput {
@@ -1556,11 +1558,8 @@ fn populate_state(
             name: name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::Snapshot,
-            reset: if program.retained_state_roots.contains(name) {
-                onda_mir::StateResetPolicy::Retain
-            } else {
-                onda_mir::StateResetPolicy::Restore
-            },
+            authored: !program.compiler_owned_state_roots.contains(name),
+            pinned: program.pinned_state_roots.contains(name),
             integer_range: state_integer_ranges.get(name.as_str()).copied(),
         });
         if let Some(range) = mir.state[id.index()].integer_range {
@@ -1629,11 +1628,8 @@ fn populate_state(
             name: array.name.clone(),
             ty: type_id,
             persistence,
-            reset: if program.retained_state_roots.contains(&array.name) {
-                onda_mir::StateResetPolicy::Retain
-            } else {
-                onda_mir::StateResetPolicy::Restore
-            },
+            authored: !program.compiler_owned_state_roots.contains(&array.name),
+            pinned: program.pinned_state_roots.contains(&array.name),
             integer_range: None,
         });
         globals
@@ -1662,7 +1658,8 @@ fn populate_state(
             name: active_name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::InstanceScratch,
-            reset: onda_mir::StateResetPolicy::Restore,
+            authored: false,
+            pinned: false,
             integer_range: None,
         });
         globals
@@ -1759,7 +1756,8 @@ fn append_mir_sinc_stages(
                     ),
                     ty: intern_scalar_type(&mut mir.types, ty),
                     persistence: onda_mir::StatePersistence::Snapshot,
-                    reset: onda_mir::StateResetPolicy::Restore,
+                    authored: false,
+                    pinned: false,
                     integer_range: None,
                 });
                 id

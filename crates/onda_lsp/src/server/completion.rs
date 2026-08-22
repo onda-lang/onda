@@ -676,7 +676,7 @@ struct ProcInfo {
 #[derive(Debug, Clone)]
 struct ProcParamInfo {
     name: String,
-    pinned: bool,
+    private: bool,
     signature: String,
 }
 
@@ -929,7 +929,7 @@ impl CompletionIndex {
                 .iter()
                 .map(|decl| ProcParamInfo {
                     name: decl.name.clone(),
-                    pinned: decl.pinned,
+                    private: decl.private,
                     signature: format_proc_param_signature(decl),
                 })
                 .chain(proc_deferred_param_infos(
@@ -2320,7 +2320,7 @@ impl CompletionIndex {
                 );
             }
             for param in &proc_info.params {
-                if !param.pinned {
+                if !param.private {
                     out.push(
                         CompletionItem::new(param.name.clone(), COMPLETION_ITEM_KIND_PROPERTY)
                             .detail("proc param")
@@ -2331,7 +2331,7 @@ impl CompletionIndex {
                     );
                 }
             }
-            if !proc_info.params.is_empty() && proc_info.params.iter().all(|param| !param.pinned) {
+            if !proc_info.params.is_empty() && proc_info.params.iter().all(|param| !param.private) {
                 out.push(
                     CompletionItem::new("params", COMPLETION_ITEM_KIND_PROPERTY)
                         .detail("dynamic proc params")
@@ -2471,7 +2471,7 @@ impl CompletionIndex {
                     out.push(named_arg_item(input, "proc input"));
                 }
                 for param in &proc_info.params {
-                    if !param.pinned {
+                    if !param.private {
                         out.push(named_arg_item(&param.name, "proc param"));
                     }
                 }
@@ -3098,7 +3098,7 @@ fn proc_deferred_param_infos(
         .map(|name| ProcParamInfo {
             signature: name.clone(),
             name,
-            pinned: false,
+            private: false,
         })
         .collect()
 }
@@ -4105,7 +4105,7 @@ fn proc_info_from_def(name: &str, proc_def: &ProcessorDef) -> ProcInfo {
             .iter()
             .map(|decl| ProcParamInfo {
                 name: decl.name.clone(),
-                pinned: decl.pinned,
+                private: decl.private,
                 signature: format_proc_param_signature(decl),
             })
             .chain(proc_deferred_param_infos(
@@ -4264,8 +4264,8 @@ fn format_event_param_signature(param: &EventParamDecl) -> String {
 
 fn format_proc_param_signature(param: &ParamDecl) -> String {
     let mut text = String::new();
-    if param.pinned {
-        text.push_str("pin ");
+    if param.private {
+        text.push_str("private ");
     }
     text.push_str(&param.name);
     if let Some(ty) = &param.ty {
@@ -4345,6 +4345,7 @@ fn assign_target_name(target: &onda_frontend::AssignTarget) -> Option<&str> {
 }
 
 fn source_assignment_target_name(line: &str) -> Option<&str> {
+    let line = line.strip_prefix("pin ").unwrap_or(line);
     let (left, _) = line.split_once('=')?;
     let left = left.trim();
     if left.starts_with("if ")
@@ -5007,7 +5008,7 @@ mod tests {
     fn member_completion_hides_proc_private_members_from_outside() {
         let source = r#"proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
     gain = 1.0
   outs:
     out1
@@ -5032,7 +5033,7 @@ sample:
         );
         assert!(
             !member_labels.iter().any(|label| label == "cutoff"),
-            "external member completion should not include pinned params: {member_labels:?}"
+            "external member completion should not include private params: {member_labels:?}"
         );
         assert!(
             member_labels.iter().any(|label| label == "gain"),
@@ -5328,7 +5329,7 @@ sample:
     fn general_completion_keeps_proc_private_members_inside_owner() {
         let source = r#"proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
   outs:
     out1
   def helper(x):
@@ -5352,7 +5353,7 @@ sample:
         );
         assert!(
             general_labels.iter().any(|label| label == "cutoff"),
-            "pinned params should complete inside their owning proc: {general_labels:?}"
+            "private params should complete inside their owning proc: {general_labels:?}"
         );
     }
 

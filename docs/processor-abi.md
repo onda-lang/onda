@@ -65,7 +65,7 @@ public processor namespace per artifact. A future ABI may add artifact-specific 
 multi-processor libraries without changing MIR.
 
 For `onda_processor_init`, a nonzero `all` clears the complete physical state image before executing
-init; zero executes against the supplied image and therefore preserves retained state unless init
+init; zero executes against the supplied image and therefore preserves pinned state unless init
 explicitly changes it. Raw ABI initialization is not transactional: a host that needs rollback must
 run it against a staging image and publish that image only after a zero status.
 
@@ -153,18 +153,18 @@ target layout and is otherwise opaque.
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
 artifact descriptor. Scratch state is deliberately absent from snapshots.
 `runtime.state_reset_ranges` lists the coalesced physical ranges copied from the post-init baseline
-by ordinary reset; retained authored roots and compiler-owned task continuations are outside those
+by ordinary reset; pinned authored roots and compiler-owned task continuations are outside those
 ranges. An all-state reset restores the complete baseline instead.
 
-`metadata.states` includes every packed snapshot entry. Its `authored` flag is false for
-compiler-owned task frames, allowing snapshot implementations to preserve suspended tasks while
-authored-state reflection omits their implementation storage.
+`metadata.states` includes every packed snapshot entry. Its `authored` flag preserves the explicit
+MIR state provenance and is false for compiler-owned task frames, allowing snapshot implementations
+to preserve suspended tasks while authored-state reflection omits their implementation storage.
 
 ## Portable snapshots
 
 The packed persistent-state snapshot is target-independent. The current snapshot format encodes
 persistent scalar elements in little-endian byte order, in metadata order, without physical padding
-or scratch state. It includes retained authored roots and compiler-owned task frames. This is
+or scratch state. It includes pinned authored roots and compiler-owned task frames. This is
 distinct from the target-native physical state image, which can use another byte order or alignment.
 
 Restore begins with `onda_processor_init(params, state, 1)`, then overlays every persistent entry

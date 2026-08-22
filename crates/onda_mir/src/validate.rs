@@ -5638,7 +5638,8 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(2),
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         let mut callee = function("update", FunctionKind::User);
         callee.params.push(FunctionParam {
@@ -6008,7 +6009,8 @@ mod tests {
             name: "control_resource_mirror".to_owned(),
             ty: test_type(3),
             persistence: StatePersistence::ControlMirror,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         program.interface.params.push(Param {
             name: "parameter_view".to_owned(),
@@ -6067,14 +6069,16 @@ mod tests {
                 name: "saved_view".to_owned(),
                 ty: test_type(2),
                 persistence: StatePersistence::Snapshot,
-                reset: crate::StateResetPolicy::Restore,
+                authored: true,
+                pinned: false,
             },
             StateSlot {
                 integer_range: None,
                 name: "scratch_buffer".to_owned(),
                 ty: test_type(4),
                 persistence: StatePersistence::InstanceScratch,
-                reset: crate::StateResetPolicy::Restore,
+                authored: false,
+                pinned: false,
             },
         ]);
 
@@ -6267,7 +6271,8 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(2),
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         program.functions[1].locals.extend([
             Local {
@@ -7138,7 +7143,8 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(1),
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         program.functions[1].locals.push(Local {
             integer_range: None,
@@ -7204,7 +7210,8 @@ mod tests {
             name: "different_debug_name".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         program
             .interface
@@ -7335,7 +7342,8 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(1),
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         let mut callee = function("consume_pair", FunctionKind::User);
         callee.params.push(FunctionParam {
@@ -7407,7 +7415,8 @@ mod tests {
             name: "meter".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         program
             .interface
@@ -7449,7 +7458,8 @@ mod tests {
             name: "meter_mirror".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: false,
         });
         program
             .interface

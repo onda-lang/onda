@@ -409,7 +409,7 @@ impl JitProgram {
         let source = initial.bytes();
         debug_assert_eq!(destination.len(), source.len());
         let mut cursor = 0usize;
-        for segment in self.retained_state_segments.iter() {
+        for segment in self.pinned_state_segments.iter() {
             if cursor < segment.state_offset {
                 destination[cursor..segment.state_offset]
                     .copy_from_slice(&source[cursor..segment.state_offset]);

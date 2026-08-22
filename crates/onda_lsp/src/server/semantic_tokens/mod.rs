@@ -775,10 +775,7 @@ fn scan_number_literals_on_line(
 }
 
 fn is_semantic_keyword(name: &str, source_lines: &[&str], line: u32, start: u32) -> bool {
-    if name == "as" {
-        return true;
-    }
-    if name == "pin" {
+    if matches!(name, "as" | "private" | "pin") {
         return true;
     }
     if !onda_frontend::is_language_keyword(name) {

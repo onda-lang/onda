@@ -548,7 +548,7 @@ Typical uses:
 - Construct proc instances.
 - Perform one-time setup.
 
-Host `init` preserves `{retain}` roots and task continuations while rerunning
+Host `init` preserves pinned roots and task continuations while rerunning
 ordinary declaration initializers and every explicit init statement. Host
 `init_all` clears all state first. Either operation atomically captures its
 successful result as the new reset baseline; a runtime failure changes neither
@@ -572,29 +572,30 @@ Rules:
 - Declaration order is lexical.
 - A fresh assignment inside nested control flow in `init` is local to that flow, not persistent state.
 
-A direct persistent binding can opt out of ordinary reset with `{retain}` or
-the equivalent named form `{reset = retain}`:
+A direct persistent binding can opt out of ordinary reset with the `pin`
+modifier:
 
 ```onda
 init:
-  prepared: f32[4096] {retain}
-  generation: i32 = 0 {reset = retain}
+  pin prepared: f32[4096]
+  pin generation: i32 = 0
   history: f32[128]
 ```
 
 Ordinary reset preserves `prepared` and `generation` while restoring `history`.
 Fresh construction always initializes every binding. Snapshots include both
-policies and restore the captured values; `retain` affects reset, not snapshot
-semantics. Integer-domain attributes compose with the named reset field, for
-example `{MaxPartitions, wrap, reset = retain}`.
+policies and restore the captured values; `pin` affects reset, not snapshot
+semantics. Integer-domain attributes remain independent, for example
+`pin partition = 0 {MaxPartitions, wrap}`.
 
-The annotation is valid only on a fresh persistent value binding introduced
+The modifier is valid only on a fresh persistent value binding introduced
 directly by `init`. It applies to the complete state root and supports primitive
 scalars, fixed arrays, tuples, structs, and arrays of structs. Individual fields
 or elements cannot select another policy unless they are separate init roots.
-Proc instances and proc arrays do not accept `{retain}`; their child state owns
-its reset policy. Params, inputs, outputs, buffers, locals, aliases, and constants
-do not accept it either.
+Proc instances and proc arrays cannot be pinned; their child state owns
+its pin status. Params, inputs, outputs, buffers, locals, aliases, and constants
+cannot be pinned either. `pin` is not valid on a nested assignment or an update
+to an existing binding.
 
 ```onda
 init:
@@ -1429,19 +1430,19 @@ Rules:
 - Named param args are not supported inside logical `&&` / `||` expressions or `while` conditions.
 - For `kouts` procs, use `kout1` or named control outputs.
 
-### Pinned Params
+### Private Params
 
-Use `pin` when a proc param should be initialized and updated only through that
-proc's controlled code path.
+Use `private` when a proc param should be initialized and updated only through
+that proc's controlled code path.
 
 ```onda
 proc Filter:
   params:
-    pin cutoff = 1000.0
-    pin q = 0.707
+    private cutoff = 1000.0
+    private q = 0.707
 ```
 
-Pinned params:
+Private params:
 
 - Can be set by the constructor.
 - Can be set by the builtin proc `init(...)` event.
@@ -1449,7 +1450,7 @@ Pinned params:
 - Cannot be accessed directly from outside through `child.cutoff`, `child.cutoff = ...`, `child.coeffs[i]`, `child.coeffs[i] = ...`, or `child(cutoff = ...)`.
 - Cause external dynamic `child.params[i]` access to be rejected for that child proc.
 
-`pin` is a reserved keyword. It is only valid as a proc-param prefix.
+`private` is a reserved keyword. It is only valid as a proc-param prefix.
 
 ### Param Update Hooks
 
@@ -1517,8 +1518,8 @@ params in declaration order and adds `all: bool = false`, assigns
 provided values into params, reruns that proc instance's `init`, then runs bound
 param hooks. Omitted args use defaults.
 
-By default the call preserves `{retain}` roots and compiler-owned retained
-state such as task continuations while reinitializing resettable roots. Passing
+By default the call preserves pinned roots and compiler-pinned state such as
+task continuations while reinitializing resettable roots. Passing
 `all = true` performs the full initialization used by fresh proc
 construction. Explicit operations in the initializer still run in either
 mode, so a `task.reset()` written there remains effective.
@@ -1606,10 +1607,10 @@ lazily on its first call in that logical block. Splitting a logical block into
 process segments never grants additional task resumptions, and a zero-frame
 begin-block segment still advances statically scheduled tasks.
 
-Task continuations are retained state. Ordinary reset and default initialization
+Task continuations are compiler-pinned state. Ordinary reset and default initialization
 preserve them. Proc `init(all = true)` and host-level all-state initialization or
 reset restore them to not-started. An explicit `prepare.reset()` in an
-initializer always runs. Tasks may use both retained and resettable state; after
+initializer always runs. Tasks may use both pinned and resettable state; after
 an ordinary reset, a suspended task observes the reset values when it resumes.
 Snapshots include task status and continuation storage, so restoring a suspended
 task resumes it from the captured suspension point.
@@ -2109,7 +2110,7 @@ or stored from `init`, `event`, or top-level `def` bodies.
 - Top-level `kins` aliases `params`.
 - Control-flow keywords are reserved: `if`, `elif`, `else`, `for`, `in`, `while`, `loop`, `break`, `continue`, `return`, and `assert`.
 - `in` separates the loop variable from its range in `for i in A..B`; use names such as `input` for ports and variables.
-- `import`, `include`, `use`, `as`, `pub`, and `pin` are reserved for their declaration and modifier syntax.
+- `import`, `include`, `use`, `as`, `pub`, `private`, and `pin` are reserved for their declaration and modifier syntax.
 - `true` and `false` are reserved boolean literals.
 - Identifiers beginning with `__onda_` are reserved for compiler-generated symbols.
 - Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.

@@ -222,7 +222,7 @@ fn build_state_reset_ranges(
         .state
         .iter()
         .zip(state_offsets)
-        .filter(|(slot, _)| slot.reset == onda_mir::StateResetPolicy::Restore)
+        .filter(|(slot, _)| !slot.pinned)
         .map(|(slot, byte_offset)| {
             crate::mir_metadata::state_slot_byte_size(program, slot.ty).map(|byte_size| {
                 AotStateResetRange {

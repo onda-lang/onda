@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Default)]
 struct ParsedNamedDecl {
-    pinned: bool,
+    private: bool,
     ty: Option<DeclType>,
     ty_loc: Span,
     default: Option<Expr>,
@@ -84,7 +84,7 @@ fn parse_named_decl(
     let mut name: Option<String> = None;
     for item in pair.into_inner() {
         match item.as_rule() {
-            Rule::param_pin => parsed.pinned = true,
+            Rule::param_private => parsed.private = true,
             Rule::ident if name.is_none() => {
                 name = Some(item.as_str().to_owned());
             }
@@ -276,7 +276,7 @@ pub(super) fn parse_params_block(
                     params.push(ParamDecl {
                         loc,
                         name,
-                        pinned: parsed.pinned,
+                        private: parsed.private,
                         ty,
                         ty_loc: parsed.ty_loc,
                         default: parsed.default,
@@ -1069,7 +1069,7 @@ pub(super) fn parse_proc_block(
             loc: Span::ZERO,
             default_ty: None,
             default_ty_loc: Span::ZERO,
-            retained_roots: Vec::new(),
+            pinned_roots: Vec::new(),
             body: Vec::new(),
         }),
         block_pre,

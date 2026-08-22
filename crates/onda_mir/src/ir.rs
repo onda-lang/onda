@@ -416,18 +416,12 @@ pub struct StateSlot {
     pub name: String,
     pub ty: TypeId,
     pub persistence: StatePersistence,
+    /// Whether this state originates from a declaration in user source.
+    pub authored: bool,
     #[serde(default)]
-    pub reset: StateResetPolicy,
+    pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integer_range: Option<IntegerRangeInvariant>,
-}
-
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StateResetPolicy {
-    #[default]
-    Restore,
-    Retain,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -631,7 +625,7 @@ pub enum StatementKind {
 pub enum Rvalue {
     Use(Value),
     Load(Place),
-    /// Whether the init entry should initialize retained state as well as
+    /// Whether the init entry should initialize pinned state as well as
     /// ordinary resettable state. This entry-ABI value is only valid in the
     /// program init function.
     InitAll,

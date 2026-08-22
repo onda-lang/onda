@@ -13,7 +13,7 @@ mod proc_local_defs;
 mod shape_helpers;
 use generated_blocks::*;
 pub(crate) use generated_blocks::{
-    guard_retained_initializers, is_retained_initializer_marker, mark_retained_initializers,
+    guard_pinned_initializers, is_pinned_initializer_marker, mark_pinned_initializers,
 };
 pub(crate) use generic_proc_rewrite::validate_generic_proc_template_forwarded_type_args;
 use generic_proc_rewrite::*;
@@ -290,37 +290,47 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) proc_api: HashMap<String, ProcApi>,
     pub(crate) lowering_shapes: HashMap<String, ProcLoweringShape>,
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
-    pub(crate) retained_proc_fields: HashMap<String, HashSet<String>>,
+    pub(crate) pinned_proc_fields: HashMap<String, HashSet<String>>,
+    pub(crate) compiler_owned_proc_fields: HashMap<String, HashSet<String>>,
 }
 
-fn collect_flattened_retained_proc_fields(
+fn collect_flattened_proc_field_metadata(
     proc_name: &str,
     prefix: &str,
     proc_defs: &HashMap<String, ProcessorDef>,
     shapes: &HashMap<String, ProcLoweringShape>,
     visiting: &mut HashSet<String>,
-    fields: &mut HashSet<String>,
+    pinned_fields: &mut HashSet<String>,
+    compiler_owned_fields: &mut HashSet<String>,
 ) {
     if !visiting.insert(proc_name.to_owned()) {
         return;
     }
     if let Some(proc) = proc_defs.get(proc_name) {
-        fields.extend(
+        pinned_fields.extend(
             proc.init
-                .retained_roots
+                .pinned_roots
                 .iter()
                 .map(|root| format!("{prefix}{root}")),
         );
     }
     if let Some(shape) = shapes.get(proc_name) {
+        compiler_owned_fields.extend(
+            shape
+                .fields
+                .iter()
+                .filter(|field| crate::internal_names::is_reserved_internal_identifier(&field.name))
+                .map(|field| format!("{prefix}{}", field.name)),
+        );
         for (field, nested) in &shape.state.nested_procs {
-            collect_flattened_retained_proc_fields(
+            collect_flattened_proc_field_metadata(
                 &nested.proc_name,
                 &format!("{prefix}{field}__"),
                 proc_defs,
                 shapes,
                 visiting,
-                fields,
+                pinned_fields,
+                compiler_owned_fields,
             );
         }
     }
@@ -1296,7 +1306,7 @@ pub(crate) fn desugar_processors(
         .iter_mut()
         .find(|block| block.kind() == BlockKind::Init)
     {
-        init.body = mark_retained_initializers(init);
+        init.body = mark_pinned_initializers(init);
     }
 
     // Rewrite proc-local defs into hidden ordinary def calls before proc lowering.
@@ -1322,7 +1332,8 @@ pub(crate) fn desugar_processors(
             proc_api: HashMap::new(),
             lowering_shapes: HashMap::new(),
             top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
-            retained_proc_fields: HashMap::new(),
+            pinned_proc_fields: HashMap::new(),
+            compiler_owned_proc_fields: HashMap::new(),
         };
     };
     let existing_struct_names = program
@@ -1372,21 +1383,23 @@ pub(crate) fn desugar_processors(
     let proc_instance_oversample_factors = top_level_proc_rewrite
         .global_proc_instance_oversample_factors
         .clone();
-    let retained_proc_fields = proc_order
-        .iter()
-        .map(|proc_name| {
-            let mut fields = HashSet::new();
-            collect_flattened_retained_proc_fields(
-                proc_name,
-                "",
-                &proc_defs_by_name,
-                &lowering_shapes,
-                &mut HashSet::new(),
-                &mut fields,
-            );
-            (proc_name.clone(), fields)
-        })
-        .collect();
+    let mut pinned_proc_fields = HashMap::new();
+    let mut compiler_owned_proc_fields = HashMap::new();
+    for proc_name in &proc_order {
+        let mut pinned_fields = HashSet::new();
+        let mut compiler_owned_fields = HashSet::new();
+        collect_flattened_proc_field_metadata(
+            proc_name,
+            "",
+            &proc_defs_by_name,
+            &lowering_shapes,
+            &mut HashSet::new(),
+            &mut pinned_fields,
+            &mut compiler_owned_fields,
+        );
+        pinned_proc_fields.insert(proc_name.clone(), pinned_fields);
+        compiler_owned_proc_fields.insert(proc_name.clone(), compiler_owned_fields);
+    }
     ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
@@ -1395,7 +1408,8 @@ pub(crate) fn desugar_processors(
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
-        retained_proc_fields,
+        pinned_proc_fields,
+        compiler_owned_proc_fields,
     }
 }
 

@@ -1,48 +1,5 @@
 use super::*;
 
-const INTERNAL_RETAIN_INIT_EXPR: &str = "__onda_retain_init_expr";
-
-fn mark_retained_initializer(expr: Expr, retain: bool) -> Expr {
-    if !retain {
-        return expr;
-    }
-    Expr::UserCall {
-        loc: Default::default(),
-        name: INTERNAL_RETAIN_INIT_EXPR.to_owned(),
-        type_args: Vec::new(),
-        args: vec![CallArg { name: None, expr }],
-    }
-}
-
-fn extract_retained_roots(body: &mut [Stmt]) -> Vec<String> {
-    let mut retained = Vec::new();
-    for stmt in body {
-        let Stmt::Assign {
-            target: AssignTarget::Var(root),
-            expr,
-            ..
-        } = stmt
-        else {
-            continue;
-        };
-        let is_marker = matches!(
-            expr,
-            Expr::UserCall { name, type_args, args, .. }
-                if name == INTERNAL_RETAIN_INIT_EXPR && type_args.is_empty() && args.len() == 1
-        );
-        if !is_marker {
-            continue;
-        }
-        let marker = std::mem::replace(expr, Expr::int(0));
-        let Expr::UserCall { mut args, .. } = marker else {
-            unreachable!()
-        };
-        *expr = args.remove(0).expr;
-        retained.push(root.clone());
-    }
-    retained
-}
-
 pub(super) fn parse_stmt_list_pair(
     stmt_list_pair: Pair<'_, Rule>,
 ) -> Result<Vec<Stmt>, Vec<Diagnostic>> {
@@ -51,6 +8,43 @@ pub(super) fn parse_stmt_list_pair(
         stmts.push(parse_stmt(stmt_pair)?);
     }
     Ok(stmts)
+}
+
+fn parse_init_stmt_list_pair(
+    stmt_list_pair: Pair<'_, Rule>,
+) -> Result<(Vec<Stmt>, Vec<String>), Vec<Diagnostic>> {
+    let mut stmts = Vec::new();
+    let mut pinned_roots = Vec::new();
+    let mut assigned_roots = HashSet::new();
+    for stmt_pair in stmt_list_pair.into_inner() {
+        let pinned = stmt_pair.as_rule() == Rule::pinned_assign_stmt;
+        let stmt = if pinned {
+            parse_pinned_assign_stmt(stmt_pair)?
+        } else {
+            parse_stmt(stmt_pair)?
+        };
+        if let Stmt::Assign {
+            target: AssignTarget::Var(root),
+            ..
+        } = &stmt
+        {
+            if pinned {
+                if !assigned_roots.insert(root.clone()) {
+                    return Err(vec![syntax_at_loc(
+                        stmt.loc().as_ref(),
+                        format!(
+                            "'pin' requires a fresh state binding; '{root}' was already assigned"
+                        ),
+                    )]);
+                }
+                pinned_roots.push(root.clone());
+            } else {
+                assigned_roots.insert(root.clone());
+            }
+        }
+        stmts.push(stmt);
+    }
+    Ok((stmts, pinned_roots))
 }
 
 pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, Vec<Diagnostic>> {
@@ -64,13 +58,12 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, 
                 default_ty = Some(parse_init_default_decl_type(child)?);
             }
             Rule::stmt_list => {
-                let mut body = parse_stmt_list_pair(child)?;
-                let retained_roots = extract_retained_roots(&mut body);
+                let (body, pinned_roots) = parse_init_stmt_list_pair(child)?;
                 return Ok(InitBlock {
                     loc,
                     default_ty,
                     default_ty_loc,
-                    retained_roots,
+                    pinned_roots,
                     body,
                 });
             }
@@ -81,7 +74,7 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, 
         loc,
         default_ty,
         default_ty_loc,
-        retained_roots: Vec::new(),
+        pinned_roots: Vec::new(),
         body: Vec::new(),
     })
 }
@@ -258,6 +251,10 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
     match pair.as_rule() {
         Rule::const_decl => parse_const_stmt(pair),
         Rule::assign_stmt => parse_assign_stmt(pair),
+        Rule::pinned_assign_stmt => Err(vec![syntax_at_pair(
+            &pair,
+            "'pin' is only valid on a direct state binding in init",
+        )]),
         Rule::return_stmt => parse_return_stmt(pair),
         Rule::yield_stmt => parse_yield_stmt(pair),
         Rule::await_stmt => parse_await_stmt(pair),
@@ -273,6 +270,30 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
             "unexpected statement kind in parser",
         )]),
     }
+}
+
+fn parse_pinned_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
+    let mut inner = pair.into_inner();
+    let _pin = inner.next();
+    let Some(assign_pair) = inner.next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "missing pinned state binding",
+        )]);
+    };
+    let stmt = parse_assign_stmt(assign_pair)?;
+    let Stmt::Assign {
+        target: AssignTarget::Var(_),
+        ..
+    } = &stmt
+    else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "'pin' requires a direct named state binding",
+        )]);
+    };
+    Ok(stmt)
 }
 
 pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Diagnostic>> {
@@ -449,10 +470,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
             let attributes = range_pair
                 .map(parse_binding_range_pair)
                 .transpose()?
-                .unwrap_or(ParsedBindingAttributes {
-                    range: None,
-                    retain: false,
-                });
+                .unwrap_or(ParsedBindingAttributes { range: None });
             if attributes.range.is_some() && ty_pair.as_rule() != Rule::type_name {
                 return Err(vec![syntax_at_loc(
                     loc.as_ref(),
@@ -484,7 +502,6 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                             args: vec![expr, lower, upper],
                         };
                     }
-                    expr = mark_retained_initializer(expr, attributes.retain);
                     Ok(Stmt::Assign {
                         loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
@@ -524,10 +541,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
-                        expr: mark_retained_initializer(
-                            Expr::ArrayCtor { loc, spec, init },
-                            attributes.retain,
-                        ),
+                        expr: Expr::ArrayCtor { loc, spec, init },
                     })
                 }
                 Rule::named_type => {
@@ -557,7 +571,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                                 generic_decl_ty: None,
                                 is_typed_decl: missing_decl_type_args,
                                 typed_decl_ty_loc,
-                                expr: mark_retained_initializer(expr, attributes.retain),
+                                expr,
                             });
                         }
                     }
@@ -569,7 +583,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: Some(decl_name),
                         is_typed_decl: true,
                         typed_decl_ty_loc,
-                        expr: mark_retained_initializer(expr, attributes.retain),
+                        expr,
                     })
                 }
                 Rule::tuple_type => {
@@ -593,7 +607,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
-                        expr: mark_retained_initializer(parse_expr(expr_pair)?, attributes.retain),
+                        expr: parse_expr(expr_pair)?,
                     })
                 }
                 _ => Err(vec![syntax_at_loc(
@@ -694,7 +708,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 generic_decl_ty: None,
                 is_typed_decl: has_range,
                 typed_decl_ty_loc: Span::ZERO,
-                expr: mark_retained_initializer(expr, attributes.retain),
+                expr,
             })
         }
         Rule::plain_assign_stmt => {

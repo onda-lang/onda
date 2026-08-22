@@ -3427,11 +3427,11 @@ sample:
 }
 
 #[test]
-fn nested_proc_event_updates_pinned_param_and_runs_bound_hook() {
+fn nested_proc_event_updates_private_param_and_runs_bound_hook() {
     let source = r#"
 proc Child:
   params:
-    pin value = 0.0 => update_cached
+    private value = 0.0 => update_cached
   init:
     cached = 0.0
   def update_cached():

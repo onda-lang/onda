@@ -105,20 +105,20 @@ host pointer. This keeps the program valid for both 32-bit WebAssembly and nativ
 State is split into three persistence classes:
 
 - `Snapshot`: persistent state that participates in snapshot and restore, including compiler-owned
-  entries that artifact reflection can mark non-authored
+  entries whose explicit MIR provenance marks them non-authored
 - `InstanceScratch`: compiler-managed caches and transient per-instance data
 - `ControlMirror`: dedicated physical storage named by exactly one control-output descriptor
 
-Snapshot state independently carries a reset policy. `Restore`, the default, participates in
-ordinary baseline reset; `Retain` keeps its live value. Compiler-generated task continuation frames
-are snapshot state with `Retain` policy, so suspension state survives ordinary reset and remains
-portable through snapshot/restore without requiring a public task value in MIR.
+Snapshot state can be marked `pinned`, which keeps its live value across ordinary baseline reset.
+Compiler-generated task continuation frames are pinned snapshot state, so suspension state survives
+ordinary reset and remains portable through snapshot/restore without requiring a public task value
+in MIR.
 
 Host buffer bindings should remain symbolic resources or instance scratch, not become persistent
 pointer-sized state. This removes host pointer width from the portable state contract.
 
 Fresh and all-state initialization zeroes every state slot before the MIR `init` entry runs. Default
-initialization executes against the existing image so retained slots survive unless init explicitly
+initialization executes against the existing image so pinned slots survive unless init explicitly
 changes them. The producer may omit redundant zero assignments, while dynamic and nonzero
 initialization remains explicit in `init`. A control output identifies its mirror with a `StateId`;
 names are diagnostic and never participate in storage resolution. Control-mirror places are readable
@@ -131,10 +131,11 @@ deterministic MIR state order, with no target ABI padding. Control-output mirror
 and then overlays the packed persistent slots, so transient caches cannot leak across restore and
 the snapshot contract is independent of a backend's native alignment and byte-order choices.
 
-Artifact metadata derives coalesced ordinary-reset ranges from `Restore` slots. Retained snapshot
-slots are excluded from those ranges but remain in the packed snapshot. Compiler-owned task entries
-are marked non-authored by artifact producers so reflection can omit them without weakening the
-physical snapshot contract.
+Artifact metadata derives coalesced ordinary-reset ranges from unpinned slots. Pinned snapshot slots
+are excluded from those ranges but remain in the packed snapshot. Every state slot carries an
+explicit `authored` flag from semantic lowering; backends preserve it rather than interpreting state
+names. Reflection can therefore omit compiler-owned task entries without weakening the physical
+snapshot contract or hiding similarly named user state.
 
 AOT sidecar snapshots serialize each scalar element independently in little-endian byte
 order: floats use their IEEE-754 bits, signed integers use two's-complement bits, and booleans are

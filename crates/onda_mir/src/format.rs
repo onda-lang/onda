@@ -52,12 +52,10 @@ impl<'a> Formatter<'a> {
 
         for (index, slot) in self.program.state.iter().enumerate() {
             let integer_range = format_integer_range(slot.integer_range);
-            let reset = match slot.reset {
-                crate::StateResetPolicy::Restore => "",
-                crate::StateResetPolicy::Retain => " reset=retain",
-            };
+            let pinned = if slot.pinned { " pinned" } else { "" };
+            let authored = if slot.authored { "" } else { " authored=false" };
             self.line(format_args!(
-                "state @state{index} {:?}: {} {}{reset}{integer_range}",
+                "state @state{index} {:?}: {} {}{authored}{pinned}{integer_range}",
                 slot.name,
                 type_id(slot.ty),
                 match slot.persistence {
@@ -966,7 +964,8 @@ mod tests {
             name: "cursor".to_owned(),
             ty: TypeId::new(0),
             persistence: StatePersistence::Snapshot,
-            reset: crate::StateResetPolicy::Restore,
+            authored: true,
+            pinned: true,
             integer_range: Some(IntegerRangeInvariant {
                 min: ScalarValue::I32(0),
                 max: ScalarValue::I32(3),
@@ -1000,7 +999,7 @@ mod tests {
 
         let formatted = format_program(&program);
         assert!(formatted.contains(
-            "state @state0 \"cursor\": @t0 snapshot integer_range=wrap(i32(0)..=i32(3))"
+            "state @state0 \"cursor\": @t0 snapshot pinned integer_range=wrap(i32(0)..=i32(3))"
         ));
         assert!(
             formatted.contains("@p0 \"index\": @t0 value integer_range=clamp(i32(-4)..=i32(7))")

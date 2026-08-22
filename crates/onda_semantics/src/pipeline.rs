@@ -5,7 +5,7 @@ use onda_frontend::Span;
 
 use crate::processor_lowering::{
     coerce_typed_events, collect_runtime_state_roots, desugar_processors,
-    guard_retained_initializers, internal_proc_index_call_signature, lower_graph_blocks,
+    guard_pinned_initializers, internal_proc_index_call_signature, lower_graph_blocks,
     nested_call_out_fn_name, nested_step_fn_name, prepare_processors_for_graph_inspection,
     proc_runtime_analysis_options, validated_sample_oversample_factor, ProcLoweringShape,
     ProcessorDesugarResult, TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
@@ -46,15 +46,24 @@ fn resolves_to_processor_constructor(
     }
 }
 
-fn reject_retained_processor_bindings(program: &Program, errors: &mut Vec<Diagnostic>) {
+fn validate_pinned_bindings(program: &Program, errors: &mut Vec<Diagnostic>) {
+    fn add_occupied_names<'a>(
+        occupied: &mut HashMap<String, &'static str>,
+        names: impl IntoIterator<Item = &'a str>,
+        kind: &'static str,
+    ) {
+        occupied.extend(names.into_iter().map(|name| (name.to_owned(), kind)));
+    }
+
     fn validate_init(
         init: &InitBlock,
+        occupied_names: &HashMap<String, &'static str>,
         current_ns: &str,
         proc_symbols: &HashSet<String>,
         proc_template_bases: &HashSet<String>,
         errors: &mut Vec<Diagnostic>,
     ) {
-        let retained = init.retained_roots.iter().collect::<HashSet<_>>();
+        let mut pending = init.pinned_roots.iter().collect::<HashSet<_>>();
         for stmt in &init.body {
             let Stmt::Assign {
                 target: AssignTarget::Var(name),
@@ -64,10 +73,19 @@ fn reject_retained_processor_bindings(program: &Program, errors: &mut Vec<Diagno
             else {
                 continue;
             };
-            if !retained.contains(name) {
+            if !pending.remove(name) {
                 continue;
             }
-            let retained_processor_kind = match expr {
+            if let Some(kind) = occupied_names.get(name) {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "'pin' requires a fresh state binding; '{name}' is already declared as {kind}"
+                    ),
+                    stmt.loc(),
+                ));
+                continue;
+            }
+            let pinned_processor_kind = match expr {
                 Expr::UserCall {
                     name: constructor, ..
                 } if resolves_to_processor_constructor(
@@ -95,10 +113,10 @@ fn reject_retained_processor_bindings(program: &Program, errors: &mut Vec<Diagno
                 }
                 _ => None,
             };
-            if let Some(kind) = retained_processor_kind {
+            if let Some(kind) = pinned_processor_kind {
                 errors.push(Diagnostic::semantic_span(
                     format!(
-                        "{{retain}} cannot be applied to {kind} '{name}'; declare reset policy on the processor's own init state"
+                        "'pin' cannot be applied to {kind} '{name}'; pin the processor's own init state instead"
                     ),
                     stmt.loc(),
                 ));
@@ -115,15 +133,93 @@ fn reject_retained_processor_bindings(program: &Program, errors: &mut Vec<Diagno
         })
         .collect::<HashSet<_>>();
     let proc_template_bases = specialized_proc_template_bases(&proc_symbols);
+    let mut top_level_names = HashMap::new();
+    for block in &program.blocks {
+        match block {
+            Block::Ins(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "an input",
+                );
+            }
+            Block::Outs(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "an output",
+                );
+            }
+            Block::KOuts(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "a control output",
+                );
+            }
+            Block::Params(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "a param",
+                );
+            }
+            Block::Buffers(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "a buffer",
+                );
+            }
+            Block::Const(decl) => {
+                top_level_names.insert(decl.name.clone(), "a constant");
+            }
+            _ => {}
+        }
+    }
     if let Some(Block::Init(init)) = program.block(BlockKind::Init) {
-        validate_init(init, "", &proc_symbols, &proc_template_bases, errors);
+        validate_init(
+            init,
+            &top_level_names,
+            "",
+            &proc_symbols,
+            &proc_template_bases,
+            errors,
+        );
     }
     for proc_def in program.blocks.iter().filter_map(|block| match block {
         Block::Proc(proc_def) => Some(proc_def),
         _ => None,
     }) {
+        let mut occupied_names = HashMap::new();
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.ins.iter().map(|decl| decl.name.as_str()),
+            "an input",
+        );
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.outs.iter().map(|decl| decl.name.as_str()),
+            "an output",
+        );
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.params.iter().map(|decl| decl.name.as_str()),
+            "a param",
+        );
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.buffers.iter().map(|decl| decl.name.as_str()),
+            "a buffer",
+        );
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.consts.iter().map(|decl| decl.name.as_str()),
+            "a constant",
+        );
         validate_init(
             &proc_def.init,
+            &occupied_names,
             &namespace_of_symbol(&proc_def.name),
             &proc_symbols,
             &proc_template_bases,
@@ -6441,7 +6537,7 @@ fn expand_param_count_shorthand(
             decls.push(ParamDecl {
                 loc,
                 name: format!("{prefix}{idx}"),
-                pinned: false,
+                private: false,
                 ty: default_ty.clone(),
                 ty_loc: Span::ZERO,
                 default: None,
@@ -7832,7 +7928,7 @@ pub fn analyze_with_options(
         .blocks
         .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
     validate_task_source_model(&program, &mut errors);
-    reject_retained_processor_bindings(&program, &mut errors);
+    validate_pinned_bindings(&program, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -7864,20 +7960,26 @@ pub fn analyze_with_options(
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
-        retained_proc_fields,
+        pinned_proc_fields,
+        compiler_owned_proc_fields,
     } = desugar_processors(program, options, &const_array_infos, &mut errors);
-    let mut retained_state_roots = program
+    let mut pinned_state_roots = program
         .block(BlockKind::Init)
         .and_then(|block| match block {
-            Block::Init(init) => Some(init.retained_roots.iter().cloned()),
+            Block::Init(init) => Some(init.pinned_roots.iter().cloned()),
             _ => None,
         })
         .into_iter()
         .flatten()
         .collect::<HashSet<_>>();
+    let mut compiler_owned_state_roots = HashSet::new();
     for (instance, proc_instance) in &top_level_proc_rewrite.global_proc_instances {
-        if let Some(fields) = retained_proc_fields.get(&proc_instance.proc_name) {
-            retained_state_roots.extend(fields.iter().map(|field| format!("{instance}.{field}")));
+        if let Some(fields) = pinned_proc_fields.get(&proc_instance.proc_name) {
+            pinned_state_roots.extend(fields.iter().map(|field| format!("{instance}.{field}")));
+        }
+        if let Some(fields) = compiler_owned_proc_fields.get(&proc_instance.proc_name) {
+            compiler_owned_state_roots
+                .extend(fields.iter().map(|field| format!("{instance}.{field}")));
         }
     }
 
@@ -9819,7 +9921,7 @@ pub fn analyze_with_options(
         nested_proc_arrays: HashMap::new(),
     };
     analyze_owner_init_stmts(&init, &init_ctx, &init_locals, &mut init_st, &mut errors);
-    guard_retained_initializers(&mut init, TOP_LEVEL_INIT_ALL_NAME);
+    guard_pinned_initializers(&mut init, TOP_LEVEL_INIT_ALL_NAME);
     let InitAnalysisState {
         known_scalars: _init_known_scalars,
         local_aliases: _init_local_aliases,
@@ -10265,7 +10367,7 @@ pub fn analyze_with_options(
                 _ => 1,
             };
             if let Some(api) = proc_api.get(&proc_info.proc_name) {
-                for param in api.params.values().filter(|param| !param.pinned) {
+                for param in api.params.values().filter(|param| !param.private) {
                     fn_local_data_aliases.insert(
                         format!("{param_name}.{}", param.name),
                         LocalArrayAliasInfo {
@@ -10566,10 +10668,27 @@ pub fn analyze_with_options(
             })
             .collect::<Vec<_>>();
         typed_data.sort_by(|a, b| a.name.cmp(&b.name));
-        let retained_state_roots = sorted_state
+        let pinned_state_roots = sorted_state
             .iter()
             .chain(typed_data.iter().map(|array| &array.name))
-            .filter(|name| path_or_ancestor_is_declared(name, &retained_state_roots))
+            .filter(|name| path_or_ancestor_is_declared(name, &pinned_state_roots))
+            .cloned()
+            .collect::<HashSet<_>>();
+        compiler_owned_state_roots.extend(
+            sorted_state
+                .iter()
+                .chain(typed_data.iter().map(|array| &array.name))
+                .filter(|name| {
+                    crate::internal_names::is_reserved_internal_identifier(runtime_symbol_root(
+                        name,
+                    ))
+                })
+                .cloned(),
+        );
+        let compiler_owned_state_roots = sorted_state
+            .iter()
+            .chain(typed_data.iter().map(|array| &array.name))
+            .filter(|name| path_or_ancestor_is_declared(name, &compiler_owned_state_roots))
             .cloned()
             .collect::<HashSet<_>>();
         let mut typed_data_roots = state_array_struct_roots
@@ -10839,7 +10958,8 @@ pub fn analyze_with_options(
             control_out_types,
             param_types,
             state_integer_ranges,
-            retained_state_roots,
+            pinned_state_roots,
+            compiler_owned_state_roots,
             in_defaults,
             in_ranges,
             dynamic_input_range_aliases,

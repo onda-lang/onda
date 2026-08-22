@@ -405,7 +405,7 @@ pub fn reset(instance: &mut Instance) {
         .reset_state_from_initial(&mut instance.state, &instance.initial_state);
 }
 
-/// Restores the complete post-init physical image, including retained state
+/// Restores the complete post-init physical image, including pinned state
 /// and compiler-owned task continuations.
 pub fn reset_all(instance: &mut Instance) {
     // SAFETY: the initial image was produced by the compiled init entry and
@@ -413,13 +413,13 @@ pub fn reset_all(instance: &mut Instance) {
     unsafe { instance.state.bytes_mut() }.copy_from_slice(instance.initial_state.bytes());
 }
 
-/// Runs the program init block while preserving retained state, then makes
+/// Runs the program init block while preserving pinned state, then makes
 /// the resulting state the baseline used by subsequent resets.
 pub fn init(instance: &mut Instance) -> Result<(), Diagnostic> {
     initialize_instance(instance, false)
 }
 
-/// Runs the program init block after clearing all state, including retained
+/// Runs the program init block after clearing all state, including pinned
 /// values and compiler-owned task continuations, then captures a new reset
 /// baseline.
 pub fn init_all(instance: &mut Instance) -> Result<(), Diagnostic> {
@@ -428,7 +428,7 @@ pub fn init_all(instance: &mut Instance) -> Result<(), Diagnostic> {
 
 fn initialize_instance(instance: &mut Instance, all: bool) -> Result<(), Diagnostic> {
     // The candidate begins as the live image so ordinary init preserves
-    // retained values. The compiled all-mode entry clears it before executing.
+    // pinned values. The compiled all-mode entry clears it before executing.
     // Keeping this image preallocated makes the operation transactional without
     // adding allocation to the instance lifecycle after construction.
     unsafe { instance.staging_state.bytes_mut() }.copy_from_slice(instance.state.bytes());
@@ -1463,8 +1463,7 @@ mod tests {
             r#"
 proc Loader:
   init:
-    progress: i32 = 0 {retain}
-
+    pin progress: i32 = 0
   task load():
     progress += 1
     yield
@@ -1600,8 +1599,7 @@ sample:
         let mut instance = compile_test_instance(
             r#"
 init:
-  progress: i32 = 0 {retain}
-
+  pin progress: i32 = 0
 task prepare():
   progress += 1
   yield
@@ -1657,7 +1655,7 @@ block:
             .expect("restarted task should complete from its creation baseline");
         assert_eq!(output, [2.0]);
 
-        init(&mut instance).expect("default init should preserve retained task state");
+        init(&mut instance).expect("default init should preserve pinned task state");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
             .expect("default init should preserve the completed task");
@@ -1679,7 +1677,7 @@ block:
         let mut instance = compile_test_instance(
             r#"
 init:
-  progress: i32 = 0 {retain}
+  pin progress: i32 = 0
   load.reset()
 
 task load():
@@ -1729,8 +1727,7 @@ kouts:
   ready
 
 init:
-  progress: i32 = 0 {retain}
-
+  pin progress: i32 = 0
 task load():
   progress += 1
   yield
@@ -1768,14 +1765,57 @@ block:
     }
 
     #[test]
+    fn proc_task_neutralizes_block_timed_outputs_at_the_await_barrier() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+proc Control:
+  kouts 1
+  init:
+    pin value: i32 = 0
+  task load():
+    yield
+    value += 1
+  block:
+    await load()
+    kout1 = f32(value)
+
+init:
+  control = Control()
+
+kouts:
+  ready
+
+block:
+  ready = control().kout1
+"#,
+            BLOCK_SIZE,
+            0,
+        );
+        let ready = instance
+            .control_output_index("ready")
+            .expect("ready control output");
+        let read_ready = |instance: &Instance| {
+            let mut bytes = [0_u8; size_of::<f32>()];
+            read_control_output_bytes(instance, ready, &mut bytes)
+                .expect("control output should be readable");
+            f32::from_le_bytes(bytes)
+        };
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("proc task should yield");
+        assert_eq!(read_ready(&instance), 0.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("proc task should complete");
+        assert_eq!(read_ready(&instance), 1.0);
+    }
+
+    #[test]
     fn top_level_task_suspension_escapes_nested_block_pre_loops() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
             r#"
 init:
-  progress: i32 = 0 {retain}
-  activations: i32 = 0 {retain}
-
+  pin progress: i32 = 0
+  pin activations: i32 = 0
 task load():
   progress += 1
   yield
@@ -1811,36 +1851,36 @@ block:
     }
 
     #[test]
-    fn live_init_preserves_retained_state_and_captures_a_new_reset_baseline() {
+    fn live_init_preserves_pinned_state_and_captures_a_new_reset_baseline() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
             r#"
 outs { out1, out2 }
 init {
-  retained: i32 = 10 {retain}
+  pin pinned: i32 = 10
   ordinary: i32 = 20
-  retained += 1
+  pinned += 1
 }
 sample {
-  retained += 1
+  pinned += 1
   ordinary += 1
-  out1 = f32(retained)
+  out1 = f32(pinned)
   out2 = f32(ordinary)
 }
 "#,
             BLOCK_SIZE,
             2,
         );
-        let mut retained = [0.0_f32; BLOCK_SIZE];
+        let mut pinned = [0.0_f32; BLOCK_SIZE];
         let mut ordinary = [0.0_f32; BLOCK_SIZE];
         unsafe {
             bind_output(
                 &mut instance,
                 0,
-                retained.as_mut_ptr().cast(),
-                std::mem::size_of_val(&retained),
+                pinned.as_mut_ptr().cast(),
+                std::mem::size_of_val(&pinned),
             )
-            .expect("retained output should bind");
+            .expect("pinned output should bind");
             bind_output(
                 &mut instance,
                 1,
@@ -1851,29 +1891,29 @@ sample {
         }
 
         process_checked(&mut instance, BLOCK_SIZE).expect("initial state should process");
-        assert_eq!((retained[0], ordinary[0]), (12.0, 21.0));
+        assert_eq!((pinned[0], ordinary[0]), (12.0, 21.0));
 
         init(&mut instance).expect("ordinary live init should succeed");
         process_checked(&mut instance, BLOCK_SIZE).expect("reinitialized state should process");
-        assert_eq!((retained[0], ordinary[0]), (14.0, 21.0));
+        assert_eq!((pinned[0], ordinary[0]), (14.0, 21.0));
         process_checked(&mut instance, BLOCK_SIZE).expect("state should advance");
-        assert_eq!((retained[0], ordinary[0]), (15.0, 22.0));
+        assert_eq!((pinned[0], ordinary[0]), (15.0, 22.0));
 
         reset(&mut instance);
         process_checked(&mut instance, BLOCK_SIZE).expect("ordinary reset should process");
-        assert_eq!((retained[0], ordinary[0]), (16.0, 21.0));
+        assert_eq!((pinned[0], ordinary[0]), (16.0, 21.0));
 
         reset_all(&mut instance);
         process_checked(&mut instance, BLOCK_SIZE).expect("full reset should process");
-        assert_eq!((retained[0], ordinary[0]), (14.0, 21.0));
+        assert_eq!((pinned[0], ordinary[0]), (14.0, 21.0));
 
         init_all(&mut instance).expect("full live init should succeed");
         process_checked(&mut instance, BLOCK_SIZE).expect("fully initialized state should process");
-        assert_eq!((retained[0], ordinary[0]), (12.0, 21.0));
+        assert_eq!((pinned[0], ordinary[0]), (12.0, 21.0));
     }
 
     #[test]
-    fn live_init_handles_untyped_retained_declarations() {
+    fn live_init_handles_untyped_pinned_declarations() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
             r#"
@@ -1881,14 +1921,14 @@ outs { out1 }
 events {
   set_amp(value: f32) {
     amp = value
-    retained = value + 1.0
+    pinned = value + 1.0
   }
 }
 init {
   amp = 0.0
-  retained = 1.0 {retain}
+  pin pinned = 1.0
 }
-sample { out1 = amp + retained }
+sample { out1 = amp + pinned }
 "#,
             BLOCK_SIZE,
             1,
@@ -1912,7 +1952,7 @@ sample { out1 = amp + retained }
     }
 
     #[test]
-    fn reset_preserves_retained_structs_and_struct_arrays() {
+    fn reset_preserves_pinned_structs_and_struct_arrays() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
             r#"
@@ -1920,8 +1960,8 @@ struct State:
   value: i32 = 1
 
 init:
-  one = State() {retain}
-  many: State[2] = State() {retain}
+  pin one = State()
+  pin many: State[2] = State()
   ordinary = State()
 
 event mutate():
@@ -1974,13 +2014,13 @@ params:
 outs:
   out1
 init:
-  retained: i32 = 10 {retain}
-  retained += 1
+  pin pinned: i32 = 10
+  pinned += 1
   quotient: i32 = 10 / divisor
-event set_retained(value: i32):
-  retained = value
+event set_pinned(value: i32):
+  pinned = value
 sample:
-  out1 = f32(retained)
+  out1 = f32(pinned)
 "#,
             BLOCK_SIZE,
             1,
@@ -1996,8 +2036,8 @@ sample:
             .expect("output should bind");
         }
         let event = instance
-            .event_index("set_retained")
-            .expect("set_retained event");
+            .event_index("set_pinned")
+            .expect("set_pinned event");
         trigger_event_by_index(&mut instance, event, &50_i32.to_ne_bytes())
             .expect("event should run");
         set_param_by_index(&mut instance, 0, &0_i32.to_ne_bytes())
@@ -2019,7 +2059,7 @@ sample:
             r#"
 proc Loader:
   init:
-    progress: i32 = 0 {retain}
+    pin progress: i32 = 0
   task load():
     for i in 0..3:
       progress += 1
@@ -2075,13 +2115,13 @@ sample:
     }
 
     #[test]
-    fn proc_init_respects_retain_and_explicit_task_reset() {
+    fn proc_init_respects_pinning_and_explicit_task_reset() {
         const BLOCK_SIZE: usize = 4;
         let parsed = parse_program(
             r#"
 proc Keeper:
   init:
-    progress: i32 = 10 {retain}
+    pin progress: i32 = 10
     scratch: i32 = 20
   task load():
     progress += 1
@@ -2096,7 +2136,7 @@ proc Keeper:
 
 proc Resetter:
   init:
-    progress: i32 = 10 {retain}
+    pin progress: i32 = 10
     scratch: i32 = 20
     load.reset()
   task load():
@@ -2196,7 +2236,7 @@ sample:
             r#"
 proc Loader:
   init:
-    progress: i32 = 0 {retain}
+    pin progress: i32 = 0
   task load():
     progress += 1
     yield
@@ -2263,7 +2303,7 @@ sample:
 proc Loader:
   init:
     enabled: bool = false
-    progress: i32 = 0 {retain}
+    pin progress: i32 = 0
   event set_enabled(value: bool):
     enabled = value
   task load():
@@ -2324,7 +2364,7 @@ sample:
             r#"
 proc Loader:
   init:
-    result: i32 = 0 {retain}
+    pin result: i32 = 0
   task load():
     values: i32[4] = [3, 5, 7, 11]
     total: i32 = 0
@@ -2372,8 +2412,7 @@ sample:
         let mut instance = compile_test_instance(
             r#"
 init:
-  result: i32 = 0 {retain}
-
+  pin result: i32 = 0
 task prepare():
   i__end: i32 = 99
   for i in 0..2:
@@ -2410,14 +2449,61 @@ sample:
     }
 
     #[test]
+    fn task_symbols_are_injective_and_authored_state_is_explicit() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  pin foo____onda_bar: i32 = 0
+task foo():
+  bar_pc: i32 = 7
+  yield
+  foo____onda_bar = bar_pc
+
+task foo_local_bar():
+  yield
+
+block:
+  await foo()
+  await foo_local_bar()
+
+sample:
+  out1 = f32(foo____onda_bar)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        assert_eq!(instance.state_count(), 1);
+        assert_eq!(instance.state_name(0), Some("foo____onda_bar"));
+
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("first task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("second task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("both tasks should complete");
+        assert_eq!(output, [7.0; BLOCK_SIZE]);
+    }
+
+    #[test]
     fn task_bindings_preserve_lexical_shadowing_across_yield() {
         const BLOCK_SIZE: usize = 4;
         let mut instance = compile_test_instance(
             r#"
 proc Loader:
   init:
-    state_value: i32 = 40 {retain}
-    result: i32 = 0 {retain}
+    pin state_value: i32 = 40
+    pin result: i32 = 0
   task load():
     state_value: i32 = 2
     if state_value == 2:
@@ -2466,7 +2552,7 @@ struct Accumulator:
 
 proc Loader:
   init:
-    accumulator = Accumulator() {retain}
+    pin accumulator = Accumulator()
   task load():
     accumulator.value += 1
     yield
@@ -2507,7 +2593,7 @@ sample:
             r#"
 proc Child:
   init:
-    progress: i32 = 0 {retain}
+    pin progress: i32 = 0
   task load():
     progress += 1
     yield

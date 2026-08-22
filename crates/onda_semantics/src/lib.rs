@@ -109,7 +109,8 @@ pub struct TypedProgram {
     pub control_out_types: HashMap<String, PrimitiveType>,
     pub param_types: HashMap<String, PrimitiveType>,
     pub(crate) state_integer_ranges: HashMap<String, TypedIntegerRange>,
-    pub(crate) retained_state_roots: HashSet<String>,
+    pub(crate) pinned_state_roots: HashSet<String>,
+    pub(crate) compiler_owned_state_roots: HashSet<String>,
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
     pub(crate) dynamic_input_range_aliases: HashMap<String, String>,
@@ -682,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_retain_on_processor_instances_and_arrays() {
+    fn rejects_pin_on_processor_instances_and_arrays() {
         let cases = [
             (
                 r#"
@@ -690,11 +691,11 @@ proc Child:
   sample:
     out1 = 0.0
 init:
-  child = Child() {retain}
+  pin child = Child()
 sample:
   out1 = child()
 "#,
-                "{retain} cannot be applied to processor instance 'child'",
+                "'pin' cannot be applied to processor instance 'child'",
             ),
             (
                 r#"
@@ -703,7 +704,7 @@ proc Child:
     out1 = 0.0
 proc Parent:
   init:
-    child = Child() {retain}
+    pin child = Child()
   sample:
     out1 = child()
 init:
@@ -711,7 +712,7 @@ init:
 sample:
   out1 = parent()
 "#,
-                "{retain} cannot be applied to processor instance 'child'",
+                "'pin' cannot be applied to processor instance 'child'",
             ),
             (
                 r#"
@@ -719,11 +720,11 @@ proc Voice:
   sample:
     out1 = 0.0
 init:
-  voices: Voice[2] = Voice() {retain}
+  pin voices: Voice[2] = Voice()
 sample:
   out1 = voices[0]()
 "#,
-                "{retain} cannot be applied to processor array 'voices'",
+                "'pin' cannot be applied to processor array 'voices'",
             ),
             (
                 r#"
@@ -732,7 +733,7 @@ proc Voice:
     out1 = 0.0
 proc Parent:
   init:
-    voices: Voice[2] = Voice() {retain}
+    pin voices: Voice[2] = Voice()
   sample:
     out1 = voices[0]()
 init:
@@ -740,7 +741,7 @@ init:
 sample:
   out1 = parent()
 "#,
-                "{retain} cannot be applied to processor array 'voices'",
+                "'pin' cannot be applied to processor array 'voices'",
             ),
         ];
 
@@ -750,34 +751,62 @@ sample:
     }
 
     #[test]
-    fn retain_supports_structs_and_fixed_struct_arrays() {
+    fn pin_requires_a_fresh_state_binding() {
+        for source in [
+            r#"
+params:
+  gain = 1.0
+init:
+  pin gain = 0.5
+sample:
+  out1 = gain
+"#,
+            r#"
+proc Voice:
+  params:
+    private gain = 1.0
+  init:
+    pin gain = 0.5
+  sample:
+    out1 = gain
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#,
+        ] {
+            assert_analyze_error_contains(source, "'pin' requires a fresh state binding");
+        }
+    }
+
+    #[test]
+    fn pin_supports_structs_and_fixed_struct_arrays() {
         let source = r#"
 struct State:
   value: i32 = 1
 
 init:
-  one = State() {retain}
-  many: State[2] = State() {retain}
-
+  pin one = State()
+  pin many: State[2] = State()
 sample:
   out1 = f32(one.value + many[0].value + many[1].value)
 "#;
         let typed = analyze(parse_program(source).expect("source should parse"))
-            .expect("retained struct aggregates should analyze");
-        let mir = lower_program_to_optimized_mir(&typed)
-            .expect("retained struct aggregates should lower");
+            .expect("pinned struct aggregates should analyze");
+        let mir =
+            lower_program_to_optimized_mir(&typed).expect("pinned struct aggregates should lower");
         for name in ["one.value", "many.value"] {
             let state = mir
                 .state
                 .iter()
                 .find(|state| state.name == name)
                 .unwrap_or_else(|| panic!("missing flattened aggregate state '{name}'"));
-            assert_eq!(state.reset, onda_mir::StateResetPolicy::Retain);
+            assert!(state.pinned);
         }
     }
 
     #[test]
-    fn convolution_retains_prepared_kernel_but_not_signal_history() {
+    fn convolution_pins_prepared_kernel_but_not_signal_history() {
         let source = r#"
 import std/convolution
 use std::convolution<256, 1024> as Conv
@@ -791,12 +820,12 @@ sample:
         let typed = analyze(parse_program(source).expect("source should parse"))
             .expect("convolver should analyze");
         let mir = lower_program_to_optimized_mir(&typed).expect("convolver should lower");
-        let reset_policy = |name: &str| {
+        let is_pinned = |name: &str| {
             mir.state
                 .iter()
                 .find(|state| state.name == name)
                 .unwrap_or_else(|| panic!("missing convolver state '{name}'"))
-                .reset
+                .pinned
         };
 
         for name in [
@@ -806,7 +835,7 @@ sample:
             "conv.head__impulse_imag",
             "conv.head__active_partitions",
         ] {
-            assert_eq!(reset_policy(name), onda_mir::StateResetPolicy::Retain);
+            assert!(is_pinned(name));
         }
         for name in [
             "conv.td__delay",
@@ -814,7 +843,7 @@ sample:
             "conv.head__overlap",
             "conv.head__input_real",
         ] {
-            assert_eq!(reset_policy(name), onda_mir::StateResetPolicy::Restore);
+            assert!(!is_pinned(name));
         }
     }
 
@@ -2008,12 +2037,12 @@ sample:
     }
 
     #[test]
-    fn pinned_proc_params_accept_constructor_and_builtin_init() {
+    fn private_proc_params_accept_constructor_and_builtin_init() {
         let src = r#"
 proc Voice:
   params:
-    pin cutoff = 1000.0
-    pin coeffs: f32[2] = [0.5, 0.25]
+    private cutoff = 1000.0
+    private coeffs: f32[2] = [0.5, 0.25]
     gain = 1.0
   init:
     cached = cutoff + coeffs[0] + coeffs[1] + gain
@@ -2038,15 +2067,15 @@ sample:
   out1 = voice(gain = 0.25)
 "#;
         let program = parse_program(src).expect("parse should succeed");
-        analyze(program).expect("pinned constructor/init params should analyze");
+        analyze(program).expect("private constructor/init params should analyze");
     }
 
     #[test]
-    fn nested_proc_events_may_update_their_own_pinned_params() {
+    fn nested_proc_events_may_update_their_own_private_params() {
         let src = r#"
 proc Child:
   params:
-    pin value = 0.0
+    private value = 0.0
   event set(value_v: f32):
     value = value_v
   outs:
@@ -2070,56 +2099,56 @@ sample:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         analyze(program)
-            .expect("a nested child event should retain authority over its pinned params");
+            .expect("a nested child event should retain authority over its private params");
     }
 
     #[test]
-    fn pinned_proc_params_reject_external_access() {
+    fn private_proc_params_reject_external_access() {
         let cases = [
             (
                 "field assignment",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.cutoff = 1200.0\n  out1 = voice()\n",
-                "param 'cutoff' is pinned and cannot be assigned",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.cutoff = 1200.0\n  out1 = voice()\n",
+                "param 'cutoff' is private and cannot be assigned",
             ),
             (
                 "field read",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.cutoff\n",
-                "param 'cutoff' is pinned and cannot be read",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.cutoff\n",
+                "param 'cutoff' is private and cannot be read",
             ),
             (
                 "field read from user def",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\ndef leak(voice: Voice):\n  return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = leak(voice)\n",
-                "param 'cutoff' is pinned and cannot be read",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\ndef leak(voice: Voice):\n  return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = leak(voice)\n",
+                "param 'cutoff' is private and cannot be read",
             ),
             (
                 "field read from __proc-prefixed user method",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nstruct Inspector:\n  def __proc_read(self, voice: Voice):\n    return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\n  inspector = Inspector()\nsample:\n  out1 = inspector.__proc_read(voice)\n",
-                "param 'cutoff' is pinned and cannot be read",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nstruct Inspector:\n  def __proc_read(self, voice: Voice):\n    return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\n  inspector = Inspector()\nsample:\n  out1 = inspector.__proc_read(voice)\n",
+                "param 'cutoff' is private and cannot be read",
             ),
             (
                 "array assignment",
-                "proc Voice:\n  params:\n    pin coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.coeffs[0] = 0.1\n  out1 = voice()\n",
-                "param 'coeffs' is pinned and cannot be assigned",
+                "proc Voice:\n  params:\n    private coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.coeffs[0] = 0.1\n  out1 = voice()\n",
+                "param 'coeffs' is private and cannot be assigned",
             ),
             (
                 "array read",
-                "proc Voice:\n  params:\n    pin coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.coeffs[0]\n",
-                "param 'coeffs' is pinned and cannot be read",
+                "proc Voice:\n  params:\n    private coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.coeffs[0]\n",
+                "param 'coeffs' is private and cannot be read",
             ),
             (
                 "named call arg",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice(cutoff = 1200.0)\n",
-                "named argument 'cutoff' is pinned",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice(cutoff = 1200.0)\n",
+                "named argument 'cutoff' is private",
             ),
             (
                 "dynamic params read",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.params[0]\n",
-                "has pinned params, so dynamic param access",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.params[0]\n",
+                "has private params, so dynamic param access",
             ),
             (
                 "dynamic params assignment",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.params[0] = 0.5\n  out1 = voice()\n",
-                "has pinned params, so assignment through dynamic",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.params[0] = 0.5\n  out1 = voice()\n",
+                "has private params, so assignment through dynamic",
             ),
         ];
 

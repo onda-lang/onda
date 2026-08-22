@@ -476,10 +476,10 @@ pub(crate) fn coerce_params(
                 param_loc,
             ));
         }
-        if param.pinned {
+        if param.private {
             errors.push(Diagnostic::semantic_span(
                 format!(
-                    "param '{}' uses 'pin', but pinned params are only supported on processor params",
+                    "param '{}' uses 'private', but private params are only supported on processor params",
                     param.name
                 ),
                 param_loc,

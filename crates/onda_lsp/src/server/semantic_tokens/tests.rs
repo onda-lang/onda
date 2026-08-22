@@ -103,6 +103,7 @@ fn repo_source(rel: &str) -> (PathBuf, String) {
 fn reserved_words_include_singular_event_keyword() {
     assert!(is_reserved_word("event"));
     assert!(is_reserved_word("events"));
+    assert!(is_reserved_word("private"));
     assert!(is_reserved_word("pin"));
 }
 
@@ -850,12 +851,12 @@ fn semantic_tokens_mark_proc_section_declarations() {
 }
 
 #[test]
-fn semantic_tokens_keep_pinned_params_registered() {
+fn semantic_tokens_keep_private_params_registered() {
     let source = concat!(
         "proc Filter:\n",
         "  params:\n",
-        "    pin cutoff = 1000.0\n",
-        "    pin coeffs: f32[2] = [0.5, 0.25]\n",
+        "    private cutoff = 1000.0\n",
+        "    private coeffs: f32[2] = [0.5, 0.25]\n",
         "  sample:\n",
         "    out1 = cutoff + coeffs[0]\n",
     );
@@ -863,36 +864,36 @@ fn semantic_tokens_keep_pinned_params_registered() {
 
     assert!(
         has_token(&tokens, 5, 11, 6, SEMANTIC_TOKEN_TYPE_PORT),
-        "proc code should still resolve the pinned scalar param name: {tokens:?}"
+        "proc code should still resolve the private scalar param name: {tokens:?}"
     );
     assert!(
         has_token(&tokens, 5, 20, 6, SEMANTIC_TOKEN_TYPE_PORT),
-        "proc code should still resolve the pinned array param name: {tokens:?}"
+        "proc code should still resolve the private array param name: {tokens:?}"
     );
 }
 
 #[test]
-fn semantic_tokens_register_pinned_param_in_incomplete_proc_params() {
+fn semantic_tokens_register_private_param_in_incomplete_proc_params() {
     let source = concat!(
         "proc Filter:\n",
         "  params:\n",
-        "    pin cutoff =\n",
+        "    private cutoff =\n",
         "  sample:\n",
-        "    out1 = cutoff + pin\n",
+        "    out1 = cutoff + private\n",
     );
     let tokens = semantic_tokens_for_document(source, None);
 
     assert!(
         has_token(&tokens, 4, 11, 6, SEMANTIC_TOKEN_TYPE_PORT),
-        "source fallback should register the pinned param name, not 'pin': {tokens:?}"
+        "source fallback should register the private param name, not 'private': {tokens:?}"
     );
 }
 
 #[test]
-fn semantic_tokens_do_not_register_top_level_pin_param_fallback() {
+fn semantic_tokens_do_not_register_top_level_private_param_fallback() {
     let source = concat!(
         "params:\n",
-        "  pin gain = 1.0\n",
+        "  private gain = 1.0\n",
         "sample:\n",
         "  out1 = gain\n",
     );
@@ -900,7 +901,23 @@ fn semantic_tokens_do_not_register_top_level_pin_param_fallback() {
 
     assert!(
         !has_token(&tokens, 3, 9, 4, SEMANTIC_TOKEN_TYPE_PARAMETER),
-        "invalid top-level pinned params should not register a fallback param: {tokens:?}"
+        "invalid top-level private params should not register a fallback param: {tokens:?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_register_pinned_state_in_incomplete_init() {
+    let source = concat!(
+        "init:\n",
+        "  pin prepared =\n",
+        "sample:\n",
+        "  out1 = prepared\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert!(
+        has_token(&tokens, 3, 9, 8, SEMANTIC_TOKEN_TYPE_STATE),
+        "source fallback should register the pinned state name, not 'pin': {tokens:?}"
     );
 }
 

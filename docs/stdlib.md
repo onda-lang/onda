@@ -305,8 +305,8 @@ proc Svf<T>:
   ins<T> 1
   outs<T> 1
   params:
-    pin cutoff: T = 1000.0
-    pin q: T = 0.707107
+    private cutoff: T = 1000.0
+    private q: T = 0.707107
     mode: i32 = 0
   events:
     update_coeffs(cutoff_v: T, q_v: T):

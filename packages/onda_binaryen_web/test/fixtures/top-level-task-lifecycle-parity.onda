@@ -1,5 +1,5 @@
 init:
-  progress: i32 = 0 {retain}
+  pin progress: i32 = 0
   scratch: i32 = 5
 
 task load():

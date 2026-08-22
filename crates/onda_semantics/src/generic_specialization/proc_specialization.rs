@@ -544,7 +544,7 @@ pub(crate) fn specialize_generic_proc_template(
         .map(|decl| ParamDecl {
             loc: decl.loc,
             name: decl.name.clone(),
-            pinned: decl.pinned,
+            private: decl.private,
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
                     ty,

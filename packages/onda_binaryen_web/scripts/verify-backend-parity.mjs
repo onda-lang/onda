@@ -84,7 +84,7 @@ const scenarios = [
     ],
   },
   {
-    name: "cooperative task lifecycle, snapshots, and retained proc init",
+    name: "cooperative task lifecycle, snapshots, and pinned proc init",
     source: join(
       packageDir,
       "test/fixtures/task-lifecycle-parity.onda",

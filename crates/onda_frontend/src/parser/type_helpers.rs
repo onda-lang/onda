@@ -90,7 +90,6 @@ pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, V
 
 pub(super) struct ParsedBindingAttributes {
     pub(super) range: Option<(BuiltinFn, Expr, Expr)>,
-    pub(super) retain: bool,
 }
 
 pub(super) fn parse_binding_range_pair(
@@ -105,7 +104,6 @@ pub(super) fn parse_binding_range_pair(
     let loc = stmt_loc_from_pair(&pair);
     let mut domain = None;
     let mut mode = None;
-    let mut retain = false;
     let mut saw_named_or_mode = false;
     for item in pair.into_inner() {
         let Some(value) = item.into_inner().next() else {
@@ -163,16 +161,6 @@ pub(super) fn parse_binding_range_pair(
                     )]);
                 }
             }
-            Rule::binding_range_named_reset | Rule::binding_retain => {
-                saw_named_or_mode = true;
-                if retain {
-                    return Err(vec![syntax_at_pair(
-                        &value,
-                        "duplicate binding reset policy 'retain'",
-                    )]);
-                }
-                retain = true;
-            }
             Rule::binding_range_mode => {
                 saw_named_or_mode = true;
                 if mode.replace(value.as_str().to_owned()).is_some() {
@@ -189,15 +177,9 @@ pub(super) fn parse_binding_range_pair(
                 "binding range mode requires a count or range domain",
             )]);
         }
-        if retain {
-            return Ok(ParsedBindingAttributes {
-                range: None,
-                retain: true,
-            });
-        }
         return Err(vec![syntax_at_loc(
             loc.as_ref(),
-            "binding attributes require a count, range, or reset policy",
+            "binding attributes require a count or range",
         )]);
     };
     let (begin, end, domain_kind) = match domain {
@@ -232,7 +214,6 @@ pub(super) fn parse_binding_range_pair(
     };
     Ok(ParsedBindingAttributes {
         range: Some((func, begin, end)),
-        retain,
     })
 }
 
