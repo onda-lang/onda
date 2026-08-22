@@ -485,7 +485,7 @@ test("AudioWorklet sets scalar and fixed-array params from metadata", () => {
   assert.deepEqual(processor.port.messages, []);
 });
 
-test("AudioWorklet reset restores its baseline while preserving pinned state", () => {
+test("AudioWorklet supports default and full in-place initialization", () => {
   const mir = f64PassthroughMir();
   mir.interface.params[0] = {
     name: "initial",
@@ -547,24 +547,14 @@ test("AudioWorklet reset restores its baseline while preserving pinned state", (
   view.setFloat64(untouchedAddress, 300, true);
   processor.setParam("initial", 7.25);
   processor.blockCursor = 3;
-  processor.port.onmessage({ data: { type: "reset" } });
-
-  assert.equal(view.getFloat64(initializedAddress, true), 2.5);
-  assert.equal(view.getFloat64(pinnedAddress, true), 200);
-  assert.equal(view.getFloat64(untouchedAddress, true), 0);
-  assert.equal(processor.blockCursor, 0);
-  assert.deepEqual(processor.port.messages, []);
-
   processor.port.onmessage({ data: { type: "init" } });
   assert.equal(view.getFloat64(initializedAddress, true), 7.25);
   assert.equal(view.getFloat64(pinnedAddress, true), 200);
+  assert.equal(processor.blockCursor, 0);
+  assert.deepEqual(processor.port.messages, []);
 
   view.setFloat64(initializedAddress, 100, true);
   view.setFloat64(pinnedAddress, 300, true);
-  processor.port.onmessage({ data: { type: "reset-all" } });
-  assert.equal(view.getFloat64(initializedAddress, true), 7.25);
-  assert.equal(view.getFloat64(pinnedAddress, true), 200);
-
   processor.port.onmessage({ data: { type: "init-all" } });
   assert.equal(view.getFloat64(initializedAddress, true), 7.25);
   assert.equal(view.getFloat64(pinnedAddress, true), 5);

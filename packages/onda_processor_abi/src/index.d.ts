@@ -201,7 +201,6 @@ export interface OndaProcessorMetadata {
     param_size_bytes: number;
     param_align_bytes: number;
     state_initialization: "zeroed";
-    state_reset_ranges?: Array<{ byte_offset: number; byte_size: number }>;
     snapshot_size_bytes: number;
     snapshot_format_version: 1;
     snapshot_byte_order: "little_endian";

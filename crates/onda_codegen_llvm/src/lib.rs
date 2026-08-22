@@ -72,7 +72,6 @@ pub struct JitProgram {
     buffer_index: Arc<HashMap<String, usize>>,
     state_entries: Arc<Vec<DeclaredState>>,
     snapshot_segments: Arc<Vec<StateSnapshotSegment>>,
-    pinned_state_segments: Arc<Vec<PhysicalStateSegment>>,
     snapshot_size_bytes: usize,
     #[cfg(feature = "llvm-orc")]
     compiled: Arc<orc_backend::MirJitProgram>,
@@ -85,12 +84,6 @@ struct StateSnapshotSegment {
     byte_size: usize,
     element_size: usize,
     integer_range: Option<IntegerRangeInvariant>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PhysicalStateSegment {
-    state_offset: usize,
-    byte_size: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -521,26 +514,6 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
     let snapshot_size_bytes = snapshot_segments
         .last()
         .map_or(0, |segment| segment.snapshot_offset + segment.byte_size);
-    let pinned_state_segments = compiled
-        .mir()
-        .state
-        .iter()
-        .zip(compiled.state_byte_offsets())
-        .filter(|(slot, _)| slot.pinned)
-        .map(|(slot, state_offset)| {
-            mir_metadata::state_slot_byte_size(compiled.mir(), slot.ty).map(|byte_size| {
-                PhysicalStateSegment {
-                    state_offset: *state_offset,
-                    byte_size,
-                }
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            vec![Diagnostic::internal(format!(
-                "MIR state reset metadata failed: {error}"
-            ))]
-        })?;
     metadata.state_entries.retain(DeclaredState::is_authored);
     Ok(JitProgram {
         sample_rate: compiled.mir().config.sample_rate,
@@ -560,7 +533,6 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
         buffer_arrays: Arc::new(metadata.buffer_arrays),
         state_entries: Arc::new(metadata.state_entries),
         snapshot_segments: Arc::new(snapshot_segments),
-        pinned_state_segments: Arc::new(pinned_state_segments),
         snapshot_size_bytes,
         compiled: Arc::new(compiled),
     })
@@ -835,7 +807,7 @@ sample:
             .expect("state should clone");
         unsafe { live.bytes_mut() }.fill(0xff);
         program
-            .restore_state_snapshot(&mut live, &initial, &snapshot)
+            .restore_state_snapshot(&params, &mut live, &snapshot)
             .expect("snapshot should restore");
         assert_eq!(live.bytes(), initial.bytes());
     }
@@ -864,7 +836,7 @@ sample:
         snapshot[0..8].copy_from_slice(&(99_i64).to_le_bytes());
         snapshot[8..12].copy_from_slice(&(-1_i32).to_le_bytes());
         program
-            .restore_state_snapshot(&mut live, &initial, &snapshot)
+            .restore_state_snapshot(&params, &mut live, &snapshot)
             .expect("snapshot should restore");
         program
             .write_state_snapshot(&live, &mut snapshot)

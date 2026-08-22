@@ -15,16 +15,14 @@ processor.node.connect(audioContext.destination);
 await processor.setParam("gain", 0.75);
 await processor.setParamNormalized("cutoff", 0.5);
 const snapshot = await processor.snapshot();
-await processor.reset();    // preserve pinned roots and task continuations
-await processor.resetAll(); // restore the complete post-init image
-await processor.init();     // rerun init, preserve pinned state, capture a new baseline
-await processor.initAll();  // clear all state, rerun init, capture a new baseline
+await processor.init();     // rerun init in place, preserving pinned state
+await processor.initAll();  // rerun init in full mode, including pinned state
 ```
 
 The adapter registers `onda-wasm-processor`, derives Web Audio channel options from artifact
 metadata, marshals declared scalar widths, schedules arbitrary render quanta across Onda compile
 blocks, and provides request/response helpers for parameters, events, buffers, control outputs,
-reset, and portable snapshots.
+initialization, and portable snapshots.
 
 ## Parameters
 
@@ -123,10 +121,11 @@ Artifact descriptors and module exports are validated by the shared, compiler-fr
 If generated init or event code returns a nonzero execution status, the adapter reports the error
 to the caller. A failing process call reports an `onda-error` and emits silence for that callback;
 later callbacks and control events remain available, which lets a failed task take its neutral
-await path or be reset explicitly. Ordinary `reset()` restores resettable state from the cached
-post-init image. `resetAll()` also restores pinned roots and compiler-owned task continuations.
-`init()` and `initAll()` rerun generated init transactionally and replace that cached baseline only
-on success. Suspend or disconnect playback before initialization that performs substantial work.
+await path or be reset explicitly. `init()` reruns generated initialization in place while
+preserving pinned roots and task continuations; `initAll()` also reruns their declaration
+initializers. Neither operation blanket-clears memory or allocates on the successful path, and a
+failure leaves processor state indeterminate. Suspend or disconnect playback before initialization
+that performs substantial work.
 
 Dynamic event storage is also allocated before rendering. Its default capacity is 64 KiB per
 processor with dynamic events and can be changed explicitly:

@@ -64,19 +64,21 @@ There is one `onda_event_N` for each declared event, in metadata order. The curr
 public processor namespace per artifact. A future ABI may add artifact-specific namespacing for
 multi-processor libraries without changing MIR.
 
-For `onda_processor_init`, a nonzero `all` clears the complete physical state image before executing
-init; zero executes against the supplied image and therefore preserves pinned state unless init
-explicitly changes it. Raw ABI initialization is not transactional: a host that needs rollback must
-run it against a staging image and publish that image only after a zero status.
+For `onda_processor_init`, both modes execute directly against the supplied physical state image.
+A nonzero `all` runs declaration initializers for pinned state and task continuations as well as
+ordinary state; zero skips those guarded declarations and therefore preserves pinned state unless
+init explicitly changes it. Neither mode blanket-clears the physical image. Raw ABI initialization
+is not transactional: a host that needs rollback must provide that policy itself.
 
 Processor ABI version 5 renamed this raw entry point from `onda_init` and added the `all` argument.
-This keeps it distinct from the instance-level C API, whose `onda_init(instance)` operation is
-transactional and captures a new reset baseline after successful initialization.
+The instance-level C API exposes the same two in-place initialization modes through
+`onda_init(instance)` and `onda_init_all(instance)`. A failed initialization leaves the physical
+state indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is
 `RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
-cannot continue safely. The host must not publish a staging state after any nonzero result; it may
-discard that image or restore a known-good image before calling `onda_processor_init` again.
+cannot continue safely. After a nonzero init result, the supplied state image is indeterminate and
+must not be processed until the host successfully initializes or restores it.
 
 The process order intentionally places state, parameters, and audio tables before segment controls
 and optional buffer tables. This keeps the hottest pointers in argument registers on common native
@@ -152,9 +154,6 @@ target layout and is otherwise opaque.
 
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
 artifact descriptor. Scratch state is deliberately absent from snapshots.
-`runtime.state_reset_ranges` lists the coalesced physical ranges copied from the post-init baseline
-by ordinary reset; pinned authored roots and compiler-owned task continuations are outside those
-ranges. An all-state reset restores the complete baseline instead.
 
 `metadata.states` includes every packed snapshot entry. Its `authored` flag preserves the explicit
 MIR state provenance and is false for compiler-owned task frames, allowing snapshot implementations

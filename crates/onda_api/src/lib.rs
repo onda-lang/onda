@@ -31,7 +31,7 @@ use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
     init as runtime_init, init_all as runtime_init_all, prepare_unchecked_process, process_checked,
     process_checked_segment, process_unchecked, process_unchecked_segment,
-    read_control_output_bytes, reset, reset_all, set_param_by_index,
+    read_control_output_bytes, set_param_by_index,
     set_param_normalized as runtime_set_param_normalized,
     set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
     trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
@@ -3086,24 +3086,6 @@ pub unsafe extern "C" fn onda_process_checked_segment(
         Ok(_) => 0,
         Err(_) => -2,
     }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_reset(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    reset(&mut (*instance).inner);
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_reset_all(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    reset_all(&mut (*instance).inner);
-    0
 }
 
 #[no_mangle]

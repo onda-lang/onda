@@ -87,25 +87,6 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
   requireInteger(metadata.compile?.block_size, "compile.block_size", 1);
   requireBoolean(metadata.compile?.fast_math, "compile.fast_math");
   requireInteger(metadata.runtime?.state_size_bytes, "runtime.state_size_bytes", 0);
-  if (metadata.runtime?.state_reset_ranges !== undefined) {
-    if (!Array.isArray(metadata.runtime.state_reset_ranges)) {
-      throw new OndaArtifactError("runtime.state_reset_ranges must be an array");
-    }
-    let previousEnd = 0;
-    for (const [index, range] of metadata.runtime.state_reset_ranges.entries()) {
-      const path = `runtime.state_reset_ranges[${index}]`;
-      requireInteger(range?.byte_offset, `${path}.byte_offset`, 0);
-      requireInteger(range?.byte_size, `${path}.byte_size`, 0);
-      if (range.byte_offset < previousEnd) {
-        throw new OndaArtifactError(`${path} overlaps or precedes an earlier range`);
-      }
-      const end = range.byte_offset + range.byte_size;
-      if (!Number.isSafeInteger(end) || end > metadata.runtime.state_size_bytes) {
-        throw new OndaArtifactError(`${path} exceeds runtime.state_size_bytes`);
-      }
-      previousEnd = end;
-    }
-  }
   requireInteger(metadata.runtime?.state_align_bytes, "runtime.state_align_bytes", 1);
   requireInteger(metadata.runtime?.param_size_bytes, "runtime.param_size_bytes", 0);
   requireInteger(metadata.runtime?.param_align_bytes, "runtime.param_align_bytes", 1);

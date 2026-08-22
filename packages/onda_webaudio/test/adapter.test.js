@@ -253,12 +253,6 @@ test("correlates control responses and preserves caller snapshot storage", async
   node.port.reply({ type: "onda-ok", requestId: restoreRequest.requestId });
   await restore;
 
-  const resetAll = processor.resetAll();
-  const resetAllRequest = node.port.messages.at(-1);
-  assert.equal(resetAllRequest.type, "reset-all");
-  node.port.reply({ type: "onda-ok", requestId: resetAllRequest.requestId });
-  await resetAll;
-
   const init = processor.init();
   const initRequest = node.port.messages.at(-1);
   assert.equal(initRequest.type, "init");

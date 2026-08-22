@@ -24,8 +24,6 @@ pub struct Instance {
     pub(crate) config: InstanceConfig,
     pub(crate) params: RuntimeBuffer<u8>,
     pub(crate) state: RuntimeState,
-    pub(crate) initial_state: RuntimeState,
-    pub(crate) staging_state: RuntimeState,
     pub(crate) input_bindings: RuntimeBuffer<Option<BoundInput>>,
     pub(crate) output_bindings: RuntimeBuffer<Option<BoundOutput>>,
     pub(crate) buffer_bindings: RuntimeBuffer<Option<BoundBuffer>>,
@@ -249,8 +247,9 @@ impl Instance {
     }
 
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
+        configure_current_thread_audio_fp_mode();
         self.program
-            .restore_state_snapshot(&mut self.state, &self.initial_state, bytes)?;
+            .restore_state_snapshot(&self.params, &mut self.state, bytes)?;
         Ok(())
     }
 }
@@ -348,8 +347,6 @@ fn create_instance_inner(
     program.write_default_param_bytes(&mut params)?;
     configure_current_thread_audio_fp_mode();
     let state = program.initialize_state_with_allocator(&params, allocator)?;
-    let initial_state = state.try_clone_with_allocator(allocator)?;
-    let staging_state = state.try_clone_with_allocator(allocator)?;
 
     let input_count = program.input_count();
     let output_count = program.output_count();
@@ -374,8 +371,6 @@ fn create_instance_inner(
         config,
         params,
         state,
-        initial_state,
-        staging_state,
         input_bindings: RuntimeBuffer::try_from_elem_in(input_count, None, allocator)?,
         output_bindings: RuntimeBuffer::try_from_elem_in(output_count, None, allocator)?,
         buffer_bindings: RuntimeBuffer::try_from_elem_in(buffer_count, None, allocator)?,
@@ -399,51 +394,23 @@ fn create_instance_inner(
     })
 }
 
-pub fn reset(instance: &mut Instance) {
-    instance
-        .program
-        .reset_state_from_initial(&mut instance.state, &instance.initial_state);
-}
-
-/// Restores the complete post-init physical image, including pinned state
-/// and compiler-owned task continuations.
-pub fn reset_all(instance: &mut Instance) {
-    // SAFETY: the initial image was produced by the compiled init entry and
-    // therefore satisfies every declared state invariant.
-    unsafe { instance.state.bytes_mut() }.copy_from_slice(instance.initial_state.bytes());
-}
-
-/// Runs the program init block while preserving pinned state, then makes
-/// the resulting state the baseline used by subsequent resets.
+/// Runs the program init block in place while preserving pinned state and
+/// compiler-owned task continuations.
 pub fn init(instance: &mut Instance) -> Result<(), Diagnostic> {
     initialize_instance(instance, false)
 }
 
-/// Runs the program init block after clearing all state, including pinned
-/// values and compiler-owned task continuations, then captures a new reset
-/// baseline.
+/// Runs the program init block in full mode, including declaration initializers
+/// for pinned values and compiler-owned task continuations.
 pub fn init_all(instance: &mut Instance) -> Result<(), Diagnostic> {
     initialize_instance(instance, true)
 }
 
 fn initialize_instance(instance: &mut Instance, all: bool) -> Result<(), Diagnostic> {
-    // The candidate begins as the live image so ordinary init preserves
-    // pinned values. The compiled all-mode entry clears it before executing.
-    // Keeping this image preallocated makes the operation transactional without
-    // adding allocation to the instance lifecycle after construction.
-    unsafe { instance.staging_state.bytes_mut() }.copy_from_slice(instance.state.bytes());
     configure_current_thread_audio_fp_mode();
-    instance.program.initialize_state_in_place(
-        &instance.params,
-        &mut instance.staging_state,
-        all,
-    )?;
-
-    // Both copies are infallible. Commit the reset baseline before publishing
-    // the candidate as live state so a failed compiled init changes neither.
-    unsafe { instance.initial_state.bytes_mut() }.copy_from_slice(instance.staging_state.bytes());
-    std::mem::swap(&mut instance.state, &mut instance.staging_state);
-    Ok(())
+    instance
+        .program
+        .initialize_state_in_place(&instance.params, &mut instance.state, all)
 }
 
 pub fn set_param_by_index(
@@ -1402,7 +1369,7 @@ mod tests {
     }
 
     #[test]
-    fn state_reset_and_restore_preserve_validated_buffer_tables() {
+    fn state_init_and_restore_preserve_validated_buffer_tables() {
         let parsed = parse_program(
             "buffers:\n  data: f32\ninit:\n  counter = 0.0\nsample:\n  counter = counter + 1.0\n",
         )
@@ -1445,7 +1412,7 @@ mod tests {
         let bound_ptr = instance.buffer_ptrs[0];
         let snapshot = instance.snapshot_state_bytes();
 
-        reset(&mut instance);
+        init(&mut instance).expect("init should succeed");
         assert!(instance.buffers_validated);
         assert_eq!(instance.buffer_ptrs[0], bound_ptr);
 
@@ -1457,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn cooperative_task_yields_gate_audio_and_survive_ordinary_reset() {
+    fn cooperative_task_yields_gate_audio_and_survive_default_init() {
         const BLOCK_SIZE: usize = 8;
         let parsed = parse_program(
             r#"
@@ -1532,14 +1499,14 @@ sample:
         process_checked(&mut instance, BLOCK_SIZE).expect("restarted task should complete");
         assert_eq!(output, [4.0; BLOCK_SIZE]);
 
-        reset(&mut instance);
+        init(&mut instance).expect("default init should succeed");
         output.fill(99.0);
-        process_checked(&mut instance, BLOCK_SIZE).expect("ordinary reset block should process");
+        process_checked(&mut instance, BLOCK_SIZE).expect("default init block should process");
         assert_eq!(output, [4.0; BLOCK_SIZE]);
 
-        reset_all(&mut instance);
+        init_all(&mut instance).expect("full init should succeed");
         output.fill(99.0);
-        process_checked(&mut instance, BLOCK_SIZE).expect("all-state reset block should process");
+        process_checked(&mut instance, BLOCK_SIZE).expect("full init block should process");
         assert_eq!(output, [0.0; BLOCK_SIZE]);
     }
 
@@ -1640,19 +1607,18 @@ block:
         process_checked(&mut instance, BLOCK_SIZE).expect("reset task should complete again");
         assert_eq!(output, [4.0]);
 
-        reset(&mut instance);
+        init(&mut instance).expect("default init should preserve the completed task");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
-            .expect("ordinary reset should preserve the completed task");
+            .expect("default init should preserve the completed task");
         assert_eq!(output, [4.0]);
 
-        reset_all(&mut instance);
+        init_all(&mut instance).expect("full init should restart the task");
         output.fill(99.0);
-        process_checked(&mut instance, BLOCK_SIZE)
-            .expect("all-state reset should restart the task");
+        process_checked(&mut instance, BLOCK_SIZE).expect("full init should restart the task");
         assert_eq!(output, [0.0]);
         process_checked(&mut instance, BLOCK_SIZE)
-            .expect("restarted task should complete from its creation baseline");
+            .expect("restarted task should complete from a cleared state");
         assert_eq!(output, [2.0]);
 
         init(&mut instance).expect("default init should preserve pinned task state");
@@ -1661,13 +1627,12 @@ block:
             .expect("default init should preserve the completed task");
         assert_eq!(output, [2.0]);
 
-        init_all(&mut instance).expect("all-state init should restart the task");
+        init_all(&mut instance).expect("full init should restart after default init");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
-            .expect("all-state init should restart at the first yield");
+            .expect("full init should restart after default init");
         assert_eq!(output, [0.0]);
-        process_checked(&mut instance, BLOCK_SIZE)
-            .expect("all-state initialized task should complete");
+        process_checked(&mut instance, BLOCK_SIZE).expect("fully initialized task should complete");
         assert_eq!(output, [2.0]);
     }
 
@@ -1851,7 +1816,7 @@ block:
     }
 
     #[test]
-    fn live_init_preserves_pinned_state_and_captures_a_new_reset_baseline() {
+    fn live_init_preserves_pinned_state_and_full_init_reinitializes_it() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
             r#"
@@ -1899,13 +1864,9 @@ sample {
         process_checked(&mut instance, BLOCK_SIZE).expect("state should advance");
         assert_eq!((pinned[0], ordinary[0]), (15.0, 22.0));
 
-        reset(&mut instance);
-        process_checked(&mut instance, BLOCK_SIZE).expect("ordinary reset should process");
-        assert_eq!((pinned[0], ordinary[0]), (16.0, 21.0));
-
-        reset_all(&mut instance);
-        process_checked(&mut instance, BLOCK_SIZE).expect("full reset should process");
-        assert_eq!((pinned[0], ordinary[0]), (14.0, 21.0));
+        init(&mut instance).expect("second default init should succeed");
+        process_checked(&mut instance, BLOCK_SIZE).expect("second init state should process");
+        assert_eq!((pinned[0], ordinary[0]), (17.0, 21.0));
 
         init_all(&mut instance).expect("full live init should succeed");
         process_checked(&mut instance, BLOCK_SIZE).expect("fully initialized state should process");
@@ -1952,7 +1913,7 @@ sample { out1 = amp + pinned }
     }
 
     #[test]
-    fn reset_preserves_pinned_structs_and_struct_arrays() {
+    fn init_preserves_pinned_structs_and_full_init_reinitializes_them() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
             r#"
@@ -1995,17 +1956,17 @@ sample:
         process_checked(&mut instance, BLOCK_SIZE).expect("mutated state should process");
         assert_eq!(output, [100.0]);
 
-        reset(&mut instance);
-        process_checked(&mut instance, BLOCK_SIZE).expect("ordinary reset should process");
+        init(&mut instance).expect("default init should succeed");
+        process_checked(&mut instance, BLOCK_SIZE).expect("default init should process");
         assert_eq!(output, [61.0]);
 
-        reset_all(&mut instance);
-        process_checked(&mut instance, BLOCK_SIZE).expect("full reset should process");
+        init_all(&mut instance).expect("full init should succeed");
+        process_checked(&mut instance, BLOCK_SIZE).expect("full init should process");
         assert_eq!(output, [4.0]);
     }
 
     #[test]
-    fn failed_live_init_is_transactional() {
+    fn failed_live_init_reports_the_execution_error() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
             r#"
@@ -2044,12 +2005,6 @@ sample:
             .expect("divisor parameter should update");
 
         assert!(init(&mut instance).is_err(), "division by zero should fail");
-        process_checked(&mut instance, BLOCK_SIZE).expect("live state should remain usable");
-        assert_eq!(output, [50.0]);
-
-        reset_all(&mut instance);
-        process_checked(&mut instance, BLOCK_SIZE).expect("baseline should remain unchanged");
-        assert_eq!(output, [11.0]);
     }
 
     #[test]
@@ -2500,8 +2455,9 @@ sample:
         process_checked_segment(&mut instance, 0, 2, 0)
             .expect("first audio segment should observe the yielded task");
         assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
+        init(&mut instance).expect("default init should succeed");
         process_checked_segment(&mut instance, 2, 2, PROCESS_END_BLOCK)
-            .expect("later segments must not resume the task");
+            .expect("default init must not reopen the task gate within a logical block");
         assert_eq!(output, [0.0; BLOCK_SIZE]);
 
         let suspended = instance.snapshot_state_bytes();
@@ -2515,6 +2471,51 @@ sample:
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
             .expect("restored task should resume after its yield");
+        assert_eq!(output, [11.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn default_init_does_not_reopen_top_level_task_gate_mid_block() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  pin progress: i32 = 0
+task load():
+  progress += 1
+  yield
+  progress += 10
+block:
+  await load()
+  sample:
+    out1 = f32(progress)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked_segment(&mut instance, 0, 0, PROCESS_BEGIN_BLOCK)
+            .expect("zero-frame begin should advance and yield the task");
+        process_checked_segment(&mut instance, 0, 2, 0)
+            .expect("first audio segment should observe the yielded task");
+        assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
+
+        init(&mut instance).expect("default init should succeed");
+        process_checked_segment(&mut instance, 2, 2, PROCESS_END_BLOCK)
+            .expect("default init must not reopen the top-level task gate");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("next block should complete the task");
         assert_eq!(output, [11.0; BLOCK_SIZE]);
     }
 
@@ -3008,6 +3009,17 @@ sample:
         assert_eq!(output, [0.0; BLOCK_SIZE]);
         process_checked(&mut instance, BLOCK_SIZE).expect("both child tasks should complete");
         assert_eq!(output, [22.0; BLOCK_SIZE]);
+
+        init(&mut instance).expect("default init should preserve nested task state");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE)
+            .expect("default init should preserve completed child tasks");
+        assert_eq!(output, [22.0; BLOCK_SIZE]);
+
+        init_all(&mut instance).expect("full init should restart nested tasks");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("restarted child tasks should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
     }
 
     #[test]

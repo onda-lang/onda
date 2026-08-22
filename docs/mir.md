@@ -109,41 +109,40 @@ State is split into three persistence classes:
 - `InstanceScratch`: compiler-managed caches and transient per-instance data
 - `ControlMirror`: dedicated physical storage named by exactly one control-output descriptor
 
-Snapshot state can be marked `pinned`, which keeps its live value across ordinary baseline reset.
+Snapshot state can be marked `pinned`, which keeps its live value across default initialization.
 Compiler-generated task continuation frames are pinned snapshot state, so suspension state survives
-ordinary reset and remains portable through snapshot/restore without requiring a public task value
-in MIR.
+default initialization and remains portable through snapshot/restore without requiring a public
+task value in MIR.
 
 Host buffer bindings should remain symbolic resources or instance scratch, not become persistent
 pointer-sized state. This removes host pointer width from the portable state contract.
 
-Fresh and all-state initialization zeroes every state slot before the MIR `init` entry runs. Default
-initialization executes against the existing image so pinned slots survive unless init explicitly
-changes them. The producer may omit redundant zero assignments, while dynamic and nonzero
-initialization remains explicit in `init`. A control output identifies its mirror with a `StateId`;
+Fresh instances receive zeroed state storage before the MIR `init` entry first runs. Both later
+initialization modes execute against the existing image. Full initialization runs declaration
+initializers for every slot; default initialization skips guarded pinned declarations so those slots
+survive unless init explicitly changes them. Dynamic and nonzero initialization remains explicit in
+`init`. A control output identifies its mirror with a `StateId`;
 names are diagnostic and never participate in storage resolution. Control-mirror places are readable
 but not directly writable. Only `ControlOutputStore` in the process entry may mutate them, preventing
 init, event, or user functions from bypassing the host-visible control-output operation.
 
 Snapshots use a packed little-endian logical layout containing only `Snapshot` slots, in
 deterministic MIR state order, with no target ABI padding. Control-output mirrors and
-`InstanceScratch` slots are omitted. Restore first resets physical state to its initialized image
-and then overlays the packed persistent slots, so transient caches cannot leak across restore and
-the snapshot contract is independent of a backend's native alignment and byte-order choices.
+`InstanceScratch` slots are omitted. Restore performs full initialization in place and then overlays
+the packed persistent slots, so transient caches cannot leak across restore and the snapshot
+contract is independent of a backend's native alignment and byte-order choices.
 
-Artifact metadata derives coalesced ordinary-reset ranges from unpinned slots. Pinned snapshot slots
-are excluded from those ranges but remain in the packed snapshot. Every state slot carries an
-explicit `authored` flag from semantic lowering; backends preserve it rather than interpreting state
-names. Reflection can therefore omit compiler-owned task entries without weakening the physical
-snapshot contract or hiding similarly named user state.
+Every state slot carries an explicit `authored` flag from semantic lowering; backends preserve it
+rather than interpreting state names. Reflection can therefore omit compiler-owned task entries
+without weakening the physical snapshot contract or hiding similarly named user state.
 
 AOT sidecar snapshots serialize each scalar element independently in little-endian byte
 order: floats use their IEEE-754 bits, signed integers use two's-complement bits, and booleans are
 one byte containing `0` or `1`. The persistent-state manifest records the element size, packed
 snapshot offset, target-layout physical offset, and byte size of every included segment. An AOT
-host must preserve the complete post-`init` physical state image; restore copies that image first,
-then decodes and overlays the manifest's persistent segments. The processor descriptor carries
-this manifest and the explicit `little_endian` / `post_init_physical_state_image` contract.
+host performs full initialization before decoding and overlaying the manifest's persistent
+segments. The processor descriptor carries this manifest and the explicit `little_endian` /
+`post_init_physical_state_image` contract.
 
 ## Operations
 

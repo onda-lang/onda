@@ -1770,7 +1770,7 @@ sample { out1 = gate }
 }
 
 #[test]
-fn c_api_reset_restores_initial_state() {
+fn c_api_init_preserves_pinned_state_and_init_all_reinitializes_it() {
     unsafe {
         let frames = 512_i32;
         let program = compile_program(
@@ -1825,27 +1825,6 @@ sample { out1 = amp + pinned }
             assert!((*sample - 2.0).abs() < 1e-6, "got {sample}");
         }
 
-        assert_eq!(onda_reset(instance.0), 0);
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
-        for sample in &out {
-            assert!((*sample - 1.5).abs() < 1e-6, "got {sample}");
-        }
-
-        assert_eq!(onda_reset_all(instance.0), 0);
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
-        for sample in &out {
-            assert!((*sample - 1.0).abs() < 1e-6);
-        }
-
-        assert_eq!(
-            onda_trigger_event_by_index(
-                instance.0,
-                0,
-                payload.as_ptr().cast::<c_void>(),
-                payload.len() as i32,
-            ),
-            0
-        );
         assert_eq!(onda_init(instance.0), 0);
         assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
@@ -1862,16 +1841,10 @@ sample { out1 = amp + pinned }
             ),
             0
         );
-        assert_eq!(onda_reset(instance.0), 0);
+        assert_eq!(onda_init(instance.0), 0);
         assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
             assert!((*sample - 1.25).abs() < 1e-6);
-        }
-
-        assert_eq!(onda_reset_all(instance.0), 0);
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
-        for sample in &out {
-            assert!((*sample - 1.5).abs() < 1e-6);
         }
 
         assert_eq!(onda_init_all(instance.0), 0);

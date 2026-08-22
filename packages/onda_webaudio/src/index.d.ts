@@ -63,8 +63,6 @@ export class OndaAudioProcessor {
   /** Map a host value in [0, 1] through the descriptor and set the resulting plain value. */
   setParamNormalized(param: string | number, value: number): Promise<any>;
   trigger(event: string | number, values?: Record<string, unknown> | unknown[]): Promise<any>;
-  reset(): Promise<any>;
-  resetAll(): Promise<any>;
   init(): Promise<any>;
   initAll(): Promise<any>;
   snapshot(): Promise<Uint8Array>;

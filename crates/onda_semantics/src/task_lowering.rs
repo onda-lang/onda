@@ -3264,9 +3264,9 @@ fn lower_top_level_tasks(
     let mut init_prefix = vec![typed_assign(
         TASK_AVAILABLE_FIELD,
         PrimitiveType::Bool,
-        Expr::bool(true),
+        Expr::bool(false),
     )];
-    let mut pinned_fields = Vec::new();
+    let mut pinned_fields = vec![TASK_AVAILABLE_FIELD.to_owned()];
     let mut scratch_declarations = Vec::new();
     let mut expansions = HashMap::new();
     for task in tasks {
@@ -3819,9 +3819,9 @@ pub(crate) fn lower_tasks(
         let mut init_prefix = vec![typed_assign(
             TASK_AVAILABLE_FIELD,
             PrimitiveType::Bool,
-            Expr::bool(true),
+            Expr::bool(false),
         )];
-        let mut pinned_task_fields = Vec::new();
+        let mut pinned_task_fields = vec![TASK_AVAILABLE_FIELD.to_owned()];
         let mut generated_defs = Vec::new();
         for task in &proc.tasks {
             let mut task = task.clone();

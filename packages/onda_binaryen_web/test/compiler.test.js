@@ -428,9 +428,6 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
     "core_webassembly_module",
   );
   assert.equal(artifact.metadata.runtime.state_size_bytes, 16);
-  assert.deepEqual(artifact.metadata.runtime.state_reset_ranges, [
-    { byte_offset: 0, byte_size: 4 },
-  ]);
   assert.equal(artifact.metadata.runtime.snapshot_size_bytes, 4);
   assert.deepEqual(artifact.metadata.metadata.states, [
     {

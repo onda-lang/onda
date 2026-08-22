@@ -574,16 +574,6 @@ fn scalar_array_shape(
     }
 }
 
-pub(crate) fn state_slot_byte_size(
-    program: &Program,
-    ty: onda_mir::TypeId,
-) -> Result<usize, MirMetadataError> {
-    let shape = scalar_array_shape(program, ty, "state reset layout")?;
-    primitive_type_bytes(shape.element)
-        .checked_mul(shape.len)
-        .ok_or_else(|| MirMetadataError::new("state reset byte size overflow"))
-}
-
 fn primitive_type(ty: ScalarType) -> PrimitiveType {
     match ty {
         ScalarType::F32 => PrimitiveType::F32,

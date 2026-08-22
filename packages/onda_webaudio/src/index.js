@@ -271,14 +271,6 @@ export class OndaAudioProcessor {
     return this.request("event", { event, values });
   }
 
-  reset() {
-    return this.request("reset");
-  }
-
-  resetAll() {
-    return this.request("reset-all");
-  }
-
   init() {
     return this.request("init");
   }

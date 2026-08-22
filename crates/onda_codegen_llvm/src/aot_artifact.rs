@@ -19,8 +19,7 @@ use onda_processor_abi::{
     Exports as AotExports, IntegerRangeEndpoint, IntegerRangeMetadata,
     IntegrationInfo as AotIntegrationInfo, IoMetadata as AotIoMetadata,
     ParamControlMetadata as AotParamControlMetadata, ProgramMetadata as AotProgramMetadata,
-    RuntimeInfo as AotRuntimeInfo, StateResetRange as AotStateResetRange,
-    TargetInfo as AotTargetInfo,
+    RuntimeInfo as AotRuntimeInfo, TargetInfo as AotTargetInfo,
 };
 
 #[cfg(feature = "llvm-orc")]
@@ -55,10 +54,8 @@ pub(crate) fn build_mir_aot_metadata(
     param_align_bytes: usize,
 ) -> Result<AotMetadata, MirMetadataError> {
     let metadata = build_mir_program_metadata(program, layout)?;
-    let state_reset_ranges = build_state_reset_ranges(program, layout.state_offsets)?;
     Ok(build_aot_metadata_from_descriptors(
         metadata,
-        state_reset_ranges,
         program.schema_version,
         program.interface.events.len(),
         program.config.sample_rate,
@@ -82,7 +79,6 @@ pub(crate) fn build_mir_aot_metadata(
 #[cfg(feature = "llvm-orc")]
 fn build_aot_metadata_from_descriptors(
     metadata: ProgramMetadata,
-    state_reset_ranges: Vec<AotStateResetRange>,
     mir_schema_version: u32,
     event_count: usize,
     sample_rate: f32,
@@ -169,7 +165,6 @@ fn build_aot_metadata_from_descriptors(
             param_size_bytes,
             param_align_bytes,
             state_initialization: "zeroed".to_owned(),
-            state_reset_ranges,
             snapshot_size_bytes,
             snapshot_format_version: AOT_SNAPSHOT_FORMAT_VERSION,
             snapshot_byte_order: "little_endian".to_owned(),
@@ -211,45 +206,6 @@ fn build_aot_metadata_from_descriptors(
         optimization: None,
         integrity: None,
     }
-}
-
-#[cfg(feature = "llvm-orc")]
-fn build_state_reset_ranges(
-    program: &onda_mir::Program,
-    state_offsets: &[usize],
-) -> Result<Vec<AotStateResetRange>, MirMetadataError> {
-    let mut segments = program
-        .state
-        .iter()
-        .zip(state_offsets)
-        .filter(|(slot, _)| !slot.pinned)
-        .map(|(slot, byte_offset)| {
-            crate::mir_metadata::state_slot_byte_size(program, slot.ty).map(|byte_size| {
-                AotStateResetRange {
-                    byte_offset: *byte_offset,
-                    byte_size,
-                }
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    segments.sort_by_key(|segment| segment.byte_offset);
-
-    let mut ranges = Vec::<AotStateResetRange>::with_capacity(segments.len());
-    for segment in segments {
-        if let Some(previous) = ranges.last_mut() {
-            if previous.byte_offset.checked_add(previous.byte_size) == Some(segment.byte_offset) {
-                previous.byte_size = previous
-                    .byte_size
-                    .checked_add(segment.byte_size)
-                    .ok_or_else(|| {
-                        MirMetadataError::new("MIR state reset range exceeds addressable size")
-                    })?;
-                continue;
-            }
-        }
-        ranges.push(segment);
-    }
-    Ok(ranges)
 }
 
 #[cfg(feature = "llvm-orc")]

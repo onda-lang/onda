@@ -45,8 +45,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.viewsReady = false;
     this.allocationLocked = false;
     this.stateBytes = null;
-    this.initialStateBytes = null;
-    this.initRollbackBytes = null;
     this.inputViews = [];
     this.outputViews = [];
 
@@ -85,11 +83,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       ? metadata.metadata.states
       : [];
     this.snapshotSizeBytes = Number(metadata.runtime?.snapshot_size_bytes ?? 0);
-    this.stateResetRanges = Array.isArray(metadata.runtime?.state_reset_ranges)
-      ? metadata.runtime.state_reset_ranges
-      : this.stateSizeBytes > 0
-        ? [{ byte_offset: 0, byte_size: this.stateSizeBytes }]
-        : [];
     this.inputChannels = this.flattenAudioChannels(this.inputInfo, "input");
     this.outputChannels = this.flattenAudioChannels(this.outputInfo, "output");
     this.inputCount = this.inputChannels.length;
@@ -356,15 +349,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   initializeState() {
-    this.refreshMemoryCache();
-    this.stateBytes.fill(0);
-    this.blockCursor = 0;
-    this.checkExecutionStatus(
-      this.exports.onda_processor_init(this.paramsPtr, this.statePtr, 1),
-      "processor init",
-    );
-    this.initialStateBytes = this.stateBytes.slice();
-    this.initRollbackBytes = new Uint8Array(this.stateSizeBytes);
+    this.runInit(true);
   }
 
   init() {
@@ -377,54 +362,15 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
 
   runInit(all) {
     this.refreshMemoryCache();
-    this.initRollbackBytes.set(this.stateBytes);
-    try {
-      this.checkExecutionStatus(
-        this.exports.onda_processor_init(
-          this.paramsPtr,
-          this.statePtr,
-          all ? 1 : 0,
-        ),
-        "processor init",
-      );
-    } catch (error) {
-      this.stateBytes.set(this.initRollbackBytes);
-      throw error;
-    }
-    this.initialStateBytes.set(this.stateBytes);
+    this.checkExecutionStatus(
+      this.exports.onda_processor_init(
+        this.paramsPtr,
+        this.statePtr,
+        all ? 1 : 0,
+      ),
+      "processor init",
+    );
     this.blockCursor = 0;
-  }
-
-  reset() {
-    this.refreshMemoryCache();
-    for (const range of this.stateResetRanges) {
-      const offset = Number(range.byte_offset);
-      const byteSize = Number(range.byte_size);
-      this.validateStateResetRange(offset, byteSize);
-      this.stateBytes.set(
-        this.initialStateBytes.subarray(offset, offset + byteSize),
-        offset,
-      );
-    }
-    this.blockCursor = 0;
-  }
-
-  resetAll() {
-    this.refreshMemoryCache();
-    this.stateBytes.set(this.initialStateBytes);
-    this.blockCursor = 0;
-  }
-
-  validateStateResetRange(offset, byteSize) {
-    if (
-      !Number.isInteger(offset)
-      || offset < 0
-      || !Number.isInteger(byteSize)
-      || byteSize < 0
-      || offset + byteSize > this.stateSizeBytes
-    ) {
-      throw new Error("invalid Onda state reset range metadata");
-    }
   }
 
   checkExecutionStatus(status, operation) {
@@ -458,7 +404,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     }
     // The ABI restore base is a fresh post-init image, so scratch and
     // control-mirror state never leak across a restore.
-    this.resetAll();
+    this.initAll();
     const state = this.stateBytes;
     for (const entry of this.snapshotInfo) {
       const packedOffset = Number(entry.packed_snapshot_byte_offset);
@@ -559,12 +505,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
           message.param ?? message.name ?? message.index,
           message.value,
         );
-        this.postResponse(message, { type: "onda-ok", operation: message.type });
-      } else if (message.type === "reset") {
-        this.reset();
-        this.postResponse(message, { type: "onda-ok", operation: message.type });
-      } else if (message.type === "reset-all") {
-        this.resetAll();
         this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "init") {
         this.init();

@@ -530,8 +530,8 @@ sample code with per-block work.
 
 `init` runs when an instance is created and may be rerun explicitly by the
 host. It creates persistent state and usually constructs structs and
-processors. Ordinary host reset restores the post-init resettable-state
-baseline rather than executing source `init` again.
+processors. Instance creation allocates zeroed physical state and performs a
+full initialization.
 
 ```onda
 init:
@@ -550,11 +550,13 @@ Typical uses:
 
 Host `init` preserves pinned roots and task continuations while rerunning
 ordinary declaration initializers and every explicit init statement. Host
-`init_all` clears all state first. Either operation atomically captures its
-successful result as the new reset baseline; a runtime failure changes neither
-the live state nor the prior baseline. Instance creation is equivalent to
-allocating zeroed storage, writing parameter defaults, running `init_all`, and
-capturing that first baseline.
+`init_all` also reruns the declaration initializers for pinned roots and task
+continuations. It does not blanket-clear the physical image. Both operations
+execute directly against the instance's single state image and allocate no memory
+on the successful path. Their execution cost depends on the authored initializer;
+a runtime failure leaves instance state indeterminate. Instance creation is
+equivalent to allocating zeroed storage, writing parameter defaults, and running
+`init_all`.
 
 Section default scalar types are supported:
 
@@ -572,7 +574,7 @@ Rules:
 - Declaration order is lexical.
 - A fresh assignment inside nested control flow in `init` is local to that flow, not persistent state.
 
-A direct persistent binding can opt out of ordinary reset with the `pin`
+A direct persistent binding can opt out of default initialization with the `pin`
 modifier:
 
 ```onda
@@ -582,10 +584,11 @@ init:
   history: f32[128]
 ```
 
-Ordinary reset preserves `prepared` and `generation` while restoring `history`.
-Fresh construction always initializes every binding. Snapshots include both
-policies and restore the captured values; `pin` affects reset, not snapshot
-semantics. Integer-domain attributes remain independent, for example
+Default `init` preserves `prepared` and `generation` while reinitializing
+`history`. Fresh construction and `init_all` initialize every binding. Snapshots
+include both policies and restore the captured values; `pin` affects
+initialization, not snapshot semantics. Integer-domain attributes remain
+independent, for example
 `pin partition = 0 {MaxPartitions, wrap}`.
 
 The modifier is valid only on a fresh persistent value binding introduced
@@ -1611,11 +1614,11 @@ lazily on its first call in that logical block. Splitting a logical block into
 process segments never grants additional task resumptions, and a zero-frame
 begin-block segment still advances statically scheduled tasks.
 
-Task continuations are compiler-pinned state. Ordinary reset and default initialization
-preserve them. Proc `init(all = true)` and host-level all-state initialization or
-reset restore them to not-started. An explicit `prepare.reset()` in an
-initializer always runs. Tasks may use both pinned and resettable state; after
-an ordinary reset, a suspended task observes the reset values when it resumes.
+Task continuations are compiler-pinned state. Default initialization preserves
+them. Proc `init(all = true)` and host-level `init_all` restore them to
+not-started. An explicit `prepare.reset()` in an initializer always runs. Tasks
+may use both pinned and resettable state; after default initialization, a
+suspended task observes the reinitialized resettable values when it resumes.
 Snapshots include task status and continuation storage, so restoring a suspended
 task resumes it from the captured suspension point.
 

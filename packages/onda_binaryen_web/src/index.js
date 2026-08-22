@@ -5710,7 +5710,6 @@ class MirCompiler {
     const stateSize = this.stateLayout.byteLength ?? 0;
     const paramSize = this.paramLayout.byteLength ?? 0;
     const snapshot = this.stateSnapshotMetadata();
-    const stateResetRanges = this.stateResetRanges();
     const eventExports = this.mir.interface.events.map(
       (_, id) => `onda_event_${id}`,
     );
@@ -5780,7 +5779,6 @@ class MirCompiler {
         state_size_bytes: stateSize,
         state_align_bytes: 16,
         state_initialization: "zeroed",
-        state_reset_ranges: stateResetRanges,
         snapshot_size_bytes: snapshot.byteLength,
         snapshot_format_version: PROCESSOR_SNAPSHOT_FORMAT_VERSION,
         snapshot_byte_order: "little_endian",
@@ -5913,21 +5911,6 @@ class MirCompiler {
       byteOffset += layout.size;
     }
     return { entries, byteLength: byteOffset };
-  }
-
-  stateResetRanges() {
-    const ranges = [];
-    for (const [id, slot] of this.mir.state.entries()) {
-      if (slot.pinned ?? false) continue;
-      const layout = this.stateLayout[id];
-      const previous = ranges.at(-1);
-      if (previous && previous.byte_offset + previous.byte_size === layout.offset) {
-        previous.byte_size += layout.size;
-      } else {
-        ranges.push({ byte_offset: layout.offset, byte_size: layout.size });
-      }
-    }
-    return ranges;
   }
 
   portMetadata(ports, layouts) {

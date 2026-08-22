@@ -404,23 +404,6 @@ impl JitProgram {
         }
     }
 
-    pub fn reset_state_from_initial(&self, state: &mut RuntimeState, initial: &RuntimeState) {
-        let destination = unsafe { state.bytes_mut() };
-        let source = initial.bytes();
-        debug_assert_eq!(destination.len(), source.len());
-        let mut cursor = 0usize;
-        for segment in self.pinned_state_segments.iter() {
-            if cursor < segment.state_offset {
-                destination[cursor..segment.state_offset]
-                    .copy_from_slice(&source[cursor..segment.state_offset]);
-            }
-            cursor = segment.state_offset + segment.byte_size;
-        }
-        if cursor < destination.len() {
-            destination[cursor..].copy_from_slice(&source[cursor..]);
-        }
-    }
-
     pub fn write_state_snapshot(
         &self,
         state: &RuntimeState,
@@ -458,8 +441,8 @@ impl JitProgram {
 
     pub fn restore_state_snapshot(
         &self,
+        params: &[u8],
         state: &mut RuntimeState,
-        initial_state: &RuntimeState,
         snapshot: &[u8],
     ) -> Result<(), Diagnostic> {
         if snapshot.len() != self.snapshot_size_bytes {
@@ -473,13 +456,7 @@ impl JitProgram {
                 0,
             ));
         }
-        if state.byte_size() != initial_state.byte_size() {
-            return Err(Diagnostic::internal(
-                "initial and live physical state layouts differ",
-            ));
-        }
-        // SAFETY: restore immediately normalizes every ranged slot below.
-        unsafe { state.bytes_mut() }.copy_from_slice(initial_state.bytes());
+        self.initialize_state_in_place(params, state, true)?;
         // SAFETY: the only externally supplied bytes are copied and normalized
         // before this function returns the state to its caller.
         let state_bytes = unsafe { state.bytes_mut() };

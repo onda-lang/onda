@@ -270,6 +270,14 @@ fn internal_marker_stmt(name: &str) -> Stmt {
     }
 }
 
+pub(super) fn mark_pinned_initializer_stmt(stmt: Stmt) -> [Stmt; 3] {
+    [
+        internal_marker_stmt(PINNED_INIT_BEGIN_MARKER),
+        stmt,
+        internal_marker_stmt(PINNED_INIT_END_MARKER),
+    ]
+}
+
 fn is_internal_marker(stmt: &Stmt, expected: &str) -> bool {
     matches!(
         stmt,

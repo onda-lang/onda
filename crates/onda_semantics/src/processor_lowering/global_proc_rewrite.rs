@@ -715,7 +715,11 @@ pub(super) fn rewrite_top_level_proc_calls(
                         {
                             *init = None;
                         }
-                        expanded.push(decl_stmt);
+                        // The aggregate declaration materializes every flattened processor
+                        // field, including pinned fields owned by nested tasks. The generated
+                        // processor init below handles ordinary fields on every init, so the
+                        // aggregate defaults are only valid during a full init.
+                        expanded.extend(mark_pinned_initializer_stmt(decl_stmt));
                     }
                     for idx in 0..len {
                         let mut args = Vec::<CallArg>::new();
@@ -882,7 +886,11 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 type_args.clear();
                                 args.clear();
                             }
-                            rewritten_init.push(ctor_stmt);
+                            // Keep the aggregate declaration for state/type discovery, but do
+                            // not let its flattened defaults overwrite pinned processor fields
+                            // during an ordinary init. The processor init emitted below still
+                            // reinitializes all non-pinned fields.
+                            rewritten_init.extend(mark_pinned_initializer_stmt(ctor_stmt));
                         }
                         if let Some(shape) = lowering_shapes.get(ctor_name) {
                             let proc_array_slot =
