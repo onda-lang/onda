@@ -166,7 +166,12 @@ pub(crate) fn merge_branch_scope_flow_state(
     }
 
     for name in common_branch_bindings {
-        if base_known_scalars.contains(&name) {
+        // Bindings that were already visible before the branch keep their
+        // established type. In particular, state tuples are seeded in
+        // `tuple_vars` without local element aliases, so trying to join them
+        // as branch-created tuple locals would spuriously report unresolved
+        // element types.
+        if base_known_scalars.contains(&name) || tuple_vars.contains_key(&name) {
             continue;
         }
         let then_kind = tracked_branch_binding_kind(&then_state, &name);

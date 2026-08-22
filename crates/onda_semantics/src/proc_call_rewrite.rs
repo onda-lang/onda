@@ -5563,7 +5563,7 @@ pub(super) fn desugar_expr_instance_method_calls(
     }
 }
 
-pub(super) fn desugar_init_instance_method_calls(
+pub(crate) fn desugar_init_instance_method_calls(
     stmt: &mut Stmt,
     struct_instances: &mut HashMap<String, String>,
     struct_array_roots: &mut HashMap<String, String>,

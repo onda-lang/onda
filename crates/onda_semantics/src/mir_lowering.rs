@@ -37,7 +37,7 @@ use crate::{
     effective_untyped_assignment_type, eval_const_expr_i64_exact, intrinsic_result_type,
     merge_inferred_return_types, merge_numeric_types, parse_array_len_instance_base,
     parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base, resolve_call_args_at,
-    AggregateLayoutTable, AggregatePathComponent, AnalysisOptions, IndexAccess,
+    zero_expr, AggregateLayoutTable, AggregatePathComponent, AnalysisOptions, IndexAccess,
     ProcSincStageStateFields, ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView,
     ReturnType, TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent,
     TypedEventParamDefault, TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction,
@@ -3299,14 +3299,6 @@ fn zero_scalar(ty: PrimitiveType) -> ScalarValue {
         PrimitiveType::I32 => ScalarValue::I32(0),
         PrimitiveType::I64 => ScalarValue::I64(0),
         PrimitiveType::Bool => ScalarValue::Bool(false),
-    }
-}
-
-fn zero_expr(ty: PrimitiveType) -> Expr {
-    match ty {
-        PrimitiveType::Bool => Expr::bool(false),
-        PrimitiveType::I32 | PrimitiveType::I64 => Expr::int(0),
-        PrimitiveType::F32 | PrimitiveType::F64 => Expr::number(0.0),
     }
 }
 

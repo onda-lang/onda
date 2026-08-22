@@ -339,7 +339,12 @@ fn infer_scalar_expr_type_with_proc_arrays(
             }
             let lexical_root = name.split('.').next().unwrap_or(name);
             if locals.contains(lexical_root) {
-                return (name == lexical_root).then_some(PrimitiveType::I32);
+                return (name == lexical_root).then(|| {
+                    local_aliases
+                        .get(name)
+                        .copied()
+                        .unwrap_or(PrimitiveType::I32)
+                });
             }
             if let Some((base, field)) = split_field_path(name, errors) {
                 let flat = format!("{base}.{field}");

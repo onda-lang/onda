@@ -1017,7 +1017,10 @@ for i in 0..8:
 for i in 0..=8:
   sum = sum + f32(i)
 
-for i @ -1 in 10..0:
+for i: i64 in (i64(2147483648))..(i64(2147483650)):
+  sum = sum + f32(i)
+
+for i: i64 @ -1 in 10..0:
   dst[i] = src[i]
 
 loop 8:
@@ -1030,12 +1033,13 @@ while sum < 1.0:
 Rules:
 
 - `for i in A..B` excludes `B`; `for i in A..=B` includes `B`.
+- Loop variables default to `i32`; annotate them as `i32` or `i64` with
+  `for i: TYPE in ...` when an explicit induction width is required.
 - `@ STEP` defaults to `1`; `@ 0` is invalid.
 - Descending loops use a negative step.
 - `loop N` is shorthand for `for _ in 0..N`.
-- Loop variables are immutable values local to the loop body. Runtime loop
-  variables are `i32`; assign a new local when an iteration-derived value
-  needs to be changed.
+- Loop variables are immutable values local to the loop body. Assign a new
+  local when an iteration-derived value needs to be changed.
 - Fresh symbols created inside loops do not escape the loop.
 - A fresh symbol created in every continuing branch of an `if` is available
   afterward. Numeric scalar and tuple-element types join to the smallest type

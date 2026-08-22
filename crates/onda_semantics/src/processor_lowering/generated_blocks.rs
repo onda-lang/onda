@@ -684,6 +684,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
         Stmt::For {
             loc,
             var,
+            var_ty,
             step,
             start,
             end,
@@ -726,6 +727,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
             range_guards.push(Stmt::For {
                 loc,
                 var,
+                var_ty,
                 step,
                 start,
                 end,
@@ -3200,6 +3202,11 @@ pub(super) fn generate_lowered_proc_blocks(
         }
 
         for (idx, out_name) in shape.outs.iter().enumerate() {
+            let out_ty = shape
+                .out_types
+                .get(out_name)
+                .copied()
+                .unwrap_or(PrimitiveType::F32);
             let mut call_args = vec![CallArg {
                 name: None,
                 expr: Expr::var("self"),
@@ -3240,7 +3247,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     },
                     then_branch: vec![Stmt::Return {
                         loc: Default::default(),
-                        expr: Expr::int(0),
+                        expr: zero_expr(out_ty),
                     }],
                     else_branch: Vec::new(),
                 });

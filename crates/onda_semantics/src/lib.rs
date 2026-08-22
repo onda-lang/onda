@@ -287,6 +287,14 @@ pub(crate) fn is_bare_return_expr(expr: &Expr) -> bool {
     )
 }
 
+pub(crate) fn zero_expr(ty: PrimitiveType) -> Expr {
+    match ty {
+        PrimitiveType::F32 | PrimitiveType::F64 => Expr::number(0.0),
+        PrimitiveType::I32 | PrimitiveType::I64 => Expr::int(0),
+        PrimitiveType::Bool => Expr::bool(false),
+    }
+}
+
 impl ReturnType {
     /// Returns the scalar type, panicking if this is a tuple.
     pub fn as_scalar(&self) -> PrimitiveType {

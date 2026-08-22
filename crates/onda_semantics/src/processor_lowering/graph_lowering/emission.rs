@@ -191,6 +191,7 @@ pub(super) fn lower_graph(
                         size: Box::new(Expr::int((delay_len * delay_state.array_len) as i64)),
                     },
                     init: None,
+                    initialize: true,
                 },
             });
             init_stmts.push(Stmt::Assign {

@@ -294,6 +294,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
         Stmt::For {
             loc,
             var,
+            var_ty,
             start,
             end,
             step,
@@ -336,6 +337,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
             range_guards.push(Stmt::For {
                 loc,
                 var,
+                var_ty,
                 start,
                 end,
                 step,
@@ -1271,6 +1273,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                             size: Box::new(Expr::int(len as i64)),
                         },
                         init: Some(vec![Expr::bool(false); len]),
+                        initialize: true,
                     },
                 });
             }

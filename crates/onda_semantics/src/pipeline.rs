@@ -7133,31 +7133,9 @@ fn rewrite_function_overloads(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     errors: &mut Vec<Diagnostic>,
 ) -> usize {
-    let mut env = seed.clone();
-    env.set_owner_type_params(&def.type_params);
-    let mut resolved = 0;
-    for param in &mut def.params {
-        env.bind_function_param(param, &def.type_params);
-        if let Some(default_expr) = &mut param.default {
-            resolved += crate::def_semantics::rewrite_overloaded_calls_in_expr(
-                default_expr,
-                &env,
-                context,
-                owner,
-                overloads,
-                errors,
-            );
-        }
-    }
-    resolved
-        + crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
-            &mut def.body,
-            &mut env,
-            context,
-            owner,
-            overloads,
-            errors,
-        )
+    crate::def_semantics::rewrite_overloaded_calls_in_function(
+        def, seed, context, owner, overloads, errors,
+    )
 }
 
 fn register_generated_method_owners(
@@ -12991,6 +12969,7 @@ fn rewrite_stmt_for_def_proc_block_guards(
             Stmt::For {
                 loc,
                 var,
+                var_ty,
                 start,
                 end,
                 end_inclusive,
@@ -13008,6 +12987,7 @@ fn rewrite_stmt_for_def_proc_block_guards(
                 vec![Stmt::For {
                     loc,
                     var,
+                    var_ty,
                     start,
                     end,
                     end_inclusive,
@@ -13067,6 +13047,7 @@ fn rewrite_stmt_for_def_proc_block_guards(
         Stmt::For {
             loc,
             var,
+            var_ty,
             start,
             end,
             end_inclusive,
@@ -13084,6 +13065,7 @@ fn rewrite_stmt_for_def_proc_block_guards(
             rewritten.push(Stmt::For {
                 loc,
                 var,
+                var_ty,
                 start,
                 end,
                 end_inclusive,

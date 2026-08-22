@@ -2115,6 +2115,188 @@ sample:
     }
 
     #[test]
+    fn task_for_bounds_share_ordinary_i32_induction_coercion() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  pin result: i32 = 0
+task prepare():
+  for i in (i64(0))..(i64(2)):
+    result += i
+    yield
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("first loop iteration should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("second loop iteration should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("task loop should complete");
+        assert_eq!(output, [1.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn explicit_i64_for_uses_i64_induction_and_overload_resolution() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+def offset(i: i32) -> i64:
+  return i64(-100)
+def offset(i: i64) -> i64:
+  return i - i64(2147483648)
+init:
+  start: i64 = i64(2147483648)
+  end: i64 = i64(2147483650)
+sample:
+  total: i64 = 0
+  for i: i64 in start..end:
+    total += offset(i)
+  out1 = f32(total)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("i64 loop should process");
+        assert_eq!(output, [1.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn explicit_i64_for_handles_an_inclusive_maximum_endpoint() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+sample:
+  count: i32 = 0
+  for i: i64 in (i64(9223372036854775806))..=(i64(9223372036854775807)):
+    count += 1
+  out1 = f32(count)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("maximum-bound loop should process");
+        assert_eq!(output, [2.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn proc_task_for_preserves_explicit_i64_induction_across_yields() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+proc Loader:
+  init:
+    pin result: i64 = 0
+  task prepare():
+    for i: i64 in (i64(2147483648))..(i64(2147483650)):
+      result += i - i64(2147483648)
+      yield
+  block:
+    await prepare()
+    sample:
+      out1 = f32(result)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("first i64 iteration should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("second i64 iteration should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("i64 task loop should complete");
+        assert_eq!(output, [1.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn fixed_tuple_task_frame_survives_yield() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  pin result: f32 = 0.0
+task prepare():
+  pair = (i32(3), i64(5))
+  yield
+  result = f32(pair[0]) + f32(pair[1])
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("tuple task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("tuple task should complete");
+        assert_eq!(output, [8.0; BLOCK_SIZE]);
+    }
+
+    #[test]
     fn proc_init_respects_pinning_and_explicit_task_reset() {
         const BLOCK_SIZE: usize = 4;
         let parsed = parse_program(
@@ -2449,6 +2631,80 @@ sample:
     }
 
     #[test]
+    fn task_barrier_neutralizes_every_array_output_element() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+outs:
+  stereo: f32[2]
+
+task prepare():
+  yield
+
+block:
+  await prepare()
+  sample:
+    stereo[0] = 1.0
+    stereo[1] = 2.0
+"#,
+            BLOCK_SIZE,
+            2,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE * 2];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("array output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE * 2]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+        assert_eq!(output, [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn task_return_inside_for_completes_without_undeclared_loop_state() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  pin result: i32 = 0
+
+task prepare():
+  for i in 0..4:
+    if i == 2:
+      return
+    result += 1
+
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+        assert_eq!(output, [2.0; BLOCK_SIZE]);
+    }
+
+    #[test]
     fn task_symbols_are_injective_and_authored_state_is_explicit() {
         const BLOCK_SIZE: usize = 4;
         let mut instance = compile_test_instance(
@@ -2540,6 +2796,87 @@ sample:
         assert_eq!(output, [0.0; BLOCK_SIZE]);
         process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
         assert_eq!(output, [53.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn task_bindings_join_declarations_from_both_if_branches() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+params:
+  choose = false
+init:
+  pin result: i32 = 0
+task prepare():
+  if choose:
+    carried: i32 = 3
+  else:
+    carried: i32 = 5
+  yield
+  result = carried
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+        assert_eq!(output, [5.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn task_frame_typing_uses_the_selected_overload() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+def value(x: i32) -> i32:
+  return x + 1
+def value(x: f64) -> f64:
+  return x + 2.0
+init:
+  pin result: i32 = 0
+task prepare():
+  carried = value(i32(3))
+  yield
+  result = carried
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should yield");
+        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+        assert_eq!(output, [4.0; BLOCK_SIZE]);
     }
 
     #[test]

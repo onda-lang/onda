@@ -4,6 +4,7 @@ use super::*;
 pub(crate) enum ScopePolicy {
     Init,
     Runtime(ScopeKind),
+    Task,
     Def,
     Event,
 }
@@ -13,6 +14,7 @@ impl ScopePolicy {
         match self {
             Self::Init => ScopeKind::Init,
             Self::Runtime(scope) => scope,
+            Self::Task => ScopeKind::Block,
             Self::Def => ScopeKind::Def,
             Self::Event => ScopeKind::Sample,
         }
@@ -114,9 +116,15 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
         output_array_names: common.output_array_names,
         io_surface_names: common.io_surface_names,
         io_surface_array_names: common.io_surface_array_names,
-        io_surface_access_allowed: matches!(common.policy, ScopePolicy::Runtime(_)),
+        io_surface_access_allowed: matches!(
+            common.policy,
+            ScopePolicy::Runtime(_) | ScopePolicy::Task
+        ),
         dynamic_param_array_names: common.dynamic_param_array_names,
-        dynamic_param_indexing_allowed: matches!(common.policy, ScopePolicy::Runtime(_)),
+        dynamic_param_indexing_allowed: matches!(
+            common.policy,
+            ScopePolicy::Runtime(_) | ScopePolicy::Task
+        ),
         param_names: common.param_names,
         struct_defs: common.struct_defs,
         fn_signatures: common.fn_signatures,

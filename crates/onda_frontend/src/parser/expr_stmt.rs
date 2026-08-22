@@ -541,7 +541,12 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
-                        expr: Expr::ArrayCtor { loc, spec, init },
+                        expr: Expr::ArrayCtor {
+                            loc,
+                            spec,
+                            init,
+                            initialize: true,
+                        },
                     })
                 }
                 Rule::named_type => {
@@ -949,6 +954,21 @@ pub(super) fn parse_for_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnosti
     let Some(next_pair) = inner.next() else {
         return Err(vec![syntax_at_loc(loc.as_ref(), "missing for loop start")]);
     };
+    let (var_ty, next_pair) = if next_pair.as_rule() == Rule::type_name {
+        let var_ty = parse_primitive_type(next_pair.as_str()).map_err(|d| vec![d])?;
+        if !matches!(var_ty, PrimitiveType::I32 | PrimitiveType::I64) {
+            return Err(vec![syntax_at_pair(
+                &next_pair,
+                "for loop variable type must be i32 or i64",
+            )]);
+        }
+        let Some(next_pair) = inner.next() else {
+            return Err(vec![syntax_at_loc(loc.as_ref(), "missing for loop start")]);
+        };
+        (var_ty, next_pair)
+    } else {
+        (PrimitiveType::I32, next_pair)
+    };
     let (step, start_pair) = if next_pair.as_rule() == Rule::for_step {
         let mut step_inner = next_pair.into_inner();
         let Some(step_expr_pair) = step_inner.next() else {
@@ -999,6 +1019,7 @@ pub(super) fn parse_for_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnosti
     Ok(Stmt::For {
         loc,
         var: var_pair.as_str().to_owned(),
+        var_ty,
         step,
         start,
         end,
@@ -1022,6 +1043,7 @@ pub(super) fn parse_loop_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnost
     Ok(Stmt::For {
         loc,
         var: "_".to_owned(),
+        var_ty: PrimitiveType::I32,
         step: None,
         start: Expr::int(0),
         end: count,

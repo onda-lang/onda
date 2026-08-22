@@ -4792,7 +4792,9 @@ fn rewrite_expr_scoped(
                 );
             }
         }
-        Expr::ArrayCtor { loc, spec, init } => {
+        Expr::ArrayCtor {
+            loc, spec, init, ..
+        } => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
                 rewrite_named_type_ref_name(
                     name,

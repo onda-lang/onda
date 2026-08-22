@@ -1293,6 +1293,7 @@ pub enum Stmt {
     For {
         loc: Span,
         var: String,
+        var_ty: PrimitiveType,
         step: Option<Expr>,
         start: Expr,
         end: Expr,
@@ -1399,6 +1400,10 @@ pub enum Expr {
         loc: Span,
         spec: ArrayTypeSpec,
         init: Option<Vec<Expr>>,
+        /// Whether evaluating this compiler-level constructor initializes the
+        /// allocated storage. Source constructors always set this; lowering
+        /// passes may clear it for declaration-only scratch storage.
+        initialize: bool,
     },
     Compare {
         loc: Span,
@@ -1579,14 +1584,16 @@ impl PartialEq for Expr {
                 Self::ArrayCtor {
                     spec: lhs_spec,
                     init: lhs_init,
+                    initialize: lhs_initialize,
                     ..
                 },
                 Self::ArrayCtor {
                     spec: rhs_spec,
                     init: rhs_init,
+                    initialize: rhs_initialize,
                     ..
                 },
-            ) => lhs_spec == rhs_spec && lhs_init == rhs_init,
+            ) => lhs_spec == rhs_spec && lhs_init == rhs_init && lhs_initialize == rhs_initialize,
             (
                 Self::Compare {
                     op: lhs_op,

@@ -391,6 +391,7 @@ pub(crate) fn analyze_init_stmt(
             }
             Stmt::For {
                 var,
+                var_ty,
                 step,
                 start,
                 end,
@@ -414,6 +415,7 @@ pub(crate) fn analyze_init_stmt(
                 loop_locals.insert(var.clone());
                 let base_flow = st.flow_state();
                 let mut loop_st = st.clone();
+                loop_st.local_aliases.insert(var.clone(), *var_ty);
                 let loop_ctx = InitStmtAnalysisCtx {
                     locals: &loop_locals,
                     ..ctx

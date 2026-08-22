@@ -272,12 +272,12 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
                 *env = joined;
                 flow
             }
-            Stmt::For { var, body, .. } => {
+            Stmt::For {
+                var, var_ty, body, ..
+            } => {
                 let mut loop_env = env.clone();
                 loop_env.shadow_binding(var);
-                loop_env
-                    .scalar_types
-                    .insert(var.clone(), PrimitiveType::I32);
+                loop_env.scalar_types.insert(var.clone(), *var_ty);
                 infer_stmt_returns_for_def_return_inference(
                     body,
                     &mut loop_env,
@@ -650,19 +650,20 @@ fn infer_def_return_types_impl(
     env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     require_known_calls: bool,
+    seed: &HashMap<String, ReturnType>,
 ) -> HashMap<String, ReturnType> {
     let all_defs = || defs.iter().chain(generated_defs);
-    let mut out = if require_known_calls {
-        all_defs()
-            .filter_map(|def| {
-                try_resolve_declared_return_type(def).map(|ty| (def.name.clone(), ty))
-            })
-            .collect::<HashMap<_, _>>()
+    let mut out = seed.clone();
+    if require_known_calls {
+        out.extend(all_defs().filter_map(|def| {
+            try_resolve_declared_return_type(def).map(|ty| (def.name.clone(), ty))
+        }));
     } else {
-        all_defs()
-            .map(|def| (def.name.clone(), ReturnType::Scalar(PrimitiveType::F32)))
-            .collect::<HashMap<_, _>>()
-    };
+        for def in all_defs() {
+            out.entry(def.name.clone())
+                .or_insert(ReturnType::Scalar(PrimitiveType::F32));
+        }
+    }
     for _ in 0..defs
         .len()
         .saturating_add(generated_defs.len())
@@ -707,6 +708,7 @@ pub(crate) fn infer_def_return_types(
         env_seed,
         struct_defs,
         false,
+        &HashMap::new(),
     )
 }
 
@@ -729,5 +731,28 @@ pub(crate) fn infer_known_def_return_types(
         env_seed,
         struct_defs,
         true,
+        &HashMap::new(),
+    )
+}
+
+/// Strictly infers `defs` while retaining already-known external callable
+/// returns. This is used by early lowering phases that share the ordinary call
+/// analysis but only own a lexical subset of the program's definitions.
+pub(crate) fn infer_known_def_return_types_with_seed(
+    defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
+    env_seed: &CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    seed: &HashMap<String, ReturnType>,
+) -> HashMap<String, ReturnType> {
+    infer_def_return_types_impl(
+        defs,
+        &[],
+        fn_signatures,
+        &HashMap::new(),
+        env_seed,
+        struct_defs,
+        true,
+        seed,
     )
 }

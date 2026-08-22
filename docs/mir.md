@@ -314,15 +314,16 @@ surfaces uses the same canonical integer range normalization; the pass removes t
 when the selector interval already fits. Bounds proofs run after structural cleanup in each fixed-point
 round, allowing removed branches, unreachable assignments, and newly exposed constants to tighten
 the ranges used by the next proof.
-Source `for` variables remain `i32`. Constant loops use an `i32` induction counter and a
-compile-time-computed final iteration, so every increment is proven not to overflow without adding
-a checked-arithmetic branch. Dynamic loops also use `i32` directly: lowering does not insert a
-hidden widened counter, a per-iteration truncation, or overflow checks. As with ordinary integer
-arithmetic, source code is responsible for choosing bounds and a step that progress to termination
-without overflowing. The body receives an immutable `i32` copy after the loop guard. Constant loops
-attach their exact body interval to that copy as a producer-proved range fact; this performs no
-runtime clamping and lets the shared bounds-proof pass cover arrays, interface surfaces, data-struct
-arrays, and processor arrays uniformly.
+Source `for` variables default to `i32` and may explicitly select `i32` or `i64`. Constant loops use
+the selected induction width and a compile-time-computed final iteration, so every increment is
+proven not to overflow without adding a checked-arithmetic branch. Dynamic loops also retain the
+selected width directly: lowering does not insert a hidden widened counter, a per-iteration
+truncation, or overflow checks. As with ordinary integer arithmetic, source code is responsible for
+choosing bounds and a step that progress to termination without overflowing. The body receives an
+immutable copy at the selected width after the loop guard. Constant loops attach their exact body
+interval to that copy as a producer-proved range fact; this performs no runtime clamping and lets
+the shared bounds-proof pass cover arrays, interface surfaces, data-struct arrays, and processor
+arrays uniformly.
 Failure effects distinguish checked fixed-range access from clamped access, which is non-failing for
 nonempty fixed arrays, ports, constant data, and validated external buffers. Clamped dynamic-slice
 element access may still fail on an empty slice, and slice windows may fail their dynamic shape

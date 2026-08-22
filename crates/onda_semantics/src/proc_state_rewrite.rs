@@ -1108,6 +1108,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
             Stmt::For {
                 loc: _stmt_loc,
                 var,
+                var_ty,
                 start,
                 end,
                 step,
@@ -1162,6 +1163,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                 Some(Stmt::For {
                     loc: source_loc.into(),
                     var: var.clone(),
+                    var_ty: *var_ty,
                     start: start_rewritten,
                     end: end_rewritten,
                     step: step_rewritten,

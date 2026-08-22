@@ -1299,6 +1299,7 @@ fn monomorphize_calls_in_stmt(
         }
         Stmt::For {
             var,
+            var_ty,
             step,
             start,
             end,
@@ -1353,14 +1354,11 @@ fn monomorphize_calls_in_stmt(
                 );
             }
             let mut body_env = env.clone();
-            // Runtime loop induction variables are always i32. Keep that
-            // resolved semantic fact available while specializing calls in the
-            // body; otherwise generated helpers called with `i` silently fall
-            // back to their contextual f32 template.
+            // Keep the resolved induction type available while specializing
+            // calls in the body; otherwise generated helpers called with the
+            // loop variable silently fall back to their contextual f32 template.
             body_env.shadow_binding(var);
-            body_env
-                .scalar_types
-                .insert(var.clone(), PrimitiveType::I32);
+            body_env.scalar_types.insert(var.clone(), *var_ty);
             monomorphize_calls_in_stmt_list_impl(
                 body,
                 &mut body_env,

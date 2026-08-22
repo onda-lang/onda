@@ -1229,6 +1229,16 @@ impl<'a> FunctionLowerer<'a> {
         self.bindings
             .insert(name.to_owned(), Binding::Array(local, element, len_u32));
 
+        let initialize = !matches!(
+            expression,
+            Expr::ArrayCtor {
+                initialize: false,
+                ..
+            }
+        );
+        if !initialize {
+            return Ok(true);
+        }
         for index in 0..len_u32 {
             let value = if let Some(values) = &values {
                 self.coerce(values[index as usize], element, block, expression.loc())?

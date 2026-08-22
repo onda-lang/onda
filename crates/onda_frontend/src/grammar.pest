@@ -203,7 +203,7 @@ call_stmt = { call_expr }
 if_cond = { expr }
 if_stmt = { "if" ~ if_cond ~ stmt_block ~ elif_clause* ~ (NEWLINE* ~ "else" ~ stmt_block)? }
 elif_clause = { NEWLINE* ~ "elif" ~ if_cond ~ stmt_block }
-for_stmt = { "for" ~ ident ~ for_step? ~ "in" ~ for_bound ~ for_range_op ~ for_bound ~ stmt_block }
+for_stmt = { "for" ~ ident ~ (":" ~ type_name)? ~ for_step? ~ "in" ~ for_bound ~ for_range_op ~ for_bound ~ stmt_block }
 for_step = { "@" ~ expr }
 for_range_op = { "..=" | ".." }
 while_stmt = { "while" ~ expr ~ stmt_block }

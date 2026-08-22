@@ -48,6 +48,8 @@ pub(crate) fn analyze_def_stmt_list(
         event_policy: None,
         state_tuples: &state_tuples,
         resolved_scalar_locals: Some(ctx.resolved_scalar_locals),
+        resolved_array_locals: None,
+        resolved_tuple_locals: None,
     };
 
     analyze_flow_scope_stmts(

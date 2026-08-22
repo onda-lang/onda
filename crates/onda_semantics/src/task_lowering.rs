@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::*;
 use onda_frontend::{
-    ArrayElemType, ArrayTypeSpec, BinaryOp, CmpOp, FnParamDecl, FnReturnScalarType, FnReturnType,
-    TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
+    ArrayElemType, ArrayTypeSpec, BinaryOp, CmpOp, FnParamDecl, FnParamType, FnReturnScalarType,
+    FnReturnType, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
 };
 
 const TASK_FIELD_PREFIX: &str = "__onda_task_";
@@ -891,27 +891,38 @@ enum TaskLocalStorage {
         element: PrimitiveType,
         len: usize,
     },
+    Tuple(Vec<PrimitiveType>),
 }
 
 impl TaskLocalStorage {
-    fn init_stmt(&self, name: String) -> Stmt {
-        let (decl_ty, expr) = match self {
-            Self::Scalar(ty) => (
-                Some(*ty),
-                match ty {
-                    PrimitiveType::F32 | PrimitiveType::F64 => Expr::number(0.0),
-                    PrimitiveType::I32 | PrimitiveType::I64 => Expr::int(0),
+    fn tuple_zero_expr(types: &[PrimitiveType]) -> Expr {
+        Expr::Tuple {
+            loc: Default::default(),
+            values: types
+                .iter()
+                .copied()
+                .map(|ty| match ty {
                     PrimitiveType::Bool => Expr::bool(false),
-                },
-            ),
+                    _ => cast_expr_to_primitive(zero_expr(ty), ty),
+                })
+                .collect(),
+        }
+    }
+
+    fn storage_stmt(&self, name: String, initialize: bool) -> Stmt {
+        let (decl_ty, is_typed_decl, expr) = match self {
+            Self::Scalar(ty) => (Some(*ty), true, zero_expr(*ty)),
             Self::Array { spec, .. } => (
                 None,
+                true,
                 Expr::ArrayCtor {
                     loc: Default::default(),
                     spec: spec.clone(),
                     init: None,
+                    initialize,
                 },
             ),
+            Self::Tuple(types) => (None, false, Self::tuple_zero_expr(types)),
         };
         Stmt::Assign {
             loc: Default::default(),
@@ -919,16 +930,25 @@ impl TaskLocalStorage {
             target: AssignTarget::Var(name),
             decl_ty,
             generic_decl_ty: None,
-            is_typed_decl: true,
+            is_typed_decl,
             typed_decl_ty_loc: Default::default(),
             expr,
         }
     }
 
+    fn init_stmt(&self, name: String) -> Stmt {
+        self.storage_stmt(name, true)
+    }
+
+    fn declaration_stmt(&self, name: String) -> Stmt {
+        self.storage_stmt(name, false)
+    }
+
     fn reset_stmts(&self, name: String) -> Vec<Stmt> {
         match self {
-            Self::Scalar(ty) => vec![assign_var(name, zero_scalar(*ty))],
-            Self::Array { element, .. } => vec![fill_array(name, zero_scalar(*element))],
+            Self::Scalar(ty) => vec![assign_var(name, zero_expr(*ty))],
+            Self::Array { element, .. } => vec![fill_array(name, zero_expr(*element))],
+            Self::Tuple(types) => vec![assign_var(name, Self::tuple_zero_expr(types))],
         }
     }
 }
@@ -1070,6 +1090,22 @@ fn assign_index(name: impl Into<String>, index: usize, expr: Expr) -> Stmt {
     }
 }
 
+fn assign_dynamic_index(name: impl Into<String>, index: impl Into<String>, expr: Expr) -> Stmt {
+    Stmt::Assign {
+        loc: Default::default(),
+        target_loc: Default::default(),
+        target: AssignTarget::Index {
+            base: name.into(),
+            index: Expr::var(index),
+        },
+        decl_ty: None,
+        generic_decl_ty: None,
+        is_typed_decl: false,
+        typed_decl_ty_loc: Default::default(),
+        expr,
+    }
+}
+
 fn fill_array(name: impl Into<String>, expr: Expr) -> Stmt {
     Stmt::Assign {
         loc: Default::default(),
@@ -1089,12 +1125,50 @@ fn fill_array(name: impl Into<String>, expr: Expr) -> Stmt {
     }
 }
 
-fn zero_scalar(ty: PrimitiveType) -> Expr {
+fn neutral_output_stmts(name: String, ty: Option<&DeclType>) -> Vec<Stmt> {
     match ty {
-        PrimitiveType::F32 | PrimitiveType::F64 => Expr::number(0.0),
-        PrimitiveType::I32 | PrimitiveType::I64 => Expr::int(0),
-        PrimitiveType::Bool => Expr::bool(false),
+        None => vec![assign_var(name, zero_expr(PrimitiveType::F32))],
+        Some(DeclType::Scalar(ty)) => vec![assign_var(name, zero_expr(*ty))],
+        Some(DeclType::Array {
+            elem,
+            size: Expr::Int { value, .. },
+        }) if *value > 0 => {
+            let index = format!("{TASK_FIELD_PREFIX}neutral_output_index");
+            vec![Stmt::For {
+                loc: Default::default(),
+                var: index.clone(),
+                var_ty: PrimitiveType::I32,
+                step: None,
+                start: Expr::int(0),
+                end: Expr::int(*value),
+                end_inclusive: false,
+                body: vec![assign_dynamic_index(name, index, zero_expr(*elem))],
+            }]
+        }
+        // Invalid, unresolved, and non-port declaration types are diagnosed by
+        // the ordinary interface analysis. Avoid adding a misleading generated
+        // assignment diagnostic on top of the source error.
+        Some(_) => Vec::new(),
     }
+}
+
+fn collect_neutral_outputs(
+    output_names: impl IntoIterator<Item = String>,
+    declarations: impl IntoIterator<Item = PortDecl>,
+) -> Vec<Stmt> {
+    let declarations = declarations
+        .into_iter()
+        .map(|decl| (decl.name, decl.ty))
+        .collect::<HashMap<_, _>>();
+    let mut output_names = output_names.into_iter().collect::<Vec<_>>();
+    output_names.sort();
+    output_names
+        .into_iter()
+        .flat_map(|name| {
+            let ty = declarations.get(&name).and_then(Option::as_ref);
+            neutral_output_stmts(name, ty)
+        })
+        .collect()
 }
 
 fn typed_assign(name: impl Into<String>, ty: PrimitiveType, expr: Expr) -> Stmt {
@@ -1135,6 +1209,7 @@ fn user_call(name: impl Into<String>, args: Vec<Expr>) -> Expr {
 struct TaskOwnerTypes {
     scalars: HashMap<String, PrimitiveType>,
     indexed: HashMap<String, PrimitiveType>,
+    array_lens: HashMap<String, usize>,
     tuples: HashMap<String, Vec<PrimitiveType>>,
     declared_symbols: DeclaredSymbolMap,
     input_names: HashSet<String>,
@@ -1197,6 +1272,15 @@ fn record_task_owner_decl_type(types: &mut TaskOwnerTypes, name: &str, ty: Optio
         }
         Some(DeclType::Array { elem, .. }) => {
             types.indexed.insert(name.to_owned(), *elem);
+            if let Some(DeclType::Array {
+                size: Expr::Int { value, .. },
+                ..
+            }) = ty
+            {
+                if let Ok(len) = usize::try_from(*value) {
+                    types.array_lens.insert(name.to_owned(), len);
+                }
+            }
         }
         Some(DeclType::Tuple(elements)) => {
             types.tuples.insert(name.to_owned(), elements.clone());
@@ -1218,7 +1302,7 @@ fn infer_task_local_storage_type(
         .iter()
         .filter_map(|(name, storage)| match storage {
             TaskLocalStorage::Scalar(ty) => Some((name.clone(), *ty)),
-            TaskLocalStorage::Array { .. } => None,
+            TaskLocalStorage::Array { .. } | TaskLocalStorage::Tuple(_) => None,
         })
         .collect::<LocalAliasTypes>();
     let local_array_aliases = known
@@ -1234,7 +1318,7 @@ fn infer_task_local_storage_type(
                     writable: true,
                 },
             )),
-            TaskLocalStorage::Scalar(_) => None,
+            TaskLocalStorage::Scalar(_) | TaskLocalStorage::Tuple(_) => None,
         })
         .collect::<HashMap<_, _>>();
     let mut inference_errors = Vec::new();
@@ -1319,24 +1403,24 @@ fn collect_task_owner_types(
         );
     }
     for decl in &owner.ins {
+        types.input_names.insert(decl.name.clone());
         if let Some(ty) = types.scalars.get(&decl.name).copied() {
-            types.input_names.insert(decl.name.clone());
             types
                 .declared_symbols
                 .insert(decl.name.clone(), DeclaredSymbolInfo::Input { ty });
         }
     }
     for decl in &owner.outs {
+        types.output_names.insert(decl.name.clone());
         if let Some(ty) = types.scalars.get(&decl.name).copied() {
-            types.output_names.insert(decl.name.clone());
             types
                 .declared_symbols
                 .insert(decl.name.clone(), DeclaredSymbolInfo::Output { ty });
         }
     }
     for decl in &owner.params {
+        types.param_names.insert(decl.name.clone());
         if let Some(ty) = types.scalars.get(&decl.name).copied() {
-            types.param_names.insert(decl.name.clone());
             types
                 .declared_symbols
                 .insert(decl.name.clone(), DeclaredSymbolInfo::Param { ty });
@@ -1422,6 +1506,11 @@ fn collect_task_owner_types(
         } else if let Expr::ArrayCtor { spec, .. } = expr {
             if let ArrayElemType::Primitive(element) = spec.elem {
                 types.indexed.insert(name.clone(), element);
+                if let Expr::Int { value, .. } = spec.size.as_ref() {
+                    if let Ok(len) = usize::try_from(*value) {
+                        types.array_lens.insert(name.clone(), len);
+                    }
+                }
                 types.declared_symbols.insert(
                     name.clone(),
                     DeclaredSymbolInfo::DataArray { elem_ty: element },
@@ -1623,10 +1712,76 @@ fn uniquify_task_bindings(
                     } => {
                         rewrite_task_expr(cond, &self.visible);
                         let outer_visible = self.visible.clone();
+
                         self.rewrite_list(then_branch);
+                        let mut then_visible = self.visible.clone();
+                        let then_flow = crate::def_semantics::statement_list_flow(then_branch);
+
                         self.visible.clone_from(&outer_visible);
                         self.rewrite_list(else_branch);
-                        self.visible = outer_visible;
+                        let mut else_visible = self.visible.clone();
+                        let else_flow = crate::def_semantics::statement_list_flow(else_branch);
+
+                        self.visible = match (then_flow, else_flow) {
+                            (
+                                crate::def_semantics::StatementFlow::Continues,
+                                crate::def_semantics::StatementFlow::Continues,
+                            ) => {
+                                let common_sources = then_visible
+                                    .keys()
+                                    .filter(|source| else_visible.contains_key(*source))
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                let mut joined = HashMap::new();
+                                for source in common_sources {
+                                    let then_name = then_visible
+                                        .get(&source)
+                                        .expect("common task binding must exist in then branch")
+                                        .clone();
+                                    let else_name = else_visible
+                                        .get(&source)
+                                        .expect("common task binding must exist in else branch")
+                                        .clone();
+                                    let outer_name = outer_visible.get(&source);
+                                    let canonical = if outer_name == Some(&then_name) {
+                                        then_name.clone()
+                                    } else if outer_name == Some(&else_name) {
+                                        else_name.clone()
+                                    } else {
+                                        then_name.clone()
+                                    };
+
+                                    if then_name != canonical {
+                                        let names =
+                                            HashMap::from([(then_name.clone(), canonical.clone())]);
+                                        rewrite_task_stmts(then_branch, &names, &HashSet::new());
+                                        then_visible.insert(source.clone(), canonical.clone());
+                                        self.source_names.remove(&then_name);
+                                    }
+                                    if else_name != canonical {
+                                        let names =
+                                            HashMap::from([(else_name.clone(), canonical.clone())]);
+                                        rewrite_task_stmts(else_branch, &names, &HashSet::new());
+                                        else_visible.insert(source.clone(), canonical.clone());
+                                        self.source_names.remove(&else_name);
+                                    }
+                                    joined.insert(source, canonical);
+                                }
+                                joined
+                            }
+                            (
+                                crate::def_semantics::StatementFlow::Continues,
+                                crate::def_semantics::StatementFlow::Terminates,
+                            ) => then_visible,
+                            (
+                                crate::def_semantics::StatementFlow::Terminates,
+                                crate::def_semantics::StatementFlow::Continues,
+                            ) => else_visible,
+                            (
+                                crate::def_semantics::StatementFlow::Terminates,
+                                crate::def_semantics::StatementFlow::Terminates,
+                            ) => outer_visible,
+                        };
                     }
                     Stmt::For {
                         var,
@@ -1672,232 +1827,143 @@ fn uniquify_task_bindings(
     env.source_names
 }
 
-fn collect_task_locals(
+#[derive(Default)]
+struct TaskBindingStorageTypes {
+    scalars: HashMap<String, PrimitiveType>,
+    arrays: HashMap<String, LocalArrayAliasInfo>,
+    tuples: HashMap<String, Vec<PrimitiveType>>,
+}
+
+fn analyze_task_binding_storage(
     stmts: &[Stmt],
-    owner_roots: &HashSet<String>,
-    return_types: &HashMap<String, ReturnType>,
     owner_types: &TaskOwnerTypes,
+    fn_signatures: &HashMap<String, FnSignature>,
+    return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> TaskBindingStorageTypes {
+    let output_array_names = owner_types
+        .output_names
+        .intersection(&owner_types.array_lens.keys().cloned().collect())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let dynamic_param_array_names = owner_types
+        .param_names
+        .intersection(&owner_types.array_lens.keys().cloned().collect())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let io_surface_names = HashSet::new();
+    let io_surface_array_names = HashSet::new();
+    let proc_event_names = HashSet::new();
+    let common = ScopeAnalysisCtx {
+        policy: ScopePolicy::Task,
+        input_names: &owner_types.input_names,
+        output_names: &owner_types.output_names,
+        output_array_names: &output_array_names,
+        io_surface_names: &io_surface_names,
+        io_surface_array_names: &io_surface_array_names,
+        dynamic_param_array_names: &dynamic_param_array_names,
+        param_names: &owner_types.param_names,
+        struct_defs,
+        fn_signatures,
+        fn_return_types: return_types,
+        options,
+        port_index_ins: None,
+        port_index_outs: None,
+        port_index_params: None,
+        port_index_kins: None,
+        proc_event_names: &proc_event_names,
+    };
+    let state_array_struct_roots = HashMap::new();
+    let nested_proc_instances = HashMap::new();
+    let proc_array_roots = HashMap::new();
+    let registration_names = HashSet::new();
+    let resolved_scalars = std::cell::RefCell::new(HashMap::new());
+    let resolved_arrays = std::cell::RefCell::new(HashMap::new());
+    let resolved_tuples = std::cell::RefCell::new(HashMap::new());
+    let ctx = FlowStmtAnalysisCtx {
+        common,
+        registration_mode: RuntimeRegistrationMode::None,
+        declared_symbols: &owner_types.declared_symbols,
+        state_arrays: &owner_types.array_lens,
+        state_array_struct_roots: &state_array_struct_roots,
+        nested_proc_instances: &nested_proc_instances,
+        struct_instances: &owner_types.struct_instances,
+        registration_input_names: &registration_names,
+        registration_output_names: &registration_names,
+        registration_param_names: &registration_names,
+        forbidden_assign_names: &owner_types.output_names,
+        forbidden_assign_array_names: &output_array_names,
+        proc_array_roots: &proc_array_roots,
+        event_policy: None,
+        state_tuples: &owner_types.tuples,
+        resolved_scalar_locals: Some(&resolved_scalars),
+        resolved_array_locals: Some(&resolved_arrays),
+        resolved_tuple_locals: Some(&resolved_tuples),
+    };
+    let mut state_scalars = owner_types.scalars.clone();
+    let mut state = ScopeFlowState::new(HashSet::new(), HashMap::new(), HashMap::new());
+    analyze_flow_scope_stmts(
+        stmts.iter(),
+        &HashSet::new(),
+        &mut state_scalars,
+        &ctx,
+        &mut state,
+        0,
+        0,
+        errors,
+    );
+    let mut scalars = resolved_scalars.into_inner();
+    scalars.extend(state.local_aliases);
+    TaskBindingStorageTypes {
+        scalars,
+        arrays: resolved_arrays.into_inner(),
+        tuples: resolved_tuples.into_inner(),
+    }
+}
+
+fn collect_task_locals(
     source_names: &HashMap<String, String>,
+    binding_types: &TaskBindingStorageTypes,
     live_across_yield: &HashSet<String>,
     task_name: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, TaskLocalStorage> {
-    fn visit(
-        stmts: &[Stmt],
-        owner_roots: &HashSet<String>,
-        return_types: &HashMap<String, ReturnType>,
-        owner_types: &TaskOwnerTypes,
-        struct_defs: &HashMap<String, Vec<TypedStructField>>,
-        source_names: &HashMap<String, String>,
-        live_across_yield: &HashSet<String>,
-        task_name: &str,
-        locals: &mut HashMap<String, TaskLocalStorage>,
-        errors: &mut Vec<Diagnostic>,
-    ) {
-        for stmt in stmts {
-            match stmt {
-                Stmt::Assign {
-                    loc,
-                    target: AssignTarget::Var(name),
-                    decl_ty,
-                    expr,
-                    ..
-                } if !path_or_ancestor_is_declared(name, owner_roots) => {
-                    if locals.contains_key(name) {
-                        continue;
-                    }
-                    let is_array_ctor = matches!(expr, Expr::ArrayCtor { .. });
-                    let storage = if let Expr::ArrayCtor { spec, init, .. } = expr {
-                        let element = match spec.elem {
-                            ArrayElemType::Primitive(element) => Some(element),
-                            ArrayElemType::Struct(_) => None,
-                        };
-                        let len = match spec.size.as_ref() {
-                            Expr::Int { value, .. } => usize::try_from(*value).ok(),
-                            _ => None,
-                        };
-                        match (element, len) {
-                            (Some(element), Some(len)) if len > 0 => {
-                                if init.as_ref().is_some_and(|values| values.len() != len) {
-                                    errors.push(Diagnostic::semantic_span(
-                                        format!(
-                                            "fixed-array local '{}' in task '{task_name}' expects {len} initializer values",
-                                            source_names.get(name).unwrap_or(name)
-                                        ),
-                                        *loc,
-                                    ));
-                                }
-                                Some(TaskLocalStorage::Array {
-                                    spec: spec.clone(),
-                                    element,
-                                    len,
-                                })
-                            }
-                            _ if live_across_yield.contains(name) => {
-                                errors.push(Diagnostic::semantic_span(
-                                    format!(
-                                        "task local '{}' must have fixed primitive storage",
-                                        source_names.get(name).unwrap_or(name)
-                                    ),
-                                    *loc,
-                                ));
-                                None
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        (*decl_ty)
-                            .or_else(|| {
-                                infer_task_local_storage_type(
-                                    expr,
-                                    locals,
-                                    owner_types,
-                                    struct_defs,
-                                )
-                            })
-                            .map(TaskLocalStorage::Scalar)
-                    };
-                    if let Some(storage) = storage {
-                        locals.insert(name.clone(), storage);
-                    } else if !is_array_ctor && live_across_yield.contains(name) {
-                        errors.push(Diagnostic::semantic_span(
-                            format!(
-                                "task local '{}' is live across a yield in task '{task_name}' but has no fixed primitive or fixed-array storage",
-                                source_names.get(name).unwrap_or(name)
-                            ),
-                            *loc,
-                        ));
-                    }
-                }
-                Stmt::Assign {
-                    loc,
-                    target: AssignTarget::Tuple(names),
-                    expr,
-                    ..
-                } => {
-                    let element_types = match expr {
-                        Expr::Tuple { values, .. } => values
-                            .iter()
-                            .map(|value| {
-                                infer_task_local_storage_type(
-                                    value,
-                                    locals,
-                                    owner_types,
-                                    struct_defs,
-                                )
-                            })
-                            .collect::<Option<Vec<_>>>(),
-                        Expr::UserCall { name, .. } => {
-                            return_types.get(name).and_then(|ty| match ty {
-                                ReturnType::Tuple(elements) => Some(elements.clone()),
-                                ReturnType::Scalar(_) => None,
-                            })
-                        }
-                        Expr::Var { name, .. } => owner_types.tuples.get(name).cloned(),
-                        _ => None,
-                    };
-                    let Some(element_types) =
-                        element_types.filter(|types| types.len() == names.len())
-                    else {
-                        if names.iter().any(|name| {
-                            !path_or_ancestor_is_declared(name, owner_roots)
-                                && live_across_yield.contains(name)
-                        }) {
-                            errors.push(Diagnostic::semantic_span(
-                                format!(
-                                    "cannot determine fixed storage types for tuple locals in task '{task_name}'"
-                                ),
-                                *loc,
-                            ));
-                        }
-                        continue;
-                    };
-                    for (name, ty) in names.iter().zip(element_types) {
-                        if !path_or_ancestor_is_declared(name, owner_roots) {
-                            locals
-                                .entry(name.clone())
-                                .or_insert(TaskLocalStorage::Scalar(ty));
-                        }
-                    }
-                }
-                Stmt::If {
-                    then_branch,
-                    else_branch,
-                    ..
-                } => {
-                    visit(
-                        then_branch,
-                        owner_roots,
-                        return_types,
-                        owner_types,
-                        struct_defs,
-                        source_names,
-                        live_across_yield,
-                        task_name,
-                        locals,
-                        errors,
-                    );
-                    visit(
-                        else_branch,
-                        owner_roots,
-                        return_types,
-                        owner_types,
-                        struct_defs,
-                        source_names,
-                        live_across_yield,
-                        task_name,
-                        locals,
-                        errors,
-                    );
-                }
-                Stmt::For { var, body, .. } => {
-                    locals
-                        .entry(var.clone())
-                        .or_insert(TaskLocalStorage::Scalar(PrimitiveType::I32));
-                    visit(
-                        body,
-                        owner_roots,
-                        return_types,
-                        owner_types,
-                        struct_defs,
-                        source_names,
-                        live_across_yield,
-                        task_name,
-                        locals,
-                        errors,
-                    );
-                }
-                Stmt::While { body, .. } => visit(
-                    body,
-                    owner_roots,
-                    return_types,
-                    owner_types,
-                    struct_defs,
-                    source_names,
-                    live_across_yield,
-                    task_name,
-                    locals,
-                    errors,
-                ),
-                _ => {}
+    let mut locals = HashMap::new();
+    for (name, source_name) in source_names {
+        if let Some(ty) = binding_types.scalars.get(name) {
+            locals.insert(name.clone(), TaskLocalStorage::Scalar(*ty));
+        } else if let Some(info) = binding_types.arrays.get(name) {
+            if let Some(len) = info.static_len {
+                locals.insert(
+                    name.clone(),
+                    TaskLocalStorage::Array {
+                        spec: ArrayTypeSpec {
+                            elem: ArrayElemType::Primitive(info.elem_ty),
+                            size: Box::new(Expr::int(len as i64)),
+                        },
+                        element: info.elem_ty,
+                        len,
+                    },
+                );
+            } else if live_across_yield.contains(name) {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "task local '{source_name}' is live across a yield in task '{task_name}' but has no fixed primitive, tuple, or fixed-array storage"
+                    ),
+                    0,
+                    0,
+                ));
             }
+        } else if let Some(types) = binding_types.tuples.get(name) {
+            locals.insert(name.clone(), TaskLocalStorage::Tuple(types.clone()));
+        } else if live_across_yield.contains(name) {
+            errors.push(Diagnostic::semantic(format!(
+                "task local '{source_name}' is live across a yield in task '{task_name}' but has no fixed primitive, tuple, or fixed-array storage"
+            ), 0, 0));
         }
     }
-
-    let mut locals = HashMap::new();
-    visit(
-        stmts,
-        owner_roots,
-        return_types,
-        owner_types,
-        struct_defs,
-        source_names,
-        live_across_yield,
-        task_name,
-        &mut locals,
-        errors,
-    );
     locals
 }
 
@@ -2096,7 +2162,7 @@ fn expand_task_array_initializers(
                         .map(|(index, value)| assign_index(name.clone(), index, value))
                         .collect::<Vec<_>>()
                 } else {
-                    vec![fill_array(name.clone(), zero_scalar(*element))]
+                    vec![fill_array(name.clone(), zero_expr(*element))]
                 }
             }),
             _ => None,
@@ -2129,7 +2195,7 @@ fn collect_for_frame_bindings(
     task_name: &str,
     stmts: &[Stmt],
     next_id: &mut usize,
-    fields: &mut HashMap<String, (String, String)>,
+    fields: &mut HashMap<String, TaskForFrameBinding>,
 ) {
     for stmt in stmts {
         match stmt {
@@ -2141,16 +2207,19 @@ fn collect_for_frame_bindings(
                 collect_for_frame_bindings(task_name, then_branch, next_id, fields);
                 collect_for_frame_bindings(task_name, else_branch, next_id, fields);
             }
-            Stmt::For { var, body, .. } => {
-                if task_stmts_contain_yield(body) {
+            Stmt::For {
+                var, var_ty, body, ..
+            } => {
+                if task_stmts_contain_resume_terminator(body) {
                     let id = *next_id;
                     *next_id += 1;
                     fields.insert(
                         var.clone(),
-                        (
-                            format!("{}_for_{id}_end", task_symbol_stem(task_name)),
-                            format!("{}_for_{id}_step", task_symbol_stem(task_name)),
-                        ),
+                        TaskForFrameBinding {
+                            end: format!("{}_for_{id}_end", task_symbol_stem(task_name)),
+                            step: format!("{}_for_{id}_step", task_symbol_stem(task_name)),
+                            ty: *var_ty,
+                        },
                     );
                 }
                 collect_for_frame_bindings(task_name, body, next_id, fields);
@@ -2183,8 +2252,15 @@ enum TaskCfgTerminator {
 
 struct TaskCfgBuilder {
     blocks: Vec<TaskCfgBlock>,
-    for_frame_bindings: HashMap<String, (String, String)>,
+    for_frame_bindings: HashMap<String, TaskForFrameBinding>,
     preserve_structured: bool,
+}
+
+#[derive(Clone)]
+struct TaskForFrameBinding {
+    end: String,
+    step: String,
+    ty: PrimitiveType,
 }
 
 fn collect_expr_uses(expr: &Expr, uses: &mut HashSet<String>) {
@@ -2432,6 +2508,7 @@ impl TaskCfgBuilder {
             }
             Stmt::For {
                 var,
+                var_ty,
                 start,
                 end,
                 step,
@@ -2439,12 +2516,23 @@ impl TaskCfgBuilder {
                 body,
                 ..
             } => {
-                let step_expr = step.clone().unwrap_or_else(|| Expr::int(1));
-                let (end_field, step_field) = self
+                let induction_ty = *var_ty;
+                let step_expr = cast_expr_to_primitive(
+                    step.clone().unwrap_or_else(|| Expr::int(1)),
+                    induction_ty,
+                );
+                let frame = self
                     .for_frame_bindings
                     .get(var)
                     .cloned()
-                    .unwrap_or_else(|| (format!("{var}__end"), format!("{var}__step")));
+                    .unwrap_or_else(|| TaskForFrameBinding {
+                        end: format!("{var}__end"),
+                        step: format!("{var}__step"),
+                        ty: induction_ty,
+                    });
+                debug_assert_eq!(frame.ty, induction_ty);
+                let end_field = frame.end;
+                let step_field = frame.step;
                 let header = self.push(Vec::new(), TaskCfgTerminator::Complete);
                 let latch = self.push(
                     vec![assign_var(
@@ -2496,8 +2584,11 @@ impl TaskCfgBuilder {
                 };
                 self.push(
                     vec![
-                        assign_var(var.clone(), start.clone()),
-                        assign_var(end_field, end.clone()),
+                        assign_var(
+                            var.clone(),
+                            cast_expr_to_primitive(start.clone(), induction_ty),
+                        ),
+                        assign_var(end_field, cast_expr_to_primitive(end.clone(), induction_ty)),
                         assign_var(step_field, step_expr),
                     ],
                     TaskCfgTerminator::Jump(header),
@@ -2556,19 +2647,6 @@ fn task_stmts_contain_resume_terminator(stmts: &[Stmt]) -> bool {
     })
 }
 
-fn task_stmts_contain_yield(stmts: &[Stmt]) -> bool {
-    stmts.iter().any(|stmt| match stmt {
-        Stmt::Expr { expr, .. } => is_yield(expr),
-        Stmt::If {
-            then_branch,
-            else_branch,
-            ..
-        } => task_stmts_contain_yield(then_branch) || task_stmts_contain_yield(else_branch),
-        Stmt::For { body, .. } | Stmt::While { body, .. } => task_stmts_contain_yield(body),
-        _ => false,
-    })
-}
-
 fn task_stmts_have_unbound_loop_control(stmts: &[Stmt], loop_depth: usize) -> bool {
     stmts.iter().any(|stmt| match stmt {
         Stmt::Break { .. } | Stmt::Continue { .. } => loop_depth == 0,
@@ -2614,7 +2692,7 @@ fn compile_task_resume_body(
     node: &str,
     result: &str,
     declare_scratch: bool,
-    for_frame_bindings: &HashMap<String, (String, String)>,
+    for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
 ) -> Vec<Stmt> {
     let mut cfg = TaskCfgBuilder {
         blocks: Vec::new(),
@@ -2736,7 +2814,7 @@ fn compile_task_resume(
     body: &[Stmt],
     local_initializers: Vec<Stmt>,
     params: Vec<FnParamDecl>,
-    for_frame_bindings: &HashMap<String, (String, String)>,
+    for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
 ) -> FunctionDef {
     let mut function_body = compile_task_resume_body(
         task_name,
@@ -2770,7 +2848,7 @@ fn compile_inline_task_resume(
     task_name: &str,
     body: &[Stmt],
     local_initializers: Vec<Stmt>,
-    for_frame_bindings: &HashMap<String, (String, String)>,
+    for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
 ) -> Vec<Stmt> {
     compile_task_resume_body(
         task_name,
@@ -2914,7 +2992,7 @@ struct PreparedTask {
     init_stmts: Vec<Stmt>,
     reset_stmts: Vec<Stmt>,
     pinned_fields: Vec<String>,
-    for_frame_bindings: HashMap<String, (String, String)>,
+    for_frame_bindings: HashMap<String, TaskForFrameBinding>,
 }
 
 #[derive(Clone)]
@@ -2929,22 +3007,44 @@ fn prepare_task(
     task: &TaskDef,
     owner_roots: &HashSet<String>,
     return_types: &HashMap<String, ReturnType>,
+    fn_signatures: &HashMap<String, FnSignature>,
     owner_types: &TaskOwnerTypes,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    options: AnalysisOptions,
     placement: TaskResumePlacement,
     errors: &mut Vec<Diagnostic>,
 ) -> PreparedTask {
     let mut body = task.body.clone();
+    let mut task_flow_errors = Vec::new();
+    analyze_task_binding_storage(
+        &body,
+        owner_types,
+        fn_signatures,
+        return_types,
+        struct_defs,
+        options,
+        &mut task_flow_errors,
+    );
+    errors.extend(task_flow_errors.into_iter().filter(|error| {
+        error.message.starts_with("binding '")
+            || error.message.starts_with("typed array declaration")
+    }));
     let source_names = uniquify_task_bindings(&mut body, owner_roots);
     let task_binding_names = source_names.keys().cloned().collect::<HashSet<_>>();
     let live_across_yield = task_locals_live_across_yield(&body, &task_binding_names);
-    let locals = collect_task_locals(
+    let mut ignored_errors = Vec::new();
+    let binding_types = analyze_task_binding_storage(
         &body,
-        owner_roots,
-        return_types,
         owner_types,
+        fn_signatures,
+        return_types,
         struct_defs,
+        options,
+        &mut ignored_errors,
+    );
+    let locals = collect_task_locals(
         &source_names,
+        &binding_types,
         &live_across_yield,
         &task.name,
         errors,
@@ -3008,11 +3108,11 @@ fn prepare_task(
         } else {
             match placement {
                 TaskResumePlacement::HelperFunction => {
-                    resume_local_initializers.push(storage.init_stmt(local));
+                    resume_local_initializers.push(storage.declaration_stmt(local));
                 }
                 TaskResumePlacement::Inline => {
                     let scratch = names[&local].clone();
-                    resume_local_initializers.push(storage.init_stmt(scratch));
+                    resume_local_initializers.push(storage.declaration_stmt(scratch));
                 }
             }
         }
@@ -3028,15 +3128,16 @@ fn prepare_task(
     );
     let mut for_frame_fields = for_frame_bindings
         .values()
-        .flat_map(|(end, step)| [end.clone(), step.clone()])
+        .flat_map(|frame| {
+            [
+                (frame.end.clone(), frame.ty),
+                (frame.step.clone(), frame.ty),
+            ]
+        })
         .collect::<Vec<_>>();
-    for_frame_fields.sort();
-    for field in for_frame_fields {
-        init_stmts.push(typed_assign(
-            field.clone(),
-            PrimitiveType::I32,
-            Expr::int(0),
-        ));
+    for_frame_fields.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+    for (field, ty) in for_frame_fields {
+        init_stmts.push(typed_assign(field.clone(), ty, Expr::int(0)));
         pinned_fields.push(field.clone());
         reset_stmts.push(assign_var(field, Expr::int(0)));
     }
@@ -3119,8 +3220,9 @@ fn take_top_level_tasks(program: &mut Program) -> Vec<TaskDef> {
 fn lower_top_level_tasks(
     program: &mut Program,
     tasks: &[TaskDef],
-    return_types: &HashMap<String, ReturnType>,
+    call_semantics: &TaskCallSemantics,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
     if tasks.is_empty() {
@@ -3128,7 +3230,9 @@ fn lower_top_level_tasks(
     }
 
     let owner_surface = TaskOwnerSurface::from_top_level(program);
-    let owner_types = collect_task_owner_types(&owner_surface, return_types, struct_defs);
+    let owner_types =
+        collect_task_owner_types(&owner_surface, &call_semantics.return_types, struct_defs);
+    let call_env = task_call_type_env(&owner_surface, &owner_types);
     let owner_roots = collect_owner_roots(&owner_surface);
     let mut init_prefix = vec![typed_assign(
         TASK_AVAILABLE_FIELD,
@@ -3139,12 +3243,16 @@ fn lower_top_level_tasks(
     let mut scratch_declarations = Vec::new();
     let mut expansions = HashMap::new();
     for task in tasks {
+        let mut task = task.clone();
+        rewrite_task_overloads(&mut task, &call_env, call_semantics, struct_defs);
         let prepared = prepare_task(
-            task,
+            &task,
             &owner_roots,
-            return_types,
+            &call_semantics.return_types,
+            &call_semantics.signatures,
             &owner_types,
             struct_defs,
+            options,
             TaskResumePlacement::Inline,
             errors,
         );
@@ -3168,14 +3276,18 @@ fn lower_top_level_tasks(
     }
 
     let mut audio_outputs = HashSet::new();
+    let mut audio_output_decls = Vec::new();
     let mut control_outputs = HashSet::new();
+    let mut control_output_decls = Vec::new();
     for block in &program.blocks {
         match block {
             Block::Outs(ports) => {
                 audio_outputs.extend(ports.decls.iter().map(|decl| decl.name.clone()));
+                audio_output_decls.extend(ports.decls.iter().cloned());
             }
             Block::KOuts(ports) => {
                 control_outputs.extend(ports.decls.iter().map(|decl| decl.name.clone()));
+                control_output_decls.extend(ports.decls.iter().cloned());
             }
             Block::Block(exec) => {
                 collect_numbered_outputs(&exec.pre, "kout", &mut control_outputs);
@@ -3190,18 +3302,8 @@ fn lower_top_level_tasks(
             _ => {}
         }
     }
-    let mut audio_outputs = audio_outputs.into_iter().collect::<Vec<_>>();
-    audio_outputs.sort();
-    let neutral_audio_outputs = audio_outputs
-        .into_iter()
-        .map(|name| assign_var(name, Expr::int(0)))
-        .collect::<Vec<_>>();
-    let mut control_outputs = control_outputs.into_iter().collect::<Vec<_>>();
-    control_outputs.sort();
-    let mut unavailable = control_outputs
-        .into_iter()
-        .map(|name| assign_var(name, Expr::int(0)))
-        .collect::<Vec<_>>();
+    let neutral_audio_outputs = collect_neutral_outputs(audio_outputs, audio_output_decls);
+    let mut unavailable = collect_neutral_outputs(control_outputs, control_output_decls);
     unavailable.push(assign_var(TASK_AVAILABLE_FIELD, Expr::bool(false)));
     unavailable.push(abort_activation_stmt());
     let task_names = expansions.keys().cloned().collect::<HashSet<_>>();
@@ -3287,21 +3389,319 @@ fn lower_top_level_tasks(
     init.pinned_roots.extend(pinned_fields);
 }
 
-fn declared_task_return_type(def: &FunctionDef) -> Option<(String, ReturnType)> {
-    let return_type = match &def.return_ty {
-        Some(FnReturnType::Scalar(FnReturnScalarType::Primitive(ty))) => ReturnType::Scalar(*ty),
-        Some(FnReturnType::Tuple(elements)) => ReturnType::Tuple(
-            elements
-                .iter()
-                .map(|element| match element {
-                    FnReturnScalarType::Primitive(ty) => Some(*ty),
-                    FnReturnScalarType::Named(_) => None,
-                })
-                .collect::<Option<Vec<_>>>()?,
-        ),
-        _ => return None,
-    };
-    Some((def.name.clone(), return_type))
+fn task_callable_defs(program: &Program) -> Vec<FunctionDef> {
+    let mut defs = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Def(def) => Some(def.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for struct_def in program.blocks.iter().filter_map(|block| match block {
+        Block::Struct(def) => Some(def),
+        _ => None,
+    }) {
+        defs.extend(struct_def.methods.iter().cloned().map(|mut method| {
+            method.name = format!("{}.{}", struct_def.name, method.name);
+            if let Some(self_param) = method
+                .params
+                .first_mut()
+                .filter(|param| param.name == "self")
+            {
+                self_param.ty = Some(FnParamType::Struct(struct_def.name.clone()));
+            }
+            method
+        }));
+    }
+    defs
+}
+
+struct TaskCallSemantics {
+    overloads: HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    callable_symbols: HashSet<String>,
+    signatures: HashMap<String, FnSignature>,
+    return_types: HashMap<String, ReturnType>,
+}
+
+fn desugar_task_callable_methods(
+    defs: &mut [FunctionDef],
+    env: &crate::def_semantics::CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    callable_symbols: &HashSet<String>,
+) {
+    for def in defs {
+        let mut struct_instances = env.struct_instances.clone();
+        let mut struct_array_roots = HashMap::new();
+        for param in &def.params {
+            if let Some(FnParamType::Struct(struct_name)) = &param.ty {
+                register_struct_instance_and_array_roots(
+                    &param.name,
+                    struct_name,
+                    struct_defs,
+                    &mut struct_instances,
+                    &mut struct_array_roots,
+                );
+            }
+        }
+        let current_ns = namespace_of_symbol(&def.name);
+        for stmt in &mut def.body {
+            crate::proc_call_rewrite::desugar_init_instance_method_calls(
+                stmt,
+                &mut struct_instances,
+                &mut struct_array_roots,
+                struct_defs,
+                &current_ns,
+                callable_symbols,
+            );
+        }
+    }
+}
+
+fn resolve_task_callable_return_types(
+    defs: &mut [FunctionDef],
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    env: &crate::def_semantics::CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    seed: &HashMap<String, ReturnType>,
+) -> HashMap<String, ReturnType> {
+    let signatures = defs
+        .iter()
+        .map(|def| (def.name.clone(), FnSignature::from_def(def)))
+        .collect::<HashMap<_, _>>();
+    let mut return_types = seed.clone();
+    let mut ignored_errors = Vec::new();
+
+    for _ in 0..=defs.len() {
+        let inferred = crate::def_semantics::infer_known_def_return_types_with_seed(
+            defs,
+            &signatures,
+            env,
+            struct_defs,
+            seed,
+        );
+        let returns_changed = inferred != return_types;
+        return_types = inferred;
+
+        let context = crate::def_semantics::CallTypeContext {
+            return_types: &return_types,
+            struct_defs,
+        };
+        let resolved = defs
+            .iter_mut()
+            .map(|def| {
+                crate::def_semantics::rewrite_overloaded_calls_in_function(
+                    def,
+                    env,
+                    context,
+                    crate::def_semantics::OverloadOwnerContext {
+                        defer_dependent_calls: true,
+                    },
+                    overloads,
+                    &mut ignored_errors,
+                )
+            })
+            .sum::<usize>();
+        ignored_errors.clear();
+        if resolved == 0 && !returns_changed {
+            break;
+        }
+    }
+
+    crate::def_semantics::infer_known_def_return_types_with_seed(
+        defs,
+        &signatures,
+        env,
+        struct_defs,
+        seed,
+    )
+}
+
+fn task_call_semantics(
+    program: &Program,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> TaskCallSemantics {
+    let mut defs = task_callable_defs(program);
+    let callable_symbols = defs
+        .iter()
+        .map(|def| def.name.clone())
+        .collect::<HashSet<_>>();
+    desugar_task_callable_methods(
+        &mut defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        struct_defs,
+        &callable_symbols,
+    );
+    let (overloads, _) = crate::def_semantics::prepare_function_overloads(&mut defs);
+    let return_types = resolve_task_callable_return_types(
+        &mut defs,
+        &overloads,
+        &crate::def_semantics::CallTypeEnv::default(),
+        struct_defs,
+        &HashMap::new(),
+    );
+    let signatures = defs
+        .iter()
+        .map(|def| (def.name.clone(), FnSignature::from_def(def)))
+        .collect();
+    TaskCallSemantics {
+        overloads,
+        callable_symbols,
+        signatures,
+        return_types,
+    }
+}
+
+fn proc_task_call_semantics(
+    local_defs: &[FunctionDef],
+    global: &TaskCallSemantics,
+    env: &crate::def_semantics::CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> TaskCallSemantics {
+    let local_names = local_defs
+        .iter()
+        .map(|def| def.name.as_str())
+        .collect::<HashSet<_>>();
+    let overloads = global
+        .overloads
+        .iter()
+        .filter(|(name, _)| !local_names.contains(name.as_str()))
+        .map(|(name, candidates)| (name.clone(), candidates.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut defs = local_defs.to_vec();
+    let callable_symbols = global
+        .callable_symbols
+        .iter()
+        .cloned()
+        .chain(local_defs.iter().map(|def| def.name.clone()))
+        .collect::<HashSet<_>>();
+    desugar_task_callable_methods(&mut defs, env, struct_defs, &callable_symbols);
+    let return_types = resolve_task_callable_return_types(
+        &mut defs,
+        &overloads,
+        env,
+        struct_defs,
+        &global.return_types,
+    );
+    let mut signatures = global.signatures.clone();
+    signatures.retain(|name, _| !local_names.contains(name.as_str()));
+    signatures.extend(
+        defs.iter()
+            .map(|def| (def.name.clone(), FnSignature::from_def(def))),
+    );
+    TaskCallSemantics {
+        overloads,
+        callable_symbols,
+        signatures,
+        return_types,
+    }
+}
+
+fn task_call_type_env(
+    owner: &TaskOwnerSurface,
+    owner_types: &TaskOwnerTypes,
+) -> crate::def_semantics::CallTypeEnv {
+    let mut env = crate::def_semantics::CallTypeEnv::default();
+    env.scalar_types.clone_from(&owner_types.scalars);
+    env.struct_instances
+        .clone_from(&owner_types.struct_instances);
+    env.tuple_elem_types.clone_from(&owner_types.tuples);
+    env.array_types
+        .extend(owner_types.indexed.iter().map(|(name, ty)| {
+            (
+                name.clone(),
+                crate::def_semantics::CallArrayType::primitive(*ty, None),
+            )
+        }));
+    for decl in owner.ins.iter().chain(&owner.outs) {
+        if let Some(DeclType::Array {
+            elem,
+            size: Expr::Int { value, .. },
+        }) = &decl.ty
+        {
+            if let Ok(len) = usize::try_from(*value) {
+                env.array_types.insert(
+                    decl.name.clone(),
+                    crate::def_semantics::CallArrayType::primitive(*elem, Some(len)),
+                );
+            }
+        }
+    }
+    for decl in &owner.params {
+        if let Some(DeclType::Array {
+            elem,
+            size: Expr::Int { value, .. },
+        }) = &decl.ty
+        {
+            if let Ok(len) = usize::try_from(*value) {
+                env.array_types.insert(
+                    decl.name.clone(),
+                    crate::def_semantics::CallArrayType::primitive(*elem, Some(len)),
+                );
+            }
+        }
+    }
+    for decl in &owner.buffers {
+        let Some(BufferType {
+            elem: BufferElemType::Primitive(elem),
+            channels,
+        }) = &decl.ty
+        else {
+            continue;
+        };
+        let channels = match channels {
+            BufferChannels::Mono => TypedBufferChannels::Mono,
+            BufferChannels::Static(Expr::Int { value, .. }) => usize::try_from(*value)
+                .ok()
+                .filter(|value| *value > 0)
+                .map(TypedBufferChannels::Static)
+                .unwrap_or(TypedBufferChannels::Dynamic),
+            BufferChannels::Static(_) | BufferChannels::Dynamic => TypedBufferChannels::Dynamic,
+        };
+        env.buffer_types
+            .insert(decl.name.clone(), (*elem, channels));
+        if let Some(Expr::Int { value, .. }) = &decl.array_size {
+            if let Ok(len) = usize::try_from(*value) {
+                env.buffer_array_lens.insert(decl.name.clone(), len);
+            }
+        }
+    }
+    env
+}
+
+fn rewrite_task_overloads(
+    task: &mut TaskDef,
+    env: &crate::def_semantics::CallTypeEnv,
+    semantics: &TaskCallSemantics,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    let mut struct_instances = env.struct_instances.clone();
+    let mut struct_array_roots = HashMap::new();
+    for stmt in &mut task.body {
+        crate::proc_call_rewrite::desugar_init_instance_method_calls(
+            stmt,
+            &mut struct_instances,
+            &mut struct_array_roots,
+            struct_defs,
+            "",
+            &semantics.callable_symbols,
+        );
+    }
+    let mut env = env.clone();
+    let mut ignored_errors = Vec::new();
+    crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
+        &mut task.body,
+        &mut env,
+        crate::def_semantics::CallTypeContext {
+            return_types: &semantics.return_types,
+            struct_defs,
+        },
+        crate::def_semantics::OverloadOwnerContext {
+            defer_dependent_calls: true,
+        },
+        &semantics.overloads,
+        &mut ignored_errors,
+    );
 }
 
 pub(crate) fn lower_tasks(
@@ -3309,6 +3709,15 @@ pub(crate) fn lower_tasks(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let has_source_tasks = program.blocks.iter().any(|block| match block {
+        Block::Tasks(tasks) => !tasks.tasks.is_empty(),
+        Block::Proc(proc) => !proc.tasks.is_empty(),
+        _ => false,
+    });
+    if !has_source_tasks {
+        return;
+    }
+
     let raw_struct_defs = program
         .blocks
         .iter()
@@ -3318,38 +3727,15 @@ pub(crate) fn lower_tasks(
         })
         .collect::<HashMap<_, _>>();
     let struct_defs = coerce_struct_defs_for_inference(&raw_struct_defs, options);
-    let mut return_types = program
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            Block::Def(def) => Some(def),
-            _ => None,
-        })
-        .filter_map(declared_task_return_type)
-        .collect::<HashMap<_, _>>();
-    return_types.extend(
-        program
-            .blocks
-            .iter()
-            .filter_map(|block| match block {
-                Block::Struct(def) => Some(def),
-                _ => None,
-            })
-            .flat_map(|def| {
-                def.methods.iter().filter_map(|method| {
-                    declared_task_return_type(method).map(|(_, return_type)| {
-                        (format!("{}.{}", def.name, method.name), return_type)
-                    })
-                })
-            }),
-    );
+    let call_semantics = task_call_semantics(program, &struct_defs);
 
     let top_level_tasks = take_top_level_tasks(program);
     lower_top_level_tasks(
         program,
         &top_level_tasks,
-        &return_types,
+        &call_semantics,
         &struct_defs,
+        options,
         errors,
     );
 
@@ -3362,11 +3748,22 @@ pub(crate) fn lower_tasks(
             continue;
         }
         has_tasks = true;
-        let mut proc_return_types = return_types.clone();
-        proc_return_types.extend(proc.local_defs.iter().filter_map(declared_task_return_type));
         let owner_surface = TaskOwnerSurface::from_proc(proc);
-        let owner_types =
-            collect_task_owner_types(&owner_surface, &proc_return_types, &struct_defs);
+        let preliminary_owner_types =
+            collect_task_owner_types(&owner_surface, &call_semantics.return_types, &struct_defs);
+        let preliminary_call_env = task_call_type_env(&owner_surface, &preliminary_owner_types);
+        let proc_call_semantics = proc_task_call_semantics(
+            &proc.local_defs,
+            &call_semantics,
+            &preliminary_call_env,
+            &struct_defs,
+        );
+        let owner_types = collect_task_owner_types(
+            &owner_surface,
+            &proc_call_semantics.return_types,
+            &struct_defs,
+        );
+        let call_env = task_call_type_env(&owner_surface, &owner_types);
         let owner_roots = collect_owner_roots(&owner_surface);
         let buffer_params = task_buffer_params(&owner_surface, errors);
         let buffer_names = buffer_params
@@ -3400,12 +3797,16 @@ pub(crate) fn lower_tasks(
         let mut pinned_task_fields = Vec::new();
         let mut generated_defs = Vec::new();
         for task in &proc.tasks {
+            let mut task = task.clone();
+            rewrite_task_overloads(&mut task, &call_env, &proc_call_semantics, &struct_defs);
             let prepared = prepare_task(
-                task,
+                &task,
                 &owner_roots,
-                &proc_return_types,
+                &proc_call_semantics.return_types,
+                &proc_call_semantics.signatures,
                 &owner_types,
                 &struct_defs,
+                options,
                 TaskResumePlacement::HelperFunction,
                 errors,
             );
@@ -3431,10 +3832,7 @@ pub(crate) fn lower_tasks(
             });
         }
 
-        let neutral_outputs = outputs
-            .iter()
-            .map(|name| assign_var(name.clone(), Expr::int(0)))
-            .collect::<Vec<_>>();
+        let neutral_outputs = collect_neutral_outputs(outputs, proc.outs.iter().cloned());
         let mut unavailable = if proc.outs_timing == OutputTiming::Block {
             neutral_outputs.clone()
         } else {
@@ -4050,6 +4448,49 @@ sample:
             1,
             "task initialization should remain one operation rather than one CFG node per element"
         );
+        let scratch_local = dump
+            .lines()
+            .find(|line| {
+                line.contains("prepare_scratch") && line.trim_start().starts_with("local ")
+            })
+            .and_then(|line| line.split_whitespace().nth(1))
+            .expect("scratch array MIR local");
+        assert_eq!(
+            dump.matches(&format!("{scratch_local}[")).count(),
+            1,
+            "declaration-only scratch storage must not emit an unrolled zero store per element"
+        );
+    }
+
+    #[test]
+    fn task_branch_bindings_use_canonical_shape_compatibility() {
+        let source = r#"
+params:
+  choose: bool = false
+init:
+  pin result = 0.0
+task prepare():
+  if choose:
+    carried: f32[2] = [1.0, 2.0]
+  else:
+    carried: f32[3] = [3.0, 4.0, 5.0]
+  yield
+  result = carried[0]
+block:
+  await prepare()
+  sample:
+    out1 = result
+"#;
+
+        let errors = analyze(parse_program(source).expect("task source should parse"))
+            .expect_err("different fixed array shapes must not join across task branches");
+        assert!(
+            errors.iter().any(|error| {
+                error.message
+                    == "binding 'carried' has incompatible branch types: arrays have different element types or fixed lengths"
+            }),
+            "unexpected diagnostics: {errors:?}"
+        );
     }
 
     #[test]
@@ -4284,6 +4725,348 @@ sample:
         }
         lower_program_to_optimized_mir(&typed)
             .expect("tuple task locals should lower to valid MIR");
+    }
+
+    #[test]
+    fn fixed_tuple_task_local_can_cross_yield() {
+        let source = r#"
+init:
+  pin result: f32 = 0.0
+
+task prepare():
+  pair = (i32(3), i64(5))
+  yield
+  result = f32(pair[0]) + f32(pair[1])
+
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#;
+
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("a fixed tuple task local should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("a fixed tuple task local should lower to valid MIR");
+        let tuple_fields = mir
+            .as_program()
+            .state
+            .iter()
+            .filter(|slot| slot.name.contains("prepare_local") && slot.name.contains("pair.__"))
+            .collect::<Vec<_>>();
+        assert_eq!(tuple_fields.len(), 2);
+        assert!(tuple_fields
+            .iter()
+            .all(|slot| slot.pinned && !slot.authored));
+    }
+
+    #[test]
+    fn task_for_bounds_use_the_language_induction_coercion() {
+        let source = r#"
+init:
+  pin result: i32 = 0
+
+task prepare():
+  for i in (i64(0))..(i64(2)):
+    result += i
+    yield
+
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#;
+
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("task for bounds should use ordinary loop coercion");
+        lower_program_to_optimized_mir(&typed)
+            .expect("coerced task for bounds should lower to valid MIR");
+    }
+
+    #[test]
+    fn task_barriers_neutralize_outputs_by_declared_type_and_shape() {
+        let sources = [
+            r#"
+const Channels = 2
+
+outs:
+  ready: bool
+  stereo: f32[Channels]
+
+task prepare():
+  yield
+
+block:
+  await prepare()
+  sample:
+    ready = true
+    stereo[0] = 1.0
+    stereo[1] = 2.0
+"#,
+            r#"
+proc Loader:
+  outs:
+    stereo: f32[2]
+  task prepare():
+    yield
+  block:
+    await prepare()
+    sample:
+      stereo[0] = 1.0
+      stereo[1] = 2.0
+
+outs:
+  out1
+init:
+  loader = Loader()
+graph:
+  loader.stereo[0] >> out1
+"#,
+        ];
+
+        for source in sources {
+            let typed = analyze(parse_program(source).expect("task source should parse"))
+                .expect("typed and array outputs should be neutralized correctly");
+            lower_program_to_optimized_mir(&typed)
+                .expect("typed and array task outputs should lower to valid MIR");
+        }
+    }
+
+    #[test]
+    fn proc_task_barrier_returns_the_declared_scalar_type() {
+        let source = r#"
+proc Gate:
+  outs:
+    out1: bool
+  task prepare():
+    yield
+  block:
+    await prepare()
+    sample:
+      out1 = true
+
+outs:
+  out1: bool
+init:
+  gate = Gate()
+sample:
+  out1 = gate()
+"#;
+
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("a task-gated bool processor output should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("a task-gated bool processor output should lower to valid MIR");
+    }
+
+    #[test]
+    fn task_for_with_early_return_has_complete_cfg_storage() {
+        let source = r#"
+init:
+  pin result: i32 = 0
+
+task prepare():
+  for i in 0..4:
+    if i == 2:
+      return
+    result += 1
+
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#;
+
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("an early task return inside a for loop should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("an early task return inside a for loop should lower to valid MIR");
+    }
+
+    #[test]
+    fn task_frame_locals_use_inferred_callable_return_types() {
+        let sources = [
+            r#"
+def value():
+  result: i64 = 2
+  return result
+
+init:
+  pin result: i64 = 0
+
+task prepare():
+  carried = value()
+  yield
+  result = carried
+
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+            r#"
+def source_value():
+  local: i64 = 2
+  return local
+
+proc Loader:
+  outs:
+    out1
+  init:
+    pin result: i64 = 0
+  def value():
+    return source_value()
+  task prepare():
+    carried = value()
+    yield
+    result = carried
+  block:
+    await prepare()
+    sample:
+      out1 = f32(result)
+
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+            r#"
+proc Loader:
+  outs:
+    out1
+  init:
+    source: i64 = 2
+    pin result: i64 = 0
+  def value():
+    return source
+  task prepare():
+    carried = value()
+    yield
+    result = carried
+  block:
+    await prepare()
+    sample:
+      out1 = f32(result)
+
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+            r#"
+struct Counter:
+  value: i64 = 2
+  def read(self):
+    return self.value
+
+init:
+  counter = Counter()
+  pin result: i64 = 0
+
+task prepare():
+  carried = counter.read()
+  yield
+  result = carried
+
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+        ];
+
+        for source in sources {
+            let typed = analyze(parse_program(source).expect("task source should parse"))
+                .expect("task frame storage should use inferred callable returns");
+            lower_program_to_optimized_mir(&typed)
+                .expect("inferred callable task locals should lower to valid MIR");
+        }
+    }
+
+    #[test]
+    fn proc_task_frame_typing_uses_the_selected_global_overload() {
+        let sources = [
+            r#"
+def value(x: i32) -> i32:
+  return x + 1
+def value(x: f64) -> f64:
+  return x + 2.0
+proc Loader:
+  outs:
+    out1
+  init:
+    pin result: i32 = 0
+  task prepare():
+    carried = value(i32(3))
+    yield
+    result = carried
+  block:
+    await prepare()
+    sample:
+      out1 = f32(result)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+            r#"
+def value(x: f64) -> f64:
+  return x + 2.0
+def value(x: i32) -> i32:
+  return x + 1
+proc Loader:
+  outs:
+    out1
+  init:
+    pin result: i32 = 0
+  task prepare():
+    carried = value(i32(3))
+    yield
+    result = carried
+  block:
+    await prepare()
+    sample:
+      out1 = f32(result)
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+        ];
+
+        for source in sources {
+            let typed = analyze(parse_program(source).expect("task source should parse"))
+                .expect("proc task frame typing should be independent of overload order");
+            lower_program_to_optimized_mir(&typed)
+                .expect("selected proc task overload should lower to valid MIR");
+        }
+    }
+
+    #[test]
+    fn task_frame_typing_uses_the_selected_method_overload() {
+        let source = r#"
+struct Calculator:
+  def value(self, x: i32) -> i32:
+    return x + 1
+  def value(self, x: f64) -> f64:
+    return x + 2.0
+init:
+  calculator = Calculator()
+  pin result: i32 = 0
+task prepare():
+  carried = calculator.value(i32(3))
+  yield
+  result = carried
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#;
+
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("task frame typing should use ordinary method overload selection");
+        lower_program_to_optimized_mir(&typed)
+            .expect("selected task method overload should lower to valid MIR");
     }
 
     #[test]

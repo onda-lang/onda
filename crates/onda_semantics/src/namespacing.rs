@@ -199,7 +199,9 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 *name = resolved;
             }
         }
-        Expr::ArrayCtor { loc, spec, init } => {
+        Expr::ArrayCtor {
+            loc, spec, init, ..
+        } => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
                 qualify_named_type_name(
                     name,

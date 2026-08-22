@@ -1257,6 +1257,68 @@ sample {
 }
 
 #[test]
+fn parses_explicit_for_induction_type() {
+    let src = r#"
+outs { out1 }
+sample {
+  for i: i64 in 0..2 { out1 = out1 + f32(i) }
+}
+"#;
+    let program = parse_program(src).expect("typed for loop should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::For { var, var_ty, .. } = &sample[0] else {
+        panic!("expected for statement");
+    };
+    assert_eq!(var, "i");
+    assert_eq!(*var_ty, PrimitiveType::I64);
+}
+
+#[test]
+fn defaults_for_induction_type_to_i32() {
+    let src = r#"
+outs { out1 }
+sample {
+  for i in 0..2 { out1 = out1 + f32(i) }
+}
+"#;
+    let program = parse_program(src).expect("default for loop should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::For { var_ty, .. } = &sample[0] else {
+        panic!("expected for statement");
+    };
+    assert_eq!(*var_ty, PrimitiveType::I32);
+}
+
+#[test]
+fn rejects_non_integer_for_induction_type() {
+    let errors = parse_program(
+        r#"
+sample {
+  for i: f64 in 0..2 { value = i }
+}
+"#,
+    )
+    .expect_err("floating-point for induction should fail");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("must be i32 or i64")));
+}
+
+#[test]
 fn parses_for_statement_with_inclusive_end() {
     let src = r#"
 outs { out1 }

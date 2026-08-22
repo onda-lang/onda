@@ -116,6 +116,8 @@ pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub event_policy: Option<EventStmtPolicy<'a>>,
     pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     pub resolved_scalar_locals: Option<&'a std::cell::RefCell<LocalAliasTypes>>,
+    pub resolved_array_locals: Option<&'a std::cell::RefCell<HashMap<String, LocalArrayAliasInfo>>>,
+    pub resolved_tuple_locals: Option<&'a std::cell::RefCell<HashMap<String, Vec<PrimitiveType>>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -283,6 +285,8 @@ fn build_runtime_stmt_analysis_ctx<'a>(
         event_policy,
         state_tuples,
         resolved_scalar_locals: None,
+        resolved_array_locals: None,
+        resolved_tuple_locals: None,
     }
 }
 
@@ -309,6 +313,30 @@ fn build_flow_stmt_expr_env<'a>(
         scope,
         &flow_state.tuple_vars,
     )
+}
+
+fn record_resolved_local_bindings(ctx: &FlowStmtAnalysisCtx<'_>, state: &FlowStmtAnalysisState) {
+    if let Some(resolved_scalar_locals) = ctx.resolved_scalar_locals {
+        let mut resolved = resolved_scalar_locals.borrow_mut();
+        for (name, ty) in &state.local_aliases {
+            resolved.entry(name.clone()).or_insert(*ty);
+        }
+    }
+    if let Some(resolved_array_locals) = ctx.resolved_array_locals {
+        resolved_array_locals
+            .borrow_mut()
+            .extend(state.local_array_aliases.clone());
+    }
+    if let Some(resolved_tuple_locals) = ctx.resolved_tuple_locals {
+        let mut resolved = resolved_tuple_locals.borrow_mut();
+        for name in state.tuple_vars.keys() {
+            if let Some(types) =
+                tracked_local_tuple_types(name, &state.tuple_vars, &state.local_aliases)
+            {
+                resolved.entry(name.clone()).or_insert(types);
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -731,9 +759,9 @@ fn analyze_flow_stmt(
                     common.output_array_names,
                     common.io_surface_names,
                     common.io_surface_array_names,
-                    matches!(common.policy, ScopePolicy::Runtime(_)),
+                    matches!(common.policy, ScopePolicy::Runtime(_) | ScopePolicy::Task),
                     common.dynamic_param_array_names,
-                    matches!(common.policy, ScopePolicy::Runtime(_)),
+                    matches!(common.policy, ScopePolicy::Runtime(_) | ScopePolicy::Task),
                     &expr_output_names,
                     forbidden_assign_names,
                     forbidden_assign_array_names,
@@ -749,14 +777,20 @@ fn analyze_flow_stmt(
                     ctx.state_tuples,
                     errors,
                 );
-                if let Some(resolved_scalar_locals) = ctx.resolved_scalar_locals {
-                    let mut resolved = resolved_scalar_locals.borrow_mut();
-                    for (name, ty) in &state.local_aliases {
-                        resolved.entry(name.clone()).or_insert(*ty);
-                    }
-                }
+                record_resolved_local_bindings(ctx, state);
             }
             Stmt::Expr { expr, .. } => {
+                if matches!(common.policy, ScopePolicy::Task)
+                    && matches!(
+                        expr,
+                        Expr::UserCall { name, type_args, args, .. }
+                            if name == onda_frontend::INTERNAL_TASK_YIELD_FN
+                                && type_args.is_empty()
+                                && args.is_empty()
+                    )
+                {
+                    return;
+                }
                 let expr = rewrite_proc_alias_calls_for_validation(expr, &state.local_proc_aliases);
                 if is_proc_event_stmt_call(&expr, nested_proc_instances, proc_array_roots) {
                     if let Expr::UserCall { args, .. } = &expr {
@@ -777,7 +811,9 @@ fn analyze_flow_stmt(
                 }
             }
             Stmt::Return { expr, .. } => {
-                if matches!(common.policy, ScopePolicy::Def) {
+                if matches!(common.policy, ScopePolicy::Def)
+                    || matches!(common.policy, ScopePolicy::Task) && is_bare_return_expr(expr)
+                {
                     if !is_bare_return_expr(expr) {
                         let expr = rewrite_proc_alias_calls_for_validation(
                             expr,
@@ -862,15 +898,23 @@ fn analyze_flow_stmt(
                     (*loc).into(),
                     errors,
                 );
+                record_resolved_local_bindings(ctx, state);
             }
             Stmt::For {
                 var,
+                var_ty,
                 step,
                 start,
                 end,
                 body,
                 ..
             } => {
+                if let Some(resolved_scalar_locals) = ctx.resolved_scalar_locals {
+                    resolved_scalar_locals
+                        .borrow_mut()
+                        .entry(var.clone())
+                        .or_insert(*var_ty);
+                }
                 let start =
                     rewrite_proc_alias_calls_for_validation(start, &state.local_proc_aliases);
                 let end = rewrite_proc_alias_calls_for_validation(end, &state.local_proc_aliases);
@@ -906,6 +950,7 @@ fn analyze_flow_stmt(
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
+                loop_state.local_aliases.insert(var.clone(), *var_ty);
                 analyze_flow_scope_stmts(
                     body.iter(),
                     &loop_locals,
