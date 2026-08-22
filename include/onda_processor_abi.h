@@ -11,14 +11,23 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 5u
+#define ONDA_PROCESSOR_ABI_VERSION 6u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
   ONDA_PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1u
 };
 
-typedef uint32_t (*onda_processor_init_fn)(const void* params, void* state, uint32_t all);
+typedef enum onda_processor_init_mode {
+  ONDA_PROCESSOR_INIT_PRESERVE_PINNED = 0,
+  ONDA_PROCESSOR_INIT_FULL = 1
+} onda_processor_init_mode_t;
+
+typedef uint32_t (*onda_processor_init_fn)(
+  const void* params,
+  void* state,
+  onda_processor_init_mode_t mode
+);
 
 /* Buffer descriptor tables remain immutable during each call and do not
  * overlap parameter, state, audio, or external-buffer sample storage. A NULL
@@ -423,10 +432,14 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_plain_to_normalized(
  * storage pointers are NULL exactly when the paired descriptor reports that
  * surface count or storage size as zero.
  */
-/* Initializes processor state. When all is nonzero, the complete physical
-   state image is cleared before init executes; otherwise retained state is
-   preserved. */
-uint32_t onda_processor_init(const void* params, void* state, uint32_t all);
+/* Initializes processor state. FULL initializes the complete physical state and is required before
+   any process or event call on newly allocated storage. PRESERVE_PINNED reruns ordinary authored
+   initializers while preserving pinned roots and task continuations, and is valid only after FULL. */
+uint32_t onda_processor_init(
+  const void* params,
+  void* state,
+  onda_processor_init_mode_t mode
+);
 
 uint32_t onda_process(
   void* state,

@@ -8,10 +8,10 @@ use onda_codegen_llvm::{
 use onda_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use onda_runtime::{
     bind_buffer as bind_buffer_raw, bind_input as bind_input_raw, bind_output as bind_output_raw,
-    create_instance, init, prepare_unchecked_process, process_checked, process_checked_segment,
-    process_unchecked, process_unchecked_segment, set_param_by_index, trigger_event_by_index,
-    validate_bindings, validate_buffers, validate_outputs, Instance, InstanceConfig,
-    PROCESS_BEGIN_BLOCK, PROCESS_END_BLOCK, PROCESS_FULL_BLOCK,
+    create_instance_initialized, init, prepare_unchecked_process, process_checked,
+    process_checked_segment, process_unchecked, process_unchecked_segment, set_param_by_index,
+    trigger_event_by_index, validate_bindings, validate_buffers, validate_outputs, InitMode,
+    Instance, InstanceConfig, PROCESS_BEGIN_BLOCK, PROCESS_END_BLOCK, PROCESS_FULL_BLOCK,
 };
 use onda_semantics::{analyze, analyze_with_options, AnalysisOptions};
 include!("examples_suite/fixtures.rs");

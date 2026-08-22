@@ -175,7 +175,7 @@ fn validate_task_control_stmt_list(
 }
 
 fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>) {
-    let mut members = HashMap::<&str, &'static str>::new();
+    let mut members = HashMap::<String, &'static str>::new();
     for (name, kind) in proc
         .local_defs
         .iter()
@@ -210,8 +210,33 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
             _ => None,
         }))
     {
-        members.entry(name).or_insert(kind);
+        members.entry(name.to_owned()).or_insert(kind);
     }
+
+    let mut inferred = IoInference::default();
+    for stmt in &proc.init.body {
+        infer_io_from_stmt(stmt, &mut inferred);
+    }
+    for stmt in &proc.block_pre {
+        infer_io_from_stmt(stmt, &mut inferred);
+    }
+    for stmt in &proc.sample {
+        infer_io_from_stmt(stmt, &mut inferred);
+    }
+    for stmt in &proc.block_post {
+        infer_io_from_stmt(stmt, &mut inferred);
+    }
+    for event in &proc.events {
+        for stmt in &event.body {
+            infer_io_from_stmt(stmt, &mut inferred);
+        }
+    }
+    for def in &proc.local_defs {
+        for stmt in &def.body {
+            infer_io_from_stmt(stmt, &mut inferred);
+        }
+    }
+    insert_inferred_task_owner_members(&mut members, &inferred);
 
     for task in &proc.tasks {
         if let Some(kind) = members.get(task.name.as_str()) {
@@ -222,6 +247,23 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
                 ),
                 task.loc,
             ));
+        }
+    }
+}
+
+fn insert_inferred_task_owner_members(
+    members: &mut HashMap<String, &'static str>,
+    inferred: &IoInference,
+) {
+    for (prefix, max_ordinal, kind) in [
+        ("in", inferred.max_in, "input"),
+        ("out", inferred.max_out, "output"),
+        ("param", inferred.max_param, "parameter"),
+        ("kin", inferred.max_kin, "parameter"),
+        ("kout", inferred.max_kout, "output"),
+    ] {
+        for ordinal in 1..=max_ordinal {
+            members.entry(format!("{prefix}{ordinal}")).or_insert(kind);
         }
     }
 }
@@ -664,6 +706,43 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                 _ => {}
             }
         }
+        let mut inferred = IoInference::default();
+        for block in &program.blocks {
+            match block {
+                Block::Init(init) => {
+                    for stmt in &init.body {
+                        infer_io_from_stmt(stmt, &mut inferred);
+                    }
+                }
+                Block::Block(exec) => {
+                    for stmt in &exec.pre {
+                        infer_io_from_stmt(stmt, &mut inferred);
+                    }
+                    if let Some(sample) = &exec.sample {
+                        for stmt in &sample.body {
+                            infer_io_from_stmt(stmt, &mut inferred);
+                        }
+                    }
+                    for stmt in &exec.post {
+                        infer_io_from_stmt(stmt, &mut inferred);
+                    }
+                }
+                Block::Sample(sample) => {
+                    for stmt in &sample.body {
+                        infer_io_from_stmt(stmt, &mut inferred);
+                    }
+                }
+                Block::Events(events) => {
+                    for event in &events.events {
+                        for stmt in &event.body {
+                            infer_io_from_stmt(stmt, &mut inferred);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        insert_inferred_task_owner_members(&mut members, &inferred);
         for task in &top_tasks {
             if let Some(kind) = members.get(&task.name) {
                 errors.push(Diagnostic::semantic_span(
@@ -3335,6 +3414,27 @@ fn lower_top_level_tasks(
     unavailable.push(abort_activation_stmt());
     let task_names = expansions.keys().cloned().collect::<HashSet<_>>();
 
+    if !program
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::Block(_)))
+    {
+        let insert_at = program
+            .blocks
+            .iter()
+            .position(|block| matches!(block, Block::Sample(_)))
+            .unwrap_or(program.blocks.len());
+        program.blocks.insert(
+            insert_at,
+            Block::Block(BlockExec {
+                loc: Default::default(),
+                pre: Vec::new(),
+                sample: None,
+                post: Vec::new(),
+            }),
+        );
+    }
+
     for block in &mut program.blocks {
         match block {
             Block::Init(init) => {
@@ -4154,6 +4254,36 @@ sample:
         assert!(top_graph.iter().any(|error| error
             .message
             .contains("tasks cannot be declared together with a graph")));
+    }
+
+    #[test]
+    fn rejects_task_conflicts_with_inferred_numbered_io() {
+        let proc_errors =
+            validate("proc P:\n  task out1():\n    yield\n  sample:\n    out1 = 0.0\n");
+        assert!(proc_errors
+            .iter()
+            .any(|error| error.message.contains("conflicts with output 'out1'")));
+
+        let top_errors = validate("task out1():\n  yield\nsample:\n  out1 = 0.0\n");
+        assert!(top_errors
+            .iter()
+            .any(|error| error.message.contains("conflicts with output 'out1'")));
+    }
+
+    #[test]
+    fn top_level_tasks_open_the_sample_gate_without_an_explicit_block() {
+        let source = "task unused():\n  yield\nsample:\n  out1 = 1.0\n";
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("top-level task without a block should analyze");
+
+        assert!(typed.block_pre.iter().any(|stmt| matches!(
+            stmt,
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr: Expr::Bool { value: true, .. },
+                ..
+            } if name == TASK_AVAILABLE_FIELD
+        )));
     }
 
     #[test]

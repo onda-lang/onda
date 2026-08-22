@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::*;
-use onda_frontend::EventParamDecl;
+use onda_frontend::{EventParamDecl, LogicalOp};
 
 mod generated_blocks;
 mod generic_proc_rewrite;

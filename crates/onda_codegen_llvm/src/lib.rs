@@ -4,6 +4,7 @@ use std::alloc::Layout;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
@@ -162,13 +163,28 @@ pub struct RuntimeState {
     pub(crate) state_size_bytes: usize,
 }
 
+/// Allocated physical state storage that has not completed full processor initialization.
+pub struct UninitializedRuntimeState {
+    state_words: Option<UninitRuntimeBuffer<u64>>,
+    state_size_bytes: usize,
+}
+
 pub struct RuntimeBuffer<T: Copy> {
     storage: RuntimeBufferStorage<T>,
+}
+
+pub(crate) struct UninitRuntimeBuffer<T: Copy> {
+    storage: UninitRuntimeBufferStorage<T>,
 }
 
 enum RuntimeBufferStorage<T: Copy> {
     Global(Vec<T>),
     Custom(CustomRuntimeBuffer<T>),
+}
+
+enum UninitRuntimeBufferStorage<T: Copy> {
+    Global(Vec<MaybeUninit<T>>),
+    Custom(CustomRuntimeBuffer<MaybeUninit<T>>),
 }
 
 struct CustomRuntimeBuffer<T: Copy> {
@@ -242,6 +258,84 @@ impl<T: Copy> RuntimeBuffer<T> {
     }
 }
 
+impl<T: Copy> UninitRuntimeBuffer<T> {
+    pub(crate) fn try_new_in(
+        len: usize,
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<Self, Diagnostic> {
+        let storage = if let Some(allocator) = allocator {
+            UninitRuntimeBufferStorage::Custom(CustomRuntimeBuffer::try_uninit(len, allocator)?)
+        } else {
+            let mut values = Vec::with_capacity(len);
+            // SAFETY: MaybeUninit<T> is valid without initializing its contained T.
+            unsafe { values.set_len(len) };
+            UninitRuntimeBufferStorage::Global(values)
+        };
+        Ok(Self { storage })
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut T {
+        if self.len() == 0 {
+            return ptr::null_mut();
+        }
+        match &mut self.storage {
+            UninitRuntimeBufferStorage::Global(values) => values.as_mut_ptr().cast::<T>(),
+            UninitRuntimeBufferStorage::Custom(values) => values.ptr.as_ptr().cast::<T>(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match &self.storage {
+            UninitRuntimeBufferStorage::Global(values) => values.len(),
+            UninitRuntimeBufferStorage::Custom(values) => values.len,
+        }
+    }
+
+    /// Converts the buffer after every element has been initialized.
+    ///
+    /// # Safety
+    ///
+    /// Every element in the buffer must contain a valid `T`.
+    pub(crate) unsafe fn assume_init(self) -> RuntimeBuffer<T> {
+        let storage = match self.storage {
+            UninitRuntimeBufferStorage::Global(values) => {
+                let mut values = ManuallyDrop::new(values);
+                // SAFETY: the caller guarantees all elements are initialized, and
+                // MaybeUninit<T> has the same layout as T.
+                let values = unsafe {
+                    Vec::from_raw_parts(
+                        values.as_mut_ptr().cast::<T>(),
+                        values.len(),
+                        values.capacity(),
+                    )
+                };
+                RuntimeBufferStorage::Global(values)
+            }
+            UninitRuntimeBufferStorage::Custom(values) => {
+                let values = ManuallyDrop::new(values);
+                RuntimeBufferStorage::Custom(CustomRuntimeBuffer {
+                    ptr: values.ptr.cast::<T>(),
+                    len: values.len,
+                    allocator: values.allocator,
+                })
+            }
+        };
+        RuntimeBuffer { storage }
+    }
+}
+
+impl fmt::Debug for UninitializedRuntimeState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UninitializedRuntimeState")
+            .field(
+                "state_words",
+                &self.state_words.as_ref().map(UninitRuntimeBuffer::len),
+            )
+            .field("state_size_bytes", &self.state_size_bytes)
+            .finish()
+    }
+}
+
 impl<T: Copy> Default for RuntimeBuffer<T> {
     fn default() -> Self {
         Self::from_vec(Vec::new())
@@ -269,6 +363,19 @@ impl<T: Copy + fmt::Debug> fmt::Debug for RuntimeBuffer<T> {
 }
 
 impl<T: Copy> CustomRuntimeBuffer<T> {
+    fn try_uninit(
+        len: usize,
+        allocator: RuntimeAllocator,
+    ) -> Result<CustomRuntimeBuffer<MaybeUninit<T>>, Diagnostic> {
+        let layout = runtime_array_layout::<MaybeUninit<T>>(len)?;
+        let ptr = allocate_custom_runtime_buffer::<MaybeUninit<T>>(allocator, layout)?;
+        Ok(CustomRuntimeBuffer {
+            ptr,
+            len,
+            allocator,
+        })
+    }
+
     fn try_from_elem(
         len: usize,
         value: T,

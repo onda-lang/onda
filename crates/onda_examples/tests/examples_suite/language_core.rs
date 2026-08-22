@@ -94,7 +94,7 @@ fn init_restores_resettable_runtime_state() {
         assert_near(*sample, 0.5, 1e-6);
     }
 
-    init(&mut instance).expect("init should succeed");
+    init(&mut instance, InitMode::PreservePinned).expect("init should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -3711,7 +3711,7 @@ sample {
     )
     .expect("jit lowering");
 
-    let mut instance = create_instance(
+    let mut instance = create_instance_initialized(
         jit,
         InstanceConfig {
             sample_rate: 48_000.0,

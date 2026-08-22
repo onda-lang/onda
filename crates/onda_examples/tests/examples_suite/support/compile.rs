@@ -29,7 +29,7 @@ fn compile_instance_with_options(
     let out_channels = typed.outs.len();
     let jit = lower_typed_and_jit(typed, options).expect("jit lowering should succeed");
 
-    let instance = create_instance(
+    let instance = create_instance_initialized(
         jit,
         InstanceConfig {
             sample_rate: options.sample_rate,

@@ -13,7 +13,17 @@ globalThis.AudioWorkletProcessor = class {
   }
 };
 globalThis.registerProcessor = (_name, constructor) => {
-  Processor = constructor;
+  Processor = class InitializedTestProcessor extends constructor {
+    constructor(options = {}) {
+      super({
+        ...options,
+        processorOptions: {
+          initialize: true,
+          ...options.processorOptions,
+        },
+      });
+    }
+  };
 };
 
 await import("../src/worklet.js");
@@ -73,6 +83,24 @@ function metadata() {
     },
   };
 }
+
+test("worklet remains silent until explicit full initialization", () => {
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: metadata(),
+      initialize: false,
+    },
+  });
+  const output = new Float32Array([1, 1, 1]);
+
+  assert.equal(processor.process([], [[output]]), true);
+  assert.deepEqual([...output], [0, 0, 0]);
+  assert.throws(() => processor.init(0), /full initialization is required/);
+  processor.init(1);
+  assert.equal(processor.initialized, true);
+  assert.equal(processor.process, processor.processInitialized);
+});
 
 test("worklet uses null pointers only for absent processor surfaces", () => {
   const descriptor = metadata();

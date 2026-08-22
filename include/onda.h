@@ -28,6 +28,11 @@ enum {
   ONDA_PARAM_SCALE_LOG = 1
 };
 
+typedef enum onda_init_mode {
+  ONDA_INIT_PRESERVE_PINNED = 0,
+  ONDA_INIT_FULL = 1
+} onda_init_mode_t;
+
 /* Largest integer magnitude represented exactly by the f64 host-control API. */
 #define ONDA_MAX_EXACT_HOST_CONTROL_INTEGER INT64_C(9007199254740991)
 
@@ -121,7 +126,7 @@ typedef void* (*onda_alloc_fn)(void* context, size_t size, size_t align);
 typedef void (*onda_free_fn)(void* context, void* ptr, size_t size, size_t align);
 
 /* Host allocator used by custom instance creation.
-   Onda calls alloc only synchronously during onda_instance_create_with_allocator; no operation on
+   Onda calls alloc only synchronously during an allocator-backed create function; no operation on
    a successfully created instance calls alloc. free may be called during failed creation or later
    instance destruction. The context and callbacks must remain valid until every instance created
    with this allocator has been destroyed. alloc must be callable on each thread where the host
@@ -444,15 +449,23 @@ void onda_project_image_destroy(onda_project_image_t* image);
    Destruction is not realtime-safe. */
 void onda_program_destroy(onda_program_t* program);
 
-/* Creates a runtime instance for a compiled program, or NULL on failure.
-   Creation writes parameter defaults and runs a full init in its single
-   physical-state allocation.
+/* Creates an uninitialized runtime instance for a compiled program, or NULL on failure.
+   Creation allocates physical state and writes parameter defaults without executing Onda code.
+   The host may set parameters and bindings before calling onda_init with ONDA_INIT_FULL.
    Uses compile-time sample_rate and block_size captured in the program handle.
    Programs compiled from filesystem .ondaproject inputs or project images
    automatically bind their immutable project buffer defaults. The instance
    retains the compiled program and its defaults, so the original program and
    project-image handles may be destroyed afterward. */
 onda_instance_t* onda_instance_create(
+  const onda_program_t* program,
+  int in_channels,
+  int out_channels,
+  onda_diag_t* out_diag
+);
+/* Creates a ready-to-process runtime instance by performing onda_instance_create followed by
+   ONDA_INIT_FULL after immutable project defaults have been bound. */
+onda_instance_t* onda_instance_create_initialized(
   const onda_program_t* program,
   int in_channels,
   int out_channels,
@@ -470,7 +483,15 @@ onda_instance_t* onda_instance_create_with_allocator(
   const onda_allocator_t* allocator,
   onda_diag_t* out_diag
 );
-/* Destroys an instance handle created by onda_instance_create or onda_instance_create_with_allocator.
+/* Allocator-backed equivalent of onda_instance_create_initialized. */
+onda_instance_t* onda_instance_create_initialized_with_allocator(
+  const onda_program_t* program,
+  int in_channels,
+  int out_channels,
+  const onda_allocator_t* allocator,
+  onda_diag_t* out_diag
+);
+/* Destroys an instance handle created by any onda_instance_create variant.
    An instance has one exclusive owner at a time. It may be transferred between threads, but no
    instance operation may overlap another operation on the same handle. Destruction is not
    realtime-safe. */
@@ -496,9 +517,9 @@ int onda_trigger_event_by_index(
   const void* payload_ptr,
   int payload_bytes
 );
-/* Triggers one event without payload/binding validation; unsafe if payload/buffer metadata is
-   invalid. Returns 0 on success, a positive generated-runtime failure code, or a negative API
-   error. */
+/* Triggers one event without payload/binding validation. The instance must have completed full
+   initialization, and payload/buffer metadata must satisfy the ABI contract. Returns 0 on success,
+   a positive generated-runtime failure code, or a negative API error. */
 int onda_trigger_event_by_index_unchecked(
   onda_instance_t* instance,
   int index,
@@ -590,17 +611,13 @@ int onda_process_checked_segment(
   int frames,
   int flags
 );
-/* Runs the Onda init block in place while preserving retained state and task
-   continuations. The successful path performs no allocation; its execution cost
-   depends on the authored initializer. On failure, instance state is indeterminate.
-   Returns 0 on success, -1 for an invalid handle, or -2 when init execution fails. */
-int onda_init(onda_instance_t* instance);
-/* Runs the Onda init block in full mode, including declaration initializers for
-   pinned state and task continuations. The successful path performs no allocation;
-   its execution cost depends on the authored initializer. On failure, instance
-   state is indeterminate. Returns 0 on success, -1 for an invalid handle, or -2
+/* Runs the Onda initializer in place. ONDA_INIT_FULL initializes the complete physical state and
+   is required before processing a newly created instance. ONDA_INIT_PRESERVE_PINNED reruns ordinary
+   authored initializers while preserving pinned state and task continuations, and is only valid
+   after successful full initialization. The successful path performs no allocation. On failure,
+   instance state is indeterminate. Returns 0 on success, -1 for an invalid handle or mode, or -2
    when init execution fails. */
-int onda_init_all(onda_instance_t* instance);
+int onda_init(onda_instance_t* instance, onda_init_mode_t mode);
 /* Returns the byte size of the instance state snapshot, or -1 on invalid instance handle. */
 int onda_instance_state_bytes(const onda_instance_t* instance);
 /*
@@ -638,13 +655,15 @@ int onda_validate_inputs(onda_instance_t* instance);
 int onda_validate_outputs(onda_instance_t* instance);
 /* Prepares buffer descriptors, including neutral unbound slots; returns 0 on success. */
 int onda_validate_buffers(onda_instance_t* instance);
-/* Validates all bindings before unchecked processing. */
+/* Validates full initialization and all bindings before unchecked processing. */
 int onda_prepare_unchecked_process(onda_instance_t* instance);
-/* Processes a full logical block without revalidation (unsafe if bindings are stale);
+/* Processes a full logical block without revalidation. Calling before successful
+   onda_prepare_unchecked_process, or after mutating a prepared binding, violates the API contract;
    returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
 int onda_process_unchecked(onda_instance_t* instance);
-/* Processes one logical-block segment without revalidation. Use the same full-block
-   binding, start_frame, frames, and flags contract as onda_process_checked_segment.
+/* Processes one logical-block segment without revalidation. Successful full initialization and
+   onda_prepare_unchecked_process are required. Use the same full-block binding, start_frame,
+   frames, and flags contract as onda_process_checked_segment.
    Returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
 int onda_process_unchecked_segment(
   onda_instance_t* instance,

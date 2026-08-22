@@ -33,7 +33,7 @@ signed 32-bit values. Public LLVM entry points use the target's C calling conven
 WebAssembly modules use ordinary core-Wasm function calls.
 
 ```text
-onda_processor_init(params: Ptr, state: Ptr, all: i32) -> i32
+onda_processor_init(params: Ptr, state: Ptr, mode: InitMode) -> i32
 
 onda_process(
   state: Ptr,
@@ -64,16 +64,15 @@ There is one `onda_event_N` for each declared event, in metadata order. The curr
 public processor namespace per artifact. A future ABI may add artifact-specific namespacing for
 multi-processor libraries without changing MIR.
 
-For `onda_processor_init`, both modes execute directly against the supplied physical state image.
-A nonzero `all` runs declaration initializers for pinned state and task continuations as well as
-ordinary state; zero skips those guarded declarations and therefore preserves pinned state unless
-init explicitly changes it. Neither mode blanket-clears the physical image. Raw ABI initialization
-is not transactional: a host that needs rollback must provide that policy itself.
+`InitMode` has two portable values: `PRESERVE_PINNED = 0` and `FULL = 1`. Full initialization clears
+the physical state before running every declaration initializer, including pinned state and task
+continuations. Preserve-pinned initialization skips those guarded declarations and leaves their
+existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
+not transactional: a host that needs rollback must provide that policy itself.
 
-Processor ABI version 5 renamed this raw entry point from `onda_init` and added the `all` argument.
-The instance-level C API exposes the same two in-place initialization modes through
-`onda_init(instance)` and `onda_init_all(instance)`. A failed initialization leaves the physical
-state indeterminate.
+Processor ABI version 6 replaces the boolean-like `all` contract with this named mode enum. The
+instance-level C and WebAssembly host APIs use the same values. A failed initialization leaves the
+physical state indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is
 `RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
@@ -149,7 +148,7 @@ contract as an LLVM object and does not make Web Audio part of the ABI.
 
 The host allocates non-overlapping parameter and physical-state regions using the sizes and minimum
 alignments in `runtime`. It initializes parameter defaults from program metadata and calls
-`onda_processor_init(params, state, 1)` before processing. Physical state uses the backend's selected
+`onda_processor_init(params, state, FULL)` before processing. Physical state uses the backend's selected
 target layout and is otherwise opaque.
 
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
@@ -166,7 +165,7 @@ persistent scalar elements in little-endian byte order, in metadata order, witho
 or scratch state. It includes pinned authored roots and compiler-owned task frames. This is
 distinct from the target-native physical state image, which can use another byte order or alignment.
 
-Restore begins with `onda_processor_init(params, state, 1)`, then overlays every persistent entry
+Restore begins with `onda_processor_init(params, state, FULL)`, then overlays every persistent entry
 from the packed snapshot. This resets instance scratch while preserving persistent state and task
 continuations.
 A host converting between a big-endian physical target and the portable snapshot must encode

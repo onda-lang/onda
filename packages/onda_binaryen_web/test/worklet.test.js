@@ -186,7 +186,17 @@ globalThis.AudioWorkletProcessor = class {
 };
 globalThis.registerProcessor = (name, processor) => {
   registeredProcessorName = name;
-  WorkletProcessor = processor;
+  WorkletProcessor = class InitializedTestProcessor extends processor {
+    constructor(options = {}) {
+      super({
+        ...options,
+        processorOptions: {
+          initialize: true,
+          ...options.processorOptions,
+        },
+      });
+    }
+  };
 };
 
 const workletFixture = await mkdtemp(join(tmpdir(), "onda-worklet-test-"));
@@ -527,6 +537,7 @@ test("AudioWorklet supports default and full in-place initialization", () => {
       wasmBytes: artifact.wasm,
       metadata: artifact.metadata,
       params: { initial: 2.5 },
+      initialize: true,
     },
   });
   const [initialized, pinned, untouched] = artifact.metadata.metadata.states;
@@ -547,7 +558,7 @@ test("AudioWorklet supports default and full in-place initialization", () => {
   view.setFloat64(untouchedAddress, 300, true);
   processor.setParam("initial", 7.25);
   processor.blockCursor = 3;
-  processor.port.onmessage({ data: { type: "init" } });
+  processor.port.onmessage({ data: { type: "init", mode: 0 } });
   assert.equal(view.getFloat64(initializedAddress, true), 7.25);
   assert.equal(view.getFloat64(pinnedAddress, true), 200);
   assert.equal(processor.blockCursor, 0);
@@ -555,7 +566,7 @@ test("AudioWorklet supports default and full in-place initialization", () => {
 
   view.setFloat64(initializedAddress, 100, true);
   view.setFloat64(pinnedAddress, 300, true);
-  processor.port.onmessage({ data: { type: "init-all" } });
+  processor.port.onmessage({ data: { type: "init", mode: 1 } });
   assert.equal(view.getFloat64(initializedAddress, true), 7.25);
   assert.equal(view.getFloat64(pinnedAddress, true), 5);
 });

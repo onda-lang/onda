@@ -29,13 +29,12 @@ use onda_project::{
 };
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
-    init as runtime_init, init_all as runtime_init_all, prepare_unchecked_process, process_checked,
-    process_checked_segment, process_unchecked, process_unchecked_segment,
-    read_control_output_bytes, set_param_by_index,
+    init as runtime_init, prepare_unchecked_process, process_checked, process_checked_segment,
+    process_unchecked, process_unchecked_segment, read_control_output_bytes, set_param_by_index,
     set_param_normalized as runtime_set_param_normalized,
     set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
     trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
-    validate_outputs, Instance, InstanceConfig,
+    validate_outputs, InitMode, Instance, InstanceConfig,
 };
 use onda_semantics::{
     analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedBufferChannels,
@@ -2741,7 +2740,17 @@ pub unsafe extern "C" fn onda_instance_create(
     out_channels: i32,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
-    onda_instance_create_impl(program, in_channels, out_channels, None, out_diag)
+    onda_instance_create_impl(program, in_channels, out_channels, None, false, out_diag)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_instance_create_initialized(
+    program: *const onda_program,
+    in_channels: i32,
+    out_channels: i32,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_instance {
+    onda_instance_create_impl(program, in_channels, out_channels, None, true, out_diag)
 }
 
 #[no_mangle]
@@ -2764,6 +2773,32 @@ pub unsafe extern "C" fn onda_instance_create_with_allocator(
         in_channels,
         out_channels,
         Some(allocator),
+        false,
+        out_diag,
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_instance_create_initialized_with_allocator(
+    program: *const onda_program,
+    in_channels: i32,
+    out_channels: i32,
+    allocator: *const onda_allocator_t,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_instance {
+    let allocator = match runtime_allocator_from_c(allocator) {
+        Ok(allocator) => allocator,
+        Err(diag) => {
+            write_diag(out_diag, diag);
+            return ptr::null_mut();
+        }
+    };
+    onda_instance_create_impl(
+        program,
+        in_channels,
+        out_channels,
+        Some(allocator),
+        true,
         out_diag,
     )
 }
@@ -2773,6 +2808,7 @@ unsafe fn onda_instance_create_impl(
     in_channels: i32,
     out_channels: i32,
     allocator: Option<RuntimeAllocator>,
+    initialize: bool,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
     if program.is_null() {
@@ -2808,6 +2844,13 @@ unsafe fn onda_instance_create_impl(
 
     if let Some(defaults) = &compiled.project_defaults {
         if let Err(error) = bind_project_defaults(&mut instance, defaults) {
+            write_diag(out_diag, diag_to_c(&error));
+            return ptr::null_mut();
+        }
+    }
+
+    if initialize {
+        if let Err(error) = runtime_init(&mut instance, InitMode::Full) {
             write_diag(out_diag, diag_to_c(&error));
             return ptr::null_mut();
         }
@@ -3089,19 +3132,16 @@ pub unsafe extern "C" fn onda_process_checked_segment(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_init(instance: *mut onda_instance) -> i32 {
+pub unsafe extern "C" fn onda_init(instance: *mut onda_instance, mode: i32) -> i32 {
     if instance.is_null() {
         return -1;
     }
-    runtime_init(&mut (*instance).inner).map_or(-2, |()| 0)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_init_all(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    runtime_init_all(&mut (*instance).inner).map_or(-2, |()| 0)
+    let mode = match mode {
+        0 => InitMode::PreservePinned,
+        1 => InitMode::Full,
+        _ => return -1,
+    };
+    runtime_init(&mut (*instance).inner, mode).map_or(-2, |()| 0)
 }
 
 #[no_mangle]

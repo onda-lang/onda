@@ -13,6 +13,8 @@ export {
 } from "@onda-lang/processor-abi";
 
 export const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
+export const ONDA_INIT_PRESERVE_PINNED = 0;
+export const ONDA_INIT_FULL = 1;
 
 const registrationByContext = new WeakMap();
 
@@ -80,6 +82,7 @@ function audioWorkletNodeOptionsFromValidated(
       ),
       buffers: options.buffers ?? {},
       eventPayloadCapacityBytes: options.eventPayloadCapacityBytes,
+      initialize: options.initialize === true,
     },
   };
   if (outputChannels) {
@@ -155,6 +158,18 @@ export async function registerOndaAudioWorklet(
 }
 
 export async function createOndaAudioProcessor(context, artifact, options = {}) {
+  return createOndaAudioProcessorImpl(context, artifact, options, false);
+}
+
+export async function createOndaAudioProcessorInitialized(
+  context,
+  artifact,
+  options = {},
+) {
+  return createOndaAudioProcessorImpl(context, artifact, options, true);
+}
+
+async function createOndaAudioProcessorImpl(context, artifact, options, initialize) {
   const validated = validateExecutableArtifact(artifact, false);
   validateContextSampleRate(context, validated.metadata);
   if (options.compiledModule !== undefined) {
@@ -175,7 +190,7 @@ export async function createOndaAudioProcessor(context, artifact, options = {}) 
     ONDA_AUDIO_WORKLET_PROCESSOR_NAME,
     audioWorkletNodeOptionsFromValidated(
       validated,
-      { ...options, compiledModule },
+      { ...options, compiledModule, initialize },
       false,
     ),
   );
@@ -271,12 +286,11 @@ export class OndaAudioProcessor {
     return this.request("event", { event, values });
   }
 
-  init() {
-    return this.request("init");
-  }
-
-  initAll() {
-    return this.request("init-all");
+  init(mode) {
+    if (mode !== ONDA_INIT_PRESERVE_PINNED && mode !== ONDA_INIT_FULL) {
+      return Promise.reject(new Error(`invalid Onda init mode '${String(mode)}'`));
+    }
+    return this.request("init", { mode });
   }
 
   async snapshot() {

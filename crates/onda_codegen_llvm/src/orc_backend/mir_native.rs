@@ -37,7 +37,9 @@ use onda_mir::{
     StatementKind, Type,
 };
 
-use crate::{RuntimeAllocator, RuntimeBuffer, RuntimeState, TargetOptLevel};
+use crate::{
+    RuntimeAllocator, RuntimeState, TargetOptLevel, UninitRuntimeBuffer, UninitializedRuntimeState,
+};
 
 use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_buffer_abi};
 
@@ -6132,14 +6134,79 @@ impl MirJitProgram {
         params: &[u8],
         allocator: Option<RuntimeAllocator>,
     ) -> Result<RuntimeState, Diagnostic> {
+        let mut state = self.allocate_state_with_allocator(allocator)?;
+        self.initialize_allocated_state(params, &mut state)
+    }
+
+    pub fn allocate_state_with_allocator(
+        &self,
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<UninitializedRuntimeState, Diagnostic> {
         let words = self.layouts.state.size.saturating_add(7) / 8;
-        let state_words = RuntimeBuffer::try_from_elem_in(words, 0_u64, allocator)?;
-        let mut state = RuntimeState {
+        let mut state_words = UninitRuntimeBuffer::<u64>::try_new_in(words, allocator)?;
+        if !self.layouts.state.size.is_multiple_of(8) {
+            // The generated initializer clears exactly the declared state bytes.
+            // Initialize the final word first so its trailing allocation padding
+            // is valid before the buffer is exposed as u64 storage.
+            unsafe { state_words.as_mut_ptr().add(words - 1).write(0) };
+        }
+        Ok(UninitializedRuntimeState {
+            state_words: Some(state_words),
+            state_size_bytes: self.layouts.state.size,
+        })
+    }
+
+    pub fn initialize_allocated_state(
+        &self,
+        params: &[u8],
+        state: &mut UninitializedRuntimeState,
+    ) -> Result<RuntimeState, Diagnostic> {
+        if params.len() != self.layouts.params.size {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "MIR runtime parameter storage has {} bytes; expected {}",
+                    params.len(),
+                    self.layouts.params.size
+                ),
+                0,
+                0,
+            ));
+        }
+        if state.state_size_bytes != self.layouts.state.size {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "MIR runtime state storage has {} bytes; expected {}",
+                    state.state_size_bytes, self.layouts.state.size
+                ),
+                0,
+                0,
+            ));
+        }
+        let state_words = state
+            .state_words
+            .as_mut()
+            .ok_or_else(|| Diagnostic::internal("state storage was already initialized"))?;
+        let status = unsafe {
+            (self.compiled.init)(
+                abi_const_ptr(params),
+                state_words.as_mut_ptr().cast::<u8>(),
+                1,
+            )
+        };
+        crate::check_execution_status(status)?;
+        // SAFETY: full initialization clears all declared state bytes, and the
+        // only possible trailing bytes were initialized above.
+        let state_words = unsafe {
+            state
+                .state_words
+                .take()
+                .expect("validated pending state storage")
+                .assume_init()
+        };
+        Ok(RuntimeState {
             state_words,
             state_size_bytes: self.layouts.state.size,
-        };
-        self.initialize_state_in_place(params, &mut state, true)?;
-        Ok(state)
+        })
     }
 
     pub fn initialize_state_in_place(

@@ -35,7 +35,7 @@ proc ConvolutionRoom:
     channel = 0
     transform_credit = 0
     blocks_done = 0
-    
+
     while blocks_done < loading_blocks:
       transform_credit = transform_credit + total_transforms
       while transform_credit >= loading_blocks && start < frames:

@@ -1,5 +1,6 @@
 use onda_codegen_llvm::{
     DeclaredBufferChannels, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState,
+    UninitializedRuntimeState,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_realtime::configure_current_thread_audio_fp_mode;
@@ -23,7 +24,7 @@ pub struct Instance {
     pub(crate) program: JitProgram,
     pub(crate) config: InstanceConfig,
     pub(crate) params: RuntimeBuffer<u8>,
-    pub(crate) state: RuntimeState,
+    state: InstanceState,
     pub(crate) input_bindings: RuntimeBuffer<Option<BoundInput>>,
     pub(crate) output_bindings: RuntimeBuffer<Option<BoundOutput>>,
     pub(crate) buffer_bindings: RuntimeBuffer<Option<BoundBuffer>>,
@@ -36,6 +37,28 @@ pub struct Instance {
     pub(crate) inputs_validated: bool,
     pub(crate) outputs_validated: bool,
     pub(crate) buffers_validated: bool,
+}
+
+#[derive(Debug)]
+enum InstanceState {
+    Pending(UninitializedRuntimeState),
+    Initialized(RuntimeState),
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum InitMode {
+    /// Rerun ordinary initializers while retaining pinned roots and task continuations.
+    PreservePinned,
+    /// Initialize the complete state image, including pinned roots and task continuations.
+    Full,
+}
+
+fn uninitialized_instance_error() -> Diagnostic {
+    Diagnostic::runtime(
+        "instance requires full initialization before this operation",
+        0,
+        0,
+    )
 }
 
 // SAFETY: Instance is an exclusive mutable runtime owner. Its raw pointers are non-owning host
@@ -234,26 +257,50 @@ impl Instance {
         self.program.state_size_bytes()
     }
 
-    pub fn snapshot_state_bytes(&self) -> Vec<u8> {
+    pub fn is_initialized(&self) -> bool {
+        matches!(self.state, InstanceState::Initialized(_))
+    }
+
+    fn initialized_state(&self) -> Result<&RuntimeState, Diagnostic> {
+        match &self.state {
+            InstanceState::Initialized(state) => Ok(state),
+            InstanceState::Pending(_) => Err(uninitialized_instance_error()),
+        }
+    }
+
+    pub fn snapshot_state_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
+        let state = self.initialized_state()?;
         let mut snapshot = vec![0_u8; self.program.state_size_bytes()];
-        self.program
-            .write_state_snapshot(&self.state, &mut snapshot)
-            .expect("instance snapshot buffer matches compiled snapshot layout");
-        snapshot
+        self.program.write_state_snapshot(state, &mut snapshot)?;
+        Ok(snapshot)
     }
 
     pub fn write_snapshot_state_bytes(&self, destination: &mut [u8]) -> Result<(), Diagnostic> {
-        self.program.write_state_snapshot(&self.state, destination)
+        self.program
+            .write_state_snapshot(self.initialized_state()?, destination)
     }
 
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         configure_current_thread_audio_fp_mode();
-        self.program
-            .restore_state_snapshot(&self.params, &mut self.state, bytes)?;
-        Ok(())
+        self.program.validate_state_snapshot(bytes)?;
+        let was_pending = !self.is_initialized();
+        if was_pending {
+            init(self, InitMode::Full)?;
+        }
+        let InstanceState::Initialized(state) = &mut self.state else {
+            unreachable!("full initialization succeeded without initializing state")
+        };
+        if was_pending {
+            self.program.overlay_state_snapshot(state, bytes)
+        } else {
+            self.program
+                .restore_state_snapshot(&self.params, state, bytes)
+        }
     }
 }
 
+/// Allocates an instance and writes its parameter defaults without running Onda initialization.
+/// Call [`init`] with [`InitMode::Full`] before using any stateful operation.
 pub fn create_instance(
     program: JitProgram,
     config: InstanceConfig,
@@ -261,12 +308,34 @@ pub fn create_instance(
     create_instance_inner(program, config, None)
 }
 
+/// Allocator-backed equivalent of [`create_instance`].
 pub fn create_instance_with_allocator(
     program: JitProgram,
     config: InstanceConfig,
     allocator: RuntimeAllocator,
 ) -> Result<Instance, Diagnostic> {
     create_instance_inner(program, config, Some(allocator))
+}
+
+/// Creates an instance and performs [`InitMode::Full`] initialization.
+pub fn create_instance_initialized(
+    program: JitProgram,
+    config: InstanceConfig,
+) -> Result<Instance, Diagnostic> {
+    let mut instance = create_instance(program, config)?;
+    init(&mut instance, InitMode::Full)?;
+    Ok(instance)
+}
+
+/// Allocator-backed equivalent of [`create_instance_initialized`].
+pub fn create_instance_initialized_with_allocator(
+    program: JitProgram,
+    config: InstanceConfig,
+    allocator: RuntimeAllocator,
+) -> Result<Instance, Diagnostic> {
+    let mut instance = create_instance_with_allocator(program, config, allocator)?;
+    init(&mut instance, InitMode::Full)?;
+    Ok(instance)
 }
 
 fn create_instance_inner(
@@ -345,8 +414,7 @@ fn create_instance_inner(
 
     let mut params = RuntimeBuffer::try_from_elem_in(program.param_byte_size(), 0_u8, allocator)?;
     program.write_default_param_bytes(&mut params)?;
-    configure_current_thread_audio_fp_mode();
-    let state = program.initialize_state_with_allocator(&params, allocator)?;
+    let state = InstanceState::Pending(program.allocate_state_with_allocator(allocator)?);
 
     let input_count = program.input_count();
     let output_count = program.output_count();
@@ -394,23 +462,27 @@ fn create_instance_inner(
     })
 }
 
-/// Runs the program init block in place while preserving pinned state and
-/// compiler-owned task continuations.
-pub fn init(instance: &mut Instance) -> Result<(), Diagnostic> {
-    initialize_instance(instance, false)
-}
-
-/// Runs the program init block in full mode, including declaration initializers
-/// for pinned values and compiler-owned task continuations.
-pub fn init_all(instance: &mut Instance) -> Result<(), Diagnostic> {
-    initialize_instance(instance, true)
-}
-
-fn initialize_instance(instance: &mut Instance, all: bool) -> Result<(), Diagnostic> {
+/// Runs the program initializer using the requested state-retention mode.
+/// Full initialization is required before any stateful instance operation.
+pub fn init(instance: &mut Instance, mode: InitMode) -> Result<(), Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    instance
-        .program
-        .initialize_state_in_place(&instance.params, &mut instance.state, all)
+    match (&mut instance.state, mode) {
+        (InstanceState::Pending(state), InitMode::Full) => {
+            let initialized = instance
+                .program
+                .initialize_allocated_state(&instance.params, state)?;
+            instance.state = InstanceState::Initialized(initialized);
+            Ok(())
+        }
+        (InstanceState::Pending(_), InitMode::PreservePinned) => {
+            Err(uninitialized_instance_error())
+        }
+        (InstanceState::Initialized(state), mode) => instance.program.initialize_state_in_place(
+            &instance.params,
+            state,
+            matches!(mode, InitMode::Full),
+        ),
+    }
 }
 
 pub fn set_param_by_index(
@@ -582,7 +654,7 @@ pub fn read_control_output_bytes(
         ));
     };
     let end = start.saturating_add(expected_bytes);
-    let state = instance.state.bytes();
+    let state = instance.initialized_state()?.bytes();
     if end > state.len() {
         return Err(Diagnostic::runtime(
             format!(
@@ -901,9 +973,13 @@ pub fn process_checked_segment(
     configure_current_thread_audio_fp_mode();
     validate_process_request(instance, start_frame, frames, flags)?;
     validate_bindings_for_process(instance)?;
+    let state = match &mut instance.state {
+        InstanceState::Initialized(state) => state,
+        InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
+    };
     let status = unsafe {
         instance.program.process_unchecked(
-            &mut instance.state,
+            state,
             &instance.params,
             u32::try_from(start_frame)
                 .map_err(|_| Diagnostic::runtime("process start frame does not fit u32", 0, 0))?,
@@ -926,6 +1002,7 @@ pub fn process_checked_segment(
 /// This is not a stale-binding snapshot operation. Call it again after rebinding before entering
 /// an unchecked processing loop; MIR backends consume the current validated buffer table directly.
 pub fn prepare_unchecked_process(instance: &mut Instance) -> Result<(), Diagnostic> {
+    instance.initialized_state()?;
     validate_bindings_for_process(instance)
 }
 
@@ -936,7 +1013,9 @@ pub fn prepare_unchecked_process(instance: &mut Instance) -> Result<(), Diagnost
 /// The instance's input, output, and buffer bindings must have been successfully prepared with
 /// [`prepare_unchecked_process`] (or the equivalent validation functions) after their most recent
 /// mutation. Every bound region must remain valid, correctly sized, and appropriately aligned for
-/// the duration of this call, without aliases that violate Rust's memory rules.
+/// the duration of this call, without aliases that violate Rust's memory rules. Preparation must
+/// occur after successful full initialization; violating that lifecycle contract is undefined
+/// behavior in release builds.
 pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<u32, Diagnostic> {
     unsafe {
         process_unchecked_segment(
@@ -955,7 +1034,9 @@ pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<u32, Diagnost
 /// The instance's input, output, and buffer bindings must have been successfully prepared with
 /// [`prepare_unchecked_process`] (or the equivalent validation functions) after their most recent
 /// mutation. Every bound region must remain valid, correctly sized, and appropriately aligned for
-/// the duration of this call, without aliases that violate Rust's memory rules.
+/// the duration of this call, without aliases that violate Rust's memory rules. Preparation must
+/// occur after successful full initialization; violating that lifecycle contract is undefined
+/// behavior in release builds.
 pub unsafe fn process_unchecked_segment(
     instance: &mut Instance,
     start_frame: usize,
@@ -964,6 +1045,10 @@ pub unsafe fn process_unchecked_segment(
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     validate_process_request(instance, start_frame, frames, flags)?;
+    debug_assert!(
+        instance.is_initialized(),
+        "process_unchecked called before full initialization; this is UB in release builds"
+    );
     debug_assert!(
         instance.inputs_validated && instance.outputs_validated && instance.buffers_validated,
         "process_unchecked called without validating required input/output/buffer bindings; this is UB in release builds"
@@ -982,9 +1067,13 @@ pub unsafe fn process_unchecked_segment(
             0,
         )
     })?;
+    let state = match &mut instance.state {
+        InstanceState::Initialized(state) => state,
+        InstanceState::Pending(_) => unsafe { std::hint::unreachable_unchecked() },
+    };
     unsafe {
         instance.program.process_unchecked(
-            &mut instance.state,
+            state,
             &instance.params,
             start_frame,
             frames,
@@ -1052,9 +1141,13 @@ pub fn trigger_event_by_index(
     if !instance.buffers_validated {
         validate_buffers(instance)?;
     }
+    let state = match &mut instance.state {
+        InstanceState::Initialized(state) => state,
+        InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
+    };
     unsafe {
         instance.program.trigger_event_by_index(
-            &mut instance.state,
+            state,
             &instance.params,
             event_index,
             payload,
@@ -1072,7 +1165,9 @@ pub fn trigger_event_by_index(
 ///
 /// Buffer bindings must have been validated after their most recent mutation and must remain valid
 /// for the call. `payload` must exactly match the declared fixed or dynamic layout for
-/// `event_index`, including all slice length prefixes and element data.
+/// `event_index`, including all slice length prefixes and element data. The instance must have
+/// completed full initialization; violating that lifecycle contract is undefined behavior in
+/// release builds.
 pub unsafe fn trigger_event_by_index_unchecked(
     instance: &mut Instance,
     event_index: usize,
@@ -1080,11 +1175,19 @@ pub unsafe fn trigger_event_by_index_unchecked(
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     debug_assert!(
+        instance.is_initialized(),
+        "trigger_event_by_index_unchecked called before full initialization; this is UB in release builds"
+    );
+    debug_assert!(
         instance.buffers_validated,
         "trigger_event_by_index_unchecked called without preparing buffer descriptors"
     );
+    let state = match &mut instance.state {
+        InstanceState::Initialized(state) => state,
+        InstanceState::Pending(_) => unsafe { std::hint::unreachable_unchecked() },
+    };
     instance.program.trigger_event_by_index_unchecked(
-        &mut instance.state,
+        state,
         &instance.params,
         event_index,
         payload,
@@ -1323,7 +1426,7 @@ mod tests {
         .expect("test source should analyze");
         let mir = lower_program_to_optimized_mir(&typed).expect("test source should lower");
         let program = jit_program_from_optimized_mir(mir).expect("test MIR should compile");
-        create_instance(
+        create_instance_initialized(
             program,
             InstanceConfig {
                 sample_rate: 48_000.0,
@@ -1354,7 +1457,7 @@ mod tests {
         let mir =
             lower_program_to_optimized_mir(&typed).expect("typed program should lower to MIR");
         let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
-        let instance = create_instance(
+        let instance = create_instance_initialized(
             program,
             InstanceConfig {
                 sample_rate: 48_000.0,
@@ -1366,6 +1469,188 @@ mod tests {
         .expect("instance should initialize");
 
         assert!(instance.buffer_ptrs.is_empty());
+    }
+
+    #[test]
+    fn creation_defers_full_init_until_after_initial_parameter_configuration() {
+        let parsed = parse_program(
+            "params:\n  gain = 0.25\ninit:\n  value = gain\nsample:\n  out1 = value\n",
+        )
+        .expect("source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: 1,
+            },
+        )
+        .expect("source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("source should lower");
+        let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
+        let mut instance = create_instance(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: 1,
+                in_channels: 0,
+                out_channels: 1,
+            },
+        )
+        .expect("instance allocation should succeed");
+        let mut output = [0.0_f32; 1];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        assert!(!instance.is_initialized());
+        assert!(process_checked(&mut instance, 1).is_err());
+        assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+        set_param_by_index(&mut instance, 0, &0.75_f32.to_ne_bytes())
+            .expect("initial parameter should update");
+        init(&mut instance, InitMode::Full).expect("full init should succeed");
+        assert!(instance.is_initialized());
+        process_checked(&mut instance, 1).expect("initialized instance should process");
+        assert_eq!(output, [0.75]);
+    }
+
+    #[test]
+    fn dynamic_proc_task_activation_tracks_each_while_condition_evaluation() {
+        let sources = [
+            r#"
+proc Child:
+  init:
+    pin progress: i32 = 0
+  task load():
+    progress = 1
+    yield
+    progress = 2
+  block:
+    await load()
+    sample:
+      out1 = f32(progress)
+
+proc Parent:
+  init:
+    children: Child[2] = Child()
+  sample:
+    index = 0
+    while index < 2 && children[index]() > 0.0:
+      index = index + 1
+    out1 = f32(index) * 0.25
+
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#,
+            r#"
+proc Child:
+  init:
+    pin progress: i32 = 0
+  task load():
+    progress = 1
+    yield
+    progress = 2
+  block:
+    await load()
+    sample:
+      out1 = f32(progress)
+
+init:
+  children: Child[2] = Child()
+sample:
+  index = 0
+  while index < 2 && children[index]() > 0.0:
+    index = index + 1
+  out1 = f32(index) * 0.25
+"#,
+        ];
+
+        for source in sources {
+            let mut instance = compile_test_instance(source, 1, 1);
+            let mut output = [0.0_f32; 1];
+            unsafe {
+                bind_output(
+                    &mut instance,
+                    0,
+                    output.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&output),
+                )
+                .expect("output should bind");
+            }
+
+            for expected in [0.0, 0.25, 0.5] {
+                process_checked(&mut instance, 1).expect("task block should process");
+                assert_eq!(output[0], expected);
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_proc_guards_preserve_short_circuiting_and_evaluate_selectors_once() {
+        let source = r#"
+proc Child:
+  block:
+    sample:
+      out1 = 0.0
+
+proc Parent:
+  init:
+    children: Child[2] = Child()
+    calls: i32 = 0
+  def select() -> i32:
+    calls = calls + 1
+    return 0
+  sample:
+    if false && children[select()]() > 0.0:
+      calls = calls + 100
+    value = children[select()]()
+    out1 = f32(calls) * 0.1
+
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#;
+        let mut instance = compile_test_instance(source, 1, 1);
+        let mut output = [0.0_f32; 1];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, 1).expect("task block should process");
+        assert_eq!(output[0], 0.1);
+    }
+
+    #[test]
+    fn top_level_task_declarations_do_not_close_a_standalone_sample_gate() {
+        let source = "task unused():\n  yield\nsample:\n  out1 = 1.0\n";
+        let mut instance = compile_test_instance(source, 4, 1);
+        let mut output = [0.0_f32; 4];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, 4).expect("standalone sample should process");
+        assert_eq!(output, [1.0; 4]);
     }
 
     #[test]
@@ -1385,7 +1670,7 @@ mod tests {
         let mir =
             lower_program_to_optimized_mir(&typed).expect("typed program should lower to MIR");
         let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
-        let mut instance = create_instance(
+        let mut instance = create_instance_initialized(
             program,
             InstanceConfig {
                 sample_rate: 48_000.0,
@@ -1410,9 +1695,11 @@ mod tests {
         }
         validate_buffers(&mut instance).expect("buffer should validate");
         let bound_ptr = instance.buffer_ptrs[0];
-        let snapshot = instance.snapshot_state_bytes();
+        let snapshot = instance
+            .snapshot_state_bytes()
+            .expect("initialized state should snapshot");
 
-        init(&mut instance).expect("init should succeed");
+        init(&mut instance, InitMode::PreservePinned).expect("init should succeed");
         assert!(instance.buffers_validated);
         assert_eq!(instance.buffer_ptrs[0], bound_ptr);
 
@@ -1465,7 +1752,7 @@ sample:
         .expect("task source should analyze");
         let mir = lower_program_to_optimized_mir(&typed).expect("task source should lower");
         let program = jit_program_from_optimized_mir(mir).expect("task MIR should compile");
-        let mut instance = create_instance(
+        let mut instance = create_instance_initialized(
             program,
             InstanceConfig {
                 sample_rate: 48_000.0,
@@ -1499,12 +1786,12 @@ sample:
         process_checked(&mut instance, BLOCK_SIZE).expect("restarted task should complete");
         assert_eq!(output, [4.0; BLOCK_SIZE]);
 
-        init(&mut instance).expect("default init should succeed");
+        init(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE).expect("default init block should process");
         assert_eq!(output, [4.0; BLOCK_SIZE]);
 
-        init_all(&mut instance).expect("full init should succeed");
+        init(&mut instance, InitMode::Full).expect("full init should succeed");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE).expect("full init block should process");
         assert_eq!(output, [0.0; BLOCK_SIZE]);
@@ -1607,13 +1894,14 @@ block:
         process_checked(&mut instance, BLOCK_SIZE).expect("reset task should complete again");
         assert_eq!(output, [4.0]);
 
-        init(&mut instance).expect("default init should preserve the completed task");
+        init(&mut instance, InitMode::PreservePinned)
+            .expect("default init should preserve the completed task");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
             .expect("default init should preserve the completed task");
         assert_eq!(output, [4.0]);
 
-        init_all(&mut instance).expect("full init should restart the task");
+        init(&mut instance, InitMode::Full).expect("full init should restart the task");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE).expect("full init should restart the task");
         assert_eq!(output, [0.0]);
@@ -1621,13 +1909,14 @@ block:
             .expect("restarted task should complete from a cleared state");
         assert_eq!(output, [2.0]);
 
-        init(&mut instance).expect("default init should preserve pinned task state");
+        init(&mut instance, InitMode::PreservePinned)
+            .expect("default init should preserve pinned task state");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
             .expect("default init should preserve the completed task");
         assert_eq!(output, [2.0]);
 
-        init_all(&mut instance).expect("full init should restart after default init");
+        init(&mut instance, InitMode::Full).expect("full init should restart after default init");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
             .expect("full init should restart after default init");
@@ -1673,7 +1962,8 @@ block:
         process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
         assert_eq!(output, [2.0]);
 
-        init(&mut instance).expect("default init should execute explicit task reset");
+        init(&mut instance, InitMode::PreservePinned)
+            .expect("default init should execute explicit task reset");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
             .expect("explicitly reset task should yield again");
@@ -1858,17 +2148,17 @@ sample {
         process_checked(&mut instance, BLOCK_SIZE).expect("initial state should process");
         assert_eq!((pinned[0], ordinary[0]), (12.0, 21.0));
 
-        init(&mut instance).expect("ordinary live init should succeed");
+        init(&mut instance, InitMode::PreservePinned).expect("ordinary live init should succeed");
         process_checked(&mut instance, BLOCK_SIZE).expect("reinitialized state should process");
         assert_eq!((pinned[0], ordinary[0]), (14.0, 21.0));
         process_checked(&mut instance, BLOCK_SIZE).expect("state should advance");
         assert_eq!((pinned[0], ordinary[0]), (15.0, 22.0));
 
-        init(&mut instance).expect("second default init should succeed");
+        init(&mut instance, InitMode::PreservePinned).expect("second default init should succeed");
         process_checked(&mut instance, BLOCK_SIZE).expect("second init state should process");
         assert_eq!((pinned[0], ordinary[0]), (17.0, 21.0));
 
-        init_all(&mut instance).expect("full live init should succeed");
+        init(&mut instance, InitMode::Full).expect("full live init should succeed");
         process_checked(&mut instance, BLOCK_SIZE).expect("fully initialized state should process");
         assert_eq!((pinned[0], ordinary[0]), (12.0, 21.0));
     }
@@ -1907,7 +2197,7 @@ sample { out1 = amp + pinned }
         let event = instance.event_index("set_amp").expect("set_amp event");
         trigger_event_by_index(&mut instance, event, &0.5_f32.to_ne_bytes())
             .expect("event should run");
-        init(&mut instance).expect("live init should run");
+        init(&mut instance, InitMode::PreservePinned).expect("live init should run");
         process_checked(&mut instance, BLOCK_SIZE).expect("state should process");
         assert_eq!(output, [1.5]);
     }
@@ -1956,11 +2246,11 @@ sample:
         process_checked(&mut instance, BLOCK_SIZE).expect("mutated state should process");
         assert_eq!(output, [100.0]);
 
-        init(&mut instance).expect("default init should succeed");
+        init(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
         process_checked(&mut instance, BLOCK_SIZE).expect("default init should process");
         assert_eq!(output, [61.0]);
 
-        init_all(&mut instance).expect("full init should succeed");
+        init(&mut instance, InitMode::Full).expect("full init should succeed");
         process_checked(&mut instance, BLOCK_SIZE).expect("full init should process");
         assert_eq!(output, [4.0]);
     }
@@ -2004,7 +2294,10 @@ sample:
         set_param_by_index(&mut instance, 0, &0_i32.to_ne_bytes())
             .expect("divisor parameter should update");
 
-        assert!(init(&mut instance).is_err(), "division by zero should fail");
+        assert!(
+            init(&mut instance, InitMode::PreservePinned).is_err(),
+            "division by zero should fail"
+        );
     }
 
     #[test]
@@ -2040,7 +2333,7 @@ sample:
         .expect("loop task source should analyze");
         let mir = lower_program_to_optimized_mir(&typed).expect("loop task should lower");
         let program = jit_program_from_optimized_mir(mir).expect("loop task MIR should compile");
-        let mut instance = create_instance(
+        let mut instance = create_instance_initialized(
             program,
             InstanceConfig {
                 sample_rate: 48_000.0,
@@ -2355,7 +2648,7 @@ sample:
         .expect("proc init task source should analyze");
         let mir = lower_program_to_optimized_mir(&typed).expect("proc init task should lower");
         let program = jit_program_from_optimized_mir(mir).expect("task MIR should compile");
-        let mut instance = create_instance(
+        let mut instance = create_instance_initialized(
             program,
             InstanceConfig {
                 sample_rate: 48_000.0,
@@ -2455,12 +2748,14 @@ sample:
         process_checked_segment(&mut instance, 0, 2, 0)
             .expect("first audio segment should observe the yielded task");
         assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
-        init(&mut instance).expect("default init should succeed");
+        init(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
         process_checked_segment(&mut instance, 2, 2, PROCESS_END_BLOCK)
             .expect("default init must not reopen the task gate within a logical block");
         assert_eq!(output, [0.0; BLOCK_SIZE]);
 
-        let suspended = instance.snapshot_state_bytes();
+        let suspended = instance
+            .snapshot_state_bytes()
+            .expect("initialized state should snapshot");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE).expect("next block should complete the task");
         assert_eq!(output, [11.0; BLOCK_SIZE]);
@@ -2510,7 +2805,7 @@ block:
             .expect("first audio segment should observe the yielded task");
         assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
 
-        init(&mut instance).expect("default init should succeed");
+        init(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
         process_checked_segment(&mut instance, 2, 2, PROCESS_END_BLOCK)
             .expect("default init must not reopen the top-level task gate");
         assert_eq!(output, [0.0; BLOCK_SIZE]);
@@ -3010,13 +3305,14 @@ sample:
         process_checked(&mut instance, BLOCK_SIZE).expect("both child tasks should complete");
         assert_eq!(output, [22.0; BLOCK_SIZE]);
 
-        init(&mut instance).expect("default init should preserve nested task state");
+        init(&mut instance, InitMode::PreservePinned)
+            .expect("default init should preserve nested task state");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE)
             .expect("default init should preserve completed child tasks");
         assert_eq!(output, [22.0; BLOCK_SIZE]);
 
-        init_all(&mut instance).expect("full init should restart nested tasks");
+        init(&mut instance, InitMode::Full).expect("full init should restart nested tasks");
         output.fill(99.0);
         process_checked(&mut instance, BLOCK_SIZE).expect("restarted child tasks should yield");
         assert_eq!(output, [0.0; BLOCK_SIZE]);
@@ -3058,7 +3354,7 @@ sample:
         .expect("failing task source should analyze");
         let mir = lower_program_to_optimized_mir(&typed).expect("failing task should lower");
         let program = jit_program_from_optimized_mir(mir).expect("failing task MIR should compile");
-        let mut instance = create_instance(
+        let mut instance = create_instance_initialized(
             program,
             InstanceConfig {
                 sample_rate: 48_000.0,
@@ -3117,7 +3413,10 @@ sample:
             out_channels: 1,
         };
         let instances = (0..INSTANCE_COUNT)
-            .map(|_| create_instance(program.clone(), config).expect("instance should initialize"))
+            .map(|_| {
+                create_instance_initialized(program.clone(), config)
+                    .expect("instance should initialize")
+            })
             .collect::<Vec<_>>();
 
         drop(program);

@@ -7,7 +7,9 @@ use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{parse_program, Diagnostic};
-use onda_runtime::{bind_buffer, bind_output, create_instance, process_checked, InstanceConfig};
+use onda_runtime::{
+    bind_buffer, bind_output, create_instance, init, process_checked, InitMode, InstanceConfig,
+};
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const DEFAULT_INPUT: &str = "target/garden.wav";
@@ -94,6 +96,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         unsafe { bind_output(&mut instance, idx, out_buf.as_mut_ptr(), out_buf.len()) }
             .map_err(|d| format!("bind output[{idx}] failed: {d:?}"))?;
     }
+    init(&mut instance, InitMode::Full)
+        .map_err(|d| format!("instance initialization failed: {d:?}"))?;
 
     let render_frames = ((input_frames as f32) / PLAYBACK_RATE).ceil() as usize;
     let full_blocks = render_frames / BLOCK_FRAMES;

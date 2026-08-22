@@ -528,10 +528,10 @@ sample code with per-block work.
 
 ### `init`
 
-`init` runs when an instance is created and may be rerun explicitly by the
-host. It creates persistent state and usually constructs structs and
-processors. Instance creation allocates zeroed physical state and performs a
-full initialization.
+`init` creates persistent state and usually constructs structs and processors.
+Hosts may either create an initialized instance or allocate an uninitialized
+instance, configure its parameters and bindings, and explicitly request full
+initialization before processing.
 
 ```onda
 init:
@@ -548,15 +548,15 @@ Typical uses:
 - Construct proc instances.
 - Perform one-time setup.
 
-Host `init` preserves pinned roots and task continuations while rerunning
-ordinary declaration initializers and every explicit init statement. Host
-`init_all` also reruns the declaration initializers for pinned roots and task
-continuations. It does not blanket-clear the physical image. Both operations
-execute directly against the instance's single state image and allocate no memory
-on the successful path. Their execution cost depends on the authored initializer;
-a runtime failure leaves instance state indeterminate. Instance creation is
-equivalent to allocating zeroed storage, writing parameter defaults, and running
-`init_all`.
+Host `init(PRESERVE_PINNED)` preserves pinned roots and task continuations while
+rerunning ordinary declaration initializers and every explicit init statement.
+Host `init(FULL)` also reruns the declaration initializers for pinned roots and
+task continuations, and is required before stateful operations on an
+uninitialized instance. Both modes execute directly against the instance's
+single state image and allocate no memory on the successful path. Their
+execution cost depends on the authored initializer; a runtime failure leaves
+instance state indeterminate. Initialized convenience creation is equivalent to
+allocating storage, writing parameter defaults, and running `init(FULL)`.
 
 Section default scalar types are supported:
 
@@ -584,8 +584,8 @@ init:
   history: f32[128]
 ```
 
-Default `init` preserves `prepared` and `generation` while reinitializing
-`history`. Fresh construction and `init_all` initialize every binding. Snapshots
+`init(PRESERVE_PINNED)` preserves `prepared` and `generation` while reinitializing
+`history`. Initialized construction and `init(FULL)` initialize every binding. Snapshots
 include both policies and restore the captured values; `pin` affects
 initialization, not snapshot semantics. Integer-domain attributes remain
 independent, for example
@@ -1614,8 +1614,8 @@ lazily on its first call in that logical block. Splitting a logical block into
 process segments never grants additional task resumptions, and a zero-frame
 begin-block segment still advances statically scheduled tasks.
 
-Task continuations are compiler-pinned state. Default initialization preserves
-them. Proc `init(all = true)` and host-level `init_all` restore them to
+Task continuations are compiler-pinned state. Preserve-pinned initialization preserves
+them. Proc `init(all = true)` and host-level `init(FULL)` restore them to
 not-started. An explicit `prepare.reset()` in an initializer always runs. Tasks
 may use both pinned and resettable state; after default initialization, a
 suspended task observes the reinitialized resettable values when it resumes.

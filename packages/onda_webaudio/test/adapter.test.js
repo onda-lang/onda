@@ -9,9 +9,12 @@ import {
 
 import {
   ONDA_AUDIO_WORKLET_PROCESSOR_NAME,
+  ONDA_INIT_FULL,
+  ONDA_INIT_PRESERVE_PINNED,
   OndaAudioProcessor,
   compileOndaProcessorModule,
   createOndaAudioProcessor,
+  createOndaAudioProcessorInitialized,
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
@@ -199,6 +202,18 @@ test("registers the worklet before constructing the public processor node", asyn
     true,
   );
   assert.equal("wasmBytes" in processor.node.options.processorOptions, false);
+  assert.equal(processor.node.options.processorOptions.initialize, false);
+});
+
+test("initialized creation requests full initialization in the worklet constructor", async () => {
+  const context = {
+    sampleRate: 48_000,
+    audioWorklet: { addModule: async () => {} },
+  };
+  const processor = await createOndaAudioProcessorInitialized(context, artifact(), {
+    AudioWorkletNode: FakeNode,
+  });
+  assert.equal(processor.node.options.processorOptions.initialize, true);
 });
 
 test("rejects a processor compiled for a different AudioContext sample rate", async () => {
@@ -253,17 +268,19 @@ test("correlates control responses and preserves caller snapshot storage", async
   node.port.reply({ type: "onda-ok", requestId: restoreRequest.requestId });
   await restore;
 
-  const init = processor.init();
+  const init = processor.init(ONDA_INIT_PRESERVE_PINNED);
   const initRequest = node.port.messages.at(-1);
   assert.equal(initRequest.type, "init");
+  assert.equal(initRequest.mode, ONDA_INIT_PRESERVE_PINNED);
   node.port.reply({ type: "onda-ok", requestId: initRequest.requestId });
   await init;
 
-  const initAll = processor.initAll();
-  const initAllRequest = node.port.messages.at(-1);
-  assert.equal(initAllRequest.type, "init-all");
-  node.port.reply({ type: "onda-ok", requestId: initAllRequest.requestId });
-  await initAll;
+  const fullInit = processor.init(ONDA_INIT_FULL);
+  const fullInitRequest = node.port.messages.at(-1);
+  assert.equal(fullInitRequest.type, "init");
+  assert.equal(fullInitRequest.mode, ONDA_INIT_FULL);
+  node.port.reply({ type: "onda-ok", requestId: fullInitRequest.requestId });
+  await fullInit;
   processor.close();
 });
 

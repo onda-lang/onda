@@ -11,7 +11,9 @@ use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, JitProgram, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{parse_program, PrimitiveType};
-use onda_runtime::{bind_buffer, bind_output, create_instance, process_checked, InstanceConfig};
+use onda_runtime::{
+    bind_buffer, bind_output, create_instance, init, process_checked, InitMode, InstanceConfig,
+};
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const SAMPLE_RATE: f32 = 48_000.0;
@@ -238,6 +240,8 @@ fn measure(
             )
             .map_err(|error| format!("right output binding failed: {error:?}"))?;
         }
+        init(&mut instance, InitMode::Full)
+            .map_err(|error| format!("instance initialization failed: {error:?}"))?;
 
         let mut peak_us = 0.0_f64;
         let started = Instant::now();
