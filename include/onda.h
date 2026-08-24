@@ -615,8 +615,9 @@ int onda_process_checked_segment(
    is required before processing a newly created instance. ONDA_INIT_PRESERVE_PINNED reruns ordinary
    authored initializers while preserving pinned state and task continuations, and is only valid
    after successful full initialization. The successful path performs no allocation. On failure,
-   instance state is indeterminate. Returns 0 on success, -1 for an invalid handle or mode, or -2
-   when init execution fails. */
+   instance state is indeterminate and stateful instance operations reject it until full
+   initialization or snapshot restore succeeds. Returns 0 on success, -1 for an invalid handle or
+   mode, or -2 when init execution fails. */
 int onda_init(onda_instance_t* instance, onda_init_mode_t mode);
 /* Returns the byte size of the instance state snapshot, or -1 on invalid instance handle. */
 int onda_instance_state_bytes(const onda_instance_t* instance);

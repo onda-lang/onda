@@ -155,8 +155,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.ensureOutputCapacity(this.blockSize);
     this.viewsReady = true;
     this.refreshMemoryCache(true);
-    this.initialized = false;
-    this.process = this.processPending;
+    this.invalidateState();
     if (processorOptions.initialize === true) {
       this.init(ONDA_INIT_FULL);
     }
@@ -361,6 +360,26 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (mode === ONDA_INIT_PRESERVE_PINNED && !this.initialized) {
       throw new Error("full initialization is required before preserving pinned state");
     }
+    this.runInitialization(mode);
+  }
+
+  invalidateState() {
+    this.initialized = false;
+    this.process = this.processPending;
+    this.blockCursor = 0;
+  }
+
+  commitInitializedState() {
+    this.initialized = true;
+    this.process = this.processInitialized;
+    this.blockCursor = 0;
+  }
+
+  runInitialization(mode, afterInitialize) {
+    // Generated initialization mutates the live image in place. Stop exposing
+    // it before entering Wasm so a failure, including one in snapshot overlay,
+    // leaves the processor on the silent pending path.
+    this.invalidateState();
     this.refreshMemoryCache();
     this.checkExecutionStatus(
       this.exports.onda_processor_init(
@@ -370,9 +389,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       ),
       "processor init",
     );
-    this.initialized = true;
-    this.process = this.processInitialized;
-    this.blockCursor = 0;
+    afterInitialize?.();
+    this.commitInitializedState();
   }
 
   requireInitialized(operation) {
@@ -412,20 +430,22 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       );
     }
     // The ABI restore base is a fresh post-init image, so scratch and
-    // control-mirror state never leak across a restore.
-    this.init(ONDA_INIT_FULL);
-    const state = this.stateBytes;
-    for (const entry of this.snapshotInfo) {
-      const packedOffset = Number(entry.packed_snapshot_byte_offset);
-      const physicalOffset = Number(entry.physical_state_byte_offset);
-      const byteSize = Number(entry.byte_size);
-      this.validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize);
-      state.set(
-        snapshot.subarray(packedOffset, packedOffset + byteSize),
-        physicalOffset,
-      );
-      this.normalizeSnapshotIntegerRange(entry, state, physicalOffset, byteSize);
-    }
+    // control-mirror state never leak across a restore. Initialization and
+    // overlay form one lifecycle transition: neither partial result is ready.
+    this.runInitialization(ONDA_INIT_FULL, () => {
+      const state = this.stateBytes;
+      for (const entry of this.snapshotInfo) {
+        const packedOffset = Number(entry.packed_snapshot_byte_offset);
+        const physicalOffset = Number(entry.physical_state_byte_offset);
+        const byteSize = Number(entry.byte_size);
+        this.validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize);
+        state.set(
+          snapshot.subarray(packedOffset, packedOffset + byteSize),
+          physicalOffset,
+        );
+        this.normalizeSnapshotIntegerRange(entry, state, physicalOffset, byteSize);
+      }
+    });
   }
 
   normalizeSnapshotIntegerRange(entry, state, offset, byteSize) {

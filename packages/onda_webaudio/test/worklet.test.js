@@ -102,6 +102,33 @@ test("worklet remains silent until explicit full initialization", () => {
   assert.equal(processor.process, processor.processInitialized);
 });
 
+test("failed live initialization returns the worklet to the silent pending state", () => {
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: metadata(),
+    },
+  });
+  const originalCheckExecutionStatus = processor.checkExecutionStatus;
+  processor.checkExecutionStatus = () => {
+    throw new Error("simulated processor init failure");
+  };
+
+  assert.throws(() => processor.init(1), /simulated processor init failure/);
+  assert.equal(processor.initialized, false);
+  assert.equal(processor.process, processor.processPending);
+  assert.throws(() => processor.init(0), /full initialization is required/);
+
+  const output = new Float32Array([1, 1, 1]);
+  assert.equal(processor.process([], [[output]]), true);
+  assert.deepEqual([...output], [0, 0, 0]);
+
+  processor.checkExecutionStatus = originalCheckExecutionStatus;
+  processor.init(1);
+  assert.equal(processor.initialized, true);
+  assert.equal(processor.process, processor.processInitialized);
+});
+
 test("worklet uses null pointers only for absent processor surfaces", () => {
   const descriptor = metadata();
   descriptor.metadata.buffers = [];

@@ -42,7 +42,28 @@ pub struct Instance {
 #[derive(Debug)]
 enum InstanceState {
     Pending(UninitializedRuntimeState),
-    Initialized(RuntimeState),
+    Allocated(AllocatedState),
+}
+
+#[derive(Debug)]
+struct AllocatedState {
+    storage: RuntimeState,
+    initialized: bool,
+}
+
+impl AllocatedState {
+    fn attempt(
+        &mut self,
+        operation: impl FnOnce(&mut RuntimeState) -> Result<(), Diagnostic>,
+    ) -> Result<(), Diagnostic> {
+        // Initialization is not transactional. Invalidate the existing image
+        // before entering generated code so errors and unwinding cannot leave
+        // a partially initialized image observable as ready state.
+        self.initialized = false;
+        let result = operation(&mut self.storage);
+        self.initialized = result.is_ok();
+        result
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -56,6 +77,14 @@ pub enum InitMode {
 fn uninitialized_instance_error() -> Diagnostic {
     Diagnostic::runtime(
         "instance requires full initialization before this operation",
+        0,
+        0,
+    )
+}
+
+fn invalid_instance_error() -> Diagnostic {
+    Diagnostic::runtime(
+        "instance state is invalid after failed initialization; run full initialization or restore state before this operation",
         0,
         0,
     )
@@ -258,12 +287,19 @@ impl Instance {
     }
 
     pub fn is_initialized(&self) -> bool {
-        matches!(self.state, InstanceState::Initialized(_))
+        matches!(
+            self.state,
+            InstanceState::Allocated(AllocatedState {
+                initialized: true,
+                ..
+            })
+        )
     }
 
     fn initialized_state(&self) -> Result<&RuntimeState, Diagnostic> {
         match &self.state {
-            InstanceState::Initialized(state) => Ok(state),
+            InstanceState::Allocated(state) if state.initialized => Ok(&state.storage),
+            InstanceState::Allocated(_) => Err(invalid_instance_error()),
             InstanceState::Pending(_) => Err(uninitialized_instance_error()),
         }
     }
@@ -283,19 +319,21 @@ impl Instance {
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         configure_current_thread_audio_fp_mode();
         self.program.validate_state_snapshot(bytes)?;
-        let was_pending = !self.is_initialized();
+        let was_pending = matches!(self.state, InstanceState::Pending(_));
         if was_pending {
             init(self, InitMode::Full)?;
         }
-        let InstanceState::Initialized(state) = &mut self.state else {
+        let InstanceState::Allocated(state) = &mut self.state else {
             unreachable!("full initialization succeeded without initializing state")
         };
-        if was_pending {
-            self.program.overlay_state_snapshot(state, bytes)
-        } else {
-            self.program
-                .restore_state_snapshot(&self.params, state, bytes)
-        }
+        state.attempt(|state| {
+            if was_pending {
+                self.program.overlay_state_snapshot(state, bytes)
+            } else {
+                self.program
+                    .restore_state_snapshot(&self.params, state, bytes)
+            }
+        })
     }
 }
 
@@ -464,6 +502,8 @@ fn create_instance_inner(
 
 /// Runs the program initializer using the requested state-retention mode.
 /// Full initialization is required before any stateful instance operation.
+/// A failed live initialization invalidates the state image until a later full
+/// initialization or snapshot restore succeeds.
 pub fn init(instance: &mut Instance, mode: InitMode) -> Result<(), Diagnostic> {
     configure_current_thread_audio_fp_mode();
     match (&mut instance.state, mode) {
@@ -471,17 +511,25 @@ pub fn init(instance: &mut Instance, mode: InitMode) -> Result<(), Diagnostic> {
             let initialized = instance
                 .program
                 .initialize_allocated_state(&instance.params, state)?;
-            instance.state = InstanceState::Initialized(initialized);
+            instance.state = InstanceState::Allocated(AllocatedState {
+                storage: initialized,
+                initialized: true,
+            });
             Ok(())
         }
         (InstanceState::Pending(_), InitMode::PreservePinned) => {
             Err(uninitialized_instance_error())
         }
-        (InstanceState::Initialized(state), mode) => instance.program.initialize_state_in_place(
-            &instance.params,
-            state,
-            matches!(mode, InitMode::Full),
-        ),
+        (InstanceState::Allocated(state), InitMode::PreservePinned) if !state.initialized => {
+            Err(invalid_instance_error())
+        }
+        (InstanceState::Allocated(state), mode) => state.attempt(|state| {
+            instance.program.initialize_state_in_place(
+                &instance.params,
+                state,
+                matches!(mode, InitMode::Full),
+            )
+        }),
     }
 }
 
@@ -974,7 +1022,8 @@ pub fn process_checked_segment(
     validate_process_request(instance, start_frame, frames, flags)?;
     validate_bindings_for_process(instance)?;
     let state = match &mut instance.state {
-        InstanceState::Initialized(state) => state,
+        InstanceState::Allocated(state) if state.initialized => &mut state.storage,
+        InstanceState::Allocated(_) => return Err(invalid_instance_error()),
         InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
     };
     let status = unsafe {
@@ -1068,8 +1117,10 @@ pub unsafe fn process_unchecked_segment(
         )
     })?;
     let state = match &mut instance.state {
-        InstanceState::Initialized(state) => state,
-        InstanceState::Pending(_) => unsafe { std::hint::unreachable_unchecked() },
+        InstanceState::Allocated(state) if state.initialized => &mut state.storage,
+        InstanceState::Allocated(_) | InstanceState::Pending(_) => unsafe {
+            std::hint::unreachable_unchecked()
+        },
     };
     unsafe {
         instance.program.process_unchecked(
@@ -1142,7 +1193,8 @@ pub fn trigger_event_by_index(
         validate_buffers(instance)?;
     }
     let state = match &mut instance.state {
-        InstanceState::Initialized(state) => state,
+        InstanceState::Allocated(state) if state.initialized => &mut state.storage,
+        InstanceState::Allocated(_) => return Err(invalid_instance_error()),
         InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
     };
     unsafe {
@@ -1183,8 +1235,10 @@ pub unsafe fn trigger_event_by_index_unchecked(
         "trigger_event_by_index_unchecked called without preparing buffer descriptors"
     );
     let state = match &mut instance.state {
-        InstanceState::Initialized(state) => state,
-        InstanceState::Pending(_) => unsafe { std::hint::unreachable_unchecked() },
+        InstanceState::Allocated(state) if state.initialized => &mut state.storage,
+        InstanceState::Allocated(_) | InstanceState::Pending(_) => unsafe {
+            std::hint::unreachable_unchecked()
+        },
     };
     instance.program.trigger_event_by_index_unchecked(
         state,
@@ -2256,7 +2310,7 @@ sample:
     }
 
     #[test]
-    fn failed_live_init_reports_the_execution_error() {
+    fn failed_live_init_invalidates_state_until_full_init_or_restore() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
             r#"
@@ -2291,6 +2345,9 @@ sample:
             .expect("set_pinned event");
         trigger_event_by_index(&mut instance, event, &50_i32.to_ne_bytes())
             .expect("event should run");
+        let snapshot = instance
+            .snapshot_state_bytes()
+            .expect("valid state should snapshot");
         set_param_by_index(&mut instance, 0, &0_i32.to_ne_bytes())
             .expect("divisor parameter should update");
 
@@ -2298,6 +2355,32 @@ sample:
             init(&mut instance, InitMode::PreservePinned).is_err(),
             "division by zero should fail"
         );
+        assert!(!instance.is_initialized());
+        assert!(process_checked(&mut instance, BLOCK_SIZE).is_err());
+        assert!(trigger_event_by_index(&mut instance, event, &0_i32.to_ne_bytes()).is_err());
+        assert!(instance.snapshot_state_bytes().is_err());
+
+        set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
+            .expect("divisor parameter should recover");
+        assert!(
+            init(&mut instance, InitMode::PreservePinned).is_err(),
+            "preserve-pinned init cannot recover indeterminate pinned state"
+        );
+        instance
+            .restore_state_bytes(&snapshot)
+            .expect("a valid snapshot should recover invalid state");
+        assert!(instance.is_initialized());
+        process_checked(&mut instance, BLOCK_SIZE).expect("restored state should process");
+        assert_eq!(output, [50.0]);
+
+        set_param_by_index(&mut instance, 0, &0_i32.to_ne_bytes())
+            .expect("divisor parameter should update");
+        assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+        set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
+            .expect("divisor parameter should recover");
+        init(&mut instance, InitMode::Full).expect("full init should recover invalid state");
+        process_checked(&mut instance, BLOCK_SIZE).expect("reinitialized state should process");
+        assert_eq!(output, [11.0]);
     }
 
     #[test]

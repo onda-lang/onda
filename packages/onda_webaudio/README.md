@@ -143,8 +143,9 @@ while preserving pinned roots and task continuations; `init(ONDA_INIT_FULL)` ini
 complete physical state and is required before processing an instance returned by
 `createOndaAudioProcessor`. The initialized convenience constructor performs full initialization
 during worklet construction. Neither mode allocates on the successful path, and a
-failure leaves processor state indeterminate. Suspend or disconnect playback before initialization
-that performs substantial work.
+failure returns the processor to its silent pending state until full initialization or snapshot
+restore succeeds. Suspend or disconnect playback before initialization that performs substantial
+work.
 
 Dynamic event storage is also allocated before rendering. Its default capacity is 64 KiB per
 processor with dynamic events and can be changed explicitly:
