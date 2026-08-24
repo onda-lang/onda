@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 use crate::{
@@ -168,6 +168,11 @@ pub fn optimize(
     // State promotion may add locals or statements, so run it once before the
     // monotonic cleanup fixed point.
     state_promotion::promote_process_scalar_state(&mut raw, &mut total);
+    let effects = crate::analysis::analyze_effects(&raw);
+    let state_count = raw.state.len();
+    if let Some(init) = raw.functions.get_mut(raw.entry_points.init.index()) {
+        guard_preinitialized_zero_stores(init, &mut raw.types, &effects, state_count);
+    }
     // Every round is monotonic: it only replaces values, rvalues, or bounds
     // modes with stronger canonical forms, or removes branches, statements,
     // and locals. No pass adds executable structure, so the finite program
@@ -203,6 +208,453 @@ pub fn optimize(
             let program = crate::validate::revalidate_owned(raw, producer_proofs)?;
             return Ok((OptimizedProgram(program), total));
         }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct StateRegion {
+    state: crate::StateId,
+    path: Vec<StateProjection>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum StateProjection {
+    Field(u32),
+    Index(u32),
+}
+
+/// Full initialization clears the complete physical state image before the
+/// MIR init body runs. Preserve-pinned initialization does not, so proven
+/// zero-before-write stores must remain available on that path. Guard those
+/// stores with `!init_all` instead of deleting them.
+fn guard_preinitialized_zero_stores(
+    function: &mut Function,
+    types: &mut Vec<crate::Type>,
+    effects: &crate::analysis::EffectAnalysis,
+    state_count: usize,
+) {
+    let init_all = LocalId::new(function.locals.len() as u32);
+    let mut dirty = Vec::<StateRegion>::new();
+    let mut aliases = HashMap::<LocalId, StateRegion>::new();
+    let mut guarded = 0_u64;
+    let statements = std::mem::take(&mut function.body.statements);
+    let mut retained = Vec::with_capacity(statements.len());
+
+    for statement in statements {
+        let mut guard = false;
+        match &statement.kind {
+            StatementKind::Assign { destination, value } => {
+                if let Some((region, exact)) = state_region(destination) {
+                    if !exact {
+                        mark_state_dirty(
+                            &mut dirty,
+                            StateRegion {
+                                state: region.state,
+                                path: Vec::new(),
+                            },
+                        );
+                    } else if rvalue_is_all_bits_zero(value) {
+                        if !dirty
+                            .iter()
+                            .any(|dirty| state_regions_overlap(dirty, &region))
+                        {
+                            guard = true;
+                        } else {
+                            clear_state_region(&mut dirty, &region);
+                        }
+                    } else {
+                        mark_state_dirty(&mut dirty, region);
+                    }
+                }
+
+                update_state_alias(destination, value, &mut aliases, &mut dirty);
+            }
+            StatementKind::SliceStore { slice, .. } => {
+                mark_value_alias_dirty(*slice, &aliases, &mut dirty, state_count);
+            }
+            StatementKind::SliceFill { destination, value } => {
+                if let Some(region) = value_alias_region(*destination, &aliases) {
+                    let whole_state = StateRegion {
+                        state: region.state,
+                        path: Vec::new(),
+                    };
+                    if scalar_is_all_bits_zero(*value)
+                        && !dirty
+                            .iter()
+                            .any(|dirty| state_regions_overlap(dirty, &whole_state))
+                    {
+                        guard = true;
+                    } else {
+                        mark_state_dirty(&mut dirty, whole_state);
+                    }
+                } else {
+                    mark_all_state_dirty(&mut dirty, state_count);
+                }
+            }
+            StatementKind::SliceCopy { destination, .. } => {
+                mark_value_alias_dirty(*destination, &aliases, &mut dirty, state_count);
+            }
+            StatementKind::Call {
+                function: callee,
+                args,
+                ..
+            } => mark_call_state_writes(*callee, args, effects, &aliases, &mut dirty, state_count),
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_block_state_writes(
+                    then_block,
+                    effects,
+                    aliases.clone(),
+                    &mut dirty,
+                    state_count,
+                );
+                collect_block_state_writes(
+                    else_block,
+                    effects,
+                    aliases.clone(),
+                    &mut dirty,
+                    state_count,
+                );
+                aliases.clear();
+            }
+            StatementKind::Loop { body } => {
+                collect_block_state_writes(body, effects, aliases.clone(), &mut dirty, state_count);
+                aliases.clear();
+            }
+            StatementKind::Break | StatementKind::Continue | StatementKind::Return { .. } => {
+                mark_all_state_dirty(&mut dirty, state_count);
+                aliases.clear();
+            }
+            StatementKind::OutputStore { .. }
+            | StatementKind::ControlOutputStore { .. }
+            | StatementKind::BufferStore { .. }
+            | StatementKind::BufferParamStore { .. } => {}
+        }
+
+        if guard {
+            let source = statement.source;
+            retained.push(Statement {
+                kind: StatementKind::If {
+                    condition: Value::Local(init_all),
+                    then_block: Block::default(),
+                    else_block: Block {
+                        statements: vec![statement],
+                    },
+                },
+                source,
+            });
+            guarded = guarded.saturating_add(1);
+        } else {
+            retained.push(statement);
+        }
+    }
+
+    if guarded == 0 {
+        function.body.statements = retained;
+        return;
+    }
+
+    let bool_ty = types
+        .iter()
+        .position(|ty| *ty == crate::Type::Scalar(ScalarType::Bool))
+        .map(|index| crate::TypeId::new(index as u32))
+        .unwrap_or_else(|| {
+            let id = crate::TypeId::new(types.len() as u32);
+            types.push(crate::Type::Scalar(ScalarType::Bool));
+            id
+        });
+    function.locals.push(crate::Local {
+        name: Some("$init.all".to_owned()),
+        ty: bool_ty,
+        integer_range: None,
+    });
+    retained.insert(
+        0,
+        Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(init_all),
+                value: Rvalue::InitAll,
+            },
+            source: function.source,
+        },
+    );
+    function.body.statements = retained;
+}
+
+fn collect_block_state_writes(
+    block: &Block,
+    effects: &crate::analysis::EffectAnalysis,
+    mut aliases: HashMap<LocalId, StateRegion>,
+    dirty: &mut Vec<StateRegion>,
+    state_count: usize,
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Assign { destination, value } => {
+                if let Some((region, exact)) = state_region(destination) {
+                    mark_state_dirty(
+                        dirty,
+                        if exact {
+                            region
+                        } else {
+                            StateRegion {
+                                state: region.state,
+                                path: Vec::new(),
+                            }
+                        },
+                    );
+                }
+                update_state_alias(destination, value, &mut aliases, dirty);
+            }
+            StatementKind::SliceStore { slice, .. } => {
+                mark_value_alias_dirty(*slice, &aliases, dirty, state_count);
+            }
+            StatementKind::SliceFill { destination, .. }
+            | StatementKind::SliceCopy { destination, .. } => {
+                mark_value_alias_dirty(*destination, &aliases, dirty, state_count);
+            }
+            StatementKind::Call { function, args, .. } => {
+                mark_call_state_writes(*function, args, effects, &aliases, dirty, state_count)
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_block_state_writes(
+                    then_block,
+                    effects,
+                    aliases.clone(),
+                    dirty,
+                    state_count,
+                );
+                collect_block_state_writes(
+                    else_block,
+                    effects,
+                    aliases.clone(),
+                    dirty,
+                    state_count,
+                );
+                aliases.clear();
+            }
+            StatementKind::Loop { body } => {
+                collect_block_state_writes(body, effects, aliases.clone(), dirty, state_count);
+                aliases.clear();
+            }
+            StatementKind::OutputStore { .. }
+            | StatementKind::ControlOutputStore { .. }
+            | StatementKind::BufferStore { .. }
+            | StatementKind::BufferParamStore { .. }
+            | StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::Return { .. } => {}
+        }
+    }
+}
+
+fn update_state_alias(
+    destination: &Place,
+    value: &Rvalue,
+    aliases: &mut HashMap<LocalId, StateRegion>,
+    dirty: &mut Vec<StateRegion>,
+) {
+    let Place {
+        base: PlaceBase::Local(local),
+        projections,
+    } = destination
+    else {
+        return;
+    };
+    if projections.is_empty() {
+        aliases.remove(local);
+        if let Rvalue::MakeSlice {
+            source: crate::SliceSource::Place(place),
+            ..
+        } = value
+        {
+            if let Some((region, exact)) = state_region(place) {
+                if exact {
+                    aliases.insert(*local, region);
+                }
+            }
+        }
+    } else if let Some(region) = aliases.get(local).cloned() {
+        mark_state_dirty(
+            dirty,
+            StateRegion {
+                state: region.state,
+                path: Vec::new(),
+            },
+        );
+    }
+}
+
+fn mark_call_state_writes(
+    callee: crate::FunctionId,
+    args: &[CallArgument],
+    effects: &crate::analysis::EffectAnalysis,
+    aliases: &HashMap<LocalId, StateRegion>,
+    dirty: &mut Vec<StateRegion>,
+    state_count: usize,
+) {
+    let callee_effects = effects.function(callee);
+    if callee_effects
+        .writes
+        .contains(crate::analysis::MemoryRegionSet::STATE)
+    {
+        mark_all_state_dirty(dirty, state_count);
+    }
+    for (argument, parameter_effects) in args.iter().zip(&callee_effects.parameters) {
+        if !parameter_effects.writes {
+            continue;
+        }
+        match argument {
+            CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => {
+                if let Some((region, exact)) = state_region(place) {
+                    mark_state_dirty(
+                        dirty,
+                        if exact {
+                            region
+                        } else {
+                            StateRegion {
+                                state: region.state,
+                                path: Vec::new(),
+                            }
+                        },
+                    );
+                }
+            }
+            CallArgument::Value(value) => {
+                mark_value_alias_dirty(*value, aliases, dirty, state_count);
+            }
+            CallArgument::SliceElement { slice, .. } | CallArgument::SliceWindow { slice, .. } => {
+                mark_value_alias_dirty(*slice, aliases, dirty, state_count);
+            }
+            CallArgument::Buffer(_)
+            | CallArgument::BufferParam(_)
+            | CallArgument::BufferSpan(_) => {}
+        }
+    }
+}
+
+fn mark_value_alias_dirty(
+    value: Value,
+    aliases: &HashMap<LocalId, StateRegion>,
+    dirty: &mut Vec<StateRegion>,
+    state_count: usize,
+) {
+    if let Some(region) = value_alias_region(value, aliases) {
+        mark_state_dirty(
+            dirty,
+            StateRegion {
+                state: region.state,
+                path: Vec::new(),
+            },
+        );
+    } else {
+        mark_all_state_dirty(dirty, state_count);
+    }
+}
+
+fn mark_all_state_dirty(dirty: &mut Vec<StateRegion>, state_count: usize) {
+    for index in 0..state_count {
+        mark_state_dirty(
+            dirty,
+            StateRegion {
+                state: crate::StateId::new(index as u32),
+                path: Vec::new(),
+            },
+        );
+    }
+}
+
+fn state_region(place: &Place) -> Option<(StateRegion, bool)> {
+    let PlaceBase::State(state) = place.base else {
+        return None;
+    };
+    let mut path = Vec::with_capacity(place.projections.len());
+    for projection in &place.projections {
+        match projection {
+            Projection::Field(field) => path.push(StateProjection::Field(field.raw())),
+            Projection::Index { index, .. } => {
+                let Value::Constant(ScalarValue::I32(index)) = index else {
+                    return Some((
+                        StateRegion {
+                            state,
+                            path: Vec::new(),
+                        },
+                        false,
+                    ));
+                };
+                let Ok(index) = u32::try_from(*index) else {
+                    return Some((
+                        StateRegion {
+                            state,
+                            path: Vec::new(),
+                        },
+                        false,
+                    ));
+                };
+                path.push(StateProjection::Index(index));
+            }
+        }
+    }
+    Some((StateRegion { state, path }, true))
+}
+
+fn state_path_is_prefix(prefix: &[StateProjection], path: &[StateProjection]) -> bool {
+    prefix.len() <= path.len() && prefix.iter().zip(path).all(|(lhs, rhs)| lhs == rhs)
+}
+
+fn state_regions_overlap(lhs: &StateRegion, rhs: &StateRegion) -> bool {
+    lhs.state == rhs.state
+        && (state_path_is_prefix(&lhs.path, &rhs.path)
+            || state_path_is_prefix(&rhs.path, &lhs.path))
+}
+
+fn mark_state_dirty(dirty: &mut Vec<StateRegion>, region: StateRegion) {
+    if dirty.iter().any(|existing| {
+        existing.state == region.state && state_path_is_prefix(&existing.path, &region.path)
+    }) {
+        return;
+    }
+    dirty.retain(|existing| {
+        existing.state != region.state || !state_path_is_prefix(&region.path, &existing.path)
+    });
+    dirty.push(region);
+}
+
+fn clear_state_region(dirty: &mut Vec<StateRegion>, region: &StateRegion) {
+    dirty.retain(|existing| {
+        existing.state != region.state || !state_path_is_prefix(&region.path, &existing.path)
+    });
+}
+
+fn value_alias_region(
+    value: Value,
+    aliases: &HashMap<LocalId, StateRegion>,
+) -> Option<StateRegion> {
+    let Value::Local(local) = value else {
+        return None;
+    };
+    aliases.get(&local).cloned()
+}
+
+fn rvalue_is_all_bits_zero(value: &Rvalue) -> bool {
+    matches!(value, Rvalue::Use(value) if scalar_is_all_bits_zero(*value))
+}
+
+fn scalar_is_all_bits_zero(value: Value) -> bool {
+    match value {
+        Value::Constant(ScalarValue::F32(value)) => value.to_bits() == 0,
+        Value::Constant(ScalarValue::F64(value)) => value.to_bits() == 0,
+        Value::Constant(ScalarValue::I32(value)) => value == 0,
+        Value::Constant(ScalarValue::I64(value)) => value == 0,
+        Value::Constant(ScalarValue::Bool(value)) => !value,
+        Value::Local(_) => false,
     }
 }
 
@@ -3357,7 +3809,7 @@ mod tests {
     }
 
     #[test]
-    fn optimize_preserves_zero_init_stores_for_live_reinitialization() {
+    fn optimize_guards_zero_init_stores_for_live_reinitialization() {
         let mut program = empty_program();
         program.types.extend([
             Type::Scalar(ScalarType::F32),
@@ -3454,7 +3906,7 @@ mod tests {
                 } if value.to_bits() == (-0.0_f32).to_bits()
             )
         }));
-        let scalar_writes = init
+        let direct_scalar_writes = init
             .body
             .statements
             .iter()
@@ -3471,11 +3923,37 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(scalar_writes, 5);
+        assert_eq!(direct_scalar_writes, 3);
+        let guarded_zero_stores = init
+            .body
+            .statements
+            .iter()
+            .filter(|statement| {
+                matches!(
+                    &statement.kind,
+                    StatementKind::If {
+                        then_block,
+                        else_block: Block { statements },
+                        ..
+                    } if then_block.statements.is_empty() && statements.len() == 1
+                )
+            })
+            .count();
+        assert_eq!(guarded_zero_stores, 5);
+        assert!(matches!(
+            init.body
+                .statements
+                .first()
+                .map(|statement| &statement.kind),
+            Some(StatementKind::Assign {
+                value: Rvalue::InitAll,
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn zero_init_stores_remain_after_calls() {
+    fn zero_init_stores_are_guarded_after_non_state_calls() {
         let mut program = empty_program();
         program.types.push(Type::Scalar(ScalarType::F32));
         program.state.push(StateSlot {
@@ -3512,6 +3990,22 @@ mod tests {
 
         let validated = crate::validate_owned(program).expect("call barrier fixture is valid");
         let (optimized, _) = super::optimize(validated).expect("optimization should succeed");
-        assert_eq!(optimized.functions[0].body.statements.len(), 2);
+        let init = &optimized.functions[0];
+        assert_eq!(init.body.statements.len(), 3);
+        assert!(matches!(
+            init.body.statements.last().map(|statement| &statement.kind),
+            Some(StatementKind::If {
+                then_block,
+                else_block: Block { statements },
+                ..
+            }) if then_block.statements.is_empty()
+                && matches!(statements.as_slice(), [Statement {
+                    kind: StatementKind::Assign {
+                        value: Rvalue::Use(Value::Constant(ScalarValue::F32(value))),
+                        ..
+                    },
+                    ..
+                }] if value.to_bits() == 0)
+        ));
     }
 }

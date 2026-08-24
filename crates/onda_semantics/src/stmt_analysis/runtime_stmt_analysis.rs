@@ -1253,9 +1253,10 @@ fn analyze_flow_assignment(
                         }
                     }
                     _ => {
-                        target_error!(format!(
+                        target_error!(
                             "tuple element index must be a compile-time integer constant"
-                        ),);
+                                .to_string(),
+                        );
                     }
                 }
                 validate_expr(

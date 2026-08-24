@@ -408,9 +408,10 @@ pub struct EventParam {
     pub default: Option<ConstantValue>,
 }
 
-/// Per-instance storage. Physical storage for every slot is zero-initialized
-/// before the MIR `init` entry point runs, so `init` only needs to write
-/// dynamic or nonzero initial values.
+/// Per-instance storage. Full initialization clears the physical state image
+/// before the MIR `init` entry runs. The init body still describes every
+/// authored initializer so preserve-pinned initialization can restore
+/// resettable state without allocating a second image.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateSlot {
     pub name: String,

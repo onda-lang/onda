@@ -1610,11 +1610,14 @@ no effect when ordinary control flow bypasses its `await`, leaving the program
 responsible for not exposing partially prepared state.
 
 Each proc instance, including each element of a proc array, owns independent
-task continuations. A statically scheduled instance runs its block-pre activation
-at most once at logical-block begin. A runtime-indexed proc-array element runs it
-lazily on its first call in that logical block. Splitting a logical block into
-process segments never grants additional task resumptions, and a zero-frame
-begin-block segment still advances statically scheduled tasks.
+task continuations. An explicitly called block-rate proc runs its block body,
+including any reached `await`, on every call just like other block-rate proc
+code. Sample-rate proc instances scheduled statically run their block-pre
+activation at most once at logical-block begin; a runtime-indexed proc-array
+element runs it lazily on its first sample-rate call in that logical block.
+Splitting a logical block into process segments never grants additional
+resumptions to those scheduled activations, and a zero-frame begin-block
+segment still advances statically scheduled tasks.
 
 Task continuations are compiler-pinned state. Preserve-pinned initialization preserves
 them. Proc `init(all = true)` and host-level `init(FULL)` restore them to
