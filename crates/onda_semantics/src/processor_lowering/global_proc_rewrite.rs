@@ -194,7 +194,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                 let Some(api) = proc_api.get(proc_name) else {
                     return;
                 };
-                if !api.has_block {
+                if !proc_needs_block_hooks(api) {
                     return;
                 }
                 let Some(CallArg {
@@ -1115,7 +1115,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         let Some(api) = proc_api.get(&instance.proc_name) else {
             continue;
         };
-        if !api.has_block {
+        if !proc_needs_block_hooks(api) {
             continue;
         }
         runtime_managed_arrays
@@ -1205,7 +1205,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 );
                 continue;
             };
-            if !api.has_block {
+            if !proc_needs_block_hooks(api) {
                 continue;
             }
             let mut pre_args = Vec::<CallArg>::new();

@@ -101,6 +101,16 @@ fn validate_task_control_stmt_list(
     context: TaskControlContext,
     errors: &mut Vec<Diagnostic>,
 ) {
+    validate_task_control_stmts(stmts, task_names, context, 0, errors);
+}
+
+fn validate_task_control_stmts(
+    stmts: &[Stmt],
+    task_names: &HashSet<String>,
+    context: TaskControlContext,
+    loop_depth: usize,
+    errors: &mut Vec<Diagnostic>,
+) {
     for stmt in stmts {
         match stmt {
             Stmt::Expr { loc, expr } if is_yield(expr) => {
@@ -159,11 +169,24 @@ fn validate_task_control_stmt_list(
                 else_branch,
                 ..
             } => {
-                validate_task_control_stmt_list(then_branch, task_names, context, errors);
-                validate_task_control_stmt_list(else_branch, task_names, context, errors);
+                validate_task_control_stmts(then_branch, task_names, context, loop_depth, errors);
+                validate_task_control_stmts(else_branch, task_names, context, loop_depth, errors);
             }
             Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                validate_task_control_stmt_list(body, task_names, context, errors);
+                validate_task_control_stmts(body, task_names, context, loop_depth + 1, errors);
+            }
+            Stmt::Break { loc } | Stmt::Continue { loc }
+                if context == TaskControlContext::Task && loop_depth == 0 =>
+            {
+                let keyword = if matches!(stmt, Stmt::Break { .. }) {
+                    "break"
+                } else {
+                    "continue"
+                };
+                errors.push(Diagnostic::semantic_span(
+                    format!("{keyword} is only allowed inside for/while/loop bodies"),
+                    *loc,
+                ));
             }
             Stmt::Const { .. }
             | Stmt::Assign { .. }
@@ -278,7 +301,6 @@ fn validate_task_expr_access(
     task: &TaskDef,
     input_names: &HashSet<String>,
     forbidden_calls: &HashMap<String, &'static str>,
-    proc_aliases: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
@@ -303,47 +325,19 @@ fn validate_task_expr_access(
                     format!("task '{}' cannot call a processor initializer", task.name),
                     *loc,
                 ));
-            } else if proc_aliases.contains(name) || name == PROC_INDEX_CALL_SENTINEL {
-                errors.push(Diagnostic::semantic_span(
-                    if name == PROC_INDEX_CALL_SENTINEL {
-                        format!("task '{}' cannot call an indexed processor", task.name)
-                    } else {
-                        format!("task '{}' cannot call processor '{name}'", task.name)
-                    },
-                    *loc,
-                ));
             }
             for arg in args {
-                validate_task_expr_access(
-                    &arg.expr,
-                    task,
-                    input_names,
-                    forbidden_calls,
-                    proc_aliases,
-                    errors,
-                );
+                validate_task_expr_access(&arg.expr, task, input_names, forbidden_calls, errors);
             }
         }
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
-                validate_task_expr_access(
-                    value,
-                    task,
-                    input_names,
-                    forbidden_calls,
-                    proc_aliases,
-                    errors,
-                );
+                validate_task_expr_access(value, task, input_names, forbidden_calls, errors);
             }
         }
-        Expr::Index { index, .. } => validate_task_expr_access(
-            index,
-            task,
-            input_names,
-            forbidden_calls,
-            proc_aliases,
-            errors,
-        ),
+        Expr::Index { index, .. } => {
+            validate_task_expr_access(index, task, input_names, forbidden_calls, errors)
+        }
         Expr::Slice {
             selector,
             channel,
@@ -352,79 +346,30 @@ fn validate_task_expr_access(
             ..
         } => {
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                validate_task_expr_access(
-                    coordinate,
-                    task,
-                    input_names,
-                    forbidden_calls,
-                    proc_aliases,
-                    errors,
-                );
+                validate_task_expr_access(coordinate, task, input_names, forbidden_calls, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
-            validate_task_expr_access(
-                &spec.size,
-                task,
-                input_names,
-                forbidden_calls,
-                proc_aliases,
-                errors,
-            );
+            validate_task_expr_access(&spec.size, task, input_names, forbidden_calls, errors);
             if let Some(values) = init {
                 for value in values {
-                    validate_task_expr_access(
-                        value,
-                        task,
-                        input_names,
-                        forbidden_calls,
-                        proc_aliases,
-                        errors,
-                    );
+                    validate_task_expr_access(value, task, input_names, forbidden_calls, errors);
                 }
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            validate_task_expr_access(
-                lhs,
-                task,
-                input_names,
-                forbidden_calls,
-                proc_aliases,
-                errors,
-            );
-            validate_task_expr_access(
-                rhs,
-                task,
-                input_names,
-                forbidden_calls,
-                proc_aliases,
-                errors,
-            );
+            validate_task_expr_access(lhs, task, input_names, forbidden_calls, errors);
+            validate_task_expr_access(rhs, task, input_names, forbidden_calls, errors);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                validate_task_expr_access(
-                    arg,
-                    task,
-                    input_names,
-                    forbidden_calls,
-                    proc_aliases,
-                    errors,
-                );
+                validate_task_expr_access(arg, task, input_names, forbidden_calls, errors);
             }
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            validate_task_expr_access(
-                expr,
-                task,
-                input_names,
-                forbidden_calls,
-                proc_aliases,
-                errors,
-            )
+            validate_task_expr_access(expr, task, input_names, forbidden_calls, errors)
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
@@ -436,7 +381,6 @@ fn validate_task_body_access(
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
     forbidden_calls: &HashMap<String, &'static str>,
-    proc_aliases: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
     for statement in statements {
@@ -460,52 +404,27 @@ fn validate_task_body_access(
                         *loc,
                     ));
                 }
-                validate_task_expr_access(
-                    expr,
-                    task,
-                    input_names,
-                    forbidden_calls,
-                    proc_aliases,
-                    errors,
-                );
+                validate_task_expr_access(expr, task, input_names, forbidden_calls, errors);
             }
-            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => validate_task_expr_access(
-                expr,
-                task,
-                input_names,
-                forbidden_calls,
-                proc_aliases,
-                errors,
-            ),
-            Stmt::Const { decl, .. } => validate_task_expr_access(
-                &decl.expr,
-                task,
-                input_names,
-                forbidden_calls,
-                proc_aliases,
-                errors,
-            ),
+            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                validate_task_expr_access(expr, task, input_names, forbidden_calls, errors)
+            }
+            Stmt::Const { decl, .. } => {
+                validate_task_expr_access(&decl.expr, task, input_names, forbidden_calls, errors)
+            }
             Stmt::If {
                 cond,
                 then_branch,
                 else_branch,
                 ..
             } => {
-                validate_task_expr_access(
-                    cond,
-                    task,
-                    input_names,
-                    forbidden_calls,
-                    proc_aliases,
-                    errors,
-                );
+                validate_task_expr_access(cond, task, input_names, forbidden_calls, errors);
                 validate_task_body_access(
                     then_branch,
                     task,
                     input_names,
                     output_names,
                     forbidden_calls,
-                    proc_aliases,
                     errors,
                 );
                 validate_task_body_access(
@@ -514,7 +433,6 @@ fn validate_task_body_access(
                     input_names,
                     output_names,
                     forbidden_calls,
-                    proc_aliases,
                     errors,
                 );
             }
@@ -529,14 +447,7 @@ fn validate_task_body_access(
                     .into_iter()
                     .flatten()
                 {
-                    validate_task_expr_access(
-                        expr,
-                        task,
-                        input_names,
-                        forbidden_calls,
-                        proc_aliases,
-                        errors,
-                    );
+                    validate_task_expr_access(expr, task, input_names, forbidden_calls, errors);
                 }
                 validate_task_body_access(
                     body,
@@ -544,26 +455,17 @@ fn validate_task_body_access(
                     input_names,
                     output_names,
                     forbidden_calls,
-                    proc_aliases,
                     errors,
                 );
             }
             Stmt::While { cond, body, .. } => {
-                validate_task_expr_access(
-                    cond,
-                    task,
-                    input_names,
-                    forbidden_calls,
-                    proc_aliases,
-                    errors,
-                );
+                validate_task_expr_access(cond, task, input_names, forbidden_calls, errors);
                 validate_task_body_access(
                     body,
                     task,
                     input_names,
                     output_names,
                     forbidden_calls,
-                    proc_aliases,
                     errors,
                 );
             }
@@ -634,25 +536,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
             .map(|name| (name.clone(), "top-level event")),
     );
     top_forbidden_calls.extend(top_task_names.iter().map(|name| (name.clone(), "task")));
-    let top_proc_aliases = program
-        .blocks
-        .iter()
-        .find_map(|block| match block {
-            Block::Init(init) => Some(init.body.as_slice()),
-            _ => None,
-        })
-        .into_iter()
-        .flatten()
-        .filter_map(|stmt| match stmt {
-            Stmt::Assign {
-                target: AssignTarget::Var(name),
-                expr: Expr::UserCall { name: ctor, .. },
-                ..
-            } if proc_names.contains(ctor) => Some(name.clone()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-
     if !top_tasks.is_empty() {
         let mut members = HashMap::<String, &'static str>::new();
         for (name, kind) in program.blocks.iter().filter_map(|block| match block {
@@ -778,7 +661,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
             &top_input_names,
             &top_output_names,
             &top_forbidden_calls,
-            &top_proc_aliases,
             errors,
         );
     }
@@ -890,20 +772,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                 .map(|event| (event.name.clone(), "processor event")),
         );
         forbidden_calls.extend(task_names.iter().map(|name| (name.clone(), "task")));
-        let proc_aliases = proc
-            .init
-            .body
-            .iter()
-            .filter_map(|stmt| match stmt {
-                Stmt::Assign {
-                    target: AssignTarget::Var(name),
-                    expr: Expr::UserCall { name: ctor, .. },
-                    ..
-                } if proc_names.contains(ctor) => Some(name.clone()),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
-
         validate_task_member_names(proc, errors);
         if !proc.tasks.is_empty() && proc.graph.is_some() {
             errors.push(Diagnostic::semantic_span(
@@ -928,7 +796,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                 &input_names,
                 &output_names,
                 &forbidden_calls,
-                &proc_aliases,
                 errors,
             );
         }
@@ -4091,6 +3958,33 @@ mod tests {
     }
 
     #[test]
+    fn task_loop_control_requires_an_enclosing_loop() {
+        let top_level = validate(
+            "task load():\n  if true:\n    break\n  continue\nblock:\n  await load()\n  sample:\n    out1 = 0.0\n",
+        );
+        for keyword in ["break", "continue"] {
+            assert!(
+                top_level.iter().any(|error| error
+                    .message
+                    .contains(&format!("{keyword} is only allowed inside"))),
+                "missing {keyword} diagnostic in {top_level:?}"
+            );
+        }
+
+        let proc_task = validate(
+            "proc P:\n  task load():\n    break\n  block:\n    await load()\n    sample:\n      out1 = 0.0\n",
+        );
+        assert!(proc_task
+            .iter()
+            .any(|error| error.message.contains("break is only allowed inside")));
+
+        let valid = validate(
+            "task load():\n  while true:\n    break\n  for i in 0..2:\n    continue\nblock:\n  await load()\n  sample:\n    out1 = 0.0\n",
+        );
+        assert!(valid.is_empty(), "unexpected diagnostics: {valid:?}");
+    }
+
+    #[test]
     fn task_locals_use_shared_expression_typing() {
         let source = r#"
 struct Counter:
@@ -4309,7 +4203,7 @@ proc P:
     }
 
     #[test]
-    fn rejects_task_io_and_processor_calls() {
+    fn rejects_task_io_access() {
         let errors = validate(
             r#"
 proc Child:
@@ -4333,14 +4227,114 @@ proc Owner:
         for expected in [
             "cannot read audio input 'in1'",
             "cannot write processor outputs",
-            "cannot call processor 'child'",
-            "cannot call an indexed processor",
         ] {
             assert!(
                 errors.iter().any(|error| error.message.contains(expected)),
                 "missing '{expected}' in {errors:?}"
             );
         }
+    }
+
+    #[test]
+    fn task_proc_calls_follow_ordinary_rate_rules() {
+        let block_rate = r#"
+proc Meter:
+  kouts:
+    value
+  block:
+    value = 1.0
+
+proc Owner:
+  init:
+    meter = Meter()
+    meters: Meter[2] = Meter()
+    pin result = 0.0
+  def read_meter():
+    return meter()
+  task prepare():
+    result = meter() + meters[0]() + read_meter()
+    yield
+  block:
+    await prepare()
+    sample:
+      out1 = result
+
+init:
+  owner = Owner()
+sample:
+  out1 = owner()
+"#;
+        let typed = analyze(parse_program(block_rate).expect("task source should parse"))
+            .expect("direct, indexed, and def-mediated block-rate proc calls should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("block-rate proc calls in tasks should lower to valid MIR");
+
+        let sample_rate = r#"
+proc Voice:
+  sample:
+    out1 = 1.0
+
+proc Owner:
+  init:
+    voice = Voice()
+    voices: Voice[2] = Voice()
+  def read_voice():
+    return voice()
+  task prepare():
+    __TASK_BODY__
+    yield
+  block:
+    await prepare()
+    sample:
+      out1 = 0.0
+
+init:
+  owner = Owner()
+sample:
+  out1 = owner()
+"#;
+        for (kind, body) in [
+            ("direct", "value = voice()"),
+            ("indexed", "value = voices[0]()"),
+            ("def-mediated", "value = read_voice()"),
+        ] {
+            let source = sample_rate.replace("__TASK_BODY__", body);
+            let errors = analyze(parse_program(&source).expect("task source should parse"))
+                .expect_err(&format!("{kind} sample-rate proc call should be rejected"));
+            assert!(
+                errors.iter().any(|error| {
+                    error.message.contains("sample-rate proc")
+                        && error.message.contains("not provably sample-only")
+                }),
+                "unexpected diagnostics for {kind} call: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn top_level_task_can_call_block_rate_proc() {
+        let source = r#"
+proc Meter:
+  kouts:
+    value
+  block:
+    value = 1.0
+
+init:
+  meter = Meter()
+  pin result = 0.0
+task prepare():
+  result = meter()
+  yield
+block:
+  await prepare()
+  sample:
+    out1 = result
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("a top-level task should allow block-rate proc calls");
+        lower_program_to_optimized_mir(&typed)
+            .expect("a top-level block-rate proc call should lower to valid MIR");
     }
 
     #[test]

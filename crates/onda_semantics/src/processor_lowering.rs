@@ -32,6 +32,10 @@ fn is_builtin_proc_init_event_name(name: &str) -> bool {
     name == BUILTIN_PROC_INIT_EVENT_NAME
 }
 
+fn proc_needs_block_hooks(api: &ProcApi) -> bool {
+    api.has_block && api.outputs.timing == OutputTiming::Sample
+}
+
 pub(crate) fn proc_local_bind_hidden_def_name(owner_proc: &str, local_name: &str) -> String {
     proc_local_defs::proc_local_hidden_def_name(owner_proc, local_name)
 }

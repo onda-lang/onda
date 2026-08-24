@@ -1902,6 +1902,62 @@ sample:
     }
 
     #[test]
+    fn task_can_step_block_rate_child_procs() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+proc Counter:
+  kouts:
+    value
+  init:
+    count: i32 = 0
+  block:
+    count += 1
+    value = f32(count)
+
+proc Owner:
+  init:
+    counter = Counter()
+    pin result = 0.0
+  def step_counter():
+    return counter()
+  task prepare():
+    result = counter()
+    yield
+    result += step_counter()
+  block:
+    await prepare()
+    sample:
+      out1 = result
+
+init:
+  owner = Owner()
+sample:
+  out1 = owner()
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("yielding task should process");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("completing task should process");
+        assert_eq!(output, [3.0]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("completed task should fall through");
+        assert_eq!(output, [3.0]);
+    }
+
+    #[test]
     fn top_level_task_yields_resumes_and_resets() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(

@@ -651,7 +651,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                 let Some(api) = proc_api.get(proc_name) else {
                     return;
                 };
-                if !api.has_block {
+                if !proc_needs_block_hooks(api) {
                     return;
                 }
                 let Some(CallArg {
@@ -1479,7 +1479,7 @@ fn generate_nested_wrapper_defs(
                 let first_slot = slots.first()?;
                 let instance = callee_nested_instances.get(first_slot)?;
                 let api = proc_api.get(&instance.proc_name)?;
-                if !api.has_block {
+                if !proc_needs_block_hooks(api) {
                     return None;
                 }
                 let prefixed_base = nested_field_name(&nested_path, array_base);
@@ -1838,8 +1838,10 @@ fn generate_nested_wrapper_defs(
 
         let callee_has_effective_block = proc_api
             .get(&callee_proc_name)
-            .map(|api| api.has_block)
-            .unwrap_or(callee_proc.has_block_block);
+            .map(proc_needs_block_hooks)
+            .unwrap_or(
+                callee_proc.has_block_block && callee_proc.outs_timing == OutputTiming::Sample,
+            );
         if callee_has_effective_block {
             let mut nested_block_params = Vec::<onda_frontend::FnParamDecl>::new();
             nested_block_params.push(onda_frontend::FnParamDecl {
@@ -1921,7 +1923,7 @@ fn generate_nested_wrapper_defs(
                 let Some(api) = proc_api.get(&instance.proc_name) else {
                     continue;
                 };
-                if !api.has_block {
+                if !proc_needs_block_hooks(api) {
                     continue;
                 }
                 let mut call_args = vec![CallArg {
@@ -1979,7 +1981,7 @@ fn generate_nested_wrapper_defs(
                 let Some(api) = proc_api.get(&instance.proc_name) else {
                     continue;
                 };
-                if !api.has_block {
+                if !proc_needs_block_hooks(api) {
                     continue;
                 }
                 let mut call_args = vec![CallArg {
@@ -2904,7 +2906,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 let first_slot = slots.first()?;
                 let instance = nested_instances.get(first_slot)?;
                 let api = proc_api.get(&instance.proc_name)?;
-                if !api.has_block {
+                if !proc_needs_block_hooks(api) {
                     return None;
                 }
                 let active_field = shape
@@ -3008,7 +3010,7 @@ pub(super) fn generate_lowered_proc_blocks(
 
         let proc_has_effective_block = proc_api
             .get(&proc.name)
-            .map(|api| api.has_block && api.outputs.timing == OutputTiming::Sample)
+            .map(proc_needs_block_hooks)
             .unwrap_or(proc.has_block_block);
         if proc_has_effective_block {
             let mut block_params = Vec::<onda_frontend::FnParamDecl>::new();
@@ -3089,7 +3091,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 let Some(api) = proc_api.get(&instance.proc_name) else {
                     continue;
                 };
-                if !api.has_block {
+                if !proc_needs_block_hooks(api) {
                     continue;
                 }
                 let mut call_args = vec![CallArg {
@@ -3142,7 +3144,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 let Some(api) = proc_api.get(&instance.proc_name) else {
                     continue;
                 };
-                if !api.has_block {
+                if !proc_needs_block_hooks(api) {
                     continue;
                 }
                 let mut call_args = vec![CallArg {

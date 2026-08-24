@@ -1575,10 +1575,12 @@ block:
 
 Tasks take no arguments and return no values. They implicitly see their
 owner's params, buffers, and init-rooted state, but cannot directly read audio
-inputs, write owner outputs, call processor steps, invoke their owner's event
-handlers, or invoke other tasks. They may call builtins and non-yielding defs
-visible from the owner, and may synchronously call child-proc events, including
-the child's builtin `init(...)` event.
+inputs, write owner outputs, invoke their owner's event handlers, or invoke
+other tasks. They may call builtins and non-yielding defs visible from the
+owner, call block-rate processor steps, and synchronously call child-proc
+events, including the child's builtin `init(...)` event. Sample-rate processor
+steps remain sample-only and therefore cannot be called by a task, directly or
+through a def.
 `yield` suspends the current task; bare `return` or reaching the end completes
 it. A task runs synchronously on the process thread until one of those points;
 `yield` is a cooperative boundary, not a time budget or preemption point.
