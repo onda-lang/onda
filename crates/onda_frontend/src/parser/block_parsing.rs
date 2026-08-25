@@ -1070,6 +1070,7 @@ pub(super) fn parse_proc_block(
             default_ty: None,
             default_ty_loc: Span::ZERO,
             pinned_roots: Vec::new(),
+            compiler_scratch_roots: Vec::new(),
             body: Vec::new(),
         }),
         block_pre,

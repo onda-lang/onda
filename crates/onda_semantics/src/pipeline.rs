@@ -7961,6 +7961,15 @@ pub fn analyze_with_options(
         .flatten()
         .collect::<HashSet<_>>();
     let mut compiler_owned_state_roots = HashSet::new();
+    let compiler_scratch_state_roots = program
+        .block(BlockKind::Init)
+        .and_then(|block| match block {
+            Block::Init(init) => Some(init.compiler_scratch_roots.iter().cloned()),
+            _ => None,
+        })
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
     for (instance, proc_instance) in &top_level_proc_rewrite.global_proc_instances {
         if let Some(fields) = pinned_proc_fields.get(&proc_instance.proc_name) {
             pinned_state_roots.extend(fields.iter().map(|field| format!("{instance}.{field}")));
@@ -10679,6 +10688,12 @@ pub fn analyze_with_options(
             .filter(|name| path_or_ancestor_is_declared(name, &compiler_owned_state_roots))
             .cloned()
             .collect::<HashSet<_>>();
+        let compiler_scratch_state_roots = sorted_state
+            .iter()
+            .chain(typed_data.iter().map(|array| &array.name))
+            .filter(|name| path_or_ancestor_is_declared(name, &compiler_scratch_state_roots))
+            .cloned()
+            .collect::<HashSet<_>>();
         let mut typed_data_roots = state_array_struct_roots
             .into_iter()
             .map(|(name, info)| TypedArrayStructRoot {
@@ -10948,6 +10963,7 @@ pub fn analyze_with_options(
             state_integer_ranges,
             pinned_state_roots,
             compiler_owned_state_roots,
+            compiler_scratch_state_roots,
             in_defaults,
             in_ranges,
             dynamic_input_range_aliases,

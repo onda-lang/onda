@@ -23,23 +23,28 @@ fn parse_init_stmt_list_pair(
         } else {
             parse_stmt(stmt_pair)?
         };
-        if let Stmt::Assign {
-            target: AssignTarget::Var(root),
-            ..
-        } = &stmt
-        {
-            if pinned {
-                if !assigned_roots.insert(root.clone()) {
-                    return Err(vec![syntax_at_loc(
-                        stmt.loc().as_ref(),
-                        format!(
-                            "'pin' requires a fresh state binding; '{root}' was already assigned"
-                        ),
-                    )]);
+        if let Stmt::Assign { target, .. } = &stmt {
+            match target {
+                AssignTarget::Var(root) => {
+                    if pinned {
+                        if !assigned_roots.insert(root.clone()) {
+                            return Err(vec![syntax_at_loc(
+                                stmt.loc().as_ref(),
+                                format!(
+                                    "'pin' requires a fresh state binding; '{root}' was already assigned"
+                                ),
+                            )]);
+                        }
+                        pinned_roots.push(root.clone());
+                    } else {
+                        assigned_roots.insert(root.clone());
+                    }
                 }
-                pinned_roots.push(root.clone());
-            } else {
-                assigned_roots.insert(root.clone());
+                AssignTarget::Tuple(roots) => {
+                    debug_assert!(!pinned, "pinned tuple targets are rejected by the grammar");
+                    assigned_roots.extend(roots.iter().cloned());
+                }
+                AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
             }
         }
         stmts.push(stmt);
@@ -64,6 +69,7 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, 
                     default_ty,
                     default_ty_loc,
                     pinned_roots,
+                    compiler_scratch_roots: Vec::new(),
                     body,
                 });
             }
@@ -75,6 +81,7 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, 
         default_ty,
         default_ty_loc,
         pinned_roots: Vec::new(),
+        compiler_scratch_roots: Vec::new(),
         body: Vec::new(),
     })
 }

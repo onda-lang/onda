@@ -1554,10 +1554,15 @@ fn populate_state(
         }
         let id = onda_mir::StateId::new(mir.state.len() as u32);
         let type_id = intern_scalar_type(&mut mir.types, ty);
+        let persistence = if program.compiler_scratch_state_roots.contains(name) {
+            onda_mir::StatePersistence::InstanceScratch
+        } else {
+            onda_mir::StatePersistence::Snapshot
+        };
         mir.state.push(onda_mir::StateSlot {
             name: name.clone(),
             ty: type_id,
-            persistence: onda_mir::StatePersistence::Snapshot,
+            persistence,
             authored: !program.compiler_owned_state_roots.contains(name),
             pinned: program.pinned_state_roots.contains(name),
             integer_range: state_integer_ranges.get(name.as_str()).copied(),
@@ -1619,7 +1624,9 @@ fn populate_state(
         }
         let id = onda_mir::StateId::new(mir.state.len() as u32);
         let type_id = intern_array_type(&mut mir.types, array.elem_ty, len);
-        let persistence = if all_internal_active_names.contains(&array.name) {
+        let persistence = if all_internal_active_names.contains(&array.name)
+            || program.compiler_scratch_state_roots.contains(&array.name)
+        {
             onda_mir::StatePersistence::InstanceScratch
         } else {
             onda_mir::StatePersistence::Snapshot

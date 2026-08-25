@@ -3146,38 +3146,65 @@ block:
     #[test]
     fn task_return_inside_for_completes_without_undeclared_loop_state() {
         const BLOCK_SIZE: usize = 4;
-        let mut instance = compile_test_instance(
+        let sources = [
             r#"
 init:
   pin result: i32 = 0
 
 task prepare():
-  for i in 0..4:
-    if i == 2:
-      return
-    result += 1
+  for outer in 0..4:
+    for inner in 0..4:
+      if outer == 1:
+        if inner == 2:
+          return
+      result += 1
 
 block:
   await prepare()
   sample:
     out1 = f32(result)
 "#,
-            BLOCK_SIZE,
-            1,
-        );
-        let mut output = [99.0_f32; BLOCK_SIZE];
-        unsafe {
-            bind_output(
-                &mut instance,
-                0,
-                output.as_mut_ptr().cast(),
-                std::mem::size_of_val(&output),
-            )
-            .expect("output should bind");
-        }
+            r#"
+proc Loader:
+  init:
+    pin result: i32 = 0
 
-        process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
-        assert_eq!(output, [2.0; BLOCK_SIZE]);
+  task prepare():
+    for outer in 0..4:
+      for inner in 0..4:
+        if outer == 1:
+          if inner == 2:
+            return
+        result += 1
+
+  block:
+    await prepare()
+    sample:
+      out1 = f32(result)
+
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#,
+        ];
+
+        for source in sources {
+            let mut instance = compile_test_instance(source, BLOCK_SIZE, 1);
+            let mut output = [99.0_f32; BLOCK_SIZE];
+            unsafe {
+                bind_output(
+                    &mut instance,
+                    0,
+                    output.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&output),
+                )
+                .expect("output should bind");
+            }
+
+            process_checked(&mut instance, BLOCK_SIZE).expect("task should complete");
+            assert_eq!(output, [6.0; BLOCK_SIZE]);
+        }
     }
 
     #[test]

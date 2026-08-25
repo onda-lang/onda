@@ -541,6 +541,7 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         for (name, kind) in program.blocks.iter().filter_map(|block| match block {
             Block::Def(def) => Some((def.name.as_str(), "top-level def")),
             Block::Proc(proc) => Some((proc.name.as_str(), "processor")),
+            Block::Struct(struct_def) => Some((struct_def.name.as_str(), "struct")),
             Block::Const(decl) => Some((decl.name.as_str(), "constant")),
             _ => None,
         }) {
@@ -2187,6 +2188,7 @@ fn collect_for_frame_bindings(
                             end: format!("{}_for_{id}_end", task_symbol_stem(task_name)),
                             step: format!("{}_for_{id}_step", task_symbol_stem(task_name)),
                             ty: *var_ty,
+                            persistent: task_stmts_contain_yield(body),
                         },
                     );
                 }
@@ -2229,6 +2231,7 @@ struct TaskForFrameBinding {
     end: String,
     step: String,
     ty: PrimitiveType,
+    persistent: bool,
 }
 
 fn collect_expr_uses(expr: &Expr, uses: &mut HashSet<String>) {
@@ -2497,6 +2500,7 @@ impl TaskCfgBuilder {
                         end: format!("{var}__end"),
                         step: format!("{var}__step"),
                         ty: induction_ty,
+                        persistent: false,
                     });
                 debug_assert_eq!(frame.ty, induction_ty);
                 let end_field = frame.end;
@@ -2620,6 +2624,19 @@ fn task_stmts_contain_resume_terminator(stmts: &[Stmt]) -> bool {
     })
 }
 
+fn task_stmts_contain_yield(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Expr { expr, .. } => is_yield(expr),
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => task_stmts_contain_yield(then_branch) || task_stmts_contain_yield(else_branch),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => task_stmts_contain_yield(body),
+        _ => false,
+    })
+}
+
 fn task_stmts_have_unbound_loop_control(stmts: &[Stmt], loop_depth: usize) -> bool {
     stmts.iter().any(|stmt| match stmt {
         Stmt::Break { .. } | Stmt::Continue { .. } => loop_depth == 0,
@@ -2656,6 +2673,110 @@ fn build_task_dispatch(mut arms: Vec<Vec<Stmt>>, first_id: usize, node: &str) ->
         then_branch: build_task_dispatch(arms, first_id, node),
         else_branch: build_task_dispatch(right, last_left_id + 1, node),
     }]
+}
+
+/// Rewrites task completion into breaks from a synthetic outer loop. When a
+/// completion is nested in an authored loop, the result flag carries it through
+/// each enclosing loop without flattening otherwise structured control flow.
+fn rewrite_non_yield_task_returns(stmts: &mut Vec<Stmt>, pc: &str, result: &str) -> bool {
+    let mut rewritten = Vec::with_capacity(stmts.len());
+    let mut can_complete = false;
+    for mut stmt in std::mem::take(stmts) {
+        match &mut stmt {
+            Stmt::Return { .. } => {
+                rewritten.push(assign_var(pc, Expr::int(TASK_COMPLETE_PC)));
+                rewritten.push(assign_var(result, Expr::bool(true)));
+                rewritten.push(Stmt::Break {
+                    loc: Default::default(),
+                });
+                can_complete = true;
+                continue;
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let then_completes = rewrite_non_yield_task_returns(then_branch, pc, result);
+                let else_completes = rewrite_non_yield_task_returns(else_branch, pc, result);
+                can_complete |= then_completes || else_completes;
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                let loop_completes = rewrite_non_yield_task_returns(body, pc, result);
+                rewritten.push(stmt);
+                if loop_completes {
+                    rewritten.push(Stmt::If {
+                        loc: Default::default(),
+                        cond: Expr::var(result),
+                        then_branch: vec![Stmt::Break {
+                            loc: Default::default(),
+                        }],
+                        else_branch: Vec::new(),
+                    });
+                    can_complete = true;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        rewritten.push(stmt);
+    }
+    *stmts = rewritten;
+    can_complete
+}
+
+fn compile_non_yield_task_resume_body(
+    task_name: &str,
+    body: &[Stmt],
+    mut local_initializers: Vec<Stmt>,
+    result: &str,
+    declare_scratch: bool,
+) -> Vec<Stmt> {
+    let pc = task_pc_field(task_name);
+    let mut execution_body = body.to_vec();
+    let has_early_return = rewrite_non_yield_task_returns(&mut execution_body, &pc, result);
+    execution_body.extend([
+        assign_var(pc.clone(), Expr::int(TASK_COMPLETE_PC)),
+        assign_var(result, Expr::bool(true)),
+    ]);
+
+    local_initializers.push(assign_var(pc.clone(), Expr::int(TASK_FAILED_PC)));
+    if has_early_return {
+        execution_body.push(Stmt::Break {
+            loc: Default::default(),
+        });
+        local_initializers.push(Stmt::While {
+            loc: Default::default(),
+            cond: Expr::bool(true),
+            body: execution_body,
+        });
+    } else {
+        local_initializers.extend(execution_body);
+    }
+
+    let initialize_result = if declare_scratch {
+        typed_assign(result, PrimitiveType::Bool, Expr::bool(false))
+    } else {
+        assign_var(result, Expr::bool(false))
+    };
+    vec![
+        initialize_result,
+        Stmt::If {
+            loc: Default::default(),
+            cond: compare(
+                CmpOp::Eq,
+                Expr::var(pc.clone()),
+                Expr::int(TASK_COMPLETE_PC),
+            ),
+            then_branch: vec![assign_var(result, Expr::bool(true))],
+            else_branch: vec![Stmt::If {
+                loc: Default::default(),
+                cond: compare(CmpOp::Eq, Expr::var(pc.clone()), Expr::int(0)),
+                then_branch: local_initializers,
+                else_branch: vec![assign_var(pc, Expr::int(TASK_FAILED_PC))],
+            }],
+        },
+    ]
 }
 
 fn compile_task_resume_body(
@@ -2789,15 +2910,25 @@ fn compile_task_resume(
     params: Vec<FnParamDecl>,
     for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
 ) -> FunctionDef {
-    let mut function_body = compile_task_resume_body(
-        task_name,
-        body,
-        local_initializers,
-        TASK_NODE_LOCAL,
-        TASK_RESULT_LOCAL,
-        true,
-        for_frame_bindings,
-    );
+    let mut function_body = if task_stmts_contain_yield(body) {
+        compile_task_resume_body(
+            task_name,
+            body,
+            local_initializers,
+            TASK_NODE_LOCAL,
+            TASK_RESULT_LOCAL,
+            true,
+            for_frame_bindings,
+        )
+    } else {
+        compile_non_yield_task_resume_body(
+            task_name,
+            body,
+            local_initializers,
+            TASK_RESULT_LOCAL,
+            true,
+        )
+    };
     function_body.push(Stmt::Return {
         loc: Default::default(),
         expr: Expr::var(TASK_RESULT_LOCAL),
@@ -2823,15 +2954,20 @@ fn compile_inline_task_resume(
     local_initializers: Vec<Stmt>,
     for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
 ) -> Vec<Stmt> {
-    compile_task_resume_body(
-        task_name,
-        body,
-        local_initializers,
-        &task_inline_node_local(task_name),
-        &task_inline_result_local(task_name),
-        false,
-        for_frame_bindings,
-    )
+    let result = task_inline_result_local(task_name);
+    if task_stmts_contain_yield(body) {
+        compile_task_resume_body(
+            task_name,
+            body,
+            local_initializers,
+            &task_inline_node_local(task_name),
+            &result,
+            false,
+            for_frame_bindings,
+        )
+    } else {
+        compile_non_yield_task_resume_body(task_name, body, local_initializers, &result, false)
+    }
 }
 
 fn rewrite_task_controls(
@@ -2962,6 +3098,7 @@ struct PreparedTask {
     body: Vec<Stmt>,
     resume_local_initializers: Vec<Stmt>,
     inline_scratch_declarations: Vec<Stmt>,
+    inline_scratch_roots: Vec<String>,
     init_stmts: Vec<Stmt>,
     reset_stmts: Vec<Stmt>,
     pinned_fields: Vec<String>,
@@ -3056,18 +3193,24 @@ fn prepare_task(
     let mut pinned_fields = vec![task_pc_field(&task.name)];
     let mut reset_stmts = vec![assign_var(task_pc_field(&task.name), Expr::int(0))];
     let mut resume_local_initializers = Vec::new();
-    let inline_scratch_declarations = vec![
-        typed_assign(
-            task_inline_node_local(&task.name),
+    let suspends = task_stmts_contain_yield(&body);
+    let result_scratch = task_inline_result_local(&task.name);
+    let mut inline_scratch_roots = vec![result_scratch.clone()];
+    let mut inline_scratch_declarations = Vec::new();
+    if suspends {
+        let node_scratch = task_inline_node_local(&task.name);
+        inline_scratch_roots.push(node_scratch.clone());
+        inline_scratch_declarations.push(typed_assign(
+            node_scratch,
             PrimitiveType::I32,
             Expr::int(0),
-        ),
-        typed_assign(
-            task_inline_result_local(&task.name),
-            PrimitiveType::Bool,
-            Expr::bool(false),
-        ),
-    ];
+        ));
+    }
+    inline_scratch_declarations.push(typed_assign(
+        result_scratch,
+        PrimitiveType::Bool,
+        Expr::bool(false),
+    ));
 
     let mut local_names = locals.keys().cloned().collect::<Vec<_>>();
     local_names.sort();
@@ -3085,6 +3228,7 @@ fn prepare_task(
                 }
                 TaskResumePlacement::Inline => {
                     let scratch = names[&local].clone();
+                    inline_scratch_roots.push(scratch.clone());
                     resume_local_initializers.push(storage.declaration_stmt(scratch));
                 }
             }
@@ -3093,26 +3237,29 @@ fn prepare_task(
 
     let mut for_frame_bindings = HashMap::new();
     let mut next_for_frame_id = 0;
-    collect_for_frame_bindings(
-        &task.name,
-        &body,
-        &mut next_for_frame_id,
-        &mut for_frame_bindings,
-    );
-    let mut for_frame_fields = for_frame_bindings
-        .values()
-        .flat_map(|frame| {
-            [
-                (frame.end.clone(), frame.ty),
-                (frame.step.clone(), frame.ty),
-            ]
-        })
-        .collect::<Vec<_>>();
-    for_frame_fields.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
-    for (field, ty) in for_frame_fields {
-        init_stmts.push(typed_assign(field.clone(), ty, Expr::int(0)));
-        pinned_fields.push(field.clone());
-        reset_stmts.push(assign_var(field, Expr::int(0)));
+    if suspends {
+        collect_for_frame_bindings(
+            &task.name,
+            &body,
+            &mut next_for_frame_id,
+            &mut for_frame_bindings,
+        );
+    }
+    let mut for_frames = for_frame_bindings.values().cloned().collect::<Vec<_>>();
+    for_frames.sort_by(|lhs, rhs| lhs.end.cmp(&rhs.end));
+    for frame in for_frames {
+        for field in [frame.end, frame.step] {
+            if frame.persistent {
+                init_stmts.push(typed_assign(field.clone(), frame.ty, Expr::int(0)));
+                pinned_fields.push(field.clone());
+                reset_stmts.push(assign_var(field, Expr::int(0)));
+            } else {
+                if matches!(placement, TaskResumePlacement::Inline) {
+                    inline_scratch_roots.push(field.clone());
+                }
+                resume_local_initializers.push(typed_assign(field, frame.ty, Expr::int(0)));
+            }
+        }
     }
 
     PreparedTask {
@@ -3120,6 +3267,7 @@ fn prepare_task(
         body,
         resume_local_initializers,
         inline_scratch_declarations,
+        inline_scratch_roots,
         init_stmts,
         reset_stmts,
         pinned_fields,
@@ -3214,6 +3362,7 @@ fn lower_top_level_tasks(
     )];
     let mut pinned_fields = vec![TASK_AVAILABLE_FIELD.to_owned()];
     let mut scratch_declarations = Vec::new();
+    let mut scratch_roots = Vec::new();
     let mut expansions = HashMap::new();
     for task in tasks {
         let mut task = task.clone();
@@ -3232,6 +3381,7 @@ fn lower_top_level_tasks(
         init_prefix.extend(prepared.init_stmts);
         pinned_fields.extend(prepared.pinned_fields);
         scratch_declarations.extend(prepared.inline_scratch_declarations);
+        scratch_roots.extend(prepared.inline_scratch_roots);
         let for_frame_bindings = prepared.for_frame_bindings.clone();
         expansions.insert(
             prepared.name.clone(),
@@ -3370,6 +3520,7 @@ fn lower_top_level_tasks(
             default_ty: None,
             default_ty_loc: Default::default(),
             pinned_roots: Vec::new(),
+            compiler_scratch_roots: Vec::new(),
             body: Vec::new(),
         }));
         match program.blocks.last_mut() {
@@ -3381,6 +3532,7 @@ fn lower_top_level_tasks(
     init_prefix.append(&mut old_init);
     init.body = init_prefix;
     init.pinned_roots.extend(pinned_fields);
+    init.compiler_scratch_roots.extend(scratch_roots);
 }
 
 fn task_callable_defs(program: &Program) -> Vec<FunctionDef> {
@@ -4144,6 +4296,13 @@ sample:
             .iter()
             .any(|error| error.message.contains("conflicts with state root")));
 
+        let top_struct_conflict = validate(
+            "struct load:\n  value: i32 = 0\ntask load():\n  return\nsample:\n  out1 = 0.0\n",
+        );
+        assert!(top_struct_conflict
+            .iter()
+            .any(|error| error.message.contains("conflicts with struct")));
+
         let top_graph = validate("task load():\n  return\ngraph:\n  source() >> out1\n");
         assert!(top_graph.iter().any(|error| error
             .message
@@ -4464,6 +4623,49 @@ sample:
             .state
             .iter()
             .any(|slot| { slot.name == "loader.progress" && slot.pinned }));
+    }
+
+    #[test]
+    fn top_level_task_dispatch_temporaries_are_instance_scratch() {
+        let source = r#"
+init:
+  pin progress: i32 = 0
+task prepare():
+  progress += 1
+  yield
+  progress += 1
+block:
+  await prepare()
+  sample:
+    out1 = f32(progress)
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("task source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("task source should lower");
+
+        for name in [
+            task_inline_node_local("prepare"),
+            task_inline_result_local("prepare"),
+        ] {
+            let slot = mir
+                .state
+                .iter()
+                .find(|slot| slot.name == name)
+                .unwrap_or_else(|| panic!("missing inline task scratch state '{name}'"));
+            assert_eq!(
+                slot.persistence,
+                onda_mir::StatePersistence::InstanceScratch
+            );
+            assert!(!slot.pinned);
+        }
+
+        let pc = mir
+            .state
+            .iter()
+            .find(|slot| slot.name == task_pc_field("prepare"))
+            .expect("missing task program counter");
+        assert_eq!(pc.persistence, onda_mir::StatePersistence::Snapshot);
+        assert!(pc.pinned);
     }
 
     #[test]
@@ -5047,7 +5249,7 @@ sample:
     }
 
     #[test]
-    fn task_for_with_early_return_has_complete_cfg_storage() {
+    fn non_yield_task_with_early_return_keeps_structured_loop_storage() {
         let source = r#"
 init:
   pin result: i32 = 0
@@ -5066,8 +5268,42 @@ block:
 
         let typed = analyze(parse_program(source).expect("task source should parse"))
             .expect("an early task return inside a for loop should analyze");
-        lower_program_to_optimized_mir(&typed)
+        let mir = lower_program_to_optimized_mir(&typed)
             .expect("an early task return inside a for loop should lower to valid MIR");
+        let generated_stem = task_symbol_stem("prepare");
+        assert!(mir.state.iter().all(|slot| {
+            !slot.name.starts_with(&format!("{generated_stem}_for_"))
+                && slot.name != task_inline_node_local("prepare")
+        }));
+    }
+
+    #[test]
+    fn return_only_loop_frames_are_not_persisted_by_a_later_yield() {
+        let source = r#"
+init:
+  pin result: i32 = 0
+
+task prepare():
+  for i in 0..4:
+    if i == result:
+      return
+  yield
+
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#;
+
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("a return-only loop before a yield should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("a return-only loop before a yield should lower to valid MIR");
+        let frame_prefix = format!("{}_for_", task_symbol_stem("prepare"));
+        assert!(mir
+            .state
+            .iter()
+            .all(|slot| !slot.name.starts_with(&frame_prefix)));
     }
 
     #[test]

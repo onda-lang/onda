@@ -2308,6 +2308,26 @@ class MirCompiler {
       : this.module.i32.const(PROCESSOR_EXECUTION_OK);
   }
 
+  fullInitClearRanges() {
+    const ranges = [];
+    let cursor = 0;
+    for (const [stateId, slot] of this.mir.state.entries()) {
+      if (slot.pinned !== true) continue;
+      const layout = this.stateLayout[stateId];
+      if (cursor < layout.offset) {
+        ranges.push({ offset: cursor, size: layout.offset - cursor });
+      }
+      cursor = layout.offset + layout.size;
+    }
+    if (cursor < this.stateLayout.byteLength) {
+      ranges.push({
+        offset: cursor,
+        size: this.stateLayout.byteLength - cursor,
+      });
+    }
+    return ranges;
+  }
+
   addAbiWrappers() {
     const initId = this.mir.entry_points.init;
     const processId = this.mir.entry_points.process;
@@ -2319,6 +2339,21 @@ class MirCompiler {
         binaryen.Features.BulkMemory |
         binaryen.Features.BulkMemoryOpt |
         (this.options.simd ? binaryen.Features.SIMD128 : 0),
+    );
+    // Pinned declarations fully initialize their own slots on this path.
+    // Clear only the complementary ranges, including layout padding, so large
+    // pinned arrays are never written once here and again by their initializer.
+    const fullInitClears = this.fullInitClearRanges().map(({ offset, size }) =>
+      this.module.memory.fill(
+        offset === 0
+          ? this.module.local.get(1, binaryen.i32)
+          : this.module.i32.add(
+            this.module.local.get(1, binaryen.i32),
+            this.module.i32.const(offset),
+          ),
+        this.module.i32.const(0),
+        this.module.i32.const(size),
+      )
     );
     const initBody = this.module.block(null, [
       ...this.resetRuntimeFailure(initId),
@@ -2337,14 +2372,14 @@ class MirCompiler {
           this.module.i32.const(0),
         ),
       ),
-      this.module.if(
-        this.module.global.get(INIT_ALL_GLOBAL, binaryen.i32),
-        this.module.memory.fill(
-          this.module.local.get(1, binaryen.i32),
-          this.module.i32.const(0),
-          this.module.i32.const(this.stateLayout.byteLength ?? 0),
-        ),
-      ),
+      ...(fullInitClears.length === 0
+        ? []
+        : [
+          this.module.if(
+            this.module.global.get(INIT_ALL_GLOBAL, binaryen.i32),
+            this.module.block(null, fullInitClears),
+          ),
+        ]),
       this.module.call(this.functionNames[initId], [], binaryen.none),
       this.executionStatus(initId),
     ], binaryen.i32);

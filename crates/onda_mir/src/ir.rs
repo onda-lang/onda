@@ -411,7 +411,9 @@ pub struct EventParam {
 /// Per-instance storage. Full initialization clears the physical state image
 /// before the MIR `init` entry runs. The init body still describes every
 /// authored initializer so preserve-pinned initialization can restore
-/// resettable state without allocating a second image.
+/// resettable state without allocating a second image. Pinned declarations
+/// fully overwrite their own slots on the full-init path, allowing backends
+/// to exclude those bytes from the physical pre-clear.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateSlot {
     pub name: String,

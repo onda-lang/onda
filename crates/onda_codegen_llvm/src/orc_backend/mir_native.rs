@@ -516,6 +516,37 @@ fn align_up_checked(value: usize, align: usize) -> Result<usize, MirCodegenError
     }
 }
 
+fn full_init_clear_ranges(
+    program: &Program,
+    layouts: &NativeLayouts,
+) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut cursor = 0;
+    for (index, slot) in program.state.iter().enumerate() {
+        if !slot.pinned {
+            continue;
+        }
+        let start = layouts.state.offsets[index];
+        if cursor < start {
+            ranges.push(cursor..start);
+        }
+        let end = start + layouts.type_sizes[slot.ty.index()];
+        debug_assert!(cursor <= start && end <= layouts.state.size);
+        cursor = end;
+    }
+    if cursor < layouts.state.size {
+        ranges.push(cursor..layouts.state.size);
+    }
+    ranges
+}
+
+fn alignment_at_byte_offset(base_alignment: usize, offset: usize) -> usize {
+    if offset == 0 {
+        return base_alignment;
+    }
+    base_alignment.min(1usize << offset.trailing_zeros())
+}
+
 fn interface_port_layout(
     program: &Program,
     ids: impl IntoIterator<Item = onda_mir::TypeId>,
@@ -5312,24 +5343,37 @@ unsafe fn build_entry_runtime_context(
                 c_name("init_all")?.as_ptr(),
             );
             fields[INIT_ALL_CONTEXT_INDEX as usize] = all;
-            let byte_count = LLVMBuildSelect(
-                builder,
-                all,
-                LLVMConstInt(
-                    LLVMInt64TypeInContext(module.context),
-                    module.layouts.state.size as u64,
-                    0,
-                ),
-                LLVMConstInt(LLVMInt64TypeInContext(module.context), 0, 0),
-                c_name("init_clear_bytes")?.as_ptr(),
-            );
-            LLVMBuildMemSet(
-                builder,
-                fields[6],
-                LLVMConstInt(LLVMInt8TypeInContext(module.context), 0, 0),
-                byte_count,
-                module.layouts.state.alignment as u32,
-            );
+            let clear = append_block(module.context, function, "init_clear")?;
+            let initialized = append_block(module.context, function, "init_cleared")?;
+            LLVMBuildCondBr(builder, all, clear, initialized);
+
+            LLVMPositionBuilderAtEnd(builder, clear);
+            // Pinned declarations run on this path and fully overwrite their
+            // slots. Clear only the complementary byte ranges so large pinned
+            // arrays are not written twice. Padding remains in the clear set,
+            // keeping the complete physical state image initialized.
+            for range in full_init_clear_ranges(module.program, module.layouts) {
+                let destination = byte_offset_ptr(
+                    module.context,
+                    builder,
+                    fields[6],
+                    range.start,
+                    "init_clear_range",
+                )?;
+                LLVMBuildMemSet(
+                    builder,
+                    destination,
+                    LLVMConstInt(LLVMInt8TypeInContext(module.context), 0, 0),
+                    LLVMConstInt(
+                        LLVMInt64TypeInContext(module.context),
+                        (range.end - range.start) as u64,
+                        0,
+                    ),
+                    alignment_at_byte_offset(module.layouts.state.alignment, range.start) as u32,
+                );
+            }
+            LLVMBuildBr(builder, initialized);
+            LLVMPositionBuilderAtEnd(builder, initialized);
         }
         FunctionKind::Process => {
             fields[6] = LLVMGetParam(function, 0);
@@ -9669,6 +9713,58 @@ sample:
             init.contains("state_slot"),
             "live init must restore an explicitly zero-initialized state:\n{init}"
         );
+    }
+
+    #[test]
+    fn full_init_does_not_preclear_pinned_zero_arrays() {
+        let sources = [
+            r#"
+init:
+  pin data: f32[4096]
+
+sample:
+  out1 = data[0]
+"#,
+            r#"
+proc Loader:
+  init:
+    pin data: f32[4096]
+
+  sample:
+    out1 = data[0]
+
+init:
+  loader = Loader()
+
+sample:
+  out1 = loader()
+"#,
+        ];
+
+        for source in sources {
+            let (_, mir) = source_program(source, 1);
+            let ir = lower_mir_to_llvm_ir_with_options(
+                &mir,
+                MirCompileOptions {
+                    fast_math: false,
+                    opt_level: TargetOptLevel::O3,
+                },
+            )
+            .expect("pinned zero array should emit LLVM IR");
+            let init = ir
+                .split("@onda_processor_init")
+                .nth(1)
+                .and_then(|tail| tail.split("\n}").next())
+                .expect("onda_processor_init definition");
+            let memset_count = init
+                .lines()
+                .filter(|line| line.contains("call void @llvm.memset"))
+                .count();
+            assert_eq!(
+                memset_count, 1,
+                "the pinned array initializer must be the only full-size clear:\n{init}"
+            );
+        }
     }
 
     #[test]

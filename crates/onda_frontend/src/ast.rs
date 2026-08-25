@@ -348,6 +348,9 @@ pub struct InitBlock {
     pub default_ty: Option<DeclType>,
     pub default_ty_loc: Span,
     pub pinned_roots: Vec<String>,
+    /// Compiler-generated roots that are live only within one entry-point
+    /// activation and must not participate in portable snapshots.
+    pub compiler_scratch_roots: Vec<String>,
     pub body: Vec<Stmt>,
 }
 

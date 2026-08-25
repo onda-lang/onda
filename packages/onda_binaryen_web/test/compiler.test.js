@@ -552,6 +552,82 @@ test("serializes a reusable Wasm artifact with integrity metadata", async () => 
   );
 });
 
+test("full initialization clears around pinned arrays without preclearing them", async () => {
+  const mir = executableMir();
+  mir.types.push(
+    type("array", { element: 0, len: 4096 }),
+    type("slice", { element: "f32", access: "read_write" }),
+  );
+  mir.state.push({
+    name: "pinned",
+    ty: 3,
+    persistence: "snapshot",
+    authored: true,
+    pinned: true,
+  });
+  mir.functions[0].locals.push(
+    { name: "$pinned", ty: 4 },
+    { name: "$init_all", ty: 1 },
+  );
+  mir.functions[0].body.statements.push(
+    assign(place("local", 1), { kind: "init_all" }),
+    statement("if", {
+      condition: local(1),
+      then_block: {
+        statements: [
+          assign(place("local", 0), {
+            kind: "make_slice",
+            data: {
+              source: { kind: "place", data: place("state", 1) },
+              start: constant("i32", 0),
+              len: constant("i32", 4096),
+              bounds: "unchecked",
+              access: "read_write",
+            },
+          }),
+          statement("slice_fill", {
+            destination: local(0),
+            value: constant("f32", 0),
+          }),
+        ],
+      },
+      else_block: { statements: [] },
+    }),
+  );
+
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  const initWrapper = emittedParameterizedFunction(
+    artifact.wat,
+    "$onda.abi.init",
+  );
+  const clearSizes = [...initWrapper.matchAll(
+    /memory\.fill[\s\S]*?\(i32\.const 0\)[\s\S]*?\(i32\.const (\d+)\)/g,
+  )].map((match) => Number(match[1]));
+  assert.deepEqual(clearSizes, [4, 12]);
+
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init } = instance.exports;
+  const params = Number(__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  const stateSize = artifact.metadata.runtime.state_size_bytes;
+  const bytes = new Uint8Array(memory.buffer, state, stateSize);
+  bytes.fill(0xff);
+  assert.equal(onda_processor_init(params, state, 1), 0);
+  assert.ok(bytes.every((byte) => byte === 0));
+
+  const pinnedOffset =
+    artifact.metadata.metadata.states[1].physical_state_byte_offset;
+  const values = new Float32Array(memory.buffer, state + pinnedOffset, 4096);
+  values[0] = 1.25;
+  values[4095] = -2.5;
+  assert.equal(onda_processor_init(params, state, 0), 0);
+  assert.equal(values[0], 1.25);
+  assert.equal(values[4095], -2.5);
+  assert.equal(onda_processor_init(params, state, 1), 0);
+  assert.equal(values[0], 0);
+  assert.equal(values[4095], 0);
+});
+
 test("passes an addressable slice element to a reference parameter", async () => {
   const mir = executableMir();
   mir.types.push(

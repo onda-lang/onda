@@ -111,6 +111,7 @@ pub struct TypedProgram {
     pub(crate) state_integer_ranges: HashMap<String, TypedIntegerRange>,
     pub(crate) pinned_state_roots: HashSet<String>,
     pub(crate) compiler_owned_state_roots: HashSet<String>,
+    pub(crate) compiler_scratch_state_roots: HashSet<String>,
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
     pub(crate) dynamic_input_range_aliases: HashMap<String, String>,

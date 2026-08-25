@@ -4736,6 +4736,17 @@ fn rejects_pin_outside_direct_init_bindings() {
 }
 
 #[test]
+fn pin_freshness_accounts_for_tuple_bindings() {
+    let diagnostics = parse_program(
+        "init:\n  (value, other) = (1.0, 2.0)\n  pin value = 3.0\nsample:\n  out1 = value\n",
+    )
+    .expect_err("a tuple-bound root must not be redeclared as pinned state");
+    assert!(diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("'pin' requires a fresh state binding; 'value' was already assigned")));
+}
+
+#[test]
 fn parameter_domains_remain_distinct_from_integer_binding_ranges() {
     let src = r#"
 params:

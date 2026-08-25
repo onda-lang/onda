@@ -116,7 +116,11 @@ try {
     )
   );
   const processor = new WorkletProcessor({
-    processorOptions: { wasmBytes: artifact.wasm, metadata: artifact.metadata },
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+      initialize: true,
+    },
   });
   processor.port.onmessage({
     data: {
@@ -170,6 +174,7 @@ try {
     processorOptions: {
       wasmBytes: bufferArtifact.wasm,
       metadata: bufferArtifact.metadata,
+      initialize: true,
       buffers: {
         table: {
           data: new Float32Array([1, 2, 3, 4]),
@@ -229,6 +234,7 @@ try {
     processorOptions: {
       wasmBytes: sliceArtifact.wasm,
       metadata: sliceArtifact.metadata,
+      initialize: true,
     },
   });
   const sliceEvent = sliceArtifact.metadata.metadata.events[0];

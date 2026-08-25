@@ -175,6 +175,7 @@ fn lower_top_level_graph_block(
                 default_ty: None,
                 default_ty_loc: Default::default(),
                 pinned_roots: Vec::new(),
+                compiler_scratch_roots: Vec::new(),
                 body: lowered.init_stmts,
             }));
         }
