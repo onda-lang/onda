@@ -134,10 +134,18 @@ fn is_proc_event_stmt_call(
     expr: &Expr,
     nested_proc_instances: &HashMap<String, ProcNestedState>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    proc_event_names: &HashSet<String>,
 ) -> bool {
-    let Expr::UserCall { name, .. } = expr else {
+    let Expr::UserCall { name, args, .. } = expr else {
         return false;
     };
+    if proc_event_names.contains(name)
+        && args.first().is_some_and(|arg| {
+            matches!(&arg.expr, Expr::Index { base, .. } if proc_array_roots.contains_key(base))
+        })
+    {
+        return true;
+    }
     let Some((base, _event_name)) = split_dot_path(name) else {
         return false;
     };
@@ -792,7 +800,12 @@ fn analyze_flow_stmt(
                     return;
                 }
                 let expr = rewrite_proc_alias_calls_for_validation(expr, &state.local_proc_aliases);
-                if is_proc_event_stmt_call(&expr, nested_proc_instances, proc_array_roots) {
+                if is_proc_event_stmt_call(
+                    &expr,
+                    nested_proc_instances,
+                    proc_array_roots,
+                    common.proc_event_names,
+                ) {
                     if let Expr::UserCall { args, .. } = &expr {
                         for arg in args {
                             analyze_proc_event_arg_expr(

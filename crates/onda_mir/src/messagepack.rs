@@ -55,7 +55,9 @@ pub fn from_messagepack(bytes: &[u8]) -> Result<ValidatedProgram, MirMessagePack
 /// `BoundsMode::Unchecked` operation is in bounds for all executions reaching
 /// it. Every declared `IntegerRangeInvariant` must contain every value
 /// observable from that storage, including values supplied by callers or
-/// restored from external state.
+/// restored from external state. Every pinned state slot must be fully
+/// overwritten on every successful full-initialization path before it can be
+/// observed.
 pub unsafe fn from_messagepack_with_producer_proofs(
     bytes: &[u8],
 ) -> Result<ValidatedProgram, MirMessagePackError> {

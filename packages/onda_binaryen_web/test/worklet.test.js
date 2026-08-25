@@ -561,7 +561,7 @@ test("AudioWorklet supports default and full in-place initialization", () => {
   processor.port.onmessage({ data: { type: "init", mode: 0 } });
   assert.equal(view.getFloat64(initializedAddress, true), 7.25);
   assert.equal(view.getFloat64(pinnedAddress, true), 200);
-  assert.equal(processor.blockCursor, 0);
+  assert.equal(processor.blockCursor, 3);
   assert.deepEqual(processor.port.messages, []);
 
   view.setFloat64(initializedAddress, 100, true);
@@ -611,7 +611,7 @@ test("AudioWorklet snapshots persistent state and restores from a post-init base
   });
   assert.equal(view.getFloat64(rememberedAddress, true), 42.5);
   assert.equal(view.getFloat64(scratchAddress, true), 9);
-  assert.equal(processor.blockCursor, 0);
+  assert.equal(processor.blockCursor, 3);
   assert.deepEqual(processor.port.messages.at(-1), {
     type: "onda-ok",
     operation: "restore-snapshot",
@@ -767,6 +767,40 @@ test("AudioWorklet segments arbitrary callback sizes across compile blocks", () 
     [0, 3, 1],
   ]);
   assert.equal(processor.blockCursor, 3);
+});
+
+test("AudioWorklet live initialization preserves compile-block scheduling", () => {
+  const artifact = compileMir(f64PassthroughMir());
+  const processor = new WorkletProcessor({
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+    },
+  });
+  const calls = [];
+  const invoke = processor.invokeProcessSegment.bind(processor);
+  processor.invokeProcessSegment = (startFrame, frames, flags) => {
+    calls.push([startFrame, frames, flags]);
+    return invoke(startFrame, frames, flags);
+  };
+
+  assert.equal(
+    processor.process(
+      [[Float32Array.from([1, 2, 3])]],
+      [[new Float32Array(3)]],
+    ),
+    true,
+  );
+  processor.init(0);
+  assert.equal(
+    processor.process([[Float32Array.of(4)]], [[new Float32Array(1)]]),
+    true,
+  );
+
+  assert.deepEqual(calls, [
+    [0, 3, 1],
+    [3, 1, 2],
+  ]);
 });
 
 test("AudioWorklet reports generated execution failures and permits retry", () => {

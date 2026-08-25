@@ -369,13 +369,17 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.blockCursor = 0;
   }
 
-  commitInitializedState() {
+  commitInitializedState(blockCursor) {
     this.initialized = true;
     this.process = this.processInitialized;
-    this.blockCursor = 0;
+    this.blockCursor = blockCursor;
   }
 
   runInitialization(mode, afterInitialize) {
+    // Reinitializing state does not create a compile-block boundary. Retain
+    // the host-side position so the next process segment cannot synthesize an
+    // extra BEGIN_BLOCK or postpone the matching END_BLOCK.
+    const blockCursor = this.initialized ? this.blockCursor : 0;
     // Generated initialization mutates the live image in place. Stop exposing
     // it before entering Wasm so a failure, including one in snapshot overlay,
     // leaves the processor on the silent pending path.
@@ -390,7 +394,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       "processor init",
     );
     afterInitialize?.();
-    this.commitInitializedState();
+    this.commitInitializedState(blockCursor);
   }
 
   requireInitialized(operation) {

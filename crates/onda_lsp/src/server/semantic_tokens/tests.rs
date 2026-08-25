@@ -1501,3 +1501,94 @@ fn semantic_tokens_work_for_convolution_onda() {
     let reset = find_tokens_named(&tokens, &source, "reset");
     assert!(!reset.is_empty(), "reset should be highlighted");
 }
+
+#[test]
+fn semantic_tokens_index_top_level_and_proc_task_scopes() {
+    let source = r#"init:
+  top_state = 1
+task prepare_top():
+  top_local = top_state
+  yield
+block:
+  await prepare_top()
+  sample:
+    out1 = 0.0
+
+proc Loader:
+  init:
+    proc_state = 1
+  task prepare_proc():
+    proc_local = proc_state
+    yield
+  block:
+    await prepare_proc()
+    sample:
+      out1 = 0.0
+"#;
+    let tokens = semantic_tokens_for_document(source, None);
+
+    for name in ["prepare_top", "prepare_proc"] {
+        let task_tokens = find_tokens_named(&tokens, source, name);
+        assert!(
+            task_tokens.len() >= 2
+                && task_tokens
+                    .iter()
+                    .all(|token| token.token_type == SEMANTIC_TOKEN_TYPE_FUNCTION),
+            "task declarations and await sites should be functions: {task_tokens:?}"
+        );
+    }
+    for name in ["top_state", "proc_state"] {
+        let state_tokens = find_tokens_named(&tokens, source, name);
+        assert!(
+            state_tokens
+                .iter()
+                .any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "tasks should inherit owner state symbols: {state_tokens:?}"
+        );
+    }
+    for name in ["top_local", "proc_local"] {
+        let local_tokens = find_tokens_named(&tokens, source, name);
+        assert!(
+            local_tokens
+                .iter()
+                .any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE),
+            "task-local assignments should be variables: {local_tokens:?}"
+        );
+    }
+}
+
+#[test]
+fn source_fallback_indexes_standalone_and_grouped_tasks() {
+    let source = r#"init:
+  state = 1
+tasks:
+  grouped():
+    grouped_local = state
+    yield
+task standalone():
+  standalone_local = state
+  yield
+"#;
+    let fallback = build_source_scope_index(source);
+
+    assert_eq!(
+        fallback.token_type_for("grouped", 4, 4),
+        Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
+    );
+    assert_eq!(
+        fallback.token_type_for("standalone", 7, 4),
+        Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
+    );
+    assert_eq!(
+        fallback.token_type_for("state", 4, 20),
+        Some(SEMANTIC_TOKEN_TYPE_STATE)
+    );
+    assert_eq!(
+        fallback.token_type_for("grouped_local", 4, 4),
+        Some(SEMANTIC_TOKEN_TYPE_VARIABLE)
+    );
+    assert_eq!(
+        fallback.token_type_for("standalone_local", 7, 4),
+        Some(SEMANTIC_TOKEN_TYPE_VARIABLE)
+    );
+}

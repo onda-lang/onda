@@ -1260,40 +1260,6 @@ fn proc_options_for_shape(
     )
 }
 
-fn infer_numbered_names_from_proc(proc: &onda_frontend::ProcessorDef) -> IoInference {
-    let mut inferred = IoInference::default();
-    for stmt in &proc.init.body {
-        infer_io_from_stmt(stmt, &mut inferred);
-    }
-    for stmt in &proc.block_pre {
-        infer_io_from_stmt(stmt, &mut inferred);
-    }
-    for stmt in &proc.sample {
-        infer_io_from_stmt(stmt, &mut inferred);
-    }
-    for stmt in &proc.block_post {
-        infer_io_from_stmt(stmt, &mut inferred);
-    }
-    for event in &proc.events {
-        for stmt in &event.body {
-            infer_io_from_stmt(stmt, &mut inferred);
-        }
-    }
-    for def in &proc.local_defs {
-        for stmt in &def.body {
-            infer_io_from_stmt(stmt, &mut inferred);
-        }
-    }
-    inferred
-}
-
-fn proc_output_numbered_prefix(proc: &onda_frontend::ProcessorDef) -> &'static str {
-    match proc.outs_timing {
-        OutputTiming::Sample => "out",
-        OutputTiming::Block => "kout",
-    }
-}
-
 fn build_child_proc_surfaces(
     proc_defs_by_name: &HashMap<String, onda_frontend::ProcessorDef>,
     options: AnalysisOptions,

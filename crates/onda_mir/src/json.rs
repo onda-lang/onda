@@ -94,7 +94,9 @@ pub fn from_json_validated(json: &str) -> Result<ValidatedProgram, MirJsonError>
 /// `BoundsMode::Unchecked` operation is in bounds for all executions reaching
 /// it. Every declared `IntegerRangeInvariant` must contain every value
 /// observable from that storage, including values supplied by callers or
-/// restored from external state.
+/// restored from external state. Every pinned state slot must be fully
+/// overwritten on every successful full-initialization path before it can be
+/// observed.
 pub unsafe fn from_json_with_producer_proofs(json: &str) -> Result<ValidatedProgram, MirJsonError> {
     let program = serde_json::from_str(json)?;
     unsafe { crate::validate_owned_with_producer_proofs(program) }.map_err(MirJsonError::Invalid)
@@ -201,6 +203,53 @@ mod tests {
     }
 
     #[test]
+    fn trusted_json_round_trip_preserves_pinned_state() {
+        let mut program = Program::new(
+            CompileConfig {
+                sample_rate: 48_000.0,
+                block_size: 64,
+            },
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types.push(Type::Scalar(ScalarType::I32));
+        program.state.push(StateSlot {
+            integer_range: None,
+            name: "cursor".to_owned(),
+            ty: TypeId::new(0),
+            persistence: StatePersistence::Snapshot,
+            authored: true,
+            pinned: true,
+        });
+        let mut init = empty_function("onda_init", FunctionKind::Init);
+        init.body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::State(StateId::new(0)),
+                    projections: Vec::new(),
+                },
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(0))),
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+        let mut process = empty_function("onda_process", FunctionKind::Process);
+        process.params = process_function_params(TypeId::new(0));
+        program.functions = vec![init, process];
+
+        // SAFETY: the init entry fully overwrites the pinned scalar on its
+        // only successful path.
+        let validated = unsafe { crate::validate_owned_with_producer_proofs(program.clone()) }
+            .expect("trusted pinned MIR should validate");
+        let json = super::to_json_validated(&validated).expect("trusted MIR should encode");
+        assert!(json.contains("\"pinned\":true"));
+        // SAFETY: this is the exact serialization of the validated producer
+        // program above, so its initialization proof is retained.
+        let decoded = unsafe { super::from_json_with_producer_proofs(&json) }
+            .expect("trusted pinned MIR should decode");
+        assert_eq!(decoded.as_program(), &program);
+    }
+
+    #[test]
     fn current_schema_json_preserves_explicit_identity_attributes_and_slice_bounds() {
         let mut program = Program::new(
             CompileConfig {
@@ -237,7 +286,7 @@ mod tests {
                 ty: TypeId::new(2),
                 persistence: StatePersistence::Snapshot,
                 authored: true,
-                pinned: true,
+                pinned: false,
             },
         ]);
         program

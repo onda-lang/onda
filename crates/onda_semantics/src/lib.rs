@@ -12513,6 +12513,34 @@ const Result = bad()
 sample:
   out1 = f32(Result)
 "#,
+            r#"
+task bad():
+  for i in 0..4:
+    i = 2
+    yield
+
+block:
+  await bad()
+  sample:
+    out1 = 0.0
+"#,
+            r#"
+proc P:
+  task bad():
+    for i in 0..4:
+      i = 2
+      yield
+  block:
+    await bad()
+    sample:
+      out1 = 0.0
+
+init:
+  p = P()
+
+sample:
+  out1 = p()
+"#,
         ] {
             assert_analyze_error_contains(source, "cannot assign to loop variable 'i'");
         }

@@ -333,9 +333,12 @@ pub fn lower_program_to_optimized_mir(
     program: &TypedProgram,
 ) -> Result<onda_mir::OptimizedProgram, Vec<MirLoweringError>> {
     let raw = lower_program_to_raw_mir(program)?;
-    // SAFETY: MIR lowering owns the proof for every unchecked access it emits.
-    // Array extents come from semantic types, process frames are validator-
-    // tracked, and slice/buffer loops establish their bounds before emission.
+    // SAFETY: MIR lowering owns the proof for every unchecked access and
+    // storage invariant it emits. Array extents come from semantic types,
+    // process frames are validator-tracked, and slice/buffer loops establish
+    // their bounds before emission. Pinned roots are introduced only by
+    // declarations whose generated init_all branch overwrites the complete
+    // flattened slot before the init entry can return successfully.
     let validated = unsafe { onda_mir::validate_owned_with_producer_proofs(raw) }
         .map_err(mir_validation_errors)?;
     let (optimized, _) = onda_mir::optimize(validated).map_err(mir_validation_errors)?;

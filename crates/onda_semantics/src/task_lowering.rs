@@ -291,198 +291,7 @@ fn insert_inferred_task_owner_members(
     }
 }
 
-fn is_numbered_surface(name: &str, prefix: &str) -> bool {
-    name.strip_prefix(prefix)
-        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()))
-}
-
-fn validate_task_expr_access(
-    expr: &Expr,
-    task: &TaskDef,
-    input_names: &HashSet<String>,
-    forbidden_calls: &HashMap<String, &'static str>,
-    errors: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        Expr::Var { name, loc } => {
-            if input_names.contains(name) || is_numbered_surface(name, "in") {
-                errors.push(Diagnostic::semantic_span(
-                    format!("task '{}' cannot read audio input '{name}'", task.name),
-                    *loc,
-                ));
-            }
-        }
-        Expr::UserCall {
-            name, args, loc, ..
-        } => {
-            if let Some(kind) = forbidden_calls.get(name) {
-                errors.push(Diagnostic::semantic_span(
-                    format!("task '{}' cannot call {kind} '{name}'", task.name),
-                    *loc,
-                ));
-            } else if name == "init" {
-                errors.push(Diagnostic::semantic_span(
-                    format!("task '{}' cannot call a processor initializer", task.name),
-                    *loc,
-                ));
-            }
-            for arg in args {
-                validate_task_expr_access(&arg.expr, task, input_names, forbidden_calls, errors);
-            }
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                validate_task_expr_access(value, task, input_names, forbidden_calls, errors);
-            }
-        }
-        Expr::Index { index, .. } => {
-            validate_task_expr_access(index, task, input_names, forbidden_calls, errors)
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                validate_task_expr_access(coordinate, task, input_names, forbidden_calls, errors);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            validate_task_expr_access(&spec.size, task, input_names, forbidden_calls, errors);
-            if let Some(values) = init {
-                for value in values {
-                    validate_task_expr_access(value, task, input_names, forbidden_calls, errors);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            validate_task_expr_access(lhs, task, input_names, forbidden_calls, errors);
-            validate_task_expr_access(rhs, task, input_names, forbidden_calls, errors);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                validate_task_expr_access(arg, task, input_names, forbidden_calls, errors);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            validate_task_expr_access(expr, task, input_names, forbidden_calls, errors)
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
-}
-
-fn validate_task_body_access(
-    statements: &[Stmt],
-    task: &TaskDef,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    forbidden_calls: &HashMap<String, &'static str>,
-    errors: &mut Vec<Diagnostic>,
-) {
-    for statement in statements {
-        match statement {
-            Stmt::Assign {
-                target, expr, loc, ..
-            } => {
-                let root = match target {
-                    AssignTarget::Var(name)
-                    | AssignTarget::Index { base: name, .. }
-                    | AssignTarget::Slice { base: name, .. } => Some(name.as_str()),
-                    AssignTarget::Tuple(_) => None,
-                };
-                if root.is_some_and(|name| {
-                    output_names.contains(name)
-                        || is_numbered_surface(name, "out")
-                        || is_numbered_surface(name, "kout")
-                }) {
-                    errors.push(Diagnostic::semantic_span(
-                        format!("task '{}' cannot write processor outputs", task.name),
-                        *loc,
-                    ));
-                }
-                validate_task_expr_access(expr, task, input_names, forbidden_calls, errors);
-            }
-            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                validate_task_expr_access(expr, task, input_names, forbidden_calls, errors)
-            }
-            Stmt::Const { decl, .. } => {
-                validate_task_expr_access(&decl.expr, task, input_names, forbidden_calls, errors)
-            }
-            Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                validate_task_expr_access(cond, task, input_names, forbidden_calls, errors);
-                validate_task_body_access(
-                    then_branch,
-                    task,
-                    input_names,
-                    output_names,
-                    forbidden_calls,
-                    errors,
-                );
-                validate_task_body_access(
-                    else_branch,
-                    task,
-                    input_names,
-                    output_names,
-                    forbidden_calls,
-                    errors,
-                );
-            }
-            Stmt::For {
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
-                for expr in [Some(start), Some(end), step.as_ref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    validate_task_expr_access(expr, task, input_names, forbidden_calls, errors);
-                }
-                validate_task_body_access(
-                    body,
-                    task,
-                    input_names,
-                    output_names,
-                    forbidden_calls,
-                    errors,
-                );
-            }
-            Stmt::While { cond, body, .. } => {
-                validate_task_expr_access(cond, task, input_names, forbidden_calls, errors);
-                validate_task_body_access(
-                    body,
-                    task,
-                    input_names,
-                    output_names,
-                    forbidden_calls,
-                    errors,
-                );
-            }
-            Stmt::Break { .. } | Stmt::Continue { .. } => {}
-        }
-    }
-}
-
 pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Diagnostic>) {
-    let proc_names = program
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            Block::Proc(proc) => Some(proc.name.clone()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
     let top_tasks = program
         .blocks
         .iter()
@@ -496,26 +305,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         .iter()
         .map(|task| task.name.clone())
         .collect::<HashSet<_>>();
-    let top_input_names = program
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            Block::Ins(ports) => Some(ports.decls.as_slice()),
-            _ => None,
-        })
-        .flatten()
-        .map(|decl| decl.name.clone())
-        .collect::<HashSet<_>>();
-    let top_output_names = program
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            Block::Outs(ports) | Block::KOuts(ports) => Some(ports.decls.as_slice()),
-            _ => None,
-        })
-        .flatten()
-        .map(|decl| decl.name.clone())
-        .collect::<HashSet<_>>();
     let top_event_names = program
         .blocks
         .iter()
@@ -526,16 +315,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         .flatten()
         .map(|event| event.name.clone())
         .collect::<HashSet<_>>();
-    let mut top_forbidden_calls = proc_names
-        .iter()
-        .map(|name| (name.clone(), "processor"))
-        .collect::<HashMap<_, _>>();
-    top_forbidden_calls.extend(
-        top_event_names
-            .iter()
-            .map(|name| (name.clone(), "top-level event")),
-    );
-    top_forbidden_calls.extend(top_task_names.iter().map(|name| (name.clone(), "task")));
     if !top_tasks.is_empty() {
         let mut members = HashMap::<String, &'static str>::new();
         for (name, kind) in program.blocks.iter().filter_map(|block| match block {
@@ -656,14 +435,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
             TaskControlContext::Task,
             errors,
         );
-        validate_task_body_access(
-            &task.body,
-            task,
-            &top_input_names,
-            &top_output_names,
-            &top_forbidden_calls,
-            errors,
-        );
     }
 
     for block in &program.blocks {
@@ -753,26 +524,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
             .iter()
             .map(|task| task.name.clone())
             .collect::<HashSet<_>>();
-        let input_names = proc
-            .ins
-            .iter()
-            .map(|decl| decl.name.clone())
-            .collect::<HashSet<_>>();
-        let output_names = proc
-            .outs
-            .iter()
-            .map(|decl| decl.name.clone())
-            .collect::<HashSet<_>>();
-        let mut forbidden_calls = proc_names
-            .iter()
-            .map(|name| (name.clone(), "processor"))
-            .collect::<HashMap<_, _>>();
-        forbidden_calls.extend(
-            proc.events
-                .iter()
-                .map(|event| (event.name.clone(), "processor event")),
-        );
-        forbidden_calls.extend(task_names.iter().map(|name| (name.clone(), "task")));
         validate_task_member_names(proc, errors);
         if !proc.tasks.is_empty() && proc.graph.is_some() {
             errors.push(Diagnostic::semantic_span(
@@ -789,14 +540,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                 &task.body,
                 &task_names,
                 TaskControlContext::Task,
-                errors,
-            );
-            validate_task_body_access(
-                &task.body,
-                task,
-                &input_names,
-                &output_names,
-                &forbidden_calls,
                 errors,
             );
         }
@@ -1185,6 +928,23 @@ struct TaskOwnerTypes {
     output_names: HashSet<String>,
     param_names: HashSet<String>,
     struct_instances: HashMap<String, String>,
+    state_array_struct_roots: HashMap<String, ArrayStructRootInfo>,
+    nested_proc_instances: HashMap<String, ProcNestedState>,
+    proc_array_roots: HashMap<String, ProcNestedArrayState>,
+    proc_event_names: HashSet<String>,
+    proc_signatures: HashMap<String, FnSignature>,
+    proc_return_types: HashMap<String, ReturnType>,
+}
+
+struct TaskProcSurface {
+    signature: FnSignature,
+    return_type: Option<ReturnType>,
+    event_names: HashSet<String>,
+}
+
+struct TaskProcRegistry {
+    names: HashSet<String>,
+    surfaces: HashMap<String, TaskProcSurface>,
 }
 
 #[derive(Clone)]
@@ -1317,6 +1077,7 @@ fn collect_task_owner_types(
     owner: &TaskOwnerSurface,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    proc_registry: &TaskProcRegistry,
 ) -> TaskOwnerTypes {
     fn record_decl(
         types: &mut TaskOwnerTypes,
@@ -1501,7 +1262,295 @@ fn collect_task_owner_types(
             types.scalars.insert(name.clone(), ty);
         }
     }
+    register_task_owner_aggregate_storage(&mut types, struct_defs);
+    register_task_owner_processors(&mut types, owner, proc_registry);
     types
+}
+
+fn register_task_owner_aggregate_storage(
+    types: &mut TaskOwnerTypes,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    let instances = types
+        .struct_instances
+        .iter()
+        .map(|(base, struct_name)| (base.clone(), struct_name.clone()))
+        .collect::<Vec<_>>();
+    for (base, struct_name) in instances {
+        let Some(fields) = struct_defs.get(&struct_name) else {
+            continue;
+        };
+        for field in fields {
+            let flat = format!("{base}.{}", field.name);
+            match &field.ty {
+                TypedFieldType::Scalar(ty) => {
+                    types.scalars.entry(flat).or_insert(*ty);
+                }
+                TypedFieldType::Tuple(elements) => {
+                    types.tuples.entry(flat.clone()).or_insert(elements.clone());
+                    for (index, ty) in elements.iter().enumerate() {
+                        types
+                            .scalars
+                            .entry(format!("{flat}.__{index}"))
+                            .or_insert(*ty);
+                    }
+                }
+                TypedFieldType::Array(len) => {
+                    if let Some(element) = field.array_elem_ty {
+                        types.indexed.entry(flat.clone()).or_insert(element);
+                        types.array_lens.entry(flat.clone()).or_insert(*len);
+                        types
+                            .declared_symbols
+                            .entry(flat)
+                            .or_insert(DeclaredSymbolInfo::DataArray { elem_ty: element });
+                    } else if let Some(element_struct) = &field.array_elem_struct {
+                        let mut scratch_errors = Vec::new();
+                        register_data_struct_root(
+                            &flat,
+                            element_struct,
+                            *len,
+                            struct_defs,
+                            "task owner struct-array field",
+                            &mut types.scalars,
+                            &mut types.declared_symbols,
+                            &mut types.array_lens,
+                            &mut types.state_array_struct_roots,
+                            &mut scratch_errors,
+                        );
+                    }
+                }
+                TypedFieldType::Struct => {}
+            }
+        }
+    }
+}
+
+fn task_proc_signature(
+    proc: &ProcessorDef,
+    options: AnalysisOptions,
+) -> (FnSignature, Option<ReturnType>) {
+    let inferred_io = infer_numbered_io_from_sample(&proc.sample);
+    let inferred_names = infer_numbered_names_from_proc(proc);
+    let inputs = normalize_numbered_port_decls(&proc.ins, "in", inferred_io.max_in);
+    let output_max = match proc.outs_timing {
+        OutputTiming::Sample => inferred_io.max_out,
+        OutputTiming::Block => inferred_names.max_kout,
+    };
+    let outputs =
+        normalize_numbered_port_decls(&proc.outs, proc_output_numbered_prefix(proc), output_max);
+    let params = normalize_numbered_param_decls(&proc.params, "param", inferred_names.max_param);
+    let mut scratch_errors = Vec::new();
+    let (_, input_types, input_arrays, _, _) = expand_port_decls(
+        &inputs,
+        &format!("processor '{}' task-call input", proc.name),
+        options,
+        &mut scratch_errors,
+    );
+    let (flat_outputs, output_types, _, _, _) = expand_port_decls(
+        &outputs,
+        &format!("processor '{}' task-call output", proc.name),
+        options,
+        &mut scratch_errors,
+    );
+    let (param_specs, _) = crate::proc_call_rewrite::expand_proc_param_specs(
+        &proc.name,
+        &params,
+        options,
+        &mut scratch_errors,
+    );
+    let return_types = flat_outputs
+        .iter()
+        .filter_map(|name| output_types.get(name).copied())
+        .collect::<Vec<_>>();
+    let return_type = match return_types.as_slice() {
+        [] => None,
+        [ty] => Some(ReturnType::Scalar(*ty)),
+        types => Some(ReturnType::Tuple(types.to_vec())),
+    };
+    let mut call_params = inputs
+        .iter()
+        .map(|input| input.name.clone())
+        .collect::<Vec<_>>();
+    let mut defaults = inputs
+        .iter()
+        .map(|input| input.default.clone())
+        .collect::<Vec<_>>();
+    let mut param_types = inputs
+        .iter()
+        .map(|input| {
+            input_arrays.get(&input.name).map_or_else(
+                || {
+                    input_types
+                        .get(&input.name)
+                        .copied()
+                        .map(FnParamType::Primitive)
+                },
+                |array| {
+                    Some(FnParamType::SizedArray {
+                        elem: Some(array.elem_ty),
+                        generic_name: None,
+                        size: Expr::int(array.len as i64),
+                    })
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    for param in param_specs.iter().filter(|param| !param.is_private()) {
+        call_params.push(param.name.clone());
+        defaults.push(Some(Expr::number(0.0)));
+        param_types.push(match param.slots.as_slice() {
+            [slot] => Some(FnParamType::Primitive(slot.ty)),
+            [first, ..] => Some(FnParamType::SizedArray {
+                elem: Some(first.ty),
+                generic_name: None,
+                size: Expr::int(param.slots.len() as i64),
+            }),
+            [] => None,
+        });
+    }
+    let readonly_array_params = inputs
+        .iter()
+        .filter(|input| input_arrays.contains_key(&input.name))
+        .map(|input| input.name.clone())
+        .collect();
+    (
+        FnSignature {
+            display_name: Some(proc.name.clone()),
+            requires_call_specialization: false,
+            params: call_params,
+            defaults,
+            param_types,
+            type_params: Vec::new(),
+            return_type: return_type.clone(),
+            readonly_array_params,
+        },
+        return_type,
+    )
+}
+
+fn task_proc_registry(program: &Program, options: AnalysisOptions) -> TaskProcRegistry {
+    let surfaces = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Proc(proc) => {
+                let (signature, return_type) = task_proc_signature(proc, options);
+                Some((
+                    proc.name.clone(),
+                    TaskProcSurface {
+                        signature,
+                        return_type,
+                        event_names: proc.events.iter().map(|event| event.name.clone()).collect(),
+                    },
+                ))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    TaskProcRegistry {
+        names: surfaces.keys().cloned().collect(),
+        surfaces,
+    }
+}
+
+fn register_task_owner_processors(
+    types: &mut TaskOwnerTypes,
+    owner: &TaskOwnerSurface,
+    proc_registry: &TaskProcRegistry,
+) {
+    let current_ns = namespace_of_symbol(&owner.name);
+
+    fn visit(
+        stmts: &[Stmt],
+        current_ns: &str,
+        proc_names: &HashSet<String>,
+        types: &mut TaskOwnerTypes,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr:
+                        Expr::UserCall {
+                            name: ctor,
+                            type_args,
+                            ..
+                        },
+                    ..
+                } if type_args.is_empty() => {
+                    if let Some(proc_name) =
+                        resolve_proc_ctor_symbol_name(ctor, current_ns, proc_names)
+                    {
+                        types
+                            .nested_proc_instances
+                            .insert(name.clone(), ProcNestedState { proc_name });
+                    }
+                }
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::ArrayCtor { spec, .. },
+                    ..
+                } => {
+                    if let ArrayElemType::Struct(ctor) = &spec.elem {
+                        if let Some(proc_name) =
+                            resolve_proc_ctor_symbol_name(ctor, current_ns, proc_names)
+                        {
+                            types.proc_array_roots.insert(
+                                name.clone(),
+                                ProcNestedArrayState {
+                                    proc_name,
+                                    size_expr: *spec.size.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+                Stmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    visit(then_branch, current_ns, proc_names, types);
+                    visit(else_branch, current_ns, proc_names, types);
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    visit(body, current_ns, proc_names, types)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    visit(&owner.init_body, &current_ns, &proc_registry.names, types);
+    for (instance, nested) in &types.nested_proc_instances {
+        let Some(surface) = proc_registry.surfaces.get(&nested.proc_name) else {
+            continue;
+        };
+        types
+            .proc_signatures
+            .insert(instance.clone(), surface.signature.clone());
+        if let Some(return_type) = &surface.return_type {
+            types
+                .proc_return_types
+                .insert(instance.clone(), return_type.clone());
+            if let ReturnType::Scalar(ty) = return_type {
+                types.declared_symbols.insert(
+                    instance.clone(),
+                    DeclaredSymbolInfo::FunctionReturn { ty: *ty },
+                );
+            }
+        }
+        types
+            .proc_event_names
+            .extend(surface.event_names.iter().cloned());
+    }
+    for nested in types.proc_array_roots.values() {
+        if let Some(surface) = proc_registry.surfaces.get(&nested.proc_name) {
+            types
+                .proc_event_names
+                .extend(surface.event_names.iter().cloned());
+        }
+    }
 }
 
 fn task_buffer_params(owner: &TaskOwnerSurface, errors: &mut Vec<Diagnostic>) -> Vec<FnParamDecl> {
@@ -1812,6 +1861,13 @@ fn analyze_task_binding_storage(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> TaskBindingStorageTypes {
+    let mut fn_signatures = fn_signatures.clone();
+    fn_signatures.extend(owner_types.proc_signatures.clone());
+    fn_signatures
+        .entry(PROC_INDEX_CALL_SENTINEL.to_owned())
+        .or_insert_with(|| crate::processor_lowering::internal_proc_index_call_signature(false));
+    let mut return_types = return_types.clone();
+    return_types.extend(owner_types.proc_return_types.clone());
     let output_array_names = owner_types
         .output_names
         .intersection(&owner_types.array_lens.keys().cloned().collect())
@@ -1824,7 +1880,6 @@ fn analyze_task_binding_storage(
         .collect::<HashSet<_>>();
     let io_surface_names = HashSet::new();
     let io_surface_array_names = HashSet::new();
-    let proc_event_names = HashSet::new();
     let common = ScopeAnalysisCtx {
         policy: ScopePolicy::Task,
         input_names: &owner_types.input_names,
@@ -1835,18 +1890,15 @@ fn analyze_task_binding_storage(
         dynamic_param_array_names: &dynamic_param_array_names,
         param_names: &owner_types.param_names,
         struct_defs,
-        fn_signatures,
-        fn_return_types: return_types,
+        fn_signatures: &fn_signatures,
+        fn_return_types: &return_types,
         options,
         port_index_ins: None,
         port_index_outs: None,
         port_index_params: None,
         port_index_kins: None,
-        proc_event_names: &proc_event_names,
+        proc_event_names: &owner_types.proc_event_names,
     };
-    let state_array_struct_roots = HashMap::new();
-    let nested_proc_instances = HashMap::new();
-    let proc_array_roots = HashMap::new();
     let registration_names = HashSet::new();
     let resolved_scalars = std::cell::RefCell::new(HashMap::new());
     let resolved_arrays = std::cell::RefCell::new(HashMap::new());
@@ -1856,15 +1908,15 @@ fn analyze_task_binding_storage(
         registration_mode: RuntimeRegistrationMode::None,
         declared_symbols: &owner_types.declared_symbols,
         state_arrays: &owner_types.array_lens,
-        state_array_struct_roots: &state_array_struct_roots,
-        nested_proc_instances: &nested_proc_instances,
+        state_array_struct_roots: &owner_types.state_array_struct_roots,
+        nested_proc_instances: &owner_types.nested_proc_instances,
         struct_instances: &owner_types.struct_instances,
         registration_input_names: &registration_names,
         registration_output_names: &registration_names,
         registration_param_names: &registration_names,
         forbidden_assign_names: &owner_types.output_names,
         forbidden_assign_array_names: &output_array_names,
-        proc_array_roots: &proc_array_roots,
+        proc_array_roots: &owner_types.proc_array_roots,
         event_policy: None,
         state_tuples: &owner_types.tuples,
         resolved_scalar_locals: Some(&resolved_scalars),
@@ -3125,24 +3177,9 @@ fn prepare_task(
     errors: &mut Vec<Diagnostic>,
 ) -> PreparedTask {
     let mut body = task.body.clone();
-    let mut task_flow_errors = Vec::new();
-    analyze_task_binding_storage(
-        &body,
-        owner_types,
-        fn_signatures,
-        return_types,
-        struct_defs,
-        options,
-        &mut task_flow_errors,
-    );
-    errors.extend(task_flow_errors.into_iter().filter(|error| {
-        error.message.starts_with("binding '")
-            || error.message.starts_with("typed array declaration")
-    }));
     let source_names = uniquify_task_bindings(&mut body, owner_roots);
     let task_binding_names = source_names.keys().cloned().collect::<HashSet<_>>();
     let live_across_yield = task_locals_live_across_yield(&body, &task_binding_names);
-    let mut ignored_errors = Vec::new();
     let binding_types = analyze_task_binding_storage(
         &body,
         owner_types,
@@ -3150,7 +3187,7 @@ fn prepare_task(
         return_types,
         struct_defs,
         options,
-        &mut ignored_errors,
+        errors,
     );
     let locals = collect_task_locals(
         &source_names,
@@ -3342,6 +3379,7 @@ fn lower_top_level_tasks(
     program: &mut Program,
     tasks: &[TaskDef],
     call_semantics: &TaskCallSemantics,
+    proc_registry: &TaskProcRegistry,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
@@ -3351,8 +3389,12 @@ fn lower_top_level_tasks(
     }
 
     let owner_surface = TaskOwnerSurface::from_top_level(program);
-    let owner_types =
-        collect_task_owner_types(&owner_surface, &call_semantics.return_types, struct_defs);
+    let owner_types = collect_task_owner_types(
+        &owner_surface,
+        &call_semantics.return_types,
+        struct_defs,
+        proc_registry,
+    );
     let call_env = task_call_type_env(&owner_surface, &owner_types);
     let owner_roots = collect_owner_roots(&owner_surface);
     let mut init_prefix = vec![typed_assign(
@@ -3874,12 +3916,14 @@ pub(crate) fn lower_tasks(
         .collect::<HashMap<_, _>>();
     let struct_defs = coerce_struct_defs_for_inference(&raw_struct_defs, options);
     let call_semantics = task_call_semantics(program, &struct_defs);
+    let proc_registry = task_proc_registry(program, options);
 
     let top_level_tasks = take_top_level_tasks(program);
     lower_top_level_tasks(
         program,
         &top_level_tasks,
         &call_semantics,
+        &proc_registry,
         &struct_defs,
         options,
         errors,
@@ -3895,8 +3939,12 @@ pub(crate) fn lower_tasks(
         }
         has_tasks = true;
         let owner_surface = TaskOwnerSurface::from_proc(proc);
-        let preliminary_owner_types =
-            collect_task_owner_types(&owner_surface, &call_semantics.return_types, &struct_defs);
+        let preliminary_owner_types = collect_task_owner_types(
+            &owner_surface,
+            &call_semantics.return_types,
+            &struct_defs,
+            &proc_registry,
+        );
         let preliminary_call_env = task_call_type_env(&owner_surface, &preliminary_owner_types);
         let proc_call_semantics = proc_task_call_semantics(
             &proc.local_defs,
@@ -3908,6 +3956,7 @@ pub(crate) fn lower_tasks(
             &owner_surface,
             &proc_call_semantics.return_types,
             &struct_defs,
+            &proc_registry,
         );
         let call_env = task_call_type_env(&owner_surface, &owner_types);
         let owner_roots = collect_owner_roots(&owner_surface);
@@ -4363,8 +4412,9 @@ proc P:
 
     #[test]
     fn rejects_task_io_access() {
-        let errors = validate(
-            r#"
+        let errors = analyze(
+            parse_program(
+                r#"
 proc Child:
   sample:
     out1 = in1
@@ -4382,10 +4432,13 @@ proc Owner:
     sample:
       out1 = 0.0
 "#,
-        );
+            )
+            .expect("task source should parse"),
+        )
+        .expect_err("task I/O access should fail shared semantic analysis");
         for expected in [
-            "cannot read audio input 'in1'",
-            "cannot write processor outputs",
+            "unknown symbol 'in1' in expression",
+            "I/O symbol 'out1' is only available in block or sample",
         ] {
             assert!(
                 errors.iter().any(|error| error.message.contains(expected)),
@@ -4400,8 +4453,10 @@ proc Owner:
 proc Meter:
   kouts:
     value
+  params:
+    offset: f64 = 0.0
   block:
-    value = 1.0
+    value = f32(1.0 + offset)
 
 proc Owner:
   init:
@@ -4411,7 +4466,7 @@ proc Owner:
   def read_meter():
     return meter()
   task prepare():
-    result = meter() + meters[0]() + read_meter()
+    result = meter(offset = 1.0) + meters[0](offset = 2.0) + read_meter()
     yield
   block:
     await prepare()

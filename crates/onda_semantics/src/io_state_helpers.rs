@@ -172,6 +172,30 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
     }
 }
 
+pub(crate) fn infer_numbered_names_from_proc(proc: &ProcessorDef) -> IoInference {
+    let mut inferred = IoInference::default();
+    for stmt in proc
+        .init
+        .body
+        .iter()
+        .chain(&proc.block_pre)
+        .chain(&proc.sample)
+        .chain(&proc.block_post)
+        .chain(proc.events.iter().flat_map(|event| event.body.iter()))
+        .chain(proc.local_defs.iter().flat_map(|def| def.body.iter()))
+    {
+        infer_io_from_stmt(stmt, &mut inferred);
+    }
+    inferred
+}
+
+pub(crate) fn proc_output_numbered_prefix(proc: &ProcessorDef) -> &'static str {
+    match proc.outs_timing {
+        OutputTiming::Sample => "out",
+        OutputTiming::Block => "kout",
+    }
+}
+
 pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::ArrayCtor { .. } => {}

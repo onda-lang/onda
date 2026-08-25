@@ -104,7 +104,10 @@ pub fn validate(program: &Program) -> Result<(), Vec<ValidationError>> {
 /// state slot, function parameter, or local must also contain every value
 /// observable from that storage. This includes values supplied by callers or
 /// restored from external state. Backends may use those invariants as hard
-/// optimization assumptions without inserting normalization or checks.
+/// optimization assumptions without inserting normalization or checks. Every
+/// pinned state slot must be fully overwritten by the init entry on every
+/// successful full-initialization path before it can be observed. Backends may
+/// omit those slots from the physical state pre-clear.
 pub unsafe fn validate_with_producer_proofs(program: &Program) -> Result<(), Vec<ValidationError>> {
     validate_with_proof_status(program, ProducerProofStatus::Trusted)
 }
@@ -143,7 +146,9 @@ pub fn validate_owned(program: Program) -> Result<ValidatedProgram, Vec<Validati
 /// bounds for every execution reaching it. Every
 /// [`crate::IntegerRangeInvariant`] attached to a state slot, function
 /// parameter, or local must contain every value observable from that storage,
-/// including values supplied by callers or restored from external state.
+/// including values supplied by callers or restored from external state. Every
+/// pinned state slot must be fully overwritten by the init entry on every
+/// successful full-initialization path before it can be observed.
 pub unsafe fn validate_owned_with_producer_proofs(
     program: Program,
 ) -> Result<ValidatedProgram, Vec<ValidationError>> {
@@ -575,6 +580,12 @@ impl Validator<'_> {
                 SourceSpan::UNKNOWN,
                 format!("{storage} '{}'", state.name),
             );
+            if state.pinned && self.producer_proofs == ProducerProofStatus::Absent {
+                self.program_error(format!(
+                    "{storage} '{}' pinned initialization requires trusted producer validation",
+                    state.name
+                ));
+            }
             if let Some(range) = state.integer_range {
                 if self.producer_proofs == ProducerProofStatus::Absent {
                     self.program_error(format!(
@@ -4990,6 +5001,40 @@ mod tests {
     #[test]
     fn accepts_well_formed_empty_program() {
         assert!(super::validate(&empty_program()).is_ok());
+    }
+
+    #[test]
+    fn pinned_state_requires_a_trusted_full_initialization_proof() {
+        let mut program = empty_program();
+        program.state.push(StateSlot {
+            name: "cursor".to_owned(),
+            ty: TypeId::new(0),
+            persistence: StatePersistence::Snapshot,
+            authored: true,
+            pinned: true,
+            integer_range: None,
+        });
+        program.functions[0].body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::State(crate::StateId::new(0)),
+                    projections: Vec::new(),
+                },
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(0))),
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        let errors = super::validate(&program)
+            .expect_err("ordinary MIR cannot assert the pinned initialization invariant");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("pinned initialization requires trusted producer validation")));
+
+        // SAFETY: the init entry above overwrites the complete pinned scalar
+        // before returning on its only successful path.
+        unsafe { super::validate_with_producer_proofs(&program) }
+            .expect("trusted producer validation should retain the proof");
     }
 
     #[test]
