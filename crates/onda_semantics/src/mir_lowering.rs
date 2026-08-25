@@ -114,9 +114,18 @@ impl std::error::Error for MirLoweringError {}
 ///
 /// The operation is transactional: on error, types, immutable constant data,
 /// source files, and functions in `mir` are left unchanged.
+#[cfg(test)]
 fn lower_scalar_user_functions_to_mir(
     program: &TypedProgram,
     mir: &mut onda_mir::Program,
+) -> Result<Vec<FunctionId>, Vec<MirLoweringError>> {
+    lower_user_functions_to_mir(program, mir, None)
+}
+
+fn lower_user_functions_to_mir(
+    program: &TypedProgram,
+    mir: &mut onda_mir::Program,
+    runtime_globals: Option<&RuntimeGlobals>,
 ) -> Result<Vec<FunctionId>, Vec<MirLoweringError>> {
     let function_base = mir.functions.len();
     let mut function_indices = HashMap::<String, usize>::new();
@@ -285,24 +294,50 @@ fn lower_scalar_user_functions_to_mir(
         } else {
             function.name.clone()
         };
-        let lowerer = FunctionLowerer::new(
-            function,
-            &program.defs,
-            &function_ids,
-            &function_indices,
-            &program.def_sample_oversample_factors,
-            &program.proc_instance_oversample_factors,
-            program.proc_step_oversample_meta.get(&function.name),
-            &structs,
-            &program.aggregate_layouts,
-            &program.nested_proc_arrays,
-            &const_arrays,
-            mir.config,
-            context.config(),
-            emitted_name,
-            &mut types,
-            &mut source_files,
-        );
+        let lowerer = if function.runtime_context {
+            let globals = runtime_globals.ok_or_else(|| {
+                vec![MirLoweringError::new(
+                    format!(
+                        "runtime-context function '{}' requires the program runtime interface",
+                        function.name
+                    ),
+                    function_location(function),
+                )]
+            })?;
+            FunctionLowerer::new_runtime(
+                function,
+                &program.defs,
+                &function_ids,
+                &function_indices,
+                &program.def_sample_oversample_factors,
+                &program.proc_instance_oversample_factors,
+                mir.config,
+                context.config(),
+                emitted_name,
+                globals,
+                &mut types,
+                &mut source_files,
+            )
+        } else {
+            FunctionLowerer::new(
+                function,
+                &program.defs,
+                &function_ids,
+                &function_indices,
+                &program.def_sample_oversample_factors,
+                &program.proc_instance_oversample_factors,
+                program.proc_step_oversample_meta.get(&function.name),
+                &structs,
+                &program.aggregate_layouts,
+                &program.nested_proc_arrays,
+                &const_arrays,
+                mir.config,
+                context.config(),
+                emitted_name,
+                &mut types,
+                &mut source_files,
+            )
+        };
         match lowerer.lower() {
             Ok(lowered) => functions.push(lowered),
             Err(error) => return Err(vec![error]),
@@ -379,7 +414,7 @@ fn lower_program_to_raw_mir(
     populate_runtime_interface_views(program, &mut globals)?;
     populate_constant_data(program, &mut mir, &mut globals)?;
 
-    lower_scalar_user_functions_to_mir(program, &mut mir)?;
+    lower_user_functions_to_mir(program, &mut mir, Some(&globals))?;
     let (function_indices, function_ids) = runtime_function_ids(program, config, 2);
 
     let init_function = synthetic_runtime_function("onda_init", program.init.clone());
@@ -1950,6 +1985,7 @@ fn runtime_function_ids(
 fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
     TypedFunction {
         name: name.to_owned(),
+        runtime_context: false,
         method_of: None,
         type_params: Vec::new(),
         params: Vec::new(),
@@ -1981,6 +2017,13 @@ fn compiler_generated_function_attributes() -> FunctionAttributes {
     FunctionAttributes {
         origin: FunctionOrigin::CompilerGenerated,
         inline: InlineHint::Always,
+    }
+}
+
+fn compiler_shared_function_attributes() -> FunctionAttributes {
+    FunctionAttributes {
+        origin: FunctionOrigin::CompilerGenerated,
+        inline: InlineHint::Never,
     }
 }
 

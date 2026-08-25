@@ -749,6 +749,7 @@ fn top_level_constructor_array_symbols(program: &Program) -> HashSet<String> {
 
 pub(super) fn rewrite_top_level_proc_calls(
     program: &mut Program,
+    runtime_def_names: &HashSet<String>,
     options: AnalysisOptions,
     proc_defs_by_name: &HashMap<String, ProcessorDef>,
     lowering_shapes: &HashMap<String, ProcLoweringShape>,
@@ -1349,7 +1350,16 @@ pub(super) fn rewrite_top_level_proc_calls(
                 }
                 stmts.body = rewritten_sample;
             }
-            Block::Def(_def) => {}
+            Block::Def(def) if runtime_def_names.contains(&def.name) => {
+                rewrite_proc_calls_in_stmts(
+                    &mut def.body,
+                    &global_proc_instances,
+                    &global_proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+            }
+            Block::Def(_) => {}
             Block::Events(events) => {
                 for event in events {
                     rewrite_proc_calls_in_stmts(

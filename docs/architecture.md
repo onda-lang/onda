@@ -106,7 +106,10 @@ Non-crate directories of note:
   - `task_lowering.rs` — owner-local task validation and lowering through a typed CFG, backwards
     live-across-yield analysis, fixed continuation-frame construction, resumable state-machine
     generation, and structured `await`/`reset` expansion. Proc tasks and top-level tasks share the
-    same preparation path; only their final integration into owner block-pre control differs.
+    same preparation path. Both use one generated resume helper per task; top-level helpers carry
+    explicit runtime-context metadata so they can address owner state without cloning their body at
+    each `await`. Reset invalidates only the program counter, leaving frame initialization to the
+    next start.
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
   - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
   - `proc_call_rewrite.rs`, `proc_call_support.rs`, `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, aliasing, and state symbol rewriting.

@@ -1627,6 +1627,11 @@ suspended task observes the reinitialized resettable values when it resumes.
 Snapshots include task status and continuation storage, so restoring a suspended
 task resumes it from the captured suspension point.
 
+`reset()` invalidates the continuation in constant time. It does not eagerly
+clear task-frame storage: restarting the task executes its declarations and
+initializers before that storage can be observed again. Full initialization
+still initializes the complete continuation image.
+
 Locals that are live across a `yield`, including fixed aggregates and loop
 control, become statically allocated continuation state. Runtime handles cannot
 cross a suspension point: buffer descriptors, slices, proc aliases, and other

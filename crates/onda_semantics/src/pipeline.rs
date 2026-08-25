@@ -7942,6 +7942,7 @@ pub fn analyze_with_options(
     }
     let ProcessorDesugarResult {
         program,
+        runtime_def_names,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
         proc_instance_oversample_factors,
@@ -10018,9 +10019,8 @@ pub fn analyze_with_options(
             struct_instances: &struct_instances,
             state_tuples: &state_tuples,
         };
-        analyze_owner_runtime_scopes(
-            &mut runtime_state,
-            analysis_plan_seeds.runtime_scope_plans(
+        let mut runtime_plans = analysis_plan_seeds
+            .runtime_scope_plans(
                 RuntimeScopeBodies {
                     block_pre: &block_pre,
                     sample: &sample,
@@ -10049,9 +10049,18 @@ pub fn analyze_with_options(
                     registration_param_names: &param_names,
                     proc_event_names: &no_proc_event_names,
                 },
-            ),
-            &mut errors,
+            )
+            .to_vec();
+        let helper_plan = runtime_plans[0].clone();
+        runtime_plans.extend(
+            defs.iter()
+                .filter(|def| runtime_def_names.contains(&def.name))
+                .map(|def| RuntimeScopePlan {
+                    stmts: &def.body,
+                    ..helper_plan.clone()
+                }),
         );
+        analyze_owner_runtime_scopes(&mut runtime_state, runtime_plans, &mut errors);
 
         analyze_owner_events(
             &runtime_state,
@@ -10215,8 +10224,9 @@ pub fn analyze_with_options(
     let def_global_params = HashSet::<String>::new();
     let mut def_scalar_local_types = HashMap::<String, LocalAliasTypes>::new();
     for def in defs.iter_mut().filter(|def| {
-        reachable_def_names.contains(&def.name)
-            || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs)
+        !runtime_def_names.contains(&def.name)
+            && (reachable_def_names.contains(&def.name)
+                || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs))
     }) {
         let def_error_start = errors.len();
         let def_param_names = def
@@ -10805,6 +10815,7 @@ pub fn analyze_with_options(
                     .map(|signature| signature.readonly_array_params.clone())
                     .unwrap_or_default();
                 TypedFunction {
+                    runtime_context: runtime_def_names.contains(&d.name),
                     method_of: method_self_struct_internal.get(&d.name).cloned(),
                     type_params: d.type_params.clone(),
                     param_defaults: d.params.iter().map(|p| p.default.clone()).collect(),

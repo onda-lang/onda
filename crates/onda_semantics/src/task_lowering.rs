@@ -646,14 +646,6 @@ impl TaskLocalStorage {
     fn declaration_stmt(&self, name: String) -> Stmt {
         self.storage_stmt(name, false)
     }
-
-    fn reset_stmts(&self, name: String) -> Vec<Stmt> {
-        match self {
-            Self::Scalar(ty) => vec![assign_var(name, zero_expr(*ty))],
-            Self::Array { element, .. } => vec![fill_array(name, zero_expr(*element))],
-            Self::Tuple(types) => vec![assign_var(name, Self::tuple_zero_expr(types))],
-        }
-    }
 }
 
 fn task_pc_field(task: &str) -> String {
@@ -672,16 +664,8 @@ fn task_reset_def(task: &str) -> String {
     format!("{}_reset", task_symbol_stem(task))
 }
 
-fn task_inline_node_local(task: &str) -> String {
-    format!("{}_node", task_symbol_stem(task))
-}
-
-fn task_inline_result_local(task: &str) -> String {
+fn task_runtime_result_field(task: &str) -> String {
     format!("{}_result", task_symbol_stem(task))
-}
-
-fn task_inline_scratch_local(task: &str, local: &str) -> String {
-    format!("{}_scratch_{}_{local}", task_symbol_stem(task), local.len())
 }
 
 fn task_symbol_stem(task: &str) -> String {
@@ -3000,26 +2984,48 @@ fn compile_task_resume(
     }
 }
 
-fn compile_inline_task_resume(
+fn compile_runtime_task_resume(
     task_name: &str,
     body: &[Stmt],
-    local_initializers: Vec<Stmt>,
+    mut local_initializers: Vec<Stmt>,
+    params: Vec<FnParamDecl>,
     for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
-) -> Vec<Stmt> {
-    let result = task_inline_result_local(task_name);
-    if task_stmts_contain_yield(body) {
+) -> FunctionDef {
+    let result = task_runtime_result_field(task_name);
+    let function_body = if task_stmts_contain_yield(body) {
+        local_initializers.insert(
+            0,
+            typed_assign(TASK_NODE_LOCAL, PrimitiveType::I32, Expr::int(0)),
+        );
         compile_task_resume_body(
             task_name,
             body,
             local_initializers,
-            &task_inline_node_local(task_name),
+            TASK_NODE_LOCAL,
             &result,
             false,
             for_frame_bindings,
         )
     } else {
         compile_non_yield_task_resume_body(task_name, body, local_initializers, &result, false)
+    };
+
+    FunctionDef {
+        loc: Default::default(),
+        is_const: false,
+        type_params: Vec::new(),
+        name: task_resume_def(task_name),
+        params,
+        return_ty: None,
+        return_ty_loc: Default::default(),
+        body: function_body,
     }
+}
+
+#[derive(Clone, Copy)]
+enum TaskResumeResult {
+    Returned,
+    RuntimeField,
 }
 
 fn rewrite_task_controls(
@@ -3027,20 +3033,32 @@ fn rewrite_task_controls(
     task_names: &HashSet<String>,
     buffer_names: &[String],
     unavailable: &[Stmt],
+    result: TaskResumeResult,
 ) {
     let mut rewritten = Vec::with_capacity(stmts.len());
     for mut stmt in std::mem::take(stmts) {
         match &mut stmt {
             Stmt::Expr { expr, .. } => {
                 if let Some(task) = await_task_name(expr).map(str::to_owned) {
+                    let resume = user_call(
+                        task_resume_def(&task),
+                        buffer_names.iter().cloned().map(Expr::var).collect(),
+                    );
+                    let completed = match result {
+                        TaskResumeResult::Returned => resume,
+                        TaskResumeResult::RuntimeField => {
+                            rewritten.push(Stmt::Expr {
+                                loc: Default::default(),
+                                expr: resume,
+                            });
+                            Expr::var(task_runtime_result_field(&task))
+                        }
+                    };
                     rewritten.push(Stmt::If {
                         loc: Default::default(),
                         cond: Expr::UnaryNot {
                             loc: Default::default(),
-                            expr: Box::new(user_call(
-                                task_resume_def(&task),
-                                buffer_names.iter().cloned().map(Expr::var).collect(),
-                            )),
+                            expr: Box::new(completed),
                         },
                         then_branch: unavailable.to_vec(),
                         else_branch: Vec::new(),
@@ -3056,11 +3074,11 @@ fn rewrite_task_controls(
                 else_branch,
                 ..
             } => {
-                rewrite_task_controls(then_branch, task_names, buffer_names, unavailable);
-                rewrite_task_controls(else_branch, task_names, buffer_names, unavailable);
+                rewrite_task_controls(then_branch, task_names, buffer_names, unavailable, result);
+                rewrite_task_controls(else_branch, task_names, buffer_names, unavailable, result);
             }
             Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                rewrite_task_controls(body, task_names, buffer_names, unavailable)
+                rewrite_task_controls(body, task_names, buffer_names, unavailable, result)
             }
             _ => {}
         }
@@ -3139,29 +3157,14 @@ fn collect_numbered_outputs(stmts: &[Stmt], prefix: &str, outputs: &mut HashSet<
     }
 }
 
-#[derive(Clone, Copy)]
-enum TaskResumePlacement {
-    HelperFunction,
-    Inline,
-}
-
 struct PreparedTask {
     name: String,
     body: Vec<Stmt>,
     resume_local_initializers: Vec<Stmt>,
-    inline_scratch_declarations: Vec<Stmt>,
-    inline_scratch_roots: Vec<String>,
     init_stmts: Vec<Stmt>,
     reset_stmts: Vec<Stmt>,
     pinned_fields: Vec<String>,
     for_frame_bindings: HashMap<String, TaskForFrameBinding>,
-}
-
-#[derive(Clone)]
-struct InlineTaskExpansion {
-    resume: Vec<Stmt>,
-    reset: Vec<Stmt>,
-    result: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3173,7 +3176,6 @@ fn prepare_task(
     owner_types: &TaskOwnerTypes,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
-    placement: TaskResumePlacement,
     errors: &mut Vec<Diagnostic>,
 ) -> PreparedTask {
     let mut body = task.body.clone();
@@ -3202,8 +3204,6 @@ fn prepare_task(
         .filter_map(|name| {
             if live_across_yield.contains(name) {
                 Some((name.clone(), task_local_field(&task.name, name)))
-            } else if matches!(placement, TaskResumePlacement::Inline) {
-                Some((name.clone(), task_inline_scratch_local(&task.name, name)))
             } else {
                 None
             }
@@ -3228,26 +3228,9 @@ fn prepare_task(
         Expr::int(0),
     )];
     let mut pinned_fields = vec![task_pc_field(&task.name)];
-    let mut reset_stmts = vec![assign_var(task_pc_field(&task.name), Expr::int(0))];
+    let reset_stmts = vec![assign_var(task_pc_field(&task.name), Expr::int(0))];
     let mut resume_local_initializers = Vec::new();
     let suspends = task_stmts_contain_yield(&body);
-    let result_scratch = task_inline_result_local(&task.name);
-    let mut inline_scratch_roots = vec![result_scratch.clone()];
-    let mut inline_scratch_declarations = Vec::new();
-    if suspends {
-        let node_scratch = task_inline_node_local(&task.name);
-        inline_scratch_roots.push(node_scratch.clone());
-        inline_scratch_declarations.push(typed_assign(
-            node_scratch,
-            PrimitiveType::I32,
-            Expr::int(0),
-        ));
-    }
-    inline_scratch_declarations.push(typed_assign(
-        result_scratch,
-        PrimitiveType::Bool,
-        Expr::bool(false),
-    ));
 
     let mut local_names = locals.keys().cloned().collect::<Vec<_>>();
     local_names.sort();
@@ -3257,18 +3240,8 @@ fn prepare_task(
             let field = names[&local].clone();
             init_stmts.push(storage.init_stmt(field.clone()));
             pinned_fields.push(field.clone());
-            reset_stmts.extend(storage.reset_stmts(field));
         } else {
-            match placement {
-                TaskResumePlacement::HelperFunction => {
-                    resume_local_initializers.push(storage.declaration_stmt(local));
-                }
-                TaskResumePlacement::Inline => {
-                    let scratch = names[&local].clone();
-                    inline_scratch_roots.push(scratch.clone());
-                    resume_local_initializers.push(storage.declaration_stmt(scratch));
-                }
-            }
+            resume_local_initializers.push(storage.declaration_stmt(local));
         }
     }
 
@@ -3289,11 +3262,7 @@ fn prepare_task(
             if frame.persistent {
                 init_stmts.push(typed_assign(field.clone(), frame.ty, Expr::int(0)));
                 pinned_fields.push(field.clone());
-                reset_stmts.push(assign_var(field, Expr::int(0)));
             } else {
-                if matches!(placement, TaskResumePlacement::Inline) {
-                    inline_scratch_roots.push(field.clone());
-                }
                 resume_local_initializers.push(typed_assign(field, frame.ty, Expr::int(0)));
             }
         }
@@ -3303,63 +3272,11 @@ fn prepare_task(
         name: task.name.clone(),
         body,
         resume_local_initializers,
-        inline_scratch_declarations,
-        inline_scratch_roots,
         init_stmts,
         reset_stmts,
         pinned_fields,
         for_frame_bindings,
     }
-}
-
-fn rewrite_inline_task_controls(
-    stmts: &mut Vec<Stmt>,
-    tasks: &HashMap<String, InlineTaskExpansion>,
-    task_names: &HashSet<String>,
-    unavailable: &[Stmt],
-) {
-    let mut rewritten = Vec::with_capacity(stmts.len());
-    for mut stmt in std::mem::take(stmts) {
-        match &mut stmt {
-            Stmt::Expr { expr, .. } => {
-                if let Some(task) = await_task_name(expr) {
-                    if let Some(expansion) = tasks.get(task) {
-                        rewritten.extend(expansion.resume.clone());
-                        rewritten.push(Stmt::If {
-                            loc: Default::default(),
-                            cond: Expr::UnaryNot {
-                                loc: Default::default(),
-                                expr: Box::new(Expr::var(&expansion.result)),
-                            },
-                            then_branch: unavailable.to_vec(),
-                            else_branch: Vec::new(),
-                        });
-                        continue;
-                    }
-                }
-                if let Some(task) = reset_task_name(expr, task_names) {
-                    if let Some(expansion) = tasks.get(task) {
-                        rewritten.extend(expansion.reset.clone());
-                        continue;
-                    }
-                }
-            }
-            Stmt::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                rewrite_inline_task_controls(then_branch, tasks, task_names, unavailable);
-                rewrite_inline_task_controls(else_branch, tasks, task_names, unavailable);
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                rewrite_inline_task_controls(body, tasks, task_names, unavailable);
-            }
-            _ => {}
-        }
-        rewritten.push(stmt);
-    }
-    *stmts = rewritten;
 }
 
 fn take_top_level_tasks(program: &mut Program) -> Vec<TaskDef> {
@@ -3383,9 +3300,9 @@ fn lower_top_level_tasks(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> HashSet<String> {
     if tasks.is_empty() {
-        return;
+        return HashSet::new();
     }
 
     let owner_surface = TaskOwnerSurface::from_top_level(program);
@@ -3397,15 +3314,20 @@ fn lower_top_level_tasks(
     );
     let call_env = task_call_type_env(&owner_surface, &owner_types);
     let owner_roots = collect_owner_roots(&owner_surface);
+    let buffer_params = task_buffer_params(&owner_surface, errors);
+    let buffer_names = buffer_params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect::<Vec<_>>();
     let mut init_prefix = vec![typed_assign(
         TASK_AVAILABLE_FIELD,
         PrimitiveType::Bool,
         Expr::bool(false),
     )];
     let mut pinned_fields = vec![TASK_AVAILABLE_FIELD.to_owned()];
-    let mut scratch_declarations = Vec::new();
-    let mut scratch_roots = Vec::new();
-    let mut expansions = HashMap::new();
+    let mut scratch_roots = Vec::with_capacity(tasks.len());
+    let mut generated_defs = Vec::with_capacity(tasks.len() * 2);
+    let mut runtime_def_names = HashSet::with_capacity(tasks.len() * 2);
     for task in tasks {
         let mut task = task.clone();
         rewrite_task_overloads(&mut task, &call_env, call_semantics, struct_defs);
@@ -3417,27 +3339,39 @@ fn lower_top_level_tasks(
             &owner_types,
             struct_defs,
             options,
-            TaskResumePlacement::Inline,
             errors,
         );
         init_prefix.extend(prepared.init_stmts);
         pinned_fields.extend(prepared.pinned_fields);
-        scratch_declarations.extend(prepared.inline_scratch_declarations);
-        scratch_roots.extend(prepared.inline_scratch_roots);
+        let result_field = task_runtime_result_field(&prepared.name);
+        init_prefix.push(typed_assign(
+            result_field.clone(),
+            PrimitiveType::Bool,
+            Expr::bool(false),
+        ));
+        scratch_roots.push(result_field);
         let for_frame_bindings = prepared.for_frame_bindings.clone();
-        expansions.insert(
-            prepared.name.clone(),
-            InlineTaskExpansion {
-                resume: compile_inline_task_resume(
-                    &prepared.name,
-                    &prepared.body,
-                    prepared.resume_local_initializers,
-                    &for_frame_bindings,
-                ),
-                reset: prepared.reset_stmts,
-                result: task_inline_result_local(&prepared.name),
-            },
+        let resume = compile_runtime_task_resume(
+            &prepared.name,
+            &prepared.body,
+            prepared.resume_local_initializers,
+            buffer_params.clone(),
+            &for_frame_bindings,
         );
+        runtime_def_names.insert(resume.name.clone());
+        generated_defs.push(resume);
+        let reset = FunctionDef {
+            loc: Default::default(),
+            is_const: false,
+            type_params: Vec::new(),
+            name: task_reset_def(&prepared.name),
+            params: Vec::new(),
+            return_ty: None,
+            return_ty_loc: Default::default(),
+            body: prepared.reset_stmts,
+        };
+        runtime_def_names.insert(reset.name.clone());
+        generated_defs.push(reset);
     }
 
     let mut audio_outputs = HashSet::new();
@@ -3471,7 +3405,10 @@ fn lower_top_level_tasks(
     let mut unavailable = collect_neutral_outputs(control_outputs, control_output_decls);
     unavailable.push(assign_var(TASK_AVAILABLE_FIELD, Expr::bool(false)));
     unavailable.push(abort_activation_stmt());
-    let task_names = expansions.keys().cloned().collect::<HashSet<_>>();
+    let task_names = tasks
+        .iter()
+        .map(|task| task.name.clone())
+        .collect::<HashSet<_>>();
 
     if !program
         .blocks
@@ -3497,18 +3434,24 @@ fn lower_top_level_tasks(
     for block in &mut program.blocks {
         match block {
             Block::Init(init) => {
-                rewrite_inline_task_controls(
+                rewrite_task_controls(
                     &mut init.body,
-                    &expansions,
                     &task_names,
+                    &buffer_names,
                     &unavailable,
+                    TaskResumeResult::RuntimeField,
                 );
             }
             Block::Block(exec) => {
-                rewrite_inline_task_controls(&mut exec.pre, &expansions, &task_names, &unavailable);
+                rewrite_task_controls(
+                    &mut exec.pre,
+                    &task_names,
+                    &buffer_names,
+                    &unavailable,
+                    TaskResumeResult::RuntimeField,
+                );
                 propagate_task_abort_through_loops(&mut exec.pre);
                 let mut body = vec![assign_var(TASK_AVAILABLE_FIELD, Expr::bool(true))];
-                body.extend(scratch_declarations.clone());
                 body.append(&mut exec.pre);
                 exec.pre = body;
                 if let Some(sample) = &mut exec.sample {
@@ -3539,11 +3482,12 @@ fn lower_top_level_tasks(
             }
             Block::Events(events) => {
                 for event in &mut events.events {
-                    rewrite_inline_task_controls(
+                    rewrite_task_controls(
                         &mut event.body,
-                        &expansions,
                         &task_names,
+                        &buffer_names,
                         &unavailable,
+                        TaskResumeResult::RuntimeField,
                     );
                 }
             }
@@ -3575,6 +3519,10 @@ fn lower_top_level_tasks(
     init.body = init_prefix;
     init.pinned_roots.extend(pinned_fields);
     init.compiler_scratch_roots.extend(scratch_roots);
+    program
+        .blocks
+        .extend(generated_defs.into_iter().map(Block::Def));
+    runtime_def_names
 }
 
 fn task_callable_defs(program: &Program) -> Vec<FunctionDef> {
@@ -3896,14 +3844,14 @@ pub(crate) fn lower_tasks(
     program: &mut Program,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> HashSet<String> {
     let has_source_tasks = program.blocks.iter().any(|block| match block {
         Block::Tasks(tasks) => !tasks.tasks.is_empty(),
         Block::Proc(proc) => !proc.tasks.is_empty(),
         _ => false,
     });
     if !has_source_tasks {
-        return;
+        return HashSet::new();
     }
 
     let raw_struct_defs = program
@@ -3919,7 +3867,7 @@ pub(crate) fn lower_tasks(
     let proc_registry = task_proc_registry(program, options);
 
     let top_level_tasks = take_top_level_tasks(program);
-    lower_top_level_tasks(
+    let runtime_def_names = lower_top_level_tasks(
         program,
         &top_level_tasks,
         &call_semantics,
@@ -4002,7 +3950,6 @@ pub(crate) fn lower_tasks(
                 &owner_types,
                 &struct_defs,
                 options,
-                TaskResumePlacement::HelperFunction,
                 errors,
             );
             init_prefix.extend(prepared.init_stmts);
@@ -4041,15 +3988,23 @@ pub(crate) fn lower_tasks(
             &task_names,
             &buffer_names,
             &unavailable,
+            TaskResumeResult::Returned,
         );
         rewrite_task_controls(
             &mut proc.block_pre,
             &task_names,
             &buffer_names,
             &unavailable,
+            TaskResumeResult::Returned,
         );
         for event in &mut proc.events {
-            rewrite_task_controls(&mut event.body, &task_names, &buffer_names, &unavailable);
+            rewrite_task_controls(
+                &mut event.body,
+                &task_names,
+                &buffer_names,
+                &unavailable,
+                TaskResumeResult::Returned,
+            );
         }
         let mut old_init = std::mem::take(&mut proc.init.body);
         init_prefix.append(&mut old_init);
@@ -4103,6 +4058,7 @@ pub(crate) fn lower_tasks(
             body: Vec::new(),
         }));
     }
+    runtime_def_names
 }
 
 #[cfg(test)]
@@ -4131,6 +4087,40 @@ mod tests {
             })
             .max()
             .unwrap_or(0)
+    }
+
+    fn mir_call_count(block: &onda_mir::Block, target: onda_mir::FunctionId) -> usize {
+        block
+            .statements
+            .iter()
+            .map(|statement| match &statement.kind {
+                onda_mir::StatementKind::Call { function, .. } => usize::from(*function == target),
+                onda_mir::StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => mir_call_count(then_block, target) + mir_call_count(else_block, target),
+                onda_mir::StatementKind::Loop { body } => mir_call_count(body, target),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    fn mir_slice_fill_count(block: &onda_mir::Block) -> usize {
+        block
+            .statements
+            .iter()
+            .map(|statement| match &statement.kind {
+                onda_mir::StatementKind::SliceFill { .. } => 1,
+                onda_mir::StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => mir_slice_fill_count(then_block) + mir_slice_fill_count(else_block),
+                onda_mir::StatementKind::Loop { body } => mir_slice_fill_count(body),
+                _ => 0,
+            })
+            .sum()
     }
 
     #[test]
@@ -4681,7 +4671,7 @@ sample:
     }
 
     #[test]
-    fn top_level_task_dispatch_temporaries_are_instance_scratch() {
+    fn top_level_task_resume_is_a_shared_compiler_function() {
         let source = r#"
 init:
   pin progress: i32 = 0
@@ -4698,21 +4688,27 @@ block:
             .expect("task source should analyze");
         let mir = lower_program_to_optimized_mir(&typed).expect("task source should lower");
 
-        for name in [
-            task_inline_node_local("prepare"),
-            task_inline_result_local("prepare"),
-        ] {
-            let slot = mir
-                .state
-                .iter()
-                .find(|slot| slot.name == name)
-                .unwrap_or_else(|| panic!("missing inline task scratch state '{name}'"));
-            assert_eq!(
-                slot.persistence,
-                onda_mir::StatePersistence::InstanceScratch
-            );
-            assert!(!slot.pinned);
-        }
+        let resume = mir
+            .functions
+            .iter()
+            .find(|function| function.name == task_resume_def("prepare"))
+            .expect("missing shared task resume function");
+        assert_eq!(
+            resume.attributes.origin,
+            onda_mir::FunctionOrigin::CompilerGenerated
+        );
+        assert_eq!(resume.attributes.inline, onda_mir::InlineHint::Never);
+
+        let result = mir
+            .state
+            .iter()
+            .find(|slot| slot.name == task_runtime_result_field("prepare"))
+            .expect("missing task result scratch state");
+        assert_eq!(
+            result.persistence,
+            onda_mir::StatePersistence::InstanceScratch
+        );
+        assert!(!result.pinned);
 
         let pc = mir
             .state
@@ -4721,6 +4717,71 @@ block:
             .expect("missing task program counter");
         assert_eq!(pc.persistence, onda_mir::StatePersistence::Snapshot);
         assert!(pc.pinned);
+    }
+
+    #[test]
+    fn repeated_top_level_awaits_call_one_shared_resume_body() {
+        let source = r#"
+init:
+  pin progress: i32 = 0
+task prepare():
+  progress += 1
+  yield
+  progress += 1
+block:
+  await prepare()
+  await prepare()
+  sample:
+    out1 = f32(progress)
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("repeated awaits should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("task source should lower");
+        let resume_index = mir
+            .functions
+            .iter()
+            .position(|function| function.name == task_resume_def("prepare"))
+            .expect("missing shared task resume function");
+        let resume = onda_mir::FunctionId::new(resume_index as u32);
+
+        assert_eq!(
+            mir.functions
+                .iter()
+                .filter(|function| function.name == task_resume_def("prepare"))
+                .count(),
+            1
+        );
+        assert_eq!(mir_call_count(&mir.functions[1].body, resume), 2);
+    }
+
+    #[test]
+    fn task_reset_does_not_clear_continuation_storage() {
+        let source = r#"
+init:
+  pin result: i32 = 0
+task prepare():
+  carried: i32[4096]
+  carried[0] = 1
+  yield
+  result = carried[0]
+event restart():
+  prepare.reset()
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("array-backed task frame should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("task source should lower");
+        let reset = mir
+            .functions
+            .iter()
+            .find(|function| function.name == task_reset_def("prepare"))
+            .expect("missing task reset function");
+
+        assert_eq!(mir_slice_fill_count(&reset.body), 0);
+        assert!(mir_slice_fill_count(&mir.functions[0].body) > 0);
     }
 
     #[test]
@@ -4894,9 +4955,7 @@ sample:
         );
         let scratch_local = dump
             .lines()
-            .find(|line| {
-                line.contains("prepare_scratch") && line.trim_start().starts_with("local ")
-            })
+            .find(|line| line.contains("\"scratch\"") && line.trim_start().starts_with("local "))
             .and_then(|line| line.split_whitespace().nth(1))
             .expect("scratch array MIR local");
         assert_eq!(
@@ -5326,10 +5385,10 @@ block:
         let mir = lower_program_to_optimized_mir(&typed)
             .expect("an early task return inside a for loop should lower to valid MIR");
         let generated_stem = task_symbol_stem("prepare");
-        assert!(mir.state.iter().all(|slot| {
-            !slot.name.starts_with(&format!("{generated_stem}_for_"))
-                && slot.name != task_inline_node_local("prepare")
-        }));
+        assert!(mir
+            .state
+            .iter()
+            .all(|slot| !slot.name.starts_with(&format!("{generated_stem}_for_"))));
     }
 
     #[test]

@@ -288,6 +288,7 @@ pub(crate) struct TopLevelProcRewriteMeta {
 
 pub(crate) struct ProcessorDesugarResult {
     pub(crate) program: Program,
+    pub(crate) runtime_def_names: HashSet<String>,
     pub(crate) def_sample_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub(crate) proc_instance_oversample_factors: HashMap<String, usize>,
@@ -1304,7 +1305,7 @@ pub(crate) fn desugar_processors(
     rewrite_and_materialize_generic_processors(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
-    crate::task_lowering::lower_tasks(&mut program, options, errors);
+    let runtime_def_names = crate::task_lowering::lower_tasks(&mut program, options, errors);
     if let Some(Block::Init(init)) = program
         .blocks
         .iter_mut()
@@ -1330,6 +1331,7 @@ pub(crate) fn desugar_processors(
     else {
         return ProcessorDesugarResult {
             program,
+            runtime_def_names,
             def_sample_oversample_factors: HashMap::new(),
             proc_step_oversample_meta: HashMap::new(),
             proc_instance_oversample_factors: HashMap::new(),
@@ -1378,6 +1380,7 @@ pub(crate) fn desugar_processors(
 
     let top_level_proc_rewrite = rewrite_top_level_proc_calls(
         &mut program,
+        &runtime_def_names,
         options,
         &proc_defs_by_name,
         &lowering_shapes,
@@ -1406,6 +1409,7 @@ pub(crate) fn desugar_processors(
     }
     ProcessorDesugarResult {
         program,
+        runtime_def_names,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
         proc_instance_oversample_factors,

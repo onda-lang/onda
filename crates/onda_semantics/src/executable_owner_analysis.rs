@@ -21,6 +21,7 @@ pub(crate) struct ExecutableOwnerRuntimeState<'a> {
     pub(crate) state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct RuntimeScopePlan<'a> {
     pub(crate) stmts: &'a [Stmt],
     pub(crate) common: ScopeAnalysisCtx<'a>,

@@ -2036,6 +2036,51 @@ block:
     }
 
     #[test]
+    fn task_reset_reinitializes_retained_frame_storage_on_restart() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  pin result: i32 = 0
+task prepare():
+  carried: i32[2] = [3, 5]
+  yield
+  result = carried[0] + carried[1]
+event retry():
+  prepare.reset()
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("initial task should yield");
+        process_checked(&mut instance, BLOCK_SIZE).expect("initial task should complete");
+        assert_eq!(output, [8.0]);
+
+        let retry = instance.event_index("retry").expect("retry event");
+        trigger_event_by_index(&mut instance, retry, &[]).expect("task reset should run");
+        output.fill(99.0);
+        process_checked(&mut instance, BLOCK_SIZE).expect("restarted task should yield");
+        assert_eq!(output, [0.0]);
+        process_checked(&mut instance, BLOCK_SIZE).expect("restarted task should complete");
+        assert_eq!(output, [8.0]);
+    }
+
+    #[test]
     fn top_level_init_respects_explicit_task_reset() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
