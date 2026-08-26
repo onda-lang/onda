@@ -1,5 +1,6 @@
 #![deny(clippy::all)]
 
+use std::borrow::Cow;
 #[cfg(target_arch = "wasm32")]
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -10,6 +11,8 @@ use onda_frontend::{
     SourceManifest,
 };
 #[cfg(target_arch = "wasm32")]
+use onda_frontend::{Block, ConstType, PrimitiveType};
+#[cfg(target_arch = "wasm32")]
 use onda_project::{
     decode_buffer_bytes, decode_ondabuffer, encode_ondabuffer, validate_ondabuffer, AssetId,
     BufferAsset, BufferSamples, MaterializationPlan,
@@ -18,10 +21,249 @@ use onda_project::{
     BufferElement, ProjectBufferChannels, ProjectBufferDeclaration, ProjectImage, ProjectLimits,
     SourceImage,
 };
-use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
+use onda_semantics::{
+    analyze_with_options_and_inputs, lower_program_to_optimized_mir, AnalysisOptions, CompileInputs,
+};
+#[cfg(target_arch = "wasm32")]
+use onda_semantics::{
+    inspect_compile_constants as inspect_semantic_compile_constants, CompileConstDescriptor,
+    CompileConstKind,
+};
+#[cfg(any(test, target_arch = "wasm32"))]
+use onda_semantics::{ConstValue, TypedConstValue};
+#[cfg(target_arch = "wasm32")]
+use serde::Deserialize;
 use serde::Serialize;
 
 pub const MIR_SCHEMA_VERSION: u32 = onda_mir::MIR_SCHEMA_VERSION;
+
+#[derive(Clone, Copy)]
+enum CompileInputRequest<'a> {
+    Typed(&'a CompileInputs),
+    #[cfg(target_arch = "wasm32")]
+    Json(&'a str),
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Deserialize)]
+struct WebCompileInput {
+    name: String,
+    element: String,
+    array: bool,
+    values: Vec<serde_json::Value>,
+}
+
+impl<'a> CompileInputRequest<'a> {
+    fn resolve(
+        self,
+        _program: &Program,
+    ) -> Result<Cow<'a, CompileInputs>, Vec<CompilerDiagnostic>> {
+        match self {
+            Self::Typed(inputs) => Ok(Cow::Borrowed(inputs)),
+            #[cfg(target_arch = "wasm32")]
+            Self::Json(json) => resolve_web_compile_inputs(_program, json).map(Cow::Owned),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn resolve_web_compile_inputs(
+    program: &Program,
+    json: &str,
+) -> Result<CompileInputs, Vec<CompilerDiagnostic>> {
+    let entries = serde_json::from_str::<Vec<WebCompileInput>>(json).map_err(|error| {
+        vec![CompilerDiagnostic::configuration(format!(
+            "invalid compile constants: {error}"
+        ))]
+    })?;
+    let mut inputs = CompileInputs::default();
+    for entry in entries {
+        if inputs.constants.contains_key(&entry.name) {
+            return Err(vec![CompilerDiagnostic::configuration(format!(
+                "configuration constant '{}' is specified more than once",
+                entry.name
+            ))]);
+        }
+        let decl = program.blocks.iter().find_map(|block| match block {
+            Block::Const(decl) if decl.name == entry.name => Some(decl),
+            _ => None,
+        });
+        let Some(decl) = decl else {
+            return Err(vec![CompilerDiagnostic::configuration(format!(
+                "unknown configuration constant '{}'",
+                entry.name
+            ))]);
+        };
+        if !decl.configurable {
+            return Err(vec![CompilerDiagnostic::source(
+                "semantic",
+                Diagnostic::semantic_span(
+                    format!(
+                        "constant '{}' is not host-configurable; declare it with 'config const'",
+                        entry.name
+                    ),
+                    decl.loc.as_ref(),
+                ),
+            )]);
+        }
+        let Some(declared_ty) = decl.ty.as_ref() else {
+            return Err(vec![CompilerDiagnostic::source(
+                "semantic",
+                Diagnostic::semantic_span(
+                    format!(
+                        "configuration constant '{}' requires an explicit type",
+                        entry.name
+                    ),
+                    decl.loc.as_ref(),
+                ),
+            )]);
+        };
+        let expected_elem = match declared_ty {
+            ConstType::Scalar(ty)
+            | ConstType::Array { elem: ty, .. }
+            | ConstType::Slice { elem: ty } => *ty,
+        };
+        if entry.element != "number" && web_element_type(&entry.element).is_none() {
+            return Err(vec![CompilerDiagnostic::configuration(format!(
+                "configuration constant '{}' has unknown element type '{}'",
+                entry.name, entry.element
+            ))]);
+        }
+        if entry.array && entry.element == "number" {
+            return Err(vec![CompilerDiagnostic::configuration(format!(
+                "configuration constant '{}' requires a typed array representation",
+                entry.name
+            ))]);
+        }
+        let values = entry
+            .values
+            .iter()
+            .map(|value| web_typed_const_value(&entry.element, value, expected_elem))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|message| {
+                vec![CompilerDiagnostic::source(
+                    "semantic",
+                    Diagnostic::semantic_span(
+                        format!("configuration constant '{}': {message}", entry.name),
+                        decl.loc.as_ref(),
+                    ),
+                )]
+            })?;
+        let value = if entry.array {
+            let elem_ty = web_element_type(&entry.element).unwrap_or(expected_elem);
+            ConstValue::Array {
+                elem_ty,
+                len: values.len(),
+                values,
+            }
+        } else if values.len() == 1 {
+            ConstValue::Scalar(values[0])
+        } else {
+            return Err(vec![CompilerDiagnostic::configuration(format!(
+                "scalar configuration constant '{}' must contain exactly one value",
+                entry.name
+            ))]);
+        };
+        inputs.constants.insert(entry.name, value);
+    }
+    Ok(inputs)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_element_type(element: &str) -> Option<PrimitiveType> {
+    match element {
+        "bool" => Some(PrimitiveType::Bool),
+        "i32" => Some(PrimitiveType::I32),
+        "i64" => Some(PrimitiveType::I64),
+        "f32" => Some(PrimitiveType::F32),
+        "f64" => Some(PrimitiveType::F64),
+        "number" => None,
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_typed_const_value(
+    element: &str,
+    value: &serde_json::Value,
+    expected: PrimitiveType,
+) -> Result<TypedConstValue, String> {
+    match element {
+        "bool" => value
+            .as_bool()
+            .map(TypedConstValue::Bool)
+            .ok_or_else(|| "expected a boolean value".to_owned()),
+        "i32" => {
+            let value = value
+                .as_i64()
+                .and_then(|value| i32::try_from(value).ok())
+                .ok_or_else(|| "expected an i32 value".to_owned())?;
+            Ok(TypedConstValue::I32(value))
+        }
+        "i64" => {
+            let value = value
+                .as_str()
+                .ok_or_else(|| "expected an i64 decimal string".to_owned())?
+                .parse::<i64>()
+                .map_err(|_| "i64 value is out of range".to_owned())?;
+            Ok(TypedConstValue::I64(value))
+        }
+        "f32" => {
+            let value = web_number(value, "f32")? as f32;
+            Ok(TypedConstValue::F32(value))
+        }
+        "f64" => {
+            let value = web_number(value, "f64")?;
+            Ok(TypedConstValue::F64(value))
+        }
+        "number" => {
+            let number = web_number(value, "number")?;
+            match expected {
+                PrimitiveType::I32 => {
+                    if number.fract() != 0.0
+                        || number < f64::from(i32::MIN)
+                        || number > f64::from(i32::MAX)
+                    {
+                        Err("number is not representable as i32".to_owned())
+                    } else {
+                        Ok(TypedConstValue::I32(number as i32))
+                    }
+                }
+                PrimitiveType::F32 => {
+                    let value = number as f32;
+                    if number.is_finite() && !value.is_finite() {
+                        Err("number is not representable as f32".to_owned())
+                    } else {
+                        Ok(TypedConstValue::F32(value))
+                    }
+                }
+                PrimitiveType::F64 => Ok(TypedConstValue::F64(number)),
+                PrimitiveType::I64 => {
+                    Err("i64 configuration constants require bigint values".to_owned())
+                }
+                PrimitiveType::Bool => {
+                    Err("bool configuration constants require boolean values".to_owned())
+                }
+            }
+        }
+        other => Err(format!("unknown compile constant element type '{other}'")),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_number(value: &serde_json::Value, label: &str) -> Result<f64, String> {
+    let value = match value {
+        serde_json::Value::Number(value) => value
+            .as_f64()
+            .ok_or_else(|| format!("expected a {label} value"))?,
+        serde_json::Value::String(value) if value == "-0" => -0.0,
+        serde_json::Value::String(value) if value == "NaN" => f64::NAN,
+        serde_json::Value::String(value) if value == "Infinity" => f64::INFINITY,
+        serde_json::Value::String(value) if value == "-Infinity" => f64::NEG_INFINITY,
+        _ => return Err(format!("expected a {label} value")),
+    };
+    Ok(value)
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct CompilerDiagnostic {
@@ -48,6 +290,12 @@ pub struct CompilationOutput<T> {
     pub output: T,
     pub source_files: Vec<String>,
     pub source_image: Option<SourceImage>,
+}
+
+struct LoadedProjectProgram {
+    program: Program,
+    source_files: Vec<String>,
+    source_image: SourceImage,
 }
 
 impl CompilerFailure {
@@ -124,6 +372,20 @@ pub fn compile_source_to_mir_json(
         .map_err(|failure| failure.diagnostics)
 }
 
+pub fn compile_source_to_mir_json_with_inputs(
+    source: &str,
+    sample_rate: f32,
+    block_size: u32,
+    inputs: &CompileInputs,
+) -> Result<String, Vec<CompilerDiagnostic>> {
+    lower_source_to_mir_with_manifest_and_inputs(source, sample_rate, block_size, inputs)
+        .and_then(|compiled| {
+            encode_mir_compilation(compiled, "mir-json", onda_mir::to_json_optimized)
+        })
+        .map(|compiled| compiled.output)
+        .map_err(|failure| failure.diagnostics)
+}
+
 /// Compiles source to the compact MessagePack MIR transport used by browser
 /// backends. JSON remains available for diagnostics and external tooling.
 pub fn compile_source_to_mir_messagepack(
@@ -132,6 +394,24 @@ pub fn compile_source_to_mir_messagepack(
     block_size: u32,
 ) -> Result<Vec<u8>, Vec<CompilerDiagnostic>> {
     compile_source_to_mir_messagepack_with_manifest(source, sample_rate, block_size)
+        .map(|compiled| compiled.output)
+        .map_err(|failure| failure.diagnostics)
+}
+
+pub fn compile_source_to_mir_messagepack_with_inputs(
+    source: &str,
+    sample_rate: f32,
+    block_size: u32,
+    inputs: &CompileInputs,
+) -> Result<Vec<u8>, Vec<CompilerDiagnostic>> {
+    lower_source_to_mir_with_manifest_and_inputs(source, sample_rate, block_size, inputs)
+        .and_then(|compiled| {
+            encode_mir_compilation(
+                compiled,
+                "mir-messagepack",
+                onda_mir::to_messagepack_optimized,
+            )
+        })
         .map(|compiled| compiled.output)
         .map_err(|failure| failure.diagnostics)
 }
@@ -150,6 +430,25 @@ pub fn compile_project_sources_to_mir_json(
         .map_err(|failure| failure.diagnostics)
 }
 
+pub fn compile_project_sources_to_mir_json_with_inputs(
+    entry_path: &str,
+    sources: &HashMap<String, String>,
+    sample_rate: f32,
+    block_size: u32,
+    inputs: &CompileInputs,
+) -> Result<String, Vec<CompilerDiagnostic>> {
+    lower_project_sources_to_mir_with_manifest_and_inputs(
+        entry_path,
+        sources,
+        sample_rate,
+        block_size,
+        inputs,
+    )
+    .and_then(|compiled| encode_mir_compilation(compiled, "mir-json", onda_mir::to_json_optimized))
+    .map(|compiled| compiled.output)
+    .map_err(|failure| failure.diagnostics)
+}
+
 pub fn compile_project_sources_to_mir_messagepack(
     entry_path: &str,
     sources: &HashMap<String, String>,
@@ -162,6 +461,31 @@ pub fn compile_project_sources_to_mir_messagepack(
         sample_rate,
         block_size,
     )
+    .map(|compiled| compiled.output)
+    .map_err(|failure| failure.diagnostics)
+}
+
+pub fn compile_project_sources_to_mir_messagepack_with_inputs(
+    entry_path: &str,
+    sources: &HashMap<String, String>,
+    sample_rate: f32,
+    block_size: u32,
+    inputs: &CompileInputs,
+) -> Result<Vec<u8>, Vec<CompilerDiagnostic>> {
+    lower_project_sources_to_mir_with_manifest_and_inputs(
+        entry_path,
+        sources,
+        sample_rate,
+        block_size,
+        inputs,
+    )
+    .and_then(|compiled| {
+        encode_mir_compilation(
+            compiled,
+            "mir-messagepack",
+            onda_mir::to_messagepack_optimized,
+        )
+    })
     .map(|compiled| compiled.output)
     .map_err(|failure| failure.diagnostics)
 }
@@ -181,11 +505,58 @@ pub fn compile_project_image_to_mir_messagepack_with_manifest(
     )
 }
 
+pub fn compile_project_image_to_mir_messagepack_with_inputs(
+    image_bytes: &[u8],
+    sample_rate: f32,
+    block_size: u32,
+    inputs: &CompileInputs,
+) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
+    compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_inputs(
+        image_bytes,
+        sample_rate,
+        block_size,
+        ProjectLimits::default(),
+        inputs,
+    )
+}
+
 fn compile_project_image_to_mir_messagepack_with_manifest_and_limits(
     image_bytes: &[u8],
     sample_rate: f32,
     block_size: u32,
     limits: ProjectLimits,
+) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
+    compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_inputs(
+        image_bytes,
+        sample_rate,
+        block_size,
+        limits,
+        &CompileInputs::default(),
+    )
+}
+
+fn compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_inputs(
+    image_bytes: &[u8],
+    sample_rate: f32,
+    block_size: u32,
+    limits: ProjectLimits,
+    inputs: &CompileInputs,
+) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
+    compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_request(
+        image_bytes,
+        sample_rate,
+        block_size,
+        limits,
+        CompileInputRequest::Typed(inputs),
+    )
+}
+
+fn compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_request(
+    image_bytes: &[u8],
+    sample_rate: f32,
+    block_size: u32,
+    limits: ProjectLimits,
+    input_request: CompileInputRequest<'_>,
 ) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
     let config =
         compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
@@ -205,7 +576,7 @@ fn compile_project_image_to_mir_messagepack_with_manifest_and_limits(
         )
     })?;
     let source_files = virtual_paths(Path::new(""), &loaded.sources.files);
-    let lowered = lower_parsed_program(loaded.program, config)
+    let lowered = lower_parsed_program(loaded.program, config, input_request)
         .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
     let mut declarations = Vec::new();
     let grouped_ids = lowered
@@ -345,6 +716,34 @@ fn lower_source_to_mir_with_manifest(
     sample_rate: f32,
     block_size: u32,
 ) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
+    lower_source_to_mir_with_manifest_and_inputs(
+        source,
+        sample_rate,
+        block_size,
+        &CompileInputs::default(),
+    )
+}
+
+fn lower_source_to_mir_with_manifest_and_inputs(
+    source: &str,
+    sample_rate: f32,
+    block_size: u32,
+    inputs: &CompileInputs,
+) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
+    lower_source_to_mir_with_manifest_and_request(
+        source,
+        sample_rate,
+        block_size,
+        CompileInputRequest::Typed(inputs),
+    )
+}
+
+fn lower_source_to_mir_with_manifest_and_request(
+    source: &str,
+    sample_rate: f32,
+    block_size: u32,
+    input_request: CompileInputRequest<'_>,
+) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
     let config =
         compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
     let parsed = parse_program(source).map_err(|diagnostics| {
@@ -355,7 +754,8 @@ fn lower_source_to_mir_with_manifest(
                 .collect::<Vec<_>>(),
         )
     })?;
-    let output = lower_parsed_program(parsed, config).map_err(CompilerFailure::without_sources)?;
+    let output = lower_parsed_program(parsed, config, input_request)
+        .map_err(CompilerFailure::without_sources)?;
     Ok(CompilationOutput {
         output,
         source_files: Vec::new(),
@@ -369,8 +769,56 @@ fn lower_project_sources_to_mir_with_manifest(
     sample_rate: f32,
     block_size: u32,
 ) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
+    lower_project_sources_to_mir_with_manifest_and_inputs(
+        entry_path,
+        sources,
+        sample_rate,
+        block_size,
+        &CompileInputs::default(),
+    )
+}
+
+fn lower_project_sources_to_mir_with_manifest_and_inputs(
+    entry_path: &str,
+    sources: &HashMap<String, String>,
+    sample_rate: f32,
+    block_size: u32,
+    inputs: &CompileInputs,
+) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
+    lower_project_sources_to_mir_with_manifest_and_request(
+        entry_path,
+        sources,
+        sample_rate,
+        block_size,
+        CompileInputRequest::Typed(inputs),
+    )
+}
+
+fn lower_project_sources_to_mir_with_manifest_and_request(
+    entry_path: &str,
+    sources: &HashMap<String, String>,
+    sample_rate: f32,
+    block_size: u32,
+    input_request: CompileInputRequest<'_>,
+) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
     let config =
         compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
+    let loaded = load_project_sources(entry_path, sources)?;
+    let output =
+        lower_parsed_program(loaded.program, config, input_request).map_err(|diagnostics| {
+            CompilerFailure::with_sources(diagnostics, loaded.source_files.clone())
+        })?;
+    Ok(CompilationOutput {
+        output,
+        source_files: loaded.source_files,
+        source_image: Some(loaded.source_image),
+    })
+}
+
+fn load_project_sources(
+    entry_path: &str,
+    sources: &HashMap<String, String>,
+) -> Result<LoadedProjectProgram, CompilerFailure> {
     // This is a logical namespace rather than a host filesystem path. Keeping
     // it relative avoids target-specific `Path::is_absolute` behavior on
     // `wasm32-unknown-unknown` while the virtual loader still confines every
@@ -426,12 +874,10 @@ fn lower_project_sources_to_mir_with_manifest(
             source_files.clone(),
         )
     })?;
-    let output = lower_parsed_program(loaded.program, config)
-        .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
-    Ok(CompilationOutput {
-        output,
+    Ok(LoadedProjectProgram {
+        program: loaded.program,
         source_files,
-        source_image: Some(source_image),
+        source_image,
     })
 }
 
@@ -481,13 +927,16 @@ fn checked_project_path(path: &str) -> Result<PathBuf, Vec<CompilerDiagnostic>> 
 fn lower_parsed_program(
     parsed: Program,
     config: onda_mir::CompileConfig,
+    input_request: CompileInputRequest<'_>,
 ) -> Result<onda_mir::OptimizedProgram, Vec<CompilerDiagnostic>> {
-    let typed = analyze_with_options(
+    let inputs = input_request.resolve(&parsed)?;
+    let typed = analyze_with_options_and_inputs(
         parsed,
         AnalysisOptions {
             sample_rate: config.sample_rate,
             block_size: config.block_size as usize,
         },
+        inputs.as_ref(),
     )
     .map_err(|diagnostics| {
         diagnostics
@@ -511,6 +960,179 @@ fn lower_parsed_program(
             })
             .collect::<Vec<_>>()
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn inspect_parsed_compile_constants(
+    parsed: Program,
+    config: onda_mir::CompileConfig,
+    input_request: CompileInputRequest<'_>,
+) -> Result<Vec<CompileConstDescriptor>, Vec<CompilerDiagnostic>> {
+    let inputs = input_request.resolve(&parsed)?;
+    inspect_semantic_compile_constants(
+        parsed,
+        AnalysisOptions {
+            sample_rate: config.sample_rate,
+            block_size: config.block_size as usize,
+        },
+        inputs.as_ref(),
+    )
+    .map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| CompilerDiagnostic::source("semantic", diagnostic))
+            .collect()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn inspect_source_compile_constants_with_request(
+    source: &str,
+    sample_rate: f32,
+    block_size: u32,
+    input_request: CompileInputRequest<'_>,
+) -> Result<Vec<CompileConstDescriptor>, CompilerFailure> {
+    let config =
+        compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
+    let parsed = parse_program(source).map_err(|diagnostics| {
+        CompilerFailure::without_sources(
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| CompilerDiagnostic::source("parse", diagnostic))
+                .collect(),
+        )
+    })?;
+    inspect_parsed_compile_constants(parsed, config, input_request)
+        .map_err(CompilerFailure::without_sources)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn inspect_project_sources_compile_constants_with_request(
+    entry_path: &str,
+    sources: &HashMap<String, String>,
+    sample_rate: f32,
+    block_size: u32,
+    input_request: CompileInputRequest<'_>,
+) -> Result<Vec<CompileConstDescriptor>, CompilerFailure> {
+    let config =
+        compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
+    let loaded = load_project_sources(entry_path, sources)?;
+    inspect_parsed_compile_constants(loaded.program, config, input_request)
+        .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, loaded.source_files))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn inspect_project_image_compile_constants_with_request(
+    image_bytes: &[u8],
+    sample_rate: f32,
+    block_size: u32,
+    limits: ProjectLimits,
+    input_request: CompileInputRequest<'_>,
+) -> Result<Vec<CompileConstDescriptor>, CompilerFailure> {
+    let config =
+        compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
+    let image = ProjectImage::deserialize(image_bytes, limits).map_err(|error| {
+        CompilerFailure::without_sources(vec![CompilerDiagnostic::configuration(error.to_string())])
+    })?;
+    let image_source_files = image
+        .sources()
+        .documents
+        .iter()
+        .map(|document| document.path.clone())
+        .collect::<Vec<_>>();
+    let loaded = image.sources().replay(limits).map_err(|error| {
+        CompilerFailure::with_sources(
+            vec![CompilerDiagnostic::configuration(error.to_string())],
+            image_source_files,
+        )
+    })?;
+    let source_files = virtual_paths(Path::new(""), &loaded.sources.files);
+    inspect_parsed_compile_constants(loaded.program, config, input_request)
+        .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Serialize)]
+struct WebCompileConstDescriptor {
+    name: String,
+    element: &'static str,
+    kind: &'static str,
+    element_count: usize,
+    values: Vec<serde_json::Value>,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn encode_web_compile_const_descriptors(
+    descriptors: Vec<CompileConstDescriptor>,
+) -> Result<String, wasm_bindgen::JsValue> {
+    let descriptors = descriptors
+        .into_iter()
+        .map(|descriptor| {
+            let kind = match descriptor.kind {
+                CompileConstKind::Scalar => "scalar",
+                CompileConstKind::FixedArray => "fixed-array",
+                CompileConstKind::Array => "array",
+            };
+            let (element, values) = match descriptor.value {
+                ConstValue::Scalar(value) => (
+                    web_primitive_type(value.primitive_type()),
+                    vec![web_compile_const_value(value)],
+                ),
+                ConstValue::Array {
+                    elem_ty, values, ..
+                } => {
+                    let values = values.into_iter().map(web_compile_const_value).collect();
+                    (web_primitive_type(elem_ty), values)
+                }
+            };
+            WebCompileConstDescriptor {
+                name: descriptor.name,
+                element,
+                kind,
+                element_count: values.len(),
+                values,
+            }
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&descriptors)
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_primitive_type(ty: PrimitiveType) -> &'static str {
+    match ty {
+        PrimitiveType::Bool => "bool",
+        PrimitiveType::I32 => "i32",
+        PrimitiveType::I64 => "i64",
+        PrimitiveType::F32 => "f32",
+        PrimitiveType::F64 => "f64",
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_compile_const_value(value: TypedConstValue) -> serde_json::Value {
+    match value {
+        TypedConstValue::Bool(value) => serde_json::Value::Bool(value),
+        TypedConstValue::I32(value) => value.into(),
+        TypedConstValue::I64(value) => value.to_string().into(),
+        TypedConstValue::F32(value) => web_compile_float_value(value as f64),
+        TypedConstValue::F64(value) => web_compile_float_value(value),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_compile_float_value(value: f64) -> serde_json::Value {
+    if value.is_nan() {
+        "NaN".into()
+    } else if value == f64::INFINITY {
+        "Infinity".into()
+    } else if value == f64::NEG_INFINITY {
+        "-Infinity".into()
+    } else if value == 0.0 && value.is_sign_negative() {
+        "-0".into()
+    } else {
+        serde_json::Value::from(value)
+    }
 }
 
 fn compile_config(
@@ -1092,14 +1714,79 @@ fn serialize_web_project_image(image: ProjectImage) -> Result<Vec<u8>, onda_proj
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
+pub fn inspect_source_compile_constants(
+    source: &str,
+    sample_rate: f32,
+    block_size: u32,
+    constants_json: &str,
+) -> Result<String, wasm_bindgen::JsValue> {
+    inspect_source_compile_constants_with_request(
+        source,
+        sample_rate,
+        block_size,
+        CompileInputRequest::Json(constants_json),
+    )
+    .map_err(compiler_failure_js)
+    .and_then(encode_web_compile_const_descriptors)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn inspect_source_workspace_compile_constants(
+    entry_path: &str,
+    sources_json: &str,
+    sample_rate: f32,
+    block_size: u32,
+    constants_json: &str,
+) -> Result<String, wasm_bindgen::JsValue> {
+    let sources = decode_project_sources_json(sources_json)?;
+    inspect_project_sources_compile_constants_with_request(
+        entry_path,
+        &sources,
+        sample_rate,
+        block_size,
+        CompileInputRequest::Json(constants_json),
+    )
+    .map_err(compiler_failure_js)
+    .and_then(encode_web_compile_const_descriptors)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn inspect_project_image_compile_constants(
+    image_bytes: &[u8],
+    sample_rate: f32,
+    block_size: u32,
+    constants_json: &str,
+) -> Result<String, wasm_bindgen::JsValue> {
+    inspect_project_image_compile_constants_with_request(
+        image_bytes,
+        sample_rate,
+        block_size,
+        web_project_limits(),
+        CompileInputRequest::Json(constants_json),
+    )
+    .map_err(compiler_failure_js)
+    .and_then(encode_web_compile_const_descriptors)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
 pub fn compile_to_mir_json(
     source: &str,
     sample_rate: f32,
     block_size: u32,
+    constants_json: &str,
 ) -> Result<FrontendJsonCompilation, wasm_bindgen::JsValue> {
-    compile_source_to_mir_json_with_manifest(source, sample_rate, block_size)
-        .map(frontend_json_compilation)
-        .map_err(compiler_failure_js)
+    lower_source_to_mir_with_manifest_and_request(
+        source,
+        sample_rate,
+        block_size,
+        CompileInputRequest::Json(constants_json),
+    )
+    .and_then(|compiled| encode_mir_compilation(compiled, "mir-json", onda_mir::to_json_optimized))
+    .map(frontend_json_compilation)
+    .map_err(compiler_failure_js)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1108,10 +1795,23 @@ pub fn compile_to_mir_messagepack(
     source: &str,
     sample_rate: f32,
     block_size: u32,
+    constants_json: &str,
 ) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
-    compile_source_to_mir_messagepack_with_manifest(source, sample_rate, block_size)
-        .map(frontend_messagepack_compilation)
-        .map_err(compiler_failure_js)
+    lower_source_to_mir_with_manifest_and_request(
+        source,
+        sample_rate,
+        block_size,
+        CompileInputRequest::Json(constants_json),
+    )
+    .and_then(|compiled| {
+        encode_mir_compilation(
+            compiled,
+            "mir-messagepack",
+            onda_mir::to_messagepack_optimized,
+        )
+    })
+    .map(frontend_messagepack_compilation)
+    .map_err(compiler_failure_js)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1121,11 +1821,19 @@ pub fn compile_source_workspace_to_mir_json(
     sources_json: &str,
     sample_rate: f32,
     block_size: u32,
+    constants_json: &str,
 ) -> Result<FrontendJsonCompilation, wasm_bindgen::JsValue> {
     let sources = decode_project_sources_json(sources_json)?;
-    compile_project_sources_to_mir_json_with_manifest(entry_path, &sources, sample_rate, block_size)
-        .map(frontend_json_compilation)
-        .map_err(compiler_failure_js)
+    lower_project_sources_to_mir_with_manifest_and_request(
+        entry_path,
+        &sources,
+        sample_rate,
+        block_size,
+        CompileInputRequest::Json(constants_json),
+    )
+    .and_then(|compiled| encode_mir_compilation(compiled, "mir-json", onda_mir::to_json_optimized))
+    .map(frontend_json_compilation)
+    .map_err(compiler_failure_js)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1135,14 +1843,23 @@ pub fn compile_source_workspace_to_mir_messagepack(
     sources_json: &str,
     sample_rate: f32,
     block_size: u32,
+    constants_json: &str,
 ) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
     let sources = decode_project_sources_json(sources_json)?;
-    compile_project_sources_to_mir_messagepack_with_manifest(
+    lower_project_sources_to_mir_with_manifest_and_request(
         entry_path,
         &sources,
         sample_rate,
         block_size,
+        CompileInputRequest::Json(constants_json),
     )
+    .and_then(|compiled| {
+        encode_mir_compilation(
+            compiled,
+            "mir-messagepack",
+            onda_mir::to_messagepack_optimized,
+        )
+    })
     .map(frontend_messagepack_compilation)
     .map_err(compiler_failure_js)
 }
@@ -1153,12 +1870,14 @@ pub fn compile_project_image_to_mir_messagepack(
     image_bytes: &[u8],
     sample_rate: f32,
     block_size: u32,
+    constants_json: &str,
 ) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
-    compile_project_image_to_mir_messagepack_with_manifest_and_limits(
+    compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_request(
         image_bytes,
         sample_rate,
         block_size,
         web_project_limits(),
+        CompileInputRequest::Json(constants_json),
     )
     .map(frontend_messagepack_compilation)
     .map_err(compiler_failure_js)
@@ -1216,6 +1935,41 @@ sample:
         let packed_mir = unsafe { onda_mir::from_messagepack_with_producer_proofs(&packed) }
             .expect("MessagePack should decode as trusted producer MIR");
         assert_eq!(packed_mir.as_program(), mir.as_program());
+    }
+
+    #[test]
+    fn typed_compile_inputs_drive_the_same_browser_compilation_pipeline() {
+        let source = r#"
+config const Selected: i32 = missing_default
+sample:
+  out1 = f32(Selected)
+"#;
+        let mut inputs = CompileInputs::default();
+        inputs.constants.insert(
+            "Selected".to_owned(),
+            ConstValue::Scalar(TypedConstValue::I32(8)),
+        );
+        let packed = compile_source_to_mir_messagepack_with_inputs(source, 48_000.0, 128, &inputs)
+            .expect("browser compilation should use the selected constant");
+        unsafe { onda_mir::from_messagepack_with_producer_proofs(&packed) }
+            .expect("compile-input result should be valid producer MIR");
+
+        let json = compile_source_to_mir_json_with_inputs(source, 48_000.0, 128, &inputs)
+            .expect("JSON compilation should accept the same inputs");
+        unsafe { onda_mir::from_json_with_producer_proofs(&json) }
+            .expect("JSON compile-input result should be valid producer MIR");
+
+        let sources = HashMap::from([("main.onda".to_owned(), source.to_owned())]);
+        let json = compile_project_sources_to_mir_json_with_inputs(
+            "main.onda",
+            &sources,
+            48_000.0,
+            128,
+            &inputs,
+        )
+        .expect("workspace JSON compilation should accept the same inputs");
+        unsafe { onda_mir::from_json_with_producer_proofs(&json) }
+            .expect("workspace JSON compile-input result should be valid producer MIR");
     }
 
     #[test]

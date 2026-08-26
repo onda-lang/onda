@@ -116,7 +116,7 @@ Top-level forms:
 | `block` | Per-block code. |
 | `sample` | Per-sample code. |
 | `graph` | Declarative signal routing. |
-| `const`, `const def` | Compile-time values and helpers. |
+| `const`, `config const`, `const def` | Compile-time values, host-selected compile inputs, and helpers. |
 | `def` | Runtime helper functions. |
 | `struct` | Nominal data types. |
 | `proc`, `processor` | Reusable DSP processors. |
@@ -1080,6 +1080,33 @@ Rules:
 - Once a numeric expression is concretely typed, every runtime operation uses that width and
   observes that type's normal rounding semantics. Use an explicit cast to request wider evaluation.
 - Reassignment, forward references, recursion, and mutual recursion are rejected.
+
+Use `config const` for the explicitly typed subset of root constants that a host may select for one
+compilation:
+
+```onda
+config const Channels: i32 = 2
+config const Enabled: bool = true
+config const Coefficients: f32[Channels] = [0.5, 1.0]
+config const Window: f64[] = [0.0, 0.5, 1.0]
+
+const SampleCount: i32 = Channels * BLOCK_SIZE
+```
+
+- Every `config const` requires an explicit type. It supports exactly the same value types as a
+  typed ordinary const: `bool`, `i32`, `i64`, `f32`, or `f64`, and fixed or inferred-length
+  primitive const arrays.
+- Configuration constants are allowed only at the executable root. The entry file and its
+  `include` files share that root; declaration modules loaded with `import` cannot declare them.
+- A host override replaces only that declaration's initializer for one compilation. Derived
+  constants, shapes, specialization, assertions, and generated code are recomputed normally.
+- Fixed array lengths are resolved from the complete selected configuration. If `Channels` above
+  changes, `Coefficients`—whether supplied by the host or evaluated from its default—must have the
+  new length or compilation fails.
+- Ordinary constants cannot be overridden. With no host input, the source initializer is used.
+
+The native CLI accepts repeatable `--const Name=value` inputs using Onda literal syntax and
+`--list-consts` prints the resolved configuration surface.
 
 `const def` declares compile-time helper functions:
 
@@ -2128,7 +2155,7 @@ or stored from `init`, `event`, or top-level `def` bodies.
 - Top-level `kins` aliases `params`.
 - Control-flow keywords are reserved: `if`, `elif`, `else`, `for`, `in`, `while`, `loop`, `break`, `continue`, `return`, and `assert`.
 - `in` separates the loop variable from its range in `for i in A..B`; use names such as `input` for ports and variables.
-- `import`, `include`, `use`, `as`, `pub`, `private`, and `pin` are reserved for their declaration and modifier syntax.
+- `import`, `include`, `use`, `as`, `pub`, `private`, `pin`, and `config` are reserved for their declaration and modifier syntax.
 - `true` and `false` are reserved boolean literals.
 - Identifiers beginning with `__onda_` are reserved for compiler-generated symbols.
 - Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.

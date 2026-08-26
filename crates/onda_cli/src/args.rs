@@ -170,6 +170,8 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
     let mut dump_graph = false;
+    let mut const_overrides = Vec::<(String, String)>::new();
+    let mut list_consts = false;
     let mut show_meta = false;
     let mut fast_math = false;
     let mut target_spec_path = None::<PathBuf>;
@@ -220,6 +222,20 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 block_frames = parse_block_frames(&value)?;
             }
             "--dump-graph" => dump_graph = true,
+            "--list-consts" => list_consts = true,
+            "--const" => {
+                let Some(value) = args.next() else {
+                    return Err("--const requires a name=value pair".to_owned());
+                };
+                let parsed = parse_compile_const_override(&value)?;
+                if const_overrides.iter().any(|(name, _)| name == &parsed.0) {
+                    return Err(format!(
+                        "configuration constant '{}' is specified more than once",
+                        parsed.0
+                    ));
+                }
+                const_overrides.push(parsed);
+            }
             "--ir" => {
                 if emit_explicit {
                     return Err("cannot use both --ir and --emit".to_owned());
@@ -313,6 +329,16 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 let value = &arg["--block-size=".len()..];
                 block_frames = parse_block_frames(value)?;
             }
+            _ if arg.starts_with("--const=") => {
+                let parsed = parse_compile_const_override(&arg["--const=".len()..])?;
+                if const_overrides.iter().any(|(name, _)| name == &parsed.0) {
+                    return Err(format!(
+                        "configuration constant '{}' is specified more than once",
+                        parsed.0
+                    ));
+                }
+                const_overrides.push(parsed);
+            }
             _ if arg.starts_with("--target-triple=") => {
                 let value = &arg["--target-triple=".len()..];
                 if value.is_empty() {
@@ -405,6 +431,8 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         sample_rate_hz,
         block_frames,
         dump_graph,
+        const_overrides,
+        list_consts,
         show_meta,
         fast_math,
         target,
@@ -1168,6 +1196,23 @@ fn parse_param_setting(value: &str) -> Result<(String, f64), String> {
         format!("invalid parameter value '{raw_value}' for '{name}', expected number")
     })?;
     Ok((name.to_owned(), parsed))
+}
+
+fn parse_compile_const_override(value: &str) -> Result<(String, String), String> {
+    let Some((name, raw_value)) = value.split_once('=') else {
+        return Err(format!(
+            "invalid compile constant override '{value}', expected name=value"
+        ));
+    };
+    if name.is_empty() {
+        return Err("compile constant override requires a non-empty name".to_owned());
+    }
+    if raw_value.trim().is_empty() {
+        return Err(format!(
+            "compile constant override for '{name}' requires a value"
+        ));
+    }
+    Ok((name.to_owned(), raw_value.to_owned()))
 }
 
 fn parse_buffer_binding(value: &str) -> Result<(String, PathBuf), String> {

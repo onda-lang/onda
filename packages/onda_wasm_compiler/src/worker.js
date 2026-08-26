@@ -19,6 +19,14 @@ globalThis.addEventListener("message", async (event) => {
       respond(requestId, result, [result.artifact.wasm.buffer]);
       return;
     }
+    if (message.type === "inspectSourceConstants") {
+      const result = await (await compiler()).inspectSourceConstants(
+        message.source,
+        message.options,
+      );
+      respond(requestId, result, compileConstTransfers(result));
+      return;
+    }
     if (message.type === "compileWorkspace") {
       const result = await (await compiler()).compileWorkspace(
         message.workspace,
@@ -27,12 +35,28 @@ globalThis.addEventListener("message", async (event) => {
       respond(requestId, result, [result.artifact.wasm.buffer]);
       return;
     }
+    if (message.type === "inspectWorkspaceConstants") {
+      const result = await (await compiler()).inspectWorkspaceConstants(
+        message.workspace,
+        message.options,
+      );
+      respond(requestId, result, compileConstTransfers(result));
+      return;
+    }
     if (message.type === "compileProjectImage") {
       const result = await (await compiler()).compileProjectImage(
         message.imageBytes,
         message.options,
       );
       respond(requestId, result, [result.artifact.wasm.buffer]);
+      return;
+    }
+    if (message.type === "inspectProjectImageConstants") {
+      const result = await (await compiler()).inspectProjectImageConstants(
+        message.imageBytes,
+        message.options,
+      );
+      respond(requestId, result, compileConstTransfers(result));
       return;
     }
     if (message.type === "createProjectImage") {
@@ -122,4 +146,11 @@ function compiler(frontendWasm) {
 
 function respond(requestId, value, transfer = []) {
   globalThis.postMessage({ type: "result", requestId, value }, transfer);
+}
+
+function compileConstTransfers(descriptors) {
+  return descriptors
+    .map((descriptor) => descriptor.value)
+    .filter(ArrayBuffer.isView)
+    .map((value) => value.buffer);
 }

@@ -227,6 +227,9 @@ Non-crate directories of note:
 ## Practical navigation entrypoints
 
 - Language/front-end behavior: `onda_frontend/src/parser/*`, `onda_semantics/src/lib.rs`.
+- Host-selected compile constants: the loader retains root `config const` declarations, immutable
+  `onda_semantics::CompileInputs` are applied before namespace/shape preprocessing, and all native,
+  C, CLI, virtual-project, project-image, and browser entry points converge on that semantic path.
 - Proc lowering path: `processor_lowering.rs` → `processor_lowering/*` → `proc_call_rewrite.rs`.
 - Graph lowering path: `processor_lowering/graph_lowering.rs` → `graph_lowering/*` (inspect via `onda compile --dump-graph`).
 - Production native lowering: `onda_semantics::lower_program_to_optimized_mir` →

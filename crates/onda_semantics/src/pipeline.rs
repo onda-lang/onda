@@ -309,15 +309,152 @@ fn collect_typed_nested_proc_arrays(
     stack.remove(proc_name);
 }
 
-fn preprocess_program_for_analysis(
+fn preprocess_program_for_analysis_with_inputs(
     mut program: Program,
     options: AnalysisOptions,
+    inputs: &CompileInputs,
 ) -> Result<Program, Vec<Diagnostic>> {
     validate_analysis_options(options)?;
+    apply_compile_inputs(&mut program, inputs)?;
     inject_auto_std_math(&mut program)?;
     flatten_namespaces_for_semantics(&mut program, options)?;
     fold_host_sr_builtin(&mut program, options);
     Ok(program)
+}
+
+fn apply_compile_inputs(
+    program: &mut Program,
+    inputs: &CompileInputs,
+) -> Result<(), Vec<Diagnostic>> {
+    let configurable = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Const(decl) if decl.configurable => Some((decl.name.as_str(), decl.loc)),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let ordinary_consts = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Const(decl) if !decl.configurable => Some((decl.name.as_str(), decl.loc)),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+
+    let mut errors = Vec::new();
+    for name in inputs.constants.keys() {
+        if configurable.contains_key(name.as_str()) {
+            continue;
+        }
+        if let Some(location) = ordinary_consts.get(name.as_str()) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "constant '{name}' is not host-configurable; declare it with 'config const'"
+                ),
+                location.as_ref(),
+            ));
+        } else {
+            errors.push(Diagnostic::semantic(
+                format!("unknown configuration constant '{name}'"),
+                0,
+                0,
+            ));
+        }
+    }
+
+    for block in &mut program.blocks {
+        let Block::Const(decl) = block else {
+            continue;
+        };
+        if !decl.configurable {
+            continue;
+        }
+        let Some(ty) = decl.ty.as_ref() else {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "configuration constant '{}' requires an explicit type",
+                    decl.name
+                ),
+                decl.loc.as_ref(),
+            ));
+            continue;
+        };
+        let Some(value) = inputs.constants.get(&decl.name) else {
+            continue;
+        };
+        if let Some(expr) = compile_input_expr(value, ty, decl) {
+            decl.expr = expr;
+        } else {
+            errors.push(compile_input_type_diagnostic(value, ty, decl));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn compile_input_expr(value: &ConstValue, ty: &ConstType, decl: &ConstDecl) -> Option<Expr> {
+    let location: SourceLoc = decl.loc.into();
+    match (value, ty) {
+        (ConstValue::Scalar(value), ConstType::Scalar(expected))
+            if value.primitive_type() == *expected =>
+        {
+            Some(typed_const_expr_with_loc(*value, location))
+        }
+        (
+            ConstValue::Array {
+                elem_ty,
+                len,
+                values,
+            },
+            ConstType::Array { elem, .. } | ConstType::Slice { elem },
+        ) if elem_ty == elem
+            && *len == values.len()
+            && values.iter().all(|value| value.primitive_type() == *elem) =>
+        {
+            Some(const_array_literal_expr(values, location))
+        }
+        _ => None,
+    }
+}
+
+fn compile_input_type_diagnostic(
+    value: &ConstValue,
+    ty: &ConstType,
+    decl: &ConstDecl,
+) -> Diagnostic {
+    let supplied = match value {
+        ConstValue::Scalar(value) => value.primitive_type().name().to_owned(),
+        ConstValue::Array {
+            elem_ty,
+            len,
+            values,
+        } if *len == values.len()
+            && values
+                .iter()
+                .all(|value| value.primitive_type() == *elem_ty) =>
+        {
+            format!("{}[{len}]", elem_ty.name())
+        }
+        ConstValue::Array { .. } => "malformed constant array".to_owned(),
+    };
+    let expected = match ty {
+        ConstType::Scalar(ty) => ty.name().to_owned(),
+        ConstType::Array { elem, .. } => format!("{}[fixed]", elem.name()),
+        ConstType::Slice { elem } => format!("{}[]", elem.name()),
+    };
+    Diagnostic::semantic_span(
+        format!(
+            "configuration constant '{}' expects {expected}, but the host supplied {supplied}",
+            decl.name
+        ),
+        decl.loc.as_ref(),
+    )
 }
 
 fn evaluate_asserts(program: &mut Program, options: AnalysisOptions, errors: &mut Vec<Diagnostic>) {
@@ -708,16 +845,6 @@ fn fold_host_sr_builtin(program: &mut Program, options: AnalysisOptions) {
     let consts = host_sr_const_map(options);
     for block in &mut program.blocks {
         fold_host_sr_block(block, &consts);
-    }
-}
-
-fn typed_const_value_type(value: TypedConstValue) -> PrimitiveType {
-    match value {
-        TypedConstValue::F32(_) => PrimitiveType::F32,
-        TypedConstValue::F64(_) => PrimitiveType::F64,
-        TypedConstValue::I32(_) => PrimitiveType::I32,
-        TypedConstValue::I64(_) => PrimitiveType::I64,
-        TypedConstValue::Bool(_) => PrimitiveType::Bool,
     }
 }
 
@@ -2963,7 +3090,7 @@ fn eval_const_def_stmt_list(
                 let ty = if let Some(ty) = decl_ty {
                     *ty
                 } else if let Some(existing) = locals.get(name).copied() {
-                    typed_const_value_type(existing)
+                    existing.primitive_type()
                 } else {
                     infer_const_scalar_expr_type_with_defs(
                         expr,
@@ -6932,6 +7059,40 @@ fn coerce_consts_and_expand_counts(
     artifacts
 }
 
+fn compile_const_descriptors(
+    program: &Program,
+    artifacts: &SemanticConstArtifacts,
+) -> Vec<CompileConstDescriptor> {
+    program
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let Block::Const(decl) = block else {
+                return None;
+            };
+            if !decl.configurable {
+                return None;
+            }
+            let value = artifacts.const_values.get(&decl.name)?.clone();
+            let kind = match (&decl.ty, &value) {
+                (Some(ConstType::Scalar(_)), ConstValue::Scalar(_)) => CompileConstKind::Scalar,
+                (Some(ConstType::Array { .. }), ConstValue::Array { .. }) => {
+                    CompileConstKind::FixedArray
+                }
+                (Some(ConstType::Slice { .. }), ConstValue::Array { .. }) => {
+                    CompileConstKind::Array
+                }
+                _ => return None,
+            };
+            Some(CompileConstDescriptor {
+                name: decl.name.clone(),
+                kind,
+                value,
+            })
+        })
+        .collect()
+}
+
 fn coerce_const_array(
     decl: &onda_frontend::ConstDecl,
     options: AnalysisOptions,
@@ -7827,12 +7988,31 @@ pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     analyze_with_options(program, AnalysisOptions::default())
 }
 
+/// Resolves executable-root configuration declarations without analyzing or
+/// lowering the runtime program.
+pub fn inspect_compile_constants(
+    program: Program,
+    options: AnalysisOptions,
+    inputs: &CompileInputs,
+) -> Result<Vec<CompileConstDescriptor>, Vec<Diagnostic>> {
+    let mut program = preprocess_program_for_analysis_with_inputs(program, options, inputs)?;
+    let mut errors = Vec::new();
+    let artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
+    evaluate_asserts(&mut program, options, &mut errors);
+    if errors.is_empty() {
+        Ok(compile_const_descriptors(&program, &artifacts))
+    } else {
+        Err(errors)
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn preprocess_const_semantics_for_lowering(
     program: Program,
     options: AnalysisOptions,
 ) -> Result<Program, Vec<Diagnostic>> {
-    let mut program = preprocess_program_for_analysis(program, options)?;
+    let mut program =
+        preprocess_program_for_analysis_with_inputs(program, options, &CompileInputs::default())?;
 
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
@@ -7852,7 +8032,15 @@ pub fn lower_graphs_for_inspection_with_options(
     program: Program,
     options: AnalysisOptions,
 ) -> Result<Program, Vec<Diagnostic>> {
-    let mut program = preprocess_program_for_analysis(program, options)?;
+    lower_graphs_for_inspection_with_options_and_inputs(program, options, &CompileInputs::default())
+}
+
+pub fn lower_graphs_for_inspection_with_options_and_inputs(
+    program: Program,
+    options: AnalysisOptions,
+    inputs: &CompileInputs,
+) -> Result<Program, Vec<Diagnostic>> {
+    let mut program = preprocess_program_for_analysis_with_inputs(program, options, inputs)?;
 
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
@@ -7880,13 +8068,23 @@ pub fn analyze_with_options(
     program: Program,
     options: AnalysisOptions,
 ) -> Result<TypedProgram, Vec<Diagnostic>> {
+    analyze_with_options_and_inputs(program, options, &CompileInputs::default())
+}
+
+/// Analyzes a program under one immutable set of host-selected compile
+/// constants. Omitted declarations use their source initializers.
+pub fn analyze_with_options_and_inputs(
+    program: Program,
+    options: AnalysisOptions,
+    inputs: &CompileInputs,
+) -> Result<TypedProgram, Vec<Diagnostic>> {
     let original_last_block_loc = program
         .blocks
         .iter()
         .rev()
         .map(Block::loc)
         .find(|loc| !loc.is_zero());
-    let mut program = preprocess_program_for_analysis(program, options)?;
+    let mut program = preprocess_program_for_analysis_with_inputs(program, options, inputs)?;
 
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);

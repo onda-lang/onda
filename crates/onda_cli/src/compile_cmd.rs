@@ -6,10 +6,14 @@ use onda_codegen_llvm::{
     lower_optimized_mir_to_object_artifact, lower_optimized_mir_to_target_llvm_ir, MirCodegenError,
     MirTargetOptions, TargetConfig,
 };
-use onda_frontend::{parse_program_file, PrimitiveType, Program};
+use onda_frontend::{
+    parse_program, parse_program_file, Block, ConstDecl, ConstType, PrimitiveType, Program,
+};
 use onda_semantics::{
-    analyze_with_options, lower_graphs_for_inspection_with_options, lower_program_to_optimized_mir,
-    AnalysisOptions, TypedArrayInfo, TypedProgram,
+    analyze_with_options_and_inputs, inspect_compile_constants,
+    lower_graphs_for_inspection_with_options_and_inputs, lower_program_to_optimized_mir,
+    AnalysisOptions, CompileConstDescriptor, CompileConstKind, CompileInputs, ConstValue,
+    TypedArrayInfo, TypedConstValue, TypedProgram,
 };
 
 use crate::args::{default_metadata_output_path, default_object_output_path};
@@ -25,6 +29,8 @@ pub(crate) struct CompileRequest<'a> {
     pub sample_rate_hz: u32,
     pub block_frames: usize,
     pub dump_graph: bool,
+    pub const_overrides: &'a [(String, String)],
+    pub list_consts: bool,
     pub show_meta: bool,
     pub fast_math: bool,
     pub target: TargetConfig,
@@ -39,17 +45,49 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         sample_rate_hz,
         block_frames,
         dump_graph,
+        const_overrides,
+        list_consts,
         show_meta,
         fast_math,
         target,
     } = request;
     let project_input = crate::project_cmd::resolve_entry(input)?;
     let source_input = project_input.entry_path();
+    let parsed = parse_program_file(source_input)
+        .map_err(|diags| format_diagnostics("parse failed", &diags))?;
+    let analysis_options = AnalysisOptions {
+        sample_rate: sample_rate_hz as f32,
+        block_size: block_frames,
+    };
+    let compile_inputs = parse_compile_inputs(&parsed, const_overrides, analysis_options)?;
+    if list_consts {
+        if dump_graph
+            || show_meta
+            || emit != CompileEmit::Check
+            || output.is_some()
+            || meta_out.is_some()
+        {
+            return Err(
+                "--list-consts cannot be combined with artifact, graph, or metadata output"
+                    .to_owned(),
+            );
+        }
+        let descriptors = inspect_compile_constants(parsed, analysis_options, &compile_inputs)
+            .map_err(|diags| format_diagnostics("compile constant inspection failed", &diags))?;
+        print_compile_constants(&descriptors);
+        return Ok(());
+    }
     if dump_graph {
-        let lowered = parse_and_lower_graphs(source_input, sample_rate_hz as f32, block_frames)?;
+        let lowered = lower_graphs_for_inspection_with_options_and_inputs(
+            parsed.clone(),
+            analysis_options,
+            &compile_inputs,
+        )
+        .map_err(|diags| format_diagnostics("graph lowering failed", &diags))?;
         print!("{}", format_program(&lowered));
     }
-    let typed = parse_and_analyze(source_input, sample_rate_hz as f32, block_frames)?;
+    let typed = analyze_with_options_and_inputs(parsed, analysis_options, &compile_inputs)
+        .map_err(|diags| format_diagnostics("semantic analysis failed", &diags))?;
     crate::project_cmd::validate_compile_project(&project_input, &typed)?;
     if show_meta {
         print_program_meta(&typed);
@@ -296,36 +334,151 @@ fn format_mir_codegen_errors(prefix: &str, errors: &[MirCodegenError]) -> String
     format!("{prefix}:\n{details}")
 }
 
-fn parse_and_analyze(
-    input: &Path,
-    sample_rate: f32,
-    block_size: usize,
-) -> Result<TypedProgram, String> {
-    let parsed =
-        parse_program_file(input).map_err(|diags| format_diagnostics("parse failed", &diags))?;
-    analyze_with_options(
-        parsed,
-        AnalysisOptions {
-            sample_rate,
-            block_size,
-        },
-    )
-    .map_err(|diags| format_diagnostics("semantic analysis failed", &diags))
+fn parse_compile_inputs(
+    parsed: &Program,
+    overrides: &[(String, String)],
+    options: AnalysisOptions,
+) -> Result<CompileInputs, String> {
+    let mut inputs = CompileInputs::default();
+    for (name, raw_value) in overrides {
+        let decl = parsed.blocks.iter().find_map(|block| match block {
+            Block::Const(decl) if decl.name == *name => Some(decl),
+            _ => None,
+        });
+        let Some(decl) = decl else {
+            return Err(format!("unknown configuration constant '{name}'"));
+        };
+        if !decl.configurable {
+            return Err(format!(
+                "constant '{name}' is not host-configurable; declare it with 'config const'"
+            ));
+        }
+        let Some(declared_ty) = decl.ty.as_ref() else {
+            return Err(format!(
+                "configuration constant '{name}' requires an explicit type"
+            ));
+        };
+        let value = parse_compile_const_literal(name, raw_value, declared_ty, decl, options)?;
+        inputs.constants.insert(name.clone(), value);
+    }
+    Ok(inputs)
 }
 
-fn parse_and_lower_graphs(
-    input: &Path,
-    sample_rate: f32,
-    block_size: usize,
-) -> Result<Program, String> {
-    let parsed =
-        parse_program_file(input).map_err(|diags| format_diagnostics("parse failed", &diags))?;
-    lower_graphs_for_inspection_with_options(
-        parsed,
-        AnalysisOptions {
-            sample_rate,
-            block_size,
-        },
-    )
-    .map_err(|diags| format_diagnostics("graph lowering failed", &diags))
+fn parse_compile_const_literal(
+    name: &str,
+    raw_value: &str,
+    declared_ty: &ConstType,
+    decl: &ConstDecl,
+    options: AnalysisOptions,
+) -> Result<ConstValue, String> {
+    let source = format!("const OndaCliValue = {raw_value}\n");
+    let literal_program = parse_program(&source)
+        .map_err(|diags| format_diagnostics("invalid --const value", &diags))?;
+    let mut blocks = literal_program.blocks.into_iter();
+    let expr = match (blocks.next(), blocks.next()) {
+        (Some(Block::Const(decl)), None) => decl.expr,
+        _ => {
+            return Err(format!(
+                "invalid --const value for '{name}': expected exactly one expression"
+            ))
+        }
+    };
+    let ty = match declared_ty {
+        ConstType::Array { elem, .. } => ConstType::Slice { elem: *elem },
+        other => other.clone(),
+    };
+    let synthetic = Program {
+        blocks: vec![Block::Const(ConstDecl {
+            loc: decl.loc,
+            name: name.to_owned(),
+            ty: Some(ty),
+            expr,
+            configurable: true,
+        })],
+    };
+    let mut descriptors = inspect_compile_constants(synthetic, options, &CompileInputs::default())
+        .map_err(|diags| format_diagnostics("invalid --const value", &diags))?;
+    descriptors
+        .pop()
+        .map(|descriptor| descriptor.value)
+        .ok_or_else(|| format!("failed to resolve --const value for '{name}'"))
+}
+
+fn print_compile_constants(descriptors: &[CompileConstDescriptor]) {
+    if descriptors.is_empty() {
+        println!("(no compile constants)");
+        return;
+    }
+    for descriptor in descriptors {
+        println!(
+            "{}: {} = {}",
+            descriptor.name,
+            compile_const_kind_name(descriptor.kind, &descriptor.value),
+            compile_const_value_repr(&descriptor.value)
+        );
+    }
+}
+
+fn compile_const_kind_name(kind: CompileConstKind, value: &ConstValue) -> String {
+    match (kind, value) {
+        (CompileConstKind::Scalar, ConstValue::Scalar(value)) => {
+            primitive_type_name(value.primitive_type()).to_owned()
+        }
+        (CompileConstKind::FixedArray, ConstValue::Array { elem_ty, len, .. }) => {
+            format!("{}[{len}]", primitive_type_name(*elem_ty))
+        }
+        (CompileConstKind::Array, ConstValue::Array { elem_ty, .. }) => {
+            format!("{}[]", primitive_type_name(*elem_ty))
+        }
+        _ => unreachable!("compile constant kind and value are produced together"),
+    }
+}
+
+fn compile_const_value_repr(value: &ConstValue) -> String {
+    match value {
+        ConstValue::Scalar(value) => typed_const_value_repr(*value),
+        ConstValue::Array { values, .. } => format!(
+            "[{}]",
+            values
+                .iter()
+                .copied()
+                .map(typed_const_value_repr)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn typed_const_value_repr(value: TypedConstValue) -> String {
+    match value {
+        TypedConstValue::F32(value) => format!("f32({value:?})"),
+        TypedConstValue::F64(value) => format!("{value:?}"),
+        TypedConstValue::I32(value) => value.to_string(),
+        TypedConstValue::I64(value) => format!("i64({value})"),
+        TypedConstValue::Bool(value) => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_constant_literal_rejects_trailing_program_items() {
+        let program = parse_program("config const Selected: i32 = 0\n")
+            .expect("test declaration should parse");
+        let decl = match &program.blocks[0] {
+            Block::Const(decl) => decl,
+            _ => panic!("expected const declaration"),
+        };
+        let error = parse_compile_const_literal(
+            "Selected",
+            "1\nconst Ignored: i32 = 2",
+            decl.ty.as_ref().unwrap(),
+            decl,
+            AnalysisOptions::default(),
+        )
+        .expect_err("a compile constant argument must not contain a second program item");
+        assert!(error.contains("expected exactly one expression"));
+    }
 }

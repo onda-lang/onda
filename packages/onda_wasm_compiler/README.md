@@ -16,6 +16,48 @@ const { artifact, sourceFiles } = await compiler.compileSource(source, {
 console.log(artifact.wasm, artifact.metadata, sourceFiles);
 ```
 
+Source may expose explicitly typed `config const` declarations. Supply optional partial overrides
+on any source, workspace, or project-image compilation:
+
+```js
+const { artifact } = await compiler.compileSource(source, {
+  constants: {
+    Enabled: true,
+    Channels: 8,
+    Seed: 9_007_199_254_740_993n,
+    Window: new Float32Array([0.0, 0.5, 1.0]),
+  },
+});
+```
+
+Inspect the resolved declarations before compilation to build configuration UI or validate a
+selection. Inspection accepts the same context and partial overrides; omitted constants keep their
+authored values:
+
+```js
+const constants = await compiler.inspectSourceConstants(`
+config const TEST: f32 = 0.25
+config const YOYO: f32 = 0.75
+`, {
+  constants: { TEST: 0.5 },
+});
+
+console.log(constants[0].value); // 0.5 (overridden)
+console.log(constants[1].value); // 0.75 (authored value retained)
+```
+
+The equivalent `inspectWorkspaceConstants(workspace, options)` and
+`inspectProjectImageConstants(imageBytes, options)` methods use the same resolution semantics.
+Descriptors report scalar/fixed-array/dynamic-array shape, element type, and resolved value. Scalar
+values are ordinary JavaScript values; arrays are typed arrays.
+
+Booleans use `boolean`, `i64` uses `bigint`, and arrays use `boolean[]`, `Uint8Array` (0/1),
+`Int32Array`, `BigInt64Array`, `Float32Array`, or `Float64Array`. Plain numbers are checked against
+the declaration's `i32`, `f32`, or `f64` type; `NaN` and infinities are valid only for floating-point
+declarations. Fixed-array lengths are resolved after all inputs are selected, so changing a size
+constant without a matching array value is a compile error. Worker mode forwards bigint and typed
+arrays through structured clone without numeric conversion.
+
 The package composes Onda's embedded Rust frontend with its Binaryen backend. The frontend emits
 validated versioned MIR in memory; the backend lowers that trusted producer output to the generic
 Onda WebAssembly processor ABI. The package verifies the MIR schema handshake during startup.

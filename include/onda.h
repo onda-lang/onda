@@ -13,6 +13,7 @@ typedef struct onda_instance onda_instance_t;
 typedef struct onda_source_manifest onda_source_manifest_t;
 typedef struct onda_project_image onda_project_image_t;
 typedef struct onda_project_materialization_plan onda_project_materialization_plan_t;
+typedef struct onda_compile_constants onda_compile_constants_t;
 
 /* Primitive element type identifiers used by metadata and buffer binding APIs. */
 enum {
@@ -63,7 +64,37 @@ typedef struct {
    strings and must not be disposed independently. */
 void onda_diag_dispose(onda_diag_t* diag);
 
-/* Compile options for onda_compile. */
+enum {
+  ONDA_COMPILE_CONST_KIND_SCALAR = 0,
+  ONDA_COMPILE_CONST_KIND_FIXED_ARRAY = 1,
+  ONDA_COMPILE_CONST_KIND_ARRAY = 2
+};
+
+/* One immutable typed compile-constant input. element_type is an
+   ONDA_PRIMITIVE_* value. values points to native C values: uint8_t (exactly
+   0 or 1) for BOOL, int32_t for I32, int64_t for I64, float for F32, and
+   double for F64. Arrays are contiguous values of the same type. is_array
+   distinguishes a scalar from an array of length one. */
+typedef struct {
+  const char* name_utf8;
+  int element_type;
+  int is_array;
+  size_t element_count;
+  const void* values;
+} onda_compile_const_input_t;
+
+/* One resolved configuration declaration. input contains the selected value in
+   the same native representation accepted by compilation and can be copied
+   directly into an input array. All pointers remain valid until the owning
+   onda_compile_constants_t is destroyed. */
+typedef struct {
+  onda_compile_const_input_t input;
+  /* One of ONDA_COMPILE_CONST_KIND_*. Fixed-array element_count is resolved
+     under the supplied partial selection. */
+  int kind;
+} onda_compile_const_descriptor_t;
+
+/* Compile options shared by all source and project-image compile entry points. */
 typedef struct {
   /* fast_math != 0 enables LLVM fast-math lowering. */
   int fast_math;
@@ -71,6 +102,9 @@ typedef struct {
   float sample_rate;
   /* Fixed compile-time block size. Must be > 0. */
   int block_size;
+  /* Immutable compile-constant inputs for this request. NULL when count is 0. */
+  const onda_compile_const_input_t* const_inputs;
+  size_t const_input_count;
 } onda_compile_options_t;
 
 typedef struct {
@@ -139,6 +173,31 @@ typedef struct {
   onda_free_fn free;
 } onda_allocator_t;
 
+/* Resolves every executable-root config const under the supplied compile
+   context and optional partial inputs. Omitted inputs use source defaults.
+   Returns an owned descriptor list, or NULL on failure. */
+onda_compile_constants_t* onda_inspect_compile_constants(
+  const char* src_utf8,
+  const onda_compile_options_t* options,
+  onda_diag_t* out_diag
+);
+/* Returns the descriptor count, or -1 for an invalid handle. */
+int onda_compile_constants_count(const onda_compile_constants_t* constants);
+/* Returns one descriptor, or NULL for an invalid handle/index. The descriptor
+   and every pointer it contains remain valid until list destruction. */
+const onda_compile_const_descriptor_t* onda_compile_constants_at(
+  const onda_compile_constants_t* constants,
+  int index
+);
+/* Returns all resolved values as a contiguous input array that may be assigned
+   directly to onda_compile_options_t. The pointer remains valid until list
+   destruction. Returns NULL for an invalid handle or an empty list. */
+const onda_compile_const_input_t* onda_compile_constants_inputs(
+  const onda_compile_constants_t* constants
+);
+/* Destroys a compile-constant descriptor list. NULL is accepted. */
+void onda_compile_constants_destroy(onda_compile_constants_t* constants);
+
 /* Compiles Onda source and returns a program handle, or NULL on failure. */
 onda_program_t* onda_compile(
   const char* src_utf8,
@@ -161,12 +220,31 @@ onda_program_t* onda_compile_file(
   onda_source_manifest_t** out_sources,
   onda_diag_t* out_diag
 );
+/* Filesystem/project equivalent of onda_inspect_compile_constants. When
+   out_sources is non-NULL, it follows onda_compile_file manifest semantics. */
+onda_compile_constants_t* onda_inspect_compile_constants_file(
+  const char* file_path_utf8,
+  const onda_compile_options_t* options,
+  onda_source_manifest_t** out_sources,
+  onda_diag_t* out_diag
+);
 /* Compiles the reachable portion of an exact in-memory source graph without
    consulting the filesystem. Source paths are NUL-terminated opaque UTF-8
    identities. Each non-stdlib import/include encountered while parsing must
    have one matching resolution. Unreferenced sources and resolutions are
    permitted and are not included in the returned manifest. */
 onda_program_t* onda_compile_source_graph(
+  const char* entry_path_utf8,
+  const onda_source_graph_document_t* sources,
+  size_t source_count,
+  const onda_source_graph_resolution_t* resolutions,
+  size_t resolution_count,
+  const onda_compile_options_t* options,
+  onda_source_manifest_t** out_sources,
+  onda_diag_t* out_diag
+);
+/* Exact-source-graph equivalent of onda_inspect_compile_constants. */
+onda_compile_constants_t* onda_inspect_compile_constants_source_graph(
   const char* entry_path_utf8,
   const onda_source_graph_document_t* sources,
   size_t source_count,
@@ -412,6 +490,12 @@ int64_t onda_project_image_buffer_channels(
 float onda_project_image_buffer_sample_rate(
   const onda_project_image_t* image,
   int index
+);
+/* Project-image equivalent of onda_inspect_compile_constants. */
+onda_compile_constants_t* onda_project_image_inspect_compile_constants(
+  const onda_project_image_t* image,
+  const onda_compile_options_t* options,
+  onda_diag_t* out_diag
 );
 /* Compiles the image and retains its decoded buffer assets as immutable program
    defaults. Compilation fails if reachable Onda code may write a project-bound

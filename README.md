@@ -97,6 +97,8 @@ Compiles an Onda file and optionally emits IR or an object file.
 Typical uses:
 - syntax and semantic checking
 - inspect graph lowering with `--dump-graph`
+- select explicitly declared compile-time variants with repeatable `--const Name=value`, or inspect
+  their resolved types and defaults with `--list-consts`
 - emit backend-neutral MIR for inspection with `--emit mir`, versioned JSON with `--emit mir-json`, or compact production transport with `--emit mir-messagepack`
 - emit LLVM IR with `--emit llvm-ir` or `--ir`
 - emit a native object file with `--emit obj`
@@ -109,6 +111,8 @@ onda compile examples/basic/sine.onda --emit mir
 onda compile examples/basic/sine.onda --emit mir-json --output sine.mir.json
 onda compile examples/basic/sine.onda --emit mir-messagepack --output sine.mir.msgpack
 onda compile examples/feedback/cybernetic_feedback_graph.onda --dump-graph
+onda compile program.onda --const Channels=8 --const 'Window=[0.0, 0.5, 1.0]' --emit mir
+onda compile program.onda --list-consts
 onda compile examples/basic/sine.onda --emit llvm-ir
 onda compile examples/basic/sine.onda --emit obj
 onda compile examples/basic/sine.onda --target-triple aarch64-unknown-linux-gnu --emit obj

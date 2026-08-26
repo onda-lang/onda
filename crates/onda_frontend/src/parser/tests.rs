@@ -1579,7 +1579,7 @@ fn rejects_reserved_keywords_as_identifiers() {
     let keywords = [
         "if", "elif", "else", "for", "in", "while", "loop", "break", "continue", "return", "await",
         "yield", "task", "tasks", "assert", "import", "include", "use", "as", "pub", "private",
-        "pin", "true", "false",
+        "pin", "config", "true", "false",
     ];
 
     for keyword in keywords {
@@ -7006,6 +7006,75 @@ sample {
             ..
         } if expr_contains_var_with_suffix(lhs, "X")
     ));
+}
+
+#[test]
+fn parses_explicit_top_level_config_constants() {
+    let program = parse_program(
+        "config const Size: i32 = 4\nconfig const Values: f32[Size] = [0.0, 1.0, 2.0, 3.0]\n",
+    )
+    .expect("configuration constants should parse");
+    let declarations = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Const(decl) => Some(decl),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(declarations.len(), 2);
+    assert!(declarations.iter().all(|decl| decl.configurable));
+    assert_eq!(declarations[0].name, "Size");
+    assert!(matches!(
+        declarations[0].ty,
+        Some(ConstType::Scalar(PrimitiveType::I32))
+    ));
+    assert!(matches!(
+        declarations[1].ty,
+        Some(ConstType::Array {
+            elem: PrimitiveType::F32,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn config_constants_are_top_level_only() {
+    for source in [
+        "namespace NS:\n  config const Value: i32 = 1\n",
+        "sample:\n  config const Value: i32 = 1\n",
+        "proc P:\n  config const Value: i32 = 1\n  sample:\n    out1 = 0.0\n",
+    ] {
+        assert!(
+            parse_program(source).is_err(),
+            "nested configuration constant unexpectedly parsed: {source}"
+        );
+    }
+}
+
+#[test]
+fn includes_allow_config_constants_but_imports_reject_them() {
+    let dir = mk_temp_dir("config_const_source_modes");
+    let main = dir.join("main.onda");
+    let shared = dir.join("shared.onda");
+    let module = dir.join("module.onda");
+    write_file(&shared, "config const Shared: i32 = 1\n");
+    write_file(&module, "config const Imported: i32 = 2\n");
+
+    write_file(&main, "include \"./shared.onda\"\n");
+    let program = load_program_file(&main).expect("includes should share configuration constants");
+    assert!(program.program.blocks.iter().any(
+        |block| matches!(block, Block::Const(decl) if decl.name == "Shared" && decl.configurable)
+    ));
+
+    write_file(&main, "import module\n");
+    let error = load_program_file(&main)
+        .expect_err("declaration-only imports must not expose configuration constants");
+    assert!(error.diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("configuration constants are not allowed")));
+
+    fs::remove_dir_all(dir).ok();
 }
 
 #[test]

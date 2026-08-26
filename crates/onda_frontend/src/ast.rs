@@ -545,6 +545,8 @@ pub struct ConstDecl {
     pub name: String,
     pub ty: Option<ConstType>,
     pub expr: Expr,
+    /// True only for an executable-root declaration written as `config const`.
+    pub configurable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

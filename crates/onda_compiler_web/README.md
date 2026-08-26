@@ -14,11 +14,14 @@ The package build runs `wasm-pack --release` and then the workspace-pinned Binar
 `wasm-opt -O4`. Its internal `--no-opt` argument only disables wasm-pack's separately bundled
 optimizer so every local, CI, website, and npm build uses the same Binaryen release.
 
-The production exports `compile_to_mir_messagepack(source, sampleRate, blockSize)` and
-`compile_source_workspace_to_mir_messagepack(entryPath, sourcesJson, sampleRate, blockSize)` return a
-`FrontendMessagePackCompilation` containing compact schema-versioned bytes plus the ordered
-contributing project paths. JSON variants return the equivalent `FrontendJsonCompilation` for
-inspection and tooling. Both result types expose the source list and exact portable source image.
+The production exports
+`compile_to_mir_messagepack(source, sampleRate, blockSize, constantsJson)` and
+`compile_source_workspace_to_mir_messagepack(entryPath, sourcesJson, sampleRate, blockSize,
+constantsJson)`. They return a `FrontendMessagePackCompilation` containing compact
+schema-versioned bytes plus the ordered contributing project paths. `constantsJson` is the typed,
+lossless internal transport for immutable `config const` inputs supplied by the public npm package.
+JSON variants return the equivalent `FrontendJsonCompilation` for inspection and tooling. Both
+result types expose the source list and exact portable source image.
 Workspace
 compilation accepts a JSON object of project-relative paths to source strings, resolving imports and
 includes entirely in memory. Paths cannot escape the virtual project root. Embedded

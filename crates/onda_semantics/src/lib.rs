@@ -4,7 +4,7 @@
 // boundaries without reducing complexity.
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use onda_frontend::{
     inject_auto_std_math, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
@@ -84,7 +84,10 @@ pub(crate) use internal_names::runtime_proc_array_active_symbol;
 use io_state_helpers::*;
 pub use mir_lowering::{lower_program_to_optimized_mir, MirLoweringError};
 use namespacing::*;
-pub use pipeline::{analyze, analyze_with_options, lower_graphs_for_inspection_with_options};
+pub use pipeline::{
+    analyze, analyze_with_options, analyze_with_options_and_inputs, inspect_compile_constants,
+    lower_graphs_for_inspection_with_options, lower_graphs_for_inspection_with_options_and_inputs,
+};
 use port_coercion::*;
 use proc_call_rewrite::*;
 use proc_call_support::{
@@ -202,6 +205,31 @@ pub enum ConstValue {
         len: usize,
         values: Vec<TypedConstValue>,
     },
+}
+
+/// Immutable host-selected values for one semantic analysis request.
+///
+/// Each key must name an executable-root `config const` declaration, and each
+/// value must exactly match its declared scalar or array element type.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CompileInputs {
+    pub constants: BTreeMap<String, ConstValue>,
+}
+
+/// The resolved source shape of one host-configurable constant.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum CompileConstKind {
+    Scalar,
+    FixedArray,
+    Array,
+}
+
+/// A configuration declaration resolved under one complete compile input map.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompileConstDescriptor {
+    pub name: String,
+    pub kind: CompileConstKind,
+    pub value: ConstValue,
 }
 
 #[derive(Debug, Clone)]
@@ -459,6 +487,16 @@ pub enum TypedConstValue {
 }
 
 impl TypedConstValue {
+    pub const fn primitive_type(self) -> PrimitiveType {
+        match self {
+            Self::F32(_) => PrimitiveType::F32,
+            Self::F64(_) => PrimitiveType::F64,
+            Self::I32(_) => PrimitiveType::I32,
+            Self::I64(_) => PrimitiveType::I64,
+            Self::Bool(_) => PrimitiveType::Bool,
+        }
+    }
+
     pub fn to_f32(self) -> f32 {
         match self {
             Self::F32(v) => v,
@@ -12754,5 +12792,299 @@ sample:
             .expect("explicit unsafe buffer operations should analyze");
         lower_program_to_optimized_mir(&typed)
             .expect("unsafe buffer operations should lower through trusted source MIR");
+    }
+
+    #[test]
+    fn compile_inputs_replace_config_initializers_and_recompute_derived_constants() {
+        let source = r#"
+config const Base: i32 = 4
+const def doubled(value: i32) -> i32:
+  return value * 2
+const Size: i32 = doubled(Base)
+
+outs Size
+sample:
+  for i in 0..Size:
+    outs[i] = 0.0
+"#;
+        let program = parse_program(source).expect("source should parse");
+        let mut inputs = CompileInputs::default();
+        inputs.constants.insert(
+            "Base".to_owned(),
+            ConstValue::Scalar(TypedConstValue::I32(8)),
+        );
+        let typed = analyze_with_options_and_inputs(program, AnalysisOptions::default(), &inputs)
+            .expect("selected configuration should analyze");
+        assert_eq!(typed.outs.len(), 16);
+    }
+
+    #[test]
+    fn compile_inputs_are_selected_before_namespace_specialization() {
+        let source = r#"
+config const Size: i32 = 2
+namespace LUT<N = 2>:
+  const Table: i32[N] = [10, 20, 30, 40]
+sample:
+  out1 = f32(LUT<Size>::Table[3])
+"#;
+        let program = parse_program(source).expect("source should parse");
+        let mut inputs = CompileInputs::default();
+        inputs.constants.insert(
+            "Size".to_owned(),
+            ConstValue::Scalar(TypedConstValue::I32(4)),
+        );
+        let typed = analyze_with_options_and_inputs(program, AnalysisOptions::default(), &inputs)
+            .expect("selected constants should drive namespace instantiation");
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("specialized namespace table");
+        assert_eq!(table.len, 4);
+        assert_eq!(table.values[3], TypedConstValue::I32(40));
+    }
+
+    #[test]
+    fn configuration_defaults_see_previously_selected_configuration_values() {
+        let source = r#"
+config const Base: i32 = 4
+config const Size: i32 = Base * 2
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(source).expect("source should parse");
+        let defaults = inspect_compile_constants(
+            program.clone(),
+            AnalysisOptions::default(),
+            &CompileInputs::default(),
+        )
+        .expect("source defaults should resolve");
+        assert_eq!(
+            defaults
+                .iter()
+                .map(|descriptor| descriptor.value.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                ConstValue::Scalar(TypedConstValue::I32(4)),
+                ConstValue::Scalar(TypedConstValue::I32(8)),
+            ]
+        );
+
+        let mut inputs = CompileInputs::default();
+        inputs.constants.insert(
+            "Base".to_owned(),
+            ConstValue::Scalar(TypedConstValue::I32(8)),
+        );
+        let selected = inspect_compile_constants(program, AnalysisOptions::default(), &inputs)
+            .expect("later defaults should see earlier host selections");
+        assert_eq!(
+            selected
+                .iter()
+                .map(|descriptor| descriptor.value.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                ConstValue::Scalar(TypedConstValue::I32(8)),
+                ConstValue::Scalar(TypedConstValue::I32(16)),
+            ]
+        );
+    }
+
+    #[test]
+    fn compile_inputs_support_every_current_value_const_type() {
+        let source = r#"
+config const Enabled: bool = false
+config const I32Value: i32 = 1
+config const I64Value: i64 = i64(2)
+config const F32Value: f32 = 3.0
+config const F64Value: f64 = 4.0
+config const Fixed: i32[2] = [5, 6]
+config const Dynamic: f64[] = [7.0]
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(source).expect("source should parse");
+        let mut inputs = CompileInputs::default();
+        inputs.constants.extend([
+            (
+                "Enabled".to_owned(),
+                ConstValue::Scalar(TypedConstValue::Bool(true)),
+            ),
+            (
+                "I32Value".to_owned(),
+                ConstValue::Scalar(TypedConstValue::I32(10)),
+            ),
+            (
+                "I64Value".to_owned(),
+                ConstValue::Scalar(TypedConstValue::I64(9_007_199_254_740_993)),
+            ),
+            (
+                "F32Value".to_owned(),
+                ConstValue::Scalar(TypedConstValue::F32(0.25)),
+            ),
+            (
+                "F64Value".to_owned(),
+                ConstValue::Scalar(TypedConstValue::F64(0.125)),
+            ),
+            (
+                "Fixed".to_owned(),
+                ConstValue::Array {
+                    elem_ty: PrimitiveType::I32,
+                    len: 2,
+                    values: vec![TypedConstValue::I32(11), TypedConstValue::I32(12)],
+                },
+            ),
+            (
+                "Dynamic".to_owned(),
+                ConstValue::Array {
+                    elem_ty: PrimitiveType::F64,
+                    len: 3,
+                    values: vec![
+                        TypedConstValue::F64(1.0),
+                        TypedConstValue::F64(2.0),
+                        TypedConstValue::F64(3.0),
+                    ],
+                },
+            ),
+        ]);
+        let descriptors = inspect_compile_constants(program, AnalysisOptions::default(), &inputs)
+            .expect("every current const value type should resolve");
+        assert_eq!(descriptors.len(), 7);
+        assert!(matches!(
+            descriptors.last(),
+            Some(CompileConstDescriptor {
+                kind: CompileConstKind::Array,
+                value: ConstValue::Array { len: 3, .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn fixed_config_array_shape_tracks_selected_upstream_constants() {
+        let source = r#"
+config const Size: i32 = 4
+config const Values: f32[Size] = [0.0, 0.25, 0.5, 1.0]
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(source).expect("source should parse");
+        let mut inputs = CompileInputs::default();
+        inputs.constants.insert(
+            "Size".to_owned(),
+            ConstValue::Scalar(TypedConstValue::I32(8)),
+        );
+        let default_errors =
+            inspect_compile_constants(program.clone(), AnalysisOptions::default(), &inputs)
+                .expect_err("the source default must match the selected fixed shape");
+        assert!(default_errors.iter().any(|diagnostic| {
+            diagnostic.message.contains("expected 8") || diagnostic.message.contains("length 8")
+        }));
+
+        inputs.constants.insert(
+            "Values".to_owned(),
+            ConstValue::Array {
+                elem_ty: PrimitiveType::F32,
+                len: 4,
+                values: vec![TypedConstValue::F32(0.0); 4],
+            },
+        );
+        let override_errors =
+            inspect_compile_constants(program.clone(), AnalysisOptions::default(), &inputs)
+                .expect_err("a host array must match the selected fixed shape");
+        assert!(override_errors.iter().any(|diagnostic| {
+            diagnostic.message.contains("expected 8") || diagnostic.message.contains("length 8")
+        }));
+
+        inputs.constants.insert(
+            "Values".to_owned(),
+            ConstValue::Array {
+                elem_ty: PrimitiveType::F32,
+                len: 8,
+                values: vec![TypedConstValue::F32(0.0); 8],
+            },
+        );
+        let descriptors = inspect_compile_constants(program, AnalysisOptions::default(), &inputs)
+            .expect("a matching selected array should resolve");
+        assert!(matches!(
+            descriptors.get(1),
+            Some(CompileConstDescriptor {
+                kind: CompileConstKind::FixedArray,
+                value: ConstValue::Array { len: 8, .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn compile_inputs_reject_unknown_ordinary_and_mistyped_targets() {
+        let source = r#"
+config const Configured: i32 = 1
+const Ordinary: i32 = 2
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(source).expect("source should parse");
+        for (name, value, expected) in [
+            (
+                "Missing",
+                ConstValue::Scalar(TypedConstValue::I32(1)),
+                "unknown configuration constant",
+            ),
+            (
+                "Ordinary",
+                ConstValue::Scalar(TypedConstValue::I32(1)),
+                "is not host-configurable",
+            ),
+            (
+                "Configured",
+                ConstValue::Scalar(TypedConstValue::F32(1.0)),
+                "expects i32",
+            ),
+        ] {
+            let mut inputs = CompileInputs::default();
+            inputs.constants.insert(name.to_owned(), value);
+            let errors =
+                inspect_compile_constants(program.clone(), AnalysisOptions::default(), &inputs)
+                    .expect_err("invalid compile input should fail");
+            assert!(
+                errors
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected)),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn configuration_constants_require_explicit_types() {
+        let program = parse_program("config const Untyped = 1\nsample:\n  out1 = 0.0\n")
+            .expect("the parser should leave type validation to semantics");
+        let errors = inspect_compile_constants(
+            program,
+            AnalysisOptions::default(),
+            &CompileInputs::default(),
+        )
+        .expect_err("configuration constants need a stable host-facing type");
+        assert!(errors
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("requires an explicit type")));
+    }
+
+    #[test]
+    fn supplied_compile_input_does_not_evaluate_its_source_default() {
+        let source = r#"
+config const Selected: i32 = missing_default
+sample:
+  out1 = f32(Selected)
+"#;
+        let program = parse_program(source).expect("source should parse");
+        let mut inputs = CompileInputs::default();
+        inputs.constants.insert(
+            "Selected".to_owned(),
+            ConstValue::Scalar(TypedConstValue::I32(7)),
+        );
+        analyze_with_options_and_inputs(program, AnalysisOptions::default(), &inputs)
+            .expect("the supplied initializer should replace the source default");
     }
 }

@@ -3,7 +3,7 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | const_block | events_block | event_block | tasks_block | task_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
+block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | config_const_block | const_block | events_block | event_block | tasks_block | task_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ namespace_any_ref ~ NEWLINE* }
@@ -80,6 +80,7 @@ struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLI
 def_block = { (const_kw ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
 const_block = { const_decl ~ NEWLINE* }
+config_const_block = { config_kw ~ NEWLINE* ~ const_decl ~ NEWLINE* }
 const_decl = { const_kw ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ const_type)? ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
 const_type = { fn_typed_array_param | array_type | type_name }
 init_block = { "init" ~ section_default_decl_type? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
@@ -111,6 +112,7 @@ outs_kw = { "outs" | "outputs" }
 kouts_kw = { "kouts" }
 proc_kw = { "proc" | "processor" }
 const_kw = @{ "const" ~ !ident_char }
+config_kw = @{ "config" ~ !ident_char }
 tasks_kw = @{ "tasks" ~ !ident_char }
 task_kw = @{ "task" ~ !ident_char }
 return_kw = @{ "return" ~ !ident_char }
@@ -262,7 +264,7 @@ keyword = _{
     | "for" | "in" | "while" | "loop"
     | "break" | "continue" | "return" | "assert"
     | "tasks" | "task" | "await" | "yield"
-    | "use" | "as" | "pub" | "private" | "pin"
+    | "use" | "as" | "pub" | "private" | "pin" | "config"
     | "true" | "false"
   ) ~ !ident_char
 }

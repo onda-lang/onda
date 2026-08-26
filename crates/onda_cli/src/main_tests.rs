@@ -232,6 +232,8 @@ fn compile_project_validates_manifest_buffers_against_source_declarations() {
         sample_rate_hz: 48_000,
         block_frames: 32,
         dump_graph: false,
+        const_overrides: &[],
+        list_consts: false,
         show_meta: false,
         fast_math: false,
         target: TargetConfig::host(),
@@ -257,6 +259,135 @@ fn parse_compile_accepts_dump_graph() {
         Command::Compile { dump_graph, .. } => assert!(dump_graph),
         _ => panic!("expected compile command"),
     }
+}
+
+#[test]
+fn parse_compile_accepts_typed_constant_overrides_and_inspection() {
+    let cmd = parse_args(
+        [
+            "onda",
+            "compile",
+            "x.onda",
+            "--const",
+            "Size=8",
+            "--const=Window=[0.0, 0.5, 1.0]",
+            "--list-consts",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    )
+    .expect("compile constants should parse");
+    match cmd {
+        Command::Compile {
+            const_overrides,
+            list_consts,
+            ..
+        } => {
+            assert_eq!(
+                const_overrides,
+                vec![
+                    ("Size".to_owned(), "8".to_owned()),
+                    ("Window".to_owned(), "[0.0, 0.5, 1.0]".to_owned()),
+                ]
+            );
+            assert!(list_consts);
+        }
+        _ => panic!("expected compile command"),
+    }
+}
+
+#[test]
+fn parse_compile_rejects_duplicate_constant_overrides() {
+    let error = parse_args(
+        [
+            "onda", "compile", "x.onda", "--const", "Size=4", "--const", "Size=8",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    )
+    .err()
+    .expect("duplicate overrides should be unambiguous errors");
+    assert!(error.contains("configuration constant 'Size' is specified more than once"));
+}
+
+#[test]
+fn compile_constant_override_replaces_the_default_for_the_whole_compilation() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "onda-config-const-source-{}-{stamp}.onda",
+        std::process::id()
+    ));
+    std::fs::write(
+        &source_path,
+        "config const Selected: i32 = missing_default\nsample:\n  out1 = f32(Selected)\n",
+    )
+    .expect("source should write");
+
+    let overrides = [("Selected".to_owned(), "8".to_owned())];
+    let result = run_compile(compile_cmd::CompileRequest {
+        input: &source_path,
+        emit: CompileEmit::Check,
+        output: None,
+        meta_out: None,
+        sample_rate_hz: 48_000,
+        block_frames: 32,
+        dump_graph: false,
+        const_overrides: &overrides,
+        list_consts: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    });
+    let _ = std::fs::remove_file(&source_path);
+
+    result.expect("the CLI override should drive derived constants and assertions");
+}
+
+#[test]
+fn cli_constant_literals_cover_all_supported_value_const_types() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "onda-config-const-types-{}-{stamp}.onda",
+        std::process::id()
+    ));
+    std::fs::write(
+        &source_path,
+        "config const Enabled: bool = missing\nconfig const Count: i32 = missing\nconfig const Wide: i64 = missing\nconfig const Gain: f32 = missing\nconfig const Phase: f64 = missing\nconfig const Fixed: i32[2] = missing\nconfig const Dynamic: f64[] = missing\nsample:\n  out1 = Gain + f32(Count)\n",
+    )
+    .expect("source should write");
+
+    let overrides = [
+        ("Enabled".to_owned(), "true".to_owned()),
+        ("Count".to_owned(), "8".to_owned()),
+        ("Wide".to_owned(), "i64(9007199254740993)".to_owned()),
+        ("Gain".to_owned(), "0.25".to_owned()),
+        ("Phase".to_owned(), "0.125".to_owned()),
+        ("Fixed".to_owned(), "[1, 2]".to_owned()),
+        ("Dynamic".to_owned(), "[0.25, 0.5, 1.0]".to_owned()),
+    ];
+    let result = run_compile(compile_cmd::CompileRequest {
+        input: &source_path,
+        emit: CompileEmit::Check,
+        output: None,
+        meta_out: None,
+        sample_rate_hz: 48_000,
+        block_frames: 32,
+        dump_graph: false,
+        const_overrides: &overrides,
+        list_consts: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    });
+    let _ = std::fs::remove_file(&source_path);
+
+    result.expect("CLI literals should use the ordinary const type system");
 }
 
 #[test]
@@ -530,6 +661,8 @@ fn compile_emits_complete_portable_mir_slice() {
         sample_rate_hz: 48_000,
         block_frames: 32,
         dump_graph: false,
+        const_overrides: &[],
+        list_consts: false,
         show_meta: false,
         fast_math: false,
         target: TargetConfig::host(),
@@ -574,6 +707,8 @@ fn compile_emits_versioned_mir_json() {
         sample_rate_hz: 48_000,
         block_frames: 32,
         dump_graph: false,
+        const_overrides: &[],
+        list_consts: false,
         show_meta: false,
         fast_math: false,
         target: TargetConfig::host(),
@@ -618,6 +753,8 @@ fn compile_emits_versioned_mir_messagepack() {
         sample_rate_hz: 48_000,
         block_frames: 32,
         dump_graph: false,
+        const_overrides: &[],
+        list_consts: false,
         show_meta: false,
         fast_math: false,
         target: TargetConfig::host(),
@@ -671,6 +808,8 @@ events {
         sample_rate_hz: 48_000,
         block_frames: 64,
         dump_graph: false,
+        const_overrides: &[],
+        list_consts: false,
         show_meta: false,
         fast_math: false,
         target: TargetConfig::host(),

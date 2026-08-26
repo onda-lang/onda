@@ -37,8 +37,9 @@ use onda_runtime::{
     validate_outputs, InitMode, Instance, InstanceConfig,
 };
 use onda_semantics::{
-    analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedBufferChannels,
-    TypedProgram,
+    analyze_with_options_and_inputs, inspect_compile_constants, lower_program_to_optimized_mir,
+    AnalysisOptions, CompileConstDescriptor, CompileConstKind, CompileInputs, ConstValue,
+    TypedBufferChannels, TypedConstValue, TypedProgram,
 };
 
 pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESS_BEGIN_BLOCK as i32;
@@ -52,6 +53,9 @@ pub const ONDA_PRIMITIVE_F64: i32 = 1;
 pub const ONDA_PRIMITIVE_I32: i32 = 2;
 pub const ONDA_PRIMITIVE_I64: i32 = 3;
 pub const ONDA_PRIMITIVE_BOOL: i32 = 4;
+pub const ONDA_COMPILE_CONST_KIND_SCALAR: i32 = 0;
+pub const ONDA_COMPILE_CONST_KIND_FIXED_ARRAY: i32 = 1;
+pub const ONDA_COMPILE_CONST_KIND_ARRAY: i32 = 2;
 
 fn execution_status_to_c(status: Result<u32, Diagnostic>) -> i32 {
     match status {
@@ -77,6 +81,24 @@ pub struct onda_compile_options_t {
     pub fast_math: i32,
     pub sample_rate: f32,
     pub block_size: i32,
+    pub const_inputs: *const onda_compile_const_input_t,
+    pub const_input_count: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct onda_compile_const_input_t {
+    pub name_utf8: *const c_char,
+    pub element_type: i32,
+    pub is_array: i32,
+    pub element_count: usize,
+    pub values: *const c_void,
+}
+
+#[repr(C)]
+pub struct onda_compile_const_descriptor_t {
+    pub input: onda_compile_const_input_t,
+    pub kind: i32,
 }
 
 #[repr(C)]
@@ -160,6 +182,38 @@ pub struct onda_allocator_t {
 #[allow(non_camel_case_types)]
 pub struct onda_program {
     inner: Arc<CompiledProgram>,
+}
+
+#[allow(non_camel_case_types)]
+pub struct onda_compile_constants {
+    _storage: Vec<CCompileConstStorage>,
+    inputs: Vec<onda_compile_const_input_t>,
+    descriptors: Vec<onda_compile_const_descriptor_t>,
+}
+
+struct CCompileConstStorage {
+    name: CString,
+    values: CCompileConstValues,
+}
+
+enum CCompileConstValues {
+    Bool(Box<[u8]>),
+    I32(Box<[i32]>),
+    I64(Box<[i64]>),
+    F32(Box<[f32]>),
+    F64(Box<[f64]>),
+}
+
+impl CCompileConstValues {
+    fn as_ptr(&self) -> *const c_void {
+        match self {
+            Self::Bool(values) => values.as_ptr().cast(),
+            Self::I32(values) => values.as_ptr().cast(),
+            Self::I64(values) => values.as_ptr().cast(),
+            Self::F32(values) => values.as_ptr().cast(),
+            Self::F64(values) => values.as_ptr().cast(),
+        }
+    }
 }
 
 struct CompiledProgram {
@@ -278,7 +332,298 @@ fn validate_compile_options(options: &onda_compile_options_t) -> Result<(), &'st
     if options.block_size <= 0 {
         return Err("compile options require block_size > 0");
     }
+    if options.const_input_count > 0 && options.const_inputs.is_null() {
+        return Err("compile options const_inputs is null with a nonzero count");
+    }
+    if options.const_input_count
+        > isize::MAX as usize / std::mem::size_of::<onda_compile_const_input_t>()
+    {
+        return Err("compile options const_input_count is too large");
+    }
     Ok(())
+}
+
+unsafe fn compile_inputs_from_options(
+    options: &onda_compile_options_t,
+) -> Result<CompileInputs, Diagnostic> {
+    let mut inputs = CompileInputs::default();
+    let entries = if options.const_input_count == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(options.const_inputs, options.const_input_count)
+    };
+    for entry in entries {
+        let name = parse_required_c_string(entry.name_utf8, "compile constant name")?;
+        if inputs.constants.contains_key(&name) {
+            return Err(Diagnostic::semantic(
+                format!("configuration constant '{name}' is specified more than once"),
+                0,
+                0,
+            ));
+        }
+        if !matches!(entry.is_array, 0 | 1) {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "configuration constant '{name}' has invalid is_array value {}",
+                    entry.is_array
+                ),
+                0,
+                0,
+            ));
+        }
+        let elem_ty = primitive_type_from_i32(entry.element_type).ok_or_else(|| {
+            Diagnostic::semantic(
+                format!(
+                    "configuration constant '{name}' has unknown primitive element type {}",
+                    entry.element_type
+                ),
+                0,
+                0,
+            )
+        })?;
+        let width = primitive_type_bytes(elem_ty);
+        let expected_bytes = entry
+            .element_count
+            .checked_mul(width)
+            .ok_or_else(|| Diagnostic::semantic("compile constant byte count overflow", 0, 0))?;
+        if expected_bytes > isize::MAX as usize {
+            return Err(Diagnostic::semantic(
+                format!("configuration constant '{name}' value is too large"),
+                0,
+                0,
+            ));
+        }
+        if expected_bytes > 0 && entry.values.is_null() {
+            return Err(Diagnostic::semantic(
+                format!("configuration constant '{name}' has a null value pointer"),
+                0,
+                0,
+            ));
+        }
+        if entry.is_array == 0 && entry.element_count != 1 {
+            return Err(Diagnostic::semantic(
+                format!("scalar configuration constant '{name}' must contain exactly one element"),
+                0,
+                0,
+            ));
+        }
+        let mut values = Vec::with_capacity(entry.element_count);
+        for index in 0..entry.element_count {
+            let element = entry.values.cast::<u8>().add(index * width);
+            let value = match elem_ty {
+                PrimitiveType::Bool => match ptr::read(element) {
+                    0 => TypedConstValue::Bool(false),
+                    1 => TypedConstValue::Bool(true),
+                    value => {
+                        return Err(Diagnostic::semantic(
+                            format!(
+                                "configuration constant '{name}' has invalid bool byte {value}"
+                            ),
+                            0,
+                            0,
+                        ))
+                    }
+                },
+                PrimitiveType::I32 => TypedConstValue::I32(ptr::read_unaligned(element.cast())),
+                PrimitiveType::I64 => TypedConstValue::I64(ptr::read_unaligned(element.cast())),
+                PrimitiveType::F32 => TypedConstValue::F32(ptr::read_unaligned(element.cast())),
+                PrimitiveType::F64 => TypedConstValue::F64(ptr::read_unaligned(element.cast())),
+            };
+            values.push(value);
+        }
+        let value = if entry.is_array != 0 {
+            ConstValue::Array {
+                elem_ty,
+                len: values.len(),
+                values,
+            }
+        } else {
+            ConstValue::Scalar(values[0])
+        };
+        inputs.constants.insert(name, value);
+    }
+    Ok(inputs)
+}
+
+fn native_compile_const_values(
+    ty: PrimitiveType,
+    values: Vec<TypedConstValue>,
+) -> Result<CCompileConstValues, Diagnostic> {
+    let type_error = || Diagnostic::internal("compile constant descriptor value type disagrees");
+    match ty {
+        PrimitiveType::Bool => values
+            .into_iter()
+            .map(|value| match value {
+                TypedConstValue::Bool(value) => Ok(u8::from(value)),
+                _ => Err(type_error()),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| CCompileConstValues::Bool(values.into_boxed_slice())),
+        PrimitiveType::I32 => values
+            .into_iter()
+            .map(|value| match value {
+                TypedConstValue::I32(value) => Ok(value),
+                _ => Err(type_error()),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| CCompileConstValues::I32(values.into_boxed_slice())),
+        PrimitiveType::I64 => values
+            .into_iter()
+            .map(|value| match value {
+                TypedConstValue::I64(value) => Ok(value),
+                _ => Err(type_error()),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| CCompileConstValues::I64(values.into_boxed_slice())),
+        PrimitiveType::F32 => values
+            .into_iter()
+            .map(|value| match value {
+                TypedConstValue::F32(value) => Ok(value),
+                _ => Err(type_error()),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| CCompileConstValues::F32(values.into_boxed_slice())),
+        PrimitiveType::F64 => values
+            .into_iter()
+            .map(|value| match value {
+                TypedConstValue::F64(value) => Ok(value),
+                _ => Err(type_error()),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| CCompileConstValues::F64(values.into_boxed_slice())),
+    }
+}
+
+fn compile_const_array_matches(
+    values: &[TypedConstValue],
+    value_len: usize,
+    elem_ty: PrimitiveType,
+) -> bool {
+    value_len == values.len() && values.iter().all(|value| value.primitive_type() == elem_ty)
+}
+
+fn build_compile_constants(
+    descriptors: Vec<CompileConstDescriptor>,
+) -> Result<onda_compile_constants, Diagnostic> {
+    let mut storage = Vec::with_capacity(descriptors.len());
+    let mut metadata = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let (kind, element_type, is_array, values) = match (descriptor.kind, descriptor.value) {
+            (CompileConstKind::Scalar, ConstValue::Scalar(value)) => (
+                ONDA_COMPILE_CONST_KIND_SCALAR,
+                value.primitive_type(),
+                0,
+                vec![value],
+            ),
+            (
+                CompileConstKind::FixedArray,
+                ConstValue::Array {
+                    elem_ty,
+                    len: value_len,
+                    values,
+                },
+            ) if compile_const_array_matches(&values, value_len, elem_ty) => {
+                (ONDA_COMPILE_CONST_KIND_FIXED_ARRAY, elem_ty, 1, values)
+            }
+            (
+                CompileConstKind::Array,
+                ConstValue::Array {
+                    elem_ty,
+                    len: value_len,
+                    values,
+                },
+            ) if compile_const_array_matches(&values, value_len, elem_ty) => {
+                (ONDA_COMPILE_CONST_KIND_ARRAY, elem_ty, 1, values)
+            }
+            _ => {
+                return Err(Diagnostic::internal(
+                    "compile constant descriptor kind and value disagree",
+                ))
+            }
+        };
+        let element_count = values.len();
+        let values = native_compile_const_values(element_type, values)?;
+        storage.push(CCompileConstStorage {
+            name: CString::new(descriptor.name)
+                .map_err(|_| Diagnostic::internal("compile constant name contains NUL"))?,
+            values,
+        });
+        metadata.push((
+            kind,
+            primitive_type_to_i32(element_type),
+            is_array,
+            element_count,
+        ));
+    }
+
+    let descriptors: Vec<onda_compile_const_descriptor_t> = storage
+        .iter()
+        .zip(metadata)
+        .map(|(storage, (kind, element_type, is_array, element_count))| {
+            onda_compile_const_descriptor_t {
+                input: onda_compile_const_input_t {
+                    name_utf8: storage.name.as_ptr(),
+                    element_type,
+                    is_array,
+                    element_count,
+                    values: if element_count == 0 {
+                        ptr::null()
+                    } else {
+                        storage.values.as_ptr()
+                    },
+                },
+                kind,
+            }
+        })
+        .collect();
+    let inputs = descriptors
+        .iter()
+        .map(|descriptor| descriptor.input)
+        .collect();
+    Ok(onda_compile_constants {
+        _storage: storage,
+        inputs,
+        descriptors,
+    })
+}
+
+unsafe fn inspect_parsed_compile_constants(
+    parsed: Program,
+    options: &onda_compile_options_t,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_compile_constants {
+    let inputs = match compile_inputs_from_options(options) {
+        Ok(inputs) => inputs,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let descriptors = match inspect_compile_constants(
+        parsed,
+        AnalysisOptions {
+            sample_rate: options.sample_rate,
+            block_size: options.block_size as usize,
+        },
+        &inputs,
+    ) {
+        Ok(descriptors) => descriptors,
+        Err(errors) => {
+            let diag = errors
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Diagnostic::internal("compile constant inspection failed"));
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    match build_compile_constants(descriptors) {
+        Ok(constants) => Box::into_raw(Box::new(constants)),
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            ptr::null_mut()
+        }
+    }
 }
 
 unsafe fn parse_required_c_string(value: *const c_char, name: &str) -> Result<String, Diagnostic> {
@@ -637,6 +982,41 @@ fn allocate_instance_handle(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_inspect_compile_constants(
+    src_utf8: *const c_char,
+    options: *const onda_compile_options_t,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_compile_constants {
+    if src_utf8.is_null() || options.is_null() {
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+        return ptr::null_mut();
+    }
+    let options = &*options;
+    if let Err(message) = validate_compile_options(options) {
+        write_diag(out_diag, runtime_diag(message));
+        return ptr::null_mut();
+    }
+    let parsed = match parse_c_program(src_utf8) {
+        Ok(parsed) => parsed,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    inspect_parsed_compile_constants(parsed, options, out_diag)
+}
+
+unsafe fn parse_c_program(src_utf8: *const c_char) -> Result<Program, Diagnostic> {
+    let source = parse_required_c_string(src_utf8, "source string")?;
+    parse_program(&source).map_err(|errors| {
+        errors
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Diagnostic::internal("parse failed"))
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_compile(
     src_utf8: *const c_char,
     options: *const onda_compile_options_t,
@@ -661,21 +1041,9 @@ unsafe fn onda_compile_impl(
         return ptr::null_mut();
     }
 
-    let source = match parse_required_c_string(src_utf8, "source string") {
-        Ok(source) => source,
+    let parsed = match parse_c_program(src_utf8) {
+        Ok(parsed) => parsed,
         Err(diag) => {
-            write_diag(out_diag, diag_to_c(&diag));
-            return ptr::null_mut();
-        }
-    };
-
-    let parsed = match parse_program(&source) {
-        Ok(p) => p,
-        Err(errs) => {
-            let diag = errs
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| Diagnostic::internal("parse failed"));
             write_diag(out_diag, diag_to_c(&diag));
             return ptr::null_mut();
         }
@@ -684,18 +1052,26 @@ unsafe fn onda_compile_impl(
     compile_parsed_program(parsed, options, None, out_diag)
 }
 
-fn compile_parsed_program(
+unsafe fn compile_parsed_program(
     parsed: Program,
     options: &onda_compile_options_t,
     project: Option<ProjectCompilation>,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
-    let typed = match analyze_with_options(
+    let compile_inputs = match compile_inputs_from_options(options) {
+        Ok(inputs) => inputs,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let typed = match analyze_with_options_and_inputs(
         parsed,
         AnalysisOptions {
             sample_rate: options.sample_rate,
             block_size: options.block_size as usize,
         },
+        &compile_inputs,
     ) {
         Ok(t) => t,
         Err(errs) => {
@@ -1121,6 +1497,35 @@ fn bind_project_defaults(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_inspect_compile_constants_file(
+    file_path_utf8: *const c_char,
+    options: *const onda_compile_options_t,
+    out_sources: *mut *mut onda_source_manifest,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_compile_constants {
+    if file_path_utf8.is_null() || options.is_null() {
+        if !out_sources.is_null() {
+            *out_sources = ptr::null_mut();
+        }
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+        return ptr::null_mut();
+    }
+    let options = &*options;
+    if let Err(message) = validate_compile_options(options) {
+        if !out_sources.is_null() {
+            *out_sources = ptr::null_mut();
+        }
+        write_diag(out_diag, runtime_diag(message));
+        return ptr::null_mut();
+    }
+    let (parsed, _) = match load_c_file_program(file_path_utf8, out_sources, out_diag) {
+        Some(loaded) => loaded,
+        None => return ptr::null_mut(),
+    };
+    inspect_parsed_compile_constants(parsed, options, out_diag)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_compile_file(
     file_path_utf8: *const c_char,
     options: *const onda_compile_options_t,
@@ -1149,12 +1554,32 @@ unsafe fn onda_compile_file_impl(
         write_diag(out_diag, runtime_diag(message));
         return ptr::null_mut();
     }
+    let (parsed, project) = match load_c_file_program(file_path_utf8, out_sources, out_diag) {
+        Some(loaded) => loaded,
+        None => return ptr::null_mut(),
+    };
+    compile_parsed_program(
+        parsed,
+        options,
+        project.map(ProjectCompilation::Filesystem),
+        out_diag,
+    )
+}
+
+unsafe fn load_c_file_program(
+    file_path_utf8: *const c_char,
+    out_sources: *mut *mut onda_source_manifest,
+    out_diag: *mut onda_diag_t,
+) -> Option<(Program, Option<ProjectFile>)> {
+    if !out_sources.is_null() {
+        *out_sources = ptr::null_mut();
+    }
 
     let path = match parse_required_c_string(file_path_utf8, "file path") {
         Ok(path) => path,
         Err(diag) => {
             write_diag(out_diag, diag_to_c(&diag));
-            return ptr::null_mut();
+            return None;
         }
     };
 
@@ -1175,10 +1600,10 @@ unsafe fn onda_compile_file_impl(
                                 &watch_paths,
                             ) {
                                 write_diag(out_diag, diag_to_c(&diag));
-                                return ptr::null_mut();
+                                return None;
                             }
                             write_diag(out_diag, project_error_diag(error));
-                            return ptr::null_mut();
+                            return None;
                         }
                     },
                 };
@@ -1195,10 +1620,10 @@ unsafe fn onda_compile_file_impl(
                     &watch_paths,
                 ) {
                     write_diag(out_diag, diag_to_c(&diag));
-                    return ptr::null_mut();
+                    return None;
                 }
                 write_diag(out_diag, project_error_diag(error));
-                return ptr::null_mut();
+                return None;
             }
         }
     } else {
@@ -1213,7 +1638,7 @@ unsafe fn onda_compile_file_impl(
                 write_source_manifest_with_watch_paths(out_sources, &error.sources, &watch_paths)
             {
                 write_diag(out_diag, diag_to_c(&diag));
-                return ptr::null_mut();
+                return None;
             }
             let diag = error
                 .diagnostics
@@ -1221,18 +1646,16 @@ unsafe fn onda_compile_file_impl(
                 .next()
                 .unwrap_or_else(|| Diagnostic::internal("parse failed"));
             write_diag(out_diag, diag_to_c(&diag));
-            return ptr::null_mut();
+            return None;
         }
     };
     if let Err(diag) =
         write_source_manifest_with_watch_paths(out_sources, &loaded.sources, &watch_paths)
     {
         write_diag(out_diag, diag_to_c(&diag));
-        return ptr::null_mut();
+        return None;
     }
-
-    let project = project.map(ProjectCompilation::Filesystem);
-    compile_parsed_program(loaded.program, options, project, out_diag)
+    Some((loaded.program, project))
 }
 
 fn filesystem_input_watch_paths(
@@ -1274,29 +1697,103 @@ pub unsafe extern "C" fn onda_compile_source_graph(
     out_sources: *mut *mut onda_source_manifest,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
+    if options.is_null() {
+        if !out_sources.is_null() {
+            *out_sources = ptr::null_mut();
+        }
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+        return ptr::null_mut();
+    }
+    let options = &*options;
+    if let Err(message) = validate_compile_options(options) {
+        if !out_sources.is_null() {
+            *out_sources = ptr::null_mut();
+        }
+        write_diag(out_diag, runtime_diag(message));
+        return ptr::null_mut();
+    }
+    let parsed = match load_c_source_graph(
+        entry_path_utf8,
+        sources,
+        source_count,
+        resolutions,
+        resolution_count,
+        out_sources,
+        out_diag,
+    ) {
+        Some(parsed) => parsed,
+        None => return ptr::null_mut(),
+    };
+    compile_parsed_program(parsed, options, None, out_diag)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_inspect_compile_constants_source_graph(
+    entry_path_utf8: *const c_char,
+    sources: *const onda_source_graph_document_t,
+    source_count: usize,
+    resolutions: *const onda_source_graph_resolution_t,
+    resolution_count: usize,
+    options: *const onda_compile_options_t,
+    out_sources: *mut *mut onda_source_manifest,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_compile_constants {
+    if options.is_null() {
+        if !out_sources.is_null() {
+            *out_sources = ptr::null_mut();
+        }
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+        return ptr::null_mut();
+    }
+    let options = &*options;
+    if let Err(message) = validate_compile_options(options) {
+        if !out_sources.is_null() {
+            *out_sources = ptr::null_mut();
+        }
+        write_diag(out_diag, runtime_diag(message));
+        return ptr::null_mut();
+    }
+    let parsed = match load_c_source_graph(
+        entry_path_utf8,
+        sources,
+        source_count,
+        resolutions,
+        resolution_count,
+        out_sources,
+        out_diag,
+    ) {
+        Some(parsed) => parsed,
+        None => return ptr::null_mut(),
+    };
+    inspect_parsed_compile_constants(parsed, options, out_diag)
+}
+
+unsafe fn load_c_source_graph(
+    entry_path_utf8: *const c_char,
+    sources: *const onda_source_graph_document_t,
+    source_count: usize,
+    resolutions: *const onda_source_graph_resolution_t,
+    resolution_count: usize,
+    out_sources: *mut *mut onda_source_manifest,
+    out_diag: *mut onda_diag_t,
+) -> Option<Program> {
     if !out_sources.is_null() {
         *out_sources = ptr::null_mut();
     }
     if entry_path_utf8.is_null()
         || sources.is_null()
         || source_count == 0
-        || options.is_null()
         || (resolution_count > 0 && resolutions.is_null())
     {
         write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
-        return ptr::null_mut();
-    }
-    let options = &*options;
-    if let Err(message) = validate_compile_options(options) {
-        write_diag(out_diag, runtime_diag(message));
-        return ptr::null_mut();
+        return None;
     }
 
     let entry = match parse_required_c_string(entry_path_utf8, "entry path") {
         Ok(value) => PathBuf::from(value),
         Err(diag) => {
             write_diag(out_diag, diag_to_c(&diag));
-            return ptr::null_mut();
+            return None;
         }
     };
     let mut source_map = HashMap::with_capacity(source_count);
@@ -1305,7 +1802,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
             Ok(value) => PathBuf::from(value),
             Err(diag) => {
                 write_diag(out_diag, diag_to_c(&diag));
-                return ptr::null_mut();
+                return None;
             }
         };
         if source.source_bytes > 0 && source.source_utf8.is_null() {
@@ -1313,7 +1810,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
                 out_diag,
                 diag_to_c(&Diagnostic::syntax("source contents are null", 0, 0)),
             );
-            return ptr::null_mut();
+            return None;
         }
         let bytes = if source.source_bytes == 0 {
             &[]
@@ -1331,7 +1828,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
                         0,
                     )),
                 );
-                return ptr::null_mut();
+                return None;
             }
         };
         if source_map.insert(path.clone(), contents).is_some() {
@@ -1343,7 +1840,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
                     0,
                 )),
             );
-            return ptr::null_mut();
+            return None;
         }
     }
 
@@ -1359,7 +1856,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
                 Ok(value) => PathBuf::from(value),
                 Err(diag) => {
                     write_diag(out_diag, diag_to_c(&diag));
-                    return ptr::null_mut();
+                    return None;
                 }
             };
         let specifier = match parse_required_c_string(resolution.specifier_utf8, "source specifier")
@@ -1367,7 +1864,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
             Ok(value) => value,
             Err(diag) => {
                 write_diag(out_diag, diag_to_c(&diag));
-                return ptr::null_mut();
+                return None;
             }
         };
         let target =
@@ -1375,7 +1872,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
                 Ok(value) => PathBuf::from(value),
                 Err(diag) => {
                     write_diag(out_diag, diag_to_c(&diag));
-                    return ptr::null_mut();
+                    return None;
                 }
             };
         let kind = match source_reference_kind(resolution.kind) {
@@ -1389,7 +1886,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
                         0,
                     )),
                 );
-                return ptr::null_mut();
+                return None;
             }
         };
         source_resolutions.push(SourceResolution {
@@ -1405,7 +1902,7 @@ pub unsafe extern "C" fn onda_compile_source_graph(
         Err(error) => {
             if let Err(diag) = write_source_manifest(out_sources, &error.sources) {
                 write_diag(out_diag, diag_to_c(&diag));
-                return ptr::null_mut();
+                return None;
             }
             let diag = error
                 .diagnostics
@@ -1413,14 +1910,14 @@ pub unsafe extern "C" fn onda_compile_source_graph(
                 .next()
                 .unwrap_or_else(|| Diagnostic::internal("snapshot parse failed"));
             write_diag(out_diag, diag_to_c(&diag));
-            return ptr::null_mut();
+            return None;
         }
     };
     if let Err(diag) = write_source_manifest(out_sources, &loaded.sources) {
         write_diag(out_diag, diag_to_c(&diag));
-        return ptr::null_mut();
+        return None;
     }
-    compile_parsed_program(loaded.program, options, None, out_diag)
+    Some(loaded.program)
 }
 
 #[no_mangle]
@@ -1547,6 +2044,53 @@ pub unsafe extern "C" fn onda_program_destroy(program: *mut onda_program) {
         return;
     }
     drop(Box::from_raw(program));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_compile_constants_count(
+    constants: *const onda_compile_constants,
+) -> i32 {
+    if constants.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*constants).descriptors.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_compile_constants_at(
+    constants: *const onda_compile_constants,
+    index: i32,
+) -> *const onda_compile_const_descriptor_t {
+    if constants.is_null() || index < 0 {
+        return ptr::null();
+    }
+    let descriptors = &(*constants).descriptors;
+    descriptors
+        .get(index as usize)
+        .map_or(ptr::null(), |descriptor| descriptor)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_compile_constants_inputs(
+    constants: *const onda_compile_constants,
+) -> *const onda_compile_const_input_t {
+    if constants.is_null() {
+        return ptr::null();
+    }
+    let inputs = &(*constants).inputs;
+    if inputs.is_empty() {
+        ptr::null()
+    } else {
+        inputs.as_ptr()
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_compile_constants_destroy(constants: *mut onda_compile_constants) {
+    if constants.is_null() {
+        return;
+    }
+    drop(Box::from_raw(constants));
 }
 
 #[no_mangle]
@@ -2614,6 +3158,28 @@ pub unsafe extern "C" fn onda_project_image_buffer_sample_rate(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_project_image_inspect_compile_constants(
+    image: *const onda_project_image,
+    options: *const onda_compile_options_t,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_compile_constants {
+    if image.is_null() || options.is_null() {
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+        return ptr::null_mut();
+    }
+    let options = &*options;
+    if let Err(message) = validate_compile_options(options) {
+        write_diag(out_diag, runtime_diag(message));
+        return ptr::null_mut();
+    }
+    let parsed = match replay_project_image_sources(&(*image).inner, out_diag) {
+        Some(parsed) => parsed,
+        None => return ptr::null_mut(),
+    };
+    inspect_parsed_compile_constants(parsed, options, out_diag)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_project_image_compile(
     image: *const onda_project_image,
     options: *const onda_compile_options_t,
@@ -2629,19 +3195,29 @@ pub unsafe extern "C" fn onda_project_image_compile(
         return ptr::null_mut();
     }
     let image = Arc::clone(&(*image).inner);
-    let loaded = match image.sources().replay(ProjectLimits::default()) {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            write_diag(out_diag, project_error_diag(error));
-            return ptr::null_mut();
-        }
+    let parsed = match replay_project_image_sources(&image, out_diag) {
+        Some(parsed) => parsed,
+        None => return ptr::null_mut(),
     };
     compile_parsed_program(
-        loaded.program,
+        parsed,
         options,
         Some(ProjectCompilation::Image(image)),
         out_diag,
     )
+}
+
+unsafe fn replay_project_image_sources(
+    image: &ProjectImage,
+    out_diag: *mut onda_diag_t,
+) -> Option<Program> {
+    match image.sources().replay(ProjectLimits::default()) {
+        Ok(loaded) => Some(loaded.program),
+        Err(error) => {
+            write_diag(out_diag, project_error_diag(error));
+            None
+        }
+    }
 }
 
 #[no_mangle]
