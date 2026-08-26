@@ -26,6 +26,27 @@ struct PersistentBufferAlias {
     source: PersistentBufferAliasSource,
 }
 
+fn split_task_block_post_guard<'a>(
+    proc: &'a ProcessorDef,
+    shape: &ProcLoweringShape,
+) -> (Option<&'a Stmt>, &'a [Stmt]) {
+    if !shape
+        .field_names
+        .contains(crate::task_lowering::task_available_field())
+    {
+        return (None, &proc.block_post);
+    }
+
+    let (guard, body) = proc
+        .block_post
+        .split_first()
+        .expect("task lowering must guard proc block-post execution");
+    debug_assert!(crate::task_lowering::contains_task_abort(
+        std::slice::from_ref(guard)
+    ));
+    (Some(guard), body)
+}
+
 fn proc_constructor_array_symbols(shape: &ProcLoweringShape) -> HashSet<String> {
     shape
         .field_array_slots
@@ -2021,7 +2042,25 @@ fn generate_nested_wrapper_defs(
                 body: nested_block_pre_body,
             }));
 
-            let mut nested_block_post_body = Vec::<Stmt>::new();
+            let (task_block_post_guard, callee_block_post) =
+                split_task_block_post_guard(callee_proc, &callee_shape);
+            let mut nested_block_post_body = Vec::new();
+            if let Some(guard) = task_block_post_guard {
+                nested_block_post_body.extend(lower_callee_stmts_for_nested_wrapper(
+                    vec![guard.clone()],
+                    &proc.name,
+                    &callee_proc_name,
+                    &nested_path,
+                    &callee_shape,
+                    &callee_nested_instances,
+                    &callee_ins_names,
+                    &callee_shape.field_array_slots,
+                    &callee_shape.in_array_slots,
+                    &callee_shape.nested_proc_array_slots,
+                    proc_api,
+                    errors,
+                ));
+            }
             for nested_var in &callee_nested_vars {
                 if !called_callee_nested.contains(nested_var) {
                     continue;
@@ -2056,7 +2095,7 @@ fn generate_nested_wrapper_defs(
                 });
             }
             nested_block_post_body.extend(lower_callee_stmts_for_nested_wrapper(
-                callee_proc.block_post.clone(),
+                callee_block_post.to_vec(),
                 &proc.name,
                 &callee_proc_name,
                 &nested_path,
@@ -3203,7 +3242,25 @@ pub(super) fn generate_lowered_proc_blocks(
                 body: block_pre_body,
             }));
 
-            let mut block_post_body = Vec::<Stmt>::new();
+            let (task_block_post_guard, proc_block_post) =
+                split_task_block_post_guard(proc, &shape);
+            let mut block_post_body = Vec::new();
+            if let Some(guard) = task_block_post_guard {
+                block_post_body.extend(rewrite_owner_proc_stmts(
+                    vec![guard.clone()],
+                    &proc.name,
+                    &shape.field_names,
+                    &shape.array_field_names,
+                    &ins_names,
+                    &shape.field_array_slots,
+                    &shape.in_array_slots,
+                    &shape.nested_proc_array_slots,
+                    &shape.nested_fields,
+                    &nested_instances,
+                    proc_api,
+                    errors,
+                ));
+            }
             for nested_var in &nested_vars {
                 if !called_nested.contains(nested_var) {
                     continue;
@@ -3236,7 +3293,7 @@ pub(super) fn generate_lowered_proc_blocks(
             }
             let mut block_post_source =
                 rebind_persistent_buffer_aliases(&persistent_buffer_aliases);
-            block_post_source.extend(proc.block_post.clone());
+            block_post_source.extend(proc_block_post.iter().cloned());
             block_post_body.extend(rewrite_owner_proc_stmts(
                 block_post_source,
                 &proc.name,

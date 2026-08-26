@@ -2246,6 +2246,74 @@ block:
     }
 
     #[test]
+    fn suspended_proc_tasks_skip_nested_block_post_hooks() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+proc Child:
+  init:
+    pin counter: i32 = 0
+  block:
+    counter += 1
+    sample:
+      out1 = f32(counter)
+    counter += 100
+
+proc Parent:
+  init:
+    child = Child()
+  task load():
+    yield
+  block:
+    await load()
+    sample:
+      out1 = child()
+
+proc Grandparent:
+  init:
+    parent = Parent()
+  sample:
+    out1 = parent()
+
+init:
+  direct = Parent()
+  nested = Grandparent()
+sample:
+  out1 = direct()
+  out2 = nested()
+"#,
+            BLOCK_SIZE,
+            2,
+        );
+        let mut direct = [99.0_f32; BLOCK_SIZE];
+        let mut nested = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                direct.as_mut_ptr().cast(),
+                std::mem::size_of_val(&direct),
+            )
+            .expect("direct output should bind");
+            bind_output(
+                &mut instance,
+                1,
+                nested.as_mut_ptr().cast(),
+                std::mem::size_of_val(&nested),
+            )
+            .expect("nested output should bind");
+        }
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("both tasks should yield");
+        assert_eq!(direct, [0.0]);
+        assert_eq!(nested, [0.0]);
+
+        process_checked(&mut instance, BLOCK_SIZE).expect("both tasks should complete");
+        assert_eq!(direct, [1.0]);
+        assert_eq!(nested, [1.0]);
+    }
+
+    #[test]
     fn top_level_task_suspension_escapes_nested_block_pre_loops() {
         const BLOCK_SIZE: usize = 1;
         let mut instance = compile_test_instance(
