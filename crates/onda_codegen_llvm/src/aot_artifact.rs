@@ -103,7 +103,7 @@ fn build_aot_metadata_from_descriptors(
     let event_exports = (0..event_count)
         .map(|idx| format!("onda_event_{idx}"))
         .collect::<Vec<_>>();
-    let mut required_symbols = vec!["onda_init".to_owned(), "onda_process".to_owned()];
+    let mut required_symbols = vec!["onda_processor_init".to_owned(), "onda_process".to_owned()];
     required_symbols.extend(event_exports.iter().cloned());
     let is_wasm = resolved_triple.starts_with("wasm32-") || resolved_triple.starts_with("wasm64-");
     let integration_profile = if is_wasm {
@@ -155,7 +155,7 @@ fn build_aot_metadata_from_descriptors(
         exports: AotExports {
             memory: None,
             heap_base: None,
-            init: "onda_init".to_owned(),
+            init: "onda_processor_init".to_owned(),
             process: "onda_process".to_owned(),
             events: event_exports,
         },
@@ -294,6 +294,7 @@ fn map_event_metadata(index: usize, event: &crate::DeclaredEvent) -> AotEventMet
 fn map_state_metadata(state: &crate::DeclaredState) -> AotStateMetadata {
     AotStateMetadata {
         name: state.name().to_owned(),
+        authored: state.is_authored(),
         type_repr: state.type_repr(),
         scalar: primitive_type_name(state.elem_ty()).to_owned(),
         array_len: state.array_len(),

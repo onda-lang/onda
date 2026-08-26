@@ -270,6 +270,7 @@ fn collect_global_value_names(blocks: &[Block]) -> HashSet<String> {
             | Block::Proc(_)
             | Block::Struct(_)
             | Block::Def(_)
+            | Block::Tasks(_)
             | Block::Sample(_)
             | Block::Graph(_) => {}
         }
@@ -286,6 +287,7 @@ fn proc_value_name_scope(proc: &ProcessorDef) -> RewriteNameScope {
     scope.extend(proc.params.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.buffers.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.events.iter().map(|event| event.name.clone()));
+    scope.extend(proc.tasks.iter().map(|task| task.name.clone()));
     scope.extend(proc.local_defs.iter().map(|def| def.name.clone()));
     collect_top_level_assignment_target_names(&proc.init.body, &mut scope.names);
     collect_top_level_assignment_target_names(&proc.block_pre, &mut scope.names);
@@ -833,6 +835,16 @@ fn validate_template_proc_refs(
             state,
             &proc_scope,
             &context,
+            errors,
+        );
+    }
+    for task in &proc.tasks {
+        validate_template_stmt_list_refs(
+            &task.body,
+            current_ns,
+            state,
+            &proc_scope,
+            &format!("task '{}'", task.name),
             errors,
         );
     }
@@ -3035,6 +3047,22 @@ fn rewrite_block_namespace_refs(
                 );
             }
         }
+        Block::Tasks(tasks) => {
+            let global_scope = RewriteNameScope::from_names(state.global_value_names.clone());
+            for task in &mut tasks.tasks {
+                let mut task_scope = global_scope.clone();
+                rewrite_stmts_scoped(
+                    &mut task.body,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    &mut task_scope,
+                );
+            }
+        }
         Block::Struct(s) => {
             for field in &mut s.fields {
                 rewrite_field_type(
@@ -3186,6 +3214,19 @@ fn rewrite_block_namespace_refs(
                     generated,
                     errors,
                     &proc_scope,
+                );
+            }
+            for task in &mut p.tasks {
+                let mut task_scope = proc_scope.clone();
+                rewrite_stmts_scoped(
+                    &mut task.body,
+                    current_ns,
+                    &proc_template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    &mut task_scope,
                 );
             }
             for decl in &mut p.buffers {
@@ -4751,7 +4792,9 @@ fn rewrite_expr_scoped(
                 );
             }
         }
-        Expr::ArrayCtor { loc, spec, init } => {
+        Expr::ArrayCtor {
+            loc, spec, init, ..
+        } => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
                 rewrite_named_type_ref_name(
                     name,

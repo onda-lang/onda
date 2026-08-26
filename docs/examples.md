@@ -103,7 +103,7 @@ Use `.ondaproject` when data is part of a patch's identity:
 | --- | --- |
 | [Wavetable Garden](https://github.com/onda-lang/onda/blob/main/examples/projects/wavetable_garden/wavetable-garden.ondaproject) | Four inline wavetables and a local oscillator module |
 | [Score-driven Resonator](https://github.com/onda-lang/onda/blob/main/examples/projects/score_driven_resonator/score-driven-resonator.ondaproject) | Typed note, timing, velocity, and pan buffers |
-| [Embedded Room](https://github.com/onda-lang/onda/blob/main/examples/projects/embedded_room/embedded-room.ondaproject) | A file-backed stereo `impulse.wav` loaded into zero-latency partitioned convolvers |
+| [Embedded Room](https://github.com/onda-lang/onda/blob/main/examples/projects/embedded_room/embedded-room.ondaproject) | A file-backed stereo `impulse.wav` cooperatively transformed into zero-latency convolution kernels, with an explicit FFT size and a configurable loading duration (0.5 seconds by default) |
 
 These links open the repository because the hosted `?example=` catalog contains source workspaces,
 not `.ondaproject` manifests and their buffer assets. To open a showcase in the browser playground,

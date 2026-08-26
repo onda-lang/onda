@@ -66,7 +66,7 @@ fn events_metadata_and_scalar_dispatch_work() {
 
 #[test]
 
-fn reset_instance_state_restores_initial_runtime_state() {
+fn init_restores_resettable_runtime_state() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -94,7 +94,7 @@ fn reset_instance_state_restores_initial_runtime_state() {
         assert_near(*sample, 0.5, 1e-6);
     }
 
-    reset_instance_state(&mut instance);
+    init(&mut instance, InitMode::PreservePinned).expect("init should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -3711,7 +3711,7 @@ sample {
     )
     .expect("jit lowering");
 
-    let mut instance = create_instance(
+    let mut instance = create_instance_initialized(
         jit,
         InstanceConfig {
             sample_rate: 48_000.0,
@@ -4721,7 +4721,7 @@ fn graph_proc_array_indexed_param_destinations_and_output_sources_run() {
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
-    for frame in output.chunks_exact(3) {
+    for frame in output.as_chunks::<3>().0 {
         assert_near(frame[0], 0.25, 1e-6);
 
         assert_near(frame[1], 0.75, 1e-6);

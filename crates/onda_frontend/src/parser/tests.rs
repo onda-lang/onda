@@ -6,7 +6,8 @@ use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallArg, CallTypeArg,
     ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, LogicalOp, NamespaceItem,
-    OutputTiming, ParamScale, PrimitiveType, Stmt,
+    OutputTiming, ParamScale, PrimitiveType, Stmt, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN,
+    INTERNAL_TASK_YIELD_FN,
 };
 
 use super::{
@@ -1256,6 +1257,68 @@ sample {
 }
 
 #[test]
+fn parses_explicit_for_induction_type() {
+    let src = r#"
+outs { out1 }
+sample {
+  for i: i64 in 0..2 { out1 = out1 + f32(i) }
+}
+"#;
+    let program = parse_program(src).expect("typed for loop should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::For { var, var_ty, .. } = &sample[0] else {
+        panic!("expected for statement");
+    };
+    assert_eq!(var, "i");
+    assert_eq!(*var_ty, PrimitiveType::I64);
+}
+
+#[test]
+fn defaults_for_induction_type_to_i32() {
+    let src = r#"
+outs { out1 }
+sample {
+  for i in 0..2 { out1 = out1 + f32(i) }
+}
+"#;
+    let program = parse_program(src).expect("default for loop should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::For { var_ty, .. } = &sample[0] else {
+        panic!("expected for statement");
+    };
+    assert_eq!(*var_ty, PrimitiveType::I32);
+}
+
+#[test]
+fn rejects_non_integer_for_induction_type() {
+    let errors = parse_program(
+        r#"
+sample {
+  for i: f64 in 0..2 { value = i }
+}
+"#,
+    )
+    .expect_err("floating-point for induction should fail");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("must be i32 or i64")));
+}
+
+#[test]
 fn parses_for_statement_with_inclusive_end() {
     let src = r#"
 outs { out1 }
@@ -1341,6 +1404,7 @@ sample {
   out1 = 0.0
 }
 "#;
+
     let program = parse_program(src).expect("program should parse");
     let sample = program
         .blocks
@@ -1363,6 +1427,130 @@ sample {
     };
     assert!(matches!(then_branch[0], Stmt::Continue { .. }));
     assert!(matches!(else_branch[0], Stmt::Break { .. }));
+}
+
+#[test]
+fn parses_grouped_and_standalone_proc_tasks() {
+    let src = r#"
+proc Loader:
+  tasks:
+    load():
+      for i in 0..4:
+        yield
+      return
+
+  task clear():
+    return
+
+  block:
+    await load()
+    sample:
+      out1 = 0.0
+"#;
+    let program = parse_program(src).expect("tasks should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) => Some(proc),
+            _ => None,
+        })
+        .expect("loader proc");
+
+    assert_eq!(proc.tasks.len(), 2);
+    assert_eq!(proc.tasks[0].name, "load");
+    assert!(matches!(proc.tasks[0].body[0], Stmt::For { .. }));
+    assert!(matches!(
+        proc.tasks[0].body[1],
+        Stmt::Return {
+            expr: Expr::UserCall { ref name, .. },
+            ..
+        } if name == INTERNAL_BARE_RETURN_FN
+    ));
+    assert_eq!(proc.tasks[1].name, "clear");
+    assert!(matches!(
+        proc.block_pre[0],
+        Stmt::Expr {
+            expr: Expr::UserCall { ref name, .. },
+            ..
+        } if name == INTERNAL_TASK_AWAIT_FN
+    ));
+}
+
+#[test]
+fn rejects_duplicate_proc_tasks_across_declaration_forms() {
+    let src = r#"
+proc Loader:
+  tasks:
+    load():
+      yield
+  task load():
+    return
+  sample:
+    out1 = 0.0
+"#;
+    let diagnostics = parse_program(src).expect_err("duplicate tasks should fail");
+    assert!(diagnostics
+        .iter()
+        .any(|diag| diag.message.contains("duplicate task declaration 'load'")));
+}
+
+#[test]
+fn parses_grouped_and_standalone_top_level_tasks() {
+    let src = r#"
+tasks:
+  load():
+    yield
+
+task clear():
+  return
+
+block:
+  await load()
+  sample:
+    out1 = 0.0
+"#;
+    let program = parse_program(src).expect("top-level tasks should parse");
+    let tasks = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Tasks(tasks) => Some(tasks),
+            _ => None,
+        })
+        .expect("top-level task block");
+
+    assert_eq!(tasks.tasks.len(), 2);
+    assert_eq!(tasks.tasks[0].name, "load");
+    assert!(matches!(
+        tasks.tasks[0].body[0],
+        Stmt::Expr {
+            expr: Expr::UserCall { ref name, .. },
+            ..
+        } if name == INTERNAL_TASK_YIELD_FN
+    ));
+    assert_eq!(tasks.tasks[1].name, "clear");
+}
+
+#[test]
+fn rejects_duplicate_top_level_tasks_across_declaration_forms() {
+    let src = r#"
+tasks:
+  load():
+    yield
+task load():
+  return
+"#;
+    let diagnostics = parse_program(src).expect_err("duplicate tasks should fail");
+    assert!(diagnostics
+        .iter()
+        .any(|diag| diag.message.contains("duplicate task declaration 'load'")));
+}
+
+#[test]
+fn rejects_task_parameters() {
+    assert!(parse_program("proc P:\n  task load(x):\n    return\n").is_err());
+    assert!(parse_program("task load(x):\n  return\n").is_err());
 }
 
 #[test]
@@ -1389,8 +1577,9 @@ sample:
 #[test]
 fn rejects_reserved_keywords_as_identifiers() {
     let keywords = [
-        "if", "elif", "else", "for", "in", "while", "loop", "break", "continue", "return",
-        "assert", "import", "include", "use", "as", "pub", "pin", "true", "false",
+        "if", "elif", "else", "for", "in", "while", "loop", "break", "continue", "return", "await",
+        "yield", "task", "tasks", "assert", "import", "include", "use", "as", "pub", "private",
+        "pin", "true", "false",
     ];
 
     for keyword in keywords {
@@ -1429,16 +1618,16 @@ fn rejects_compiler_reserved_identifier_prefix() {
 #[test]
 fn rejects_pin_keyword_as_identifier() {
     let cases = [
-        "params:\n  pin = 1.0\n",
-        "params:\n  pin gain = 1.0\n",
+        "params:\n  private = 1.0\n",
+        "params:\n  private gain = 1.0\n",
         "sample:\n  pin = 1.0\n",
-        "proc Voice:\n  params:\n    pin = 1.0\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
+        "proc Voice:\n  params:\n    private = 1.0\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
     ];
 
     for src in cases {
         assert!(
             parse_program(src).is_err(),
-            "'pin' should be reserved as a keyword, source parsed: {src}"
+            "modifier keywords should remain reserved, source parsed: {src}"
         );
     }
 }
@@ -4492,6 +4681,69 @@ sample:
         assert!(matches!(args[1], Expr::Int { value, .. } if value == expected_begin));
         assert!(matches!(args[2], Expr::Int { value, .. } if value == expected_end));
     }
+}
+
+#[test]
+fn parses_pinned_init_state_independently_from_integer_ranges() {
+    let program = parse_program(
+        r#"
+init:
+  pin kernel: f32[8]
+  pin cursor: i32 = 0 {8, wrap}
+  pin gain = 1.0
+
+sample:
+  out1 = gain
+"#,
+    )
+    .expect("pinned init state should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("init block");
+    assert_eq!(init.pinned_roots, ["kernel", "cursor", "gain"]);
+    assert_eq!(init.body.len(), 3);
+    assert!(matches!(
+        &init.body[1],
+        Stmt::Assign {
+            expr: Expr::Call {
+                func: BuiltinFn::BindingCountWrap,
+                ..
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn rejects_pin_outside_direct_init_bindings() {
+    for source in [
+        "sample:\n  pin value = 1\n",
+        "init:\n  if true:\n    pin value = 1\n",
+        "init:\n  value = 1\n  pin value = 2\n",
+        "init:\n  pin value += 1\n",
+        "proc Voice:\n  params:\n    pin gain = 1.0\n",
+    ] {
+        assert!(
+            parse_program(source).is_err(),
+            "pin should be restricted to direct init bindings: {source}"
+        );
+    }
+}
+
+#[test]
+fn pin_freshness_accounts_for_tuple_bindings() {
+    let diagnostics = parse_program(
+        "init:\n  (value, other) = (1.0, 2.0)\n  pin value = 3.0\nsample:\n  out1 = value\n",
+    )
+    .expect_err("a tuple-bound root must not be redeclared as pinned state");
+    assert!(diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("'pin' requires a fresh state binding; 'value' was already assigned")));
 }
 
 #[test]
@@ -7762,12 +8014,12 @@ sample:
 }
 
 #[test]
-fn parses_proc_pinned_params() {
+fn parses_proc_private_params() {
     let src = r#"
 proc Voice:
   params:
-    pin cutoff = 1000.0
-    pin coeffs: f32[2] = [0.5, 0.25]
+    private cutoff = 1000.0
+    private coeffs: f32[2] = [0.5, 0.25]
   outs:
     out1
   sample:
@@ -7776,7 +8028,7 @@ proc Voice:
 sample:
   out1 = 0.0
 "#;
-    let program = parse_program(src).expect("pinned processor params should parse");
+    let program = parse_program(src).expect("private processor params should parse");
     let proc = program
         .blocks
         .iter()
@@ -7787,9 +8039,9 @@ sample:
         .expect("Voice proc");
 
     assert_eq!(proc.params[0].name, "cutoff");
-    assert!(proc.params[0].pinned);
+    assert!(proc.params[0].private);
     assert_eq!(proc.params[1].name, "coeffs");
-    assert!(proc.params[1].pinned);
+    assert!(proc.params[1].private);
     assert_eq!(proc.params.len(), 2);
 }
 

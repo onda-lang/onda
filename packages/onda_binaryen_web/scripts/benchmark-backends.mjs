@@ -341,7 +341,7 @@ async function prepareWasmBenchmark(artifact) {
     artifact.wasm,
     createDefaultImports(),
   );
-  const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   const metadata = artifact.metadata;
   let heap = Number(__heap_base.value);
   const allocate = (bytes, alignment = 16) => {
@@ -400,7 +400,7 @@ async function prepareWasmBenchmark(artifact) {
     );
     view.setFloat32(bufferSampleRates + index * 4, sampleRate, true);
   });
-  requireExecutionSuccess(onda_init(params, state), "processor init");
+  requireExecutionSuccess(onda_processor_init(params, state, 1), "processor init");
   const process = () => requireExecutionSuccess(
     onda_process(
       state,

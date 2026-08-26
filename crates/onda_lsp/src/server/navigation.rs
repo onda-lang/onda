@@ -10,7 +10,7 @@ use onda_frontend::{
     parse_program_file_with_overlays, ArrayElemType, AssignTarget, Block, BlockExec, BufferDecl,
     ConstDecl, EventDef, EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef,
     NamespaceAliasDecl, NamespaceDecl, NamespaceItem, ParamDecl, PortDecl, ProcessorDef, Program,
-    Span, Stmt, StructDef, StructField, UseDecl,
+    Span, Stmt, StructDef, StructField, TaskDef, UseDecl,
 };
 use onda_semantics::builtins::{
     builtin_constant_type, builtin_instance_method_names, is_builtin_function_name,
@@ -341,7 +341,7 @@ struct DefinitionInfo {
     detail: String,
     span: Span,
     file_key: Option<String>,
-    pinned: bool,
+    private: bool,
 }
 
 impl DefinitionInfo {
@@ -384,6 +384,7 @@ enum DefinitionKind {
     Param,
     Buffer,
     Event,
+    Task,
     Field,
     Method,
     Variable,
@@ -400,7 +401,7 @@ struct ProcInfo {
     events: HashMap<String, usize>,
     buffers: HashMap<String, usize>,
     local_defs: HashMap<String, usize>,
-    has_pinned_params: bool,
+    has_private_params: bool,
     call_signature: String,
 }
 
@@ -522,7 +523,7 @@ impl NavigationIndex {
             detail: format!("namespace {full_name}"),
             span: ns.loc,
             file_key: file_key_for_span(ns.loc),
-            pinned: false,
+            private: false,
         });
         for param in &ns.params {
             self.add_namespace_param_definition(&full_name, param, ns.loc);
@@ -567,7 +568,7 @@ impl NavigationIndex {
             detail: format!("namespace {} = {target}", alias.name),
             span: alias.loc,
             file_key: file_key_for_span(alias.loc),
-            pinned: false,
+            private: false,
         });
     }
 
@@ -590,7 +591,7 @@ impl NavigationIndex {
             detail: format!("const {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -617,7 +618,7 @@ impl NavigationIndex {
             detail: format!("{const_prefix}{label} {}{type_params}({params})", def.name),
             span: def.loc,
             file_key: file_key_for_span(def.loc),
-            pinned: false,
+            private: false,
         });
 
         let mut param_indices = HashMap::new();
@@ -653,11 +654,11 @@ impl NavigationIndex {
             detail: format!("proc {}{type_params}({args})", proc_def.name),
             span: proc_def.loc,
             file_key: file_key_for_span(proc_def.loc),
-            pinned: false,
+            private: false,
         });
 
         let mut info = ProcInfo {
-            has_pinned_params: proc_def.params.iter().any(|param| param.pinned),
+            has_private_params: proc_def.params.iter().any(|param| param.private),
             call_signature: proc_call_signature(proc_def),
             ..ProcInfo::default()
         };
@@ -668,7 +669,7 @@ impl NavigationIndex {
             detail: format!("event init({})", proc_init_signature(proc_def)),
             span: proc_def.loc,
             file_key: file_key_for_span(proc_def.loc),
-            pinned: false,
+            private: false,
         });
         info.init = Some(init_idx);
         for decl in &proc_def.ins {
@@ -757,7 +758,7 @@ impl NavigationIndex {
             detail: format!("struct {} {{ {fields} }}", struct_def.name),
             span: struct_def.loc,
             file_key: file_key_for_span(struct_def.loc),
-            pinned: false,
+            private: false,
         });
 
         let mut info = StructInfo::default();
@@ -788,7 +789,7 @@ impl NavigationIndex {
             detail: format!("{detail} {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -807,7 +808,7 @@ impl NavigationIndex {
             detail: format!("{detail} {name}"),
             span,
             file_key: file_key_for_span(span),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -844,7 +845,7 @@ impl NavigationIndex {
             detail: format!("{detail} {}", format_param_decl(decl)),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: decl.pinned,
+            private: decl.private,
         })
     }
 
@@ -856,7 +857,7 @@ impl NavigationIndex {
             detail: format!("argument {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -868,7 +869,7 @@ impl NavigationIndex {
             detail: format!("event parameter {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -880,7 +881,7 @@ impl NavigationIndex {
             detail: format!("{detail} {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -899,7 +900,7 @@ impl NavigationIndex {
             detail: format!("event {}({params})", event.name),
             span: event.loc,
             file_key: file_key_for_span(event.loc),
-            pinned: false,
+            private: false,
         });
 
         let mut param_indices = HashMap::new();
@@ -914,6 +915,18 @@ impl NavigationIndex {
         event_idx
     }
 
+    fn add_task_definition(&mut self, owner: &str, task: &TaskDef) -> usize {
+        self.add_definition_once(DefinitionInfo {
+            name: task.name.clone(),
+            full_name: namespace_join(owner, &task.name),
+            kind: DefinitionKind::Task,
+            detail: format!("task {}()", task.name),
+            span: task.loc,
+            file_key: file_key_for_span(task.loc),
+            private: true,
+        })
+    }
+
     fn add_struct_field_definition(&mut self, owner: &str, field: &StructField) -> usize {
         self.add_definition(DefinitionInfo {
             name: field.name.clone(),
@@ -922,7 +935,7 @@ impl NavigationIndex {
             detail: format!("field {}", field.name),
             span: field.loc,
             file_key: file_key_for_span(field.loc),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -934,7 +947,7 @@ impl NavigationIndex {
             detail: format!("local {name}"),
             span,
             file_key: file_key_for_span(span),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -946,7 +959,7 @@ impl NavigationIndex {
             detail: format!("type parameter {name}"),
             span,
             file_key: file_key_for_span(span),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -963,7 +976,7 @@ impl NavigationIndex {
             detail: format!("namespace parameter {}", param.name),
             span,
             file_key: file_key_for_span(span),
-            pinned: false,
+            private: false,
         })
     }
 
@@ -1087,6 +1100,7 @@ impl NavigationIndex {
         let mut definitions = HashMap::<String, usize>::new();
         let mut instances = HashMap::<String, InstanceInfo>::new();
         let mut stmt_regions = Vec::<(Span, &[Stmt], bool)>::new();
+        let mut tasks = Vec::<&TaskDef>::new();
 
         for block in blocks {
             if !self.block_belongs_to_current_file(block) {
@@ -1129,6 +1143,14 @@ impl NavigationIndex {
                         definitions.insert(event.name.clone(), idx);
                     }
                 }
+                Block::Tasks(task_block) => {
+                    extend_span(&mut span, task_block.loc);
+                    for task in &task_block.tasks {
+                        let idx = self.add_task_definition("", task);
+                        definitions.insert(task.name.clone(), idx);
+                        tasks.push(task);
+                    }
+                }
                 Block::Init(init) => {
                     extend_span(&mut span, init.loc);
                     stmt_regions.push((init.loc, init.body.as_slice(), true));
@@ -1162,6 +1184,14 @@ impl NavigationIndex {
         let owner_idx = self.push_scope(None, "", span?, definitions, instances)?;
         for (span, stmts, _) in stmt_regions {
             self.collect_stmt_scope(Some(owner_idx), "", span, stmts);
+        }
+        for task in tasks {
+            self.collect_stmt_scope(
+                Some(owner_idx),
+                &task.name,
+                span_for_task_scope(task),
+                &task.body,
+            );
         }
         Some(owner_idx)
     }
@@ -1232,6 +1262,10 @@ impl NavigationIndex {
                 self.add_function_definition(&owner, def, DefinitionKind::Method, "proc-local def");
             definitions.insert(def.name.clone(), idx);
         }
+        for task in &proc_def.tasks {
+            let idx = self.add_task_definition(&owner, task);
+            definitions.insert(task.name.clone(), idx);
+        }
         self.collect_stmt_definitions_unfiltered(
             &owner,
             &proc_def.init.body,
@@ -1284,6 +1318,14 @@ impl NavigationIndex {
         }
         for def in &proc_def.local_defs {
             self.collect_function_scope(Some(owner_idx), &owner, def, "proc-local def");
+        }
+        for task in &proc_def.tasks {
+            self.collect_stmt_scope(
+                Some(owner_idx),
+                &namespace_join(&owner, &task.name),
+                span_for_task_scope(task),
+                &task.body,
+            );
         }
         Some(owner_idx)
     }
@@ -2296,6 +2338,13 @@ impl NavigationIndex {
         column: u32,
     ) -> Option<&DefinitionInfo> {
         let root = receiver_root(receiver);
+        if member == "reset" {
+            if let Some(definition) = self.resolve_unqualified(root, line, column) {
+                if definition.kind == DefinitionKind::Task {
+                    return Some(definition);
+                }
+            }
+        }
         let instance = self.resolve_instance(root, line, column)?;
         if member == ARRAY_LEN_METHOD && instance.is_array {
             return None;
@@ -2310,12 +2359,12 @@ impl NavigationIndex {
             }
             if let Some(idx) = proc_info.params.get(member) {
                 let definition = self.definitions.get(*idx)?;
-                if !definition.pinned {
+                if !definition.private {
                     return Some(definition);
                 }
                 return None;
             }
-            if member == "params" && !proc_info.has_pinned_params {
+            if member == "params" && !proc_info.has_private_params {
                 return None;
             }
             if member == "init" {
@@ -2358,7 +2407,7 @@ impl NavigationIndex {
                 }
                 if let Some(idx) = proc_info.params.get(arg) {
                     let definition = self.definitions.get(*idx)?;
-                    if !definition.pinned {
+                    if !definition.private {
                         return Some(definition);
                     }
                 }
@@ -2591,6 +2640,20 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
                 children,
             ))
         }
+        Block::Tasks(tasks) => {
+            let children = tasks
+                .tasks
+                .iter()
+                .map(|task| document_symbol_for_task(task, source))
+                .collect::<Vec<_>>();
+            Some(document_symbol(
+                "tasks",
+                SYMBOL_KIND_FUNCTION,
+                tasks.loc,
+                source,
+                children,
+            ))
+        }
         Block::Init(init) => Some(document_symbol(
             "init",
             SYMBOL_KIND_METHOD,
@@ -2702,6 +2765,12 @@ fn document_symbol_for_proc(proc_def: &ProcessorDef, source: &str) -> Value {
             .iter()
             .map(|def| document_symbol_for_function(def, SYMBOL_KIND_METHOD, source)),
     );
+    children.extend(
+        proc_def
+            .tasks
+            .iter()
+            .map(|task| document_symbol_for_task(task, source)),
+    );
     document_symbol(
         &proc_def.name,
         SYMBOL_KIND_CONSTRUCTOR,
@@ -2739,6 +2808,10 @@ fn document_symbol_for_function(def: &FunctionDef, kind: u32, source: &str) -> V
 
 fn document_symbol_for_event(event: &EventDef, source: &str) -> Value {
     document_symbol(&event.name, SYMBOL_KIND_EVENT, event.loc, source, vec![])
+}
+
+fn document_symbol_for_task(task: &TaskDef, source: &str) -> Value {
+    document_symbol(&task.name, SYMBOL_KIND_FUNCTION, task.loc, source, vec![])
 }
 
 fn document_symbol(name: &str, kind: u32, span: Span, source: &str, children: Vec<Value>) -> Value {
@@ -3133,8 +3206,8 @@ fn format_event_param_signature(param: &EventParamDecl) -> String {
 
 fn format_proc_param_signature(param: &ParamDecl) -> String {
     let mut text = String::new();
-    if param.pinned {
-        text.push_str("pin ");
+    if param.private {
+        text.push_str("private ");
     }
     text.push_str(&param.name);
     if let Some(ty) = &param.ty {
@@ -3175,7 +3248,7 @@ fn proc_call_signature(proc_def: &ProcessorDef) -> String {
             proc_def
                 .params
                 .iter()
-                .filter(|param| !param.pinned)
+                .filter(|param| !param.private)
                 .map(format_proc_param_signature),
         )
         .collect::<Vec<_>>()
@@ -3911,6 +3984,12 @@ fn span_for_event_scope(event: &EventDef) -> Span {
         .unwrap_or(event.loc)
 }
 
+fn span_for_task_scope(task: &TaskDef) -> Span {
+    span_for_stmt_body(&task.body)
+        .map(|body_span| Span::spanning(task.loc, body_span))
+        .unwrap_or(task.loc)
+}
+
 fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     let mut span = proc_def.loc;
     for decl in &proc_def.consts {
@@ -3946,6 +4025,9 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     }
     for def in &proc_def.local_defs {
         span = Span::spanning(span, span_for_function_scope(def));
+    }
+    for task in &proc_def.tasks {
+        span = Span::spanning(span, span_for_task_scope(task));
     }
     span
 }
@@ -4185,10 +4267,10 @@ sample:
     }
 
     #[test]
-    fn hides_pinned_params_from_external_member_navigation() {
+    fn hides_private_params_from_external_member_navigation() {
         let source = r#"proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
   outs:
     out1
   sample:
@@ -4204,11 +4286,11 @@ sample:
 
         assert!(
             definition_at(source, "voice.cutoff", "voice.".len() + 1).is_none(),
-            "external member access should not resolve pinned params"
+            "external member access should not resolve private params"
         );
         assert!(
             definition_at(source, "out1 = cutoff", "out1 = ".len() + 1).is_some(),
-            "pinned params should still resolve inside their owning proc"
+            "private params should still resolve inside their owning proc"
         );
     }
 
@@ -4535,5 +4617,63 @@ def read(box: Box):
                 .is_some_and(|value| value.contains("const TEST")),
             "namespace-local generic-def const hover should describe the const: {hover:?}"
         );
+    }
+
+    #[test]
+    fn resolves_top_level_task_await_and_reset_to_the_task_declaration() {
+        let source = r#"task prepare():
+  work = 1
+  yield
+
+block:
+  prepare.reset()
+  await prepare()
+  sample:
+    out1 = 0.0
+"#;
+        for (needle, offset) in [
+            ("prepare.reset", 1),
+            ("prepare.reset", "prepare.".len() + 1),
+            ("await prepare", "await ".len() + 1),
+        ] {
+            let definition = definition_at(source, needle, offset)
+                .expect("task control reference should resolve");
+            assert_eq!(definition["range"]["start"]["line"], json!(0));
+        }
+
+        let hover = hover_at(source, "await prepare", "await ".len() + 1)
+            .expect("task await hover should resolve");
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|value| value.contains("task prepare()")),
+            "task hover should describe the declaration: {hover:?}"
+        );
+    }
+
+    #[test]
+    fn proc_task_navigation_and_document_symbols_are_owner_local() {
+        let source = r#"proc Loader:
+  task prepare():
+    work = 1
+    yield
+  event reload():
+    prepare.reset()
+  block:
+    await prepare()
+    sample:
+      out1 = 0.0
+"#;
+        let definition = definition_at(source, "await prepare", "await ".len() + 1)
+            .expect("proc task await should resolve");
+        assert_eq!(definition["range"]["start"]["line"], json!(1));
+
+        let parsed = parse_program(source).expect("test source should parse");
+        let symbols =
+            document_symbols_for_document_with_parsed(source, None, &HashMap::new(), Some(&parsed));
+        let children = symbols[0]["children"]
+            .as_array()
+            .expect("proc document symbol children");
+        assert!(children.iter().any(|symbol| symbol["name"] == "prepare"));
     }
 }

@@ -544,7 +544,7 @@ pub(crate) fn specialize_generic_proc_template(
         .map(|decl| ParamDecl {
             loc: decl.loc,
             name: decl.name.clone(),
-            pinned: decl.pinned,
+            private: decl.private,
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
                     ty,
@@ -682,6 +682,7 @@ pub(crate) fn specialize_generic_proc_template(
     let mut block_post = template.block_post.clone();
     let mut local_defs = template.local_defs.clone();
     let mut events = template.events.clone();
+    let mut tasks = template.tasks.clone();
     for event in &mut events {
         for param in &mut event.params {
             param.ty = specialize_generic_proc_event_param_type(
@@ -804,6 +805,19 @@ pub(crate) fn specialize_generic_proc_template(
     expand_inline_array_ctor_initializers(&mut block_post);
     for event in &mut events {
         expand_inline_array_ctor_initializers(&mut event.body);
+    }
+    for task in &mut tasks {
+        for stmt in &mut task.body {
+            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
+            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
+            substitute_call_type_args_with_bindings_stmt(
+                stmt,
+                &type_bindings,
+                &format!("processor '{}' task '{}'", template.name, task.name),
+                errors,
+            );
+        }
+        expand_inline_array_ctor_initializers(&mut task.body);
     }
     for def in &mut local_defs {
         let specialize_return_scalar = |ty: &FnReturnScalarType| -> FnReturnScalarType {
@@ -942,6 +956,7 @@ pub(crate) fn specialize_generic_proc_template(
         params_deferred_count: None,
         params_deferred_default_ty: None,
         events,
+        tasks,
         buffers,
         buffers_deferred_count: None,
         buffers_deferred_default_ty: None,

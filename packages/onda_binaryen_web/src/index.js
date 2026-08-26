@@ -43,6 +43,7 @@ const WASM32_ADDRESS_SPACE_BYTES = MAX_MEMORY_PAGES * PAGE_BYTES;
 const DEFAULT_OPTIMIZE_LEVEL = 4;
 const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
 const RUNTIME_FAILURE_GLOBAL = "$onda.runtime_failure";
+const INIT_ALL_GLOBAL = "$onda.init_all";
 const MATH_KERNEL_INTRINSICS = new Set([
   "sin",
   "cos",
@@ -983,6 +984,12 @@ class MirCompiler {
       "control_mirror",
     ]);
     for (const [stateId, slot] of this.mir.state.entries()) {
+      if (typeof slot?.authored !== "boolean") {
+        this.fail(`state slot ${stateId} has an invalid authored flag`);
+      }
+      if (slot?.pinned !== undefined && typeof slot.pinned !== "boolean") {
+        this.fail(`state slot ${stateId} has an invalid pinned flag`);
+      }
       if (!persistenceKinds.has(slot?.persistence)) {
         this.fail(
           `state slot ${stateId} has invalid persistence '${String(slot?.persistence)}'`,
@@ -1818,6 +1825,12 @@ class MirCompiler {
       true,
       this.module.i32.const(0),
     );
+    this.module.addGlobal(
+      INIT_ALL_GLOBAL,
+      binaryen.i32,
+      true,
+      this.module.i32.const(0),
+    );
   }
 
   addMathKernel() {
@@ -2295,6 +2308,26 @@ class MirCompiler {
       : this.module.i32.const(PROCESSOR_EXECUTION_OK);
   }
 
+  fullInitClearRanges() {
+    const ranges = [];
+    let cursor = 0;
+    for (const [stateId, slot] of this.mir.state.entries()) {
+      if (slot.pinned !== true) continue;
+      const layout = this.stateLayout[stateId];
+      if (cursor < layout.offset) {
+        ranges.push({ offset: cursor, size: layout.offset - cursor });
+      }
+      cursor = layout.offset + layout.size;
+    }
+    if (cursor < this.stateLayout.byteLength) {
+      ranges.push({
+        offset: cursor,
+        size: this.stateLayout.byteLength - cursor,
+      });
+    }
+    return ranges;
+  }
+
   addAbiWrappers() {
     const initId = this.mir.entry_points.init;
     const processId = this.mir.entry_points.process;
@@ -2307,6 +2340,21 @@ class MirCompiler {
         binaryen.Features.BulkMemoryOpt |
         (this.options.simd ? binaryen.Features.SIMD128 : 0),
     );
+    // Pinned declarations fully initialize their own slots on this path.
+    // Clear only the complementary ranges, including layout padding, so large
+    // pinned arrays are never written once here and again by their initializer.
+    const fullInitClears = this.fullInitClearRanges().map(({ offset, size }) =>
+      this.module.memory.fill(
+        offset === 0
+          ? this.module.local.get(1, binaryen.i32)
+          : this.module.i32.add(
+            this.module.local.get(1, binaryen.i32),
+            this.module.i32.const(offset),
+          ),
+        this.module.i32.const(0),
+        this.module.i32.const(size),
+      )
+    );
     const initBody = this.module.block(null, [
       ...this.resetRuntimeFailure(initId),
       this.module.global.set(
@@ -2317,22 +2365,32 @@ class MirCompiler {
         POINTER_GLOBALS.state,
         this.module.local.get(1, binaryen.i32),
       ),
-      this.module.memory.fill(
-        this.module.local.get(1, binaryen.i32),
-        this.module.i32.const(0),
-        this.module.i32.const(this.stateLayout.byteLength ?? 0),
+      this.module.global.set(
+        INIT_ALL_GLOBAL,
+        this.module.i32.ne(
+          this.module.local.get(2, binaryen.i32),
+          this.module.i32.const(0),
+        ),
       ),
+      ...(fullInitClears.length === 0
+        ? []
+        : [
+          this.module.if(
+            this.module.global.get(INIT_ALL_GLOBAL, binaryen.i32),
+            this.module.block(null, fullInitClears),
+          ),
+        ]),
       this.module.call(this.functionNames[initId], [], binaryen.none),
       this.executionStatus(initId),
     ], binaryen.i32);
     this.module.addFunction(
       "$onda.abi.init",
-      binaryen.createType([binaryen.i32, binaryen.i32]),
+      binaryen.createType([binaryen.i32, binaryen.i32, binaryen.i32]),
       binaryen.i32,
       [],
       initBody,
     );
-    this.module.addFunctionExport("$onda.abi.init", "onda_init");
+    this.module.addFunctionExport("$onda.abi.init", "onda_processor_init");
 
     const processParams = binaryen.createType(
       Array.from({ length: 11 }, () => binaryen.i32),
@@ -2925,6 +2983,11 @@ class MirCompiler {
         );
       case "intrinsic":
         return this.compileIntrinsic(data, expectedScalar, context);
+      case "init_all":
+        if (context.function.kind?.kind !== "init") {
+          this.fail("init_all is only valid in the init entry point");
+        }
+        return this.module.global.get(INIT_ALL_GLOBAL, binaryen.i32);
       case "process_frame":
         return this.compileProcessFrame(data, context);
       case "input_load":
@@ -5688,7 +5751,7 @@ class MirCompiler {
     const requiredExports = [
       "memory",
       "__heap_base",
-      "onda_init",
+      "onda_processor_init",
       "onda_process",
       ...eventExports,
     ];
@@ -5743,7 +5806,7 @@ class MirCompiler {
       exports: {
         memory: "memory",
         heap_base: "__heap_base",
-        init: "onda_init",
+        init: "onda_processor_init",
         process: "onda_process",
         events: eventExports,
       },
@@ -5858,6 +5921,7 @@ class MirCompiler {
       const layout = this.stateLayout[id];
       entries.push({
         name: slot.name,
+        authored: slot.authored,
         type_repr: typeName(this.type(slot.ty), this),
         scalar: shape.scalar,
         array_len: shape.length,

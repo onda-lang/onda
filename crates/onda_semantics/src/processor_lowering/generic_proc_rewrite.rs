@@ -148,6 +148,16 @@ pub(super) fn rewrite_and_materialize_generic_processors(
                         &proc_ns,
                     );
                 }
+                for task in &mut p.tasks {
+                    rewrite_generic_proc_ctor_stmt_list(
+                        &mut task.body,
+                        &generic_proc_templates,
+                        &mut generated_specializations,
+                        errors,
+                        &proc_seed,
+                        &proc_ns,
+                    );
+                }
                 for def in &mut p.local_defs {
                     rewrite_generic_proc_ctor_stmt_list(
                         &mut def.body,

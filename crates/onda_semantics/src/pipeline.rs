@@ -5,14 +5,15 @@ use onda_frontend::Span;
 
 use crate::processor_lowering::{
     coerce_typed_events, collect_runtime_state_roots, desugar_processors,
-    internal_proc_index_call_signature, lower_graph_blocks, nested_call_out_fn_name,
-    nested_step_fn_name, prepare_processors_for_graph_inspection, proc_runtime_analysis_options,
-    validated_sample_oversample_factor, ProcLoweringShape, ProcessorDesugarResult,
-    TopLevelProcRewriteMeta,
+    guard_pinned_initializers, internal_proc_index_call_signature, lower_graph_blocks,
+    nested_call_out_fn_name, nested_step_fn_name, prepare_processors_for_graph_inspection,
+    proc_runtime_analysis_options, validated_sample_oversample_factor, ProcLoweringShape,
+    ProcessorDesugarResult, TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
 };
 use crate::*;
 
 mod namespace_flattening;
+use crate::task_lowering::validate_task_source_model;
 use namespace_flattening::flatten_namespaces_for_semantics;
 
 fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnostic>> {
@@ -29,9 +30,207 @@ fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnos
     Ok(())
 }
 
+fn resolves_to_processor_constructor(
+    name: &str,
+    current_ns: &str,
+    proc_symbols: &HashSet<String>,
+    proc_template_bases: &HashSet<String>,
+) -> bool {
+    if resolve_proc_ctor_symbol_name(name, current_ns, proc_symbols).is_some() {
+        return true;
+    }
+    if name.contains("::") {
+        proc_template_bases.contains(name)
+    } else {
+        resolve_unqualified_symbol_name(name, current_ns, proc_template_bases).is_some()
+    }
+}
+
+fn validate_pinned_bindings(program: &Program, errors: &mut Vec<Diagnostic>) {
+    fn add_occupied_names<'a>(
+        occupied: &mut HashMap<String, &'static str>,
+        names: impl IntoIterator<Item = &'a str>,
+        kind: &'static str,
+    ) {
+        occupied.extend(names.into_iter().map(|name| (name.to_owned(), kind)));
+    }
+
+    fn validate_init(
+        init: &InitBlock,
+        occupied_names: &HashMap<String, &'static str>,
+        current_ns: &str,
+        proc_symbols: &HashSet<String>,
+        proc_template_bases: &HashSet<String>,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        let mut pending = init.pinned_roots.iter().collect::<HashSet<_>>();
+        for stmt in &init.body {
+            let Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr,
+                ..
+            } = stmt
+            else {
+                continue;
+            };
+            if !pending.remove(name) {
+                continue;
+            }
+            if let Some(kind) = occupied_names.get(name) {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "'pin' requires a fresh state binding; '{name}' is already declared as {kind}"
+                    ),
+                    stmt.loc(),
+                ));
+                continue;
+            }
+            let pinned_processor_kind = match expr {
+                Expr::UserCall {
+                    name: constructor, ..
+                } if resolves_to_processor_constructor(
+                    constructor,
+                    current_ns,
+                    proc_symbols,
+                    proc_template_bases,
+                ) =>
+                {
+                    Some("processor instance")
+                }
+                Expr::ArrayCtor { spec, .. }
+                    if matches!(
+                        &spec.elem,
+                        ArrayElemType::Struct(constructor)
+                            if resolves_to_processor_constructor(
+                                constructor,
+                                current_ns,
+                                proc_symbols,
+                                proc_template_bases,
+                            )
+                    ) =>
+                {
+                    Some("processor array")
+                }
+                _ => None,
+            };
+            if let Some(kind) = pinned_processor_kind {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "'pin' cannot be applied to {kind} '{name}'; pin the processor's own init state instead"
+                    ),
+                    stmt.loc(),
+                ));
+            }
+        }
+    }
+
+    let proc_symbols = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Proc(proc_def) => Some(proc_def.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let proc_template_bases = specialized_proc_template_bases(&proc_symbols);
+    let mut top_level_names = HashMap::new();
+    for block in &program.blocks {
+        match block {
+            Block::Ins(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "an input",
+                );
+            }
+            Block::Outs(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "an output",
+                );
+            }
+            Block::KOuts(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "a control output",
+                );
+            }
+            Block::Params(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "a param",
+                );
+            }
+            Block::Buffers(decls) => {
+                add_occupied_names(
+                    &mut top_level_names,
+                    decls.iter().map(|decl| decl.name.as_str()),
+                    "a buffer",
+                );
+            }
+            Block::Const(decl) => {
+                top_level_names.insert(decl.name.clone(), "a constant");
+            }
+            _ => {}
+        }
+    }
+    if let Some(Block::Init(init)) = program.block(BlockKind::Init) {
+        validate_init(
+            init,
+            &top_level_names,
+            "",
+            &proc_symbols,
+            &proc_template_bases,
+            errors,
+        );
+    }
+    for proc_def in program.blocks.iter().filter_map(|block| match block {
+        Block::Proc(proc_def) => Some(proc_def),
+        _ => None,
+    }) {
+        let mut occupied_names = HashMap::new();
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.ins.iter().map(|decl| decl.name.as_str()),
+            "an input",
+        );
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.outs.iter().map(|decl| decl.name.as_str()),
+            "an output",
+        );
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.params.iter().map(|decl| decl.name.as_str()),
+            "a param",
+        );
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.buffers.iter().map(|decl| decl.name.as_str()),
+            "a buffer",
+        );
+        add_occupied_names(
+            &mut occupied_names,
+            proc_def.consts.iter().map(|decl| decl.name.as_str()),
+            "a constant",
+        );
+        validate_init(
+            &proc_def.init,
+            &occupied_names,
+            &namespace_of_symbol(&proc_def.name),
+            &proc_symbols,
+            &proc_template_bases,
+            errors,
+        );
+    }
+}
+
 fn statements_return_value(statements: &[Stmt]) -> bool {
     statements.iter().any(|statement| match statement {
-        Stmt::Return { .. } => true,
+        Stmt::Return { expr, .. } => !is_bare_return_expr(expr),
         Stmt::If {
             then_branch,
             else_branch,
@@ -424,6 +623,9 @@ fn fold_host_sr_proc(proc: &mut ProcessorDef, consts: &HashMap<String, TypedCons
     for event in &mut proc.events {
         fold_host_sr_event(event, consts);
     }
+    for task in &mut proc.tasks {
+        fold_host_sr_stmts(&mut task.body, consts);
+    }
     for def in &mut proc.local_defs {
         fold_host_sr_function(def, consts);
     }
@@ -462,6 +664,11 @@ fn fold_host_sr_block(block: &mut Block, consts: &HashMap<String, TypedConstValu
         Block::Events(events) => {
             for event in &mut events.events {
                 fold_host_sr_event(event, consts);
+            }
+        }
+        Block::Tasks(tasks) => {
+            for task in &mut tasks.tasks {
+                fold_host_sr_stmts(&mut task.body, consts);
             }
         }
         Block::Assert(assert_decl) => {
@@ -596,6 +803,7 @@ struct SemanticConstArtifacts {
 
 #[derive(Debug, Clone, Default)]
 struct ProcLocalConstArtifacts {
+    names: HashSet<String>,
     values: HashMap<String, TypedConstValue>,
 }
 
@@ -3747,6 +3955,13 @@ fn reject_forward_const_refs_in_block(
                 reject_forward_const_refs_event(event, visible_consts, future_consts, errors);
             }
         }
+        Block::Tasks(tasks) => {
+            for task in &tasks.tasks {
+                for stmt in &task.body {
+                    reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+                }
+            }
+        }
         Block::Buffers(buffers) => {
             if let Some(count) = &buffers.deferred_count {
                 reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
@@ -3892,6 +4107,11 @@ fn reject_forward_const_refs_in_block(
             if let Some(graph) = &proc.graph {
                 reject_forward_const_refs_graph(graph, visible_consts, future_consts, errors);
             }
+            for task in &proc.tasks {
+                for stmt in &task.body {
+                    reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+                }
+            }
             for def in &proc.local_defs {
                 reject_forward_const_refs_function(def, visible_consts, future_consts, errors);
             }
@@ -3945,6 +4165,13 @@ fn fold_const_array_exprs_in_block(
         Block::Events(events) => {
             for event in &mut events.events {
                 fold_event_const_arrays(event, const_values, options, errors);
+            }
+        }
+        Block::Tasks(tasks) => {
+            for task in &mut tasks.tasks {
+                for stmt in &mut task.body {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
             }
         }
         Block::Buffers(buffers) => {
@@ -4067,6 +4294,11 @@ fn fold_const_array_exprs_in_block(
             }
             if let Some(graph) = &mut proc.graph {
                 fold_graph_const_arrays(graph, const_values, options, errors);
+            }
+            for task in &mut proc.tasks {
+                for stmt in &mut task.body {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
             }
             for def in &mut proc.local_defs {
                 fold_function_const_arrays(def, const_values, options, errors);
@@ -4238,6 +4470,13 @@ fn reject_const_shadowing_in_program(
                     reject_const_shadowing_event(event, &scope_ns, const_values, errors);
                 }
             }
+            Block::Tasks(tasks) => {
+                for task in &tasks.tasks {
+                    for stmt in &task.body {
+                        reject_const_shadowing_stmt(stmt, "", const_values, errors);
+                    }
+                }
+            }
             Block::Init(init) => {
                 for stmt in &init.body {
                     reject_const_shadowing_stmt(stmt, "", const_values, errors);
@@ -4332,6 +4571,11 @@ fn reject_const_shadowing_in_program(
                 for stmt in &proc.block_post {
                     reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
                 }
+                for task in &proc.tasks {
+                    for stmt in &task.body {
+                        reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
+                    }
+                }
                 for def in &proc.local_defs {
                     reject_const_shadowing_function(def, &scope_ns, const_values, errors);
                 }
@@ -4418,6 +4662,13 @@ fn reject_const_assignments_in_program(
                     reject_const_assignments_event(event, const_values, errors);
                 }
             }
+            Block::Tasks(tasks) => {
+                for task in &tasks.tasks {
+                    for stmt in &task.body {
+                        reject_const_assignments_stmt(stmt, const_values, errors);
+                    }
+                }
+            }
             Block::Init(init) => {
                 for stmt in &init.body {
                     reject_const_assignments_stmt(stmt, const_values, errors);
@@ -4462,6 +4713,11 @@ fn reject_const_assignments_in_program(
                 }
                 for stmt in &proc.block_post {
                     reject_const_assignments_stmt(stmt, const_values, errors);
+                }
+                for task in &proc.tasks {
+                    for stmt in &task.body {
+                        reject_const_assignments_stmt(stmt, const_values, errors);
+                    }
                 }
                 for def in &proc.local_defs {
                     reject_const_assignments_function(def, const_values, errors);
@@ -4994,6 +5250,13 @@ fn fold_direct_const_def_calls_in_block(
         Block::Events(events) => {
             for event in &mut events.events {
                 fold_direct_const_def_event(event, artifacts, options, errors);
+            }
+        }
+        Block::Tasks(tasks) => {
+            for task in &mut tasks.tasks {
+                for stmt in &mut task.body {
+                    fold_direct_const_def_stmt(stmt, artifacts, options, errors);
+                }
             }
         }
         Block::Buffers(buffers) => {
@@ -5774,10 +6037,10 @@ fn reject_proc_local_const_decl_name(
     symbol_kind: &str,
     name: &str,
     loc: Span,
-    proc_consts: &HashMap<String, TypedConstValue>,
+    proc_const_names: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if proc_consts.contains_key(name) {
+    if proc_const_names.contains(name) {
         errors.push(Diagnostic::semantic_span(
             format!(
                 "{symbol_kind} '{name}' in processor '{proc_name}' conflicts with local constant '{name}'"
@@ -5789,16 +6052,26 @@ fn reject_proc_local_const_decl_name(
 
 fn reject_proc_local_const_decl_conflicts(
     proc: &ProcessorDef,
-    proc_consts: &HashMap<String, TypedConstValue>,
+    proc_const_names: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    for task in &proc.tasks {
+        reject_proc_local_const_decl_name(
+            &proc.name,
+            "task",
+            &task.name,
+            task.loc,
+            proc_const_names,
+            errors,
+        );
+    }
     for decl in &proc.ins {
         reject_proc_local_const_decl_name(
             &proc.name,
             "processor input",
             &decl.name,
             decl.loc,
-            proc_consts,
+            proc_const_names,
             errors,
         );
     }
@@ -5808,7 +6081,7 @@ fn reject_proc_local_const_decl_conflicts(
             "processor output",
             &decl.name,
             decl.loc,
-            proc_consts,
+            proc_const_names,
             errors,
         );
     }
@@ -5818,7 +6091,7 @@ fn reject_proc_local_const_decl_conflicts(
             "processor parameter",
             &decl.name,
             decl.loc,
-            proc_consts,
+            proc_const_names,
             errors,
         );
     }
@@ -5828,7 +6101,7 @@ fn reject_proc_local_const_decl_conflicts(
             "processor buffer",
             &decl.name,
             decl.loc,
-            proc_consts,
+            proc_const_names,
             errors,
         );
     }
@@ -5842,9 +6115,8 @@ fn preprocess_proc_local_const_decls(
     errors: &mut Vec<Diagnostic>,
 ) -> ProcLocalConstArtifacts {
     let mut out = ProcLocalConstArtifacts::default();
-    let mut proc_const_names = HashSet::<String>::new();
     for decl in consts {
-        if !proc_const_names.insert(decl.name.clone()) {
+        if !out.names.insert(decl.name.clone()) {
             errors.push(Diagnostic::semantic_span(
                 format!("duplicate proc constant '{}'", decl.name),
                 decl.loc.as_ref(),
@@ -5924,6 +6196,18 @@ fn preprocess_local_consts_in_block(
         Block::Events(events) => {
             for event in &mut events.events {
                 preprocess_local_const_event(event, &empty_consts, artifacts, options, errors);
+            }
+        }
+        Block::Tasks(tasks) => {
+            for task in &mut tasks.tasks {
+                preprocess_local_const_stmts(
+                    &mut task.body,
+                    &empty_consts,
+                    artifacts,
+                    options,
+                    &format!("top-level task '{}'", task.name),
+                    errors,
+                );
             }
         }
         Block::Init(init) => {
@@ -6026,7 +6310,7 @@ fn preprocess_local_consts_in_block(
             );
             let proc_options = proc_runtime_analysis_options(options, sample_oversample_factor);
             let proc_consts = preprocess_proc_local_consts(proc, artifacts, proc_options, errors);
-            reject_proc_local_const_decl_conflicts(proc, &proc_consts.values, errors);
+            reject_proc_local_const_decl_conflicts(proc, &proc_consts.names, errors);
             if let Some(count) = &mut proc.ins_deferred_count {
                 fold_local_scalar_const_expr(count, &proc_consts.values);
             }
@@ -6130,6 +6414,16 @@ fn preprocess_local_consts_in_block(
                 &format!("processor '{}' block post", proc.name),
                 errors,
             );
+            for task in &mut proc.tasks {
+                preprocess_local_const_stmts(
+                    &mut task.body,
+                    &proc_consts.values,
+                    artifacts,
+                    proc_options,
+                    &format!("task '{}' in processor '{}'", task.name, proc.name),
+                    errors,
+                );
+            }
             if let Some(graph) = &mut proc.graph {
                 preprocess_local_const_graph(graph, &proc_consts.values);
             }
@@ -6253,7 +6547,7 @@ fn expand_param_count_shorthand(
             decls.push(ParamDecl {
                 loc,
                 name: format!("{prefix}{idx}"),
-                pinned: false,
+                private: false,
                 ty: default_ty.clone(),
                 ty_loc: Span::ZERO,
                 default: None,
@@ -6849,31 +7143,9 @@ fn rewrite_function_overloads(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     errors: &mut Vec<Diagnostic>,
 ) -> usize {
-    let mut env = seed.clone();
-    env.set_owner_type_params(&def.type_params);
-    let mut resolved = 0;
-    for param in &mut def.params {
-        env.bind_function_param(param, &def.type_params);
-        if let Some(default_expr) = &mut param.default {
-            resolved += crate::def_semantics::rewrite_overloaded_calls_in_expr(
-                default_expr,
-                &env,
-                context,
-                owner,
-                overloads,
-                errors,
-            );
-        }
-    }
-    resolved
-        + crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
-            &mut def.body,
-            &mut env,
-            context,
-            owner,
-            overloads,
-            errors,
-        )
+    crate::def_semantics::rewrite_overloaded_calls_in_function(
+        def, seed, context, owner, overloads, errors,
+    )
 }
 
 fn register_generated_method_owners(
@@ -7643,6 +7915,11 @@ pub fn analyze_with_options(
     program
         .blocks
         .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
+    validate_task_source_model(&program, &mut errors);
+    validate_pinned_bindings(&program, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     let const_arrays = const_artifacts.const_arrays;
     let mut declared_proc_integer_ranges = HashMap::new();
     for proc_def in program.blocks.iter_mut().filter_map(|block| match block {
@@ -7665,13 +7942,44 @@ pub fn analyze_with_options(
     }
     let ProcessorDesugarResult {
         program,
+        runtime_def_names,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
         proc_instance_oversample_factors,
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
+        pinned_proc_fields,
+        compiler_owned_proc_fields,
     } = desugar_processors(program, options, &const_array_infos, &mut errors);
+    let mut pinned_state_roots = program
+        .block(BlockKind::Init)
+        .and_then(|block| match block {
+            Block::Init(init) => Some(init.pinned_roots.iter().cloned()),
+            _ => None,
+        })
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+    let mut compiler_owned_state_roots = HashSet::new();
+    let compiler_scratch_state_roots = program
+        .block(BlockKind::Init)
+        .and_then(|block| match block {
+            Block::Init(init) => Some(init.compiler_scratch_roots.iter().cloned()),
+            _ => None,
+        })
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+    for (instance, proc_instance) in &top_level_proc_rewrite.global_proc_instances {
+        if let Some(fields) = pinned_proc_fields.get(&proc_instance.proc_name) {
+            pinned_state_roots.extend(fields.iter().map(|field| format!("{instance}.{field}")));
+        }
+        if let Some(fields) = compiler_owned_proc_fields.get(&proc_instance.proc_name) {
+            compiler_owned_state_roots
+                .extend(fields.iter().map(|field| format!("{instance}.{field}")));
+        }
+    }
 
     let mut seen_singleton = HashSet::new();
     for block in &program.blocks {
@@ -9545,13 +9853,12 @@ pub fn analyze_with_options(
             },
         );
     }
-    let state_arrays = HashMap::new();
-    let state_array_struct_roots = HashMap::<String, ArrayStructRootInfo>::new();
-    let struct_instances = HashMap::new();
     let mut init_known_scalars = param_names.clone();
     init_known_scalars.extend(state_scalars.keys().cloned());
+    init_known_scalars.insert(TOP_LEVEL_INIT_ALL_NAME.to_owned());
     let init_locals = HashSet::new();
-    let init_local_aliases = LocalAliasTypes::new();
+    let mut init_local_aliases = LocalAliasTypes::new();
+    init_local_aliases.insert(TOP_LEVEL_INIT_ALL_NAME.to_owned(), PrimitiveType::Bool);
     let mut init_local_data_aliases = HashMap::new();
     seed_top_level_array_aliases(&mut init_local_data_aliases, &param_arrays, false);
     seed_top_level_array_aliases(&mut init_local_data_aliases, &const_array_infos, false);
@@ -9592,23 +9899,15 @@ pub fn analyze_with_options(
         proc_resolution: None,
         top_level_proc_symbols: Some(&top_level_proc_symbols),
     };
-    let mut init_st = InitAnalysisState {
-        known_scalars: init_known_scalars,
-        local_aliases: init_local_aliases,
-        integer_ranges: HashMap::new(),
-        local_array_aliases: init_local_data_aliases,
+    let mut init_st = InitAnalysisState::new(
+        init_known_scalars,
+        init_local_aliases,
+        init_local_data_aliases,
         declared_symbols,
         state_scalars,
-        state_arrays,
-        state_array_struct_roots,
-        struct_instances,
-        state_tuples: HashMap::new(),
-        state_array_specs: HashMap::new(),
-        struct_instance_type_args: HashMap::new(),
-        nested_procs: HashMap::new(),
-        nested_proc_arrays: HashMap::new(),
-    };
+    );
     analyze_owner_init_stmts(&init, &init_ctx, &init_locals, &mut init_st, &mut errors);
+    guard_pinned_initializers(&mut init, TOP_LEVEL_INIT_ALL_NAME);
     let InitAnalysisState {
         known_scalars: _init_known_scalars,
         local_aliases: _init_local_aliases,
@@ -9708,9 +10007,8 @@ pub fn analyze_with_options(
             struct_instances: &struct_instances,
             state_tuples: &state_tuples,
         };
-        analyze_owner_runtime_scopes(
-            &mut runtime_state,
-            analysis_plan_seeds.runtime_scope_plans(
+        let mut runtime_plans = analysis_plan_seeds
+            .runtime_scope_plans(
                 RuntimeScopeBodies {
                     block_pre: &block_pre,
                     sample: &sample,
@@ -9739,9 +10037,18 @@ pub fn analyze_with_options(
                     registration_param_names: &param_names,
                     proc_event_names: &no_proc_event_names,
                 },
-            ),
-            &mut errors,
+            )
+            .to_vec();
+        let helper_plan = runtime_plans[0].clone();
+        runtime_plans.extend(
+            defs.iter()
+                .filter(|def| runtime_def_names.contains(&def.name))
+                .map(|def| RuntimeScopePlan {
+                    stmts: &def.body,
+                    ..helper_plan.clone()
+                }),
         );
+        analyze_owner_runtime_scopes(&mut runtime_state, runtime_plans, &mut errors);
 
         analyze_owner_events(
             &runtime_state,
@@ -9905,8 +10212,9 @@ pub fn analyze_with_options(
     let def_global_params = HashSet::<String>::new();
     let mut def_scalar_local_types = HashMap::<String, LocalAliasTypes>::new();
     for def in defs.iter_mut().filter(|def| {
-        reachable_def_names.contains(&def.name)
-            || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs)
+        !runtime_def_names.contains(&def.name)
+            && (reachable_def_names.contains(&def.name)
+                || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs))
     }) {
         let def_error_start = errors.len();
         let def_param_names = def
@@ -10054,7 +10362,7 @@ pub fn analyze_with_options(
                 _ => 1,
             };
             if let Some(api) = proc_api.get(&proc_info.proc_name) {
-                for param in api.params.values().filter(|param| !param.pinned) {
+                for param in api.params.values().filter(|param| !param.private) {
                     fn_local_data_aliases.insert(
                         format!("{param_name}.{}", param.name),
                         LocalArrayAliasInfo {
@@ -10229,6 +10537,22 @@ pub fn analyze_with_options(
                 }
             }
         }
+        let mut def_proc_array_roots = param_proc_arrays.clone();
+        for (base, slots) in &def_proc_array_slots {
+            let Some(proc_name) = slots
+                .first()
+                .and_then(|slot| def_proc_vars.get(slot))
+                .map(|instance| instance.proc_name.clone())
+            else {
+                continue;
+            };
+            def_proc_array_roots
+                .entry(base.clone())
+                .or_insert_with(|| ProcNestedArrayState {
+                    proc_name,
+                    size_expr: Expr::int(slots.len() as i64),
+                });
+        }
         if (!def_proc_vars.is_empty() || !def_proc_array_slots.is_empty())
             && !def.name.contains(".__onda_proc_")
         {
@@ -10275,9 +10599,8 @@ pub fn analyze_with_options(
             declared_symbols: &def_declared_symbols,
             param_structs: &param_structs,
             struct_array_roots: &def_param_array_struct_roots,
-            proc_array_roots: &param_proc_arrays,
+            proc_array_roots: &def_proc_array_roots,
             state_scalars: &def_state_scalars,
-            def_return_types: &def_return_types,
             resolved_scalar_locals: &resolved_scalar_locals,
         };
         let mut def_state = DefStmtAnalysisState::from_parts(
@@ -10340,6 +10663,35 @@ pub fn analyze_with_options(
             })
             .collect::<Vec<_>>();
         typed_data.sort_by(|a, b| a.name.cmp(&b.name));
+        let pinned_state_roots = sorted_state
+            .iter()
+            .chain(typed_data.iter().map(|array| &array.name))
+            .filter(|name| path_or_ancestor_is_declared(name, &pinned_state_roots))
+            .cloned()
+            .collect::<HashSet<_>>();
+        compiler_owned_state_roots.extend(
+            sorted_state
+                .iter()
+                .chain(typed_data.iter().map(|array| &array.name))
+                .filter(|name| {
+                    crate::internal_names::is_reserved_internal_identifier(runtime_symbol_root(
+                        name,
+                    ))
+                })
+                .cloned(),
+        );
+        let compiler_owned_state_roots = sorted_state
+            .iter()
+            .chain(typed_data.iter().map(|array| &array.name))
+            .filter(|name| path_or_ancestor_is_declared(name, &compiler_owned_state_roots))
+            .cloned()
+            .collect::<HashSet<_>>();
+        let compiler_scratch_state_roots = sorted_state
+            .iter()
+            .chain(typed_data.iter().map(|array| &array.name))
+            .filter(|name| path_or_ancestor_is_declared(name, &compiler_scratch_state_roots))
+            .cloned()
+            .collect::<HashSet<_>>();
         let mut typed_data_roots = state_array_struct_roots
             .into_iter()
             .map(|(name, info)| TypedArrayStructRoot {
@@ -10451,6 +10803,7 @@ pub fn analyze_with_options(
                     .map(|signature| signature.readonly_array_params.clone())
                     .unwrap_or_default();
                 TypedFunction {
+                    runtime_context: runtime_def_names.contains(&d.name),
                     method_of: method_self_struct_internal.get(&d.name).cloned(),
                     type_params: d.type_params.clone(),
                     param_defaults: d.params.iter().map(|p| p.default.clone()).collect(),
@@ -10607,6 +10960,9 @@ pub fn analyze_with_options(
             control_out_types,
             param_types,
             state_integer_ranges,
+            pinned_state_roots,
+            compiler_owned_state_roots,
+            compiler_scratch_state_roots,
             in_defaults,
             in_ranges,
             dynamic_input_range_aliases,
@@ -12638,6 +12994,7 @@ fn rewrite_stmt_for_def_proc_block_guards(
             Stmt::For {
                 loc,
                 var,
+                var_ty,
                 start,
                 end,
                 end_inclusive,
@@ -12655,6 +13012,7 @@ fn rewrite_stmt_for_def_proc_block_guards(
                 vec![Stmt::For {
                     loc,
                     var,
+                    var_ty,
                     start,
                     end,
                     end_inclusive,
@@ -12714,6 +13072,7 @@ fn rewrite_stmt_for_def_proc_block_guards(
         Stmt::For {
             loc,
             var,
+            var_ty,
             start,
             end,
             end_inclusive,
@@ -12731,6 +13090,7 @@ fn rewrite_stmt_for_def_proc_block_guards(
             rewritten.push(Stmt::For {
                 loc,
                 var,
+                var_ty,
                 start,
                 end,
                 end_inclusive,

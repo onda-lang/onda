@@ -63,6 +63,18 @@ test("the shared run view keeps parameter and event resets independent", async (
   );
 });
 
+test("the shared run view preserves explicit false scalar values", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+  const helper = runView.match(/function booleanScalarValue\(value\) \{[\s\S]*?\n      \}/)?.[0];
+
+  assert.ok(helper);
+  const booleanScalarValue = Function(`return (${helper})`)();
+  assert.equal(booleanScalarValue(false), false);
+  assert.equal(booleanScalarValue(true), true);
+  assert.equal(booleanScalarValue(0), false);
+  assert.equal(booleanScalarValue(1), true);
+});
+
 test("the empty native run view owns its compile settings", async () => {
   const [runView, webview] = await Promise.all([
     readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),

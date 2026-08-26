@@ -456,7 +456,12 @@ pub(super) fn rewrite_graph_source_expr(
                 ))
             }),
         },
-        Expr::ArrayCtor { spec, init, .. } => Expr::ArrayCtor {
+        Expr::ArrayCtor {
+            spec,
+            init,
+            initialize,
+            ..
+        } => Expr::ArrayCtor {
             loc: expr_loc.into(),
             spec: ArrayTypeSpec {
                 elem: spec.elem.clone(),
@@ -486,6 +491,7 @@ pub(super) fn rewrite_graph_source_expr(
                     })
                     .collect()
             }),
+            initialize: *initialize,
         },
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Tuple { .. } => {
             expr.clone()

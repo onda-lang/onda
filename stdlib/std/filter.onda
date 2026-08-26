@@ -85,8 +85,8 @@ namespace std::filter:
     outs<T> 1
 
     params<T>:
-      pin cutoff = 1000.0
-      pin q = 0.707107
+      private cutoff = 1000.0
+      private q = 0.707107
       mode: i32 = 0
 
     init<T>:

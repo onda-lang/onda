@@ -94,6 +94,7 @@ enum SourceProcScopeKind {
     Sample,
     Function,
     Event,
+    Task,
 }
 
 #[derive(Clone, Copy)]
@@ -111,6 +112,7 @@ enum SourceProcSectionKind {
     Buffers,
     Init,
     Events,
+    Tasks,
     Block,
     Sample,
     Graph,
@@ -243,6 +245,21 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                             continue;
                         }
                     }
+                    SourceProcSectionKind::Tasks => {
+                        if let Some(task_name) = parse_grouped_task_header(trimmed) {
+                            push_source_task_scope(
+                                &mut index,
+                                proc_owner_idx,
+                                &mut open_scopes,
+                                line_no,
+                                indent,
+                                task_name,
+                                SourceProcScopeKind::Task,
+                            );
+                            prev_nonempty_line = line_no;
+                            continue;
+                        }
+                    }
                     SourceProcSectionKind::Sample | SourceProcSectionKind::Graph => {}
                 }
             }
@@ -292,6 +309,20 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
             continue;
         }
 
+        if let Some(task_name) = parse_task_header(trimmed) {
+            push_source_task_scope(
+                &mut index,
+                proc_owner_idx,
+                &mut open_scopes,
+                line_no,
+                indent,
+                task_name,
+                SourceProcScopeKind::Task,
+            );
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
         if let Some(active_scope_idx) = open_scopes
             .iter()
             .rev()
@@ -301,6 +332,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                     SourceProcScopeKind::Sample
                         | SourceProcScopeKind::Function
                         | SourceProcScopeKind::Event
+                        | SourceProcScopeKind::Task
                 )
             })
             .map(|scope| scope.idx)
@@ -329,6 +361,7 @@ enum SourceTopLevelScopeKind {
     Sample,
     Function,
     Event,
+    Task,
 }
 
 #[derive(Clone, Copy)]
@@ -339,6 +372,7 @@ enum SourceTopLevelSectionKind {
     Buffers,
     Init,
     Events,
+    Tasks,
     Block,
     Sample,
     Graph,
@@ -464,6 +498,21 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                             continue;
                         }
                     }
+                    SourceTopLevelSectionKind::Tasks => {
+                        if let Some(task_name) = parse_grouped_task_header(trimmed) {
+                            push_source_task_scope(
+                                &mut index,
+                                section.owner_idx,
+                                &mut open_scopes,
+                                line_no,
+                                indent,
+                                task_name,
+                                SourceTopLevelScopeKind::Task,
+                            );
+                            prev_nonempty_line = line_no;
+                            continue;
+                        }
+                    }
                     SourceTopLevelSectionKind::Sample | SourceTopLevelSectionKind::Graph => {}
                 }
             }
@@ -510,6 +559,26 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
             continue;
         }
 
+        if let Some(task_name) = parse_task_header(trimmed) {
+            let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
+                let idx = push_line_scope(&mut index, None, line_no, 0, true);
+                index.scopes[idx].end_line = u32::MAX;
+                index.scopes[idx].end_column = u32::MAX;
+                idx
+            });
+            push_source_task_scope(
+                &mut index,
+                owner_idx,
+                &mut open_scopes,
+                line_no,
+                indent,
+                task_name,
+                SourceTopLevelScopeKind::Task,
+            );
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
         if let Some(active_scope_idx) = open_scopes
             .iter()
             .rev()
@@ -519,6 +588,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                     SourceTopLevelScopeKind::Sample
                         | SourceTopLevelScopeKind::Function
                         | SourceTopLevelScopeKind::Event
+                        | SourceTopLevelScopeKind::Task
                 )
             })
             .map(|scope| scope.idx)
@@ -601,6 +671,23 @@ fn push_source_callable_scope(
         scope.parameters.insert(param);
     }
     idx
+}
+
+fn push_source_task_scope<K: Copy>(
+    index: &mut SemanticScopeIndex,
+    owner_idx: usize,
+    open_scopes: &mut Vec<OpenLineScope<K>>,
+    line_no: u32,
+    indent: usize,
+    name: &str,
+    kind: K,
+) {
+    index.scopes[owner_idx]
+        .scope
+        .functions
+        .insert(name.to_owned());
+    let idx = push_source_callable_scope(index, Some(owner_idx), line_no, true, name, Vec::new());
+    open_scopes.push(OpenLineScope { idx, indent, kind });
 }
 
 fn trim_section_stack<S: Copy + SectionOwner>(
@@ -703,6 +790,7 @@ fn detect_source_proc_section_header(trimmed: &str) -> Option<SourceProcSectionK
         ("buffers", SourceProcSectionKind::Buffers),
         ("init", SourceProcSectionKind::Init),
         ("events", SourceProcSectionKind::Events),
+        ("tasks", SourceProcSectionKind::Tasks),
         ("block", SourceProcSectionKind::Block),
         ("sample", SourceProcSectionKind::Sample),
         ("graph", SourceProcSectionKind::Graph),
@@ -718,6 +806,7 @@ fn detect_source_top_level_section_header(trimmed: &str) -> Option<SourceTopLeve
         ("buffers", SourceTopLevelSectionKind::Buffers),
         ("init", SourceTopLevelSectionKind::Init),
         ("events", SourceTopLevelSectionKind::Events),
+        ("tasks", SourceTopLevelSectionKind::Tasks),
         ("block", SourceTopLevelSectionKind::Block),
         ("sample", SourceTopLevelSectionKind::Sample),
         ("graph", SourceTopLevelSectionKind::Graph),
@@ -776,6 +865,24 @@ fn parse_event_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
     Some((name, extract_param_names_from_parens(&trimmed[paren..])))
 }
 
+fn parse_task_header(trimmed: &str) -> Option<&str> {
+    parse_grouped_task_header(trimmed.strip_prefix("task ")?.trim_start())
+}
+
+fn parse_grouped_task_header(trimmed: &str) -> Option<&str> {
+    let paren = trimmed.find('(')?;
+    let name = trimmed[..paren].trim();
+    let after_open = &trimmed[paren + 1..];
+    if name.is_empty()
+        || !is_ident_start(name.as_bytes()[0])
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        || !after_open.trim_start().starts_with(')')
+    {
+        return None;
+    }
+    Some(name)
+}
+
 fn extract_param_names_from_parens(text: &str) -> Vec<String> {
     let inner = if let Some(open) = text.find('(') {
         if let Some(close) = text[open..].find(')') {
@@ -794,6 +901,7 @@ fn extract_param_names_from_parens(text: &str) -> Vec<String> {
 }
 
 fn source_assignment_target_name(trimmed: &str) -> Option<&str> {
+    let trimmed = trimmed.strip_prefix("pin ").unwrap_or(trimmed);
     let name = extract_leading_ident(trimmed)?;
     let rest = trimmed[name.len()..].trim_start();
     if (rest.starts_with(':') && !rest.starts_with("::"))
@@ -805,20 +913,20 @@ fn source_assignment_target_name(trimmed: &str) -> Option<&str> {
     }
 }
 
-fn extract_param_decl_name(trimmed: &str, allow_pin: bool) -> Option<&str> {
+fn extract_param_decl_name(trimmed: &str, allow_private: bool) -> Option<&str> {
     let name = extract_leading_ident(trimmed)?;
-    if name != "pin" {
+    if name != "private" {
         return Some(name);
     }
-    if !allow_pin {
+    if !allow_private {
         return None;
     }
     let rest = trimmed[name.len()..].trim_start();
-    let pinned_name = extract_leading_ident(rest)?;
-    if is_reserved_identifier(pinned_name) {
+    let private_name = extract_leading_ident(rest)?;
+    if is_reserved_identifier(private_name) {
         None
     } else {
-        Some(pinned_name)
+        Some(private_name)
     }
 }
 

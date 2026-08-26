@@ -166,7 +166,12 @@ pub(crate) fn merge_branch_scope_flow_state(
     }
 
     for name in common_branch_bindings {
-        if base_known_scalars.contains(&name) {
+        // Bindings that were already visible before the branch keep their
+        // established type. In particular, state tuples are seeded in
+        // `tuple_vars` without local element aliases, so trying to join them
+        // as branch-created tuple locals would spuriously report unresolved
+        // element types.
+        if base_known_scalars.contains(&name) || tuple_vars.contains_key(&name) {
             continue;
         }
         let then_kind = tracked_branch_binding_kind(&then_state, &name);
@@ -879,6 +884,29 @@ pub(crate) fn analyze_proc_event_arg_expr(
     env: StmtExprAnalysisEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if let Expr::Index { base, index, .. } = expr {
+        if env.expr_env.proc_array_roots.contains_key(base) {
+            validate_expr(index, env.expr_env, errors);
+            let index_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                index,
+                env.expr_env.state_scalars,
+                env.expr_env.declared_symbols,
+                Some(env.expr_env.param_structs),
+                env.expr_env.local_aliases,
+                env.local_array_aliases,
+                env.expr_env.locals,
+                env.expr_env.input_names,
+                env.expr_env.output_names,
+                env.expr_env.param_names,
+                env.expr_env.struct_instances,
+                env.expr_env.struct_defs,
+                env.expr_env.proc_array_roots,
+                errors,
+            );
+            require_expr_numeric_type(index, index_ty, "processor array index", errors);
+            return;
+        }
+    }
     if is_data_like_value_expr(expr, env) {
         validate_data_like_value_expr(expr, env, errors);
         return;

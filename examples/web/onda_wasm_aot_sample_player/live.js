@@ -1,5 +1,5 @@
 import { loadProcessorArtifactFiles } from "./artifact.js";
-import { createOndaAudioProcessor } from "./onda-webaudio.js";
+import { createOndaAudioProcessorInitialized } from "./onda-webaudio.js";
 
 const audioButton = document.querySelector("[data-audio]");
 const playButton = document.querySelector("[data-play]");
@@ -66,7 +66,7 @@ async function startAudio() {
   context = new AudioContext({ sampleRate: artifact.metadata.compile.sample_rate });
   try {
     const clip = await decodeClip(context);
-    processor = await createOndaAudioProcessor(context, artifact, {
+    processor = await createOndaAudioProcessorInitialized(context, artifact, {
       workletUrl: "./onda-wasm-processor.js",
       params: { speed: Number(speedInput.value) },
       buffers: { clip },

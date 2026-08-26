@@ -23,7 +23,7 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 test("validates the descriptor fixture shared with the Rust schema", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v4.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v6.json", import.meta.url),
     "utf8",
   ));
   assert.equal(
@@ -344,7 +344,7 @@ test("rejects i64 control domains that are not exact through host numbers", () =
 
 test("validates parameter-control semantics before accepting a descriptor", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v4.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v6.json", import.meta.url),
     "utf8",
   ));
 
@@ -473,7 +473,7 @@ test("rejects runtime semantics not implemented by the current processor ABI", (
 
 test("rejects metadata layouts outside or overlapping their runtime regions", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v4.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v6.json", import.meta.url),
     "utf8",
   ));
 
@@ -531,10 +531,10 @@ const wasm = new Uint8Array([
   3, 3, 2, 0, 0,
   5, 3, 1, 0, 1,
   6, 7, 1, 127, 0, 65, 128, 8, 11,
-  7, 51, 4,
+  7, 61, 4,
   6, 109, 101, 109, 111, 114, 121, 2, 0,
   11, 95, 95, 104, 101, 97, 112, 95, 98, 97, 115, 101, 3, 0,
-  9, 111, 110, 100, 97, 95, 105, 110, 105, 116, 0, 0,
+  19, 111, 110, 100, 97, 95, 112, 114, 111, 99, 101, 115, 115, 111, 114, 95, 105, 110, 105, 116, 0, 0,
   12, 111, 110, 100, 97, 95, 112, 114, 111, 99, 101, 115, 115, 0, 1,
   10, 7, 2, 2, 0, 11, 2, 0, 11,
 ]);
@@ -577,12 +577,12 @@ function metadata() {
     exports: {
       memory: "memory",
       heap_base: "__heap_base",
-      init: "onda_init",
+      init: "onda_processor_init",
       process: "onda_process",
       events: [],
     },
     integration: {
-      required_symbols: ["memory", "__heap_base", "onda_init", "onda_process"],
+      required_symbols: ["memory", "__heap_base", "onda_processor_init", "onda_process"],
       one_processor_per_artifact: true,
       profile: {
         kind: "core_webassembly_module",

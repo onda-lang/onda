@@ -51,7 +51,6 @@ impl<'a> FunctionLowerer<'a> {
             bindings: HashMap::new(),
             nested_proc_aliases: HashMap::new(),
             event_slice_parameters: Vec::new(),
-            prezeroed_init_state_dirty: None,
         }
     }
 
@@ -92,10 +91,9 @@ impl<'a> FunctionLowerer<'a> {
         lowerer
     }
 
-    pub(super) fn with_prezeroed_init_state(mut self) -> Self {
+    pub(super) fn bind_init_all(&mut self, name: &str) {
         debug_assert!(self.runtime_globals.is_some());
-        self.prezeroed_init_state_dirty = Some(Vec::new());
-        self
+        self.bindings.insert(name.to_owned(), Binding::InitAll);
     }
 
     pub(super) fn bind_event_params(&mut self, event: &TypedEvent) -> Result<(), MirLoweringError> {
@@ -1130,7 +1128,9 @@ impl<'a> FunctionLowerer<'a> {
         Ok(onda_mir::Function {
             name: self.emitted_name,
             kind: onda_mir::FunctionKind::User,
-            attributes: if self.runtime_globals.is_some() {
+            attributes: if self.function.runtime_context {
+                compiler_shared_function_attributes()
+            } else if self.runtime_globals.is_some() {
                 compiler_generated_function_attributes()
             } else {
                 source_function_attributes(&self.function.name)

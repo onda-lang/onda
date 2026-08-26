@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::*;
-use onda_frontend::EventParamDecl;
+use onda_frontend::{EventParamDecl, LogicalOp};
 
 mod generated_blocks;
 mod generic_proc_rewrite;
@@ -12,6 +12,9 @@ mod nested_proc_lowering;
 mod proc_local_defs;
 mod shape_helpers;
 use generated_blocks::*;
+pub(crate) use generated_blocks::{
+    guard_pinned_initializers, is_pinned_initializer_marker, mark_pinned_initializers,
+};
 pub(crate) use generic_proc_rewrite::validate_generic_proc_template_forwarded_type_args;
 use generic_proc_rewrite::*;
 use global_proc_rewrite::*;
@@ -22,9 +25,15 @@ use proc_local_defs::*;
 use shape_helpers::*;
 
 const BUILTIN_PROC_INIT_EVENT_NAME: &str = "init";
+const INIT_ALL_PARAM_NAME: &str = "all";
+pub(crate) const TOP_LEVEL_INIT_ALL_NAME: &str = "__onda_init_all";
 
 fn is_builtin_proc_init_event_name(name: &str) -> bool {
     name == BUILTIN_PROC_INIT_EVENT_NAME
+}
+
+fn proc_needs_block_hooks(api: &ProcApi) -> bool {
+    api.has_block && api.outputs.timing == OutputTiming::Sample
 }
 
 pub(crate) fn proc_local_bind_hidden_def_name(owner_proc: &str, local_name: &str) -> String {
@@ -57,6 +66,18 @@ fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagn
                     proc.name, BUILTIN_PROC_INIT_EVENT_NAME
                 ),
             );
+        }
+        for param in &proc.params {
+            if param.name == INIT_ALL_PARAM_NAME {
+                push_semantic(
+                    DiagCtx::new(param.loc),
+                    errors,
+                    format!(
+                        "processor '{}' parameter name '{}' is reserved for the builtin initializer event",
+                        proc.name, INIT_ALL_PARAM_NAME
+                    ),
+                );
+            }
         }
         proc.events
             .retain(|event| !is_builtin_proc_init_event_name(&event.name));
@@ -267,12 +288,58 @@ pub(crate) struct TopLevelProcRewriteMeta {
 
 pub(crate) struct ProcessorDesugarResult {
     pub(crate) program: Program,
+    pub(crate) runtime_def_names: HashSet<String>,
     pub(crate) def_sample_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub(crate) proc_instance_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_api: HashMap<String, ProcApi>,
     pub(crate) lowering_shapes: HashMap<String, ProcLoweringShape>,
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
+    pub(crate) pinned_proc_fields: HashMap<String, HashSet<String>>,
+    pub(crate) compiler_owned_proc_fields: HashMap<String, HashSet<String>>,
+}
+
+fn collect_flattened_proc_field_metadata(
+    proc_name: &str,
+    prefix: &str,
+    proc_defs: &HashMap<String, ProcessorDef>,
+    shapes: &HashMap<String, ProcLoweringShape>,
+    visiting: &mut HashSet<String>,
+    pinned_fields: &mut HashSet<String>,
+    compiler_owned_fields: &mut HashSet<String>,
+) {
+    if !visiting.insert(proc_name.to_owned()) {
+        return;
+    }
+    if let Some(proc) = proc_defs.get(proc_name) {
+        pinned_fields.extend(
+            proc.init
+                .pinned_roots
+                .iter()
+                .map(|root| format!("{prefix}{root}")),
+        );
+    }
+    if let Some(shape) = shapes.get(proc_name) {
+        compiler_owned_fields.extend(
+            shape
+                .fields
+                .iter()
+                .filter(|field| crate::internal_names::is_reserved_internal_identifier(&field.name))
+                .map(|field| format!("{prefix}{}", field.name)),
+        );
+        for (field, nested) in &shape.state.nested_procs {
+            collect_flattened_proc_field_metadata(
+                &nested.proc_name,
+                &format!("{prefix}{field}__"),
+                proc_defs,
+                shapes,
+                visiting,
+                pinned_fields,
+                compiler_owned_fields,
+            );
+        }
+    }
+    visiting.remove(proc_name);
 }
 
 const ALLOWED_SAMPLE_OVERSAMPLE_FACTORS: &[i64] = &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
@@ -516,7 +583,7 @@ pub(crate) fn coerce_typed_events(
 }
 
 fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec {
-    let params =
+    let mut params =
         param_specs
             .iter()
             .map(|param| {
@@ -553,7 +620,18 @@ fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec 
                     }
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+    params.push(ProcEventParamSpec {
+        name: INIT_ALL_PARAM_NAME.to_owned(),
+        slots: vec![ProcEventParamSlotSpec {
+            name: INIT_ALL_PARAM_NAME.to_owned(),
+            ty: PrimitiveType::Bool,
+        }],
+        ty: ProcEventParamTypeSpec::Scalar {
+            ty: PrimitiveType::Bool,
+        },
+        default: Some(Expr::bool(false)),
+    });
     ProcEventSpec { params }
 }
 
@@ -868,6 +946,13 @@ fn build_proc_lowering_env(
             callable_symbols_for_method_sugar.insert(format!("{struct_name}.{}", method.name));
         }
     }
+    for proc in &mut proc_defs {
+        desugar_processor_instance_method_calls(
+            proc,
+            &typed_struct_defs,
+            &callable_symbols_for_method_sugar,
+        );
+    }
     for (struct_name, struct_def) in &struct_defs_by_name {
         for method in &struct_def.methods {
             let mut desugared_method_body = method.body.clone();
@@ -931,13 +1016,6 @@ fn build_proc_lowering_env(
         &crate::def_semantics::CallTypeEnv::default(),
         &HashMap::new(),
     );
-    for proc in &mut proc_defs {
-        desugar_processor_instance_method_calls(
-            proc,
-            &typed_struct_defs,
-            &callable_symbols_for_method_sugar,
-        );
-    }
     for proc in &mut proc_defs {
         let sample_inferred = infer_numbered_io_from_sample(&proc.sample);
         let mut owner_inferred = IoInference::default();
@@ -1227,6 +1305,15 @@ pub(crate) fn desugar_processors(
     rewrite_and_materialize_generic_processors(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
+    let runtime_def_names =
+        crate::task_lowering::lower_tasks(&mut program, options, const_arrays, errors);
+    if let Some(Block::Init(init)) = program
+        .blocks
+        .iter_mut()
+        .find(|block| block.kind() == BlockKind::Init)
+    {
+        init.body = mark_pinned_initializers(init);
+    }
 
     // Rewrite proc-local defs into hidden ordinary def calls before proc lowering.
     for block in &mut program.blocks {
@@ -1245,12 +1332,15 @@ pub(crate) fn desugar_processors(
     else {
         return ProcessorDesugarResult {
             program,
+            runtime_def_names,
             def_sample_oversample_factors: HashMap::new(),
             proc_step_oversample_meta: HashMap::new(),
             proc_instance_oversample_factors: HashMap::new(),
             proc_api: HashMap::new(),
             lowering_shapes: HashMap::new(),
             top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
+            pinned_proc_fields: HashMap::new(),
+            compiler_owned_proc_fields: HashMap::new(),
         };
     };
     let existing_struct_names = program
@@ -1270,7 +1360,7 @@ pub(crate) fn desugar_processors(
 
     let (
         generated_structs,
-        generated_defs,
+        mut generated_defs,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
     ) = generate_lowered_proc_blocks(
@@ -1281,6 +1371,7 @@ pub(crate) fn desugar_processors(
         &proc_api,
         errors,
     );
+    crate::task_lowering::materialize_task_abort_returns(&mut generated_defs);
     program.blocks.retain(|b| !matches!(b, Block::Proc(_)));
     program
         .blocks
@@ -1290,6 +1381,7 @@ pub(crate) fn desugar_processors(
 
     let top_level_proc_rewrite = rewrite_top_level_proc_calls(
         &mut program,
+        &runtime_def_names,
         options,
         &proc_defs_by_name,
         &lowering_shapes,
@@ -1299,14 +1391,34 @@ pub(crate) fn desugar_processors(
     let proc_instance_oversample_factors = top_level_proc_rewrite
         .global_proc_instance_oversample_factors
         .clone();
+    let mut pinned_proc_fields = HashMap::new();
+    let mut compiler_owned_proc_fields = HashMap::new();
+    for proc_name in &proc_order {
+        let mut pinned_fields = HashSet::new();
+        let mut compiler_owned_fields = HashSet::new();
+        collect_flattened_proc_field_metadata(
+            proc_name,
+            "",
+            &proc_defs_by_name,
+            &lowering_shapes,
+            &mut HashSet::new(),
+            &mut pinned_fields,
+            &mut compiler_owned_fields,
+        );
+        pinned_proc_fields.insert(proc_name.clone(), pinned_fields);
+        compiler_owned_proc_fields.insert(proc_name.clone(), compiler_owned_fields);
+    }
     ProcessorDesugarResult {
         program,
+        runtime_def_names,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
         proc_instance_oversample_factors,
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
+        pinned_proc_fields,
+        compiler_owned_proc_fields,
     }
 }
 
@@ -1666,7 +1778,7 @@ sample:
             })
             .expect("expected generated builtin init event def");
 
-        assert_eq!(init_def.params.len(), 3);
+        assert_eq!(init_def.params.len(), 4);
         assert!(matches!(
             init_def.params[1].ty,
             Some(FnParamType::Primitive(PrimitiveType::I32))
@@ -1678,6 +1790,15 @@ sample:
                 generic_name: None,
                 size,
             }) if matches!(size, Expr::Int { value: 2, .. })
+        ));
+        assert_eq!(init_def.params[3].name, INIT_ALL_PARAM_NAME);
+        assert!(matches!(
+            init_def.params[3].ty,
+            Some(FnParamType::Primitive(PrimitiveType::Bool))
+        ));
+        assert!(matches!(
+            init_def.params[3].default,
+            Some(Expr::Bool { value: false, .. })
         ));
         assert!(init_def.body.iter().any(|stmt| matches!(
             stmt,
@@ -1712,7 +1833,7 @@ sample:
             Stmt::Expr {
                 expr: Expr::UserCall { name, args, .. },
                 ..
-            } if name == "Voice.__onda_proc_init" && args.len() == 1
+            } if name == "Voice.__onda_proc_init" && args.len() == 2
         )));
     }
 
@@ -1863,6 +1984,29 @@ sample:
                 .message
                 .contains("event name 'init' is reserved for the builtin initializer event")),
             "expected builtin init reservation diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_reserves_all_for_builtin_proc_init() {
+        let src = r#"
+proc Voice:
+  params:
+    all = false
+  sample:
+    out1 = 0.0
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("the builtin all option must be reserved");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("parameter name 'all' is reserved for the builtin initializer event")),
+            "expected builtin all reservation diagnostic, got {errors:?}"
         );
     }
 

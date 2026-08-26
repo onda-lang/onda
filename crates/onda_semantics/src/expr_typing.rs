@@ -339,7 +339,12 @@ fn infer_scalar_expr_type_with_proc_arrays(
             }
             let lexical_root = name.split('.').next().unwrap_or(name);
             if locals.contains(lexical_root) {
-                return (name == lexical_root).then_some(PrimitiveType::I32);
+                return (name == lexical_root).then(|| {
+                    local_aliases
+                        .get(name)
+                        .copied()
+                        .unwrap_or(PrimitiveType::I32)
+                });
             }
             if let Some((base, field)) = split_field_path(name, errors) {
                 let flat = format!("{base}.{field}");
@@ -637,6 +642,15 @@ fn infer_scalar_expr_type_with_proc_arrays(
             }
             if let Some(ty) = declared_symbol_scalar_type(declared_symbols, name) {
                 return Some(ty);
+            }
+            if let Some((receiver, method)) = name.rsplit_once('.') {
+                if let Some(struct_name) = struct_instances.get(receiver) {
+                    let resolved_name = format!("{struct_name}.{method}");
+                    if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &resolved_name)
+                    {
+                        return Some(ty);
+                    }
+                }
             }
             if let Some(base) = parse_array_len_instance_base(name) {
                 if is_data_receiver_symbol_for_builtin(

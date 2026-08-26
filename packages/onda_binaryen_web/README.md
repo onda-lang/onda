@@ -30,7 +30,7 @@ such a boundary would need to reproduce every invariant enforced by `onda_mir`. 
 a JSON string, a MessagePack `ArrayBuffer`/typed-array view, or a decoded object. JSON remains useful
 for inspection; the browser compiler and test corpus use MessagePack as the production transport.
 
-The generated module exports `memory`, `__heap_base`, `onda_init(params_ptr, state_ptr)`, the
+The generated module exports `memory`, `__heap_base`, `onda_processor_init(params_ptr, state_ptr, all)`, the
 11-argument processor `onda_process`, and one `onda_event_N` function per declared event. Each
 function returns zero on success or a positive generated execution-failure code. These are
 the complete wasm32-module profile of the generic
@@ -78,6 +78,8 @@ continuous.
 Emitted metadata distinguishes physical Wasm state storage from the packed persistent snapshot:
 `runtime.state_size_bytes` sizes linear-memory state, while `runtime.snapshot_size_bytes` and
 `metadata.states` describe the deterministic scratch-free snapshot layout shared with native MIR.
+Snapshot entries carry an `authored` flag so compiler-owned task frames remain serializable without
+being presented as user-authored state reflection.
 
 Core WebAssembly has no scalar fused multiply-add or transcendental instructions. The backend
 therefore links only the required closure from an embedded, pure-Wasm math kernel into each DSP

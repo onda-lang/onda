@@ -1,6 +1,6 @@
 {
   "name": "@onda-lang/binaryen-web",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "type": "module",
   "description": "Binaryen backend for versioned Onda MIR in browsers and Node.js",
   "license": "MIT",
@@ -44,7 +44,7 @@
     "verify-mir": "node ./scripts/verify-mir.mjs"
   },
   "dependencies": {
-    "@onda-lang/processor-abi": "0.7.5",
+    "@onda-lang/processor-abi": "0.7.6",
     "binaryen": "130.0.0"
   },
   "publishConfig": {

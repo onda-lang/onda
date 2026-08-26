@@ -36,6 +36,15 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       param_control: null,
     }),
     scalarParam({
+      name: "live_input",
+      type_repr: "bool",
+      scalar: "bool",
+      default_reprs: ["false"],
+      range_min_repr: null,
+      range_max_repr: null,
+      param_control: null,
+    }),
+    scalarParam({
       name: "partials",
       type_repr: "f32[2]",
       array_len: 2,
@@ -73,6 +82,21 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       stepCount: null,
       scalar: true,
       value: true,
+    },
+    {
+      index: 2,
+      name: "live_input",
+      type: "bool",
+      default: false,
+      rangeMin: null,
+      rangeMax: null,
+      scale: null,
+      curve: null,
+      unit: null,
+      step: null,
+      stepCount: null,
+      scalar: true,
+      value: false,
     },
   ]);
 });
@@ -342,7 +366,10 @@ test("allows browser playback while buffers are unbound", async () => {
     await host.handleMessage({ type: "start" });
     assert.equal(starts, 2);
 
-    host.state.params = [{ name: "gain", default: 1, value: 0.5 }];
+    host.state.params = [
+      { name: "gain", type: "f32", default: 1, value: 0.5 },
+      { name: "live_input", type: "bool", default: false, value: true },
+    ];
     host.state.events = [{
       name: "note",
       args: [{ name: "velocity", default: 1, value: 0.25 }],
@@ -350,10 +377,12 @@ test("allows browser playback while buffers are unbound", async () => {
     await host.handleMessage({ type: "resetParams" });
     assert.equal(paramResets, 1);
     assert.equal(host.state.params[0].value, 1);
+    assert.equal(host.state.params[1].value, false);
     assert.equal(host.state.events[0].args[0].value, 0.25);
 
     await host.handleMessage({ type: "resetEventArguments" });
     assert.equal(host.state.params[0].value, 1);
+    assert.equal(host.state.params[1].value, false);
     assert.equal(host.state.events[0].args[0].value, 1);
     host.dispose();
   } finally {

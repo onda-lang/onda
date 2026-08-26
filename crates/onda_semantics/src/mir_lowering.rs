@@ -37,7 +37,7 @@ use crate::{
     effective_untyped_assignment_type, eval_const_expr_i64_exact, intrinsic_result_type,
     merge_inferred_return_types, merge_numeric_types, parse_array_len_instance_base,
     parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base, resolve_call_args_at,
-    AggregateLayoutTable, AggregatePathComponent, AnalysisOptions, IndexAccess,
+    zero_expr, AggregateLayoutTable, AggregatePathComponent, AnalysisOptions, IndexAccess,
     ProcSincStageStateFields, ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView,
     ReturnType, TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent,
     TypedEventParamDefault, TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction,
@@ -114,9 +114,18 @@ impl std::error::Error for MirLoweringError {}
 ///
 /// The operation is transactional: on error, types, immutable constant data,
 /// source files, and functions in `mir` are left unchanged.
+#[cfg(test)]
 fn lower_scalar_user_functions_to_mir(
     program: &TypedProgram,
     mir: &mut onda_mir::Program,
+) -> Result<Vec<FunctionId>, Vec<MirLoweringError>> {
+    lower_user_functions_to_mir(program, mir, None)
+}
+
+fn lower_user_functions_to_mir(
+    program: &TypedProgram,
+    mir: &mut onda_mir::Program,
+    runtime_globals: Option<&RuntimeGlobals>,
 ) -> Result<Vec<FunctionId>, Vec<MirLoweringError>> {
     let function_base = mir.functions.len();
     let mut function_indices = HashMap::<String, usize>::new();
@@ -285,24 +294,50 @@ fn lower_scalar_user_functions_to_mir(
         } else {
             function.name.clone()
         };
-        let lowerer = FunctionLowerer::new(
-            function,
-            &program.defs,
-            &function_ids,
-            &function_indices,
-            &program.def_sample_oversample_factors,
-            &program.proc_instance_oversample_factors,
-            program.proc_step_oversample_meta.get(&function.name),
-            &structs,
-            &program.aggregate_layouts,
-            &program.nested_proc_arrays,
-            &const_arrays,
-            mir.config,
-            context.config(),
-            emitted_name,
-            &mut types,
-            &mut source_files,
-        );
+        let lowerer = if function.runtime_context {
+            let globals = runtime_globals.ok_or_else(|| {
+                vec![MirLoweringError::new(
+                    format!(
+                        "runtime-context function '{}' requires the program runtime interface",
+                        function.name
+                    ),
+                    function_location(function),
+                )]
+            })?;
+            FunctionLowerer::new_runtime(
+                function,
+                &program.defs,
+                &function_ids,
+                &function_indices,
+                &program.def_sample_oversample_factors,
+                &program.proc_instance_oversample_factors,
+                mir.config,
+                context.config(),
+                emitted_name,
+                globals,
+                &mut types,
+                &mut source_files,
+            )
+        } else {
+            FunctionLowerer::new(
+                function,
+                &program.defs,
+                &function_ids,
+                &function_indices,
+                &program.def_sample_oversample_factors,
+                &program.proc_instance_oversample_factors,
+                program.proc_step_oversample_meta.get(&function.name),
+                &structs,
+                &program.aggregate_layouts,
+                &program.nested_proc_arrays,
+                &const_arrays,
+                mir.config,
+                context.config(),
+                emitted_name,
+                &mut types,
+                &mut source_files,
+            )
+        };
         match lowerer.lower() {
             Ok(lowered) => functions.push(lowered),
             Err(error) => return Err(vec![error]),
@@ -333,9 +368,12 @@ pub fn lower_program_to_optimized_mir(
     program: &TypedProgram,
 ) -> Result<onda_mir::OptimizedProgram, Vec<MirLoweringError>> {
     let raw = lower_program_to_raw_mir(program)?;
-    // SAFETY: MIR lowering owns the proof for every unchecked access it emits.
-    // Array extents come from semantic types, process frames are validator-
-    // tracked, and slice/buffer loops establish their bounds before emission.
+    // SAFETY: MIR lowering owns the proof for every unchecked access and
+    // storage invariant it emits. Array extents come from semantic types,
+    // process frames are validator-tracked, and slice/buffer loops establish
+    // their bounds before emission. Pinned roots are introduced only by
+    // declarations whose generated init_all branch overwrites the complete
+    // flattened slot before the init entry can return successfully.
     let validated = unsafe { onda_mir::validate_owned_with_producer_proofs(raw) }
         .map_err(mir_validation_errors)?;
     let (optimized, _) = onda_mir::optimize(validated).map_err(mir_validation_errors)?;
@@ -376,11 +414,11 @@ fn lower_program_to_raw_mir(
     populate_runtime_interface_views(program, &mut globals)?;
     populate_constant_data(program, &mut mir, &mut globals)?;
 
-    lower_scalar_user_functions_to_mir(program, &mut mir)?;
+    lower_user_functions_to_mir(program, &mut mir, Some(&globals))?;
     let (function_indices, function_ids) = runtime_function_ids(program, config, 2);
 
     let init_function = synthetic_runtime_function("onda_init", program.init.clone());
-    let mut init = FunctionLowerer::new_runtime(
+    let mut init_lowerer = FunctionLowerer::new_runtime(
         &init_function,
         &program.defs,
         &function_ids,
@@ -393,10 +431,9 @@ fn lower_program_to_raw_mir(
         &globals,
         &mut mir.types,
         &mut mir.source_files,
-    )
-    .with_prezeroed_init_state()
-    .lower()
-    .map_err(|error| vec![error])?;
+    );
+    init_lowerer.bind_init_all(crate::processor_lowering::TOP_LEVEL_INIT_ALL_NAME);
+    let mut init = init_lowerer.lower().map_err(|error| vec![error])?;
     init.kind = onda_mir::FunctionKind::Init;
 
     let process_function = synthetic_runtime_function("onda_process", Vec::new());
@@ -1041,6 +1078,8 @@ fn populate_interface(
                 name: name.clone(),
                 ty: type_id,
                 persistence: onda_mir::StatePersistence::ControlMirror,
+                authored: true,
+                pinned: false,
                 integer_range: None,
             });
             mir.interface.control_outputs.push(onda_mir::ControlOutput {
@@ -1070,6 +1109,8 @@ fn populate_interface(
             name: name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::ControlMirror,
+            authored: true,
+            pinned: false,
             integer_range: None,
         });
         mir.interface.control_outputs.push(onda_mir::ControlOutput {
@@ -1551,10 +1592,17 @@ fn populate_state(
         }
         let id = onda_mir::StateId::new(mir.state.len() as u32);
         let type_id = intern_scalar_type(&mut mir.types, ty);
+        let persistence = if program.compiler_scratch_state_roots.contains(name) {
+            onda_mir::StatePersistence::InstanceScratch
+        } else {
+            onda_mir::StatePersistence::Snapshot
+        };
         mir.state.push(onda_mir::StateSlot {
             name: name.clone(),
             ty: type_id,
-            persistence: onda_mir::StatePersistence::Snapshot,
+            persistence,
+            authored: !program.compiler_owned_state_roots.contains(name),
+            pinned: program.pinned_state_roots.contains(name),
             integer_range: state_integer_ranges.get(name.as_str()).copied(),
         });
         if let Some(range) = mir.state[id.index()].integer_range {
@@ -1614,7 +1662,9 @@ fn populate_state(
         }
         let id = onda_mir::StateId::new(mir.state.len() as u32);
         let type_id = intern_array_type(&mut mir.types, array.elem_ty, len);
-        let persistence = if all_internal_active_names.contains(&array.name) {
+        let persistence = if all_internal_active_names.contains(&array.name)
+            || program.compiler_scratch_state_roots.contains(&array.name)
+        {
             onda_mir::StatePersistence::InstanceScratch
         } else {
             onda_mir::StatePersistence::Snapshot
@@ -1623,6 +1673,8 @@ fn populate_state(
             name: array.name.clone(),
             ty: type_id,
             persistence,
+            authored: !program.compiler_owned_state_roots.contains(&array.name),
+            pinned: program.pinned_state_roots.contains(&array.name),
             integer_range: None,
         });
         globals
@@ -1651,6 +1703,8 @@ fn populate_state(
             name: active_name.clone(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::InstanceScratch,
+            authored: false,
+            pinned: false,
             integer_range: None,
         });
         globals
@@ -1747,6 +1801,8 @@ fn append_mir_sinc_stages(
                     ),
                     ty: intern_scalar_type(&mut mir.types, ty),
                     persistence: onda_mir::StatePersistence::Snapshot,
+                    authored: false,
+                    pinned: false,
                     integer_range: None,
                 });
                 id
@@ -1929,6 +1985,7 @@ fn runtime_function_ids(
 fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
     TypedFunction {
         name: name.to_owned(),
+        runtime_context: false,
         method_of: None,
         type_params: Vec::new(),
         params: Vec::new(),
@@ -1960,6 +2017,13 @@ fn compiler_generated_function_attributes() -> FunctionAttributes {
     FunctionAttributes {
         origin: FunctionOrigin::CompilerGenerated,
         inline: InlineHint::Always,
+    }
+}
+
+fn compiler_shared_function_attributes() -> FunctionAttributes {
+    FunctionAttributes {
+        origin: FunctionOrigin::CompilerGenerated,
+        inline: InlineHint::Never,
     }
 }
 
@@ -2595,6 +2659,7 @@ enum StructArrayLength {
 
 #[derive(Debug, Clone)]
 enum Binding {
+    InitAll,
     ReferenceParameter(ParameterId, PrimitiveType),
     EventParameter(onda_mir::EventParamId, PrimitiveType),
     EventArrayParameter(onda_mir::EventParamId, PrimitiveType, u32),
@@ -2667,18 +2732,6 @@ enum ContinueMode {
     },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct PrezeroedStateRegion {
-    state: onda_mir::StateId,
-    path: Vec<PrezeroedStateProjection>,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum PrezeroedStateProjection {
-    Field(u32),
-    Index(u32),
-}
-
 struct FunctionLowerer<'a> {
     function: &'a TypedFunction,
     functions: &'a [TypedFunction],
@@ -2710,11 +2763,6 @@ struct FunctionLowerer<'a> {
     bindings: HashMap<String, Binding>,
     nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
     event_slice_parameters: Vec<(String, onda_mir::EventParamId, PrimitiveType)>,
-    /// Exact state regions that are no longer known to contain their
-    /// backend-provided all-bits-zero init image. `Some(empty)` is the
-    /// straight-line prefix of the init entry; `None` disables the proof
-    /// outside init or after an alias/control-flow barrier.
-    prezeroed_init_state_dirty: Option<Vec<PrezeroedStateRegion>>,
 }
 
 fn function_location(function: &TypedFunction) -> SourceLoc {
@@ -3186,79 +3234,7 @@ fn zero_value(ty: PrimitiveType) -> Value {
     })
 }
 
-fn prezeroed_state_region(place: &Place) -> Option<(PrezeroedStateRegion, bool)> {
-    let PlaceBase::State(state) = place.base else {
-        return None;
-    };
-    let mut path = Vec::with_capacity(place.projections.len());
-    for projection in &place.projections {
-        match projection {
-            Projection::Field(field) => {
-                path.push(PrezeroedStateProjection::Field(field.raw()));
-            }
-            Projection::Index { index, .. } => {
-                let Value::Constant(ScalarValue::I32(index)) = index else {
-                    return Some((
-                        PrezeroedStateRegion {
-                            state,
-                            path: Vec::new(),
-                        },
-                        false,
-                    ));
-                };
-                let Ok(index) = u32::try_from(*index) else {
-                    return Some((
-                        PrezeroedStateRegion {
-                            state,
-                            path: Vec::new(),
-                        },
-                        false,
-                    ));
-                };
-                path.push(PrezeroedStateProjection::Index(index));
-            }
-        }
-    }
-    Some((PrezeroedStateRegion { state, path }, true))
-}
-
-fn prezeroed_state_path_is_prefix(
-    prefix: &[PrezeroedStateProjection],
-    path: &[PrezeroedStateProjection],
-) -> bool {
-    prefix.len() <= path.len() && prefix.iter().zip(path).all(|(lhs, rhs)| lhs == rhs)
-}
-
-fn prezeroed_state_regions_overlap(lhs: &PrezeroedStateRegion, rhs: &PrezeroedStateRegion) -> bool {
-    lhs.state == rhs.state
-        && (prezeroed_state_path_is_prefix(&lhs.path, &rhs.path)
-            || prezeroed_state_path_is_prefix(&rhs.path, &lhs.path))
-}
-
-fn mark_prezeroed_state_dirty(dirty: &mut Vec<PrezeroedStateRegion>, region: PrezeroedStateRegion) {
-    if dirty.iter().any(|existing| {
-        existing.state == region.state
-            && prezeroed_state_path_is_prefix(&existing.path, &region.path)
-    }) {
-        return;
-    }
-    dirty.retain(|existing| {
-        existing.state != region.state
-            || !prezeroed_state_path_is_prefix(&region.path, &existing.path)
-    });
-    dirty.push(region);
-}
-
-fn clear_prezeroed_state_region(
-    dirty: &mut Vec<PrezeroedStateRegion>,
-    region: &PrezeroedStateRegion,
-) {
-    dirty.retain(|existing| {
-        existing.state != region.state
-            || !prezeroed_state_path_is_prefix(&region.path, &existing.path)
-    });
-}
-
+#[cfg(test)]
 fn scalar_value_is_all_bits_zero(value: Value) -> bool {
     match value {
         Value::Constant(ScalarValue::F32(value)) => value.to_bits() == 0,
@@ -3376,14 +3352,6 @@ fn zero_scalar(ty: PrimitiveType) -> ScalarValue {
         PrimitiveType::I32 => ScalarValue::I32(0),
         PrimitiveType::I64 => ScalarValue::I64(0),
         PrimitiveType::Bool => ScalarValue::Bool(false),
-    }
-}
-
-fn zero_expr(ty: PrimitiveType) -> Expr {
-    match ty {
-        PrimitiveType::Bool => Expr::bool(false),
-        PrimitiveType::I32 | PrimitiveType::I64 => Expr::int(0),
-        PrimitiveType::F32 | PrimitiveType::F64 => Expr::number(0.0),
     }
 }
 

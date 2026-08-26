@@ -820,6 +820,42 @@ pub(crate) fn rewrite_overloaded_calls_in_stmt_list(
     resolved
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rewrite_overloaded_calls_in_function(
+    def: &mut FunctionDef,
+    seed: &CallTypeEnv,
+    context: CallTypeContext<'_>,
+    owner: OverloadOwnerContext,
+    overloads: &HashMap<String, Vec<OverloadCandidate>>,
+    errors: &mut Vec<Diagnostic>,
+) -> usize {
+    let mut env = seed.clone();
+    env.set_owner_type_params(&def.type_params);
+    let mut resolved = 0;
+    for param in &mut def.params {
+        env.bind_function_param(param, &def.type_params);
+        if let Some(default_expr) = &mut param.default {
+            resolved += rewrite_overloaded_calls_in_expr(
+                default_expr,
+                &env,
+                context,
+                owner,
+                overloads,
+                errors,
+            );
+        }
+    }
+    resolved
+        + rewrite_overloaded_calls_in_stmt_list(
+            &mut def.body,
+            &mut env,
+            context,
+            owner,
+            overloads,
+            errors,
+        )
+}
+
 fn rewrite_overloaded_calls_in_stmt_list_impl(
     stmts: &mut [Stmt],
     env: &mut CallTypeEnv,
@@ -902,6 +938,7 @@ fn rewrite_overloaded_calls_in_stmt_list_impl(
             }
             Stmt::For {
                 var,
+                var_ty,
                 start,
                 end,
                 step,
@@ -921,9 +958,7 @@ fn rewrite_overloaded_calls_in_stmt_list_impl(
                 }
                 let mut body_env = env.clone();
                 body_env.shadow_binding(var);
-                body_env
-                    .scalar_types
-                    .insert(var.clone(), PrimitiveType::I32);
+                body_env.scalar_types.insert(var.clone(), *var_ty);
                 rewrite_overloaded_calls_in_stmt_list_impl(
                     body,
                     &mut body_env,

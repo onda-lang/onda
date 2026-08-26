@@ -321,8 +321,12 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             .map(|_| json!({ "status": "ok" })),
         Request::RunSnapshot { path } => session
             .run(path)
-            .map(|run| json!({ "bytes": run.snapshot_state_bytes() }))
-            .ok_or_else(|| "run is not active".to_owned()),
+            .ok_or_else(|| "run is not active".to_owned())
+            .and_then(|run| {
+                run.snapshot_state_bytes()
+                    .map(|bytes| json!({ "bytes": bytes }))
+                    .map_err(|diag| diagnostic_string("run_snapshot failed", &diag))
+            }),
         Request::RunRestore { path, bytes } => session
             .run_mut(path)
             .ok_or_else(|| "run is not active".to_owned())

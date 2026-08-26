@@ -697,7 +697,10 @@ events {
         metadata["integration"]["profile"]["kind"],
         "native_relocatable_object"
     );
-    assert_eq!(metadata["integration"]["required_symbols"][0], "onda_init");
+    assert_eq!(
+        metadata["integration"]["required_symbols"][0],
+        "onda_processor_init"
+    );
     assert_eq!(metadata["compile"]["sample_rate"], 48_000.0);
     assert_eq!(metadata["compile"]["block_size"], 64);
     assert_eq!(metadata["exports"]["events"][0], "onda_event_0");
@@ -1218,7 +1221,7 @@ kins<f64> 2
 proc Voice:
   params:
     gain = 1.0 {0.0, 1.0} => update
-    pin coeffs: f32[2] = [0.5, 0.25]
+    private coeffs: f32[2] = [0.5, 0.25]
   def update():
     cached = gain
   outs:
@@ -1239,7 +1242,7 @@ sample:
     let formatted = onda_lsp::formatting::format_program(&program);
     assert!(formatted.contains("kins<f64> 2\n"));
     assert!(formatted.contains("    gain = 1.0 {0.0, 1.0} => update\n"));
-    assert!(formatted.contains("    pin coeffs: f32[2] = [0.5, 0.25]\n"));
+    assert!(formatted.contains("    private coeffs: f32[2] = [0.5, 0.25]\n"));
 }
 
 #[test]

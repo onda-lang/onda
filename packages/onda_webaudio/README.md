@@ -5,9 +5,13 @@ reference adapter for the generic Onda processor ABI; Web Audio is not required 
 by native and relocatable-WebAssembly object consumers.
 
 ```js
-import { createOndaAudioProcessor } from "@onda-lang/webaudio";
+import {
+  createOndaAudioProcessorInitialized,
+  ONDA_INIT_FULL,
+  ONDA_INIT_PRESERVE_PINNED,
+} from "@onda-lang/webaudio";
 
-const processor = await createOndaAudioProcessor(audioContext, artifact, {
+const processor = await createOndaAudioProcessorInitialized(audioContext, artifact, {
   params: { gain: 0.5 },
   buffers: {},
 });
@@ -15,12 +19,27 @@ processor.node.connect(audioContext.destination);
 await processor.setParam("gain", 0.75);
 await processor.setParamNormalized("cutoff", 0.5);
 const snapshot = await processor.snapshot();
+await processor.init(ONDA_INIT_PRESERVE_PINNED);
+await processor.init(ONDA_INIT_FULL);
 ```
 
 The adapter registers `onda-wasm-processor`, derives Web Audio channel options from artifact
 metadata, marshals declared scalar widths, schedules arbitrary render quanta across Onda compile
 blocks, and provides request/response helpers for parameters, events, buffers, control outputs,
-reset, and portable snapshots.
+initialization, and portable snapshots.
+
+`createOndaAudioProcessor()` is allocation-only. This lets a host configure parameters before the
+first initializer run:
+
+```js
+const processor = await createOndaAudioProcessor(audioContext, artifact);
+await processor.setParam("gain", 0.75);
+await processor.init(ONDA_INIT_FULL);
+```
+
+Until full initialization succeeds, the worklet emits silence and rejects stateful control
+operations. Successful initialization switches it to the initialized process callback, so the
+steady-state audio callback does not retain a lifecycle branch.
 
 ## Parameters
 
@@ -78,12 +97,12 @@ compile once and reuse the module:
 ```js
 import {
   compileOndaProcessorModule,
-  createOndaAudioProcessor,
+  createOndaAudioProcessorInitialized,
 } from "@onda-lang/webaudio";
 
 const compiledModule = await compileOndaProcessorModule(artifact);
-const left = await createOndaAudioProcessor(context, artifact, { compiledModule });
-const right = await createOndaAudioProcessor(context, artifact, { compiledModule });
+const left = await createOndaAudioProcessorInitialized(context, artifact, { compiledModule });
+const right = await createOndaAudioProcessorInitialized(context, artifact, { compiledModule });
 ```
 
 After construction, the normal f32 render callback reuses cached Wasm-memory views and performs no
@@ -98,7 +117,7 @@ nonempty, correctly shaped data.
 Fixed buffer arrays may be supplied under their logical group name. Each slot is independent:
 
 ```js
-const processor = await createOndaAudioProcessor(context, artifact, {
+const processor = await createOndaAudioProcessorInitialized(context, artifact, {
   buffers: {
     impulse: { data: impulseSamples, channels: 1, sampleRate: 48_000 },
     bank: [
@@ -116,15 +135,24 @@ copied when Onda selects a slot while processing.
 
 Artifact descriptors and module exports are validated by the shared, compiler-free
 `@onda-lang/processor-abi` package before anything reaches the rendering thread.
-If generated init, event, or process code returns a nonzero execution status, the adapter reports
-an `onda-error`, latches the failed state, and emits silence without re-entering processing. A
-successful reset clears the latch after reinitializing state.
+If generated init or event code returns a nonzero execution status, the adapter reports the error
+to the caller. A failing process call reports an `onda-error` and emits silence. Any generated-code
+failure invalidates the live state, so later callbacks remain silent and stateful operations are
+rejected until full initialization or snapshot restoration succeeds.
+`init(ONDA_INIT_PRESERVE_PINNED)` reruns generated initialization
+while preserving pinned roots and task continuations; `init(ONDA_INIT_FULL)` initializes the
+complete physical state and is required before processing an instance returned by
+`createOndaAudioProcessor`. The initialized convenience constructor performs full initialization
+during worklet construction. Neither mode allocates on the successful path, and a
+failure returns the processor to its silent pending state until full initialization or snapshot
+restore succeeds. Suspend or disconnect playback before initialization that performs substantial
+work.
 
 Dynamic event storage is also allocated before rendering. Its default capacity is 64 KiB per
 processor with dynamic events and can be changed explicitly:
 
 ```js
-const processor = await createOndaAudioProcessor(context, artifact, {
+const processor = await createOndaAudioProcessorInitialized(context, artifact, {
   eventPayloadCapacityBytes: 256 * 1024,
 });
 ```

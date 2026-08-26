@@ -2,7 +2,7 @@
   "format": "onda-processor",
   "format_version": 4,
   "artifact_kind": "webassembly_module",
-  "abi_version": 4,
+  "abi_version": 6,
   "backend": "conformance-fixture",
   "mir_schema_version": 5,
   "target": {
@@ -20,7 +20,7 @@
     "calling_convention": "core_webassembly"
   },
   "integration": {
-    "required_symbols": ["memory", "__heap_base", "onda_init", "onda_process", "onda_event_0"],
+    "required_symbols": ["memory", "__heap_base", "onda_processor_init", "onda_process", "onda_event_0"],
     "one_processor_per_artifact": true,
     "profile": {
       "kind": "core_webassembly_module",
@@ -33,7 +33,7 @@
   "exports": {
     "memory": "memory",
     "heap_base": "__heap_base",
-    "init": "onda_init",
+    "init": "onda_processor_init",
     "process": "onda_process",
     "events": ["onda_event_0"]
   },

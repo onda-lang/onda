@@ -1,7 +1,10 @@
 use onda_frontend::Diagnostic;
 
 use crate::primitives::primitive_type_bytes;
-use crate::{DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState};
+use crate::{
+    DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState,
+    UninitializedRuntimeState,
+};
 
 pub(crate) fn validate_event_payload(
     desc: &DeclaredEvent,
@@ -441,10 +444,16 @@ impl JitProgram {
 
     pub fn restore_state_snapshot(
         &self,
+        params: &[u8],
         state: &mut RuntimeState,
-        initial_state: &RuntimeState,
         snapshot: &[u8],
     ) -> Result<(), Diagnostic> {
+        self.validate_state_snapshot(snapshot)?;
+        self.initialize_state_in_place(params, state, true)?;
+        self.overlay_state_snapshot(state, snapshot)
+    }
+
+    pub fn validate_state_snapshot(&self, snapshot: &[u8]) -> Result<(), Diagnostic> {
         if snapshot.len() != self.snapshot_size_bytes {
             return Err(Diagnostic::runtime(
                 format!(
@@ -456,13 +465,16 @@ impl JitProgram {
                 0,
             ));
         }
-        if state.byte_size() != initial_state.byte_size() {
-            return Err(Diagnostic::internal(
-                "initial and live physical state layouts differ",
-            ));
-        }
-        // SAFETY: restore immediately normalizes every ranged slot below.
-        unsafe { state.bytes_mut() }.copy_from_slice(initial_state.bytes());
+        Ok(())
+    }
+
+    /// Overlays a validated portable snapshot onto an already fully initialized state image.
+    pub fn overlay_state_snapshot(
+        &self,
+        state: &mut RuntimeState,
+        snapshot: &[u8],
+    ) -> Result<(), Diagnostic> {
+        self.validate_state_snapshot(snapshot)?;
         // SAFETY: the only externally supplied bytes are copied and normalized
         // before this function returns the state to its caller.
         let state_bytes = unsafe { state.bytes_mut() };
@@ -511,6 +523,60 @@ impl JitProgram {
         #[cfg(not(feature = "llvm-orc"))]
         {
             let _ = (params, allocator);
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
+    pub fn allocate_state_with_allocator(
+        &self,
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<UninitializedRuntimeState, Diagnostic> {
+        #[cfg(feature = "llvm-orc")]
+        {
+            self.compiled.allocate_state_with_allocator(allocator)
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = allocator;
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
+    pub fn initialize_allocated_state(
+        &self,
+        params: &[u8],
+        state: &mut UninitializedRuntimeState,
+    ) -> Result<RuntimeState, Diagnostic> {
+        #[cfg(feature = "llvm-orc")]
+        {
+            self.compiled.initialize_allocated_state(params, state)
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = (params, state);
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
+    pub fn initialize_state_in_place(
+        &self,
+        params: &[u8],
+        state: &mut RuntimeState,
+        all: bool,
+    ) -> Result<(), Diagnostic> {
+        #[cfg(feature = "llvm-orc")]
+        {
+            self.compiled.initialize_state_in_place(params, state, all)
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = (params, state, all);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
@@ -660,14 +726,48 @@ impl JitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.trigger_event_by_index_with_status(
+                state,
+                params,
+                event_index,
+                payload,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+            )?
+        };
+        crate::check_execution_status(status)
+    }
+
+    /// Validates payload and buffer shape, then returns the generated execution status.
+    /// Validation errors are returned before generated event code is entered.
+    ///
+    /// # Safety
+    ///
+    /// Raw external-buffer pointers must satisfy their complete binding
+    /// contract and remain valid for the duration of the call.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_by_index_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        payload: &[u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+    ) -> Result<u32, Diagnostic> {
         let Some(desc) = self.event_descriptor(event_index) else {
-            return Ok(());
+            return Ok(0);
         };
         validate_event_payload(desc, payload)?;
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.trigger_event_by_index(
+                self.compiled.trigger_event_by_index_with_status(
                     state,
                     params,
                     event_index,

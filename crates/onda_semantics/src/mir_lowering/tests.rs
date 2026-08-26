@@ -368,21 +368,6 @@ fn normalized_source_paths(paths: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn block_contains_loop(block: &MirBlock) -> bool {
-    block
-        .statements
-        .iter()
-        .any(|statement| match &statement.kind {
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => block_contains_loop(then_block) || block_contains_loop(else_block),
-            StatementKind::Loop { .. } => true,
-            _ => false,
-        })
-}
-
 fn block_loop_count(block: &MirBlock) -> usize {
     block
         .statements
@@ -397,6 +382,22 @@ fn block_loop_count(block: &MirBlock) -> usize {
             _ => 0,
         })
         .sum()
+}
+
+fn block_contains_slice_fill(block: &MirBlock) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => block_contains_slice_fill(then_block) || block_contains_slice_fill(else_block),
+            StatementKind::Loop { body } => block_contains_slice_fill(body),
+            StatementKind::SliceFill { .. } => true,
+            _ => false,
+        })
 }
 
 fn block_contains_all_bits_zero_state_store(block: &MirBlock) -> bool {
@@ -421,6 +422,29 @@ fn block_contains_all_bits_zero_state_store(block: &MirBlock) -> bool {
                     || block_contains_all_bits_zero_state_store(else_block)
             }
             StatementKind::Loop { body } => block_contains_all_bits_zero_state_store(body),
+            _ => false,
+        })
+}
+
+fn block_writes_state(block: &MirBlock, state: onda_mir::StateId) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::Assign {
+                destination:
+                    Place {
+                        base: PlaceBase::State(destination),
+                        ..
+                    },
+                ..
+            } => *destination == state,
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => block_writes_state(then_block, state) || block_writes_state(else_block, state),
+            StatementKind::Loop { body } => block_writes_state(body, state),
             _ => false,
         })
 }
@@ -1768,15 +1792,11 @@ block:
     assert_eq!(mir.functions[0].kind, onda_mir::FunctionKind::Init);
     assert_eq!(mir.functions[1].kind, onda_mir::FunctionKind::Process);
     assert!(
-        !mir.functions[0].body.statements.iter().any(|statement| {
-            matches!(
-                &statement.kind,
-                StatementKind::Assign { destination, .. }
-                    if destination.base
-                        == PlaceBase::State(onda_mir::StateId::new(phase_state as u32))
-            )
-        }),
-        "canonical MIR should remove the redundant zero store to pre-zeroed state"
+        block_writes_state(
+            &mir.functions[0].body,
+            onda_mir::StateId::new(phase_state as u32),
+        ),
+        "canonical MIR must retain the zero store needed by live init"
     );
 
     let dump = format_program(&mir);
@@ -3408,15 +3428,11 @@ sample:
     assert!(dump.contains("const_data @data0 \"Table\""));
     assert!(dump.contains("load_const_data @data0"));
     assert!(dump.contains("@state") && dump.contains("] clamp"));
-    assert!(!mir.functions[0]
-        .body
-        .statements
-        .iter()
-        .any(|statement| matches!(statement.kind, StatementKind::Loop { .. })));
+    assert!(block_contains_slice_fill(&mir.functions[0].body));
 }
 
 #[test]
-fn raw_init_omits_large_prezeroed_state_fills_and_zero_elements() {
+fn raw_init_emits_zero_initializers_needed_by_live_reinitialization() {
     let source = r#"
 struct Defaults:
   gain: f32 = 0.0
@@ -3453,12 +3469,12 @@ sample:
 
     let init = &mir.functions[mir.entry_points.init.index()];
     assert!(
-        !block_contains_loop(&init.body),
-        "pre-zeroed state declarations must not synthesize init loops"
+        block_contains_slice_fill(&init.body),
+        "array state declarations must be restored during live init"
     );
     assert!(
-        !block_contains_all_bits_zero_state_store(&init.body),
-        "pre-zeroed state declarations must not emit all-bits-zero state stores"
+        block_contains_all_bits_zero_state_store(&init.body),
+        "zero-valued state declarations must be restored during live init"
     );
 
     let explicit = mir
@@ -3484,7 +3500,7 @@ sample:
             )
         })
         .count();
-    assert_eq!(explicit_stores, 2);
+    assert_eq!(explicit_stores, 4);
 }
 
 #[test]

@@ -225,6 +225,12 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<LoweredValue, MirLoweringError> {
         if let Some(binding) = self.bindings.get(name).cloned() {
             return match binding {
+                Binding::InitAll => Ok(self.emit_temp(
+                    block,
+                    PrimitiveType::Bool,
+                    Rvalue::InitAll,
+                    location,
+                )),
                 Binding::Local(local, ty) => Ok(LoweredValue {
                     value: Value::Local(local),
                     ty,

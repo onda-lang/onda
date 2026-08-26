@@ -13,7 +13,17 @@ globalThis.AudioWorkletProcessor = class {
   }
 };
 globalThis.registerProcessor = (_name, constructor) => {
-  Processor = constructor;
+  Processor = class InitializedTestProcessor extends constructor {
+    constructor(options = {}) {
+      super({
+        ...options,
+        processorOptions: {
+          initialize: true,
+          ...options.processorOptions,
+        },
+      });
+    }
+  };
 };
 
 await import("../src/worklet.js");
@@ -24,10 +34,10 @@ const wasm = new Uint8Array([
   3, 3, 2, 0, 0,
   5, 3, 1, 0, 1,
   6, 7, 1, 127, 0, 65, 128, 8, 11,
-  7, 51, 4,
+  7, 61, 4,
   6, 109, 101, 109, 111, 114, 121, 2, 0,
   11, 95, 95, 104, 101, 97, 112, 95, 98, 97, 115, 101, 3, 0,
-  9, 111, 110, 100, 97, 95, 105, 110, 105, 116, 0, 0,
+  19, 111, 110, 100, 97, 95, 112, 114, 111, 99, 101, 115, 115, 111, 114, 95, 105, 110, 105, 116, 0, 0,
   12, 111, 110, 100, 97, 95, 112, 114, 111, 99, 101, 115, 115, 0, 1,
   10, 11, 2, 4, 0, 65, 0, 11, 4, 0, 65, 0, 11,
 ]);
@@ -37,6 +47,9 @@ const highBitHeapBaseWasm = new Uint8Array([
   6, 10, 1, 127, 0, 65, 128, 128, 128, 128, 120, 11,
   ...wasm.slice(34),
 ]);
+
+const processFailureWasm = wasm.slice();
+processFailureWasm[processFailureWasm.length - 2] = 1;
 
 function metadata() {
   return {
@@ -73,6 +86,98 @@ function metadata() {
     },
   };
 }
+
+test("worklet remains silent until explicit full initialization", () => {
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: metadata(),
+      initialize: false,
+    },
+  });
+  const output = new Float32Array([1, 1, 1]);
+
+  assert.equal(processor.process([], [[output]]), true);
+  assert.deepEqual([...output], [0, 0, 0]);
+  assert.throws(() => processor.init(0), /full initialization is required/);
+  processor.init(1);
+  assert.equal(processor.initialized, true);
+  assert.equal(processor.process, processor.processInitialized);
+});
+
+test("failed live initialization returns the worklet to the silent pending state", () => {
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: metadata(),
+    },
+  });
+  const originalCheckExecutionStatus = processor.checkExecutionStatus;
+  processor.checkExecutionStatus = () => {
+    throw new Error("simulated processor init failure");
+  };
+
+  assert.throws(() => processor.init(1), /simulated processor init failure/);
+  assert.equal(processor.initialized, false);
+  assert.equal(processor.process, processor.processPending);
+  assert.throws(() => processor.init(0), /full initialization is required/);
+
+  const output = new Float32Array([1, 1, 1]);
+  assert.equal(processor.process([], [[output]]), true);
+  assert.deepEqual([...output], [0, 0, 0]);
+
+  processor.checkExecutionStatus = originalCheckExecutionStatus;
+  processor.init(1);
+  assert.equal(processor.initialized, true);
+  assert.equal(processor.process, processor.processInitialized);
+});
+
+test("failed processing invalidates the worklet and keeps later callbacks silent", () => {
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: processFailureWasm,
+      metadata: metadata(),
+    },
+  });
+  const messages = [];
+  processor.port.postMessage = (message) => messages.push(message);
+  const output = new Float32Array([1, 1, 1]);
+
+  assert.equal(processor.process([], [[output]]), true);
+  assert.deepEqual([...output], [0, 0, 0]);
+  assert.equal(processor.initialized, false);
+  assert.equal(processor.process, processor.processPending);
+  assert.equal(processor.blockCursor, 0);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "onda-error");
+
+  output.fill(1);
+  assert.equal(processor.process([], [[output]]), true);
+  assert.deepEqual([...output], [0, 0, 0]);
+  assert.equal(messages.length, 1);
+});
+
+test("failed event execution invalidates the worklet", () => {
+  const descriptor = metadata();
+  descriptor.metadata.events = [{
+    name: "fail",
+    export: "onda_process",
+    params: [],
+  }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: processFailureWasm,
+      metadata: descriptor,
+    },
+  });
+
+  assert.throws(
+    () => processor.dispatchEvent("fail", []),
+    /event 'fail' failed with Onda execution status 1/,
+  );
+  assert.equal(processor.initialized, false);
+  assert.equal(processor.process, processor.processPending);
+});
 
 test("worklet uses null pointers only for absent processor surfaces", () => {
   const descriptor = metadata();

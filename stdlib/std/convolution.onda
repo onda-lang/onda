@@ -17,25 +17,29 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
     outs<T> 1
 
     init:
-      impulse: T[MaxImpulseLen]
-      # Store the ring twice so the newest-to-oldest history is always one
-      # contiguous forward window for the convolution loop.
-      delay: T[TimeDelayStorageSize]
-      active_taps: i32 = 0 {0..MaxImpulseLen + 1}
-      write: i32 = 0 {0..MaxImpulseLen, wrap}
+      pin impulse: T[MaxImpulseLen]
+      delay: T[TimeDelayStorageSize] # Store the ring twice so the newest-to-oldest history is always contiguous
+      pin active_taps = 0 {0..=MaxImpulseLen}
+      write = 0 {0..MaxImpulseLen, wrap}
 
     def clear_state():
       delay[:] = 0.0
       write = 0
 
-    events:
-      set_impulse(values: T[]):
-        values_len = values.len()
-        active_taps = values_len
-        impulse[:] = 0.0
-        impulse[:] = values[:MaxImpulseLen]
+    def prepare_impulse(value_count: i32):
+      active_taps = max(min(value_count, MaxImpulseLen), 0)
+      clear_state()
 
-        clear_state()
+    events:
+      begin_impulse(value_count: i32):
+        prepare_impulse(value_count)
+
+      set_impulse_window(start: i32, values: T[]):
+        impulse[start:start + values.len()] = values
+
+      set_impulse(values: T[]):
+        prepare_impulse(values.len())
+        impulse[:] = values[:MaxImpulseLen]
 
       reset():
         clear_state()
@@ -72,12 +76,12 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
 
       spectrum_real: T[SpectrumBins]
       spectrum_imag: T[SpectrumBins]
-      impulse_real: T[FFTStorageSize]
-      impulse_imag: T[FFTStorageSize]
+      pin impulse_real: T[FFTStorageSize]
+      pin impulse_imag: T[FFTStorageSize]
       input_real: T[FFTStorageSize]
       input_imag: T[FFTStorageSize]
 
-      active_partitions = 0
+      pin active_partitions = 0 {0..=MaxPartitions}
       offset = -1
       pending_count = 0
       output_idx = HopSize
@@ -95,12 +99,10 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
       time_domain[:] = 0.0
       spectrum_real[:] = 0.0
       spectrum_imag[:] = 0.0
+
+    def clear_input_history():
       input_real[:] = 0.0
       input_imag[:] = 0.0
-
-    def clear_impulse():
-      impulse_real[:] = 0.0
-      impulse_imag[:] = 0.0
 
     def reset_counters():
       # Match HISSTools: a negative offset requests a fresh scheduling phase,
@@ -154,36 +156,51 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
         last_partition = last_partition + 1
         partitions_done = partitions_done + 1
 
+    def prepare_impulse(value_count: i32):
+      active_taps = value_count
+      if (active_taps < 0):
+        active_taps = 0
+      if (active_taps > MaxImpulseLen):
+        active_taps = MaxImpulseLen
+      active_partitions = ceil_div_i(active_taps, HopSize)
+
+      clear_state()
+      reset_counters()
+
+    def transform_impulse_partition(part: i32):
+      fwd.forward_real(block_time)
+
+      for i in 0..SpectrumBins:
+        slot = partition_slot(part, i)
+        impulse_real[slot] = fwd.real(i)
+        impulse_imag[slot] = fwd.imag(i)
+        input_real[slot] = 0.0
+        input_imag[slot] = 0.0
+
     events:
       set_offset(value: i32 = -1):
         offset = value
 
-      set_impulse(values: T[]):
-        active_taps = values.len()
-        if (active_taps < 0):
-          active_taps = 0
-        if (active_taps > MaxImpulseLen):
-          active_taps = MaxImpulseLen
-        active_partitions = ceil_div_i(active_taps, HopSize)
+      begin_impulse(value_count: i32):
+        prepare_impulse(value_count)
 
-        clear_state()
-        clear_impulse()
-        reset_counters()
+      set_impulse_partition(part: i32, values: T[]):
+        block_time[:] = 0.0
+        block_time[:HopSize] = values[:HopSize]
+        transform_impulse_partition(part)
+
+      set_impulse(values: T[]):
+        prepare_impulse(values.len())
 
         for part in 0..active_partitions:
           start = part * HopSize
           block_time[:] = 0.0
           block_time[:HopSize] = values[start:start + HopSize]
-
-          fwd.forward_real(block_time)
-
-          for i in 0..SpectrumBins:
-            slot = partition_slot(part, i)
-            impulse_real[slot] = fwd.real(i)
-            impulse_imag[slot] = fwd.imag(i)
+          transform_impulse_partition(part)
 
       reset():
         clear_state()
+        clear_input_history()
         reset_counters()
 
     sample:
@@ -260,6 +277,31 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
   const LargeStageCapacity = max(LargeStageEnd - MidStageEnd, 1)
   const FinalStageCapacity = max(MaxImpulseLen - LargeStageEnd, 1)
 
+  def stage_window_count(frames: i32, start: i32, end: i32, window_size: i32) -> i32:
+    length = max(min(frames, end) - start, 0)
+    return (length + window_size - 1) / window_size
+
+  def impulse_window_count(frames: i32) -> i32:
+    count = 0
+    if frames > 0:
+      count = 1
+    count = count + stage_window_count(frames, DirectTaps, HeadStageEnd, HeadFFTSize / 2)
+    count = count + stage_window_count(frames, HeadStageEnd, MidStageEnd, MidFFTSize / 2)
+    count = count + stage_window_count(frames, MidStageEnd, LargeStageEnd, LargeFFTSize / 2)
+    count = count + stage_window_count(frames, LargeStageEnd, frames, FFTSize / 2)
+    return count
+
+  def impulse_window_end(start: i32, frames: i32) -> i32:
+    if start < DirectTaps:
+      return min(frames, DirectTaps)
+    if start < HeadStageEnd:
+      return min(frames, min(start + (HeadFFTSize / 2), HeadStageEnd))
+    if start < MidStageEnd:
+      return min(frames, min(start + (MidFFTSize / 2), MidStageEnd))
+    if start < LargeStageEnd:
+      return min(frames, min(start + (LargeFFTSize / 2), LargeStageEnd))
+    return min(frames, start + (FFTSize / 2))
+
   proc TimeDomainConvolver<T>:
     ins<T> 1
     outs<T> 1
@@ -322,6 +364,9 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
       large.set_offset(offset + (FFTSize >> 3))
       final.set_offset(offset)
 
+    def stage_length(value_count: i32, start: i32, end: i32) -> i32:
+      return max(min(value_count, end) - start, 0)
+
     events:
       set_offset(value: i32 = -1):
         apply_offset(value)
@@ -332,6 +377,29 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
         mid.set_impulse(values[HeadStageEnd:MidStageEnd])
         large.set_impulse(values[MidStageEnd:LargeStageEnd])
         final.set_impulse(values[LargeStageEnd:])
+
+      begin_impulse(value_count: i32):
+        td.begin_impulse(stage_length(value_count, 0, DirectTaps))
+        head.begin_impulse(stage_length(value_count, DirectTaps, HeadStageEnd))
+        mid.begin_impulse(stage_length(value_count, HeadStageEnd, MidStageEnd))
+        large.begin_impulse(stage_length(value_count, MidStageEnd, LargeStageEnd))
+        final.begin_impulse(stage_length(value_count, LargeStageEnd, MaxImpulseLen))
+
+      set_impulse_window(start: i32, values: T[]):
+        if start < DirectTaps:
+          td.set_impulse_window(start, values)
+        elif start < HeadStageEnd:
+          part = (start - DirectTaps) / (HeadFFTSize / 2)
+          head.set_impulse_partition(part, values)
+        elif start < MidStageEnd:
+          part = (start - HeadStageEnd) / (MidFFTSize / 2)
+          mid.set_impulse_partition(part, values)
+        elif start < LargeStageEnd:
+          part = (start - MidStageEnd) / (LargeFFTSize / 2)
+          large.set_impulse_partition(part, values)
+        else:
+          part = (start - LargeStageEnd) / (FFTSize / 2)
+          final.set_impulse_partition(part, values)
 
       reset():
         td.reset()

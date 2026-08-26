@@ -84,6 +84,40 @@ const scenarios = [
     ],
   },
   {
+    name: "cooperative task lifecycle, snapshots, and pinned proc init",
+    source: join(
+      packageDir,
+      "test/fixtures/task-lifecycle-parity.onda",
+    ),
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "event", name: "soft_init", values: [] },
+      { kind: "render" },
+      { kind: "restore" },
+      { kind: "render" },
+      { kind: "event", name: "hard_init", values: [] },
+      { kind: "render" },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "top-level cooperative task lifecycle, reset, and snapshots",
+    source: join(
+      packageDir,
+      "test/fixtures/top-level-task-lifecycle-parity.onda",
+    ),
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "render" },
+      { kind: "event", name: "restart", values: [] },
+      { kind: "render" },
+      { kind: "restore" },
+      { kind: "render" },
+    ],
+  },
+  {
     name: "integer overflow, masked shifts, NaN comparison, and saturating casts",
     source: join(packageDir, "test/fixtures/numeric-edge-parity.onda"),
     blocks: 2,
@@ -285,7 +319,7 @@ async function renderWasmBlocks(artifact, scenario) {
     artifact.wasm,
     createDefaultImports(),
   );
-  const { memory, __heap_base, onda_init, onda_process } = instance.exports;
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   const metadata = artifact.metadata;
   let heap = Number(__heap_base.value);
   const allocate = (bytes, alignment = 16) => {
@@ -350,7 +384,7 @@ async function renderWasmBlocks(artifact, scenario) {
     view.setFloat32(bufferSampleRates + index * 4, sampleRate, true);
   });
 
-  requireExecutionSuccess(onda_init(params, state), "processor init");
+  requireExecutionSuccess(onda_processor_init(params, state, 1), "processor init");
   const processSegment = (startFrame, frames, flags) => requireExecutionSuccess(
     onda_process(
       state,
@@ -397,7 +431,7 @@ async function renderWasmBlocks(artifact, scenario) {
       if (savedSnapshot === null) {
         throw new Error("Wasm parity restore has no preceding snapshot");
       }
-      requireExecutionSuccess(onda_init(params, state), "processor restore init");
+      requireExecutionSuccess(onda_processor_init(params, state, 1), "processor restore init");
       restoreWasmState(memory, state, metadata, savedSnapshot);
       continue;
     }

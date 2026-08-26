@@ -104,33 +104,47 @@ host pointer. This keeps the program valid for both 32-bit WebAssembly and nativ
 
 State is split into three persistence classes:
 
-- `Snapshot`: language-visible state that participates in snapshot and restore
+- `Snapshot`: persistent state that participates in snapshot and restore, including compiler-owned
+  entries whose explicit MIR provenance marks them non-authored
 - `InstanceScratch`: compiler-managed caches and transient per-instance data
 - `ControlMirror`: dedicated physical storage named by exactly one control-output descriptor
+
+Snapshot state can be marked `pinned`, which keeps its live value across default initialization.
+Compiler-generated task continuation frames are pinned snapshot state, so suspension state survives
+default initialization and remains portable through snapshot/restore without requiring a public
+task value in MIR.
 
 Host buffer bindings should remain symbolic resources or instance scratch, not become persistent
 pointer-sized state. This removes host pointer width from the portable state contract.
 
-Physical storage for every state slot is zero-initialized before the MIR `init` entry runs. The
-producer may omit redundant zero assignments, while dynamic and nonzero initialization remains
-explicit in `init`. A control output identifies its mirror with a `StateId`; names are diagnostic and
-never participate in storage resolution. Control-mirror places are readable but not directly
-writable. Only `ControlOutputStore` in the process entry may mutate them, preventing init, event, or
-user functions from bypassing the host-visible control-output operation.
+Fresh instances receive zeroed state storage before the MIR `init` entry first runs. Both later
+initialization modes execute against the existing image. Full initialization runs declaration
+initializers for every slot; default initialization skips guarded pinned declarations so those slots
+survive unless init explicitly changes them. Dynamic and nonzero initialization remains explicit in
+`init`. The optimizer guards zero-before-write initialization so it runs only in default mode; the
+same writes would be redundant after the whole-image clear performed by full initialization. A
+control output identifies its mirror with a `StateId`;
+names are diagnostic and never participate in storage resolution. Control-mirror places are readable
+but not directly writable. Only `ControlOutputStore` in the process entry may mutate them, preventing
+init, event, or user functions from bypassing the host-visible control-output operation.
 
 Snapshots use a packed little-endian logical layout containing only `Snapshot` slots, in
 deterministic MIR state order, with no target ABI padding. Control-output mirrors and
-`InstanceScratch` slots are omitted. Restore first resets physical state to its initialized image
-and then overlays the packed persistent slots, so transient caches cannot leak across restore and
-the snapshot contract is independent of a backend's native alignment and byte-order choices.
+`InstanceScratch` slots are omitted. Restore performs full initialization in place and then overlays
+the packed persistent slots, so transient caches cannot leak across restore and the snapshot
+contract is independent of a backend's native alignment and byte-order choices.
+
+Every state slot carries an explicit `authored` flag from semantic lowering; backends preserve it
+rather than interpreting state names. Reflection can therefore omit compiler-owned task entries
+without weakening the physical snapshot contract or hiding similarly named user state.
 
 AOT sidecar snapshots serialize each scalar element independently in little-endian byte
 order: floats use their IEEE-754 bits, signed integers use two's-complement bits, and booleans are
 one byte containing `0` or `1`. The persistent-state manifest records the element size, packed
 snapshot offset, target-layout physical offset, and byte size of every included segment. An AOT
-host must preserve the complete post-`init` physical state image; restore copies that image first,
-then decodes and overlays the manifest's persistent segments. The processor descriptor carries
-this manifest and the explicit `little_endian` / `post_init_physical_state_image` contract.
+host performs full initialization before decoding and overlaying the manifest's persistent
+segments. The processor descriptor carries this manifest and the explicit `little_endian` /
+`post_init_physical_state_image` contract.
 
 ## Operations
 
@@ -301,15 +315,16 @@ surfaces uses the same canonical integer range normalization; the pass removes t
 when the selector interval already fits. Bounds proofs run after structural cleanup in each fixed-point
 round, allowing removed branches, unreachable assignments, and newly exposed constants to tighten
 the ranges used by the next proof.
-Source `for` variables remain `i32`. Constant loops use an `i32` induction counter and a
-compile-time-computed final iteration, so every increment is proven not to overflow without adding
-a checked-arithmetic branch. Dynamic loops also use `i32` directly: lowering does not insert a
-hidden widened counter, a per-iteration truncation, or overflow checks. As with ordinary integer
-arithmetic, source code is responsible for choosing bounds and a step that progress to termination
-without overflowing. The body receives an immutable `i32` copy after the loop guard. Constant loops
-attach their exact body interval to that copy as a producer-proved range fact; this performs no
-runtime clamping and lets the shared bounds-proof pass cover arrays, interface surfaces, data-struct
-arrays, and processor arrays uniformly.
+Source `for` variables default to `i32` and may explicitly select `i32` or `i64`. Constant loops use
+the selected induction width and a compile-time-computed final iteration, so every increment is
+proven not to overflow without adding a checked-arithmetic branch. Dynamic loops also retain the
+selected width directly: lowering does not insert a hidden widened counter, a per-iteration
+truncation, or overflow checks. As with ordinary integer arithmetic, source code is responsible for
+choosing bounds and a step that progress to termination without overflowing. The body receives an
+immutable copy at the selected width after the loop guard. Constant loops attach their exact body
+interval to that copy as a producer-proved range fact; this performs no runtime clamping and lets
+the shared bounds-proof pass cover arrays, interface surfaces, data-struct arrays, and processor
+arrays uniformly.
 Failure effects distinguish checked fixed-range access from clamped access, which is non-failing for
 nonempty fixed arrays, ports, constant data, and validated external buffers. Clamped dynamic-slice
 element access may still fail on an empty slice, and slice windows may fail their dynamic shape

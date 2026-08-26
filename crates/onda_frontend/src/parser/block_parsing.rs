@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Default)]
 struct ParsedNamedDecl {
-    pinned: bool,
+    private: bool,
     ty: Option<DeclType>,
     ty_loc: Span,
     default: Option<Expr>,
@@ -84,7 +84,7 @@ fn parse_named_decl(
     let mut name: Option<String> = None;
     for item in pair.into_inner() {
         match item.as_rule() {
-            Rule::param_pin => parsed.pinned = true,
+            Rule::param_private => parsed.private = true,
             Rule::ident if name.is_none() => {
                 name = Some(item.as_str().to_owned());
             }
@@ -276,7 +276,7 @@ pub(super) fn parse_params_block(
                     params.push(ParamDecl {
                         loc,
                         name,
-                        pinned: parsed.pinned,
+                        private: parsed.private,
                         ty,
                         ty_loc: parsed.ty_loc,
                         default: parsed.default,
@@ -537,6 +537,82 @@ fn parse_event_decl(item: Pair<'_, Rule>) -> Result<EventDef, Vec<Diagnostic>> {
         params,
         body,
     })
+}
+
+pub(super) fn parse_tasks_block(block_pair: Pair<'_, Rule>) -> Result<TaskBlock, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&block_pair);
+    let mut tasks = Vec::new();
+    for child in block_pair.into_inner() {
+        if child.as_rule() != Rule::task_list {
+            continue;
+        }
+        for item in child.into_inner() {
+            if item.as_rule() == Rule::task_decl {
+                merge_task_defs(&mut tasks, vec![parse_task_decl(item)?])?;
+            }
+        }
+    }
+    Ok(TaskBlock { loc, tasks })
+}
+
+pub(super) fn parse_task_block(block_pair: Pair<'_, Rule>) -> Result<TaskBlock, Vec<Diagnostic>> {
+    let block_loc = stmt_loc_from_pair(&block_pair);
+    let Some(task_decl) = block_pair
+        .into_inner()
+        .find(|part| part.as_rule() == Rule::task_decl)
+    else {
+        return Err(vec![syntax_at_loc(
+            block_loc.as_ref(),
+            "missing task declaration",
+        )]);
+    };
+    Ok(TaskBlock {
+        loc: block_loc,
+        tasks: vec![parse_task_decl(task_decl)?],
+    })
+}
+
+pub(super) fn merge_task_defs(
+    existing: &mut Vec<TaskDef>,
+    incoming: Vec<TaskDef>,
+) -> Result<(), Vec<Diagnostic>> {
+    let mut seen = existing
+        .iter()
+        .map(|task| task.name.clone())
+        .collect::<HashSet<_>>();
+    for task in incoming {
+        if !seen.insert(task.name.clone()) {
+            return Err(vec![syntax_at_loc(
+                task.loc.as_ref(),
+                format!("duplicate task declaration '{}'", task.name),
+            )]);
+        }
+        existing.push(task);
+    }
+    Ok(())
+}
+
+fn parse_task_decl(item: Pair<'_, Rule>) -> Result<TaskDef, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&item);
+    let mut name = None;
+    let mut body = None;
+    for part in item.into_inner() {
+        match part.as_rule() {
+            Rule::ident if name.is_none() => name = Some(part.as_str().to_owned()),
+            Rule::stmt_block => body = Some(parse_stmt_block(part)?),
+            _ => {}
+        }
+    }
+    let Some(name) = name else {
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing task name")]);
+    };
+    let Some(body) = body else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            format!("missing body for task '{name}'"),
+        )]);
+    };
+    Ok(TaskDef { loc, name, body })
 }
 
 pub(super) fn parse_graph_block(block_pair: Pair<'_, Rule>) -> Result<GraphBlock, Vec<Diagnostic>> {
@@ -800,6 +876,7 @@ pub(super) fn parse_proc_block(
     let mut params_deferred_count: Option<Expr> = None;
     let mut params_deferred_default_ty: Option<DeclType> = None;
     let mut events = Vec::<EventDef>::new();
+    let mut tasks = Vec::<TaskDef>::new();
     let mut buffers = Vec::new();
     let mut buffers_deferred_count: Option<Expr> = None;
     let mut buffers_deferred_default_ty: Option<BufferType> = None;
@@ -871,6 +948,14 @@ pub(super) fn parse_proc_block(
             Rule::event_block => {
                 let block = parse_event_block(child)?;
                 merge_event_defs(&mut events, block.events)?;
+            }
+            Rule::tasks_block => {
+                let parsed = parse_tasks_block(child)?;
+                merge_task_defs(&mut tasks, parsed.tasks)?;
+            }
+            Rule::task_block => {
+                let parsed = parse_task_block(child)?;
+                merge_task_defs(&mut tasks, parsed.tasks)?;
             }
             Rule::buffers_block => {
                 if !buffers.is_empty() || buffers_deferred_count.is_some() {
@@ -971,6 +1056,7 @@ pub(super) fn parse_proc_block(
         params_deferred_count,
         params_deferred_default_ty,
         events,
+        tasks,
         buffers,
         buffers_deferred_count,
         buffers_deferred_default_ty,
@@ -983,6 +1069,8 @@ pub(super) fn parse_proc_block(
             loc: Span::ZERO,
             default_ty: None,
             default_ty_loc: Span::ZERO,
+            pinned_roots: Vec::new(),
+            compiler_scratch_roots: Vec::new(),
             body: Vec::new(),
         }),
         block_pre,

@@ -2,15 +2,10 @@
 
 ## Optimization / runtime follow-ups
 
-- Deferred and repeatable initialization
-  - The full proposal is specified in [`init.md`](init.md).
-  - Split allocation from full instance initialization so project and host buffers can be bound
-    before `init` runs. Keep proc `init(...)` callable from runtime code and leave realtime cost to
-    the program and host under the exclusive-instance contract.
-  - Remove or rename the existing `prepare_unchecked_process` /
-    `onda_prepare_unchecked_process` binding-validation APIs because they perform validation, not
-    initialization. Prefer the existing `validate_bindings` APIs; if a distinct convenience entry
-    remains, name it `validate_bindings_for_unchecked_process`.
+- Remove or rename the existing `prepare_unchecked_process` /
+  `onda_prepare_unchecked_process` binding-validation APIs because they perform validation, not
+  initialization. Prefer the existing `validate_bindings` APIs; if a distinct convenience entry
+  remains, name it `validate_bindings_for_unchecked_process`.
 
 - Proc-array block-hook lowering
   - When a loop over proc-array indices is statically proven to visit a known set of slots, lower those calls like static slot access:

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use onda_frontend::{
     AssignTarget, Block, BlockExec, EventDef, FunctionDef, NamespaceDecl, NamespaceItem,
-    ProcessorDef, Program, Span, Stmt,
+    ProcessorDef, Program, Span, Stmt, TaskDef,
 };
 use onda_semantics::builtins::builtin_constant_names;
 
@@ -169,6 +169,7 @@ struct TopLevelRuntimeSections<'a> {
     parameters: Vec<String>,
     stmt_regions: Vec<RuntimeStmtRegion<'a>>,
     events: Vec<&'a EventDef>,
+    tasks: Vec<&'a TaskDef>,
 }
 
 fn build_top_level_runtime_scope(
@@ -186,10 +187,16 @@ fn build_top_level_runtime_scope(
         for name in sections.parameters {
             owner.ports.insert(name);
         }
+        for task in &sections.tasks {
+            owner.functions.insert(task.name.clone());
+        }
     }
     build_runtime_stmt_regions(index, owner_idx, &sections.stmt_regions);
     for event in sections.events {
         build_event_scope(index, owner_idx, event);
+    }
+    for task in sections.tasks {
+        build_task_scope(index, owner_idx, task);
     }
     Some(owner_idx)
 }
@@ -242,6 +249,10 @@ fn collect_top_level_runtime_sections<'a>(blocks: &[&'a Block]) -> TopLevelRunti
             Block::Events(events) => {
                 extend_runtime_owner_span(&mut sections.span, events.loc);
                 sections.events.extend(events.events.iter());
+            }
+            Block::Tasks(tasks) => {
+                extend_runtime_owner_span(&mut sections.span, tasks.loc);
+                sections.tasks.extend(tasks.tasks.iter());
             }
             Block::Graph(graph) => {
                 extend_runtime_owner_span(&mut sections.span, graph.loc);
@@ -323,6 +334,9 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
         for def in &proc_def.local_defs {
             owner.functions.insert(def.name.clone());
         }
+        for task in &proc_def.tasks {
+            owner.functions.insert(task.name.clone());
+        }
     }
     let stmt_regions = proc_runtime_stmt_regions(proc_def);
     build_runtime_stmt_regions(index, owner_idx, &stmt_regions);
@@ -332,6 +346,9 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
     }
     for def in &proc_def.local_defs {
         build_function_scope(index, Some(owner_idx), def);
+    }
+    for task in &proc_def.tasks {
+        build_task_scope(index, owner_idx, task);
     }
 }
 
@@ -403,6 +420,17 @@ fn build_event_scope(index: &mut SemanticScopeIndex, parent: usize, event: &Even
         collect_stmt_symbols(&event.body, scope);
         prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
     }
+}
+
+fn build_task_scope(index: &mut SemanticScopeIndex, parent: usize, task: &TaskDef) {
+    let Some(scope_idx) = index.push_scope(Some(parent), span_for_task_scope(task)) else {
+        return;
+    };
+    let reserved = index.scopes[parent].scope.clone();
+    let allows_implicit_ports = index.scopes[scope_idx].allows_implicit_ports;
+    let scope = &mut index.scopes[scope_idx].scope;
+    collect_stmt_symbols(&task.body, scope);
+    prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
 }
 
 fn build_stmt_scope(index: &mut SemanticScopeIndex, parent: usize, span: Span, stmts: &[Stmt]) {
@@ -481,6 +509,12 @@ fn span_for_event_scope(event: &EventDef) -> Span {
         .unwrap_or(event.loc)
 }
 
+fn span_for_task_scope(task: &TaskDef) -> Span {
+    span_for_stmt_body(&task.body)
+        .map(|body_span| Span::spanning(task.loc, body_span))
+        .unwrap_or(task.loc)
+}
+
 fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     let mut span = proc_def.loc;
 
@@ -518,6 +552,9 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     }
     for def in &proc_def.local_defs {
         span = Span::spanning(span, span_for_function_scope(def));
+    }
+    for task in &proc_def.tasks {
+        span = Span::spanning(span, span_for_task_scope(task));
     }
 
     span
@@ -575,6 +612,12 @@ fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
                     scope.parameters.insert(param.name.clone());
                 }
                 collect_stmt_symbols(&event.body, scope);
+            }
+        }
+        Block::Tasks(tasks) => {
+            for task in &tasks.tasks {
+                scope.functions.insert(task.name.clone());
+                collect_stmt_symbols(&task.body, scope);
             }
         }
         Block::Init(init) => {
@@ -648,6 +691,10 @@ fn collect_proc_symbols(proc_def: &ProcessorDef, scope: &mut SemanticScope) {
     for def in &proc_def.local_defs {
         scope.functions.insert(def.name.clone());
         collect_def_symbols(def, scope);
+    }
+    for task in &proc_def.tasks {
+        scope.functions.insert(task.name.clone());
+        collect_stmt_symbols(&task.body, scope);
     }
 }
 

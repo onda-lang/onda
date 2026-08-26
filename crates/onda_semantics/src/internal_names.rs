@@ -10,6 +10,10 @@ pub fn is_compiler_generated_function_name(name: &str) -> bool {
     name.contains(".__onda_proc_") || name.contains(".__onda_mono") || name.starts_with("__onda_")
 }
 
+pub(crate) fn is_reserved_internal_identifier(name: &str) -> bool {
+    name.starts_with("__onda_")
+}
+
 pub fn sanitize_runtime_symbol_component(name: &str) -> String {
     name.chars()
         .map(|ch| {

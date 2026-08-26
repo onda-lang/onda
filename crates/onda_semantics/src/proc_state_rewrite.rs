@@ -48,7 +48,7 @@ pub(crate) struct ProcPortSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct ProcParamSlotSpec {
     pub(crate) name: String,
-    pub(crate) pinned: bool,
+    pub(crate) private: bool,
     pub(crate) ty: PrimitiveType,
     pub(crate) default: Option<Expr>,
     pub(crate) range: Option<TypedValueRange>,
@@ -62,8 +62,8 @@ pub(crate) struct ProcParamSpec {
 }
 
 impl ProcParamSpec {
-    pub(crate) fn is_pinned(&self) -> bool {
-        self.slots.iter().any(|slot| slot.pinned)
+    pub(crate) fn is_private(&self) -> bool {
+        self.slots.iter().any(|slot| slot.private)
     }
 }
 
@@ -213,12 +213,6 @@ pub(crate) fn is_declared_proc_symbol(
         || local_aliases.contains_key(name)
         || local_array_aliases.contains_key(name)
         || out.has_any(name)
-}
-
-pub(crate) fn has_use_before_declaration_error(errors: &[Diagnostic]) -> bool {
-    errors
-        .iter()
-        .any(|d| d.message.contains("used before declaration"))
 }
 
 pub(crate) fn validate_proc_expr_decl_order(
@@ -1114,6 +1108,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
             Stmt::For {
                 loc: _stmt_loc,
                 var,
+                var_ty,
                 start,
                 end,
                 step,
@@ -1168,6 +1163,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                 Some(Stmt::For {
                     loc: source_loc.into(),
                     var: var.clone(),
+                    var_ty: *var_ty,
                     start: start_rewritten,
                     end: end_rewritten,
                     step: step_rewritten,

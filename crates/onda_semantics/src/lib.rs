@@ -14,10 +14,24 @@ use onda_frontend::{
     FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl,
     NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock,
     ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
-    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BARE_RETURN_FN,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
+
+pub(crate) fn path_or_ancestor_is_declared(path: &str, roots: &HashSet<String>) -> bool {
+    let mut candidate = path;
+    loop {
+        if roots.contains(candidate) {
+            return true;
+        }
+        let Some((parent, _)) = candidate.rsplit_once('.') else {
+            return false;
+        };
+        candidate = parent;
+    }
+}
 
 pub mod aggregate_layout;
 mod analysis_session;
@@ -45,6 +59,7 @@ mod proc_resolution;
 mod proc_state_rewrite;
 mod processor_lowering;
 mod stmt_analysis;
+mod task_lowering;
 pub use aggregate_layout::{
     AggregateLayout, AggregateLayoutArithmeticError, AggregateLayoutError, AggregateLayoutId,
     AggregateLayoutTable, AggregateLeafId, AggregateLeafLayout, AggregatePathComponent,
@@ -94,6 +109,9 @@ pub struct TypedProgram {
     pub control_out_types: HashMap<String, PrimitiveType>,
     pub param_types: HashMap<String, PrimitiveType>,
     pub(crate) state_integer_ranges: HashMap<String, TypedIntegerRange>,
+    pub(crate) pinned_state_roots: HashSet<String>,
+    pub(crate) compiler_owned_state_roots: HashSet<String>,
+    pub(crate) compiler_scratch_state_roots: HashSet<String>,
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
     pub(crate) dynamic_input_range_aliases: HashMap<String, String>,
@@ -262,6 +280,22 @@ pub enum ReturnType {
     Tuple(Vec<PrimitiveType>),
 }
 
+pub(crate) fn is_bare_return_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::UserCall { name, type_args, args, .. }
+            if name == INTERNAL_BARE_RETURN_FN && type_args.is_empty() && args.is_empty()
+    )
+}
+
+pub(crate) fn zero_expr(ty: PrimitiveType) -> Expr {
+    match ty {
+        PrimitiveType::F32 | PrimitiveType::F64 => Expr::number(0.0),
+        PrimitiveType::I32 | PrimitiveType::I64 => Expr::int(0),
+        PrimitiveType::Bool => Expr::bool(false),
+    }
+}
+
 impl ReturnType {
     /// Returns the scalar type, panicking if this is a tuple.
     pub fn as_scalar(&self) -> PrimitiveType {
@@ -283,6 +317,9 @@ impl ReturnType {
 #[derive(Debug, Clone)]
 pub struct TypedFunction {
     pub name: String,
+    /// Compiler-owned helpers that execute with access to the program's
+    /// runtime state and interface rather than in the lexical `def` scope.
+    pub(crate) runtime_context: bool,
     pub method_of: Option<String>,
     pub type_params: Vec<String>,
     pub params: Vec<String>,
@@ -655,6 +692,171 @@ mod tests {
             errors.iter().any(|diag| diag.message.contains(expected)),
             "expected diagnostic containing '{expected}', got {errors:?}"
         );
+    }
+
+    #[test]
+    fn rejects_pin_on_processor_instances_and_arrays() {
+        let cases = [
+            (
+                r#"
+proc Child:
+  sample:
+    out1 = 0.0
+init:
+  pin child = Child()
+sample:
+  out1 = child()
+"#,
+                "'pin' cannot be applied to processor instance 'child'",
+            ),
+            (
+                r#"
+proc Child:
+  sample:
+    out1 = 0.0
+proc Parent:
+  init:
+    pin child = Child()
+  sample:
+    out1 = child()
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#,
+                "'pin' cannot be applied to processor instance 'child'",
+            ),
+            (
+                r#"
+proc Voice:
+  sample:
+    out1 = 0.0
+init:
+  pin voices: Voice[2] = Voice()
+sample:
+  out1 = voices[0]()
+"#,
+                "'pin' cannot be applied to processor array 'voices'",
+            ),
+            (
+                r#"
+proc Voice:
+  sample:
+    out1 = 0.0
+proc Parent:
+  init:
+    pin voices: Voice[2] = Voice()
+  sample:
+    out1 = voices[0]()
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#,
+                "'pin' cannot be applied to processor array 'voices'",
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_analyze_error_contains(source, expected);
+        }
+    }
+
+    #[test]
+    fn pin_requires_a_fresh_state_binding() {
+        for source in [
+            r#"
+params:
+  gain = 1.0
+init:
+  pin gain = 0.5
+sample:
+  out1 = gain
+"#,
+            r#"
+proc Voice:
+  params:
+    private gain = 1.0
+  init:
+    pin gain = 0.5
+  sample:
+    out1 = gain
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#,
+        ] {
+            assert_analyze_error_contains(source, "'pin' requires a fresh state binding");
+        }
+    }
+
+    #[test]
+    fn pin_supports_structs_and_fixed_struct_arrays() {
+        let source = r#"
+struct State:
+  value: i32 = 1
+
+init:
+  pin one = State()
+  pin many: State[2] = State()
+sample:
+  out1 = f32(one.value + many[0].value + many[1].value)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("pinned struct aggregates should analyze");
+        let mir =
+            lower_program_to_optimized_mir(&typed).expect("pinned struct aggregates should lower");
+        for name in ["one.value", "many.value"] {
+            let state = mir
+                .state
+                .iter()
+                .find(|state| state.name == name)
+                .unwrap_or_else(|| panic!("missing flattened aggregate state '{name}'"));
+            assert!(state.pinned);
+        }
+    }
+
+    #[test]
+    fn convolution_pins_prepared_kernel_but_not_signal_history() {
+        let source = r#"
+import std/convolution
+use std::convolution<256, 1024> as Conv
+
+init:
+  conv = Conv::ZeroLatencyConvolver()
+
+sample:
+  out1 = conv(0.0)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("convolver should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("convolver should lower");
+        let is_pinned = |name: &str| {
+            mir.state
+                .iter()
+                .find(|state| state.name == name)
+                .unwrap_or_else(|| panic!("missing convolver state '{name}'"))
+                .pinned
+        };
+
+        for name in [
+            "conv.td__impulse",
+            "conv.td__active_taps",
+            "conv.head__impulse_real",
+            "conv.head__impulse_imag",
+            "conv.head__active_partitions",
+        ] {
+            assert!(is_pinned(name));
+        }
+        for name in [
+            "conv.td__delay",
+            "conv.head__pending",
+            "conv.head__overlap",
+            "conv.head__input_real",
+        ] {
+            assert!(!is_pinned(name));
+        }
     }
 
     #[test]
@@ -1370,7 +1572,7 @@ sample:
             (
                 "target return",
                 "proc Voice:\n  params:\n    gain = 0.0 => update\n  outs:\n    out1\n  def update():\n    return gain\n  sample:\n    out1 = gain\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n",
-                "bind target 'update' must not contain return",
+                "bind target 'update' must not return a value",
             ),
             (
                 "owner param write",
@@ -1500,6 +1702,10 @@ sample:
         let untyped_scalar_local = "def shadow(x):\n  x = x + 1.0\nproc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  outs:\n    out1\n  def update():\n    shadow(gain)\n    cached = gain\n  sample:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n";
         let program = parse_program(untyped_scalar_local).expect("parse should succeed");
         analyze(program).expect("untyped scalar helper local should analyze");
+
+        let bare_return = "proc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  outs:\n    out1\n  def update():\n    if gain == 0.0:\n      return\n    cached = gain\n  sample:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n";
+        let program = parse_program(bare_return).expect("parse should succeed");
+        analyze(program).expect("bare return in bind hook should analyze");
     }
 
     #[test]
@@ -1843,12 +2049,12 @@ sample:
     }
 
     #[test]
-    fn pinned_proc_params_accept_constructor_and_builtin_init() {
+    fn private_proc_params_accept_constructor_and_builtin_init() {
         let src = r#"
 proc Voice:
   params:
-    pin cutoff = 1000.0
-    pin coeffs: f32[2] = [0.5, 0.25]
+    private cutoff = 1000.0
+    private coeffs: f32[2] = [0.5, 0.25]
     gain = 1.0
   init:
     cached = cutoff + coeffs[0] + coeffs[1] + gain
@@ -1873,15 +2079,15 @@ sample:
   out1 = voice(gain = 0.25)
 "#;
         let program = parse_program(src).expect("parse should succeed");
-        analyze(program).expect("pinned constructor/init params should analyze");
+        analyze(program).expect("private constructor/init params should analyze");
     }
 
     #[test]
-    fn nested_proc_events_may_update_their_own_pinned_params() {
+    fn nested_proc_events_may_update_their_own_private_params() {
         let src = r#"
 proc Child:
   params:
-    pin value = 0.0
+    private value = 0.0
   event set(value_v: f32):
     value = value_v
   outs:
@@ -1905,56 +2111,56 @@ sample:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         analyze(program)
-            .expect("a nested child event should retain authority over its pinned params");
+            .expect("a nested child event should retain authority over its private params");
     }
 
     #[test]
-    fn pinned_proc_params_reject_external_access() {
+    fn private_proc_params_reject_external_access() {
         let cases = [
             (
                 "field assignment",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.cutoff = 1200.0\n  out1 = voice()\n",
-                "param 'cutoff' is pinned and cannot be assigned",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.cutoff = 1200.0\n  out1 = voice()\n",
+                "param 'cutoff' is private and cannot be assigned",
             ),
             (
                 "field read",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.cutoff\n",
-                "param 'cutoff' is pinned and cannot be read",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.cutoff\n",
+                "param 'cutoff' is private and cannot be read",
             ),
             (
                 "field read from user def",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\ndef leak(voice: Voice):\n  return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = leak(voice)\n",
-                "param 'cutoff' is pinned and cannot be read",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\ndef leak(voice: Voice):\n  return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = leak(voice)\n",
+                "param 'cutoff' is private and cannot be read",
             ),
             (
                 "field read from __proc-prefixed user method",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nstruct Inspector:\n  def __proc_read(self, voice: Voice):\n    return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\n  inspector = Inspector()\nsample:\n  out1 = inspector.__proc_read(voice)\n",
-                "param 'cutoff' is pinned and cannot be read",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nstruct Inspector:\n  def __proc_read(self, voice: Voice):\n    return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\n  inspector = Inspector()\nsample:\n  out1 = inspector.__proc_read(voice)\n",
+                "param 'cutoff' is private and cannot be read",
             ),
             (
                 "array assignment",
-                "proc Voice:\n  params:\n    pin coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.coeffs[0] = 0.1\n  out1 = voice()\n",
-                "param 'coeffs' is pinned and cannot be assigned",
+                "proc Voice:\n  params:\n    private coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.coeffs[0] = 0.1\n  out1 = voice()\n",
+                "param 'coeffs' is private and cannot be assigned",
             ),
             (
                 "array read",
-                "proc Voice:\n  params:\n    pin coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.coeffs[0]\n",
-                "param 'coeffs' is pinned and cannot be read",
+                "proc Voice:\n  params:\n    private coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.coeffs[0]\n",
+                "param 'coeffs' is private and cannot be read",
             ),
             (
                 "named call arg",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice(cutoff = 1200.0)\n",
-                "named argument 'cutoff' is pinned",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice(cutoff = 1200.0)\n",
+                "named argument 'cutoff' is private",
             ),
             (
                 "dynamic params read",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.params[0]\n",
-                "has pinned params, so dynamic param access",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.params[0]\n",
+                "has private params, so dynamic param access",
             ),
             (
                 "dynamic params assignment",
-                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.params[0] = 0.5\n  out1 = voice()\n",
-                "has pinned params, so assignment through dynamic",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.params[0] = 0.5\n  out1 = voice()\n",
+                "has private params, so assignment through dynamic",
             ),
         ];
 
@@ -6021,6 +6227,39 @@ sample:
     }
 
     #[test]
+    fn no_result_def_accepts_bare_early_return() {
+        let src = "outs:\n  out1\ndef observe(flag: bool):\n  if flag:\n    return\n  value = 1.0\nsample:\n  observe(false)\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("bare return should analyze");
+        let observe = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "observe")
+            .expect("missing observe def");
+        assert!(!observe.returns_value);
+    }
+
+    #[test]
+    fn rejects_mixed_bare_and_value_returns() {
+        let src = "outs:\n  out1\ndef choose(flag: bool):\n  if flag:\n    return\n  return 1.0\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("mixed returns should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("cannot mix bare returns with value returns")));
+    }
+
+    #[test]
+    fn rejects_bare_return_with_explicit_return_type() {
+        let src = "outs:\n  out1\ndef choose() -> f32:\n  return\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("bare typed return should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("cannot mix bare returns with value returns or an explicit return type")));
+    }
+
+    #[test]
     fn proc_local_value_helper_requires_total_return() {
         let src = "proc Voice:\n  outs:\n    out1\n  def choose(flag: bool) -> f32:\n    if flag:\n      return 1.0\n  sample:\n    out1 = 0.0\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -8546,7 +8785,7 @@ sample:
         assert!(
             errors.iter().any(|diag| diag
                 .message
-                .contains("struct parameter 'pair' (type 'Pair') has no field 'y'")),
+                .contains("struct instance 'pair' (type 'Pair') has no field 'y'")),
             "expected unreachable explicit struct def diagnostic, got {errors:?}"
         );
     }
@@ -8560,7 +8799,7 @@ sample:
         assert!(
             errors.iter().any(|diag| diag
                 .message
-                .contains("struct parameter 'voice' (type 'Voice') has no field 'missing'")),
+                .contains("struct instance 'voice' (type 'Voice') has no field 'missing'")),
             "expected unreachable explicit proc def diagnostic, got {errors:?}"
         );
     }
@@ -12276,6 +12515,34 @@ const Result = bad()
 
 sample:
   out1 = f32(Result)
+"#,
+            r#"
+task bad():
+  for i in 0..4:
+    i = 2
+    yield
+
+block:
+  await bad()
+  sample:
+    out1 = 0.0
+"#,
+            r#"
+proc P:
+  task bad():
+    for i in 0..4:
+      i = 2
+      yield
+  block:
+    await bad()
+    sample:
+      out1 = 0.0
+
+init:
+  p = P()
+
+sample:
+  out1 = p()
 "#,
         ] {
             assert_analyze_error_contains(source, "cannot assign to loop variable 'i'");

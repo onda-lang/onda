@@ -1,4 +1,7 @@
 export const ONDA_AUDIO_WORKLET_PROCESSOR_NAME: "onda-wasm-processor";
+export const ONDA_INIT_PRESERVE_PINNED: 0;
+export const ONDA_INIT_FULL: 1;
+export type OndaInitMode = 0 | 1;
 
 export type {
   OndaParamDomain,
@@ -33,6 +36,8 @@ export interface OndaAudioProcessorOptions {
   compiledModule?: WebAssembly.Module;
   nodeOptions?: AudioWorkletNodeOptions;
   AudioWorkletNode?: typeof AudioWorkletNode;
+  /** Low-level node-option builders only: initialize in the worklet constructor. */
+  initialize?: boolean;
 }
 
 export function flattenedAudioChannelCount(ports?: unknown[]): number;
@@ -45,6 +50,11 @@ export function registerOndaAudioWorklet(
   workletUrl?: string | URL,
 ): Promise<void>;
 export function createOndaAudioProcessor(
+  context: BaseAudioContext,
+  artifact: OndaProcessorArtifact,
+  options?: OndaAudioProcessorOptions,
+): Promise<OndaAudioProcessor>;
+export function createOndaAudioProcessorInitialized(
   context: BaseAudioContext,
   artifact: OndaProcessorArtifact,
   options?: OndaAudioProcessorOptions,
@@ -63,7 +73,7 @@ export class OndaAudioProcessor {
   /** Map a host value in [0, 1] through the descriptor and set the resulting plain value. */
   setParamNormalized(param: string | number, value: number): Promise<any>;
   trigger(event: string | number, values?: Record<string, unknown> | unknown[]): Promise<any>;
-  reset(): Promise<any>;
+  init(mode: OndaInitMode): Promise<any>;
   snapshot(): Promise<Uint8Array>;
   restoreSnapshot(snapshot: Uint8Array | ArrayBuffer): Promise<any>;
   readControlOutputs(): Promise<Record<string, unknown>>;

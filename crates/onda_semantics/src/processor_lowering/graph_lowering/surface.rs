@@ -53,20 +53,20 @@ pub(super) fn build_graph_proc_surfaces(
             expand_proc_param_specs(&proc.name, &proc.params, options, errors);
         let params = param_specs
             .iter()
-            .filter(|spec| !spec.is_pinned())
+            .filter(|spec| !spec.is_private())
             .flat_map(|spec| spec.slots.iter().cloned())
             .map(|slot| (slot.name.clone(), slot))
             .collect::<HashMap<_, _>>();
         let has_bound_params = params.values().any(|slot| slot.bind.is_some());
-        let pinned_param_names = proc
+        let private_param_names = proc
             .params
             .iter()
-            .filter(|param| param.pinned)
+            .filter(|param| param.private)
             .map(|param| param.name.clone())
             .collect::<std::collections::HashSet<_>>();
         let param_array_slots = param_array_slots
             .into_iter()
-            .filter(|(name, _)| !pinned_param_names.contains(name))
+            .filter(|(name, _)| !private_param_names.contains(name))
             .collect::<HashMap<_, _>>();
         out.insert(
             proc.name.clone(),
@@ -324,11 +324,11 @@ fn value_types_from_params(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
     owner_context: &str,
-    include_pinned: bool,
+    include_private: bool,
 ) -> HashMap<String, GraphValueType> {
     let mut out = HashMap::<String, GraphValueType>::new();
     for param in params {
-        if param.pinned && !include_pinned {
+        if param.private && !include_private {
             continue;
         }
         let ty = match param.ty.as_ref() {

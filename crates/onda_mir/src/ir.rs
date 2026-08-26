@@ -408,14 +408,21 @@ pub struct EventParam {
     pub default: Option<ConstantValue>,
 }
 
-/// Per-instance storage. Physical storage for every slot is zero-initialized
-/// before the MIR `init` entry point runs, so `init` only needs to write
-/// dynamic or nonzero initial values.
+/// Per-instance storage. Full initialization clears the physical state image
+/// before the MIR `init` entry runs. The init body still describes every
+/// authored initializer so preserve-pinned initialization can restore
+/// resettable state without allocating a second image. Pinned declarations
+/// fully overwrite their own slots on the full-init path, allowing backends
+/// to exclude those bytes from the physical pre-clear.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateSlot {
     pub name: String,
     pub ty: TypeId,
     pub persistence: StatePersistence,
+    /// Whether this state originates from a declaration in user source.
+    pub authored: bool,
+    #[serde(default)]
+    pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integer_range: Option<IntegerRangeInvariant>,
 }
@@ -621,6 +628,10 @@ pub enum StatementKind {
 pub enum Rvalue {
     Use(Value),
     Load(Place),
+    /// Whether the init entry should initialize pinned state as well as
+    /// ordinary resettable state. This entry-ABI value is only valid in the
+    /// program init function.
+    InitAll,
     Unary {
         op: UnaryOp,
         operand: Value,

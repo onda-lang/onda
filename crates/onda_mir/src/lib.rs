@@ -46,7 +46,7 @@ pub use validate::{
 /// additions retain this value; incompatible serialized-schema changes must
 /// increment it.
 // Synchronized from format-versions.json; do not edit this copy directly.
-pub const MIR_SCHEMA_VERSION: u32 = 5;
+pub const MIR_SCHEMA_VERSION: u32 = 6;
 
 /// Positional ABI indices for the three value parameters of the process entry.
 pub const PROCESS_START_FRAME_PARAM_INDEX: usize = 0;

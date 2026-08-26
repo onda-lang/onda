@@ -4,7 +4,7 @@ pub(crate) fn runtime_symbol_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
 }
 
-fn runtime_scope_label(scope: ScopeKind) -> &'static str {
+fn flow_scope_label(scope: ScopeKind) -> &'static str {
     match scope {
         ScopeKind::Block => "block",
         ScopeKind::Sample => "sample",
@@ -13,7 +13,48 @@ fn runtime_scope_label(scope: ScopeKind) -> &'static str {
     }
 }
 
-fn infer_runtime_slice_alias_info(
+fn indexed_aggregate_target_type(
+    base: &str,
+    index: &Expr,
+    struct_instances: &HashMap<String, String>,
+    struct_array_roots: &HashMap<String, ArrayStructRootInfo>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<PrimitiveType> {
+    let (root, field) = split_root_field_path(base)?;
+    let (struct_name, indexes_struct_element) = struct_instances
+        .get(root)
+        .map(|struct_name| (struct_name.as_str(), false))
+        .or_else(|| {
+            struct_array_roots
+                .get(root)
+                .map(|info| (info.struct_name.as_str(), true))
+        })
+        .or_else(|| {
+            proc_array_roots
+                .get(root)
+                .map(|info| (info.proc_name.as_str(), true))
+        })?;
+    let field = resolve_struct_field_decl(struct_name, field, struct_defs)?;
+    if indexes_struct_element {
+        return match field.ty {
+            TypedFieldType::Scalar(ty) => Some(ty),
+            TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => None,
+        };
+    }
+    match &field.ty {
+        TypedFieldType::Array(_) => field.array_elem_ty,
+        TypedFieldType::Tuple(types) => match index {
+            Expr::Int { value, .. } => usize::try_from(*value)
+                .ok()
+                .and_then(|index| types.get(index).copied()),
+            _ => None,
+        },
+        TypedFieldType::Scalar(_) | TypedFieldType::Struct => None,
+    }
+}
+
+fn infer_flow_slice_alias_info(
     base: &str,
     start: Option<&Expr>,
     end: Option<&Expr>,
@@ -38,7 +79,7 @@ fn infer_runtime_slice_alias_info(
     )
 }
 
-fn infer_runtime_data_like_info(
+fn infer_flow_data_like_info(
     expr: &Expr,
     declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
@@ -58,7 +99,7 @@ fn infer_runtime_data_like_info(
     )
 }
 
-pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
+pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub common: ScopeAnalysisCtx<'a>,
     pub registration_mode: RuntimeRegistrationMode,
     pub declared_symbols: &'a DeclaredSymbolMap,
@@ -74,6 +115,9 @@ pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub event_policy: Option<EventStmtPolicy<'a>>,
     pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    pub resolved_scalar_locals: Option<&'a std::cell::RefCell<LocalAliasTypes>>,
+    pub resolved_array_locals: Option<&'a std::cell::RefCell<HashMap<String, LocalArrayAliasInfo>>>,
+    pub resolved_tuple_locals: Option<&'a std::cell::RefCell<HashMap<String, Vec<PrimitiveType>>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -90,10 +134,18 @@ fn is_proc_event_stmt_call(
     expr: &Expr,
     nested_proc_instances: &HashMap<String, ProcNestedState>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    proc_event_names: &HashSet<String>,
 ) -> bool {
-    let Expr::UserCall { name, .. } = expr else {
+    let Expr::UserCall { name, args, .. } = expr else {
         return false;
     };
+    if proc_event_names.contains(name)
+        && args.first().is_some_and(|arg| {
+            matches!(&arg.expr, Expr::Index { base, .. } if proc_array_roots.contains_key(base))
+        })
+    {
+        return true;
+    }
     let Some((base, _event_name)) = split_dot_path(name) else {
         return false;
     };
@@ -102,7 +154,7 @@ fn is_proc_event_stmt_call(
         || proc_array_roots.contains_key(base)
 }
 
-pub(crate) type RuntimeStmtAnalysisState = ScopeFlowState;
+pub(crate) type FlowStmtAnalysisState = ScopeFlowState;
 
 fn has_local_binding_root(
     root: &str,
@@ -223,8 +275,8 @@ fn build_runtime_stmt_analysis_ctx<'a>(
     forbidden_assign_array_names: &'a HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
     state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
-) -> RuntimeStmtAnalysisCtx<'a> {
-    RuntimeStmtAnalysisCtx {
+) -> FlowStmtAnalysisCtx<'a> {
+    FlowStmtAnalysisCtx {
         common,
         registration_mode,
         declared_symbols,
@@ -240,6 +292,9 @@ fn build_runtime_stmt_analysis_ctx<'a>(
         forbidden_assign_array_names,
         event_policy,
         state_tuples,
+        resolved_scalar_locals: None,
+        resolved_array_locals: None,
+        resolved_tuple_locals: None,
     }
 }
 
@@ -247,13 +302,13 @@ fn build_runtime_stmt_analysis_state(
     known_scalars: HashSet<String>,
     local_aliases: LocalAliasTypes,
     local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
-) -> RuntimeStmtAnalysisState {
+) -> FlowStmtAnalysisState {
     ScopeFlowState::new(known_scalars, local_aliases, local_array_aliases)
 }
 
-fn build_runtime_stmt_expr_env<'a>(
+fn build_flow_stmt_expr_env<'a>(
     expr_inputs: ScopeExprInputs<'a>,
-    flow_state: &'a RuntimeStmtAnalysisState,
+    flow_state: &'a FlowStmtAnalysisState,
     array_vars: &'a HashMap<String, usize>,
     scope: ScopeKind,
 ) -> StmtExprAnalysisEnv<'a> {
@@ -266,6 +321,30 @@ fn build_runtime_stmt_expr_env<'a>(
         scope,
         &flow_state.tuple_vars,
     )
+}
+
+fn record_resolved_local_bindings(ctx: &FlowStmtAnalysisCtx<'_>, state: &FlowStmtAnalysisState) {
+    if let Some(resolved_scalar_locals) = ctx.resolved_scalar_locals {
+        let mut resolved = resolved_scalar_locals.borrow_mut();
+        for (name, ty) in &state.local_aliases {
+            resolved.entry(name.clone()).or_insert(*ty);
+        }
+    }
+    if let Some(resolved_array_locals) = ctx.resolved_array_locals {
+        resolved_array_locals
+            .borrow_mut()
+            .extend(state.local_array_aliases.clone());
+    }
+    if let Some(resolved_tuple_locals) = ctx.resolved_tuple_locals {
+        let mut resolved = resolved_tuple_locals.borrow_mut();
+        for name in state.tuple_vars.keys() {
+            if let Some(types) =
+                tracked_local_tuple_types(name, &state.tuple_vars, &state.local_aliases)
+            {
+                resolved.entry(name.clone()).or_insert(types);
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,8 +596,8 @@ pub(crate) fn analyze_runtime_stmts<'a>(
     stmts: impl IntoIterator<Item = &'a Stmt>,
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    ctx: &RuntimeStmtAnalysisCtx<'_>,
-    state: &mut RuntimeStmtAnalysisState,
+    ctx: &FlowStmtAnalysisCtx<'_>,
+    state: &mut FlowStmtAnalysisState,
     errors: &mut Vec<Diagnostic>,
 ) {
     debug_assert!(
@@ -529,16 +608,16 @@ pub(crate) fn analyze_runtime_stmts<'a>(
         ),
         "runtime analysis scope and registration mode must stay aligned"
     );
-    analyze_runtime_scope(stmts, locals, state_scalars, ctx, state, 0, 0, errors);
+    analyze_flow_scope_stmts(stmts, locals, state_scalars, ctx, state, 0, 0, errors);
 }
 
 #[allow(clippy::too_many_arguments)]
-fn analyze_runtime_scope<'a>(
+pub(crate) fn analyze_flow_scope_stmts<'a>(
     stmts: impl IntoIterator<Item = &'a Stmt>,
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    ctx: &RuntimeStmtAnalysisCtx<'_>,
-    state: &mut RuntimeStmtAnalysisState,
+    ctx: &FlowStmtAnalysisCtx<'_>,
+    state: &mut FlowStmtAnalysisState,
     loop_depth: usize,
     scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
@@ -568,7 +647,7 @@ fn analyze_runtime_scope<'a>(
         .tuple_vars
         .extend(ctx.state_tuples.iter().map(|(k, v)| (k.clone(), v.len())));
     for stmt in stmts {
-        analyze_runtime_stmt_inner(
+        analyze_flow_stmt(
             stmt,
             locals,
             state_scalars,
@@ -586,12 +665,12 @@ fn analyze_runtime_scope<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn analyze_runtime_stmt_inner(
+fn analyze_flow_stmt(
     stmt: &Stmt,
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    ctx: &RuntimeStmtAnalysisCtx<'_>,
-    state: &mut RuntimeStmtAnalysisState,
+    ctx: &FlowStmtAnalysisCtx<'_>,
+    state: &mut FlowStmtAnalysisState,
     loop_depth: usize,
     scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
@@ -622,7 +701,7 @@ fn analyze_runtime_stmt_inner(
 
     with_stmt_diag_context(stmt, |diag| {
         track_integer_range_declaration(stmt, &mut state.integer_ranges);
-        let array_vars = merged_data_vars_for_runtime(state_arrays, &state.local_array_aliases);
+        let array_vars = merged_data_vars(state_arrays, &state.local_array_aliases);
         let empty_param_structs = HashMap::<String, String>::new();
         let mut visible_struct_instances = struct_instances.clone();
         visible_struct_instances.extend(state.local_struct_aliases.clone());
@@ -660,7 +739,7 @@ fn analyze_runtime_stmt_inner(
                         errors,
                     );
                 }
-                analyze_assign_sample(
+                analyze_flow_assignment(
                     target_loc.as_ref().into(),
                     target,
                     decl_ty,
@@ -682,15 +761,15 @@ fn analyze_runtime_stmt_inner(
                     state_array_struct_roots,
                     proc_array_roots,
                     ctx.common.proc_event_names,
-                    struct_instances,
+                    &visible_struct_instances,
                     input_names,
                     output_names,
                     common.output_array_names,
                     common.io_surface_names,
                     common.io_surface_array_names,
-                    matches!(common.policy, ScopePolicy::Runtime(_)),
+                    matches!(common.policy, ScopePolicy::Runtime(_) | ScopePolicy::Task),
                     common.dynamic_param_array_names,
-                    matches!(common.policy, ScopePolicy::Runtime(_)),
+                    matches!(common.policy, ScopePolicy::Runtime(_) | ScopePolicy::Task),
                     &expr_output_names,
                     forbidden_assign_names,
                     forbidden_assign_array_names,
@@ -706,15 +785,32 @@ fn analyze_runtime_stmt_inner(
                     ctx.state_tuples,
                     errors,
                 );
+                record_resolved_local_bindings(ctx, state);
             }
             Stmt::Expr { expr, .. } => {
+                if matches!(common.policy, ScopePolicy::Task)
+                    && matches!(
+                        expr,
+                        Expr::UserCall { name, type_args, args, .. }
+                            if name == onda_frontend::INTERNAL_TASK_YIELD_FN
+                                && type_args.is_empty()
+                                && args.is_empty()
+                    )
+                {
+                    return;
+                }
                 let expr = rewrite_proc_alias_calls_for_validation(expr, &state.local_proc_aliases);
-                if is_proc_event_stmt_call(&expr, nested_proc_instances, proc_array_roots) {
+                if is_proc_event_stmt_call(
+                    &expr,
+                    nested_proc_instances,
+                    proc_array_roots,
+                    common.proc_event_names,
+                ) {
                     if let Expr::UserCall { args, .. } = &expr {
                         for arg in args {
                             analyze_proc_event_arg_expr(
                                 &arg.expr,
-                                build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                                build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                                 errors,
                             );
                         }
@@ -722,13 +818,29 @@ fn analyze_runtime_stmt_inner(
                 } else {
                     analyze_standalone_stmt_expr(
                         &expr,
-                        build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                        build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                         errors,
                     );
                 }
             }
-            Stmt::Return { .. } => {
-                push_semantic(diag, errors, "return is only allowed inside def blocks");
+            Stmt::Return { expr, .. } => {
+                if matches!(common.policy, ScopePolicy::Def)
+                    || matches!(common.policy, ScopePolicy::Task) && is_bare_return_expr(expr)
+                {
+                    if !is_bare_return_expr(expr) {
+                        let expr = rewrite_proc_alias_calls_for_validation(
+                            expr,
+                            &state.local_proc_aliases,
+                        );
+                        analyze_stmt_expr(
+                            &expr,
+                            build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                            errors,
+                        );
+                    }
+                } else {
+                    push_semantic(diag, errors, "return is only allowed inside def blocks");
+                }
             }
             Stmt::If {
                 cond,
@@ -740,7 +852,7 @@ fn analyze_runtime_stmt_inner(
                 require_validated_bool_stmt_expr(
                     &cond,
                     "if condition",
-                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                    build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
                 let mut then_state = fork_scope_flow_state_with_tuples(
@@ -753,7 +865,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
-                let then_flow = analyze_runtime_scope(
+                let then_flow = analyze_flow_scope_stmts(
                     then_branch.iter(),
                     locals,
                     state_scalars,
@@ -773,7 +885,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
-                let else_flow = analyze_runtime_scope(
+                let else_flow = analyze_flow_scope_stmts(
                     else_branch.iter(),
                     locals,
                     state_scalars,
@@ -799,28 +911,36 @@ fn analyze_runtime_stmt_inner(
                     (*loc).into(),
                     errors,
                 );
+                record_resolved_local_bindings(ctx, state);
             }
             Stmt::For {
                 var,
+                var_ty,
                 step,
                 start,
                 end,
                 body,
                 ..
             } => {
+                if let Some(resolved_scalar_locals) = ctx.resolved_scalar_locals {
+                    resolved_scalar_locals
+                        .borrow_mut()
+                        .entry(var.clone())
+                        .or_insert(*var_ty);
+                }
                 let start =
                     rewrite_proc_alias_calls_for_validation(start, &state.local_proc_aliases);
                 let end = rewrite_proc_alias_calls_for_validation(end, &state.local_proc_aliases);
                 require_validated_numeric_stmt_expr(
                     &start,
                     "for loop start bound",
-                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                    build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
                 require_validated_numeric_stmt_expr(
                     &end,
                     "for loop end bound",
-                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                    build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
                 let rewritten_step = step.as_ref().map(|step_expr| {
@@ -828,7 +948,7 @@ fn analyze_runtime_stmt_inner(
                 });
                 validate_for_loop_step_expr(
                     rewritten_step.as_ref(),
-                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                    build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
                 let mut loop_locals = locals.clone();
@@ -843,7 +963,8 @@ fn analyze_runtime_stmt_inner(
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
-                analyze_runtime_scope(
+                loop_state.local_aliases.insert(var.clone(), *var_ty);
+                analyze_flow_scope_stmts(
                     body.iter(),
                     &loop_locals,
                     state_scalars,
@@ -869,7 +990,7 @@ fn analyze_runtime_stmt_inner(
                 require_validated_bool_stmt_expr(
                     &cond,
                     "while condition",
-                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                    build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
                 let mut loop_state = fork_scope_flow_state_with_tuples(
@@ -882,7 +1003,7 @@ fn analyze_runtime_stmt_inner(
                     &state.local_buffer_aliases,
                     &state.tuple_vars,
                 );
-                analyze_runtime_scope(
+                analyze_flow_scope_stmts(
                     body.iter(),
                     locals,
                     state_scalars,
@@ -909,7 +1030,7 @@ fn analyze_runtime_stmt_inner(
     });
 }
 #[allow(clippy::too_many_arguments)]
-fn analyze_assign_sample(
+fn analyze_flow_assignment(
     target_loc: SourceLoc,
     target: &AssignTarget,
     decl_ty: &Option<PrimitiveType>,
@@ -955,7 +1076,7 @@ fn analyze_assign_sample(
     state_tuples: &HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
+    let array_vars = merged_data_vars(state_arrays, local_array_aliases);
     let empty_param_structs = HashMap::<String, String>::new();
     let mut visible_struct_instances = struct_instances.clone();
     visible_struct_instances.extend(local_struct_aliases.clone());
@@ -1019,6 +1140,14 @@ fn analyze_assign_sample(
         AssignTarget::Index { base, index } => {
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+            let aggregate_target_ty = indexed_aggregate_target_type(
+                base,
+                index,
+                struct_instances,
+                state_array_struct_roots,
+                proc_array_roots,
+                struct_defs,
+            );
             let lexical_root = base.split('.').next().unwrap_or(base);
             if locals.contains(lexical_root) {
                 target_error!(format!(
@@ -1042,7 +1171,7 @@ fn analyze_assign_sample(
             if forbidden_assign_array_names.contains(base) {
                 target_error!(format!(
                     "cannot assign to output array symbol '{base}' in {}",
-                    runtime_scope_label(scope)
+                    flow_scope_label(scope)
                 ));
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
@@ -1060,6 +1189,7 @@ fn analyze_assign_sample(
                 if state_array_struct_roots.contains_key(root)
                     && !proc_array_roots.contains_key(root)
                     && !state_arrays.contains_key(base)
+                    && aggregate_target_ty.is_none()
                 {
                     target_error!(
                         format!(
@@ -1136,9 +1266,10 @@ fn analyze_assign_sample(
                         }
                     }
                     _ => {
-                        target_error!(format!(
+                        target_error!(
                             "tuple element index must be a compile-time integer constant"
-                        ),);
+                                .to_string(),
+                        );
                     }
                 }
                 validate_expr(
@@ -1151,6 +1282,7 @@ fn analyze_assign_sample(
             if !state_arrays.contains_key(base)
                 && !local_array_aliases.contains_key(base)
                 && !has_declared_buffer_symbol_info(declared_symbols, base)
+                && aggregate_target_ty.is_none()
             {
                 target_error!(format!(
                     "indexed assignment target '{base}[...]' is not a array/buffer symbol"
@@ -1201,6 +1333,7 @@ fn analyze_assign_sample(
                 .get(base)
                 .map(|a| a.elem_ty)
                 .or_else(|| declared_symbol_scalar_type(declared_symbols, base))
+                .or(aggregate_target_ty)
                 .unwrap_or(PrimitiveType::F32);
             require_expr_assignable_type(expr, expr_ty, expected_ty, "array/buffer write", errors);
         }
@@ -1249,7 +1382,7 @@ fn analyze_assign_sample(
             if forbidden_assign_array_names.contains(base) {
                 target_error!(format!(
                     "cannot assign to output array symbol '{base}' in {}",
-                    runtime_scope_label(scope)
+                    flow_scope_label(scope)
                 ));
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     validate_expr(coordinate, scope_expr_env!(), errors);
@@ -1283,7 +1416,7 @@ fn analyze_assign_sample(
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                 return;
             }
-            let Some(target_info) = infer_runtime_slice_alias_info(
+            let Some(target_info) = infer_flow_slice_alias_info(
                 base,
                 start.as_deref(),
                 end.as_deref(),
@@ -1342,7 +1475,7 @@ fn analyze_assign_sample(
             }
             if is_data_like_value_expr(&expr_for_validation, stmt_expr_env(scope)) {
                 validate_data_like_value_expr(&expr_for_validation, stmt_expr_env(scope), errors);
-                if let Some(src_info) = infer_runtime_data_like_info(
+                if let Some(src_info) = infer_flow_data_like_info(
                     &expr_for_validation,
                     declared_symbols,
                     state_arrays,
@@ -1403,13 +1536,13 @@ fn analyze_assign_sample(
             if forbidden_assign_names.contains(name) {
                 target_error!(format!(
                     "cannot assign to output symbol '{name}' in {}",
-                    runtime_scope_label(scope)
+                    flow_scope_label(scope)
                 ));
             }
             if forbidden_assign_array_names.contains(name) {
                 target_error!(format!(
                     "cannot assign to output array symbol '{name}' in {}",
-                    runtime_scope_label(scope)
+                    flow_scope_label(scope)
                 ));
                 validate_expr(expr, scope_expr_env!(), errors);
                 return;
@@ -1506,8 +1639,10 @@ fn analyze_assign_sample(
                         ),);
                         return;
                     }
-                    let size_context =
-                        format!("typed array declaration size for symbol '{name}' in sample");
+                    let size_context = format!(
+                        "typed array declaration size for symbol '{name}' in {}",
+                        flow_scope_label(scope)
+                    );
                     let Some(size_value) = with_expr_diag_context(&spec.size, |_diag| {
                         eval_data_size_expr(&spec.size, options, &size_context, errors)
                     }) else {
@@ -1574,7 +1709,8 @@ fn analyze_assign_sample(
                                     expr_diag,
                                     errors,
                                     format!(
-                                        "typed array declaration '{name}: {struct_name}[N]' is not yet supported in sample/block"
+                                        "typed array declaration '{name}: {struct_name}[N]' is not yet supported in {}",
+                                        flow_scope_label(scope)
                                     ),
                                 );
                             });
@@ -1725,7 +1861,7 @@ fn analyze_assign_sample(
                     return;
                 }
                 validate_expr(expr, scope_expr_env!(), errors);
-                if let Some(alias) = infer_runtime_slice_alias_info(
+                if let Some(alias) = infer_flow_slice_alias_info(
                     base,
                     start.as_deref(),
                     end.as_deref(),
@@ -1798,7 +1934,9 @@ fn analyze_assign_sample(
                     let flat = format!("{base}.{field}");
                     match field_decl.ty {
                         TypedFieldType::Scalar(prim) => {
-                            if !state_scalars.contains_key(&flat) {
+                            if !matches!(scope, ScopeKind::Def)
+                                && !state_scalars.contains_key(&flat)
+                            {
                                 target_error!(format!(
                                     "struct field '{flat}' must be initialized in init"
                                 ));
@@ -1827,7 +1965,7 @@ fn analyze_assign_sample(
                                 expr,
                                 expr_ty,
                                 prim,
-                                &format!("sample assignment to '{flat}'"),
+                                &format!("{} assignment to '{flat}'", flow_scope_label(scope)),
                                 errors,
                             );
                         }
@@ -1947,12 +2085,14 @@ fn analyze_assign_sample(
 
             if input_names.contains(name) || param_names.contains(name) {
                 target_error!(format!(
-                    "cannot assign to immutable symbol '{name}' in sample block"
+                    "cannot assign to immutable symbol '{name}' in {}",
+                    flow_scope_label(scope)
                 ),);
             }
             if struct_instances.contains_key(name) {
                 target_error!(format!(
-                    "struct instance '{name}' cannot be assigned in sample"
+                    "struct instance '{name}' cannot be assigned in {}",
+                    flow_scope_label(scope)
                 ),);
             }
             if matches!(expr, Expr::ArrayCtor { .. }) {
@@ -2115,7 +2255,7 @@ fn analyze_assign_sample(
                     expr,
                     expr_ty,
                     target_ty,
-                    &format!("sample assignment to '{name}'"),
+                    &format!("{} assignment to '{name}'", flow_scope_label(scope)),
                     errors,
                 );
                 if can_track_local {

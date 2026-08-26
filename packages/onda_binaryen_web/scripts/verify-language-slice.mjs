@@ -52,7 +52,7 @@ try {
     artifact.wasm,
     createDefaultImports(),
   );
-  const { memory, __heap_base, onda_init, onda_process, onda_event_0 } =
+  const { memory, __heap_base, onda_processor_init, onda_process, onda_event_0 } =
     instance.exports;
   let heap = Number(__heap_base.value);
   const allocate = (bytes, alignment = 16) => {
@@ -73,7 +73,7 @@ try {
   view.setFloat32(payload + 8, 4, true);
   view.setUint32(outputTable, output, true);
 
-  if (onda_init(params, state) !== 0) {
+  if (onda_processor_init(params, state, 1) !== 0) {
     throw new Error("real-Onda init returned a generated execution failure");
   }
   if (onda_event_0(payload, params, state, 0, 0, 0, 0) !== 0) {
@@ -116,7 +116,11 @@ try {
     )
   );
   const processor = new WorkletProcessor({
-    processorOptions: { wasmBytes: artifact.wasm, metadata: artifact.metadata },
+    processorOptions: {
+      wasmBytes: artifact.wasm,
+      metadata: artifact.metadata,
+      initialize: true,
+    },
   });
   processor.port.onmessage({
     data: {
@@ -170,6 +174,7 @@ try {
     processorOptions: {
       wasmBytes: bufferArtifact.wasm,
       metadata: bufferArtifact.metadata,
+      initialize: true,
       buffers: {
         table: {
           data: new Float32Array([1, 2, 3, 4]),
@@ -229,6 +234,7 @@ try {
     processorOptions: {
       wasmBytes: sliceArtifact.wasm,
       metadata: sliceArtifact.metadata,
+      initialize: true,
     },
   });
   const sliceEvent = sliceArtifact.metadata.metadata.events[0];

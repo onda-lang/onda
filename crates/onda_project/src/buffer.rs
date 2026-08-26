@@ -175,38 +175,34 @@ impl BufferSamples {
             }
             BufferElement::I32 => Ok(Self::I32(
                 bytes
-                    .chunks_exact(4)
-                    .map(|chunk| i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|chunk| i32::from_le_bytes(*chunk))
                     .collect(),
             )),
             BufferElement::I64 => Ok(Self::I64(
                 bytes
-                    .chunks_exact(8)
-                    .map(|chunk| {
-                        i64::from_le_bytes([
-                            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
-                            chunk[7],
-                        ])
-                    })
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|chunk| i64::from_le_bytes(*chunk))
                     .collect(),
             )),
             BufferElement::F32 => Ok(Self::F32(
                 bytes
-                    .chunks_exact(4)
-                    .map(|chunk| {
-                        f32::from_bits(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    })
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|chunk| f32::from_bits(u32::from_le_bytes(*chunk)))
                     .collect(),
             )),
             BufferElement::F64 => Ok(Self::F64(
                 bytes
-                    .chunks_exact(8)
-                    .map(|chunk| {
-                        f64::from_bits(u64::from_le_bytes([
-                            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
-                            chunk[7],
-                        ]))
-                    })
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|chunk| f64::from_bits(u64::from_le_bytes(*chunk)))
                     .collect(),
             )),
         }

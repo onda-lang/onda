@@ -119,6 +119,10 @@ impl DeclaredIo {
 }
 
 impl DeclaredState {
+    pub fn is_authored(&self) -> bool {
+        self.authored
+    }
+
     pub fn integer_range(&self) -> Option<onda_mir::IntegerRangeInvariant> {
         self.integer_range
     }

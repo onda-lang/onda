@@ -496,7 +496,14 @@ impl<'a> FunctionLowerer<'a> {
                     } else {
                         Value::Constant(zero_scalar(*ty))
                     };
-                    self.emit_state_array_value_fill(state, value, len, block, statement_location);
+                    self.emit_state_array_value_fill(
+                        state,
+                        *ty,
+                        value,
+                        len,
+                        block,
+                        statement_location,
+                    );
                 }
                 TypedFieldType::Tuple(types) => {
                     let defaults = if let Some(default) = &field.default {
@@ -546,6 +553,7 @@ impl<'a> FunctionLowerer<'a> {
                         let value = self.coerce(value, ty, block, expression.loc())?;
                         self.emit_state_array_value_fill(
                             state,
+                            ty,
                             value.value,
                             len,
                             block,
@@ -1229,6 +1237,16 @@ impl<'a> FunctionLowerer<'a> {
         self.bindings
             .insert(name.to_owned(), Binding::Array(local, element, len_u32));
 
+        let initialize = !matches!(
+            expression,
+            Expr::ArrayCtor {
+                initialize: false,
+                ..
+            }
+        );
+        if !initialize {
+            return Ok(true);
+        }
         for index in 0..len_u32 {
             let value = if let Some(values) = &values {
                 self.coerce(values[index as usize], element, block, expression.loc())?
@@ -1264,6 +1282,7 @@ impl<'a> FunctionLowerer<'a> {
     ) {
         self.emit_state_array_value_fill(
             state,
+            ty,
             Value::Constant(zero_scalar(ty)),
             len,
             block,
@@ -1274,71 +1293,37 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn emit_state_array_value_fill(
         &mut self,
         state: onda_mir::StateId,
+        ty: PrimitiveType,
         value: Value,
         len: u32,
         block: &mut MirBlock,
         location: SourceLoc,
     ) {
-        let whole_state = PrezeroedStateRegion {
-            state,
-            path: Vec::new(),
-        };
-        if scalar_value_is_all_bits_zero(value)
-            && self.prezeroed_init_state_is_known_zero(&whole_state)
-        {
-            return;
-        }
-
-        let index = self.new_local(None, PrimitiveType::I32);
-        self.assign_value(block, index, Value::Constant(ScalarValue::I32(0)), location);
-
-        let mut loop_body = MirBlock::default();
-        let in_range = self.compare_value(
-            &mut loop_body,
-            CompareOp::Less,
-            Value::Local(index),
-            Value::Constant(ScalarValue::I32(len as i32)),
-            location,
-        );
-        let mut fill = MirBlock::default();
-        self.push_statement(
-            &mut fill,
-            StatementKind::Assign {
-                destination: Place {
+        let destination = self.emit_slice_temp(
+            block,
+            None,
+            ty,
+            onda_mir::AccessMode::ReadWrite,
+            Rvalue::MakeSlice {
+                source: onda_mir::SliceSource::Place(Place {
                     base: PlaceBase::State(state),
-                    projections: vec![Projection::Index {
-                        index: Value::Local(index),
-                        bounds: BoundsMode::Unchecked,
-                    }],
-                },
-                value: Rvalue::Use(value),
+                    projections: Vec::new(),
+                }),
+                start: Value::Constant(ScalarValue::I32(0)),
+                len: Value::Constant(ScalarValue::I32(len as i32)),
+                bounds: BoundsMode::Unchecked,
+                access: onda_mir::AccessMode::ReadWrite,
             },
             location,
         );
         self.push_statement(
-            &mut fill,
-            StatementKind::Assign {
-                destination: Place::local(index),
-                value: Rvalue::Binary {
-                    op: MirBinaryOp::Add,
-                    lhs: Value::Local(index),
-                    rhs: Value::Constant(ScalarValue::I32(1)),
-                },
+            block,
+            StatementKind::SliceFill {
+                destination: destination.value,
+                value,
             },
             location,
         );
-        let mut finished = MirBlock::default();
-        self.push_statement(&mut finished, StatementKind::Break, location);
-        self.push_statement(
-            &mut loop_body,
-            StatementKind::If {
-                condition: in_range,
-                then_block: fill,
-                else_block: finished,
-            },
-            location,
-        );
-        self.push_statement(block, StatementKind::Loop { body: loop_body }, location);
     }
 
     pub(super) fn assign_variable_values(

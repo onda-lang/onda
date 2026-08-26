@@ -32,7 +32,12 @@ pub(super) fn promote_process_scalar_state(program: &mut Program, stats: &mut Pa
         .iter()
         .map(|state| StateAccess {
             eligible: matches!(program.types[state.ty.index()], Type::Scalar(_))
-                && state.persistence != StatePersistence::ControlMirror,
+                && state.persistence != StatePersistence::ControlMirror
+                // Task lifecycle stores deliberately commit before executing
+                // a resume region so a propagated runtime failure leaves the
+                // task Failed. Hoisting them into a process-local with only a
+                // normal-path epilogue would violate that contract.
+                && !state.name.contains("__onda_task_"),
             ..StateAccess::default()
         })
         .collect::<Vec<_>>();

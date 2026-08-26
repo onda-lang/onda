@@ -33,7 +33,7 @@ signed 32-bit values. Public LLVM entry points use the target's C calling conven
 WebAssembly modules use ordinary core-Wasm function calls.
 
 ```text
-onda_init(params: Ptr, state: Ptr) -> i32
+onda_processor_init(params: Ptr, state: Ptr, mode: InitMode) -> i32
 
 onda_process(
   state: Ptr,
@@ -60,14 +60,24 @@ onda_event_N(
 ) -> i32
 ```
 
-There is one `onda_event_N` for each declared event, in metadata order. The current ABI uses
-unprefixed symbol names and therefore permits one public processor namespace per artifact. A future
-ABI may add namespacing for multi-processor libraries without changing MIR.
+There is one `onda_event_N` for each declared event, in metadata order. The current ABI permits one
+public processor namespace per artifact. A future ABI may add artifact-specific namespacing for
+multi-processor libraries without changing MIR.
+
+`InitMode` has two portable values: `PRESERVE_PINNED = 0` and `FULL = 1`. Full initialization clears
+the physical state before running every declaration initializer, including pinned state and task
+continuations. Preserve-pinned initialization skips those guarded declarations and leaves their
+existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
+not transactional: a host that needs rollback must provide that policy itself.
+
+Processor ABI version 6 replaces the boolean-like `all` contract with this named mode enum. The
+instance-level C and WebAssembly host APIs use the same values. A failed initialization leaves the
+physical state indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is
 `RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
-cannot continue safely. The host must stop using the current processor state after any nonzero
-result; it may discard the instance or reset its state and call `onda_init` again.
+cannot continue safely. After a nonzero init result, the supplied state image is indeterminate and
+must not be processed until the host successfully initializes or restores it.
 
 The process order intentionally places state, parameters, and audio tables before segment controls
 and optional buffer tables. This keeps the hottest pointers in argument registers on common native
@@ -114,7 +124,7 @@ relocatable `linking` section. It does not pretend that the object is directly i
 
 `include/onda_processor_abi.h` is the canonical C declaration of the current ABI entry points. An
 application links the emitted object, allocates storage from the exact paired descriptor, builds the
-input/output and external-buffer pointer tables, and calls `onda_init`, `onda_process`, and any
+input/output and external-buffer pointer tables, and calls `onda_processor_init`, `onda_process`, and any
 `onda_event_N` functions directly. No Onda runtime or compiler library is required.
 
 The application must reject descriptor/ABI versions it does not implement and must verify that the
@@ -137,23 +147,28 @@ contract as an LLVM object and does not make Web Audio part of the ABI.
 ## Storage and initialization
 
 The host allocates non-overlapping parameter and physical-state regions using the sizes and minimum
-alignments in `runtime`. It initializes parameter defaults from program metadata, zeroes physical
-state, and calls `onda_init` before processing. Physical state uses the backend's selected target
-layout and is otherwise opaque.
+alignments in `runtime`. It initializes parameter defaults from program metadata and calls
+`onda_processor_init(params, state, FULL)` before processing. Physical state uses the backend's selected
+target layout and is otherwise opaque.
 
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
 artifact descriptor. Scratch state is deliberately absent from snapshots.
 
+`metadata.states` includes every packed snapshot entry. Its `authored` flag preserves the explicit
+MIR state provenance and is false for compiler-owned task frames, allowing snapshot implementations
+to preserve suspended tasks while authored-state reflection omits their implementation storage.
+
 ## Portable snapshots
 
 The packed persistent-state snapshot is target-independent. The current snapshot format encodes
-declared scalar elements in little-endian byte order, in metadata order, without physical padding or
-scratch state. This is distinct from the target-native physical state image, which can use another
-byte order or alignment.
+persistent scalar elements in little-endian byte order, in metadata order, without physical padding
+or scratch state. It includes pinned authored roots and compiler-owned task frames. This is
+distinct from the target-native physical state image, which can use another byte order or alignment.
 
-Restore begins from a freshly zeroed state followed by `onda_init`, then overlays every persistent
-entry from the packed snapshot. This resets instance scratch while preserving declared persistent
-state. A host converting between a big-endian physical target and the portable snapshot must encode
+Restore begins with `onda_processor_init(params, state, FULL)`, then overlays every persistent entry
+from the packed snapshot. This resets instance scratch while preserving persistent state and task
+continuations.
+A host converting between a big-endian physical target and the portable snapshot must encode
 and decode each scalar according to metadata rather than copying physical bytes wholesale.
 
 Processor ABI version 4 adds optional `integer_range` metadata to scalar `i32` and `i64` state.
@@ -291,7 +306,9 @@ Bounds checks, integer division, and other generated safety checks return
 `RUNTIME_SAFETY_FAILURE` instead of trapping. Invalid host pointers, storage extents, or other
 violations of the raw ABI remain outside generated-code recovery and can still trap or cause
 undefined behavior. A host must treat every nonzero execution result as a failed processor state
-instead of continuing with potentially partial state or output writes.
+instead of continuing with potentially partial state or output writes. Audio hosts discard partial
+output and emit silence for the failed render interval and every later interval until full
+initialization or snapshot restoration establishes valid state again.
 
 ## Web Audio reference adapter
 

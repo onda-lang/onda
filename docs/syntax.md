@@ -528,8 +528,10 @@ sample code with per-block work.
 
 ### `init`
 
-`init` runs when an instance is created or reset. It creates persistent state
-and usually constructs structs and processors.
+`init` creates persistent state and usually constructs structs and processors.
+Hosts may either create an initialized instance or allocate an uninitialized
+instance, configure its parameters and bindings, and explicitly request full
+initialization before processing.
 
 ```onda
 init:
@@ -546,6 +548,16 @@ Typical uses:
 - Construct proc instances.
 - Perform one-time setup.
 
+Host `init(PRESERVE_PINNED)` preserves pinned roots and task continuations while
+rerunning ordinary declaration initializers and every explicit init statement.
+Host `init(FULL)` also reruns the declaration initializers for pinned roots and
+task continuations, and is required before stateful operations on an
+uninitialized instance. Both modes execute directly against the instance's
+single state image and allocate no memory on the successful path. Their
+execution cost depends on the authored initializer; a runtime failure leaves
+instance state indeterminate. Initialized convenience creation is equivalent to
+allocating storage, writing parameter defaults, and running `init(FULL)`.
+
 Section default scalar types are supported:
 
 ```onda
@@ -561,6 +573,32 @@ Rules:
 - `const` declarations are allowed inside `init`.
 - Declaration order is lexical.
 - A fresh assignment inside nested control flow in `init` is local to that flow, not persistent state.
+
+A direct persistent binding can opt out of default initialization with the `pin`
+modifier:
+
+```onda
+init:
+  pin prepared: f32[4096]
+  pin generation: i32 = 0
+  history: f32[128]
+```
+
+`init(PRESERVE_PINNED)` preserves `prepared` and `generation` while reinitializing
+`history`. Initialized construction and `init(FULL)` initialize every binding. Snapshots
+include both policies and restore the captured values; `pin` affects
+initialization, not snapshot semantics. Integer-domain attributes remain
+independent, for example
+`pin partition = 0 {MaxPartitions, wrap}`.
+
+The modifier is valid only on a fresh persistent value binding introduced
+directly by `init`. It applies to the complete state root and supports primitive
+scalars, fixed arrays, tuples, structs, and arrays of structs. Individual fields
+or elements cannot select another policy unless they are separate init roots.
+Proc instances and proc arrays cannot be pinned; their child state owns
+its pin status. Params, inputs, outputs, buffers, locals, aliases, and constants
+cannot be pinned either. `pin` is not valid on a nested assignment or an update
+to an existing binding.
 
 ```onda
 init:
@@ -982,7 +1020,10 @@ for i in 0..8:
 for i in 0..=8:
   sum = sum + f32(i)
 
-for i @ -1 in 10..0:
+for i: i64 in (i64(2147483648))..(i64(2147483650)):
+  sum = sum + f32(i)
+
+for i: i64 @ -1 in 10..0:
   dst[i] = src[i]
 
 loop 8:
@@ -995,12 +1036,13 @@ while sum < 1.0:
 Rules:
 
 - `for i in A..B` excludes `B`; `for i in A..=B` includes `B`.
+- Loop variables default to `i32`; annotate them as `i32` or `i64` with
+  `for i: TYPE in ...` when an explicit induction width is required.
 - `@ STEP` defaults to `1`; `@ 0` is invalid.
 - Descending loops use a negative step.
 - `loop N` is shorthand for `for _ in 0..N`.
-- Loop variables are immutable values local to the loop body. Runtime loop
-  variables are `i32`; assign a new local when an iteration-derived value
-  needs to be changed.
+- Loop variables are immutable values local to the loop body. Assign a new
+  local when an iteration-derived value needs to be changed.
 - Fresh symbols created inside loops do not escape the loop.
 - A fresh symbol created in every continuing branch of an `if` is available
   afterward. Numeric scalar and tuple-element types join to the smallest type
@@ -1104,6 +1146,11 @@ Return rules:
 
 - A `def` can return a primitive scalar.
 - A `def` can return a tuple of primitive scalars.
+- A runtime `def` with no explicit return type and no `return EXPR` is
+  non-value-returning. It may use bare `return` for early exit and can only be
+  called as a statement.
+- Bare and value returns cannot be mixed. A `def` with an explicit return type
+  rejects bare `return`.
 - A value-returning `def` must return a value on every reachable path. A
   return nested only in a `for` or `while` loop is not sufficient because the
   loop may execute zero times.
@@ -1112,6 +1159,7 @@ Return rules:
 - Return checking follows ordinary assignment rules: exact match and implicit widening are allowed; narrowing requires an explicit cast.
 - Runtime def call graphs must be acyclic. Direct and mutual recursion are
   rejected because they do not provide a statically bounded realtime workload.
+- `const def` remains value-returning and does not accept bare `return`.
 
 Top-level `def` bodies are lexical-local. Top-level runtime symbols such as
 inputs, outputs, params, buffers, and `init` state are not in scope unless
@@ -1389,19 +1437,19 @@ Rules:
 - Named param args are not supported inside logical `&&` / `||` expressions or `while` conditions.
 - For `kouts` procs, use `kout1` or named control outputs.
 
-### Pinned Params
+### Private Params
 
-Use `pin` when a proc param should be initialized and updated only through that
-proc's controlled code path.
+Use `private` when a proc param should be initialized and updated only through
+that proc's controlled code path.
 
 ```onda
 proc Filter:
   params:
-    pin cutoff = 1000.0
-    pin q = 0.707
+    private cutoff = 1000.0
+    private q = 0.707
 ```
 
-Pinned params:
+Private params:
 
 - Can be set by the constructor.
 - Can be set by the builtin proc `init(...)` event.
@@ -1409,7 +1457,7 @@ Pinned params:
 - Cannot be accessed directly from outside through `child.cutoff`, `child.cutoff = ...`, `child.coeffs[i]`, `child.coeffs[i] = ...`, or `child(cutoff = ...)`.
 - Cause external dynamic `child.params[i]` access to be rejected for that child proc.
 
-`pin` is a reserved keyword. It is only valid as a proc-param prefix.
+`private` is a reserved keyword. It is only valid as a proc-param prefix.
 
 ### Param Update Hooks
 
@@ -1473,14 +1521,137 @@ Proc-event rules:
 - Generic proc events can use generic primitive placeholders such as `T`, `T[N]`, and `T[]`.
 
 Every proc also gets a reserved builtin `init(...)` event. It mirrors the proc
-params in declaration order, assigns provided values into params, reruns that
-proc instance's `init`, then runs bound param hooks. Omitted args use defaults.
+params in declaration order and adds `all: bool = false`, assigns
+provided values into params, reruns that proc instance's `init`, then runs bound
+param hooks. Omitted args use defaults.
+
+By default the call preserves pinned roots and compiler-pinned state such as
+task continuations while reinitializing resettable roots. Passing
+`all = true` performs the full initialization used by fresh proc
+construction. Explicit operations in the initializer still run in either
+mode, so a `task.reset()` written there remains effective.
 
 ```onda
 voice.init(0.5)
 voice.init(gain = 0.5)
 voices[i].init(freq = 220.0, amp = 0.1)
+voice.init(all = true)
 ```
+
+`all` is reserved as a proc parameter name.
+
+### Tasks
+
+The top-level program and procs can declare statically allocated cooperative
+tasks. They spread divisible preparation work, such as convolution-kernel or
+lookup-table construction, over multiple logical blocks without dynamic
+allocation or worker threads. The standalone and grouped forms are equivalent:
+
+```onda
+proc Loader:
+  task prepare():
+    build_header()
+    yield
+    build_body()
+
+  tasks:
+    clear():
+      clear_cache()
+```
+
+The same declarations work at top level:
+
+```onda
+task prepare():
+  build_header()
+  yield
+  build_body()
+
+block:
+  await prepare()
+  sample:
+    out1 = render()
+```
+
+Tasks take no arguments and return no values. They implicitly see their
+owner's params, buffers, and init-rooted state, but cannot directly read audio
+inputs, write owner outputs, invoke their owner's event handlers, or invoke
+other tasks. They may call builtins and non-yielding defs visible from the
+owner, call block-rate processor steps, and synchronously call child-proc
+events, including the child's builtin `init(...)` event. Sample-rate processor
+steps remain sample-only and therefore cannot be called by a task, directly or
+through a def.
+`yield` suspends the current task; bare `return` or reaching the end completes
+it. A task runs synchronously on the process thread until one of those points;
+`yield` is a cooperative boundary, not a time budget or preemption point.
+
+The owner advances a task with `await` from block-pre control flow:
+
+```onda
+block:
+  await prepare()
+
+  sample:
+    out1 = process(in1)
+```
+
+If the task yields or has failed, the owner stops that activation and produces
+neutral outputs. For a top-level task those are the program outputs; for a proc
+task only that proc becomes neutral and its parent continues normally. If the
+task completes, execution continues after `await` in the same logical block. A
+task is reset explicitly with `prepare.reset()` from the owner's `init`, event,
+or block-pre scope.
+
+The containing block is not a coroutine. Its block-pre control flow starts from
+the beginning on each activation, so statements and conditions before an
+`await` are evaluated again. Completed tasks fall through without rerunning;
+the first reached task that yields stops the activation. An incomplete task has
+no effect when ordinary control flow bypasses its `await`, leaving the program
+responsible for not exposing partially prepared state.
+
+Each proc instance, including each element of a proc array, owns independent
+task continuations. An explicitly called block-rate proc runs its block body,
+including any reached `await`, on every call just like other block-rate proc
+code. Sample-rate proc instances scheduled statically run their block-pre
+activation at most once at logical-block begin; a runtime-indexed proc-array
+element runs it lazily on its first sample-rate call in that logical block.
+Splitting a logical block into process segments never grants additional
+resumptions to those scheduled activations, and a zero-frame begin-block
+segment still advances statically scheduled tasks.
+
+Task continuations are compiler-pinned state. Preserve-pinned initialization preserves
+them. Proc `init(all = true)` and host-level `init(FULL)` restore them to
+not-started. An explicit `prepare.reset()` in an initializer always runs. Tasks
+may use both pinned and resettable state; after default initialization, a
+suspended task observes the reinitialized resettable values when it resumes.
+Snapshots include task status and continuation storage, so restoring a suspended
+task resumes it from the captured suspension point.
+
+`reset()` invalidates the continuation in constant time. It does not eagerly
+clear task-frame storage: restarting the task executes its declarations and
+initializers before that storage can be observed again. Full initialization
+still initializes the complete continuation image.
+
+Locals that are live across a `yield`, including fixed aggregates and loop
+control, become statically allocated continuation state. Runtime handles cannot
+cross a suspension point: buffer descriptors, slices, proc aliases, and other
+reference-like values must be dead at `yield` and reacquired after resumption.
+The compiler rejects only references that are live across the boundary.
+
+Tasks read owner params and current buffer mappings whenever they resume.
+Changing a parameter or rebinding a buffer does not reset a task automatically;
+the program must call `reset()` when previously prepared or partially prepared
+state is no longer valid.
+
+A runtime failure reports through the failing process call and invalidates the
+processor state. Hosts must emit silence and reject further stateful operations
+until full initialization or snapshot restoration succeeds. This is the same
+fail-closed behavior as a runtime failure outside a task.
+
+Tasks are private to their owner and share that owner's declaration namespace.
+They cannot be used with a `graph` block. `await` is valid only in structured
+block-pre control flow; task reset is valid only in owner `init`, event, and
+block-pre code. Neither operation is a first-class callable value.
 
 ### Proc-Local Defs
 
@@ -1957,7 +2128,7 @@ or stored from `init`, `event`, or top-level `def` bodies.
 - Top-level `kins` aliases `params`.
 - Control-flow keywords are reserved: `if`, `elif`, `else`, `for`, `in`, `while`, `loop`, `break`, `continue`, `return`, and `assert`.
 - `in` separates the loop variable from its range in `for i in A..B`; use names such as `input` for ports and variables.
-- `import`, `include`, `use`, `as`, `pub`, and `pin` are reserved for their declaration and modifier syntax.
+- `import`, `include`, `use`, `as`, `pub`, `private`, and `pin` are reserved for their declaration and modifier syntax.
 - `true` and `false` are reserved boolean literals.
 - Identifiers beginning with `__onda_` are reserved for compiler-generated symbols.
 - Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.

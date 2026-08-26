@@ -128,12 +128,6 @@
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
 
 - Range-analysis follow-ups
-  - Evaluate explicit loop-variable types, for example `for i: i32 in ...` and
-    `for i: i64 in ...`, while retaining `i32` as the default. The selected type should be the
-    actual induction type end to end: do not introduce hidden widened counters, per-iteration
-    narrowing, clamping, or overflow checks. Specify endpoint/overflow behavior as ordinary
-    integer arithmetic, leaving progress and termination to the source program, and preserve
-    range facts for bounds-proof elimination at either width.
   - Add source syntax for refined integer function parameters. Ranged `i32`/`i64` locals and state,
     normalization on stores, erased physical representation, conservative MIR range propagation,
     loop induction facts, call-boundary propagation, and fixed-array bounds-check elimination are

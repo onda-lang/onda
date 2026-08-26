@@ -208,16 +208,6 @@ pub(crate) fn is_declared_data_array_symbol(
     )
 }
 
-pub(crate) fn is_invalid_placeholder_symbol(
-    declared_symbols: &DeclaredSymbolMap,
-    name: &str,
-) -> bool {
-    matches!(
-        declared_symbols.get(name),
-        Some(DeclaredSymbolInfo::InvalidPlaceholder)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,50 +7,39 @@ struct RuntimeManagedProcArray {
     active_symbol: String,
 }
 
-fn try_dynamic_proc_call_meta<'a>(
-    expr: &'a Expr,
-    proc_api: &HashMap<String, ProcApi>,
-) -> Option<(&'a str, &'a [CallArg], &'a str, &'a Expr)> {
-    let Expr::UserCall { name, args, .. } = expr else {
-        return None;
-    };
-    let proc_name = if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
-        step_proc
-    } else if let Some((call_proc, out_idx_raw)) = name.rsplit_once(PROC_CALL_OUT_FN_PREFIX) {
-        if out_idx_raw.parse::<usize>().is_ok() {
-            call_proc
-        } else {
-            return None;
-        }
-    } else {
-        return None;
-    };
-    let api = proc_api.get(proc_name)?;
-    if !api.has_block {
-        return None;
-    }
-    let self_arg = args.first()?;
-    let Expr::Index { base, index, .. } = &self_arg.expr else {
-        return None;
-    };
-    if matches!(index.as_ref(), Expr::Int { .. }) {
-        return None;
-    }
-    Some((proc_name, args, base.as_str(), index.as_ref()))
-}
-
 fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
-    stmt: Stmt,
+    mut stmt: Stmt,
     proc_api: &HashMap<String, ProcApi>,
     proc_array_slots: &HashMap<String, Vec<String>>,
     runtime_managed_arrays: &mut HashMap<String, RuntimeManagedProcArray>,
+    temp_counter: &mut usize,
 ) -> Vec<Stmt> {
+    fn temp_name(temp_counter: &mut usize, purpose: &str) -> String {
+        let id = *temp_counter;
+        *temp_counter += 1;
+        format!("__onda_dynamic_proc_{purpose}_{id}")
+    }
+
+    fn assign_temp(name: String, expr: Expr, ty: Option<PrimitiveType>) -> Stmt {
+        Stmt::Assign {
+            loc: Default::default(),
+            target_loc: Default::default(),
+            target: AssignTarget::Var(name),
+            decl_ty: ty,
+            generic_decl_ty: None,
+            is_typed_decl: ty.is_some(),
+            typed_decl_ty_loc: Default::default(),
+            expr,
+        }
+    }
+
     fn collect_guards_from_expr(
-        expr: &Expr,
+        expr: &mut Expr,
         proc_api: &HashMap<String, ProcApi>,
         proc_array_slots: &HashMap<String, Vec<String>>,
         runtime_managed_arrays: &mut HashMap<String, RuntimeManagedProcArray>,
         guards: &mut Vec<Stmt>,
+        temp_counter: &mut usize,
     ) {
         match expr {
             Expr::Index { index, .. } => collect_guards_from_expr(
@@ -59,6 +48,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                 proc_array_slots,
                 runtime_managed_arrays,
                 guards,
+                temp_counter,
             ),
             Expr::Slice {
                 selector,
@@ -74,16 +64,18 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                         proc_array_slots,
                         runtime_managed_arrays,
                         guards,
+                        temp_counter,
                     );
                 }
             }
             Expr::ArrayCtor { spec, init, .. } => {
                 collect_guards_from_expr(
-                    &spec.size,
+                    &mut spec.size,
                     proc_api,
                     proc_array_slots,
                     runtime_managed_arrays,
                     guards,
+                    temp_counter,
                 );
                 if let Some(values) = init {
                     for value in values {
@@ -93,19 +85,63 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                             proc_array_slots,
                             runtime_managed_arrays,
                             guards,
+                            temp_counter,
                         );
                     }
                 }
             }
-            Expr::Compare { lhs, rhs, .. }
-            | Expr::Logical { lhs, rhs, .. }
-            | Expr::Binary { lhs, rhs, .. } => {
+            Expr::Logical { op, lhs, rhs, .. } => {
                 collect_guards_from_expr(
                     lhs,
                     proc_api,
                     proc_array_slots,
                     runtime_managed_arrays,
                     guards,
+                    temp_counter,
+                );
+                let mut rhs_guards = Vec::new();
+                collect_guards_from_expr(
+                    rhs,
+                    proc_api,
+                    proc_array_slots,
+                    runtime_managed_arrays,
+                    &mut rhs_guards,
+                    temp_counter,
+                );
+                if !rhs_guards.is_empty() {
+                    // Keep hook execution behind the language's short-circuit
+                    // boundary while still producing one expression result.
+                    let result = temp_name(temp_counter, "condition");
+                    guards.push(assign_temp(
+                        result.clone(),
+                        lhs.as_ref().clone(),
+                        Some(PrimitiveType::Bool),
+                    ));
+                    let branch_cond = match op {
+                        LogicalOp::And => Expr::var(result.clone()),
+                        LogicalOp::Or => Expr::UnaryNot {
+                            loc: Default::default(),
+                            expr: Box::new(Expr::var(result.clone())),
+                        },
+                    };
+                    rhs_guards.push(assign_temp(result.clone(), rhs.as_ref().clone(), None));
+                    guards.push(Stmt::If {
+                        loc: Default::default(),
+                        cond: branch_cond,
+                        then_branch: rhs_guards,
+                        else_branch: Vec::new(),
+                    });
+                    *expr = Expr::var(result);
+                }
+            }
+            Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
+                collect_guards_from_expr(
+                    lhs,
+                    proc_api,
+                    proc_array_slots,
+                    runtime_managed_arrays,
+                    guards,
+                    temp_counter,
                 );
                 collect_guards_from_expr(
                     rhs,
@@ -113,48 +149,81 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     proc_array_slots,
                     runtime_managed_arrays,
                     guards,
+                    temp_counter,
                 );
             }
             Expr::Call { args, .. } => {
-                for arg in args {
+                for arg in args.iter_mut() {
                     collect_guards_from_expr(
                         arg,
                         proc_api,
                         proc_array_slots,
                         runtime_managed_arrays,
                         guards,
+                        temp_counter,
                     );
                 }
             }
             Expr::UserCall { name: _, args, .. } => {
-                for arg in args {
+                for arg in args.iter_mut() {
                     collect_guards_from_expr(
-                        &arg.expr,
+                        &mut arg.expr,
                         proc_api,
                         proc_array_slots,
                         runtime_managed_arrays,
                         guards,
+                        temp_counter,
                     );
                 }
-                let Some((proc_name, args, array_base, index_expr)) =
-                    try_dynamic_proc_call_meta(expr, proc_api)
-                else {
+                let Expr::UserCall { name, args, .. } = expr else {
+                    unreachable!();
+                };
+                let proc_name = if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
+                    step_proc
+                } else if let Some((call_proc, out_idx_raw)) =
+                    name.rsplit_once(PROC_CALL_OUT_FN_PREFIX)
+                {
+                    if out_idx_raw.parse::<usize>().is_ok() {
+                        call_proc
+                    } else {
+                        return;
+                    }
+                } else {
                     return;
                 };
                 let Some(api) = proc_api.get(proc_name) else {
                     return;
                 };
-                let Some(slots) = proc_array_slots.get(array_base) else {
+                if !proc_needs_block_hooks(api) {
+                    return;
+                }
+                let Some(CallArg {
+                    expr: Expr::Index { base, index, .. },
+                    ..
+                }) = args.first_mut()
+                else {
+                    return;
+                };
+                if matches!(index.as_ref(), Expr::Int { .. }) {
+                    return;
+                }
+                let array_base = base.clone();
+                let Some(slots) = proc_array_slots.get(&array_base) else {
                     return;
                 };
                 runtime_managed_arrays
-                    .entry(array_base.to_owned())
+                    .entry(array_base.clone())
                     .or_insert_with(|| RuntimeManagedProcArray {
                         proc_name: proc_name.to_owned(),
                         slots: slots.clone(),
-                        active_symbol: runtime_proc_array_active_symbol(array_base),
+                        active_symbol: runtime_proc_array_active_symbol(&array_base),
                     });
-                let active_symbol = runtime_proc_array_active_symbol(array_base);
+                let active_symbol = runtime_proc_array_active_symbol(&array_base);
+                // The selector participates in the hook and the original call;
+                // cache it so source evaluation still happens exactly once.
+                let selector = temp_name(temp_counter, "selector");
+                guards.push(assign_temp(selector.clone(), index.as_ref().clone(), None));
+                **index = Expr::var(selector.clone());
                 let input_slots = api.ins.iter().map(|port| port.slots.len()).sum::<usize>();
                 let buffer_start = 1 + input_slots;
                 let mut pre_args = Vec::<CallArg>::new();
@@ -162,8 +231,8 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     name: None,
                     expr: Expr::Index {
                         loc: Default::default(),
-                        base: array_base.to_owned(),
-                        index: Box::new(index_expr.clone()),
+                        base: array_base,
+                        index: Box::new(Expr::var(selector.clone())),
                     },
                 });
                 pre_args.extend(args.iter().skip(buffer_start).cloned());
@@ -174,7 +243,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                         expr: Box::new(Expr::Index {
                             loc: Default::default(),
                             base: active_symbol.clone(),
-                            index: Box::new(index_expr.clone()),
+                            index: Box::new(Expr::var(selector.clone())),
                         }),
                     },
                     then_branch: vec![
@@ -192,7 +261,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                             target_loc: Default::default(),
                             target: AssignTarget::Index {
                                 base: active_symbol,
-                                index: index_expr.clone(),
+                                index: Expr::var(selector),
                             },
                             decl_ty: None,
                             generic_decl_ty: None,
@@ -213,16 +282,18 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     proc_array_slots,
                     runtime_managed_arrays,
                     guards,
+                    temp_counter,
                 );
             }
             Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-                for value in values {
+                for value in values.iter_mut() {
                     collect_guards_from_expr(
                         value,
                         proc_api,
                         proc_array_slots,
                         runtime_managed_arrays,
                         guards,
+                        temp_counter,
                     );
                 }
             }
@@ -231,7 +302,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
     }
 
     let mut guards = Vec::<Stmt>::new();
-    match &stmt {
+    match &mut stmt {
         Stmt::Expr { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
             collect_guards_from_expr(
                 expr,
@@ -239,6 +310,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                 proc_array_slots,
                 runtime_managed_arrays,
                 &mut guards,
+                temp_counter,
             );
         }
         _ => {}
@@ -253,17 +325,18 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
         Stmt::Const { .. } => Vec::new(),
         Stmt::If {
             loc,
-            cond,
+            mut cond,
             then_branch,
             else_branch,
         } => {
             let mut cond_guards = Vec::<Stmt>::new();
             collect_guards_from_expr(
-                &cond,
+                &mut cond,
                 proc_api,
                 proc_array_slots,
                 runtime_managed_arrays,
                 &mut cond_guards,
+                temp_counter,
             );
             let mut rewritten_then = Vec::<Stmt>::new();
             for nested in then_branch {
@@ -272,6 +345,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     proc_api,
                     proc_array_slots,
                     runtime_managed_arrays,
+                    temp_counter,
                 ));
             }
             let mut rewritten_else = Vec::<Stmt>::new();
@@ -281,6 +355,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     proc_api,
                     proc_array_slots,
                     runtime_managed_arrays,
+                    temp_counter,
                 ));
             }
             cond_guards.push(Stmt::If {
@@ -294,34 +369,38 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
         Stmt::For {
             loc,
             var,
-            start,
-            end,
-            step,
+            var_ty,
+            mut start,
+            mut end,
+            mut step,
             end_inclusive,
             body,
         } => {
             let mut range_guards = Vec::<Stmt>::new();
             collect_guards_from_expr(
-                &start,
+                &mut start,
                 proc_api,
                 proc_array_slots,
                 runtime_managed_arrays,
                 &mut range_guards,
+                temp_counter,
             );
             collect_guards_from_expr(
-                &end,
+                &mut end,
                 proc_api,
                 proc_array_slots,
                 runtime_managed_arrays,
                 &mut range_guards,
+                temp_counter,
             );
-            if let Some(step_expr) = &step {
+            if let Some(step_expr) = &mut step {
                 collect_guards_from_expr(
                     step_expr,
                     proc_api,
                     proc_array_slots,
                     runtime_managed_arrays,
                     &mut range_guards,
+                    temp_counter,
                 );
             }
             let mut rewritten_body = Vec::<Stmt>::new();
@@ -331,11 +410,13 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     proc_api,
                     proc_array_slots,
                     runtime_managed_arrays,
+                    temp_counter,
                 ));
             }
             range_guards.push(Stmt::For {
                 loc,
                 var,
+                var_ty,
                 start,
                 end,
                 step,
@@ -344,14 +425,19 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
             });
             range_guards
         }
-        Stmt::While { loc, cond, body } => {
+        Stmt::While {
+            loc,
+            mut cond,
+            body,
+        } => {
             let mut cond_guards = Vec::<Stmt>::new();
             collect_guards_from_expr(
-                &cond,
+                &mut cond,
                 proc_api,
                 proc_array_slots,
                 runtime_managed_arrays,
                 &mut cond_guards,
+                temp_counter,
             );
             let mut rewritten_body = Vec::<Stmt>::new();
             for nested in body {
@@ -360,14 +446,36 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     proc_api,
                     proc_array_slots,
                     runtime_managed_arrays,
+                    temp_counter,
                 ));
             }
-            cond_guards.push(Stmt::While {
-                loc,
-                cond,
-                body: rewritten_body,
-            });
-            cond_guards
+            if cond_guards.is_empty() {
+                vec![Stmt::While {
+                    loc,
+                    cond,
+                    body: rewritten_body,
+                }]
+            } else {
+                // Condition hooks belong to each evaluation, including the one
+                // that terminates the loop.
+                cond_guards.push(Stmt::If {
+                    loc: Default::default(),
+                    cond: Expr::UnaryNot {
+                        loc: Default::default(),
+                        expr: Box::new(cond),
+                    },
+                    then_branch: vec![Stmt::Break {
+                        loc: Default::default(),
+                    }],
+                    else_branch: Vec::new(),
+                });
+                cond_guards.extend(rewritten_body);
+                vec![Stmt::While {
+                    loc,
+                    cond: Expr::bool(true),
+                    body: cond_guards,
+                }]
+            }
         }
         _ => vec![stmt],
     }
@@ -641,6 +749,7 @@ fn top_level_constructor_array_symbols(program: &Program) -> HashSet<String> {
 
 pub(super) fn rewrite_top_level_proc_calls(
     program: &mut Program,
+    runtime_def_names: &HashSet<String>,
     options: AnalysisOptions,
     proc_defs_by_name: &HashMap<String, ProcessorDef>,
     lowering_shapes: &HashMap<String, ProcLoweringShape>,
@@ -653,6 +762,7 @@ pub(super) fn rewrite_top_level_proc_calls(
     let mut global_proc_instance_oversample_factors = HashMap::<String, usize>::new();
     let mut global_proc_array_broadcast_slots = HashMap::<String, (usize, usize)>::new();
     let mut runtime_managed_arrays = HashMap::<String, RuntimeManagedProcArray>::new();
+    let mut dynamic_hook_temp_counter = 0;
     let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
     if let Some(Block::Init(init)) = program
         .blocks
@@ -713,7 +823,11 @@ pub(super) fn rewrite_top_level_proc_calls(
                         {
                             *init = None;
                         }
-                        expanded.push(decl_stmt);
+                        // The aggregate declaration materializes every flattened processor
+                        // field, including pinned fields owned by nested tasks. The generated
+                        // processor init below handles ordinary fields on every init, so the
+                        // aggregate defaults are only valid during a full init.
+                        expanded.extend(mark_pinned_initializer_stmt(decl_stmt));
                     }
                     for idx in 0..len {
                         let mut args = Vec::<CallArg>::new();
@@ -880,7 +994,11 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 type_args.clear();
                                 args.clear();
                             }
-                            rewritten_init.push(ctor_stmt);
+                            // Keep the aggregate declaration for state/type discovery, but do
+                            // not let its flattened defaults overwrite pinned processor fields
+                            // during an ordinary init. The processor init emitted below still
+                            // reinitializes all non-pinned fields.
+                            rewritten_init.extend(mark_pinned_initializer_stmt(ctor_stmt));
                         }
                         if let Some(shape) = lowering_shapes.get(ctor_name) {
                             let proc_array_slot =
@@ -925,13 +1043,19 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     loc: Default::default(),
                                     name: format!("{ctor_name}{PROC_INIT_FN_SUFFIX}"),
                                     type_args: Vec::new(),
-                                    args: vec![CallArg {
-                                        name: None,
-                                        expr: proc_instance_self_expr(
-                                            var,
-                                            &global_proc_array_slots,
-                                        ),
-                                    }],
+                                    args: vec![
+                                        CallArg {
+                                            name: None,
+                                            expr: proc_instance_self_expr(
+                                                var,
+                                                &global_proc_array_slots,
+                                            ),
+                                        },
+                                        CallArg {
+                                            name: None,
+                                            expr: Expr::var(TOP_LEVEL_INIT_ALL_NAME),
+                                        },
+                                    ],
                                 },
                             });
                         } else {
@@ -941,13 +1065,19 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     loc: Default::default(),
                                     name: format!("{ctor_name}{PROC_INIT_FN_SUFFIX}"),
                                     type_args: Vec::new(),
-                                    args: vec![CallArg {
-                                        name: None,
-                                        expr: proc_instance_self_expr(
-                                            var,
-                                            &global_proc_array_slots,
-                                        ),
-                                    }],
+                                    args: vec![
+                                        CallArg {
+                                            name: None,
+                                            expr: proc_instance_self_expr(
+                                                var,
+                                                &global_proc_array_slots,
+                                            ),
+                                        },
+                                        CallArg {
+                                            name: None,
+                                            expr: Expr::var(TOP_LEVEL_INIT_ALL_NAME),
+                                        },
+                                    ],
                                 },
                             });
                         }
@@ -986,7 +1116,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         let Some(api) = proc_api.get(&instance.proc_name) else {
             continue;
         };
-        if !api.has_block {
+        if !proc_needs_block_hooks(api) {
             continue;
         }
         runtime_managed_arrays
@@ -1076,7 +1206,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 );
                 continue;
             };
-            if !api.has_block {
+            if !proc_needs_block_hooks(api) {
                 continue;
             }
             let mut pre_args = Vec::<CallArg>::new();
@@ -1186,6 +1316,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 proc_api,
                                 &global_proc_array_slots,
                                 &mut runtime_managed_arrays,
+                                &mut dynamic_hook_temp_counter,
                             ),
                         );
                     }
@@ -1214,11 +1345,21 @@ pub(super) fn rewrite_top_level_proc_calls(
                         proc_api,
                         &global_proc_array_slots,
                         &mut runtime_managed_arrays,
+                        &mut dynamic_hook_temp_counter,
                     ));
                 }
                 stmts.body = rewritten_sample;
             }
-            Block::Def(_def) => {}
+            Block::Def(def) if runtime_def_names.contains(&def.name) => {
+                rewrite_proc_calls_in_stmts(
+                    &mut def.body,
+                    &global_proc_instances,
+                    &global_proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+            }
+            Block::Def(_) => {}
             Block::Events(events) => {
                 for event in events {
                     rewrite_proc_calls_in_stmts(
@@ -1259,6 +1400,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                             size: Box::new(Expr::int(len as i64)),
                         },
                         init: Some(vec![Expr::bool(false); len]),
+                        initialize: true,
                     },
                 });
             }

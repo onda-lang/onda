@@ -3,7 +3,7 @@ import { closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { createCompiler } from "@onda-lang/wasm-compiler";
 import {
   compileOndaProcessorModule,
-  createOndaAudioProcessor,
+  createOndaAudioProcessorInitialized,
   flattenedAudioChannelCount,
 } from "@onda-lang/webaudio";
 
@@ -669,7 +669,7 @@ async function startAudio() {
     const params = Object.fromEntries(
       runView.state.params.map((param) => [param.name, param.value]),
     );
-    audioProcessor = await createOndaAudioProcessor(context, artifact, {
+    audioProcessor = await createOndaAudioProcessorInitialized(context, artifact, {
       compiledModule,
       params,
       buffers,

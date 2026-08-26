@@ -1188,7 +1188,7 @@ fn stmt_list_contains_return(stmts: &[Stmt]) -> bool {
 
 fn stmt_contains_return(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Return { .. } => true,
+        Stmt::Return { expr, .. } => !is_bare_return_expr(expr),
         Stmt::If {
             then_branch,
             else_branch,
@@ -1260,40 +1260,6 @@ fn proc_options_for_shape(
     )
 }
 
-fn infer_numbered_names_from_proc(proc: &onda_frontend::ProcessorDef) -> IoInference {
-    let mut inferred = IoInference::default();
-    for stmt in &proc.init.body {
-        infer_io_from_stmt(stmt, &mut inferred);
-    }
-    for stmt in &proc.block_pre {
-        infer_io_from_stmt(stmt, &mut inferred);
-    }
-    for stmt in &proc.sample {
-        infer_io_from_stmt(stmt, &mut inferred);
-    }
-    for stmt in &proc.block_post {
-        infer_io_from_stmt(stmt, &mut inferred);
-    }
-    for event in &proc.events {
-        for stmt in &event.body {
-            infer_io_from_stmt(stmt, &mut inferred);
-        }
-    }
-    for def in &proc.local_defs {
-        for stmt in &def.body {
-            infer_io_from_stmt(stmt, &mut inferred);
-        }
-    }
-    inferred
-}
-
-fn proc_output_numbered_prefix(proc: &onda_frontend::ProcessorDef) -> &'static str {
-    match proc.outs_timing {
-        OutputTiming::Sample => "out",
-        OutputTiming::Block => "kout",
-    }
-}
-
 fn build_child_proc_surfaces(
     proc_defs_by_name: &HashMap<String, onda_frontend::ProcessorDef>,
     options: AnalysisOptions,
@@ -1359,7 +1325,7 @@ fn build_child_proc_surfaces(
             }
         }
         for spec in &param_specs {
-            if spec.is_pinned() {
+            if spec.is_private() {
                 continue;
             }
             surface.params.insert(spec.name.clone());
@@ -1372,7 +1338,7 @@ fn build_child_proc_surfaces(
         }
         if param_specs
             .iter()
-            .filter(|spec| !spec.is_pinned())
+            .filter(|spec| !spec.is_private())
             .map(|spec| spec.slots.len())
             .sum::<usize>()
             > 1
@@ -2102,13 +2068,15 @@ fn validate_hook_safe_stmts(
                 validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
             }
             Stmt::Return { expr, .. } => {
-                validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
-                if frame.mode == HookBodyMode::ProcLocal {
+                if !is_bare_return_expr(expr) {
+                    validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
+                }
+                if frame.mode == HookBodyMode::ProcLocal && !is_bare_return_expr(expr) {
                     push_semantic(
                         diag,
                         errors,
                         format!(
-                            "bind hook in processor '{}' cannot contain return",
+                            "bind hook in processor '{}' cannot return a value",
                             ctx.owner_proc
                         ),
                     );
@@ -2255,7 +2223,7 @@ fn validate_proc_param_binds(
                     DiagCtx::new(def.loc),
                     errors,
                     format!(
-                        "processor '{}' bind target '{}' must not contain return",
+                        "processor '{}' bind target '{}' must not return a value",
                         proc.name, hook
                     ),
                 );
@@ -2871,22 +2839,13 @@ pub(super) fn compute_proc_shape(
     let mut init_local_array_aliases = HashMap::new();
     seed_top_level_array_aliases(&mut init_local_array_aliases, &proc_param_arrays, false);
     seed_top_level_array_aliases(&mut init_local_array_aliases, const_arrays, false);
-    let mut init_st = InitAnalysisState {
-        known_scalars: HashSet::new(),
-        local_aliases: HashMap::new(),
-        integer_ranges: HashMap::new(),
-        local_array_aliases: init_local_array_aliases,
+    let mut init_st = InitAnalysisState::new(
+        HashSet::new(),
+        HashMap::new(),
+        init_local_array_aliases,
         declared_symbols,
-        state_scalars: state_type_hints.clone(),
-        state_arrays: HashMap::new(),
-        state_array_struct_roots: HashMap::new(),
-        struct_instances: HashMap::new(),
-        state_array_specs: HashMap::new(),
-        struct_instance_type_args: HashMap::new(),
-        nested_procs: HashMap::new(),
-        nested_proc_arrays: HashMap::new(),
-        state_tuples: HashMap::new(),
-    };
+        state_type_hints.clone(),
+    );
     // Seed known_scalars with reserved names so they're visible for decl-order checks
     init_st.known_scalars.extend(reserved.iter().cloned());
     analyze_owner_init_stmts(&proc.init, &init_ctx, &proc_locals, &mut init_st, errors);

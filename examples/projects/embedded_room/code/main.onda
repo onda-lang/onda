@@ -21,8 +21,7 @@ params:
   level = 0.8 {0.0, 1.0}
 
 init:
-  room = ConvolutionRoom()
-  impulse_loaded = false
+  room = ConvolutionRoom(room_ir = room_ir)
   audition_frequency = std::pitch::note_to_hz(f32(AuditionNotes[0]))
   audition_osc_1 = std::osc::Sine(freq = audition_frequency, amp = 0.7)
   audition_osc_2 = std::osc::Sine(freq = audition_frequency * 1.5, amp = 0.25)
@@ -33,14 +32,13 @@ init:
   audition_step = 0
   pending_bang = false
 
+event reload_impulse():
+  room.reload_impulse()
+
 event bang():
   pending_bang = true
 
 block:
-  if !impulse_loaded:
-    room.load_impulse(room_ir[0, :], room_ir[1, :])
-    impulse_loaded = true
-  
   sample:
     if auto_play && audition_clock == 0:
       pending_bang = true

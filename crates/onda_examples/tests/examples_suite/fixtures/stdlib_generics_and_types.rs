@@ -750,6 +750,51 @@ sample {
 }
 "#;
 
+const STDLIB_CONVOLUTION_TASK_LOADED_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+init {
+  conv = std::convolution<8, 16>::ZeroLatencyConvolver<f32>()
+  ir: f32[13] = [
+    1.0, 0.5, 0.25, 0.125,
+    -0.5, 0.3, -0.2, 0.1,
+    0.05, -0.04, 0.03, -0.02,
+    0.01,
+  ]
+}
+task load_impulse() {
+  conv.begin_impulse(13)
+  conv.set_impulse_window(0, ir[0:4])
+  yield
+  conv.set_impulse_window(4, ir[4:8])
+  yield
+  conv.set_impulse_window(8, ir[8:12])
+  yield
+  conv.set_impulse_window(12, ir[12:13])
+  yield
+}
+event reload_impulse() {
+  load_impulse.reset()
+}
+block {
+  await load_impulse()
+  sample {
+    out1 = conv(in1)
+  }
+}
+"#;
+
+const STDLIB_CONVOLUTION_WINDOW_COUNT_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+init {
+  window_count = std::convolution<16384, 480000>::impulse_window_count(360530)
+}
+sample {
+  out1 = f32(window_count)
+}
+"#;
+
 const STDLIB_CONVOLUTION_ZERO_LATENCY_MULTISTAGE_EXAMPLE: &str = r#"
 import std/convolution
 outs { out1 }

@@ -30,31 +30,28 @@ fn encode_planar_i64(channels: &[Vec<i64>]) -> Vec<u8> {
 
 fn decode_planar_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(std::mem::size_of::<f32>())
-        .map(|chunk| {
-            let arr: [u8; 4] = chunk.try_into().expect("chunk");
-            f32::from_ne_bytes(arr)
-        })
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_ne_bytes(*chunk))
         .collect()
 }
 
 fn decode_planar_f64(bytes: &[u8]) -> Vec<f64> {
     bytes
-        .chunks_exact(std::mem::size_of::<f64>())
-        .map(|chunk| {
-            let arr: [u8; 8] = chunk.try_into().expect("chunk");
-            f64::from_ne_bytes(arr)
-        })
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| f64::from_ne_bytes(*chunk))
         .collect()
 }
 
 fn decode_planar_i64(bytes: &[u8]) -> Vec<i64> {
     bytes
-        .chunks_exact(std::mem::size_of::<i64>())
-        .map(|chunk| {
-            let arr: [u8; 8] = chunk.try_into().expect("chunk");
-            i64::from_ne_bytes(arr)
-        })
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| i64::from_ne_bytes(*chunk))
         .collect()
 }
 

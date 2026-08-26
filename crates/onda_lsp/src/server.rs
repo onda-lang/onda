@@ -4728,13 +4728,13 @@ sample:
     }
 
     #[test]
-    fn completion_filters_pinned_proc_params_after_receiver_dot() {
+    fn completion_filters_private_proc_params_after_receiver_dot() {
         let dir = mk_temp_dir("completion_proc_members");
         let main = dir.join("main.onda");
         let source = r#"
 proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
     gain = 1.0
 
   outs:
@@ -4764,11 +4764,11 @@ sample:
         assert!(labels.contains(&"init".to_owned()), "labels: {labels:?}");
         assert!(
             !labels.contains(&"cutoff".to_owned()),
-            "pinned param should not be exposed after receiver dot: {labels:?}"
+            "private param should not be exposed after receiver dot: {labels:?}"
         );
         assert!(
             !labels.contains(&"params".to_owned()),
-            "dynamic params should be hidden when a proc has pinned params: {labels:?}"
+            "dynamic params should be hidden when a proc has private params: {labels:?}"
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -4846,13 +4846,13 @@ sample:
     }
 
     #[test]
-    fn completion_filters_pinned_proc_params_in_live_call_args() {
+    fn completion_filters_private_proc_params_in_live_call_args() {
         let dir = mk_temp_dir("completion_proc_call_args");
         let main = dir.join("main.onda");
         let source = r#"
 proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
     gain = 1.0
 
   outs:
@@ -4875,7 +4875,7 @@ sample:
         assert!(labels.contains(&"gain".to_owned()), "labels: {labels:?}");
         assert!(
             !labels.contains(&"cutoff".to_owned()),
-            "pinned param should not be exposed as a live call arg: {labels:?}"
+            "private param should not be exposed as a live call arg: {labels:?}"
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -6756,7 +6756,7 @@ proc Voice<T>:
     input
 
   params:
-    pin cutoff: f32 = 1000.0
+    private cutoff: f32 = 1000.0
     gain: f32 = 1.0
 
   buffers:
@@ -6796,7 +6796,7 @@ sample:
         );
         assert!(
             constructor_hover.contains(
-                "proc Voice<T>(pin cutoff: f32 = 1000.0, gain: f32 = 1.0, table: buffer<f32>)"
+                "proc Voice<T>(private cutoff: f32 = 1000.0, gain: f32 = 1.0, table: buffer<f32>)"
             ),
             "hover: {constructor_hover}"
         );
@@ -6805,7 +6805,7 @@ sample:
             "hover: {call_hover}"
         );
         assert!(
-            init_hover.contains("event init(pin cutoff: f32 = 1000.0, gain: f32 = 1.0)"),
+            init_hover.contains("event init(private cutoff: f32 = 1000.0, gain: f32 = 1.0)"),
             "hover: {init_hover}"
         );
         assert!(
@@ -6838,12 +6838,12 @@ sample:
             .expect("set completion item");
         assert_eq!(
             init_item["detail"],
-            json!("event init(pin cutoff: f32 = 1000.0, gain: f32 = 1.0)")
+            json!("event init(private cutoff: f32 = 1000.0, gain: f32 = 1.0)")
         );
         assert_eq!(set_item["detail"], json!("event set(v: f32 = 0.5)"));
         assert_eq!(
             init_item["labelDetails"]["detail"],
-            json!("(pin cutoff: f32 = 1000.0, gain: f32 = 1.0)")
+            json!("(private cutoff: f32 = 1000.0, gain: f32 = 1.0)")
         );
         assert_eq!(set_item["labelDetails"]["detail"], json!("(v: f32 = 0.5)"));
 
@@ -7710,13 +7710,13 @@ namespace Test<FFTSize = 64, MaxImpulseLen = 1024>:
     }
 
     #[test]
-    fn definition_resolves_receiver_members_and_hides_pinned_params() {
+    fn definition_resolves_receiver_members_and_hides_private_params() {
         let dir = mk_temp_dir("definition_receiver_members");
         let main = dir.join("main.onda");
         let source = r#"
 proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
     gain = 1.0
 
   outs:
@@ -7743,7 +7743,7 @@ sample:
         assert_eq!(
             cutoff,
             json!(null),
-            "pinned proc param should not resolve through receiver access"
+            "private proc param should not resolve through receiver access"
         );
 
         fs::remove_dir_all(&dir).ok();

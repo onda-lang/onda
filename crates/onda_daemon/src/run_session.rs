@@ -8,8 +8,8 @@ use onda_codegen_llvm::{
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, prepare_unchecked_process,
-    process_unchecked_segment, set_param_by_index, trigger_event_by_index, Instance,
+    bind_buffer, bind_input, bind_output, create_instance, init, prepare_unchecked_process,
+    process_unchecked_segment, set_param_by_index, trigger_event_by_index, InitMode, Instance,
     InstanceConfig,
 };
 use onda_semantics::{AnalysisOptions, TypedProgram};
@@ -532,7 +532,7 @@ impl RunSession {
         Ok(())
     }
 
-    pub fn snapshot_state_bytes(&self) -> Vec<u8> {
+    pub fn snapshot_state_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
         self.instance.snapshot_state_bytes()
     }
 
@@ -885,8 +885,7 @@ fn create_bound_instance(
         set_param_by_index(&mut instance, index, bytes.as_slice())?;
     }
 
-    // TODO: Run a future non-realtime Onda `prepare` lifecycle here, after all
-    // external resources are bound and before the instance can process audio.
+    init(&mut instance, InitMode::Full)?;
     prepare_unchecked_process(&mut instance)?;
     Ok(instance)
 }

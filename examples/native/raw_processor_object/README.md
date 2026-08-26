@@ -134,12 +134,13 @@ The application performs the integration itself:
 
 1. Verify the descriptor and ABI versions and the target profile.
 2. Generate target-correct C constants and parameter bytes directly from that sidecar.
-3. Allocate and zero state using `runtime.state_size_bytes` and `runtime.state_align_bytes`.
+3. Allocate state using `runtime.state_size_bytes` and `runtime.state_align_bytes`.
 4. Encode defaults and parameter-control tables using `runtime.param_size_bytes`,
    `metadata.params[*].byte_offset`, ranges, scalar types, and `param_control`.
 5. Build flattened input/output pointer tables in metadata slot order.
 6. Build the four parallel external-buffer tables in `metadata.buffers` order.
-7. Call `onda_init(params, state)` once and reject a nonzero execution status.
+7. Call `onda_processor_init(params, state, ONDA_PROCESSOR_INIT_FULL)` once and reject a nonzero
+   execution status.
 8. Encode fixed event defaults from `metadata.events` and call exports through a generated function
    table.
 9. Call `onda_process` once with `ONDA_PROCESSOR_FULL_BLOCK` for the complete block, stopping

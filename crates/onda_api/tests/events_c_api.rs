@@ -597,7 +597,7 @@ fn c_file_compile_accepts_filesystem_projects_with_defaults_and_watch_paths() {
         expected_watch_paths.sort();
         assert_eq!(watch_paths, expected_watch_paths);
 
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "project instance creation failed: {}",
@@ -1103,7 +1103,7 @@ sample { out1 = samples[0] }
         );
         onda_project_image_destroy(image);
 
-        let instance = onda_instance_create(program, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1592,7 +1592,7 @@ block {
         assert!(onda_control_output_byte_offset(program.0, 1) >= 0);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 0, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 0, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1646,7 +1646,7 @@ sample { out1 = amp }
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1719,7 +1719,7 @@ sample { out1 = gate }
         assert_eq!(onda_event_payload_bytes(program.0, event_idx), -1);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1770,7 +1770,7 @@ sample { out1 = gate }
 }
 
 #[test]
-fn c_api_reset_instance_state_restores_initial_state() {
+fn c_api_creation_and_init_modes_enforce_the_instance_lifecycle() {
     unsafe {
         let frames = 512_i32;
         let program = compile_program(
@@ -1779,10 +1779,14 @@ outs { out1 }
 events {
   set_amp(value: f32) {
     amp = value
+    pinned = value + 1.0
   }
 }
-init { amp = 0.0 }
-sample { out1 = amp }
+init {
+  amp = 0.0
+  pin pinned = 1.0
+}
+sample { out1 = amp + pinned }
 "#,
         );
 
@@ -1805,6 +1809,9 @@ sample { out1 = amp }
             ),
             0
         );
+        assert_eq!(onda_process_checked(instance.0, frames), -2);
+        assert_eq!(onda_init(instance.0, 0), -2);
+        assert_eq!(onda_init(instance.0, 1), 0);
 
         let payload = 0.5_f32.to_ne_bytes();
         assert_eq!(
@@ -1818,14 +1825,39 @@ sample { out1 = amp }
         );
         assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
-            assert!((*sample - 0.5).abs() < 1e-6);
+            assert!((*sample - 2.0).abs() < 1e-6, "got {sample}");
         }
 
-        assert_eq!(onda_reset_instance_state(instance.0), 0);
+        assert_eq!(onda_init(instance.0, 0), 0);
         assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
-            assert!((*sample - 0.0).abs() < 1e-6);
+            assert!((*sample - 1.5).abs() < 1e-6, "got {sample}");
         }
+
+        let changed_payload = 0.25_f32.to_ne_bytes();
+        assert_eq!(
+            onda_trigger_event_by_index(
+                instance.0,
+                0,
+                changed_payload.as_ptr().cast::<c_void>(),
+                changed_payload.len() as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_init(instance.0, 0), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 1.25).abs() < 1e-6);
+        }
+
+        assert_eq!(onda_init(instance.0, 1), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 1.0).abs() < 1e-6);
+        }
+
+        assert_eq!(onda_init(std::ptr::null_mut(), 0), -1);
+        assert_eq!(onda_init(std::ptr::null_mut(), 1), -1);
     }
 }
 
@@ -1851,7 +1883,9 @@ sample {
             free: Some(test_free),
         };
         let mut diag = empty_diag();
-        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut *diag);
+        let instance = onda_instance_create_initialized_with_allocator(
+            program.0, 0, 1, &allocator, &mut *diag,
+        );
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1893,7 +1927,9 @@ fn c_api_custom_allocator_allocates_on_creation_thread_and_frees_on_instance_own
             free: Some(thread_bound_free),
         };
         let mut diag = empty_diag();
-        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut *diag);
+        let instance = onda_instance_create_initialized_with_allocator(
+            program.0, 0, 1, &allocator, &mut *diag,
+        );
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1962,7 +1998,7 @@ sample {
         assert!(onda_state_total_bytes(program.0) >= 4);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2106,7 +2142,7 @@ sample { out1 = 0.25 }
         );
         let program = ProgramHandle(program);
 
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2144,7 +2180,7 @@ sample { out1 = 0.25 }
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2195,7 +2231,7 @@ block {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2276,7 +2312,7 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 1, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 1, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2348,7 +2384,7 @@ block {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2431,7 +2467,7 @@ sample { out1 = SAMPLE_RATE }
         );
         let program = ProgramHandle(program);
 
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2472,7 +2508,7 @@ sample:
 "#,
         );
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2663,7 +2699,7 @@ sample { out1 = 0.25 }
 "#,
         );
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2828,7 +2864,7 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 2, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 2, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2884,7 +2920,7 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",

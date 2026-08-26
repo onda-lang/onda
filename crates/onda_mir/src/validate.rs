@@ -104,7 +104,10 @@ pub fn validate(program: &Program) -> Result<(), Vec<ValidationError>> {
 /// state slot, function parameter, or local must also contain every value
 /// observable from that storage. This includes values supplied by callers or
 /// restored from external state. Backends may use those invariants as hard
-/// optimization assumptions without inserting normalization or checks.
+/// optimization assumptions without inserting normalization or checks. Every
+/// pinned state slot must be fully overwritten by the init entry on every
+/// successful full-initialization path before it can be observed. Backends may
+/// omit those slots from the physical state pre-clear.
 pub unsafe fn validate_with_producer_proofs(program: &Program) -> Result<(), Vec<ValidationError>> {
     validate_with_proof_status(program, ProducerProofStatus::Trusted)
 }
@@ -143,7 +146,9 @@ pub fn validate_owned(program: Program) -> Result<ValidatedProgram, Vec<Validati
 /// bounds for every execution reaching it. Every
 /// [`crate::IntegerRangeInvariant`] attached to a state slot, function
 /// parameter, or local must contain every value observable from that storage,
-/// including values supplied by callers or restored from external state.
+/// including values supplied by callers or restored from external state. Every
+/// pinned state slot must be fully overwritten by the init entry on every
+/// successful full-initialization path before it can be observed.
 pub unsafe fn validate_owned_with_producer_proofs(
     program: Program,
 ) -> Result<ValidatedProgram, Vec<ValidationError>> {
@@ -320,7 +325,8 @@ fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
         Rvalue::MakeSlice { source, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || slice_source_uses_unchecked_bounds(source)
         }
-        Rvalue::Use(_)
+        Rvalue::InitAll
+        | Rvalue::Use(_)
         | Rvalue::Unary { .. }
         | Rvalue::Binary { .. }
         | Rvalue::Compare { .. }
@@ -574,6 +580,12 @@ impl Validator<'_> {
                 SourceSpan::UNKNOWN,
                 format!("{storage} '{}'", state.name),
             );
+            if state.pinned && self.producer_proofs == ProducerProofStatus::Absent {
+                self.program_error(format!(
+                    "{storage} '{}' pinned initialization requires trusted producer validation",
+                    state.name
+                ));
+            }
             if let Some(range) = state.integer_range {
                 if self.producer_proofs == ProducerProofStatus::Absent {
                     self.program_error(format!(
@@ -2105,6 +2117,7 @@ impl Validator<'_> {
         state: &AssignmentState,
     ) {
         match rvalue {
+            Rvalue::InitAll => {}
             Rvalue::Use(value) => {
                 self.assignment_read_value(function_id, function, *value, source, state)
             }
@@ -2466,6 +2479,15 @@ impl Validator<'_> {
         source: SourceSpan,
     ) {
         match value {
+            Rvalue::InitAll => {
+                if function.kind != FunctionKind::Init {
+                    self.function_error(
+                        function_id,
+                        source,
+                        "init_all is only valid in the init entry point",
+                    );
+                }
+            }
             Rvalue::Use(value) => self.validate_value(function_id, function, *value, source),
             Rvalue::Load(place) => self.validate_place(function_id, function, place, source),
             Rvalue::Unary { operand, .. } => {
@@ -3181,6 +3203,7 @@ impl Validator<'_> {
                         .iter()
                         .all(|arg| self.value_matches_type(function, *arg, expected))
             }
+            Rvalue::InitAll => self.type_is_scalar(expected, crate::ScalarType::Bool),
             Rvalue::ProcessFrame { .. } => self.type_is_scalar(expected, crate::ScalarType::I32),
             Rvalue::InputLoad { input, element, .. } => self
                 .program
@@ -4981,6 +5004,40 @@ mod tests {
     }
 
     #[test]
+    fn pinned_state_requires_a_trusted_full_initialization_proof() {
+        let mut program = empty_program();
+        program.state.push(StateSlot {
+            name: "cursor".to_owned(),
+            ty: TypeId::new(0),
+            persistence: StatePersistence::Snapshot,
+            authored: true,
+            pinned: true,
+            integer_range: None,
+        });
+        program.functions[0].body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::State(crate::StateId::new(0)),
+                    projections: Vec::new(),
+                },
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(0))),
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        let errors = super::validate(&program)
+            .expect_err("ordinary MIR cannot assert the pinned initialization invariant");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("pinned initialization requires trusted producer validation")));
+
+        // SAFETY: the init entry above overwrites the complete pinned scalar
+        // before returning on its only successful path.
+        unsafe { super::validate_with_producer_proofs(&program) }
+            .expect("trusted producer validation should retain the proof");
+    }
+
+    #[test]
     fn logical_type_equivalence_is_recursive_but_structs_are_nominal() {
         let mut program = empty_program();
         program.structs = vec![
@@ -5626,6 +5683,8 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(2),
             persistence: StatePersistence::Snapshot,
+            authored: true,
+            pinned: false,
         });
         let mut callee = function("update", FunctionKind::User);
         callee.params.push(FunctionParam {
@@ -5995,6 +6054,8 @@ mod tests {
             name: "control_resource_mirror".to_owned(),
             ty: test_type(3),
             persistence: StatePersistence::ControlMirror,
+            authored: true,
+            pinned: false,
         });
         program.interface.params.push(Param {
             name: "parameter_view".to_owned(),
@@ -6053,12 +6114,16 @@ mod tests {
                 name: "saved_view".to_owned(),
                 ty: test_type(2),
                 persistence: StatePersistence::Snapshot,
+                authored: true,
+                pinned: false,
             },
             StateSlot {
                 integer_range: None,
                 name: "scratch_buffer".to_owned(),
                 ty: test_type(4),
                 persistence: StatePersistence::InstanceScratch,
+                authored: false,
+                pinned: false,
             },
         ]);
 
@@ -6251,6 +6316,8 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(2),
             persistence: StatePersistence::Snapshot,
+            authored: true,
+            pinned: false,
         });
         program.functions[1].locals.extend([
             Local {
@@ -7121,6 +7188,8 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(1),
             persistence: StatePersistence::Snapshot,
+            authored: true,
+            pinned: false,
         });
         program.functions[1].locals.push(Local {
             integer_range: None,
@@ -7186,6 +7255,8 @@ mod tests {
             name: "different_debug_name".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
+            authored: true,
+            pinned: false,
         });
         program
             .interface
@@ -7316,6 +7387,8 @@ mod tests {
             name: "values".to_owned(),
             ty: test_type(1),
             persistence: StatePersistence::Snapshot,
+            authored: true,
+            pinned: false,
         });
         let mut callee = function("consume_pair", FunctionKind::User);
         callee.params.push(FunctionParam {
@@ -7387,6 +7460,8 @@ mod tests {
             name: "meter".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
+            authored: true,
+            pinned: false,
         });
         program
             .interface
@@ -7428,6 +7503,8 @@ mod tests {
             name: "meter_mirror".to_owned(),
             ty: test_type(0),
             persistence: StatePersistence::ControlMirror,
+            authored: true,
+            pinned: false,
         });
         program
             .interface

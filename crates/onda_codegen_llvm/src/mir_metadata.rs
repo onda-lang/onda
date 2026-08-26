@@ -34,7 +34,7 @@ pub(crate) struct MirMetadataError {
 }
 
 impl MirMetadataError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -347,6 +347,7 @@ fn build_state_entries(
             .ok_or_else(|| MirMetadataError::new("snapshot state byte size overflow"))?;
         entries.push(DeclaredState {
             name: slot.name.clone(),
+            authored: slot.authored,
             elem_ty: shape.element,
             array_len: shape.len,
             is_array: shape.is_array,
@@ -891,24 +892,32 @@ mod tests {
                     name: "phase".to_owned(),
                     ty: onda_mir::TypeId::new(1),
                     persistence: StatePersistence::Snapshot,
+                    authored: true,
+                    pinned: false,
                 },
                 StateSlot {
                     integer_range: None,
                     name: "meter".to_owned(),
                     ty: onda_mir::TypeId::new(0),
                     persistence: StatePersistence::ControlMirror,
+                    authored: true,
+                    pinned: false,
                 },
                 StateSlot {
                     integer_range: None,
                     name: "$scratch".to_owned(),
                     ty: onda_mir::TypeId::new(7),
                     persistence: StatePersistence::InstanceScratch,
+                    authored: false,
+                    pinned: false,
                 },
                 StateSlot {
                     integer_range: None,
                     name: "history".to_owned(),
                     ty: onda_mir::TypeId::new(6),
                     persistence: StatePersistence::Snapshot,
+                    authored: false,
+                    pinned: false,
                 },
             ],
             const_data: Vec::new(),
@@ -982,9 +991,9 @@ mod tests {
         let state = metadata
             .state_entries
             .iter()
-            .map(|entry| (entry.name(), entry.byte_offset()))
+            .map(|entry| (entry.name(), entry.is_authored(), entry.byte_offset()))
             .collect::<Vec<_>>();
-        assert_eq!(state, vec![("phase", 0), ("history", 8)]);
+        assert_eq!(state, vec![("phase", true, 0), ("history", false, 8)]);
 
         assert_eq!(metadata.buffers[0].channels(), DeclaredBufferChannels::Mono);
         assert_eq!(

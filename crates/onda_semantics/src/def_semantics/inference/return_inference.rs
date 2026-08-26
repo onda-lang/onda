@@ -3,7 +3,10 @@ use super::super::call_types::{
     update_call_type_env_after_assign, CallTypeContext, CallTypeEnv, StatementFlow,
 };
 use super::*;
-use crate::{effective_untyped_assignment_type, require_expr_assignable_type, ReturnType};
+use crate::{
+    effective_untyped_assignment_type, is_bare_return_expr, require_expr_assignable_type,
+    ReturnType,
+};
 use onda_frontend::{
     ast::{FnReturnScalarType, FnReturnType},
     SourceLoc,
@@ -219,6 +222,9 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
             }
             Stmt::Expr { .. } => StatementFlow::Continues,
             Stmt::Return { expr, .. } => {
+                if is_bare_return_expr(expr) {
+                    return StatementFlow::Terminates;
+                }
                 if let Some(elem_tys) =
                     infer_return_tuple_type(expr, env, context, require_known_calls)
                 {
@@ -266,12 +272,12 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
                 *env = joined;
                 flow
             }
-            Stmt::For { var, body, .. } => {
+            Stmt::For {
+                var, var_ty, body, ..
+            } => {
                 let mut loop_env = env.clone();
                 loop_env.shadow_binding(var);
-                loop_env
-                    .scalar_types
-                    .insert(var.clone(), PrimitiveType::I32);
+                loop_env.scalar_types.insert(var.clone(), *var_ty);
                 infer_stmt_returns_for_def_return_inference(
                     body,
                     &mut loop_env,
@@ -450,7 +456,7 @@ fn return_type_is_assignable(src: &ReturnType, dst: &ReturnType) -> bool {
 fn statements_must_return_value(statements: &[Stmt]) -> bool {
     for statement in statements {
         match statement {
-            Stmt::Return { .. } => return true,
+            Stmt::Return { expr, .. } => return !is_bare_return_expr(expr),
             Stmt::If {
                 then_branch,
                 else_branch,
@@ -473,15 +479,38 @@ fn statements_must_return_value(statements: &[Stmt]) -> bool {
     false
 }
 
-fn statements_contain_return(statements: &[Stmt]) -> bool {
+fn statements_contain_value_return(statements: &[Stmt]) -> bool {
     statements.iter().any(|statement| match statement {
-        Stmt::Return { .. } => true,
+        Stmt::Return { expr, .. } => !is_bare_return_expr(expr),
         Stmt::If {
             then_branch,
             else_branch,
             ..
-        } => statements_contain_return(then_branch) || statements_contain_return(else_branch),
-        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_return(body),
+        } => {
+            statements_contain_value_return(then_branch)
+                || statements_contain_value_return(else_branch)
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_value_return(body),
+        Stmt::Const { .. }
+        | Stmt::Assign { .. }
+        | Stmt::Expr { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => false,
+    })
+}
+
+fn statements_contain_bare_return(statements: &[Stmt]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Stmt::Return { expr, .. } => is_bare_return_expr(expr),
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            statements_contain_bare_return(then_branch)
+                || statements_contain_bare_return(else_branch)
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_bare_return(body),
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
@@ -502,12 +531,23 @@ pub(crate) fn validate_def_return_control_flow(
     errors: &mut Vec<Diagnostic>,
 ) {
     for def in defs {
-        let returns_value = def.return_ty.is_some() || statements_contain_return(&def.body);
+        let has_value_return = statements_contain_value_return(&def.body);
+        let has_bare_return = statements_contain_bare_return(&def.body);
+        let returns_value = def.return_ty.is_some() || has_value_return;
+        let display_name = fn_signatures
+            .get(&def.name)
+            .and_then(|signature| signature.display_name.as_deref())
+            .unwrap_or(&def.name);
+        if returns_value && has_bare_return {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "function '{}' cannot mix bare returns with value returns or an explicit return type",
+                    display_name
+                ),
+                def.loc,
+            ));
+        }
         if returns_value && !statements_must_return_value(&def.body) {
-            let display_name = fn_signatures
-                .get(&def.name)
-                .and_then(|signature| signature.display_name.as_deref())
-                .unwrap_or(&def.name);
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "function '{}' returns a value, but not all reachable paths return a value",
@@ -610,19 +650,20 @@ fn infer_def_return_types_impl(
     env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     require_known_calls: bool,
+    seed: &HashMap<String, ReturnType>,
 ) -> HashMap<String, ReturnType> {
     let all_defs = || defs.iter().chain(generated_defs);
-    let mut out = if require_known_calls {
-        all_defs()
-            .filter_map(|def| {
-                try_resolve_declared_return_type(def).map(|ty| (def.name.clone(), ty))
-            })
-            .collect::<HashMap<_, _>>()
+    let mut out = seed.clone();
+    if require_known_calls {
+        out.extend(all_defs().filter_map(|def| {
+            try_resolve_declared_return_type(def).map(|ty| (def.name.clone(), ty))
+        }));
     } else {
-        all_defs()
-            .map(|def| (def.name.clone(), ReturnType::Scalar(PrimitiveType::F32)))
-            .collect::<HashMap<_, _>>()
-    };
+        for def in all_defs() {
+            out.entry(def.name.clone())
+                .or_insert(ReturnType::Scalar(PrimitiveType::F32));
+        }
+    }
     for _ in 0..defs
         .len()
         .saturating_add(generated_defs.len())
@@ -667,6 +708,7 @@ pub(crate) fn infer_def_return_types(
         env_seed,
         struct_defs,
         false,
+        &HashMap::new(),
     )
 }
 
@@ -689,5 +731,28 @@ pub(crate) fn infer_known_def_return_types(
         env_seed,
         struct_defs,
         true,
+        &HashMap::new(),
+    )
+}
+
+/// Strictly infers `defs` while retaining already-known external callable
+/// returns. This is used by early lowering phases that share the ordinary call
+/// analysis but only own a lexical subset of the program's definitions.
+pub(crate) fn infer_known_def_return_types_with_seed(
+    defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
+    env_seed: &CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    seed: &HashMap<String, ReturnType>,
+) -> HashMap<String, ReturnType> {
+    infer_def_return_types_impl(
+        defs,
+        &[],
+        fn_signatures,
+        &HashMap::new(),
+        env_seed,
+        struct_defs,
+        true,
+        seed,
     )
 }

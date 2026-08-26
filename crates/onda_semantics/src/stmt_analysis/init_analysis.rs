@@ -105,6 +105,31 @@ fn infer_init_data_like_info(
 }
 
 impl InitAnalysisState {
+    pub(crate) fn new(
+        known_scalars: HashSet<String>,
+        local_aliases: LocalAliasTypes,
+        local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+        declared_symbols: DeclaredSymbolMap,
+        state_scalars: HashMap<String, PrimitiveType>,
+    ) -> Self {
+        Self {
+            known_scalars,
+            local_aliases,
+            integer_ranges: HashMap::new(),
+            local_array_aliases,
+            declared_symbols,
+            state_scalars,
+            state_arrays: HashMap::new(),
+            state_array_struct_roots: HashMap::new(),
+            struct_instances: HashMap::new(),
+            state_tuples: HashMap::new(),
+            state_array_specs: HashMap::new(),
+            struct_instance_type_args: HashMap::new(),
+            nested_procs: HashMap::new(),
+            nested_proc_arrays: HashMap::new(),
+        }
+    }
+
     fn flow_state(&self) -> ScopeFlowState {
         let mut flow = ScopeFlowState::from_parts(
             self.known_scalars.clone(),
@@ -246,12 +271,15 @@ pub(crate) fn analyze_init_stmt(
     scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if crate::processor_lowering::is_pinned_initializer_marker(stmt) {
+        return;
+    }
     with_stmt_diag_context(stmt, |stmt_diag| {
         track_integer_range_declaration(stmt, &mut st.integer_ranges);
         let init_ctx = ctx.init;
         let common = init_ctx.common;
         let locals = ctx.locals;
-        let array_vars = merged_data_vars_for_runtime(&st.state_arrays, &st.local_array_aliases);
+        let array_vars = merged_data_vars(&st.state_arrays, &st.local_array_aliases);
         let empty_param_structs = HashMap::<String, String>::new();
         let expr_inputs = build_scope_analysis_expr_inputs(
             common,
@@ -388,6 +416,7 @@ pub(crate) fn analyze_init_stmt(
             }
             Stmt::For {
                 var,
+                var_ty,
                 step,
                 start,
                 end,
@@ -411,6 +440,7 @@ pub(crate) fn analyze_init_stmt(
                 loop_locals.insert(var.clone());
                 let base_flow = st.flow_state();
                 let mut loop_st = st.clone();
+                loop_st.local_aliases.insert(var.clone(), *var_ty);
                 let loop_ctx = InitStmtAnalysisCtx {
                     locals: &loop_locals,
                     ..ctx
@@ -508,7 +538,7 @@ fn analyze_assign_init(
     let options = common.options;
     let scope = common.scope_kind();
     let allow_owner_state_intro = scope_depth == 0;
-    let array_vars = merged_data_vars_for_runtime(&st.state_arrays, &st.local_array_aliases);
+    let array_vars = merged_data_vars(&st.state_arrays, &st.local_array_aliases);
     let mut rewritten_expr = expr.clone();
     rewrite_struct_array_inline_field_expr(
         &mut rewritten_expr,

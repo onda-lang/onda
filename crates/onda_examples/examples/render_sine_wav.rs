@@ -7,7 +7,7 @@ use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{parse_program, Diagnostic};
-use onda_runtime::{bind_output, create_instance, process_checked, InstanceConfig};
+use onda_runtime::{bind_output, create_instance_initialized, process_checked, InstanceConfig};
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const SAMPLE_RATE: u32 = 48_000;
@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )
     .map_err(|d| format_diagnostics("ORC JIT lowering failed", &d))?;
 
-    let mut instance = create_instance(
+    let mut instance = create_instance_initialized(
         jit,
         InstanceConfig {
             sample_rate: SAMPLE_RATE as f32,

@@ -1,10 +1,15 @@
 use super::*;
 use crate::def_semantics::call_types::StatementFlow;
+use crate::is_bare_return_expr;
 
 #[derive(Clone, Copy)]
 enum StaticForPlan {
     Empty,
-    NonEmpty { min: i32, max: i32, last: i32 },
+    NonEmpty {
+        min: ScalarValue,
+        max: ScalarValue,
+        last: ScalarValue,
+    },
 }
 
 impl<'a> FunctionLowerer<'a> {
@@ -138,6 +143,10 @@ impl<'a> FunctionLowerer<'a> {
                     StatementFlow::Continues
                 }
                 Stmt::Expr { expr, .. } => {
+                    if crate::task_lowering::is_task_abort_expr(expr) {
+                        self.push_statement(block, StatementKind::Break, expr.loc());
+                        return Ok(StatementFlow::Terminates);
+                    }
                     if let Expr::UserCall {
                         loc,
                         name,
@@ -162,6 +171,20 @@ impl<'a> FunctionLowerer<'a> {
                     StatementFlow::Continues
                 }
                 Stmt::Return { expr, loc } => {
+                    if is_bare_return_expr(expr) {
+                        if self.function.returns_value {
+                            return Err(self.error(
+                                "bare return found in a value-returning function",
+                                (*loc).into(),
+                            ));
+                        }
+                        self.push_statement(
+                            block,
+                            StatementKind::Return { values: Vec::new() },
+                            (*loc).into(),
+                        );
+                        return Ok(StatementFlow::Terminates);
+                    }
                     if !self.function.returns_value {
                         return Err(self.error(
                             "value return found in a function marked as no-result",
@@ -203,7 +226,6 @@ impl<'a> FunctionLowerer<'a> {
                     let condition = self.lower_expr(cond, block)?;
                     let condition =
                         self.coerce(condition, PrimitiveType::Bool, block, cond.loc())?;
-                    self.stop_prezeroed_init_state_proof();
                     let outer_bindings = self.bindings.clone();
                     let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
                     let mut then_block = MirBlock::default();
@@ -263,7 +285,6 @@ impl<'a> FunctionLowerer<'a> {
                     }
                 }
                 Stmt::While { cond, body, loc } => {
-                    self.stop_prezeroed_init_state_proof();
                     let outer_bindings = self.bindings.clone();
                     let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
                     let mut loop_body = MirBlock::default();
@@ -294,6 +315,7 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 Stmt::For {
                     var,
+                    var_ty,
                     step,
                     start,
                     end,
@@ -303,6 +325,7 @@ impl<'a> FunctionLowerer<'a> {
                 } => {
                     self.lower_for(
                         var,
+                        *var_ty,
                         step.as_ref(),
                         start,
                         end,
@@ -350,6 +373,7 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_for(
         &mut self,
         variable: &str,
+        induction_ty: PrimitiveType,
         step: Option<&Expr>,
         start: &Expr,
         end: &Expr,
@@ -359,21 +383,26 @@ impl<'a> FunctionLowerer<'a> {
         destination: &mut MirBlock,
     ) -> Result<(), MirLoweringError> {
         let start_value = self.lower_expr(start, destination)?;
-        let start_value = self.coerce(start_value, PrimitiveType::I32, destination, start.loc())?;
+        let start_value = self.coerce(start_value, induction_ty, destination, start.loc())?;
 
         let end_value = self.lower_expr(end, destination)?;
-        let end_value = self.coerce(end_value, PrimitiveType::I32, destination, end.loc())?;
+        let end_value = self.coerce(end_value, induction_ty, destination, end.loc())?;
 
+        let unit_step = match induction_ty {
+            PrimitiveType::I32 => ScalarValue::I32(1),
+            PrimitiveType::I64 => ScalarValue::I64(1),
+            _ => unreachable!("for induction types are restricted to integers"),
+        };
         let step_value = if let Some(step) = step {
             let value = self.lower_expr(step, destination)?;
-            self.coerce(value, PrimitiveType::I32, destination, step.loc())?
+            self.coerce(value, induction_ty, destination, step.loc())?
         } else {
             LoweredValue {
-                value: Value::Constant(ScalarValue::I32(1)),
-                ty: PrimitiveType::I32,
+                value: Value::Constant(unit_step),
+                ty: induction_ty,
             }
         };
-        let forward_unit_step = step_value.value == Value::Constant(ScalarValue::I32(1));
+        let forward_unit_step = step_value.value == Value::Constant(unit_step);
 
         let static_plan = static_for_plan(
             start_value.value,
@@ -389,10 +418,10 @@ impl<'a> FunctionLowerer<'a> {
                 start_value,
                 end_value,
                 step_value,
-                Some(Value::Constant(ScalarValue::I32(last))),
+                Some(Value::Constant(last)),
                 Some(onda_mir::IntegerRangeInvariant {
-                    min: ScalarValue::I32(min),
-                    max: ScalarValue::I32(max),
+                    min,
+                    max,
                     mode: onda_mir::IntegerRangeMode::Clamp,
                 }),
             ),
@@ -406,14 +435,13 @@ impl<'a> FunctionLowerer<'a> {
             Some(StaticForPlan::Empty) => unreachable!("empty loops return above"),
         };
 
-        self.stop_prezeroed_init_state_proof();
         let outer_bindings = self.bindings.clone();
         let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
-        // The source-language loop variable and its induction counter are i32
-        // end to end. Constant loops stop at their statically computed final
-        // iteration; dynamic loops retain ordinary i32 arithmetic without a
-        // hidden widening/narrowing path in the loop body.
-        let index = self.new_local(Some(format!("{variable}.$induction")), PrimitiveType::I32);
+        // The source-language loop variable and its induction counter retain
+        // the selected integer width end to end. Constant loops stop at their
+        // statically computed final iteration; dynamic loops retain ordinary
+        // integer arithmetic without a hidden widening/narrowing path.
+        let index = self.new_local(Some(format!("{variable}.$induction")), induction_ty);
         self.push_statement(
             destination,
             StatementKind::Assign {
@@ -440,7 +468,7 @@ impl<'a> FunctionLowerer<'a> {
             } else {
                 format!("{variable}.$body")
             }),
-            PrimitiveType::I32,
+            induction_ty,
         );
         self.locals[body_index.index()].integer_range = body_range;
         self.push_statement(
@@ -453,7 +481,7 @@ impl<'a> FunctionLowerer<'a> {
         );
         self.bindings.insert(
             variable.to_owned(),
-            Binding::Local(body_index, PrimitiveType::I32),
+            Binding::Local(body_index, induction_ty),
         );
         let body_flow = self.lower_statements(
             body,
@@ -782,7 +810,11 @@ impl<'a> FunctionLowerer<'a> {
         inclusive: bool,
         location: SourceLoc,
     ) {
-        let zero = Value::Constant(ScalarValue::I32(0));
+        let zero = Value::Constant(match self.types[self.locals[index.index()].ty.index()] {
+            MirType::Scalar(ScalarType::I32) => ScalarValue::I32(0),
+            MirType::Scalar(ScalarType::I64) => ScalarValue::I64(0),
+            _ => unreachable!("for induction locals are restricted to integers"),
+        });
         let step_positive = self.compare_value(block, CompareOp::Greater, step, zero, location);
 
         let mut positive = MirBlock::default();
@@ -904,22 +936,33 @@ fn static_for_plan(
     step: Value,
     inclusive: bool,
 ) -> Option<StaticForPlan> {
-    let Value::Constant(ScalarValue::I32(start)) = start else {
-        return None;
-    };
-    let Value::Constant(ScalarValue::I32(end)) = end else {
-        return None;
-    };
-    let Value::Constant(ScalarValue::I32(step)) = step else {
-        return None;
+    let (ty, start, end, step) = match (start, end, step) {
+        (
+            Value::Constant(ScalarValue::I32(start)),
+            Value::Constant(ScalarValue::I32(end)),
+            Value::Constant(ScalarValue::I32(step)),
+        ) => (
+            PrimitiveType::I32,
+            i128::from(start),
+            i128::from(end),
+            i128::from(step),
+        ),
+        (
+            Value::Constant(ScalarValue::I64(start)),
+            Value::Constant(ScalarValue::I64(end)),
+            Value::Constant(ScalarValue::I64(step)),
+        ) => (
+            PrimitiveType::I64,
+            i128::from(start),
+            i128::from(end),
+            i128::from(step),
+        ),
+        _ => return None,
     };
     if step == 0 {
         return None;
     }
 
-    let start = i64::from(start);
-    let end = i64::from(end);
-    let step = i64::from(step);
     let last = if step > 0 {
         let upper = if inclusive { end } else { end - 1 };
         if start > upper {
@@ -933,11 +976,18 @@ fn static_for_plan(
         }
         start - ((start - lower) / -step) * -step
     };
-    let last = i32::try_from(last).expect("an i32-bounded loop has an i32 final iteration");
-    let start = start as i32;
+    let scalar = |value| match ty {
+        PrimitiveType::I32 => ScalarValue::I32(
+            i32::try_from(value).expect("an i32-bounded loop has an i32 iteration value"),
+        ),
+        PrimitiveType::I64 => ScalarValue::I64(
+            i64::try_from(value).expect("an i64-bounded loop has an i64 iteration value"),
+        ),
+        _ => unreachable!("static for plans are restricted to integers"),
+    };
     Some(StaticForPlan::NonEmpty {
-        min: start.min(last),
-        max: start.max(last),
-        last,
+        min: scalar(start.min(last)),
+        max: scalar(start.max(last)),
+        last: scalar(last),
     })
 }

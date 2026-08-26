@@ -2071,6 +2071,67 @@ fn stdlib_convolution_zero_latency_compile_and_run() {
 }
 
 #[test]
+fn stdlib_convolution_incremental_loading_preserves_the_impulse() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_TASK_LOADED_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let silence = [0.0_f32; 4];
+    let mut output = [99.0_f32; 4];
+    for _ in 0..4 {
+        process_interleaved(&mut instance, &silence, &mut output, frames)
+            .expect("task loading block should process");
+        assert_eq!(output, [0.0; 4]);
+    }
+
+    let impulse = [1.0_f32, 0.0, 0.0, 0.0];
+    process_interleaved(&mut instance, &impulse, &mut output, frames)
+        .expect("task completion block should process");
+    for (actual, expected) in output.iter().zip([1.0, 0.5, 0.25, 0.125]) {
+        assert_near(*actual, expected, 1e-4);
+    }
+
+    process_interleaved(&mut instance, &silence, &mut output, frames)
+        .expect("partitioned tail block should process");
+    for (actual, expected) in output.iter().zip([-0.5, 0.3, -0.2, 0.1]) {
+        assert_near(*actual, expected, 2e-4);
+    }
+
+    let reload = instance
+        .event_index("reload_impulse")
+        .expect("reload event should exist");
+    trigger_event_by_index(&mut instance, reload, &[]).expect("reload event should succeed");
+    for _ in 0..4 {
+        process_interleaved(&mut instance, &silence, &mut output, frames)
+            .expect("reloading block should process");
+        assert_eq!(output, [0.0; 4]);
+    }
+    process_interleaved(&mut instance, &impulse, &mut output, frames)
+        .expect("reloaded task completion block should process");
+    for (actual, expected) in output.iter().zip([1.0, 0.5, 0.25, 0.125]) {
+        assert_near(*actual, expected, 1e-4);
+    }
+}
+
+#[test]
+fn stdlib_convolution_counts_incremental_loading_windows() {
+    let frames = 128;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_WINDOW_COUNT_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in output {
+        assert_eq!(sample, 54.0);
+    }
+}
+
+#[test]
 
 fn stdlib_convolution_zero_latency_aligns_every_non_uniform_stage() {
     let frames = 8_304;

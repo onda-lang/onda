@@ -31,7 +31,7 @@ enum ProcCallArgKind {
     Internal,
     Input,
     Param,
-    PinnedParam,
+    PrivateParam,
     Ambiguous,
     Unknown,
 }
@@ -1120,10 +1120,10 @@ fn proc_input_arg_names(api: &ProcApi) -> HashSet<String> {
 fn proc_named_param_slots(
     api: &ProcApi,
     name: &str,
-    include_pinned: bool,
+    include_private: bool,
 ) -> Option<Vec<ProcParamSlotSpec>> {
     if let Some(slot) = api.params.get(name) {
-        if slot.pinned && !include_pinned {
+        if slot.private && !include_private {
             return None;
         }
         return Some(vec![slot.clone()]);
@@ -1134,7 +1134,7 @@ fn proc_named_param_slots(
         .params
         .values()
         .filter_map(|slot| {
-            if slot.pinned && !include_pinned {
+            if slot.private && !include_private {
                 return None;
             }
             let rest = slot.name.strip_prefix(&prefix)?;
@@ -1168,14 +1168,14 @@ fn proc_param_slots_for_api<'a>(api: &'a ProcApi, name: &str) -> Vec<&'a ProcPar
     slots.into_iter().map(|(_, slot)| slot).collect()
 }
 
-fn proc_param_field_is_pinned(api: &ProcApi, field: &str) -> bool {
+fn proc_param_field_is_private(api: &ProcApi, field: &str) -> bool {
     proc_param_slots_for_api(api, field)
         .into_iter()
-        .any(|slot| slot.pinned)
+        .any(|slot| slot.private)
 }
 
-fn proc_has_pinned_params(api: &ProcApi) -> bool {
-    api.params.values().any(|slot| slot.pinned)
+fn proc_has_private_params(api: &ProcApi) -> bool {
+    api.params.values().any(|slot| slot.private)
 }
 
 fn proc_call_arg_kind(api: &ProcApi, arg_name: Option<&str>) -> ProcCallArgKind {
@@ -1187,9 +1187,9 @@ fn proc_call_arg_kind(api: &ProcApi, arg_name: Option<&str>) -> ProcCallArgKind 
     }
     let is_input = proc_input_arg_names(api).contains(name);
     let is_param = proc_named_param_slots(api, name, false).is_some();
-    let is_pinned_param = !is_param && proc_named_param_slots(api, name, true).is_some();
-    match (is_input, is_param, is_pinned_param) {
-        (_, _, true) => ProcCallArgKind::PinnedParam,
+    let is_private_param = !is_param && proc_named_param_slots(api, name, true).is_some();
+    match (is_input, is_param, is_private_param) {
+        (_, _, true) => ProcCallArgKind::PrivateParam,
         (true, true, false) => ProcCallArgKind::Ambiguous,
         (true, false, false) => ProcCallArgKind::Input,
         (false, true, false) => ProcCallArgKind::Param,
@@ -1671,7 +1671,7 @@ fn lower_named_proc_param_call_expr(
     let has_named_param_arg = args.iter().any(|arg| {
         matches!(
             proc_call_arg_kind(&target.api, arg.name.as_deref()),
-            ProcCallArgKind::Param | ProcCallArgKind::PinnedParam | ProcCallArgKind::Ambiguous
+            ProcCallArgKind::Param | ProcCallArgKind::PrivateParam | ProcCallArgKind::Ambiguous
         )
     });
     if !has_named_param_arg {
@@ -1769,13 +1769,13 @@ fn lower_named_proc_param_call_expr(
                 );
                 lowered_args.push(arg);
             }
-            ProcCallArgKind::PinnedParam => {
+            ProcCallArgKind::PrivateParam => {
                 let arg_name = arg.name.clone().unwrap_or_default();
                 push_semantic(
                     DiagCtx::new(arg.expr.loc()),
                     errors,
                     format!(
-                        "processor call '{}(...)' named argument '{}' is pinned and cannot be used as a live param argument; pass it to the constructor or builtin init(...), or expose an event",
+                        "processor call '{}(...)' named argument '{}' is private and cannot be used as a live param argument; pass it to the constructor or builtin init(...), or expose an event",
                         target.display_name, arg_name
                     ),
                 );
@@ -1877,7 +1877,7 @@ fn reject_named_proc_param_calls_in_expr(
                     matches!(
                         proc_call_arg_kind(&target.api, arg.name.as_deref()),
                         ProcCallArgKind::Param
-                            | ProcCallArgKind::PinnedParam
+                            | ProcCallArgKind::PrivateParam
                             | ProcCallArgKind::Ambiguous
                     )
                 });
@@ -2455,7 +2455,7 @@ pub(super) fn expand_proc_param_specs(
                     name: param.name.clone(),
                     slots: vec![ProcParamSlotSpec {
                         name: param.name.clone(),
-                        pinned: param.pinned,
+                        private: param.private,
                         ty,
                         default: Some(typed_const_expr(default)),
                         range,
@@ -2500,7 +2500,7 @@ pub(super) fn expand_proc_param_specs(
                     name: param.name.clone(),
                     slots: vec![ProcParamSlotSpec {
                         name: param.name.clone(),
-                        pinned: param.pinned,
+                        private: param.private,
                         ty: PrimitiveType::F32,
                         default: Some(typed_const_expr(default)),
                         range,
@@ -2579,7 +2579,7 @@ pub(super) fn expand_proc_param_specs(
                     slot_names.push(slot_name.clone());
                     slots.push(ProcParamSlotSpec {
                         name: slot_name,
-                        pinned: param.pinned,
+                        private: param.private,
                         ty: PrimitiveType::F32,
                         default: slot_defaults.get(idx).cloned().unwrap_or(None),
                         range: None,
@@ -2676,7 +2676,7 @@ pub(super) fn expand_proc_param_specs(
                     slot_names.push(slot_name.clone());
                     slots.push(ProcParamSlotSpec {
                         name: slot_name,
-                        pinned: param.pinned,
+                        private: param.private,
                         ty: *elem,
                         default: slot_defaults
                             .get(idx)
@@ -2730,7 +2730,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
     match expr {
         Expr::Index { base, index, .. } => {
             rewrite_proc_calls_in_expr(index, proc_vars, proc_array_slots, proc_api, errors);
-            if reject_pinned_proc_param_read_path(
+            if reject_private_proc_param_read_path(
                 base,
                 expr_loc.into(),
                 proc_vars,
@@ -2759,7 +2759,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     errors,
                 );
             }
-            if reject_pinned_proc_param_read_path(
+            if reject_private_proc_param_read_path(
                 base,
                 expr_loc.into(),
                 proc_vars,
@@ -2955,12 +2955,12 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     else {
                         return;
                     };
-                    if proc_param_field_is_pinned(&api, &field_name) {
+                    if proc_param_field_is_private(&api, &field_name) {
                         push_semantic(
                             expr_diag,
                             errors,
                             format!(
-                                "processor '{proc_name}' param '{field_name}' is pinned and cannot be read through '{array_base}.{field_name}'"
+                                "processor '{proc_name}' param '{field_name}' is private and cannot be read through '{array_base}.{field_name}'"
                             ),
                         );
                         return;
@@ -3006,12 +3006,12 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     return;
                 };
                 if let Some(param_slot) = api.params.get(&field_name) {
-                    if param_slot.pinned {
+                    if param_slot.private {
                         push_semantic(
                             expr_diag,
                             errors,
                             format!(
-                                "processor '{proc_name}' param '{field_name}' is pinned and cannot be read through '{proc_var}.{field_name}'"
+                                "processor '{proc_name}' param '{field_name}' is private and cannot be read through '{proc_var}.{field_name}'"
                             ),
                         );
                         return;
@@ -3252,7 +3252,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
         }
         Expr::Var { name, .. } => {
-            if reject_pinned_proc_param_read_path(
+            if reject_private_proc_param_read_path(
                 name,
                 expr_loc.into(),
                 proc_vars,
@@ -3508,7 +3508,7 @@ fn proc_param_slot_for_receiver<'a>(
     Some((proc_name, slot))
 }
 
-fn proc_pinned_param_field_for_receiver<'a>(
+fn proc_private_param_field_for_receiver<'a>(
     receiver: &str,
     field: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
@@ -3516,7 +3516,7 @@ fn proc_pinned_param_field_for_receiver<'a>(
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a ProcApi)> {
     let (proc_name, api) = proc_api_for_receiver(receiver, proc_vars, proc_array_slots, proc_api)?;
-    if proc_param_field_is_pinned(api, field) {
+    if proc_param_field_is_private(api, field) {
         Some((proc_name, api))
     } else {
         None
@@ -3730,7 +3730,7 @@ fn proc_param_slot_for_nested_path<'a>(
     Some((proc_name, slot))
 }
 
-fn proc_pinned_param_field_for_nested_path<'a>(
+fn proc_private_param_field_for_nested_path<'a>(
     nested_path: &str,
     field: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
@@ -3739,7 +3739,7 @@ fn proc_pinned_param_field_for_nested_path<'a>(
 ) -> Option<(&'a str, &'a ProcApi)> {
     let (proc_name, api) =
         proc_api_for_nested_path(nested_path, proc_vars, proc_array_slots, proc_api)?;
-    if proc_param_field_is_pinned(api, field) {
+    if proc_param_field_is_private(api, field) {
         Some((proc_name, api))
     } else {
         None
@@ -3843,7 +3843,7 @@ fn dynamic_params_assignment_target<'a>(
     Some((proc_name, api, base.clone()))
 }
 
-fn pinned_proc_param_assignment_target<'a>(
+fn private_proc_param_assignment_target<'a>(
     target: &AssignTarget,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
     proc_array_slots: &HashMap<String, Vec<String>>,
@@ -3852,7 +3852,7 @@ fn pinned_proc_param_assignment_target<'a>(
     let (base, field) = match target {
         AssignTarget::Var(name) => {
             if let Some((nested_path, field)) = flattened_nested_proc_field(name, proc_vars) {
-                if let Some((proc_name, _api)) = proc_pinned_param_field_for_nested_path(
+                if let Some((proc_name, _api)) = proc_private_param_field_for_nested_path(
                     &nested_path,
                     field,
                     proc_vars,
@@ -3866,7 +3866,7 @@ fn pinned_proc_param_assignment_target<'a>(
         }
         AssignTarget::Index { base, .. } | AssignTarget::Slice { base, .. } => {
             if let Some((nested_path, field)) = flattened_nested_proc_field(base, proc_vars) {
-                if let Some((proc_name, _api)) = proc_pinned_param_field_for_nested_path(
+                if let Some((proc_name, _api)) = proc_private_param_field_for_nested_path(
                     &nested_path,
                     field,
                     proc_vars,
@@ -3884,11 +3884,11 @@ fn pinned_proc_param_assignment_target<'a>(
         return None;
     }
     let (proc_name, _api) =
-        proc_pinned_param_field_for_receiver(base, field, proc_vars, proc_array_slots, proc_api)?;
+        proc_private_param_field_for_receiver(base, field, proc_vars, proc_array_slots, proc_api)?;
     Some((proc_name, base.to_owned(), field.to_owned()))
 }
 
-fn reject_pinned_proc_param_assignment(
+fn reject_private_proc_param_assignment(
     target: &AssignTarget,
     target_loc: Span,
     proc_vars: &HashMap<String, ProcCallInstance>,
@@ -3898,7 +3898,7 @@ fn reject_pinned_proc_param_assignment(
     errors: &mut Vec<Diagnostic>,
 ) {
     let Some((proc_name, receiver, field)) =
-        pinned_proc_param_assignment_target(target, proc_vars, proc_array_slots, proc_api)
+        private_proc_param_assignment_target(target, proc_vars, proc_array_slots, proc_api)
     else {
         return;
     };
@@ -3909,12 +3909,12 @@ fn reject_pinned_proc_param_assignment(
         DiagCtx::new(target_loc),
         errors,
         format!(
-            "processor '{proc_name}' param '{field}' is pinned and cannot be assigned through '{receiver}.{field}'; pass it to the constructor or builtin init(...), or expose an event"
+            "processor '{proc_name}' param '{field}' is private and cannot be assigned through '{receiver}.{field}'; pass it to the constructor or builtin init(...), or expose an event"
         ),
     );
 }
 
-enum PinnedParamReadAccess<'a> {
+enum PrivateParamReadAccess<'a> {
     Field {
         proc_name: &'a str,
         receiver: String,
@@ -3926,23 +3926,23 @@ enum PinnedParamReadAccess<'a> {
     },
 }
 
-fn pinned_proc_param_read_access<'a>(
+fn private_proc_param_read_access<'a>(
     path: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
     proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &'a HashMap<String, ProcApi>,
-) -> Option<PinnedParamReadAccess<'a>> {
+) -> Option<PrivateParamReadAccess<'a>> {
     if let Some((nested_path, field)) = flattened_nested_proc_field(path, proc_vars) {
         let (proc_name, api) =
             proc_api_for_nested_path(&nested_path, proc_vars, proc_array_slots, proc_api)?;
-        if field == "params" && proc_has_pinned_params(api) {
-            return Some(PinnedParamReadAccess::DynamicParams {
+        if field == "params" && proc_has_private_params(api) {
+            return Some(PrivateParamReadAccess::DynamicParams {
                 proc_name,
                 display: format!("{nested_path}.params"),
             });
         }
-        if proc_param_field_is_pinned(api, field) {
-            return Some(PinnedParamReadAccess::Field {
+        if proc_param_field_is_private(api, field) {
+            return Some(PrivateParamReadAccess::Field {
                 proc_name,
                 receiver: nested_path,
                 field: field.to_owned(),
@@ -3955,14 +3955,14 @@ fn pinned_proc_param_read_access<'a>(
         return None;
     }
     let (proc_name, api) = proc_api_for_receiver(receiver, proc_vars, proc_array_slots, proc_api)?;
-    if field == "params" && proc_has_pinned_params(api) {
-        return Some(PinnedParamReadAccess::DynamicParams {
+    if field == "params" && proc_has_private_params(api) {
+        return Some(PrivateParamReadAccess::DynamicParams {
             proc_name,
             display: path.to_owned(),
         });
     }
-    if proc_param_field_is_pinned(api, field) {
-        return Some(PinnedParamReadAccess::Field {
+    if proc_param_field_is_private(api, field) {
+        return Some(PrivateParamReadAccess::Field {
             proc_name,
             receiver: receiver.to_owned(),
             field: field.to_owned(),
@@ -3971,7 +3971,7 @@ fn pinned_proc_param_read_access<'a>(
     None
 }
 
-fn reject_pinned_proc_param_read_path(
+fn reject_private_proc_param_read_path(
     path: &str,
     loc: Span,
     proc_vars: &HashMap<String, ProcCallInstance>,
@@ -3979,12 +3979,12 @@ fn reject_pinned_proc_param_read_path(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
-    let Some(access) = pinned_proc_param_read_access(path, proc_vars, proc_array_slots, proc_api)
+    let Some(access) = private_proc_param_read_access(path, proc_vars, proc_array_slots, proc_api)
     else {
         return false;
     };
     match access {
-        PinnedParamReadAccess::Field {
+        PrivateParamReadAccess::Field {
             proc_name,
             receiver,
             field,
@@ -3992,14 +3992,14 @@ fn reject_pinned_proc_param_read_path(
             DiagCtx::new(loc),
             errors,
             format!(
-                "processor '{proc_name}' param '{field}' is pinned and cannot be read through '{receiver}.{field}'"
+                "processor '{proc_name}' param '{field}' is private and cannot be read through '{receiver}.{field}'"
             ),
         ),
-        PinnedParamReadAccess::DynamicParams { proc_name, display } => push_semantic(
+        PrivateParamReadAccess::DynamicParams { proc_name, display } => push_semantic(
             DiagCtx::new(loc),
             errors,
             format!(
-                "processor '{proc_name}' has pinned params, so dynamic param access through '{display}[...]' is not supported"
+                "processor '{proc_name}' has private params, so dynamic param access through '{display}[...]' is not supported"
             ),
         ),
     }
@@ -4019,12 +4019,12 @@ fn reject_bound_proc_dynamic_params_assignment(
     else {
         return;
     };
-    if proc_has_pinned_params(api) {
+    if proc_has_private_params(api) {
         push_semantic(
             DiagCtx::new(target_loc),
             errors,
             format!(
-                "processor '{proc_name}' has pinned params, so assignment through dynamic '{display}[...]' is not supported; assign a live named param or expose an event"
+                "processor '{proc_name}' has private params, so assignment through dynamic '{display}[...]' is not supported; assign a live named param or expose an event"
             ),
         );
         return;
@@ -4186,7 +4186,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
-    authorized_pinned_receiver: Option<&str>,
+    authorized_private_receiver: Option<&str>,
     errors: &mut Vec<Diagnostic>,
     skip_top_level_indices: Option<&HashSet<usize>>,
     temp_counter: &mut usize,
@@ -4205,7 +4205,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_vars,
                     proc_array_slots,
                     proc_api,
-                    authorized_pinned_receiver,
+                    authorized_private_receiver,
                     errors,
                     None,
                     temp_counter,
@@ -4216,7 +4216,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_vars,
                     proc_array_slots,
                     proc_api,
-                    authorized_pinned_receiver,
+                    authorized_private_receiver,
                     errors,
                     None,
                     temp_counter,
@@ -4229,7 +4229,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_vars,
                     proc_array_slots,
                     proc_api,
-                    authorized_pinned_receiver,
+                    authorized_private_receiver,
                     errors,
                     None,
                     temp_counter,
@@ -4250,13 +4250,13 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
         } = &stmt
         {
             if !skip_hook {
-                reject_pinned_proc_param_assignment(
+                reject_private_proc_param_assignment(
                     target,
                     *target_loc,
                     proc_vars,
                     proc_array_slots,
                     proc_api,
-                    authorized_pinned_receiver,
+                    authorized_private_receiver,
                     errors,
                 );
                 reject_bound_proc_dynamic_params_assignment(
@@ -4922,7 +4922,7 @@ pub(super) fn rewrite_proc_array_param_field_reads(
         let Some(param) = proc_api
             .get(&array.proc_name)
             .and_then(|api| api.params.get(field))
-            .filter(|param| !param.pinned)
+            .filter(|param| !param.private)
         else {
             return;
         };
@@ -5408,6 +5408,22 @@ pub(super) fn desugar_expr_instance_method_calls(
                     }
                 }
             }
+            if let Some(CallArg {
+                name: receiver_name,
+                expr: Expr::Var { name: receiver, .. },
+            }) = args.first()
+            {
+                if receiver_name.as_deref() == Some(METHOD_RECEIVER_ARG) {
+                    if let Some(struct_name) = struct_instances.get(receiver) {
+                        let resolved_method = format!("{struct_name}.{name}");
+                        if callable_symbols.contains(&resolved_method) {
+                            args[0].name = None;
+                            *name = resolved_method;
+                            return;
+                        }
+                    }
+                }
+            }
             if is_unsafe_index_method_name(name) {
                 if let Some(receiver) = args
                     .first_mut()
@@ -5492,6 +5508,9 @@ pub(super) fn desugar_expr_instance_method_calls(
                     }
                 }
             }
+            if callable_symbols.contains(name) {
+                return;
+            }
             if let Some((base, method)) = split_receiver_method_path(name) {
                 if is_unsafe_index_method_name(method) {
                     let receiver = base.to_owned();
@@ -5544,7 +5563,7 @@ pub(super) fn desugar_expr_instance_method_calls(
     }
 }
 
-pub(super) fn desugar_init_instance_method_calls(
+pub(crate) fn desugar_init_instance_method_calls(
     stmt: &mut Stmt,
     struct_instances: &mut HashMap<String, String>,
     struct_array_roots: &mut HashMap<String, String>,

@@ -88,9 +88,13 @@ pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, V
     Ok(DeclRange { min, max })
 }
 
+pub(super) struct ParsedBindingAttributes {
+    pub(super) range: Option<(BuiltinFn, Expr, Expr)>,
+}
+
 pub(super) fn parse_binding_range_pair(
     pair: Pair<'_, Rule>,
-) -> Result<(BuiltinFn, Expr, Expr), Vec<Diagnostic>> {
+) -> Result<ParsedBindingAttributes, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::binding_range {
         return Err(vec![syntax_at_pair(
             &pair,
@@ -167,9 +171,15 @@ pub(super) fn parse_binding_range_pair(
         }
     }
     let Some(domain) = domain else {
+        if mode.is_some() {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "binding range mode requires a count or range domain",
+            )]);
+        }
         return Err(vec![syntax_at_loc(
             loc.as_ref(),
-            "binding range requires a count or range domain",
+            "binding attributes require a count or range",
         )]);
     };
     let (begin, end, domain_kind) = match domain {
@@ -202,7 +212,9 @@ pub(super) fn parse_binding_range_pair(
             )]);
         }
     };
-    Ok((func, begin, end))
+    Ok(ParsedBindingAttributes {
+        range: Some((func, begin, end)),
+    })
 }
 
 enum BindingRangeDomain {

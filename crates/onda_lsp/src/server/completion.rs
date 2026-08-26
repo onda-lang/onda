@@ -9,7 +9,7 @@ use onda_frontend::{
     EventDef, EventParamDecl, EventParamType, Expr, FnParamDecl, FnParamType, FunctionDef,
     InitBlock, NamespaceAliasDecl, NamespaceDecl, NamespaceItem, NamespaceTemplateParam,
     OutputTiming, ParamBlock, ParamDecl, PortBlock, PortDecl, ProcessorDef, Program, Span, Stmt,
-    StructDef, UseDecl, LANGUAGE_KEYWORDS, PARAM_SCALES, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    StructDef, TaskDef, UseDecl, LANGUAGE_KEYWORDS, PARAM_SCALES, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 use onda_semantics::builtins::{
     builtin_constant_names, public_builtin_function_names, ARRAY_LEN_METHOD,
@@ -676,7 +676,7 @@ struct ProcInfo {
 #[derive(Debug, Clone)]
 struct ProcParamInfo {
     name: String,
-    pinned: bool,
+    private: bool,
     signature: String,
 }
 
@@ -712,6 +712,7 @@ struct FunctionInfo {
 
 #[derive(Debug, Clone)]
 enum InstanceInfo {
+    Task,
     UserType {
         type_name: String,
         is_array: bool,
@@ -929,7 +930,7 @@ impl CompletionIndex {
                 .iter()
                 .map(|decl| ProcParamInfo {
                     name: decl.name.clone(),
-                    pinned: decl.pinned,
+                    private: decl.private,
                     signature: format_proc_param_signature(decl),
                 })
                 .chain(proc_deferred_param_infos(
@@ -1202,6 +1203,7 @@ impl CompletionIndex {
         let mut state_items = Vec::<CompletionItem>::new();
         let mut instances = HashMap::<String, InstanceInfo>::new();
         let mut stmt_regions = Vec::<(Span, &[Stmt], bool)>::new();
+        let mut tasks = Vec::<&TaskDef>::new();
 
         for block in blocks {
             if !self.span_belongs_to_current_file(block.loc().span()) {
@@ -1284,6 +1286,14 @@ impl CompletionIndex {
                         items.push(event_item(event));
                     }
                 }
+                Block::Tasks(task_block) => {
+                    extend_span(&mut span, task_block.loc);
+                    for task in &task_block.tasks {
+                        items.push(task_item(task));
+                        instances.insert(task.name.clone(), InstanceInfo::Task);
+                        tasks.push(task);
+                    }
+                }
                 Block::Init(init) => {
                     extend_span(&mut span, init.loc);
                     self.collect_stmt_items(&init.body, "state", true, &mut state_items);
@@ -1323,6 +1333,9 @@ impl CompletionIndex {
             } else {
                 self.collect_stmt_scope(Some(owner_idx), span, stmts);
             }
+        }
+        for task in tasks {
+            self.collect_stmt_scope(Some(owner_idx), span_for_task_scope(task), &task.body);
         }
         Some(owner_idx)
     }
@@ -1429,6 +1442,10 @@ impl CompletionIndex {
                 COMPLETION_ITEM_KIND_FUNCTION,
             ));
         }
+        for task in &proc_def.tasks {
+            items.push(task_item(task));
+            instances.insert(task.name.clone(), InstanceInfo::Task);
+        }
         self.collect_stmt_items(&proc_def.init.body, "state", true, &mut items);
         self.collect_stmt_items(&proc_def.block_pre, "state", true, &mut items);
         let scope_namespace = self.child_scope_namespace(parent, namespace);
@@ -1474,6 +1491,9 @@ impl CompletionIndex {
         }
         for def in &proc_def.local_defs {
             self.collect_function_scope(Some(owner_idx), &scope_namespace, def, "proc-local def");
+        }
+        for task in &proc_def.tasks {
+            self.collect_stmt_scope(Some(owner_idx), span_for_task_scope(task), &task.body);
         }
         Some(owner_idx)
     }
@@ -2259,6 +2279,12 @@ impl CompletionIndex {
         let Some(instance) = self.resolve_instance(root) else {
             return Vec::new();
         };
+        if matches!(instance, InstanceInfo::Task) {
+            return [task_reset_item()]
+                .into_iter()
+                .filter(|item| prefix_matches(&item.label, prefix))
+                .collect();
+        }
         if matches!(instance, InstanceInfo::Buffer { .. }) {
             let mut items = self.buffer_member_items();
             items.extend(unsafe_index_method_items(true, true));
@@ -2320,7 +2346,7 @@ impl CompletionIndex {
                 );
             }
             for param in &proc_info.params {
-                if !param.pinned {
+                if !param.private {
                     out.push(
                         CompletionItem::new(param.name.clone(), COMPLETION_ITEM_KIND_PROPERTY)
                             .detail("proc param")
@@ -2331,7 +2357,7 @@ impl CompletionIndex {
                     );
                 }
             }
-            if !proc_info.params.is_empty() && proc_info.params.iter().all(|param| !param.pinned) {
+            if !proc_info.params.is_empty() && proc_info.params.iter().all(|param| !param.private) {
                 out.push(
                     CompletionItem::new("params", COMPLETION_ITEM_KIND_PROPERTY)
                         .detail("dynamic proc params")
@@ -2471,7 +2497,7 @@ impl CompletionIndex {
                     out.push(named_arg_item(input, "proc input"));
                 }
                 for param in &proc_info.params {
-                    if !param.pinned {
+                    if !param.private {
                         out.push(named_arg_item(&param.name, "proc param"));
                     }
                 }
@@ -2944,7 +2970,8 @@ fn aggregate_element_instance(instance: &InstanceInfo) -> Option<InstanceInfo> {
             type_name: type_name.clone(),
             is_array: false,
         }),
-        InstanceInfo::UserType { .. }
+        InstanceInfo::Task
+        | InstanceInfo::UserType { .. }
         | InstanceInfo::Buffer { .. }
         | InstanceInfo::PrimitiveIndexable { .. } => None,
     }
@@ -3098,7 +3125,7 @@ fn proc_deferred_param_infos(
         .map(|name| ProcParamInfo {
             signature: name.clone(),
             name,
-            pinned: false,
+            private: false,
         })
         .collect()
 }
@@ -3291,6 +3318,27 @@ fn event_item(event: &EventDef) -> CompletionItem {
         ))
 }
 
+fn task_item(task: &TaskDef) -> CompletionItem {
+    CompletionItem::new(task.name.clone(), COMPLETION_ITEM_KIND_FUNCTION)
+        .maybe_label_detail(Some("()".to_owned()))
+        .detail(format!("task {}()", task.name))
+        .insert_text(format!("{}()", task.name))
+        .snippet(format!("{}()", task.name))
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::ScopeDef,
+            &task.name,
+        ))
+}
+
+fn task_reset_item() -> CompletionItem {
+    CompletionItem::new("reset", COMPLETION_ITEM_KIND_METHOD)
+        .maybe_label_detail(Some("()".to_owned()))
+        .detail("task control reset()")
+        .insert_text("reset()")
+        .snippet("reset()")
+        .sort_text(completion_sort_text(CompletionSortGroup::ScopeDef, "reset"))
+}
+
 fn plugin_event_item(
     group: PluginEventCompletionGroup,
     event: PluginEventCompletion,
@@ -3454,6 +3502,12 @@ fn span_for_event_scope(event: &EventDef) -> Span {
         .unwrap_or(event.loc)
 }
 
+fn span_for_task_scope(task: &TaskDef) -> Span {
+    span_for_stmt_body(&task.body)
+        .map(|body_span| Span::spanning(task.loc, body_span))
+        .unwrap_or(task.loc)
+}
+
 fn span_for_init_scope(init: &InitBlock) -> Span {
     span_for_stmt_body(&init.body)
         .map(|body_span| Span::spanning(init.loc, body_span))
@@ -3495,6 +3549,9 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     }
     for def in &proc_def.local_defs {
         span = Span::spanning(span, span_for_function_scope(def));
+    }
+    for task in &proc_def.tasks {
+        span = Span::spanning(span, span_for_task_scope(task));
     }
     span
 }
@@ -4105,7 +4162,7 @@ fn proc_info_from_def(name: &str, proc_def: &ProcessorDef) -> ProcInfo {
             .iter()
             .map(|decl| ProcParamInfo {
                 name: decl.name.clone(),
-                pinned: decl.pinned,
+                private: decl.private,
                 signature: format_proc_param_signature(decl),
             })
             .chain(proc_deferred_param_infos(
@@ -4264,8 +4321,8 @@ fn format_event_param_signature(param: &EventParamDecl) -> String {
 
 fn format_proc_param_signature(param: &ParamDecl) -> String {
     let mut text = String::new();
-    if param.pinned {
-        text.push_str("pin ");
+    if param.private {
+        text.push_str("private ");
     }
     text.push_str(&param.name);
     if let Some(ty) = &param.ty {
@@ -4345,6 +4402,7 @@ fn assign_target_name(target: &onda_frontend::AssignTarget) -> Option<&str> {
 }
 
 fn source_assignment_target_name(line: &str) -> Option<&str> {
+    let line = line.strip_prefix("pin ").unwrap_or(line);
     let (left, _) = line.split_once('=')?;
     let left = left.trim();
     if left.starts_with("if ")
@@ -5007,7 +5065,7 @@ mod tests {
     fn member_completion_hides_proc_private_members_from_outside() {
         let source = r#"proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
     gain = 1.0
   outs:
     out1
@@ -5032,7 +5090,7 @@ sample:
         );
         assert!(
             !member_labels.iter().any(|label| label == "cutoff"),
-            "external member completion should not include pinned params: {member_labels:?}"
+            "external member completion should not include private params: {member_labels:?}"
         );
         assert!(
             member_labels.iter().any(|label| label == "gain"),
@@ -5328,7 +5386,7 @@ sample:
     fn general_completion_keeps_proc_private_members_inside_owner() {
         let source = r#"proc Voice:
   params:
-    pin cutoff = 1000.0
+    private cutoff = 1000.0
   outs:
     out1
   def helper(x):
@@ -5352,7 +5410,7 @@ sample:
         );
         assert!(
             general_labels.iter().any(|label| label == "cutoff"),
-            "pinned params should complete inside their owning proc: {general_labels:?}"
+            "private params should complete inside their owning proc: {general_labels:?}"
         );
     }
 
@@ -5379,6 +5437,73 @@ sample:
         assert!(
             arg_labels.is_empty(),
             "external proc-local def calls should not expose argument completions: {arg_labels:?}"
+        );
+    }
+
+    #[test]
+    fn top_level_tasks_complete_owner_state_locals_and_control_surface() {
+        let source = r#"buffers:
+  table: f32
+init:
+  seed = 1.0
+task prepare():
+  local = seed
+  table[0] = local
+  yield
+block:
+  prepare.reset()
+  await prepare()
+  sample:
+    out1 = table[0]
+"#;
+        let body_index = index_at(source, "table[0] = local", "table[0] = loc".len());
+        let body_labels = labels(body_index.general_items(""));
+        for expected in ["table", "seed", "local", "prepare"] {
+            assert!(
+                body_labels.iter().any(|label| label == expected),
+                "task body should complete '{expected}': {body_labels:?}"
+            );
+        }
+
+        let control_index = index_at(source, "prepare.reset", "prepare.".len());
+        let reset = control_index.member_items("prepare", "");
+        assert_eq!(labels(reset), vec!["reset"]);
+    }
+
+    #[test]
+    fn proc_tasks_complete_inside_the_owner_but_not_on_instances() {
+        let source = r#"proc Loader:
+  buffers:
+    table: f32
+  init:
+    seed = 1.0
+  task prepare():
+    local = seed
+    table[0] = local
+    yield
+  block:
+    await prepare()
+    sample:
+      out1 = table[0]
+
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#;
+        let body_index = index_at(source, "table[0] = local", "table[0] = loc".len());
+        let body_labels = labels(body_index.general_items(""));
+        for expected in ["table", "seed", "local", "prepare"] {
+            assert!(
+                body_labels.iter().any(|label| label == expected),
+                "proc task body should complete '{expected}': {body_labels:?}"
+            );
+        }
+
+        let external_index = index_at(source, "out1 = loader()", "out1 = loader".len());
+        assert!(
+            external_index.member_items("loader", "pre").is_empty(),
+            "proc tasks are owner-private control symbols"
         );
     }
 }
