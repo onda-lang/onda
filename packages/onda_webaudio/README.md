@@ -136,9 +136,10 @@ copied when Onda selects a slot while processing.
 Artifact descriptors and module exports are validated by the shared, compiler-free
 `@onda-lang/processor-abi` package before anything reaches the rendering thread.
 If generated init or event code returns a nonzero execution status, the adapter reports the error
-to the caller. A failing process call reports an `onda-error` and emits silence for that callback;
-later callbacks and control events remain available, which lets a failed task take its neutral
-await path or be reset explicitly. `init(ONDA_INIT_PRESERVE_PINNED)` reruns generated initialization
+to the caller. A failing process call reports an `onda-error` and emits silence. Any generated-code
+failure invalidates the live state, so later callbacks remain silent and stateful operations are
+rejected until full initialization or snapshot restoration succeeds.
+`init(ONDA_INIT_PRESERVE_PINNED)` reruns generated initialization
 while preserving pinned roots and task continuations; `init(ONDA_INIT_FULL)` initializes the
 complete physical state and is required before processing an instance returned by
 `createOndaAudioProcessor`. The initialized convenience constructor performs full initialization

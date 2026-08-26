@@ -726,14 +726,48 @@ impl JitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.trigger_event_by_index_with_status(
+                state,
+                params,
+                event_index,
+                payload,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+            )?
+        };
+        crate::check_execution_status(status)
+    }
+
+    /// Validates payload and buffer shape, then returns the generated execution status.
+    /// Validation errors are returned before generated event code is entered.
+    ///
+    /// # Safety
+    ///
+    /// Raw external-buffer pointers must satisfy their complete binding
+    /// contract and remain valid for the duration of the call.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_by_index_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        payload: &[u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+    ) -> Result<u32, Diagnostic> {
         let Some(desc) = self.event_descriptor(event_index) else {
-            return Ok(());
+            return Ok(0);
         };
         validate_event_payload(desc, payload)?;
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.trigger_event_by_index(
+                self.compiled.trigger_event_by_index_with_status(
                     state,
                     params,
                     event_index,

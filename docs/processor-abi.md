@@ -306,7 +306,9 @@ Bounds checks, integer division, and other generated safety checks return
 `RUNTIME_SAFETY_FAILURE` instead of trapping. Invalid host pointers, storage extents, or other
 violations of the raw ABI remain outside generated-code recovery and can still trap or cause
 undefined behavior. A host must treat every nonzero execution result as a failed processor state
-instead of continuing with potentially partial state or output writes.
+instead of continuing with potentially partial state or output writes. Audio hosts discard partial
+output and emit silence for the failed render interval and every later interval until full
+initialization or snapshot restoration establishes valid state again.
 
 ## Web Audio reference adapter
 

@@ -6425,8 +6425,42 @@ impl MirJitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.trigger_event_by_index_with_status(
+                state,
+                params,
+                event_index,
+                payload,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+            )?
+        };
+        crate::check_execution_status(status)
+    }
+
+    /// Validates event and buffer metadata, then returns the generated execution status.
+    /// Validation errors are returned before generated event code is entered.
+    ///
+    /// # Safety
+    ///
+    /// Every non-null external-buffer pointer must remain valid for the region
+    /// described by its frame/channel metadata for the duration of the call.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_by_index_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        payload: &[u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+    ) -> Result<u32, Diagnostic> {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
-            return Ok(());
+            return Ok(0);
         };
         self.validate_event_payload(event_index, payload)?;
         self.validate_runtime_regions(state, params)?;
@@ -6448,8 +6482,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_sample_rates),
             )
         };
-        crate::check_execution_status(status)?;
-        Ok(())
+        Ok(status)
     }
 
     /// Executes an event entry without validating payload or runtime regions.

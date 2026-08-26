@@ -48,6 +48,9 @@ const highBitHeapBaseWasm = new Uint8Array([
   ...wasm.slice(34),
 ]);
 
+const processFailureWasm = wasm.slice();
+processFailureWasm[processFailureWasm.length - 2] = 1;
+
 function metadata() {
   return {
     artifact_kind: "webassembly_module",
@@ -127,6 +130,53 @@ test("failed live initialization returns the worklet to the silent pending state
   processor.init(1);
   assert.equal(processor.initialized, true);
   assert.equal(processor.process, processor.processInitialized);
+});
+
+test("failed processing invalidates the worklet and keeps later callbacks silent", () => {
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: processFailureWasm,
+      metadata: metadata(),
+    },
+  });
+  const messages = [];
+  processor.port.postMessage = (message) => messages.push(message);
+  const output = new Float32Array([1, 1, 1]);
+
+  assert.equal(processor.process([], [[output]]), true);
+  assert.deepEqual([...output], [0, 0, 0]);
+  assert.equal(processor.initialized, false);
+  assert.equal(processor.process, processor.processPending);
+  assert.equal(processor.blockCursor, 0);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "onda-error");
+
+  output.fill(1);
+  assert.equal(processor.process([], [[output]]), true);
+  assert.deepEqual([...output], [0, 0, 0]);
+  assert.equal(messages.length, 1);
+});
+
+test("failed event execution invalidates the worklet", () => {
+  const descriptor = metadata();
+  descriptor.metadata.events = [{
+    name: "fail",
+    export: "onda_process",
+    params: [],
+  }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: processFailureWasm,
+      metadata: descriptor,
+    },
+  });
+
+  assert.throws(
+    () => processor.dispatchEvent("fail", []),
+    /event 'fail' failed with Onda execution status 1/,
+  );
+  assert.equal(processor.initialized, false);
+  assert.equal(processor.process, processor.processPending);
 });
 
 test("worklet uses null pointers only for absent processor surfaces", () => {

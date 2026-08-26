@@ -56,9 +56,9 @@ impl AllocatedState {
         &mut self,
         operation: impl FnOnce(&mut RuntimeState) -> Result<(), Diagnostic>,
     ) -> Result<(), Diagnostic> {
-        // Initialization is not transactional. Invalidate the existing image
+        // Generated entry points mutate the live image in place. Invalidate it
         // before entering generated code so errors and unwinding cannot leave
-        // a partially initialized image observable as ready state.
+        // partially mutated state observable as ready.
         self.initialized = false;
         let result = operation(&mut self.storage);
         self.initialized = result.is_ok();
@@ -84,7 +84,7 @@ fn uninitialized_instance_error() -> Diagnostic {
 
 fn invalid_instance_error() -> Diagnostic {
     Diagnostic::runtime(
-        "instance state is invalid after failed initialization; run full initialization or restore state before this operation",
+        "instance state is invalid after failed execution; run full initialization or restore state before this operation",
         0,
         0,
     )
@@ -1012,6 +1012,8 @@ pub fn process_checked(instance: &mut Instance, frames: usize) -> Result<(), Dia
     process_checked_segment(instance, 0, frames, PROCESS_FULL_BLOCK)
 }
 
+/// Processes a validated segment and invalidates the instance if generated execution fails.
+/// A later full initialization or snapshot restore is required before state can be used again.
 pub fn process_checked_segment(
     instance: &mut Instance,
     start_frame: usize,
@@ -1022,28 +1024,32 @@ pub fn process_checked_segment(
     validate_process_request(instance, start_frame, frames, flags)?;
     validate_bindings_for_process(instance)?;
     let state = match &mut instance.state {
-        InstanceState::Allocated(state) if state.initialized => &mut state.storage,
+        InstanceState::Allocated(state) if state.initialized => state,
         InstanceState::Allocated(_) => return Err(invalid_instance_error()),
         InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
     };
-    let status = unsafe {
-        instance.program.process_unchecked(
-            state,
-            &instance.params,
-            u32::try_from(start_frame)
-                .map_err(|_| Diagnostic::runtime("process start frame does not fit u32", 0, 0))?,
-            u32::try_from(frames)
-                .map_err(|_| Diagnostic::runtime("process frame count does not fit u32", 0, 0))?,
-            flags,
-            &instance.input_ptrs,
-            &instance.output_ptrs,
-            &instance.buffer_ptrs,
-            &instance.buffer_frames,
-            &instance.buffer_channels,
-            &instance.buffer_sample_rates,
-        )?
-    };
-    onda_codegen_llvm::check_execution_status(status)
+    state.attempt(|state| {
+        let status = unsafe {
+            instance.program.process_unchecked(
+                state,
+                &instance.params,
+                u32::try_from(start_frame).map_err(|_| {
+                    Diagnostic::runtime("process start frame does not fit u32", 0, 0)
+                })?,
+                u32::try_from(frames).map_err(|_| {
+                    Diagnostic::runtime("process frame count does not fit u32", 0, 0)
+                })?,
+                flags,
+                &instance.input_ptrs,
+                &instance.output_ptrs,
+                &instance.buffer_ptrs,
+                &instance.buffer_frames,
+                &instance.buffer_channels,
+                &instance.buffer_sample_rates,
+            )?
+        };
+        onda_codegen_llvm::check_execution_status(status)
+    })
 }
 
 /// Validates the current host bindings for unchecked processing.
@@ -1077,6 +1083,9 @@ pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<u32, Diagnost
 }
 
 /// Processes a segment of the configured block without revalidating host bindings.
+///
+/// A nonzero generated execution status invalidates the instance. Full initialization is then
+/// required before any further processing, event dispatch, or task execution.
 ///
 /// # Safety
 ///
@@ -1117,14 +1126,14 @@ pub unsafe fn process_unchecked_segment(
         )
     })?;
     let state = match &mut instance.state {
-        InstanceState::Allocated(state) if state.initialized => &mut state.storage,
+        InstanceState::Allocated(state) if state.initialized => state,
         InstanceState::Allocated(_) | InstanceState::Pending(_) => unsafe {
             std::hint::unreachable_unchecked()
         },
     };
-    unsafe {
+    let status = unsafe {
         instance.program.process_unchecked(
-            state,
+            &mut state.storage,
             &instance.params,
             start_frame,
             frames,
@@ -1136,7 +1145,11 @@ pub unsafe fn process_unchecked_segment(
             &instance.buffer_channels,
             &instance.buffer_sample_rates,
         )
+    }?;
+    if status != onda_codegen_llvm::PROCESSOR_EXECUTION_OK {
+        state.initialized = false;
     }
+    Ok(status)
 }
 
 fn validate_process_request(
@@ -1183,6 +1196,8 @@ fn validate_bindings_for_process(instance: &mut Instance) -> Result<(), Diagnost
     Ok(())
 }
 
+/// Dispatches an event and invalidates the instance if generated execution fails.
+/// A later full initialization or snapshot restore is required before state can be used again.
 pub fn trigger_event_by_index(
     instance: &mut Instance,
     event_index: usize,
@@ -1193,13 +1208,13 @@ pub fn trigger_event_by_index(
         validate_buffers(instance)?;
     }
     let state = match &mut instance.state {
-        InstanceState::Allocated(state) if state.initialized => &mut state.storage,
+        InstanceState::Allocated(state) if state.initialized => state,
         InstanceState::Allocated(_) => return Err(invalid_instance_error()),
         InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
     };
-    unsafe {
-        instance.program.trigger_event_by_index(
-            state,
+    let status = unsafe {
+        instance.program.trigger_event_by_index_with_status(
+            &mut state.storage,
             &instance.params,
             event_index,
             payload,
@@ -1207,11 +1222,19 @@ pub fn trigger_event_by_index(
             &instance.buffer_frames,
             &instance.buffer_channels,
             &instance.buffer_sample_rates,
-        )
+        )?
+    };
+    let result = onda_codegen_llvm::check_execution_status(status);
+    if result.is_err() {
+        state.initialized = false;
     }
+    result
 }
 
 /// Dispatches an event without validating its payload or current buffer bindings.
+///
+/// A nonzero generated execution status invalidates the instance. Full initialization is then
+/// required before any further processing, event dispatch, or task execution.
 ///
 /// # Safety
 ///
@@ -1235,13 +1258,13 @@ pub unsafe fn trigger_event_by_index_unchecked(
         "trigger_event_by_index_unchecked called without preparing buffer descriptors"
     );
     let state = match &mut instance.state {
-        InstanceState::Allocated(state) if state.initialized => &mut state.storage,
+        InstanceState::Allocated(state) if state.initialized => state,
         InstanceState::Allocated(_) | InstanceState::Pending(_) => unsafe {
             std::hint::unreachable_unchecked()
         },
     };
-    instance.program.trigger_event_by_index_unchecked(
-        state,
+    let status = instance.program.trigger_event_by_index_unchecked(
+        &mut state.storage,
         &instance.params,
         event_index,
         payload,
@@ -1249,7 +1272,11 @@ pub unsafe fn trigger_event_by_index_unchecked(
         &instance.buffer_frames,
         &instance.buffer_channels,
         &instance.buffer_sample_rates,
-    )
+    )?;
+    if status != onda_codegen_llvm::PROCESSOR_EXECUTION_OK {
+        state.initialized = false;
+    }
+    Ok(status)
 }
 
 fn prepare_buffer_ptrs_from_bindings(instance: &mut Instance) -> Result<(), Diagnostic> {
@@ -2485,6 +2512,115 @@ sample:
     }
 
     #[test]
+    fn failed_event_invalidates_state_until_full_init_or_restore() {
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  held: i32 = 0
+event divide(divisor: i32):
+  held = 1 / divisor
+sample:
+  out1 = f32(held)
+"#,
+            1,
+            1,
+        );
+        let event = instance.event_index("divide").expect("divide event");
+
+        assert!(trigger_event_by_index(&mut instance, event, &0_i32.to_ne_bytes()).is_err());
+        assert!(!instance.is_initialized());
+        assert!(trigger_event_by_index(&mut instance, event, &1_i32.to_ne_bytes()).is_err());
+        assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+
+        init(&mut instance, InitMode::Full).expect("full init should recover the instance");
+        trigger_event_by_index(&mut instance, event, &1_i32.to_ne_bytes())
+            .expect("event should run after recovery");
+    }
+
+    #[test]
+    fn unchecked_event_failure_invalidates_state_until_full_init() {
+        let mut instance = compile_test_instance(
+            r#"
+init:
+  held: i32 = 0
+event divide(divisor: i32):
+  held = 1 / divisor
+sample:
+  out1 = f32(held)
+"#,
+            1,
+            1,
+        );
+        let event = instance.event_index("divide").expect("divide event");
+        validate_buffers(&mut instance).expect("buffer descriptors should validate");
+
+        let status =
+            unsafe { trigger_event_by_index_unchecked(&mut instance, event, &0_i32.to_ne_bytes()) }
+                .expect("unchecked dispatch should return the generated status");
+        assert_eq!(
+            status,
+            onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+        );
+        assert!(!instance.is_initialized());
+        assert!(trigger_event_by_index(&mut instance, event, &1_i32.to_ne_bytes()).is_err());
+        assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+
+        init(&mut instance, InitMode::Full).expect("full init should recover the instance");
+        validate_buffers(&mut instance).expect("buffer descriptors should revalidate");
+        let status =
+            unsafe { trigger_event_by_index_unchecked(&mut instance, event, &1_i32.to_ne_bytes()) }
+                .expect("event should run after recovery");
+        assert_eq!(status, onda_codegen_llvm::PROCESSOR_EXECUTION_OK);
+        assert!(instance.is_initialized());
+    }
+
+    #[test]
+    fn unchecked_process_failure_invalidates_state_until_full_init() {
+        const BLOCK_SIZE: usize = 1;
+        let mut instance = compile_test_instance(
+            r#"
+params:
+  divisor: i32 = 0
+sample:
+  out1 = f32(1 / divisor)
+"#,
+            BLOCK_SIZE,
+            1,
+        );
+        let mut output = [0.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+        prepare_unchecked_process(&mut instance).expect("bindings should validate");
+
+        let status = unsafe { process_unchecked(&mut instance) }
+            .expect("unchecked processing should return the generated status");
+        assert_eq!(
+            status,
+            onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+        );
+        assert!(!instance.is_initialized());
+        assert!(process_checked(&mut instance, BLOCK_SIZE).is_err());
+        assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+
+        set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
+            .expect("divisor parameter should update");
+        init(&mut instance, InitMode::Full).expect("full init should recover the instance");
+        prepare_unchecked_process(&mut instance).expect("bindings should revalidate");
+        let status = unsafe { process_unchecked(&mut instance) }
+            .expect("processing should run after recovery");
+        assert_eq!(status, onda_codegen_llvm::PROCESSOR_EXECUTION_OK);
+        assert!(instance.is_initialized());
+        assert_eq!(output, [1.0]);
+    }
+
+    #[test]
     fn cooperative_task_resumes_for_loop_control_state() {
         const BLOCK_SIZE: usize = 4;
         let parsed = parse_program(
@@ -2882,6 +3018,95 @@ sample:
         assert_eq!(output1, [0.0; BLOCK_SIZE]);
         process_checked(&mut instance, BLOCK_SIZE).expect("fully reset task should complete");
         assert_eq!(output1, [232.0; BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn proc_init_reinitializes_declaration_only_fixed_arrays() {
+        const BLOCK_SIZE: usize = 4;
+        let mut instance = compile_test_instance(
+            r#"
+proc Probe:
+  init:
+    pin prepared: f32[8]
+    scratch: f32[8]
+  event dirty():
+    prepared[0] = 9.0
+    scratch[0] = 7.0
+  sample:
+    out1 = prepared[0] * 10.0 + scratch[0]
+
+proc Parent:
+  init:
+    probe = Probe()
+  event dirty():
+    probe.dirty()
+  event default_init():
+    probe.init()
+  event full_init():
+    probe.init(all = true)
+  sample:
+    out1 = probe()
+
+init:
+  direct = Probe()
+  parent = Parent()
+event dirty():
+  direct.dirty()
+  parent.dirty()
+event default_init():
+  direct.init()
+  parent.default_init()
+event full_init():
+  direct.init(all = true)
+  parent.full_init()
+sample:
+  out1 = direct()
+  out2 = parent()
+"#,
+            BLOCK_SIZE,
+            2,
+        );
+        let mut direct_output = [99.0_f32; BLOCK_SIZE];
+        let mut nested_output = [99.0_f32; BLOCK_SIZE];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                direct_output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&direct_output),
+            )
+            .expect("direct output should bind");
+            bind_output(
+                &mut instance,
+                1,
+                nested_output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&nested_output),
+            )
+            .expect("nested output should bind");
+        }
+
+        let dirty = instance.event_index("dirty").expect("dirty event");
+        let default_init = instance
+            .event_index("default_init")
+            .expect("default init event");
+        let full_init = instance.event_index("full_init").expect("full init event");
+
+        trigger_event_by_index(&mut instance, dirty, &[]).expect("arrays should become dirty");
+        process_checked(&mut instance, BLOCK_SIZE).expect("dirty state should process");
+        assert_eq!(direct_output, [97.0; BLOCK_SIZE]);
+        assert_eq!(nested_output, [97.0; BLOCK_SIZE]);
+
+        trigger_event_by_index(&mut instance, default_init, &[])
+            .expect("default proc init should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("default state should process");
+        assert_eq!(direct_output, [90.0; BLOCK_SIZE]);
+        assert_eq!(nested_output, [90.0; BLOCK_SIZE]);
+
+        trigger_event_by_index(&mut instance, dirty, &[]).expect("arrays should become dirty");
+        trigger_event_by_index(&mut instance, full_init, &[]).expect("full proc init should run");
+        process_checked(&mut instance, BLOCK_SIZE).expect("fully reset state should process");
+        assert_eq!(direct_output, [0.0; BLOCK_SIZE]);
+        assert_eq!(nested_output, [0.0; BLOCK_SIZE]);
     }
 
     #[test]
@@ -3530,7 +3755,7 @@ sample:
     }
 
     #[test]
-    fn failed_task_reports_once_and_then_takes_neutral_await_path() {
+    fn failed_task_invalidates_instance_until_full_init_or_restore() {
         const BLOCK_SIZE: usize = 4;
         let parsed = parse_program(
             r#"
@@ -3587,17 +3812,14 @@ sample:
         }
         assert!(process_checked(&mut instance, BLOCK_SIZE).is_err());
         output.fill(99.0);
-        process_checked(&mut instance, BLOCK_SIZE)
-            .expect("a later await of the failed task should not repeat the failure");
-        assert_eq!(output, [0.0; BLOCK_SIZE]);
+        assert!(process_checked(&mut instance, BLOCK_SIZE).is_err());
+        assert_eq!(output, [99.0; BLOCK_SIZE]);
 
         let retry = instance.event_index("retry").expect("retry event");
-        trigger_event_by_index(&mut instance, retry, &[])
-            .expect("a failed task should remain resettable");
-        assert!(
-            process_checked(&mut instance, BLOCK_SIZE).is_err(),
-            "resetting a failed task should permit another reported attempt"
-        );
+        assert!(trigger_event_by_index(&mut instance, retry, &[]).is_err());
+
+        init(&mut instance, InitMode::Full).expect("full init should recover the instance");
+        assert!(process_checked(&mut instance, BLOCK_SIZE).is_err());
     }
 
     #[test]

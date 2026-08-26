@@ -1643,9 +1643,10 @@ Changing a parameter or rebinding a buffer does not reset a task automatically;
 the program must call `reset()` when previously prepared or partially prepared
 state is no longer valid.
 
-A runtime failure reports through the failing process call and leaves the task
-failed. Later reached awaits take the same neutral-output path without reporting
-that failure again. Resetting the task permits another attempt.
+A runtime failure reports through the failing process call and invalidates the
+processor state. Hosts must emit silence and reject further stateful operations
+until full initialization or snapshot restoration succeeds. This is the same
+fail-closed behavior as a runtime failure outside a task.
 
 Tasks are private to their owner and share that owner's declaration namespace.
 They cannot be used with a `graph` block. `await` is valid only in structured

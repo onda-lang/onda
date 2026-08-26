@@ -405,6 +405,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
 
   checkExecutionStatus(status, operation) {
     if (status === 0) return;
+    this.invalidateState();
     throw new Error(`${operation} failed with Onda execution status ${String(status)}`);
   }
 
@@ -1299,6 +1300,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         flags,
       );
       if (status !== 0) {
+        this.invalidateState();
         this.clearOutputs(outputs);
         this.port.postMessage({
           type: "onda-error",

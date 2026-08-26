@@ -348,6 +348,38 @@ pub(crate) fn guard_pinned_initializers(stmts: &mut Vec<Stmt>, all_name: &str) {
     *stmts = lowered;
 }
 
+fn declaration_only_primitive_array_fill(stmt: &Stmt) -> Option<Stmt> {
+    let Stmt::Assign {
+        target: AssignTarget::Var(array_var),
+        expr: Expr::ArrayCtor {
+            spec, init: None, ..
+        },
+        ..
+    } = stmt
+    else {
+        return None;
+    };
+    let ArrayElemType::Primitive(element) = spec.elem else {
+        return None;
+    };
+    Some(Stmt::Assign {
+        loc: Default::default(),
+        target_loc: Default::default(),
+        target: AssignTarget::Slice {
+            base: array_var.clone(),
+            selector: None,
+            channel: None,
+            start: None,
+            end: None,
+        },
+        decl_ty: None,
+        generic_decl_ty: None,
+        is_typed_decl: false,
+        typed_decl_ty_loc: Default::default(),
+        expr: zero_expr(element),
+    })
+}
+
 fn build_builtin_proc_init_event_parts<F>(
     receiver_ty: &str,
     param_specs: &[ProcParamSpec],
@@ -1222,6 +1254,25 @@ fn generate_nested_wrapper_defs(
                     }
                     continue;
                 }
+            }
+            if let Some(fill_stmt) = declaration_only_primitive_array_fill(stmt) {
+                if let Some(rewritten) = lower_callee_stmt_for_nested_wrapper(
+                    &fill_stmt,
+                    &proc.name,
+                    &callee_proc_name,
+                    &nested_path,
+                    &callee_shape,
+                    &callee_nested_instances,
+                    &callee_ins_names,
+                    &callee_shape.field_array_slots,
+                    &callee_shape.in_array_slots,
+                    &callee_shape.nested_proc_array_slots,
+                    proc_api,
+                    errors,
+                ) {
+                    nested_init_body.push(rewritten);
+                }
+                continue;
             }
             if let Stmt::Assign {
                 target: AssignTarget::Var(var),
@@ -2538,6 +2589,25 @@ pub(super) fn generate_lowered_proc_blocks(
                     }
                     continue;
                 }
+            }
+            if let Some(fill_stmt) = declaration_only_primitive_array_fill(stmt) {
+                if let Some(rewritten) = rewrite_owner_proc_stmt(
+                    fill_stmt,
+                    &proc.name,
+                    &shape.field_names,
+                    &shape.array_field_names,
+                    &ins_names,
+                    &shape.field_array_slots,
+                    &shape.in_array_slots,
+                    &shape.nested_proc_array_slots,
+                    &shape.nested_fields,
+                    &nested_instances,
+                    proc_api,
+                    errors,
+                ) {
+                    init_body.push(rewritten);
+                }
+                continue;
             }
             if let Stmt::Assign {
                 target: AssignTarget::Var(array_var),

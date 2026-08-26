@@ -803,7 +803,7 @@ test("AudioWorklet live initialization preserves compile-block scheduling", () =
   ]);
 });
 
-test("AudioWorklet reports generated execution failures and permits retry", () => {
+test("AudioWorklet reports generated execution failures and remains silent", () => {
   const artifact = compileMir(f64PassthroughMir());
   const processor = new WorkletProcessor({
     processorOptions: {
@@ -836,5 +836,6 @@ test("AudioWorklet reports generated execution failures and permits retry", () =
     true,
   );
   assert.deepEqual([...output], [0, 0, 0, 0]);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
+  assert.equal(processor.initialized, false);
 });
