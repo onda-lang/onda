@@ -58,6 +58,7 @@ pub const LANGUAGE_KEYWORDS: &[&str] = &[
     "block",
     "sample",
     "graph",
+    "config",
     "const",
     "def",
     "struct",
@@ -86,8 +87,9 @@ pub const LANGUAGE_KEYWORDS: &[&str] = &[
     "false",
 ];
 
-pub const RESERVED_IDENTIFIER_WORDS: &[&str] =
-    &["while", "break", "continue", "private", "pin", "as", "pub"];
+pub const RESERVED_IDENTIFIER_WORDS: &[&str] = &[
+    "while", "break", "continue", "private", "pin", "as", "pub", "config",
+];
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]

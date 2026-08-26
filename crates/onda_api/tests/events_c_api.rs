@@ -212,6 +212,8 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
         fast_math: 0,
         sample_rate: 48_000.0,
         block_size: 512,
+        const_inputs: std::ptr::null(),
+        const_input_count: 0,
     };
     let mut diag = empty_diag();
     let program = onda_compile(src_c.as_ptr(), &options, &mut *diag);
@@ -224,6 +226,142 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
 }
 
 #[test]
+fn c_api_compile_constants_preserve_exact_scalar_and_array_types() {
+    unsafe {
+        let source = CString::new(
+            r#"
+config const Enabled: bool = false
+config const Size: i32 = 1
+config const Wide: i64 = i64(1)
+config const Gain: f32 = 0.0
+config const Phase: f64 = 0.0
+config const Values: f32[2] = [0.0, 0.0]
+namespace Checks:
+  assert(Enabled)
+  assert(Size == 8)
+  assert(Wide == i64(9007199254740993))
+  assert(Gain == f32(0.25))
+  assert(Phase == f64(0.125))
+  assert(Values[1] == f32(0.75))
+sample:
+  out1 = 0.0
+"#,
+        )
+        .unwrap();
+        let names = [
+            CString::new("Enabled").unwrap(),
+            CString::new("Size").unwrap(),
+            CString::new("Wide").unwrap(),
+            CString::new("Gain").unwrap(),
+            CString::new("Phase").unwrap(),
+            CString::new("Values").unwrap(),
+        ];
+        let enabled = [1_u8];
+        let size = 8_i32.to_le_bytes();
+        let wide = 9_007_199_254_740_993_i64.to_le_bytes();
+        let gain = 0.25_f32.to_le_bytes();
+        let phase = 0.125_f64.to_le_bytes();
+        let mut values = [0_u8; 8];
+        values[..4].copy_from_slice(&0.5_f32.to_le_bytes());
+        values[4..].copy_from_slice(&0.75_f32.to_le_bytes());
+        let inputs = [
+            onda_compile_const_input_t {
+                name_utf8: names[0].as_ptr(),
+                element_type: ONDA_COMPILE_CONST_BOOL,
+                is_array: 0,
+                element_count: 1,
+                value_bytes: enabled.as_ptr().cast(),
+                value_byte_count: enabled.len(),
+            },
+            onda_compile_const_input_t {
+                name_utf8: names[1].as_ptr(),
+                element_type: ONDA_COMPILE_CONST_I32,
+                is_array: 0,
+                element_count: 1,
+                value_bytes: size.as_ptr().cast(),
+                value_byte_count: size.len(),
+            },
+            onda_compile_const_input_t {
+                name_utf8: names[2].as_ptr(),
+                element_type: ONDA_COMPILE_CONST_I64,
+                is_array: 0,
+                element_count: 1,
+                value_bytes: wide.as_ptr().cast(),
+                value_byte_count: wide.len(),
+            },
+            onda_compile_const_input_t {
+                name_utf8: names[3].as_ptr(),
+                element_type: ONDA_COMPILE_CONST_F32,
+                is_array: 0,
+                element_count: 1,
+                value_bytes: gain.as_ptr().cast(),
+                value_byte_count: gain.len(),
+            },
+            onda_compile_const_input_t {
+                name_utf8: names[4].as_ptr(),
+                element_type: ONDA_COMPILE_CONST_F64,
+                is_array: 0,
+                element_count: 1,
+                value_bytes: phase.as_ptr().cast(),
+                value_byte_count: phase.len(),
+            },
+            onda_compile_const_input_t {
+                name_utf8: names[5].as_ptr(),
+                element_type: ONDA_COMPILE_CONST_F32,
+                is_array: 1,
+                element_count: 2,
+                value_bytes: values.as_ptr().cast(),
+                value_byte_count: values.len(),
+            },
+        ];
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+            const_inputs: inputs.as_ptr(),
+            const_input_count: inputs.len(),
+        };
+        let mut diag = empty_diag();
+        let program = onda_compile(source.as_ptr(), &options, &mut *diag);
+        assert!(
+            !program.is_null(),
+            "compile failed: {}",
+            diag_message(&diag)
+        );
+        let _program = ProgramHandle(program);
+    }
+}
+
+#[test]
+fn c_api_compile_constants_reject_malformed_canonical_values() {
+    unsafe {
+        let source =
+            CString::new("config const Enabled: bool = false\nsample:\n  out1 = 0.0\n").unwrap();
+        let name = CString::new("Enabled").unwrap();
+        let invalid_bool = [2_u8];
+        let input = onda_compile_const_input_t {
+            name_utf8: name.as_ptr(),
+            element_type: ONDA_COMPILE_CONST_BOOL,
+            is_array: 0,
+            element_count: 1,
+            value_bytes: invalid_bool.as_ptr().cast(),
+            value_byte_count: invalid_bool.len(),
+        };
+        let options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+            const_inputs: &input,
+            const_input_count: 1,
+        };
+        let mut diag = empty_diag();
+        let program = onda_compile(source.as_ptr(), &options, &mut *diag);
+        assert!(program.is_null());
+        assert!(diag_message(&diag).contains("invalid bool byte 2"));
+    }
+}
+
+#[test]
 fn diagnostic_strings_have_an_explicit_reusable_lifecycle() {
     unsafe {
         let invalid = CString::new("this is not valid Onda").unwrap();
@@ -232,6 +370,8 @@ fn diagnostic_strings_have_an_explicit_reusable_lifecycle() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let mut diag = empty_diag();
 
@@ -268,6 +408,8 @@ fn null_diagnostic_output_releases_generated_strings() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         for _ in 0..32 {
             assert!(onda_compile(invalid.as_ptr(), &options, std::ptr::null_mut()).is_null());
@@ -347,6 +489,8 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let mut diag = empty_diag();
         let mut manifest = std::ptr::null_mut();
@@ -569,6 +713,8 @@ fn c_file_compile_accepts_filesystem_projects_with_defaults_and_watch_paths() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 4,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let mut manifest = std::ptr::null_mut();
         let program = onda_compile_file(project_path.as_ptr(), &options, &mut manifest, &mut *diag);
@@ -721,6 +867,8 @@ fn c_project_compile_replays_an_exact_in_memory_source_graph() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let mut diag = empty_diag();
         let mut manifest = std::ptr::null_mut();
@@ -809,6 +957,8 @@ fn c_project_image_and_typed_asset_api_round_trip() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let mut diag = empty_diag();
         let mut manifest = std::ptr::null_mut();
@@ -1094,6 +1244,8 @@ sample { out1 = samples[0] }
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 4,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let program = onda_project_image_compile(image, &options, &mut *diag);
         assert!(
@@ -1197,6 +1349,8 @@ sample { samples[0] = 0.0 }
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 4,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let program = onda_project_image_compile(image.0, &options, &mut *diag);
         assert!(program.is_null());
@@ -1293,6 +1447,8 @@ sample:
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 512,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let mut diag = empty_diag();
         let program = onda_compile(src.as_ptr(), &options, &mut *diag);
@@ -2132,6 +2288,8 @@ sample { out1 = 0.25 }
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 128,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let mut diag = empty_diag();
         let program = onda_compile(src.as_ptr(), &options, &mut *diag);
@@ -2457,6 +2615,8 @@ sample { out1 = SAMPLE_RATE }
             fast_math: 0,
             sample_rate,
             block_size,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
         };
         let mut diag = empty_diag();
         let program = onda_compile(src.as_ptr(), &options, &mut *diag);

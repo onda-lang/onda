@@ -80,6 +80,66 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.match(files.metadata.text, /"integrity"/);
 });
 
+test("compile constants preserve every public JavaScript value type", async () => {
+  const compiler = await createCompiler();
+  const source = `config const Enabled: bool = false
+config const Size: i32 = 1
+config const Wide: i64 = i64(1)
+config const Gain: f32 = 0.0
+config const Phase: f64 = 0.0
+config const Flags: bool[] = [false]
+config const Indices: i32[] = [0]
+config const WideValues: i64[] = [i64(0)]
+config const Coefficients: f32[2] = [0.0, 0.0]
+config const Precise: f64[] = [0.0]
+namespace Checks:
+  assert(Enabled)
+  assert(Size == 8)
+  assert(Wide == i64(9007199254740993))
+  assert(Gain == f32(0.25))
+  assert(Phase == f64(0.125))
+  assert(Flags[1])
+  assert(Indices[1] == 13)
+  assert(WideValues[0] == i64(9007199254740993))
+  assert(Coefficients[1] == f32(0.75))
+  assert(Precise[0] == f64(0.125))
+sample:
+  out1 = 0.0
+`;
+  const constants = {
+    Enabled: true,
+    Size: 8,
+    Wide: 9_007_199_254_740_993n,
+    Gain: 0.25,
+    Phase: 0.125,
+    Flags: new Uint8Array([0, 1]),
+    Indices: new Int32Array([12, 13]),
+    WideValues: new BigInt64Array([9_007_199_254_740_993n]),
+    Coefficients: new Float32Array([0.5, 0.75]),
+    Precise: new Float64Array([0.125]),
+  };
+  const compiled = await compiler.compileSource(source, { constants });
+  assert.equal(WebAssembly.validate(compiled.artifact.wasm), true);
+
+  const workspace = await compiler.compileWorkspace({
+    entry: "main.onda",
+    sources: { "main.onda": source },
+  }, { constants });
+  const image = await compiler.createProjectImage(workspace.sourceGraph);
+  const replayed = await compiler.compileProjectImage(image.bytes, { constants });
+  assert.equal(WebAssembly.validate(replayed.artifact.wasm), true);
+  assert.throws(
+    () => compiler.frontend.compile_to_mir_messagepack(
+      "config const Values: f32[] = []\n",
+      48_000,
+      128,
+      JSON.stringify([{ name: "Values", element: "invalid", array: true, values: [] }]),
+    ),
+    (error) => String(error).includes("unknown element type 'invalid'"),
+  );
+  await compiler.dispose();
+});
+
 test("compiles fixed buffer arrays with explicit contiguous group metadata", async () => {
   const compiler = await createCompiler();
   const { artifact } = await compiler.compileSource(`buffers:
@@ -464,6 +524,7 @@ test("runs the Onda LSP protocol inside frontend Wasm", async () => {
 });
 
 test("offers an asynchronous browser-worker client", async () => {
+  let receivedCompileOptions;
   class FakeWorker {
     constructor(url, options) {
       assert.match(String(url), /worker\.js$/);
@@ -481,6 +542,9 @@ test("offers an asynchronous browser-worker client", async () => {
     }
 
     postMessage(message) {
+      if (message.type === "compileSource") {
+        receivedCompileOptions = message.options;
+      }
       const value = message.type === "compileSource"
         ? {
           artifact: { wasm: new Uint8Array([0, 97, 115, 109]), metadata: {} },
@@ -502,9 +566,15 @@ test("offers an asynchronous browser-worker client", async () => {
   }
 
   const compiler = await createCompiler({ worker: true, Worker: FakeWorker });
-  const { artifact, sourceFiles } = await compiler.compileSource(SOURCE);
+  const constants = {
+    Wide: 9_007_199_254_740_993n,
+    Window: new Float32Array([0.25, 0.75]),
+  };
+  const { artifact, sourceFiles } = await compiler.compileSource(SOURCE, { constants });
   assert.deepEqual([...artifact.wasm], [0, 97, 115, 109]);
   assert.deepEqual(sourceFiles, []);
+  assert.equal(receivedCompileOptions.constants.Wide, constants.Wide);
+  assert.deepEqual(receivedCompileOptions.constants.Window, constants.Window);
   assert.deepEqual(
     await compiler.sendLspMessage({ jsonrpc: "2.0", id: 9, method: "shutdown" }),
     [{ jsonrpc: "2.0", id: 9, result: null }],

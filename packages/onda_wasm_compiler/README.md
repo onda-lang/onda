@@ -16,6 +16,26 @@ const { artifact, sourceFiles } = await compiler.compileSource(source, {
 console.log(artifact.wasm, artifact.metadata, sourceFiles);
 ```
 
+Source may expose explicitly typed `config const` declarations. Select a complete immutable input
+map on any source, workspace, or project-image compilation:
+
+```js
+const { artifact } = await compiler.compileSource(source, {
+  constants: {
+    Enabled: true,
+    Channels: 8,
+    Seed: 9_007_199_254_740_993n,
+    Window: new Float32Array([0.0, 0.5, 1.0]),
+  },
+});
+```
+
+Booleans use `boolean`, `i64` uses `bigint`, and arrays use `boolean[]`, `Uint8Array` (0/1),
+`Int32Array`, `BigInt64Array`, `Float32Array`, or `Float64Array`. Plain finite numbers are checked
+against the declaration's `i32`, `f32`, or `f64` type. Fixed-array lengths are resolved after all
+inputs are selected, so changing a size constant without a matching array value is a compile error.
+Worker mode forwards bigint and typed arrays through structured clone without numeric conversion.
+
 The package composes Onda's embedded Rust frontend with its Binaryen backend. The frontend emits
 validated versioned MIR in memory; the backend lowers that trusted producer output to the generic
 Onda WebAssembly processor ABI. The package verifies the MIR schema handshake during startup.

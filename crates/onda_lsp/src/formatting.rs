@@ -32,7 +32,11 @@ pub fn format_expr(expr: &Expr) -> String {
 }
 
 pub fn format_const_decl(decl: &onda_frontend::ConstDecl) -> String {
-    let mut text = format!("const {}", decl.name);
+    let mut text = if decl.configurable {
+        format!("config const {}", decl.name)
+    } else {
+        format!("const {}", decl.name)
+    };
     if let Some(ty) = &decl.ty {
         text.push_str(": ");
         text.push_str(&format_const_type(ty));
@@ -1517,6 +1521,19 @@ proc Worker:
             "{formatted}"
         );
         let reparsed = parse_program(&formatted).expect("formatted modifiers should parse");
+        assert_eq!(format_program(&reparsed), formatted);
+    }
+
+    #[test]
+    fn formatting_preserves_configuration_constants() {
+        let program = parse_program(
+            "config const Size: i32 = 4\nconfig const Values: f32[Size] = [0.0, 0.5, 1.0, 0.5]\n",
+        )
+        .expect("configuration constants should parse");
+        let formatted = format_program(&program);
+        assert!(formatted.contains("config const Size: i32 = 4\n"));
+        assert!(formatted.contains("config const Values: f32[Size] = [0.0, 0.5, 1.0, 0.5]\n"));
+        let reparsed = parse_program(&formatted).expect("formatted config constants should parse");
         assert_eq!(format_program(&reparsed), formatted);
     }
 }

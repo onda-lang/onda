@@ -63,7 +63,27 @@ typedef struct {
    strings and must not be disposed independently. */
 void onda_diag_dispose(onda_diag_t* diag);
 
-/* Compile options for onda_compile. */
+enum {
+  ONDA_COMPILE_CONST_BOOL = 0,
+  ONDA_COMPILE_CONST_I32 = 1,
+  ONDA_COMPILE_CONST_I64 = 2,
+  ONDA_COMPILE_CONST_F32 = 3,
+  ONDA_COMPILE_CONST_F64 = 4
+};
+
+/* One immutable typed compile-constant input. value_bytes uses canonical
+   little-endian scalar encoding. is_array distinguishes a scalar from an
+   array of length one. */
+typedef struct {
+  const char* name_utf8;
+  int element_type;
+  int is_array;
+  size_t element_count;
+  const void* value_bytes;
+  size_t value_byte_count;
+} onda_compile_const_input_t;
+
+/* Compile options shared by all source and project-image compile entry points. */
 typedef struct {
   /* fast_math != 0 enables LLVM fast-math lowering. */
   int fast_math;
@@ -71,6 +91,9 @@ typedef struct {
   float sample_rate;
   /* Fixed compile-time block size. Must be > 0. */
   int block_size;
+  /* Immutable compile-constant inputs for this request. NULL when count is 0. */
+  const onda_compile_const_input_t* const_inputs;
+  size_t const_input_count;
 } onda_compile_options_t;
 
 typedef struct {

@@ -39,7 +39,7 @@ const nameFollowing = new Set([
 const keywordWords = new Set([
   "if", "elif", "else", "for", "in", "while", "loop", "break",
   "continue", "return", "assert", "import", "include", "use", "pub",
-  "as", "private", "pin",
+  "as", "private", "pin", "config",
 ]);
 const typeWords = new Set(["f32", "f64", "i32", "i64", "bool", "buffer"]);
 const constantWords = new Set([

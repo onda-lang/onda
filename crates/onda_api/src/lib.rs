@@ -37,8 +37,8 @@ use onda_runtime::{
     validate_outputs, InitMode, Instance, InstanceConfig,
 };
 use onda_semantics::{
-    analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedBufferChannels,
-    TypedProgram,
+    analyze_with_options_and_inputs, lower_program_to_optimized_mir, AnalysisOptions,
+    CompileInputs, ConstValue, TypedBufferChannels, TypedConstValue, TypedProgram,
 };
 
 pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESS_BEGIN_BLOCK as i32;
@@ -52,6 +52,11 @@ pub const ONDA_PRIMITIVE_F64: i32 = 1;
 pub const ONDA_PRIMITIVE_I32: i32 = 2;
 pub const ONDA_PRIMITIVE_I64: i32 = 3;
 pub const ONDA_PRIMITIVE_BOOL: i32 = 4;
+pub const ONDA_COMPILE_CONST_BOOL: i32 = 0;
+pub const ONDA_COMPILE_CONST_I32: i32 = 1;
+pub const ONDA_COMPILE_CONST_I64: i32 = 2;
+pub const ONDA_COMPILE_CONST_F32: i32 = 3;
+pub const ONDA_COMPILE_CONST_F64: i32 = 4;
 
 fn execution_status_to_c(status: Result<u32, Diagnostic>) -> i32 {
     match status {
@@ -77,6 +82,18 @@ pub struct onda_compile_options_t {
     pub fast_math: i32,
     pub sample_rate: f32,
     pub block_size: i32,
+    pub const_inputs: *const onda_compile_const_input_t,
+    pub const_input_count: usize,
+}
+
+#[repr(C)]
+pub struct onda_compile_const_input_t {
+    pub name_utf8: *const c_char,
+    pub element_type: i32,
+    pub is_array: i32,
+    pub element_count: usize,
+    pub value_bytes: *const c_void,
+    pub value_byte_count: usize,
 }
 
 #[repr(C)]
@@ -278,7 +295,152 @@ fn validate_compile_options(options: &onda_compile_options_t) -> Result<(), &'st
     if options.block_size <= 0 {
         return Err("compile options require block_size > 0");
     }
+    if options.const_input_count > 0 && options.const_inputs.is_null() {
+        return Err("compile options const_inputs is null with a nonzero count");
+    }
+    if options.const_input_count
+        > isize::MAX as usize / std::mem::size_of::<onda_compile_const_input_t>()
+    {
+        return Err("compile options const_input_count is too large");
+    }
     Ok(())
+}
+
+unsafe fn compile_inputs_from_options(
+    options: &onda_compile_options_t,
+) -> Result<CompileInputs, Diagnostic> {
+    let mut inputs = CompileInputs::default();
+    let entries = if options.const_input_count == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(options.const_inputs, options.const_input_count)
+    };
+    for entry in entries {
+        let name = parse_required_c_string(entry.name_utf8, "compile constant name")?;
+        if inputs.constants.contains_key(&name) {
+            return Err(Diagnostic::semantic(
+                format!("configuration constant '{name}' is specified more than once"),
+                0,
+                0,
+            ));
+        }
+        if !matches!(entry.is_array, 0 | 1) {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "configuration constant '{name}' has invalid is_array value {}",
+                    entry.is_array
+                ),
+                0,
+                0,
+            ));
+        }
+        let width = match entry.element_type {
+            ONDA_COMPILE_CONST_BOOL => 1,
+            ONDA_COMPILE_CONST_I32 | ONDA_COMPILE_CONST_F32 => 4,
+            ONDA_COMPILE_CONST_I64 | ONDA_COMPILE_CONST_F64 => 8,
+            _ => {
+                return Err(Diagnostic::semantic(
+                    format!(
+                        "configuration constant '{name}' has unknown element type {}",
+                        entry.element_type
+                    ),
+                    0,
+                    0,
+                ))
+            }
+        };
+        let expected_bytes = entry
+            .element_count
+            .checked_mul(width)
+            .ok_or_else(|| Diagnostic::semantic("compile constant byte count overflow", 0, 0))?;
+        if entry.value_byte_count != expected_bytes {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "configuration constant '{name}' has {} value bytes, expected {expected_bytes}",
+                    entry.value_byte_count
+                ),
+                0,
+                0,
+            ));
+        }
+        if expected_bytes > isize::MAX as usize {
+            return Err(Diagnostic::semantic(
+                format!("configuration constant '{name}' value is too large"),
+                0,
+                0,
+            ));
+        }
+        if expected_bytes > 0 && entry.value_bytes.is_null() {
+            return Err(Diagnostic::semantic(
+                format!("configuration constant '{name}' has a null value pointer"),
+                0,
+                0,
+            ));
+        }
+        if entry.is_array == 0 && entry.element_count != 1 {
+            return Err(Diagnostic::semantic(
+                format!("scalar configuration constant '{name}' must contain exactly one element"),
+                0,
+                0,
+            ));
+        }
+        let bytes = if expected_bytes == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(entry.value_bytes.cast::<u8>(), expected_bytes)
+        };
+        let mut values = Vec::with_capacity(entry.element_count);
+        for chunk in bytes.chunks_exact(width) {
+            let value = match entry.element_type {
+                ONDA_COMPILE_CONST_BOOL => match chunk[0] {
+                    0 => TypedConstValue::Bool(false),
+                    1 => TypedConstValue::Bool(true),
+                    value => {
+                        return Err(Diagnostic::semantic(
+                            format!(
+                                "configuration constant '{name}' has invalid bool byte {value}"
+                            ),
+                            0,
+                            0,
+                        ))
+                    }
+                },
+                ONDA_COMPILE_CONST_I32 => {
+                    TypedConstValue::I32(i32::from_le_bytes(chunk.try_into().unwrap()))
+                }
+                ONDA_COMPILE_CONST_I64 => {
+                    TypedConstValue::I64(i64::from_le_bytes(chunk.try_into().unwrap()))
+                }
+                ONDA_COMPILE_CONST_F32 => TypedConstValue::F32(f32::from_bits(u32::from_le_bytes(
+                    chunk.try_into().unwrap(),
+                ))),
+                ONDA_COMPILE_CONST_F64 => TypedConstValue::F64(f64::from_bits(u64::from_le_bytes(
+                    chunk.try_into().unwrap(),
+                ))),
+                _ => unreachable!(),
+            };
+            values.push(value);
+        }
+        let elem_ty = match entry.element_type {
+            ONDA_COMPILE_CONST_BOOL => PrimitiveType::Bool,
+            ONDA_COMPILE_CONST_I32 => PrimitiveType::I32,
+            ONDA_COMPILE_CONST_I64 => PrimitiveType::I64,
+            ONDA_COMPILE_CONST_F32 => PrimitiveType::F32,
+            ONDA_COMPILE_CONST_F64 => PrimitiveType::F64,
+            _ => unreachable!(),
+        };
+        let value = if entry.is_array != 0 {
+            ConstValue::Array {
+                elem_ty,
+                len: values.len(),
+                values,
+            }
+        } else {
+            ConstValue::Scalar(values[0])
+        };
+        inputs.constants.insert(name, value);
+    }
+    Ok(inputs)
 }
 
 unsafe fn parse_required_c_string(value: *const c_char, name: &str) -> Result<String, Diagnostic> {
@@ -684,18 +846,26 @@ unsafe fn onda_compile_impl(
     compile_parsed_program(parsed, options, None, out_diag)
 }
 
-fn compile_parsed_program(
+unsafe fn compile_parsed_program(
     parsed: Program,
     options: &onda_compile_options_t,
     project: Option<ProjectCompilation>,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
-    let typed = match analyze_with_options(
+    let compile_inputs = match compile_inputs_from_options(options) {
+        Ok(inputs) => inputs,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let typed = match analyze_with_options_and_inputs(
         parsed,
         AnalysisOptions {
             sample_rate: options.sample_rate,
             block_size: options.block_size as usize,
         },
+        &compile_inputs,
     ) {
         Ok(t) => t,
         Err(errs) => {

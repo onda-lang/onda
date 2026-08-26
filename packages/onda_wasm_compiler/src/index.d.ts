@@ -47,8 +47,21 @@ export interface OndaCodegenOptions {
 export interface OndaCompileOptions {
   sampleRate?: number;
   blockSize?: number;
+  constants?: Map<string, OndaCompileConstValue>
+    | Record<string, OndaCompileConstValue>;
   codegen?: OndaCodegenOptions;
 }
+
+export type OndaCompileConstValue =
+  | boolean
+  | number
+  | bigint
+  | boolean[]
+  | Uint8Array
+  | Int32Array
+  | BigInt64Array
+  | Float32Array
+  | Float64Array;
 
 export interface OndaSourceWorkspace {
   entry: string;

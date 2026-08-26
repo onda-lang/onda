@@ -653,7 +653,7 @@ fn parse_program_preprocessed(
                 Rule::params_block | Rule::kins_block => {
                     blocks.push(Block::Params(parse_params_block(pair)?))
                 }
-                Rule::const_block => {
+                Rule::const_block | Rule::config_const_block => {
                     let decl = parse_const_decl(pair)?;
                     if !top_level_const_names.insert(decl.name.clone()) {
                         return Err(vec![Diagnostic::semantic_span(
@@ -898,6 +898,19 @@ fn load_program_blocks_from_file(
         }
 
         if import_module_mode {
+            if let Some(decl) = blocks.iter().find_map(|block| match block {
+                Block::Const(decl) if decl.configurable => Some(decl),
+                _ => None,
+            }) {
+                return Err(annotate_diagnostics_with_file(
+                    vec![Diagnostic::semantic_span(
+                        "configuration constants are not allowed in imported declaration modules",
+                        decl.loc.as_ref(),
+                    )],
+                    &canonical,
+                    0,
+                ));
+            }
             for block in &blocks {
                 if !matches!(
                     block,
@@ -1545,6 +1558,19 @@ fn load_builtin_module_blocks(
             }
         }
         if import_module_mode {
+            if let Some(decl) = blocks.iter().find_map(|block| match block {
+                Block::Const(decl) if decl.configurable => Some(decl),
+                _ => None,
+            }) {
+                return Err(annotate_diagnostics_with_file(
+                    vec![Diagnostic::semantic_span(
+                        "configuration constants are not allowed in imported declaration modules",
+                        decl.loc.as_ref(),
+                    )],
+                    &virtual_path,
+                    0,
+                ));
+            }
             for block in &blocks {
                 if !matches!(
                     block,

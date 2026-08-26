@@ -31,6 +31,7 @@ const USAGE_BODY: &str = r#"Commands:
     
     [--emit <check|mir|mir-json|mir-messagepack|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
     [--sample-rate <hz>] [--block-size <frames>]
+    [--const <name=value>] [--list-consts]
     [--opt-level <0|1|2|3>] [--fast-math]  
     [--dump-graph] [--ir] [--meta] 
     [--target-spec <path>] [--target-features <feature-list>] 
@@ -87,6 +88,8 @@ Compile Options:
   --output, -o           Output path for `mir`, `mir-json`, `mir-messagepack`, `llvm-ir`, or `obj`
   --meta-out             Write AOT sidecar metadata JSON for `onda compile --emit obj`
   --dump-graph           Print program after graph lowering, before proc desugaring/codegen
+  --const                Override one typed `config const` declaration
+  --list-consts          Resolve and print compile configuration without generating an artifact
   --ir                   Alias for `onda compile --emit llvm-ir`
   --target-triple        LLVM target triple for compile-time IR emission
   --target-spec          TOML target spec for compile-time IR/object emission
@@ -144,6 +147,8 @@ enum Command {
         sample_rate_hz: u32,
         block_frames: usize,
         dump_graph: bool,
+        const_overrides: Vec<(String, String)>,
+        list_consts: bool,
         show_meta: bool,
         fast_math: bool,
         target: TargetConfig,
@@ -243,6 +248,8 @@ fn main() {
             sample_rate_hz,
             block_frames,
             dump_graph,
+            const_overrides,
+            list_consts,
             show_meta,
             fast_math,
             target,
@@ -254,6 +261,8 @@ fn main() {
             sample_rate_hz,
             block_frames,
             dump_graph,
+            const_overrides: &const_overrides,
+            list_consts,
             show_meta,
             fast_math,
             target,

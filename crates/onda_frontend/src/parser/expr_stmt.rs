@@ -304,11 +304,12 @@ fn parse_pinned_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic
 }
 
 pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Diagnostic>> {
-    let pair = if pair.as_rule() == Rule::const_block {
+    let configurable = pair.as_rule() == Rule::config_const_block;
+    let pair = if matches!(pair.as_rule(), Rule::const_block | Rule::config_const_block) {
         let loc = stmt_loc_from_pair(&pair);
         let mut inner = pair.into_inner();
         inner
-            .next()
+            .find(|child| child.as_rule() == Rule::const_decl)
             .ok_or_else(|| vec![syntax_at_loc(loc.as_ref(), "missing const declaration")])?
     } else {
         pair
@@ -353,6 +354,7 @@ pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Di
         name,
         ty,
         expr,
+        configurable,
     })
 }
 

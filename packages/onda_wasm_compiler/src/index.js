@@ -87,6 +87,7 @@ class OndaCompiler {
         source,
         compile.sampleRate,
         compile.blockSize,
+        compile.constantsJson,
       );
     } catch (error) {
       throw diagnosticsFromFrontend(error);
@@ -125,6 +126,7 @@ class OndaCompiler {
         JSON.stringify(workspace.sources),
         compile.sampleRate,
         compile.blockSize,
+        compile.constantsJson,
       );
     } catch (error) {
       throw diagnosticsFromFrontend(error);
@@ -148,6 +150,7 @@ class OndaCompiler {
         bytes,
         compile.sampleRate,
         compile.blockSize,
+        compile.constantsJson,
       );
     } catch (error) {
       throw diagnosticsFromFrontend(error);
@@ -521,7 +524,81 @@ function normalizeCompileOptions(options) {
   ) {
     throw configurationError("codegen options must be an object");
   }
-  return { sampleRate, blockSize, codegen: options.codegen ?? {} };
+  return {
+    sampleRate,
+    blockSize,
+    codegen: options.codegen ?? {},
+    constantsJson: JSON.stringify(normalizeCompileConstants(options.constants ?? {})),
+  };
+}
+
+function normalizeCompileConstants(constants) {
+  if (
+    !constants
+    || typeof constants !== "object"
+    || Array.isArray(constants)
+    || ArrayBuffer.isView(constants)
+  ) {
+    throw configurationError("constants must be an object or Map");
+  }
+  const entries = constants instanceof Map
+    ? [...constants.entries()]
+    : Object.entries(constants);
+  return entries.map(([rawName, value]) => {
+    const name = String(rawName);
+    if (name.length === 0) {
+      throw configurationError("compile constant names must be non-empty");
+    }
+    if (typeof value === "boolean") {
+      return { name, element: "bool", array: false, values: [value] };
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) {
+        throw configurationError(`compile constant '${name}' must be finite`);
+      }
+      return { name, element: "number", array: false, values: [value] };
+    }
+    if (typeof value === "bigint") {
+      return { name, element: "i64", array: false, values: [value.toString()] };
+    }
+    if (value instanceof Uint8Array) {
+      const values = [...value];
+      if (values.some((item) => item !== 0 && item !== 1)) {
+        throw configurationError(
+          `boolean compile constant array '${name}' may contain only 0 or 1`,
+        );
+      }
+      return {
+        name,
+        element: "bool",
+        array: true,
+        values: values.map((item) => item !== 0),
+      };
+    }
+    if (value instanceof Int32Array) {
+      return { name, element: "i32", array: true, values: [...value] };
+    }
+    if (value instanceof BigInt64Array) {
+      return {
+        name,
+        element: "i64",
+        array: true,
+        values: [...value].map((item) => item.toString()),
+      };
+    }
+    if (value instanceof Float32Array) {
+      return { name, element: "f32", array: true, values: [...value] };
+    }
+    if (value instanceof Float64Array) {
+      return { name, element: "f64", array: true, values: [...value] };
+    }
+    if (Array.isArray(value) && value.every((item) => typeof item === "boolean")) {
+      return { name, element: "bool", array: true, values: value };
+    }
+    throw configurationError(
+      `compile constant '${name}' must be a boolean, number, bigint, or matching typed array`,
+    );
+  });
 }
 
 function consumeFrontendCompilation(compilation) {

@@ -2,466 +2,458 @@
 
 ## Status
 
-This document specifies a proposed source and compiler API for overriding executable top-level
-constants before compilation.
+Implemented. This document defines the explicit source declaration and compiler input API for
+selecting compile-time program variants.
 
 ## Summary
 
-Every value `const` declared in the executable program's root namespace is a compile-time
-configuration input. A host may inspect those declarations, supply typed overrides, and compile
-multiple specialized programs from the same prepared source graph.
+An executable may declare typed configuration constants:
 
-Overrides are applied before ordinary constant evaluation. They therefore propagate through const
-expressions, const defs, namespace arguments, array shapes, processor specialization, graph
-lowering, task lowering, assertions, and generated MIR exactly as source-provided values do.
+~~~onda
+config const FftSize: i32 = 2048
+config const Channels: i32 = 2
+~~~
 
-Compile constants are not runtime state. They add no loads, storage, branching, reflection, or
-mutation to a compiled processor instance.
+A host compiles the program with an immutable map of optional overrides. An override replaces the
+initializer at that declaration for one compilation. The selected value then flows through the
+ordinary constant evaluator, namespace expansion, array and interface shapes, processor
+specialization, graph and task lowering, assertions, and generated MIR.
+
+Configuration constants remain true compile-time values. They add no runtime storage, loads,
+branching, reflection, or mutation to a compiled processor.
+
+There is no required prepare/set/clear lifecycle. Parsing or loading may be reused independently of
+this feature, and optional configuration inspection is a separate semantic query.
 
 ## Motivation
 
-Some program choices should produce distinct optimized artifacts rather than runtime-parametric
-code. Examples include FFT size, channel count, filter order, table layout, oversampling topology,
-algorithm selection, and fixed resource limits.
+Some choices should produce distinct optimized artifacts rather than runtime-parametric code:
 
-Without host configuration, producing variants requires rewriting or generating source text:
+- FFT and partition sizes;
+- channel and voice counts;
+- filter order and oversampling topology;
+- lookup-table contents and layout;
+- algorithm selection;
+- fixed resource limits.
 
-```onda
-const FftSize: i32 = 2048
-const PartitionCount: i32 = 16
-```
+Without compile inputs, a host must rewrite or generate source text:
 
-A host should instead be able to prepare this source once and compile independent variants with,
-for example, `FftSize = 4096` and `FftSize = 8192`. Because the selected value remains a true Onda
-constant, each result can be folded and specialized completely.
+~~~onda
+config const FftSize: i32 = 2048
+const HopSize: i32 = FftSize / 2
+~~~
+
+The host should instead compile the same loaded source with FftSize set to 4096 or 8192. HopSize and
+all downstream structure then update through normal constant evaluation and specialization.
 
 ## Design principles
 
-- Root-level `const` already defines the correct configuration boundary; no `expose` annotation is
-  required.
-- Configuration happens before semantic analysis and cannot mutate a compiled program or instance.
-- Overrides feed the existing constant evaluator instead of creating a second substitution system.
-- Source defaults remain valid Onda constant expressions and are used whenever no override exists.
-- Types and shapes are validated by the same rules as source constant declarations.
-- Derived constants update naturally when an upstream constant is overridden.
-- Invalid configurations produce ordinary compiler diagnostics with source context.
-- Prepared source, selected configuration, and compiled artifacts remain deterministic and
-  reproducible.
+- The source explicitly declares its public compile-time configuration surface.
+- Every configuration declaration has an explicit, stable type.
+- Configuration declarations support every value type supported by ordinary const declarations;
+  they do not define a narrower parallel type system.
+- Overrides are immutable inputs to one compilation.
+- An override participates in the existing constant evaluator rather than a second substitution
+  system.
+- Derived ordinary constants are not independently configurable unless the author marks them as
+  configuration declarations.
+- Type, shape, assertion, and semantic errors use ordinary source diagnostics.
+- Parsing and source-graph reuse are general compiler capabilities, not a host-constant-specific
+  prepared object.
+- Configuration is deterministic and suitable for build identities and caching.
 
-## Configurable declaration surface
+## Source model
 
-The host-visible surface contains every value `const` in the executable root namespace:
+### Declaration syntax
 
-```onda
-const Channels = 8
-const FftSize: i32 = 2048
-const Window: f32[] = make_window(FftSize)
-```
+A host-configurable constant uses config const and must declare its type:
 
-The following are not directly configurable:
+~~~onda
+config const Enabled: bool = true
+config const Channels: i32 = 2
+config const Seed: i64 = i64(1234)
+config const Gain: f32 = 0.5
+config const Phase: f64 = 0.0
+config const Window: f32[] = make_window(1024)
+config const Coefficients: f64[4] = [0.1, 0.2, 0.3, 0.4]
+~~~
 
-- builtin and contextual constants such as sample rate and block size;
-- `const def` declarations;
-- constants local to a runtime or const def;
-- proc-local constants;
-- constants declared inside a namespace;
-- constants belonging to an imported declaration module.
+Untyped configuration declarations are rejected. Ordinary untyped const declarations retain their
+existing contextual numeric semantics and are never forced into one host-visible scalar type.
 
-An `include` contributes declarations to the executable program and its root constants therefore
-belong to the configurable surface. An `import` keeps declarations in a module or namespace and
-does not add its constants to that surface. Imported and namespace constants can still depend on a
-root constant through the language's existing namespace arguments and const evaluation rules.
+The explicit type may be any type accepted by an ordinary value const declaration. Today that is a
+primitive scalar, fixed primitive array, or primitive const slice. If the language gains additional
+const value types, configuration declarations inherit them through the same AST, type checker, and
+constant-value representation rather than requiring a separate feature extension.
 
-The surface is collected from the author-provided source graph before automatic standard-library
-injection and before namespace flattening. Host names are unqualified root identifiers. Existing
-duplicate-symbol validation guarantees that each name selects at most one declaration.
+### Where declarations are allowed
+
+Configuration declarations are allowed only in the executable root namespace:
+
+- the entry source may declare them;
+- an included source contributes to the executable and may declare them;
+- an imported declaration module may not declare them;
+- a namespace, proc, const def, runtime def, task, event, init, block, or sample scope may not
+  declare them;
+- builtin and contextual constants such as sample rate and block size are not configurable through
+  this mechanism.
+
+Rejecting config const while loading an imported file preserves the entry/include boundary before
+the loader composes imported declarations into the executable Program.
+
+Names are the unqualified root identifiers already subject to normal duplicate-symbol validation.
+Automatic standard-library injection cannot add configuration declarations.
+
+### Configuration inputs and derived constants
+
+Only config const declarations accept host inputs:
+
+~~~onda
+config const BaseSize: i32 = 1024
+config const PartitionCount: i32 = 16
+
+const FftSize: i32 = BaseSize * 2
+const TableSize: i32 = FftSize * PartitionCount
+~~~
+
+Overriding BaseSize recomputes FftSize and TableSize. The host cannot override either derived
+ordinary constant.
+
+One configuration default may depend on earlier configuration constants:
+
+~~~onda
+config const Base: i32 = 4
+config const Size: i32 = Base * 2
+~~~
+
+With Base set to 8 and no Size override, Size resolves to 16. If Size is also supplied, the explicit
+Size input wins.
+
+Existing source-order rules remain unchanged. Forward references are still rejected.
 
 ## Resolution semantics
 
-Each configurable declaration has two conceptual values:
-
-- **default value**: the declaration evaluated with the complete source-default configuration;
-- **selected value**: either a host override or the declaration expression evaluated under the
-  currently selected values of earlier constants.
-
-Constant declarations keep their existing source-order dependency rule. A host override replaces
-the value produced at the declaration point; it does not replace syntax globally.
-
-```onda
-const Base: i32 = 4
-const Size: i32 = Base * 2
-```
-
-With no overrides, `Base` is `4` and `Size` is `8`. After selecting `Base = 8`, `Size` becomes `16`.
-If the host also selects `Size = 24`, that explicit override wins. Clearing the `Size` override
-restores evaluation of `Base * 2` under the current configuration.
-
-The compiler performs constant resolution in this order:
+The compiler resolves one immutable input set as follows:
 
 1. Parse and compose the exact executable source graph.
-2. Discover root constant declarations and resolve the source-default descriptor table.
-3. At each root constant declaration, validate its source expression and determine its declared or
-   inferred value type.
-4. If an override exists, coerce and select it; otherwise evaluate the source expression using the
-   selected values already in scope.
-5. Continue through ordinary const defs, namespace expansion, count and shape expansion, constant
-   folding, assertions, and semantic analysis.
+2. Collect config const declarations before automatic standard-library injection and namespace
+   flattening.
+3. Reject unknown input names and inputs targeting ordinary constants or other declarations.
+4. At each configuration declaration in source order, either:
+   - convert the host value to a typed constant expression and select it; or
+   - evaluate the source initializer using previously selected constants.
+5. Continue through the existing namespace, const-def, count, shape, folding, assertion, processor,
+   graph, task, and semantic passes.
 
-The source initializer is still checked when an override is present. An override cannot make an
-ill-typed constant declaration valid. Program behavior that depends on the selected configuration,
-including assertions and downstream shape constraints, is checked against the selected values.
+An override replaces the initializer for that compilation; the source initializer is not separately
+evaluated. The explicit declaration type and every downstream use are still checked. Compiling
+without that override evaluates and validates the source default.
+
+Applying an input map is atomic because no compiler-owned configuration is mutated. A failed
+compilation has no state to roll back, and clearing an override means omitting it from the next
+request.
+
+Parsing itself never requires configuration values. They are needed before early semantic
+preprocessing because namespace flattening and shape expansion already consume constants.
 
 ## Types and shapes
 
-The first implementation supports the complete existing top-level value-constant surface:
+Compile inputs use the compiler's canonical typed constant-value model. The supported input types
+are exactly the supported ordinary value-const types. At present these are:
 
-- primitive scalars: `bool`, `i32`, `i64`, `f32`, and `f64`;
+- bool, i32, i64, f32, and f64 scalars;
 - fixed primitive arrays;
-- inferred or explicitly sliced primitive constant arrays.
+- variable-length primitive const arrays declared with a slice type.
 
-An inferred declaration's source-default resolution establishes its element or scalar type. An
-override must preserve that type; host configuration never changes a constant from, for example,
-`i32` to `f32`.
+This list describes the current language rather than a permanent host-API restriction. Future
+tuple, struct, or other const value types become valid compile inputs when they become valid value
+const declarations.
 
-For fixed arrays, the selected value must match the currently resolved declared length. For sliced
-or inferred constant arrays, the selected length may differ between compilations. This deliberately
-allows one source program to produce artifacts with different compile-time table sizes.
+The host value carries the same exact type information as a source constant. Numeric values are not
+implicitly routed through f64, and i64 values retain their full width. JavaScript uses bigint for
+i64 and typed arrays for the currently supported numeric arrays.
 
-Shapes may depend on earlier configurable constants:
+For a fixed array, the supplied value must match the selected declared length:
 
-```onda
-const Size: i32 = 4
-const Values: f32[Size] = [0.0, 0.25, 0.5, 1.0]
-```
+~~~onda
+config const Size: i32 = 4
+config const Values: f32[Size] = [0.0, 0.25, 0.5, 1.0]
+~~~
 
-Changing `Size` changes the current descriptor for `Values`. Any existing `Values` override must
-match the newly resolved shape. Updating an upstream constant is transactional: if it makes an
-existing downstream override impossible to coerce or makes constant resolution fail, the prepared
-compilation retains its previous valid configuration and reports a diagnostic.
+If Size is set to 8, a Values input must contain eight f32 elements. If Values is omitted, its source
+initializer is evaluated under Size = 8 and will produce the ordinary fixed-length diagnostic unless
+it also resolves to eight elements.
 
-Floating-point values preserve their exact width and bit pattern. `i64` values are never routed
-through `f64`. Arrays use the canonical element ordering of Onda array literals.
+Every compilation resolves the fixed length from its complete selected input map before accepting
+the array value. Therefore changing an upstream constant without supplying a compatible downstream
+array is an error whether the downstream value comes from another host input or from its source
+default. There is no previous configuration whose array value or shape can remain stale.
 
-## Prepared compilation lifecycle
+For a slice declaration, the selected input determines the concrete length for that compilation:
 
-Inspection and mutation belong to a prepared compilation object:
+~~~onda
+config const Window: f32[] = make_window(1024)
+~~~
 
-```text
-source / source graph / project image + contextual compile options
+Different compilations may supply different Window lengths.
+
+## Compiler API
+
+### Immutable compile inputs
+
+Compile constants belong to a request-level input structure, separate from AnalysisOptions. The
+value type is shared with ordinary semantic constant evaluation; the following names are
+representative:
+
+~~~rust
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CompileInputs {
+    pub constants: BTreeMap<String, ConstValue>,
+}
+~~~
+
+ConstValue is not a host-constants-only enum. It is the canonical lossless representation used by
+the constant evaluator for every supported scalar and aggregate const value.
+
+AnalysisOptions remains the small copied set of contextual compiler values such as sample rate and
+block size. CompileInputs is owned at the outer compiler boundary and is not cloned through
+unrelated semantic helpers.
+
+Representative lower-level use:
+
+~~~rust
+let loaded = load_program_file(path)?;
+
+let first_inputs = CompileInputs {
+    constants: BTreeMap::from([(
+        "FftSize".to_owned(),
+        ConstValue::Scalar(TypedConstValue::I32(4096)),
+    )]),
+};
+let first = compile_loaded(
+    &loaded,
+    analysis_options,
+    &first_inputs,
+    codegen_options,
+)?;
+
+let second_inputs = CompileInputs {
+    constants: BTreeMap::from([(
+        "FftSize".to_owned(),
+        ConstValue::Scalar(TypedConstValue::I32(8192)),
+    )]),
+};
+let second = compile_loaded(
+    &loaded,
+    analysis_options,
+    &second_inputs,
+    codegen_options,
+)?;
+~~~
+
+The exact helper names should follow the compiler's existing ownership boundaries. The important
+properties are that the loaded source is immutable, compilation accepts all inputs at once, and
+compiling one variant cannot affect another.
+
+One-shot source, filesystem, virtual-source-graph, and project-image entry points accept the same
+CompileInputs. Internally they parse or load and then call the same parsed-program path.
+
+### Source reuse
+
+If C or JavaScript consumers need to compile many variants without reparsing, expose a general
+immutable loaded-source handle:
+
+~~~text
+source / source graph / project image
                 |
                 v
-      prepared compilation
-       - immutable parsed source graph
-       - fixed sample rate and block size
-       - default constant table
-       - current override set
-       - current resolved constant table
+       immutable loaded source
                 |
-                +---- set / clear override
+                +---- compile(options, inputs A)
                 |
-                +---- compile variant A
-                |
-                +---- compile variant B
-```
+                +---- compile(options, inputs B)
+~~~
 
-Preparing resolves source inputs and the default constant table under fixed contextual analysis
-options, including sample rate and block size, but does not generate MIR or native code. Those
-options must be known because source const expressions and shapes may depend on the corresponding
-builtin constants. Compilation clones the prepared AST, applies the current override set through
-constant resolution, and runs the normal analysis and backend pipeline. A prepared compilation can
-therefore produce multiple independent artifacts without reparsing or reloading unchanged source
-files.
+That handle owns the parsed Program and exact SourceManifest. It does not own a current override
+set, selected descriptor table, backend artifact, or mutable compiler session.
 
-Changing source text, a source-graph resolution, an included/imported document, a project image,
-sample rate, or block size requires a new preparation. Overrides are configuration of one exact
-prepared source graph and analysis context and are not implicitly carried to a different one.
+Source reuse may be added after measuring repeated-variant workloads. The one-shot API remains the
+primary surface.
 
-Constant updates are transactional. A failed setter leaves the previous override set and resolved
-metadata unchanged. Full semantic or backend errors found only during compilation likewise do not
-mutate the prepared compilation.
+## Optional inspection
 
-The compiled program and instance APIs expose selected constants as read-only provenance if useful,
-but provide no setter. Creating, resetting, initializing, snapshotting, or restoring an instance
-has no relationship to compile constants.
+Tools may need to display configuration names, defaults, and resolved shapes before compiling an
+artifact. Provide an explicit semantic query for that use case:
 
-## Metadata model
+~~~rust
+let descriptors = inspect_compile_constants(
+    &loaded,
+    analysis_options,
+    &CompileInputs::default(),
+)?;
+~~~
 
-Each root constant descriptor contains at least:
+The query runs the same configuration resolver used internally by compilation. It is not a required
+preflight call, and callers may compile directly.
 
-```text
+A descriptor contains only resolved information for the supplied immutable request:
+
+~~~text
 name
-element type: bool | i32 | i64 | f32 | f64
-kind: scalar | fixed array | variable-length const array
-current array length (1 for scalars at the generic byte boundary)
-element byte width
-total value byte count
-source-default value
-currently selected value
-has explicit host override
+declared scalar or element type
+kind: scalar | fixed array | variable-length array
+resolved element count
+resolved value
 source location
-```
+~~~
 
-Descriptors are returned in deterministic source declaration order. Name lookup is also provided.
-After a successful update, descriptor queries observe the fully recomputed current table, including
-derived constants and shapes affected by the override.
-
-Rust uses a typed enum rather than unstructured bytes. C exposes element type and shape metadata
-plus exact canonical value bytes, with scalar convenience setters where useful. JavaScript maps
-`bool` to `boolean`, `i32`/`f32`/`f64` to `number`, `i64` to `bigint`, and arrays to the matching typed
-array representation.
-
-Compiled artifact metadata records the selected root constant table. This is build provenance, not
-part of the runtime parameter or state interface. It allows tools to identify how an artifact was
-specialized without implying that its constants can be modified.
-
-## Rust API
-
-The concrete names may follow existing compiler ownership conventions, but the intended shape is:
-
-```rust
-let mut compilation = Compiler::prepare_source(source, analysis_options)?;
-
-for descriptor in compilation.consts() {
-    println!("{}: {:?}", descriptor.name(), descriptor.selected_value());
-}
-
-compilation.set_const("FftSize", CompileConstValue::I32(4096))?;
-let program_4096 = compilation.compile(codegen_options)?;
-
-compilation.set_const("FftSize", CompileConstValue::I32(8192))?;
-let program_8192 = compilation.compile(codegen_options)?;
-
-compilation.clear_const("FftSize")?;
-```
-
-The same prepared-compilation abstraction accepts a single source, filesystem entry, exact virtual
-source graph, or immutable project image. Lower-level callers that already own a parsed `Program`
-can construct it directly from that program and its source identity metadata.
-
-Constant overrides should not be added directly to `AnalysisOptions`. That type is a small copied
-set of contextual compiler constants used throughout analysis. A separately owned compilation
-configuration avoids cloning maps through every semantic helper and keeps contextual constants and
-source-declared constants conceptually distinct.
+It does not expose mutable current/default state or setter methods. To inspect another variant, call
+the query again with another CompileInputs value.
 
 ## C API
 
-The C API introduces an opaque prepared-compilation handle. Representative operations are:
+The C boundary accepts all overrides with a compile request rather than introducing a mutable
+prepared-compilation handle. Each entry contains:
 
-```c
-onda_compilation_t* onda_compilation_prepare(
-  const char* source_utf8,
-  const onda_compile_options_t* options,
-  onda_diag_t* out_diag
-);
+~~~text
+name
+element type tag
+element count
+canonical value bytes
+~~~
 
-int onda_compilation_const_count(const onda_compilation_t* compilation);
-int onda_compilation_const_index(
-  const onda_compilation_t* compilation,
-  const char* name_utf8
-);
-const char* onda_compilation_const_name(
-  const onda_compilation_t* compilation,
-  int index
-);
-int onda_compilation_const_elem_type(
-  const onda_compilation_t* compilation,
-  int index
-);
-int onda_compilation_const_array_len(
-  const onda_compilation_t* compilation,
-  int index
-);
-int onda_compilation_const_value_bytes(
-  const onda_compilation_t* compilation,
-  int index
-);
+Scalars have one element. The encoding must preserve i64 and each floating-point width exactly.
+Unknown tags, malformed byte counts, type mismatches, and shape mismatches are reported through the
+existing diagnostic mechanism.
 
-int onda_compilation_get_const(
-  const onda_compilation_t* compilation,
-  int index,
-  void* out_value,
-  int out_capacity,
-  onda_diag_t* out_diag
-);
-
-int onda_compilation_get_const_default(
-  const onda_compilation_t* compilation,
-  int index,
-  void* out_value,
-  int out_capacity,
-  onda_diag_t* out_diag
-);
-
-int onda_compilation_set_const(
-  onda_compilation_t* compilation,
-  int index,
-  const void* value,
-  int value_bytes,
-  onda_diag_t* out_diag
-);
-
-int onda_compilation_clear_const(
-  onda_compilation_t* compilation,
-  int index,
-  onda_diag_t* out_diag
-);
-
-onda_program_t* onda_compilation_compile(
-  const onda_compilation_t* compilation,
-  onda_diag_t* out_diag
-);
-
-void onda_compilation_destroy(onda_compilation_t* compilation);
-```
-
-Equivalent preparation entry points are required for filesystem input, exact source graphs, and
-project images. They preserve the existing source-manifest and project-validation behavior. The
-one-shot `onda_compile*` functions remain implementable as prepare-plus-compile conveniences.
-Preparation binds the supplied sample rate and block size so descriptor metadata cannot drift from
-the later compilation. Backend-only options may remain compile-time arguments if the public options
-structure is split in the future; options that affect constant evaluation are always preparation
-inputs.
-
-Generic value bytes use one documented canonical encoding shared with artifact provenance. Queries
-return the required size when the destination is null or too small. Setters require an exact byte
-count and validate the descriptor's current type and shape before committing the update.
+One-shot compile entry points accept a pointer and count for these inputs. A future immutable
+loaded-source handle may expose compile and inspection operations using the same request structure.
+There are no set, clear, or rollback functions.
 
 ## JavaScript and browser API
 
-The packaged compiler exposes a prepared object while retaining the one-shot convenience API:
+One-shot compilation accepts a constants property:
 
-```js
-const compilation = await compiler.prepareSource(source, {
+~~~js
+const first = await compiler.compileSource(source, {
   sampleRate: 48_000,
   blockSize: 128,
-});
-
-for (const descriptor of compilation.constants) {
-  console.log(descriptor.name, descriptor.type, descriptor.value);
-}
-
-compilation.setConst("FftSize", 4096);
-const first = await compilation.compile();
-
-compilation.setConst("FftSize", 8192);
-const second = await compilation.compile();
-
-compilation.clearConst("FftSize");
-```
-
-The direct form accepts the same override map without requiring explicit preparation:
-
-```js
-const result = await compiler.compileSource(source, {
   constants: {
     FftSize: 4096,
     Window: new Float32Array([0.0, 0.5, 1.0, 0.5]),
   },
 });
-```
+~~~
 
-Workspace and project-image compilation accept the same `constants` option. Worker transport
-serializes `bigint` and typed arrays without converting them through JSON numbers.
+Workspace and project-image compilation accept the same property. JavaScript maps bool to boolean,
+i32/f32/f64 to number, i64 to bigint, and arrays to the corresponding typed array representation.
+Worker transport must preserve bigint and typed arrays without JSON-number conversion.
+
+If parsed-source reuse is later exposed, the object remains immutable:
+
+~~~js
+const loaded = await compiler.loadSource(source);
+const a = await compiler.compile(loaded, options, { FftSize: 4096 });
+const b = await compiler.compile(loaded, options, { FftSize: 8192 });
+~~~
+
+Optional inspection is a separate operation on the source plus a complete input map.
 
 ## CLI
 
-The compile command accepts repeatable root-constant overrides:
+The compile command accepts repeatable overrides:
 
-```text
+~~~text
 onda compile program.onda --const FftSize=4096 --const Channels=2
-```
+~~~
 
-Scalar CLI values use Onda literal syntax and are coerced against the discovered declaration type.
-Array support should use an unambiguous Onda array literal or a dedicated file form rather than a
-comma-splitting convention. Unknown, duplicate, or malformed overrides are errors.
+CLI values use Onda literal syntax and are coerced against the explicitly declared configuration
+type. Arrays use an unambiguous Onda array literal or a dedicated file form rather than comma
+splitting.
 
-An inspection mode exposes the prepared default surface without generating an artifact:
+An optional inspection mode resolves the source defaults without generating an artifact:
 
-```text
+~~~text
 onda compile program.onda --list-consts
-```
+~~~
 
-Machine-readable output should use the CLI's established structured-output conventions rather than
-requiring callers to scrape formatted diagnostic text.
-
-## Determinism, caching, and artifacts
-
-The canonical compilation identity contains:
-
-- the exact source or project image identity already used by the compiler;
-- contextual compile options such as sample rate and block size;
-- the sorted set of explicit typed overrides, encoded without float or `i64` loss;
-- backend code-generation options.
-
-The source identity already captures declaration defaults, so a cache key need not duplicate every
-default value. It must distinguish an absent override from an explicit override equal to the
-current default because artifact provenance reports the explicit selection, even if generated MIR
-happens to be identical.
-
-Prepared metadata and output artifacts are deterministic for the same source identity and override
-set. Project images remain immutable; overrides are external compilation inputs and do not mutate
-or weaken image integrity. A packaged artifact records both its source/image association and its
-selected compile-constant provenance.
+Unknown, duplicate, or malformed command-line overrides are errors.
 
 ## Diagnostics
 
 Configuration failures use normal structured diagnostics. Required cases include:
 
-- unknown root constant name;
-- attempt to configure a namespace, proc-local, local, builtin, or const-def symbol;
+- config const without an explicit type;
+- config const outside the executable root or inside an imported module;
+- unknown input name;
+- an input targeting an ordinary const or another declaration;
 - scalar or element type mismatch;
-- fixed-array length mismatch;
-- malformed canonical bytes or JavaScript value representation;
-- non-finite value where the existing const rules reject it;
-- an upstream update invalidating a downstream override or shape;
-- selected values violating an `assert` or another semantic constraint;
-- duplicate CLI overrides.
+- fixed-array length mismatch under the selected upstream configuration;
+- malformed canonical bytes or JavaScript representation;
+- duplicate CLI or C request entries;
+- selected values violating an assertion or downstream semantic constraint.
 
-Diagnostics should name both the host-selected constant and the affected source declaration. When
-an upstream selection invalidates a downstream declaration, the diagnostic should preserve the
-downstream source location and mention the responsible override.
+Diagnostics point at the configuration declaration or affected downstream declaration and identify
+the responsible host input where relevant.
+
+## Determinism, caching, and provenance
+
+A compilation identity contains:
+
+- the exact source or project-image identity;
+- contextual analysis options such as sample rate and block size;
+- the sorted typed input map, encoded without floating-point or i64 loss;
+- backend code-generation options.
+
+Absence of an input is distinct from explicitly supplying a value equal to the source default.
+
+The first implementation does not add source configuration to the MIR runtime interface or
+processor descriptor. A compiler or packaging result may record the explicit input map as build
+provenance. The source identity already captures defaults and derived constants.
 
 ## Performance and realtime behavior
 
-Preparation performs parsing, source-graph composition, and default constant resolution once.
-Compiling a new variant reruns all specialization-dependent semantic and backend work; reusing a
-prepared AST avoids source I/O and parsing but does not promise incremental code generation.
+Input lookup occurs during constant resolution and is not on a runtime path. Generated processors
+contain only folded selected values and have the same realtime properties as equivalent source
+initializers.
 
-Override lookup during constant resolution is a deterministic name-table operation and is not on a
-runtime path. Generated processors contain only the selected folded values and have exactly the
-same realtime properties as equivalent source with those values written directly.
+Compiling another input map reruns specialization-dependent semantic and backend work. Reusing a
+loaded Program may avoid source I/O and parsing, but no incremental semantic or backend compilation
+is promised initially.
 
 ## Explicit non-goals
 
 This design does not include:
 
 - changing a compile constant on an existing program or instance;
-- exposing constants as params, events, state, or snapshot entries;
-- runtime specialization or lazy JIT recompilation from the audio thread;
-- directly configuring namespace, proc-local, local, builtin, or const-def symbols;
-- string-based source replacement or macro substitution;
-- permitting an override to change a declaration's scalar or element type;
-- automatic transfer of overrides to a changed source graph;
-- incremental semantic analysis or backend compilation between variants in the first version.
+- a mutable prepared-compilation configuration;
+- setters, clearing, transactional session state, or rollback;
+- exposing compile constants as params, events, state, or snapshots;
+- runtime specialization or recompilation from the audio thread;
+- overriding ordinary, namespace-local, proc-local, or local constants;
+- allowing an override to change its declared scalar or element type;
+- transferring inputs automatically to a changed source graph;
+- incremental semantic analysis or backend compilation;
+- mandatory artifact or processor-descriptor provenance in the first implementation.
 
 ## Implementation structure
 
-1. Add shared typed compile-constant descriptors and values covering primitive scalars and const
-   arrays.
-2. Collect executable root `ConstDecl` declarations with stable source identity before auto-import
-   and namespace lowering.
-3. Refactor the existing const-coercion phase so it can resolve both the source-default table and a
-   selected table with overrides applied at declaration points.
-4. Implement transactional override set/clear plus dependency and shape recomputation on a prepared
-   compilation.
-5. Route the selected table into the existing count expansion, const-def evaluation, constant
-   folding, namespace, proc, graph, task, and assertion passes.
-6. Add the prepared-compilation Rust API while keeping one-shot compile paths as default-config
-   conveniences.
-7. Add matching C, compiler-Wasm, JavaScript, worker, and CLI surfaces for every supported source
-   input form.
-8. Record selected constants as read-only artifact provenance and include canonical overrides in
-   compilation cache identities.
-9. Add conformance coverage for dependency propagation, const defs, arrays and changing shapes,
-   namespaces, processor specialization, graphs, tasks, assertions, projects, source graphs,
-   diagnostics, exact `i64` and floating-point values, and native/Binaryen parity.
+1. Add config const syntax and retain an explicit configuration marker on ConstDecl.
+2. Require an explicit type accepted by ordinary value const declarations, without maintaining a
+   separate configuration-only allowlist.
+3. Reject configuration declarations in imported modules, namespaces, and executable-local scopes.
+4. Expose the canonical semantic ConstValue through CompileInputs at the compiler boundary; do not
+   introduce a second value hierarchy specifically for host inputs.
+5. Before automatic standard-library injection and namespace flattening, validate the complete input
+   map and apply selected typed expressions at configuration declaration points.
+6. Route namespace flattening and the main const/count pass through the same selected constant
+   environment, refactoring their duplicated declaration-resolution logic rather than adding a new
+   evaluator.
+7. Add optional descriptor inspection as a thin query over that resolver.
+8. Add one-shot Rust and CLI inputs first, followed by C and compiler-Wasm/JavaScript surfaces using
+   the same immutable request model.
+9. Add general immutable loaded-source reuse only if repeated compilation measurements justify its
+   public complexity.
+10. Cover defaults, explicit overrides, derived constants, namespace arguments, arrays and changing
+    shapes, const defs, processors, graphs, tasks, assertions, imports/includes, exact i64 and float
+    values, diagnostics, source graphs, projects, and native/Binaryen parity.
