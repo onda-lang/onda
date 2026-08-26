@@ -402,7 +402,7 @@ fn compile_input_expr(value: &ConstValue, ty: &ConstType, decl: &ConstDecl) -> O
     let location: SourceLoc = decl.loc.into();
     match (value, ty) {
         (ConstValue::Scalar(value), ConstType::Scalar(expected))
-            if typed_const_value_type(*value) == *expected =>
+            if value.primitive_type() == *expected =>
         {
             Some(typed_const_expr_with_loc(*value, location))
         }
@@ -415,9 +415,7 @@ fn compile_input_expr(value: &ConstValue, ty: &ConstType, decl: &ConstDecl) -> O
             ConstType::Array { elem, .. } | ConstType::Slice { elem },
         ) if elem_ty == elem
             && *len == values.len()
-            && values
-                .iter()
-                .all(|value| typed_const_value_type(*value) == *elem) =>
+            && values.iter().all(|value| value.primitive_type() == *elem) =>
         {
             Some(const_array_literal_expr(values, location))
         }
@@ -431,7 +429,7 @@ fn compile_input_type_diagnostic(
     decl: &ConstDecl,
 ) -> Diagnostic {
     let supplied = match value {
-        ConstValue::Scalar(value) => typed_const_value_type(*value).name().to_owned(),
+        ConstValue::Scalar(value) => value.primitive_type().name().to_owned(),
         ConstValue::Array {
             elem_ty,
             len,
@@ -439,7 +437,7 @@ fn compile_input_type_diagnostic(
         } if *len == values.len()
             && values
                 .iter()
-                .all(|value| typed_const_value_type(*value) == *elem_ty) =>
+                .all(|value| value.primitive_type() == *elem_ty) =>
         {
             format!("{}[{len}]", elem_ty.name())
         }
@@ -847,16 +845,6 @@ fn fold_host_sr_builtin(program: &mut Program, options: AnalysisOptions) {
     let consts = host_sr_const_map(options);
     for block in &mut program.blocks {
         fold_host_sr_block(block, &consts);
-    }
-}
-
-fn typed_const_value_type(value: TypedConstValue) -> PrimitiveType {
-    match value {
-        TypedConstValue::F32(_) => PrimitiveType::F32,
-        TypedConstValue::F64(_) => PrimitiveType::F64,
-        TypedConstValue::I32(_) => PrimitiveType::I32,
-        TypedConstValue::I64(_) => PrimitiveType::I64,
-        TypedConstValue::Bool(_) => PrimitiveType::Bool,
     }
 }
 
@@ -3102,7 +3090,7 @@ fn eval_const_def_stmt_list(
                 let ty = if let Some(ty) = decl_ty {
                     *ty
                 } else if let Some(existing) = locals.get(name).copied() {
-                    typed_const_value_type(existing)
+                    existing.primitive_type()
                 } else {
                     infer_const_scalar_expr_type_with_defs(
                         expr,
@@ -7087,17 +7075,12 @@ fn compile_const_descriptors(
             }
             let value = artifacts.const_values.get(&decl.name)?.clone();
             let kind = match (&decl.ty, &value) {
-                (Some(ConstType::Scalar(ty)), ConstValue::Scalar(_)) => {
-                    CompileConstKind::Scalar(*ty)
+                (Some(ConstType::Scalar(_)), ConstValue::Scalar(_)) => CompileConstKind::Scalar,
+                (Some(ConstType::Array { .. }), ConstValue::Array { .. }) => {
+                    CompileConstKind::FixedArray
                 }
-                (Some(ConstType::Array { elem, .. }), ConstValue::Array { len, .. }) => {
-                    CompileConstKind::FixedArray {
-                        elem_ty: *elem,
-                        len: *len,
-                    }
-                }
-                (Some(ConstType::Slice { elem }), ConstValue::Array { .. }) => {
-                    CompileConstKind::Array { elem_ty: *elem }
+                (Some(ConstType::Slice { .. }), ConstValue::Array { .. }) => {
+                    CompileConstKind::Array
                 }
                 _ => return None,
             };
@@ -7105,7 +7088,6 @@ fn compile_const_descriptors(
                 name: decl.name.clone(),
                 kind,
                 value,
-                location: decl.loc.into(),
             })
         })
         .collect()

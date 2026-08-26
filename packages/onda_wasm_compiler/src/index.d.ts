@@ -52,6 +52,19 @@ export interface OndaCompileOptions {
   codegen?: OndaCodegenOptions;
 }
 
+export interface OndaCompileConstInspectionOptions {
+  sampleRate?: number;
+  blockSize?: number;
+  /** Optional partial overrides; omitted declarations retain their authored values. */
+  constants?: Map<string, OndaCompileConstValue>
+    | Record<string, OndaCompileConstValue>;
+}
+
+export interface OndaLspAnalysisOptions {
+  sampleRate?: number;
+  blockSize?: number;
+}
+
 export type OndaCompileConstValue =
   | boolean
   | number
@@ -62,6 +75,27 @@ export type OndaCompileConstValue =
   | BigInt64Array
   | Float32Array
   | Float64Array;
+
+export type OndaCompileConstElement = "bool" | "i32" | "i64" | "f32" | "f64";
+export type OndaCompileConstKind = "scalar" | "fixed-array" | "array";
+export type OndaResolvedCompileConstValue =
+  | boolean
+  | number
+  | bigint
+  | Uint8Array
+  | Int32Array
+  | BigInt64Array
+  | Float32Array
+  | Float64Array;
+
+export interface OndaCompileConstDescriptor {
+  name: string;
+  element: OndaCompileConstElement;
+  kind: OndaCompileConstKind;
+  /** One for scalars; the resolved length for either array kind. */
+  elementCount: number;
+  value: OndaResolvedCompileConstValue;
+}
 
 export interface OndaSourceWorkspace {
   entry: string;
@@ -154,14 +188,26 @@ export interface OndaCompilerInstance {
     source: string,
     options?: OndaCompileOptions,
   ): Promise<OndaCompilationResult>;
+  inspectSourceConstants(
+    source: string,
+    options?: OndaCompileConstInspectionOptions,
+  ): Promise<OndaCompileConstDescriptor[]>;
   compileWorkspace(
     workspace: OndaSourceWorkspace,
     options?: OndaCompileOptions,
   ): Promise<OndaCompilationResult>;
+  inspectWorkspaceConstants(
+    workspace: OndaSourceWorkspace,
+    options?: OndaCompileConstInspectionOptions,
+  ): Promise<OndaCompileConstDescriptor[]>;
   compileProjectImage(
     imageBytes: ArrayBuffer | ArrayBufferView,
     options?: OndaCompileOptions,
   ): Promise<OndaCompilationResult>;
+  inspectProjectImageConstants(
+    imageBytes: ArrayBuffer | ArrayBufferView,
+    options?: OndaCompileConstInspectionOptions,
+  ): Promise<OndaCompileConstDescriptor[]>;
   createProjectImage(
     sourceGraph: OndaSourceGraph,
     buffers?: Map<string, ArrayBuffer | ArrayBufferView>
@@ -187,7 +233,7 @@ export interface OndaCompilerInstance {
   ): Promise<OndaBufferAssetBinding>;
   projectCapabilities(): Promise<OndaProjectCapabilities>;
   sendLspMessage(message: OndaLspMessage): Promise<OndaLspMessage[]>;
-  setLspAnalysisOptions(options?: OndaCompileOptions): Promise<void>;
+  setLspAnalysisOptions(options?: OndaLspAnalysisOptions): Promise<void>;
   dispose(): Promise<void>;
 }
 

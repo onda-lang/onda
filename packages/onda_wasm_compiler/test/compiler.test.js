@@ -92,6 +92,10 @@ config const Indices: i32[] = [0]
 config const WideValues: i64[] = [i64(0)]
 config const Coefficients: f32[2] = [0.0, 0.0]
 config const Precise: f64[] = [0.0]
+config const NegativeZero: f64 = 0.0
+config const NegativeZeros32: f32[] = [0.0]
+config const NegativeZeros64: f64[] = [0.0]
+config const SpecialValues: f64[] = [0.0]
 namespace Checks:
   assert(Enabled)
   assert(Size == 8)
@@ -103,6 +107,9 @@ namespace Checks:
   assert(WideValues[0] == i64(9007199254740993))
   assert(Coefficients[1] == f32(0.75))
   assert(Precise[0] == f64(0.125))
+  assert((f64(1.0) / NegativeZero) < f64(0.0))
+  assert((f32(1.0) / NegativeZeros32[0]) < f32(0.0))
+  assert((f64(1.0) / NegativeZeros64[0]) < f64(0.0))
 sample:
   out1 = 0.0
 `;
@@ -117,7 +124,39 @@ sample:
     WideValues: new BigInt64Array([9_007_199_254_740_993n]),
     Coefficients: new Float32Array([0.5, 0.75]),
     Precise: new Float64Array([0.125]),
+    NegativeZero: -0,
+    NegativeZeros32: new Float32Array([-0]),
+    NegativeZeros64: new Float64Array([-0]),
+    SpecialValues: new Float64Array([
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]),
   };
+  const inspected = await compiler.inspectSourceConstants(source, { constants });
+  const inspectedByName = Object.fromEntries(inspected.map((descriptor) => [
+    descriptor.name,
+    descriptor,
+  ]));
+  assert.equal(inspectedByName.Enabled.value, true);
+  assert.equal(inspectedByName.Size.value, 8);
+  assert.equal(inspectedByName.Wide.value, 9_007_199_254_740_993n);
+  assert.equal(inspectedByName.Gain.value, 0.25);
+  assert.equal(inspectedByName.Flags.value instanceof Uint8Array, true);
+  assert.equal(inspectedByName.Indices.value instanceof Int32Array, true);
+  assert.equal(inspectedByName.WideValues.value instanceof BigInt64Array, true);
+  assert.equal(inspectedByName.Coefficients.value instanceof Float32Array, true);
+  assert.equal(inspectedByName.Precise.value instanceof Float64Array, true);
+  assert.equal(Number.isNaN(inspectedByName.SpecialValues.value[0]), true);
+  assert.equal(inspectedByName.SpecialValues.value[1], Number.POSITIVE_INFINITY);
+  assert.equal(inspectedByName.SpecialValues.value[2], Number.NEGATIVE_INFINITY);
+  assert.equal(inspectedByName.Coefficients.kind, "fixed-array");
+  assert.equal(inspectedByName.Coefficients.elementCount, 2);
+  assert.equal(inspectedByName.Flags.kind, "array");
+  assert.equal(Object.is(inspectedByName.NegativeZero.value, -0), true);
+  assert.equal(Object.is(inspectedByName.NegativeZeros32.value[0], -0), true);
+  assert.equal(Object.is(inspectedByName.NegativeZeros64.value[0], -0), true);
+
   const compiled = await compiler.compileSource(source, { constants });
   assert.equal(WebAssembly.validate(compiled.artifact.wasm), true);
 
@@ -125,7 +164,20 @@ sample:
     entry: "main.onda",
     sources: { "main.onda": source },
   }, { constants });
+  const inspectedWorkspace = await compiler.inspectWorkspaceConstants({
+    entry: "main.onda",
+    sources: { "main.onda": source },
+  }, { constants });
+  assert.deepEqual(
+    inspectedWorkspace.map(({ name, value }) => ({ name, value })),
+    inspected.map(({ name, value }) => ({ name, value })),
+  );
   const image = await compiler.createProjectImage(workspace.sourceGraph);
+  const inspectedImage = await compiler.inspectProjectImageConstants(image.bytes, { constants });
+  assert.deepEqual(
+    inspectedImage.map(({ name, value }) => ({ name, value })),
+    inspected.map(({ name, value }) => ({ name, value })),
+  );
   const replayed = await compiler.compileProjectImage(image.bytes, { constants });
   assert.equal(WebAssembly.validate(replayed.artifact.wasm), true);
   assert.throws(
@@ -136,6 +188,56 @@ sample:
       JSON.stringify([{ name: "Values", element: "invalid", array: true, values: [] }]),
     ),
     (error) => String(error).includes("unknown element type 'invalid'"),
+  );
+  await compiler.dispose();
+});
+
+test("compile constant inspection applies partial overrides and retains authored values", async () => {
+  const compiler = await createCompiler();
+  const descriptors = await compiler.inspectSourceConstants(`
+config const TEST: f32 = 0.25
+config const YOYO: f32 = 0.75
+config const NAN: f32 = 0.0
+config const POSITIVE_INFINITY: f64 = 0.0
+config const NEGATIVE_INFINITY: f64 = 0.0
+sample:
+  out1 = TEST + YOYO
+`, {
+    constants: {
+      TEST: 0.5,
+      NAN: Number.NaN,
+      POSITIVE_INFINITY: Number.POSITIVE_INFINITY,
+      NEGATIVE_INFINITY: Number.NEGATIVE_INFINITY,
+    },
+  });
+
+  assert.deepEqual(
+    descriptors.map(({ name, element, kind, elementCount, value }) => ({
+      name,
+      element,
+      kind,
+      elementCount,
+      value,
+    })),
+    [
+      { name: "TEST", element: "f32", kind: "scalar", elementCount: 1, value: 0.5 },
+      { name: "YOYO", element: "f32", kind: "scalar", elementCount: 1, value: 0.75 },
+      { name: "NAN", element: "f32", kind: "scalar", elementCount: 1, value: Number.NaN },
+      {
+        name: "POSITIVE_INFINITY",
+        element: "f64",
+        kind: "scalar",
+        elementCount: 1,
+        value: Number.POSITIVE_INFINITY,
+      },
+      {
+        name: "NEGATIVE_INFINITY",
+        element: "f64",
+        kind: "scalar",
+        elementCount: 1,
+        value: Number.NEGATIVE_INFINITY,
+      },
+    ],
   );
   await compiler.dispose();
 });
@@ -426,6 +528,10 @@ test("returns unresolved project source candidates with parse failures", async (
 
 test("runs the Onda LSP protocol inside frontend Wasm", async () => {
   const compiler = await createCompiler();
+  await assert.rejects(
+    compiler.setLspAnalysisOptions({ constants: { Size: 8 } }),
+    /constants are compile-request inputs/,
+  );
   const initialized = await compiler.sendLspMessage({
     jsonrpc: "2.0",
     id: 1,
@@ -550,6 +656,8 @@ test("offers an asynchronous browser-worker client", async () => {
           artifact: { wasm: new Uint8Array([0, 97, 115, 109]), metadata: {} },
           sourceFiles: [],
         }
+        : message.type === "inspectSourceConstants"
+          ? [{ name: "Wide", element: "i64", kind: "scalar", elementCount: 1, value: 1n }]
         : message.type === "lspMessage"
           ? [{ jsonrpc: "2.0", id: message.message.id, result: null }]
           : null;
@@ -575,6 +683,10 @@ test("offers an asynchronous browser-worker client", async () => {
   assert.deepEqual(sourceFiles, []);
   assert.equal(receivedCompileOptions.constants.Wide, constants.Wide);
   assert.deepEqual(receivedCompileOptions.constants.Window, constants.Window);
+  assert.deepEqual(
+    await compiler.inspectSourceConstants(SOURCE),
+    [{ name: "Wide", element: "i64", kind: "scalar", elementCount: 1, value: 1n }],
+  );
   assert.deepEqual(
     await compiler.sendLspMessage({ jsonrpc: "2.0", id: 9, method: "shutdown" }),
     [{ jsonrpc: "2.0", id: 9, result: null }],

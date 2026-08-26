@@ -374,14 +374,15 @@ fn parse_compile_const_literal(
     let source = format!("const OndaCliValue = {raw_value}\n");
     let literal_program = parse_program(&source)
         .map_err(|diags| format_diagnostics("invalid --const value", &diags))?;
-    let expr = literal_program
-        .blocks
-        .into_iter()
-        .find_map(|block| match block {
-            Block::Const(decl) => Some(decl.expr),
-            _ => None,
-        })
-        .ok_or_else(|| format!("invalid --const value for '{name}'"))?;
+    let mut blocks = literal_program.blocks.into_iter();
+    let expr = match (blocks.next(), blocks.next()) {
+        (Some(Block::Const(decl)), None) => decl.expr,
+        _ => {
+            return Err(format!(
+                "invalid --const value for '{name}': expected exactly one expression"
+            ))
+        }
+    };
     let ty = match declared_ty {
         ConstType::Array { elem, .. } => ConstType::Slice { elem: *elem },
         other => other.clone(),
@@ -412,19 +413,24 @@ fn print_compile_constants(descriptors: &[CompileConstDescriptor]) {
         println!(
             "{}: {} = {}",
             descriptor.name,
-            compile_const_kind_name(descriptor.kind),
+            compile_const_kind_name(descriptor.kind, &descriptor.value),
             compile_const_value_repr(&descriptor.value)
         );
     }
 }
 
-fn compile_const_kind_name(kind: CompileConstKind) -> String {
-    match kind {
-        CompileConstKind::Scalar(ty) => primitive_type_name(ty).to_owned(),
-        CompileConstKind::FixedArray { elem_ty, len } => {
-            format!("{}[{len}]", primitive_type_name(elem_ty))
+fn compile_const_kind_name(kind: CompileConstKind, value: &ConstValue) -> String {
+    match (kind, value) {
+        (CompileConstKind::Scalar, ConstValue::Scalar(value)) => {
+            primitive_type_name(value.primitive_type()).to_owned()
         }
-        CompileConstKind::Array { elem_ty } => format!("{}[]", primitive_type_name(elem_ty)),
+        (CompileConstKind::FixedArray, ConstValue::Array { elem_ty, len, .. }) => {
+            format!("{}[{len}]", primitive_type_name(*elem_ty))
+        }
+        (CompileConstKind::Array, ConstValue::Array { elem_ty, .. }) => {
+            format!("{}[]", primitive_type_name(*elem_ty))
+        }
+        _ => unreachable!("compile constant kind and value are produced together"),
     }
 }
 
@@ -450,5 +456,29 @@ fn typed_const_value_repr(value: TypedConstValue) -> String {
         TypedConstValue::I32(value) => value.to_string(),
         TypedConstValue::I64(value) => format!("i64({value})"),
         TypedConstValue::Bool(value) => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_constant_literal_rejects_trailing_program_items() {
+        let program = parse_program("config const Selected: i32 = 0\n")
+            .expect("test declaration should parse");
+        let decl = match &program.blocks[0] {
+            Block::Const(decl) => decl,
+            _ => panic!("expected const declaration"),
+        };
+        let error = parse_compile_const_literal(
+            "Selected",
+            "1\nconst Ignored: i32 = 2",
+            decl.ty.as_ref().unwrap(),
+            decl,
+            AnalysisOptions::default(),
+        )
+        .expect_err("a compile constant argument must not contain a second program item");
+        assert!(error.contains("expected exactly one expression"));
     }
 }

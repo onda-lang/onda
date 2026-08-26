@@ -11,6 +11,11 @@ release; earlier releases are available on the
 
 ### Added
 
+- Added explicitly typed executable-root `config const` declarations for immutable host-selected
+  compile-time variants. Overrides flow through ordinary constant evaluation, shapes,
+  specialization, assertions, and generated code, with support in the Rust compiler API, native
+  CLI (`--const` and `--list-consts`), C inspection and compile requests, and browser source,
+  workspace, and project-image inspection and compilation.
 - Added statically allocated cooperative `task` declarations at the top level and inside procs.
   Tasks use `yield` to suspend, `await` to advance from block-pre control flow, and
   `task_name.reset()` to restart in constant time, allowing preparation such as convolution-kernel

@@ -69,6 +69,16 @@ impl Drop for ProgramHandle {
     }
 }
 
+struct CompileConstantsHandle(*mut onda_compile_constants);
+
+impl Drop for CompileConstantsHandle {
+    fn drop(&mut self) {
+        unsafe {
+            onda_compile_constants_destroy(self.0);
+        }
+    }
+}
+
 struct SourceManifestHandle(*mut onda_source_manifest);
 
 impl Drop for SourceManifestHandle {
@@ -256,62 +266,54 @@ sample:
             CString::new("Phase").unwrap(),
             CString::new("Values").unwrap(),
         ];
-        let enabled = [1_u8];
-        let size = 8_i32.to_le_bytes();
-        let wide = 9_007_199_254_740_993_i64.to_le_bytes();
-        let gain = 0.25_f32.to_le_bytes();
-        let phase = 0.125_f64.to_le_bytes();
-        let mut values = [0_u8; 8];
-        values[..4].copy_from_slice(&0.5_f32.to_le_bytes());
-        values[4..].copy_from_slice(&0.75_f32.to_le_bytes());
+        let enabled = 1_u8;
+        let size = 8_i32;
+        let wide = 9_007_199_254_740_993_i64;
+        let gain = 0.25_f32;
+        let phase = 0.125_f64;
+        let values = [0.5_f32, 0.75_f32];
         let inputs = [
             onda_compile_const_input_t {
                 name_utf8: names[0].as_ptr(),
-                element_type: ONDA_COMPILE_CONST_BOOL,
+                element_type: ONDA_PRIMITIVE_BOOL,
                 is_array: 0,
                 element_count: 1,
-                value_bytes: enabled.as_ptr().cast(),
-                value_byte_count: enabled.len(),
+                values: (&enabled as *const u8).cast(),
             },
             onda_compile_const_input_t {
                 name_utf8: names[1].as_ptr(),
-                element_type: ONDA_COMPILE_CONST_I32,
+                element_type: ONDA_PRIMITIVE_I32,
                 is_array: 0,
                 element_count: 1,
-                value_bytes: size.as_ptr().cast(),
-                value_byte_count: size.len(),
+                values: (&size as *const i32).cast(),
             },
             onda_compile_const_input_t {
                 name_utf8: names[2].as_ptr(),
-                element_type: ONDA_COMPILE_CONST_I64,
+                element_type: ONDA_PRIMITIVE_I64,
                 is_array: 0,
                 element_count: 1,
-                value_bytes: wide.as_ptr().cast(),
-                value_byte_count: wide.len(),
+                values: (&wide as *const i64).cast(),
             },
             onda_compile_const_input_t {
                 name_utf8: names[3].as_ptr(),
-                element_type: ONDA_COMPILE_CONST_F32,
+                element_type: ONDA_PRIMITIVE_F32,
                 is_array: 0,
                 element_count: 1,
-                value_bytes: gain.as_ptr().cast(),
-                value_byte_count: gain.len(),
+                values: (&gain as *const f32).cast(),
             },
             onda_compile_const_input_t {
                 name_utf8: names[4].as_ptr(),
-                element_type: ONDA_COMPILE_CONST_F64,
+                element_type: ONDA_PRIMITIVE_F64,
                 is_array: 0,
                 element_count: 1,
-                value_bytes: phase.as_ptr().cast(),
-                value_byte_count: phase.len(),
+                values: (&phase as *const f64).cast(),
             },
             onda_compile_const_input_t {
                 name_utf8: names[5].as_ptr(),
-                element_type: ONDA_COMPILE_CONST_F32,
+                element_type: ONDA_PRIMITIVE_F32,
                 is_array: 1,
                 element_count: 2,
-                value_bytes: values.as_ptr().cast(),
-                value_byte_count: values.len(),
+                values: values.as_ptr().cast(),
             },
         ];
         let options = onda_compile_options_t {
@@ -333,7 +335,144 @@ sample:
 }
 
 #[test]
-fn c_api_compile_constants_reject_malformed_canonical_values() {
+fn c_api_compile_constant_inspection_returns_reusable_native_inputs() {
+    unsafe {
+        let source = CString::new(concat!(
+            "config const Enabled: bool = true\n",
+            "config const Size: i32 = 2\n",
+            "config const Double: i32 = Size * 2\n",
+            "config const Wide: i64 = i64(9007199254740993)\n",
+            "config const Gain: f32 = 0.25\n",
+            "config const Phase: f64 = -0.0\n",
+            "config const Fixed: f32[2] = [0.5, 0.75]\n",
+            "config const Dynamic: f64[] = [1.0]\n",
+            "sample:\n",
+            "  out1 = 0.0\n",
+        ))
+        .unwrap();
+        let mut options = onda_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 64,
+            const_inputs: std::ptr::null(),
+            const_input_count: 0,
+        };
+        let mut diag = empty_diag();
+        let constants = onda_inspect_compile_constants(source.as_ptr(), &options, &mut *diag);
+        assert!(
+            !constants.is_null(),
+            "inspection failed: {}",
+            diag_message(&diag)
+        );
+        let constants = CompileConstantsHandle(constants);
+        assert_eq!(onda_compile_constants_count(constants.0), 8);
+
+        let expected = [
+            (
+                "Enabled",
+                ONDA_PRIMITIVE_BOOL,
+                ONDA_COMPILE_CONST_KIND_SCALAR,
+                1,
+            ),
+            (
+                "Size",
+                ONDA_PRIMITIVE_I32,
+                ONDA_COMPILE_CONST_KIND_SCALAR,
+                1,
+            ),
+            (
+                "Double",
+                ONDA_PRIMITIVE_I32,
+                ONDA_COMPILE_CONST_KIND_SCALAR,
+                1,
+            ),
+            (
+                "Wide",
+                ONDA_PRIMITIVE_I64,
+                ONDA_COMPILE_CONST_KIND_SCALAR,
+                1,
+            ),
+            (
+                "Gain",
+                ONDA_PRIMITIVE_F32,
+                ONDA_COMPILE_CONST_KIND_SCALAR,
+                1,
+            ),
+            (
+                "Phase",
+                ONDA_PRIMITIVE_F64,
+                ONDA_COMPILE_CONST_KIND_SCALAR,
+                1,
+            ),
+            (
+                "Fixed",
+                ONDA_PRIMITIVE_F32,
+                ONDA_COMPILE_CONST_KIND_FIXED_ARRAY,
+                2,
+            ),
+            (
+                "Dynamic",
+                ONDA_PRIMITIVE_F64,
+                ONDA_COMPILE_CONST_KIND_ARRAY,
+                1,
+            ),
+        ];
+        for (index, (name, element_type, kind, element_count)) in expected.iter().enumerate() {
+            let descriptor = onda_compile_constants_at(constants.0, index as i32);
+            assert!(!descriptor.is_null());
+            let descriptor = &*descriptor;
+            assert_eq!(
+                CStr::from_ptr(descriptor.input.name_utf8).to_str().unwrap(),
+                *name
+            );
+            assert_eq!(descriptor.input.element_type, *element_type);
+            assert_eq!(descriptor.kind, *kind);
+            assert_eq!(descriptor.input.element_count, *element_count);
+            assert_eq!(
+                descriptor.input.is_array,
+                i32::from(*kind != ONDA_COMPILE_CONST_KIND_SCALAR)
+            );
+        }
+
+        let phase = &*onda_compile_constants_at(constants.0, 5);
+        assert_eq!(
+            (*phase.input.values.cast::<f64>()).to_bits(),
+            (-0.0_f64).to_bits()
+        );
+
+        let default_inputs = onda_compile_constants_inputs(constants.0);
+        assert!(!default_inputs.is_null());
+        options.const_inputs = default_inputs;
+        options.const_input_count = expected.len();
+        let program = onda_compile(source.as_ptr(), &options, &mut *diag);
+        assert!(
+            !program.is_null(),
+            "compile with inspected defaults failed: {}",
+            diag_message(&diag)
+        );
+        let _program = ProgramHandle(program);
+
+        let selected_size = 8_i32;
+        let mut selected_size_input = (*onda_compile_constants_at(constants.0, 1)).input;
+        selected_size_input.values = (&selected_size as *const i32).cast();
+        options.const_inputs = &selected_size_input;
+        options.const_input_count = 1;
+        let selected = onda_inspect_compile_constants(source.as_ptr(), &options, &mut *diag);
+        assert!(
+            !selected.is_null(),
+            "selected inspection failed: {}",
+            diag_message(&diag)
+        );
+        let selected = CompileConstantsHandle(selected);
+        let size = &*onda_compile_constants_at(selected.0, 1);
+        assert_eq!(*size.input.values.cast::<i32>(), 8);
+        let double = &*onda_compile_constants_at(selected.0, 2);
+        assert_eq!(*double.input.values.cast::<i32>(), 16);
+    }
+}
+
+#[test]
+fn c_api_compile_constants_reject_malformed_native_values() {
     unsafe {
         let source =
             CString::new("config const Enabled: bool = false\nsample:\n  out1 = 0.0\n").unwrap();
@@ -341,11 +480,10 @@ fn c_api_compile_constants_reject_malformed_canonical_values() {
         let invalid_bool = [2_u8];
         let input = onda_compile_const_input_t {
             name_utf8: name.as_ptr(),
-            element_type: ONDA_COMPILE_CONST_BOOL,
+            element_type: ONDA_PRIMITIVE_BOOL,
             is_array: 0,
             element_count: 1,
-            value_bytes: invalid_bool.as_ptr().cast(),
-            value_byte_count: invalid_bool.len(),
+            values: invalid_bool.as_ptr().cast(),
         };
         let options = onda_compile_options_t {
             fast_math: 0,
@@ -837,7 +975,7 @@ fn c_project_compile_replays_an_exact_in_memory_source_graph() {
         let specifier = CString::new("/absolute/filter.onda").unwrap();
         let entry_source =
             "include \"/absolute/filter.onda\"\nouts 1\nsample:\n  out1 = FILTER_VALUE\n";
-        let dependency_source = "const FILTER_VALUE = 0.375\n";
+        let dependency_source = "config const FILTER_VALUE: f32 = 0.375\n";
         let entry_source_c = CString::new(entry_source).unwrap();
         let dependency_source_c = CString::new(dependency_source).unwrap();
         let sources = [
@@ -871,6 +1009,29 @@ fn c_project_compile_replays_an_exact_in_memory_source_graph() {
             const_input_count: 0,
         };
         let mut diag = empty_diag();
+        let mut inspection_manifest = std::ptr::null_mut();
+        let constants = onda_inspect_compile_constants_source_graph(
+            entry_path.as_ptr(),
+            sources.as_ptr(),
+            sources.len(),
+            resolutions.as_ptr(),
+            resolutions.len(),
+            &options,
+            &mut inspection_manifest,
+            &mut *diag,
+        );
+        assert!(
+            !constants.is_null(),
+            "source graph inspection failed: {}",
+            diag_message(&diag)
+        );
+        let constants = CompileConstantsHandle(constants);
+        let _inspection_manifest = SourceManifestHandle(inspection_manifest);
+        assert_eq!(onda_compile_constants_count(constants.0), 1);
+        assert_eq!(
+            CStr::from_ptr((*onda_compile_constants_at(constants.0, 0)).input.name_utf8).to_bytes(),
+            b"FILTER_VALUE"
+        );
         let mut manifest = std::ptr::null_mut();
         let program = onda_compile_source_graph(
             entry_path.as_ptr(),
@@ -949,7 +1110,8 @@ fn c_project_image_and_typed_asset_api_round_trip() {
             ),
         )
         .expect("write project entry");
-        fs::write(&dependency, "const LEVEL = 0.25\n").expect("write project dependency");
+        fs::write(&dependency, "config const LEVEL: f32 = 0.25\n")
+            .expect("write project dependency");
 
         let entry_c = CString::new(entry.to_string_lossy().as_bytes()).unwrap();
         let root_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
@@ -961,6 +1123,25 @@ fn c_project_image_and_typed_asset_api_round_trip() {
             const_input_count: 0,
         };
         let mut diag = empty_diag();
+        let mut inspection_manifest = std::ptr::null_mut();
+        let constants = onda_inspect_compile_constants_file(
+            entry_c.as_ptr(),
+            &options,
+            &mut inspection_manifest,
+            &mut *diag,
+        );
+        assert!(
+            !constants.is_null(),
+            "file inspection failed: {}",
+            diag_message(&diag)
+        );
+        let constants = CompileConstantsHandle(constants);
+        let _inspection_manifest = SourceManifestHandle(inspection_manifest);
+        assert_eq!(onda_compile_constants_count(constants.0), 1);
+        assert_eq!(
+            CStr::from_ptr((*onda_compile_constants_at(constants.0, 0)).input.name_utf8).to_bytes(),
+            b"LEVEL"
+        );
         let mut manifest = std::ptr::null_mut();
         let program = onda_compile_file(entry_c.as_ptr(), &options, &mut manifest, &mut *diag);
         assert!(
@@ -1124,6 +1305,19 @@ fn c_project_image_and_typed_asset_api_round_trip() {
         assert_eq!(
             onda_project_image_buffer_sample_rate(restored.0, 0),
             48_000.0
+        );
+        let constants =
+            onda_project_image_inspect_compile_constants(restored.0, &options, &mut *diag);
+        assert!(
+            !constants.is_null(),
+            "project image inspection failed: {}",
+            diag_message(&diag)
+        );
+        let constants = CompileConstantsHandle(constants);
+        assert_eq!(onda_compile_constants_count(constants.0), 1);
+        assert_eq!(
+            CStr::from_ptr((*onda_compile_constants_at(constants.0, 0)).input.name_utf8).to_bytes(),
+            b"LEVEL"
         );
         let replayed = onda_project_image_compile(restored.0, &options, &mut *diag);
         assert!(

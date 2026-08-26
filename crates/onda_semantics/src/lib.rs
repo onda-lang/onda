@@ -219,9 +219,9 @@ pub struct CompileInputs {
 /// The resolved source shape of one host-configurable constant.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CompileConstKind {
-    Scalar(PrimitiveType),
-    FixedArray { elem_ty: PrimitiveType, len: usize },
-    Array { elem_ty: PrimitiveType },
+    Scalar,
+    FixedArray,
+    Array,
 }
 
 /// A configuration declaration resolved under one complete compile input map.
@@ -230,7 +230,6 @@ pub struct CompileConstDescriptor {
     pub name: String,
     pub kind: CompileConstKind,
     pub value: ConstValue,
-    pub location: SourceLoc,
 }
 
 #[derive(Debug, Clone)]
@@ -488,6 +487,16 @@ pub enum TypedConstValue {
 }
 
 impl TypedConstValue {
+    pub const fn primitive_type(self) -> PrimitiveType {
+        match self {
+            Self::F32(_) => PrimitiveType::F32,
+            Self::F64(_) => PrimitiveType::F64,
+            Self::I32(_) => PrimitiveType::I32,
+            Self::I64(_) => PrimitiveType::I64,
+            Self::Bool(_) => PrimitiveType::Bool,
+        }
+    }
+
     pub fn to_f32(self) -> f32 {
         match self {
             Self::F32(v) => v,
@@ -12944,9 +12953,7 @@ sample:
         assert!(matches!(
             descriptors.last(),
             Some(CompileConstDescriptor {
-                kind: CompileConstKind::Array {
-                    elem_ty: PrimitiveType::F64
-                },
+                kind: CompileConstKind::Array,
                 value: ConstValue::Array { len: 3, .. },
                 ..
             })
@@ -13002,7 +13009,8 @@ sample:
         assert!(matches!(
             descriptors.get(1),
             Some(CompileConstDescriptor {
-                kind: CompileConstKind::FixedArray { len: 8, .. },
+                kind: CompileConstKind::FixedArray,
+                value: ConstValue::Array { len: 8, .. },
                 ..
             })
         ));

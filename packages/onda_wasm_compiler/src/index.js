@@ -102,22 +102,27 @@ class OndaCompiler {
     return { artifact, sourceFiles, sourceGraph };
   }
 
-  async compileWorkspace(workspace, options = {}) {
-    if (!workspace || typeof workspace !== "object" || Array.isArray(workspace)) {
-      throw configurationError("workspace must contain an entry and source map");
+  async inspectSourceConstants(source, options = {}) {
+    if (typeof source !== "string") {
+      throw configurationError("source must be a string");
     }
-    if (typeof workspace.entry !== "string" || workspace.entry.length === 0) {
-      throw configurationError("workspace.entry must be a non-empty string");
+    const compile = normalizeCompileConstInspectionOptions(options);
+    let encoded;
+    try {
+      encoded = this.frontend.inspect_source_compile_constants(
+        source,
+        compile.sampleRate,
+        compile.blockSize,
+        compile.constantsJson,
+      );
+    } catch (error) {
+      throw diagnosticsFromFrontend(error);
     }
-    if (!workspace.sources || typeof workspace.sources !== "object" || Array.isArray(workspace.sources)) {
-      throw configurationError("workspace.sources must be an object of paths to source strings");
-    }
-    for (const [path, source] of Object.entries(workspace.sources)) {
-      if (typeof source !== "string") {
-        throw configurationError(`workspace source '${path}' must be a string`);
-      }
-    }
+    return decodeCompileConstDescriptors(encoded);
+  }
 
+  async compileWorkspace(workspace, options = {}) {
+    workspace = normalizeWorkspace(workspace);
     const compile = normalizeCompileOptions(options);
     let frontendCompilation;
     try {
@@ -139,6 +144,24 @@ class OndaCompiler {
       sourceFiles,
     );
     return { artifact, sourceFiles, sourceGraph };
+  }
+
+  async inspectWorkspaceConstants(workspace, options = {}) {
+    workspace = normalizeWorkspace(workspace);
+    const compile = normalizeCompileConstInspectionOptions(options);
+    let encoded;
+    try {
+      encoded = this.frontend.inspect_source_workspace_compile_constants(
+        workspace.entry,
+        JSON.stringify(workspace.sources),
+        compile.sampleRate,
+        compile.blockSize,
+        compile.constantsJson,
+      );
+    } catch (error) {
+      throw diagnosticsFromFrontend(error);
+    }
+    return decodeCompileConstDescriptors(encoded);
   }
 
   async compileProjectImage(imageBytes, options = {}) {
@@ -163,6 +186,23 @@ class OndaCompiler {
       sourceFiles,
     );
     return { artifact, sourceFiles, sourceGraph };
+  }
+
+  async inspectProjectImageConstants(imageBytes, options = {}) {
+    const bytes = normalizeBytes(imageBytes, "project image");
+    const compile = normalizeCompileConstInspectionOptions(options);
+    let encoded;
+    try {
+      encoded = this.frontend.inspect_project_image_compile_constants(
+        bytes,
+        compile.sampleRate,
+        compile.blockSize,
+        compile.constantsJson,
+      );
+    } catch (error) {
+      throw diagnosticsFromFrontend(error);
+    }
+    return decodeCompileConstDescriptors(encoded);
   }
 
   async createProjectImage(sourceGraph, buffers = new Map()) {
@@ -311,10 +351,10 @@ class OndaCompiler {
   }
 
   async setLspAnalysisOptions(options = {}) {
-    const compile = normalizeCompileOptions(options);
+    const analysis = normalizeLspAnalysisOptions(options);
     this.lsp ??= new this.frontend.OndaLsp();
     try {
-      this.lsp.set_analysis_options(compile.sampleRate, compile.blockSize);
+      this.lsp.set_analysis_options(analysis.sampleRate, analysis.blockSize);
     } catch (cause) {
       throw new OndaCompilerError("failed to configure Onda LSP analysis", { cause });
     }
@@ -345,12 +385,24 @@ class WorkerOndaCompiler {
     return this.request("compileSource", { source, options });
   }
 
+  inspectSourceConstants(source, options = {}) {
+    return this.request("inspectSourceConstants", { source, options });
+  }
+
   compileWorkspace(workspace, options = {}) {
     return this.request("compileWorkspace", { workspace, options });
   }
 
+  inspectWorkspaceConstants(workspace, options = {}) {
+    return this.request("inspectWorkspaceConstants", { workspace, options });
+  }
+
   compileProjectImage(imageBytes, options = {}) {
     return this.request("compileProjectImage", { imageBytes, options });
+  }
+
+  inspectProjectImageConstants(imageBytes, options = {}) {
+    return this.request("inspectProjectImageConstants", { imageBytes, options });
   }
 
   createProjectImage(sourceGraph, buffers = new Map()) {
@@ -507,6 +559,48 @@ export function createDefaultImports() {
 }
 
 function normalizeCompileOptions(options) {
+  const compile = normalizeCompileInputOptions(options);
+  if (
+    options.codegen !== undefined
+    && (!options.codegen || typeof options.codegen !== "object" || Array.isArray(options.codegen))
+  ) {
+    throw configurationError("codegen options must be an object");
+  }
+  return {
+    ...compile,
+    codegen: options.codegen ?? {},
+  };
+}
+
+function normalizeCompileConstInspectionOptions(options) {
+  const compile = normalizeCompileInputOptions(options);
+  if (options.codegen !== undefined) {
+    throw configurationError("codegen options do not apply to compile constant inspection");
+  }
+  return compile;
+}
+
+function normalizeCompileInputOptions(options) {
+  return {
+    ...normalizeContextOptions(options),
+    constantsJson: JSON.stringify(normalizeCompileConstants(options.constants ?? {})),
+  };
+}
+
+function normalizeLspAnalysisOptions(options) {
+  const context = normalizeContextOptions(options);
+  if (options.constants !== undefined) {
+    throw configurationError(
+      "constants are compile-request inputs and cannot be set as LSP analysis options",
+    );
+  }
+  if (options.codegen !== undefined) {
+    throw configurationError("codegen options cannot be set as LSP analysis options");
+  }
+  return context;
+}
+
+function normalizeContextOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw configurationError("compiler options must be an object");
   }
@@ -518,18 +612,25 @@ function normalizeCompileOptions(options) {
   if (!Number.isInteger(blockSize) || blockSize <= 0 || blockSize > MAX_BLOCK_SIZE) {
     throw configurationError(`blockSize must be between 1 and ${MAX_BLOCK_SIZE} frames`);
   }
-  if (
-    options.codegen !== undefined
-    && (!options.codegen || typeof options.codegen !== "object" || Array.isArray(options.codegen))
-  ) {
-    throw configurationError("codegen options must be an object");
+  return { sampleRate, blockSize };
+}
+
+function normalizeWorkspace(workspace) {
+  if (!workspace || typeof workspace !== "object" || Array.isArray(workspace)) {
+    throw configurationError("workspace must contain an entry and source map");
   }
-  return {
-    sampleRate,
-    blockSize,
-    codegen: options.codegen ?? {},
-    constantsJson: JSON.stringify(normalizeCompileConstants(options.constants ?? {})),
-  };
+  if (typeof workspace.entry !== "string" || workspace.entry.length === 0) {
+    throw configurationError("workspace.entry must be a non-empty string");
+  }
+  if (!workspace.sources || typeof workspace.sources !== "object" || Array.isArray(workspace.sources)) {
+    throw configurationError("workspace.sources must be an object of paths to source strings");
+  }
+  for (const [path, source] of Object.entries(workspace.sources)) {
+    if (typeof source !== "string") {
+      throw configurationError(`workspace source '${path}' must be a string`);
+    }
+  }
+  return workspace;
 }
 
 function normalizeCompileConstants(constants) {
@@ -553,10 +654,12 @@ function normalizeCompileConstants(constants) {
       return { name, element: "bool", array: false, values: [value] };
     }
     if (typeof value === "number") {
-      if (!Number.isFinite(value)) {
-        throw configurationError(`compile constant '${name}' must be finite`);
-      }
-      return { name, element: "number", array: false, values: [value] };
+      return {
+        name,
+        element: "number",
+        array: false,
+        values: [encodeCompileNumber(value)],
+      };
     }
     if (typeof value === "bigint") {
       return { name, element: "i64", array: false, values: [value.toString()] };
@@ -587,10 +690,20 @@ function normalizeCompileConstants(constants) {
       };
     }
     if (value instanceof Float32Array) {
-      return { name, element: "f32", array: true, values: [...value] };
+      return {
+        name,
+        element: "f32",
+        array: true,
+        values: encodeCompileFloatArray(value),
+      };
     }
     if (value instanceof Float64Array) {
-      return { name, element: "f64", array: true, values: [...value] };
+      return {
+        name,
+        element: "f64",
+        array: true,
+        values: encodeCompileFloatArray(value),
+      };
     }
     if (Array.isArray(value) && value.every((item) => typeof item === "boolean")) {
       return { name, element: "bool", array: true, values: value };
@@ -599,6 +712,60 @@ function normalizeCompileConstants(constants) {
       `compile constant '${name}' must be a boolean, number, bigint, or matching typed array`,
     );
   });
+}
+
+function encodeCompileFloatArray(values) {
+  return [...values].map(encodeCompileNumber);
+}
+
+function encodeCompileNumber(value) {
+  if (Object.is(value, -0)) return "-0";
+  if (Number.isNaN(value)) return "NaN";
+  if (value === Number.POSITIVE_INFINITY) return "Infinity";
+  if (value === Number.NEGATIVE_INFINITY) return "-Infinity";
+  return value;
+}
+
+function decodeCompileConstDescriptors(encoded) {
+  let descriptors;
+  try {
+    descriptors = JSON.parse(encoded);
+  } catch (cause) {
+    throw new OndaCompilerError("failed to decode compile constant descriptors", { cause });
+  }
+  if (!Array.isArray(descriptors)) {
+    throw new OndaCompilerError("frontend returned invalid compile constant descriptors");
+  }
+  return descriptors.map((descriptor) => ({
+    name: descriptor.name,
+    element: descriptor.element,
+    kind: descriptor.kind,
+    elementCount: descriptor.element_count,
+    value: decodeCompileConstValue(descriptor.element, descriptor.kind, descriptor.values),
+  }));
+}
+
+function decodeCompileConstValue(element, kind, values) {
+  const decoded = element === "i64"
+    ? values.map((value) => BigInt(value))
+    : element === "f32" || element === "f64"
+      ? values.map(decodeCompileFloat)
+      : values;
+  if (kind === "scalar") return decoded[0];
+  if (element === "bool") return Uint8Array.from(decoded, (value) => value ? 1 : 0);
+  if (element === "i32") return Int32Array.from(decoded);
+  if (element === "i64") return BigInt64Array.from(decoded);
+  if (element === "f32") return Float32Array.from(decoded);
+  if (element === "f64") return Float64Array.from(decoded);
+  throw new OndaCompilerError(`frontend returned unknown compile constant element '${element}'`);
+}
+
+function decodeCompileFloat(value) {
+  if (value === "-0") return -0;
+  if (value === "NaN") return Number.NaN;
+  if (value === "Infinity") return Number.POSITIVE_INFINITY;
+  if (value === "-Infinity") return Number.NEGATIVE_INFINITY;
+  return value;
 }
 
 function consumeFrontendCompilation(compilation) {
