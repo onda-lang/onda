@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::processor_lowering::TOP_LEVEL_INIT_ALL_NAME;
 use crate::*;
 use onda_frontend::{
     ArrayElemType, ArrayTypeSpec, BinaryOp, CmpOp, FnParamDecl, FnParamType, FnReturnScalarType,
@@ -934,33 +935,39 @@ struct TaskProcRegistry {
 #[derive(Clone)]
 struct TaskOwnerSurface {
     name: String,
+    proc_name: Option<String>,
     ins: Vec<PortDecl>,
     outs: Vec<PortDecl>,
     params: Vec<ParamDecl>,
     buffers: Vec<BufferDecl>,
     init_body: Vec<Stmt>,
+    init_default_ty: Option<DeclType>,
 }
 
 impl TaskOwnerSurface {
     fn from_proc(proc: &ProcessorDef) -> Self {
         Self {
             name: proc.name.clone(),
+            proc_name: Some(proc.name.clone()),
             ins: proc.ins.clone(),
             outs: proc.outs.clone(),
             params: proc.params.clone(),
             buffers: proc.buffers.clone(),
             init_body: proc.init.body.clone(),
+            init_default_ty: proc.init.default_ty.clone(),
         }
     }
 
     fn from_top_level(program: &Program) -> Self {
         let mut surface = Self {
             name: "<top-level>".to_owned(),
+            proc_name: None,
             ins: Vec::new(),
             outs: Vec::new(),
             params: Vec::new(),
             buffers: Vec::new(),
             init_body: Vec::new(),
+            init_default_ty: None,
         };
         for block in &program.blocks {
             match block {
@@ -970,7 +977,10 @@ impl TaskOwnerSurface {
                 }
                 Block::Params(params) => surface.params.extend(params.decls.clone()),
                 Block::Buffers(buffers) => surface.buffers.extend(buffers.decls.clone()),
-                Block::Init(init) => surface.init_body.extend(init.body.clone()),
+                Block::Init(init) => {
+                    surface.init_body.extend(init.body.clone());
+                    surface.init_default_ty = init.default_ty.clone();
+                }
                 _ => {}
             }
         }
@@ -1059,9 +1069,13 @@ fn infer_task_local_storage_type(
 
 fn collect_task_owner_types(
     owner: &TaskOwnerSurface,
+    fn_signatures: &HashMap<String, FnSignature>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    frontend_struct_defs: &HashMap<String, onda_frontend::StructDef>,
     proc_registry: &TaskProcRegistry,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    options: AnalysisOptions,
 ) -> TaskOwnerTypes {
     fn record_decl(
         types: &mut TaskOwnerTypes,
@@ -1172,83 +1186,168 @@ fn collect_task_owner_types(
         }
     }
 
-    let empty_locals = HashMap::new();
-    for stmt in &owner.init_body {
-        let Stmt::Assign {
-            target: AssignTarget::Var(name),
-            decl_ty,
-            expr,
-            ..
-        } = stmt
+    analyze_task_owner_init(
+        &mut types,
+        owner,
+        fn_signatures,
+        return_types,
+        struct_defs,
+        frontend_struct_defs,
+        proc_registry,
+        const_arrays,
+        options,
+    );
+    register_task_owner_aggregate_storage(&mut types, struct_defs);
+    register_task_owner_processor_call_surfaces(&mut types, owner, proc_registry);
+    types
+}
+
+fn analyze_task_owner_init(
+    types: &mut TaskOwnerTypes,
+    owner: &TaskOwnerSurface,
+    fn_signatures: &HashMap<String, FnSignature>,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    frontend_struct_defs: &HashMap<String, onda_frontend::StructDef>,
+    proc_registry: &TaskProcRegistry,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    options: AnalysisOptions,
+) {
+    let output_array_names = types
+        .output_names
+        .intersection(&types.array_lens.keys().cloned().collect())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let dynamic_param_array_names = types
+        .param_names
+        .intersection(&types.array_lens.keys().cloned().collect())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut io_surface_names = types.input_names.clone();
+    io_surface_names.extend(types.output_names.iter().cloned());
+    let io_surface_array_names = types
+        .input_names
+        .union(&types.output_names)
+        .filter(|name| types.array_lens.contains_key(*name))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut known_scalars = types.scalars.keys().cloned().collect::<HashSet<_>>();
+    let mut local_aliases = LocalAliasTypes::new();
+    if owner.proc_name.is_none() {
+        known_scalars.insert(TOP_LEVEL_INIT_ALL_NAME.to_owned());
+        local_aliases.insert(TOP_LEVEL_INIT_ALL_NAME.to_owned(), PrimitiveType::Bool);
+    }
+
+    let mut local_array_aliases = HashMap::new();
+    for name in &types.param_names {
+        let (Some(elem_ty), Some(len)) = (types.indexed.get(name), types.array_lens.get(name))
         else {
             continue;
         };
-        if types.scalars.contains_key(name)
-            || types.indexed.contains_key(name)
-            || types.tuples.contains_key(name)
+        local_array_aliases.insert(
+            name.clone(),
+            LocalArrayAliasInfo {
+                len: *len,
+                static_len: Some(*len),
+                elem_ty: *elem_ty,
+                elem_struct: None,
+                writable: false,
+            },
+        );
+    }
+    seed_top_level_array_aliases(&mut local_array_aliases, const_arrays, false);
+    let mut init_state = InitAnalysisState::new(
+        known_scalars,
+        local_aliases,
+        local_array_aliases,
+        types.declared_symbols.clone(),
+        types.scalars.clone(),
+    );
+    let struct_symbols = frontend_struct_defs.keys().cloned().collect::<HashSet<_>>();
+    let ctor_symbols = struct_symbols
+        .iter()
+        .cloned()
+        .chain(proc_registry.names.iter().cloned())
+        .collect::<HashSet<_>>();
+    let current_ns = namespace_of_symbol(&owner.name);
+    let mut reserved = types.input_names.clone();
+    reserved.extend(types.output_names.iter().cloned());
+    reserved.extend(types.param_names.iter().cloned());
+    reserved.extend(owner.buffers.iter().map(|buffer| buffer.name.clone()));
+    let proc_resolution = owner
+        .proc_name
+        .as_deref()
+        .map(|owner_proc_name| ProcResolutionCtx {
+            owner_proc_name,
+            reserved: &reserved,
+            current_ns: &current_ns,
+            proc_symbols: &proc_registry.names,
+            struct_symbols: &struct_symbols,
+            frontend_struct_defs,
+            ctor_symbols: &ctor_symbols,
+            in_init_scope: true,
+        });
+    let proc_event_names = proc_registry
+        .surfaces
+        .values()
+        .flat_map(|surface| surface.event_names.iter().cloned())
+        .collect::<HashSet<_>>();
+    let mut scratch_errors = Vec::new();
+    let init_default_ty = resolve_init_default_ty(
+        owner.init_default_ty.as_ref(),
+        &owner.name,
+        &mut scratch_errors,
+    );
+    let init_ctx = InitAnalysisCtx {
+        context_label: &owner.name,
+        common: ScopeAnalysisCtx {
+            policy: ScopePolicy::Init,
+            input_names: &types.input_names,
+            output_names: &types.output_names,
+            output_array_names: &output_array_names,
+            io_surface_names: &io_surface_names,
+            io_surface_array_names: &io_surface_array_names,
+            dynamic_param_array_names: &dynamic_param_array_names,
+            param_names: &types.param_names,
+            struct_defs,
+            fn_signatures,
+            fn_return_types: return_types,
+            options,
+            port_index_ins: None,
+            port_index_outs: None,
+            port_index_params: None,
+            port_index_kins: None,
+            proc_event_names: &proc_event_names,
+        },
+        init_default_ty,
+        proc_resolution,
+        top_level_proc_symbols: owner.proc_name.is_none().then_some(&proc_registry.names),
+    };
+    analyze_owner_init_stmts(
+        &owner.init_body,
+        &init_ctx,
+        &HashSet::new(),
+        &mut init_state,
+        &mut scratch_errors,
+    );
+
+    types.scalars = init_state.state_scalars;
+    types.declared_symbols = init_state.declared_symbols;
+    types.array_lens.extend(init_state.state_arrays);
+    types.tuples = init_state.state_tuples;
+    types.struct_instances = init_state.struct_instances;
+    types
+        .state_array_struct_roots
+        .extend(init_state.state_array_struct_roots);
+    types.nested_proc_instances = init_state.nested_procs;
+    types.proc_array_roots = init_state.nested_proc_arrays;
+    for (name, symbol) in &types.declared_symbols {
+        if let DeclaredSymbolInfo::DataArray { elem_ty }
+        | DeclaredSymbolInfo::Buffer { elem_ty, .. } = symbol
         {
-            continue;
-        }
-        if let Some(ty) = decl_ty {
-            types.scalars.insert(name.clone(), *ty);
-        } else if let Expr::UserCall { name: ctor, .. } = expr {
-            if struct_defs.contains_key(ctor) {
-                register_struct_instance_roots(
-                    name,
-                    ctor,
-                    struct_defs,
-                    &mut types.struct_instances,
-                );
-            } else if let Some(ty) =
-                infer_task_local_storage_type(expr, &empty_locals, &types, struct_defs)
-            {
-                types.scalars.insert(name.clone(), ty);
-            }
-        } else if let Expr::Var { name: source, .. } = expr {
-            if let Some(struct_name) = types.struct_instances.get(source).cloned() {
-                register_struct_instance_roots(
-                    name,
-                    &struct_name,
-                    struct_defs,
-                    &mut types.struct_instances,
-                );
-            } else if let Some(ty) =
-                infer_task_local_storage_type(expr, &empty_locals, &types, struct_defs)
-            {
-                types.scalars.insert(name.clone(), ty);
-            }
-        } else if let Expr::ArrayCtor { spec, .. } = expr {
-            if let ArrayElemType::Primitive(element) = spec.elem {
-                types.indexed.insert(name.clone(), element);
-                if let Expr::Int { value, .. } = spec.size.as_ref() {
-                    if let Ok(len) = usize::try_from(*value) {
-                        types.array_lens.insert(name.clone(), len);
-                    }
-                }
-                types.declared_symbols.insert(
-                    name.clone(),
-                    DeclaredSymbolInfo::DataArray { elem_ty: element },
-                );
-            }
-        } else if let Expr::Tuple { values, .. } = expr {
-            if let Some(elements) = values
-                .iter()
-                .map(|value| {
-                    infer_task_local_storage_type(value, &empty_locals, &types, struct_defs)
-                })
-                .collect::<Option<Vec<_>>>()
-            {
-                types.tuples.insert(name.clone(), elements);
-            }
-        } else if let Some(ty) =
-            infer_task_local_storage_type(expr, &empty_locals, &types, struct_defs)
-        {
-            types.scalars.insert(name.clone(), ty);
+            types.indexed.insert(name.clone(), *elem_ty);
         }
     }
-    register_task_owner_aggregate_storage(&mut types, struct_defs);
-    register_task_owner_processors(&mut types, owner, proc_registry);
-    types
 }
 
 fn register_task_owner_aggregate_storage(
@@ -1437,75 +1536,41 @@ fn task_proc_registry(program: &Program, options: AnalysisOptions) -> TaskProcRe
     }
 }
 
-fn register_task_owner_processors(
+fn register_task_owner_processor_call_surfaces(
     types: &mut TaskOwnerTypes,
     owner: &TaskOwnerSurface,
     proc_registry: &TaskProcRegistry,
 ) {
-    let current_ns = namespace_of_symbol(&owner.name);
-
-    fn visit(
-        stmts: &[Stmt],
-        current_ns: &str,
-        proc_names: &HashSet<String>,
-        types: &mut TaskOwnerTypes,
-    ) {
-        for stmt in stmts {
-            match stmt {
-                Stmt::Assign {
-                    target: AssignTarget::Var(name),
-                    expr:
-                        Expr::UserCall {
-                            name: ctor,
-                            type_args,
-                            ..
-                        },
-                    ..
-                } if type_args.is_empty() => {
-                    if let Some(proc_name) =
-                        resolve_proc_ctor_symbol_name(ctor, current_ns, proc_names)
-                    {
-                        types
-                            .nested_proc_instances
-                            .insert(name.clone(), ProcNestedState { proc_name });
-                    }
+    // Top-level scalar processor instances are rewritten by the top-level proc
+    // lowering pass, which intentionally recognizes only root init statements.
+    // Proc-owned instances and processor arrays already come from the canonical
+    // init analysis above.
+    if owner.proc_name.is_none() {
+        for stmt in &owner.init_body {
+            let Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr:
+                    Expr::UserCall {
+                        name: ctor,
+                        type_args,
+                        ..
+                    },
+                ..
+            } = stmt
+            else {
+                continue;
+            };
+            if type_args.is_empty() {
+                if let Some(proc_name) =
+                    resolve_proc_ctor_symbol_name(ctor, "", &proc_registry.names)
+                {
+                    types
+                        .nested_proc_instances
+                        .insert(name.clone(), ProcNestedState { proc_name });
                 }
-                Stmt::Assign {
-                    target: AssignTarget::Var(name),
-                    expr: Expr::ArrayCtor { spec, .. },
-                    ..
-                } => {
-                    if let ArrayElemType::Struct(ctor) = &spec.elem {
-                        if let Some(proc_name) =
-                            resolve_proc_ctor_symbol_name(ctor, current_ns, proc_names)
-                        {
-                            types.proc_array_roots.insert(
-                                name.clone(),
-                                ProcNestedArrayState {
-                                    proc_name,
-                                    size_expr: *spec.size.clone(),
-                                },
-                            );
-                        }
-                    }
-                }
-                Stmt::If {
-                    then_branch,
-                    else_branch,
-                    ..
-                } => {
-                    visit(then_branch, current_ns, proc_names, types);
-                    visit(else_branch, current_ns, proc_names, types);
-                }
-                Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                    visit(body, current_ns, proc_names, types)
-                }
-                _ => {}
             }
         }
     }
-
-    visit(&owner.init_body, &current_ns, &proc_registry.names, types);
     for (instance, nested) in &types.nested_proc_instances {
         let Some(surface) = proc_registry.surfaces.get(&nested.proc_name) else {
             continue;
@@ -1589,7 +1654,7 @@ fn task_buffer_params(owner: &TaskOwnerSurface, errors: &mut Vec<Diagnostic>) ->
         .collect()
 }
 
-fn collect_owner_roots(owner: &TaskOwnerSurface) -> HashSet<String> {
+fn collect_owner_roots(owner: &TaskOwnerSurface, owner_types: &TaskOwnerTypes) -> HashSet<String> {
     let mut roots = owner
         .ins
         .iter()
@@ -1598,15 +1663,12 @@ fn collect_owner_roots(owner: &TaskOwnerSurface) -> HashSet<String> {
         .chain(owner.params.iter().map(|decl| decl.name.clone()))
         .chain(owner.buffers.iter().map(|decl| decl.name.clone()))
         .collect::<HashSet<_>>();
-    for stmt in &owner.init_body {
-        if let Stmt::Assign {
-            target: AssignTarget::Var(name),
-            ..
-        } = stmt
-        {
-            roots.insert(name.clone());
-        }
-    }
+    roots.extend(owner_types.scalars.keys().cloned());
+    roots.extend(owner_types.array_lens.keys().cloned());
+    roots.extend(owner_types.tuples.keys().cloned());
+    roots.extend(owner_types.struct_instances.keys().cloned());
+    roots.extend(owner_types.nested_proc_instances.keys().cloned());
+    roots.extend(owner_types.proc_array_roots.keys().cloned());
     roots
 }
 
@@ -3298,6 +3360,8 @@ fn lower_top_level_tasks(
     call_semantics: &TaskCallSemantics,
     proc_registry: &TaskProcRegistry,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    frontend_struct_defs: &HashMap<String, onda_frontend::StructDef>,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> HashSet<String> {
@@ -3308,12 +3372,16 @@ fn lower_top_level_tasks(
     let owner_surface = TaskOwnerSurface::from_top_level(program);
     let owner_types = collect_task_owner_types(
         &owner_surface,
+        &call_semantics.signatures,
         &call_semantics.return_types,
         struct_defs,
+        frontend_struct_defs,
         proc_registry,
+        const_arrays,
+        options,
     );
     let call_env = task_call_type_env(&owner_surface, &owner_types);
-    let owner_roots = collect_owner_roots(&owner_surface);
+    let owner_roots = collect_owner_roots(&owner_surface, &owner_types);
     let buffer_params = task_buffer_params(&owner_surface, errors);
     let buffer_names = buffer_params
         .iter()
@@ -3843,6 +3911,7 @@ fn rewrite_task_overloads(
 pub(crate) fn lower_tasks(
     program: &mut Program,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> HashSet<String> {
     let has_source_tasks = program.blocks.iter().any(|block| match block {
@@ -3873,6 +3942,8 @@ pub(crate) fn lower_tasks(
         &call_semantics,
         &proc_registry,
         &struct_defs,
+        &raw_struct_defs,
+        const_arrays,
         options,
         errors,
     );
@@ -3889,9 +3960,13 @@ pub(crate) fn lower_tasks(
         let owner_surface = TaskOwnerSurface::from_proc(proc);
         let preliminary_owner_types = collect_task_owner_types(
             &owner_surface,
+            &call_semantics.signatures,
             &call_semantics.return_types,
             &struct_defs,
+            &raw_struct_defs,
             &proc_registry,
+            const_arrays,
+            options,
         );
         let preliminary_call_env = task_call_type_env(&owner_surface, &preliminary_owner_types);
         let proc_call_semantics = proc_task_call_semantics(
@@ -3902,12 +3977,16 @@ pub(crate) fn lower_tasks(
         );
         let owner_types = collect_task_owner_types(
             &owner_surface,
+            &proc_call_semantics.signatures,
             &proc_call_semantics.return_types,
             &struct_defs,
+            &raw_struct_defs,
             &proc_registry,
+            const_arrays,
+            options,
         );
         let call_env = task_call_type_env(&owner_surface, &owner_types);
-        let owner_roots = collect_owner_roots(&owner_surface);
+        let owner_roots = collect_owner_roots(&owner_surface, &owner_types);
         let buffer_params = task_buffer_params(&owner_surface, errors);
         let buffer_names = buffer_params
             .iter()
@@ -4623,6 +4702,93 @@ proc Loader:
 "#;
         let parsed = parse_program(source).expect("task source should parse");
         analyze(parsed).expect("resettable task state should be accepted");
+    }
+
+    #[test]
+    fn top_level_task_uses_branch_joined_init_state_types() {
+        let source = r#"
+params:
+  choose_first: bool = true
+init:
+  if choose_first:
+    candidate: i32 = 1
+  else:
+    candidate: i32 = 2
+  carried = candidate
+  pin result: i32 = 0
+task prepare():
+  result = carried
+  yield
+block:
+  await prepare()
+  sample:
+    out1 = f32(result)
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("task should see the canonical type of branch-joined init state");
+        lower_program_to_optimized_mir(&typed)
+            .expect("branch-joined top-level task state should lower to valid MIR");
+    }
+
+    #[test]
+    fn proc_task_uses_branch_joined_init_state_types() {
+        let source = r#"
+proc Loader:
+  params:
+    choose_first: bool = true
+  init:
+    if choose_first:
+      candidate: i64 = 1
+    else:
+      candidate: i64 = 2
+    carried = candidate
+    pin result: i64 = 0
+  task prepare():
+    result = carried
+    yield
+  block:
+    await prepare()
+    sample:
+      out1 = f32(result)
+
+init:
+  loader = Loader()
+sample:
+  out1 = loader()
+"#;
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("proc task should see the canonical type of branch-joined init state");
+        lower_program_to_optimized_mir(&typed)
+            .expect("branch-joined proc task state should lower to valid MIR");
+    }
+
+    #[test]
+    fn task_cannot_see_branch_local_init_bindings() {
+        let source = r#"
+params:
+  choose_first: bool = true
+init:
+  if choose_first:
+    candidate: i32 = 1
+  else:
+    candidate: i32 = 2
+  carried = candidate
+task prepare():
+  carried = candidate
+  yield
+block:
+  await prepare()
+  sample:
+    out1 = f32(carried)
+"#;
+        let errors = analyze(parse_program(source).expect("task source should parse"))
+            .expect_err("branch-local init bindings must not escape into tasks");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("unknown symbol 'candidate'")),
+            "unexpected diagnostics: {errors:?}"
+        );
     }
 
     #[test]

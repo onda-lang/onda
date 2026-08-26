@@ -9853,9 +9853,6 @@ pub fn analyze_with_options(
             },
         );
     }
-    let state_arrays = HashMap::new();
-    let state_array_struct_roots = HashMap::<String, ArrayStructRootInfo>::new();
-    let struct_instances = HashMap::new();
     let mut init_known_scalars = param_names.clone();
     init_known_scalars.extend(state_scalars.keys().cloned());
     init_known_scalars.insert(TOP_LEVEL_INIT_ALL_NAME.to_owned());
@@ -9902,22 +9899,13 @@ pub fn analyze_with_options(
         proc_resolution: None,
         top_level_proc_symbols: Some(&top_level_proc_symbols),
     };
-    let mut init_st = InitAnalysisState {
-        known_scalars: init_known_scalars,
-        local_aliases: init_local_aliases,
-        integer_ranges: HashMap::new(),
-        local_array_aliases: init_local_data_aliases,
+    let mut init_st = InitAnalysisState::new(
+        init_known_scalars,
+        init_local_aliases,
+        init_local_data_aliases,
         declared_symbols,
         state_scalars,
-        state_arrays,
-        state_array_struct_roots,
-        struct_instances,
-        state_tuples: HashMap::new(),
-        state_array_specs: HashMap::new(),
-        struct_instance_type_args: HashMap::new(),
-        nested_procs: HashMap::new(),
-        nested_proc_arrays: HashMap::new(),
-    };
+    );
     analyze_owner_init_stmts(&init, &init_ctx, &init_locals, &mut init_st, &mut errors);
     guard_pinned_initializers(&mut init, TOP_LEVEL_INIT_ALL_NAME);
     let InitAnalysisState {

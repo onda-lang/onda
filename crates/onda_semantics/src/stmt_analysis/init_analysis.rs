@@ -105,6 +105,31 @@ fn infer_init_data_like_info(
 }
 
 impl InitAnalysisState {
+    pub(crate) fn new(
+        known_scalars: HashSet<String>,
+        local_aliases: LocalAliasTypes,
+        local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+        declared_symbols: DeclaredSymbolMap,
+        state_scalars: HashMap<String, PrimitiveType>,
+    ) -> Self {
+        Self {
+            known_scalars,
+            local_aliases,
+            integer_ranges: HashMap::new(),
+            local_array_aliases,
+            declared_symbols,
+            state_scalars,
+            state_arrays: HashMap::new(),
+            state_array_struct_roots: HashMap::new(),
+            struct_instances: HashMap::new(),
+            state_tuples: HashMap::new(),
+            state_array_specs: HashMap::new(),
+            struct_instance_type_args: HashMap::new(),
+            nested_procs: HashMap::new(),
+            nested_proc_arrays: HashMap::new(),
+        }
+    }
+
     fn flow_state(&self) -> ScopeFlowState {
         let mut flow = ScopeFlowState::from_parts(
             self.known_scalars.clone(),

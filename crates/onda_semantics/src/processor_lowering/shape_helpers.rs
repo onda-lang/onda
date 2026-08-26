@@ -2839,22 +2839,13 @@ pub(super) fn compute_proc_shape(
     let mut init_local_array_aliases = HashMap::new();
     seed_top_level_array_aliases(&mut init_local_array_aliases, &proc_param_arrays, false);
     seed_top_level_array_aliases(&mut init_local_array_aliases, const_arrays, false);
-    let mut init_st = InitAnalysisState {
-        known_scalars: HashSet::new(),
-        local_aliases: HashMap::new(),
-        integer_ranges: HashMap::new(),
-        local_array_aliases: init_local_array_aliases,
+    let mut init_st = InitAnalysisState::new(
+        HashSet::new(),
+        HashMap::new(),
+        init_local_array_aliases,
         declared_symbols,
-        state_scalars: state_type_hints.clone(),
-        state_arrays: HashMap::new(),
-        state_array_struct_roots: HashMap::new(),
-        struct_instances: HashMap::new(),
-        state_array_specs: HashMap::new(),
-        struct_instance_type_args: HashMap::new(),
-        nested_procs: HashMap::new(),
-        nested_proc_arrays: HashMap::new(),
-        state_tuples: HashMap::new(),
-    };
+        state_type_hints.clone(),
+    );
     // Seed known_scalars with reserved names so they're visible for decl-order checks
     init_st.known_scalars.extend(reserved.iter().cloned());
     analyze_owner_init_stmts(&proc.init, &init_ctx, &proc_locals, &mut init_st, errors);

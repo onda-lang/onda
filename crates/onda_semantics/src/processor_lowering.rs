@@ -1305,7 +1305,8 @@ pub(crate) fn desugar_processors(
     rewrite_and_materialize_generic_processors(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
-    let runtime_def_names = crate::task_lowering::lower_tasks(&mut program, options, errors);
+    let runtime_def_names =
+        crate::task_lowering::lower_tasks(&mut program, options, const_arrays, errors);
     if let Some(Block::Init(init)) = program
         .blocks
         .iter_mut()
