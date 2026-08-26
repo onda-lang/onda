@@ -1912,9 +1912,11 @@ unsafe fn native_buffer_samples(
     bytes: &[u8],
 ) -> Result<BufferSamples, onda_project::ProjectError> {
     fn read_values<T: Copy>(bytes: &[u8]) -> Vec<T> {
-        bytes
-            .chunks_exact(std::mem::size_of::<T>())
-            .map(|chunk| unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) })
+        let element_size = std::mem::size_of::<T>();
+        (0..bytes.len() / element_size)
+            .map(|index| unsafe {
+                std::ptr::read_unaligned(bytes.as_ptr().add(index * element_size).cast::<T>())
+            })
             .collect()
     }
     if !bytes.len().is_multiple_of(element.byte_size()) {

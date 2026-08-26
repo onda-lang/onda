@@ -1101,10 +1101,8 @@ sample:
                 .control_output_storage_byte_offset(index)
                 .expect("control output should have storage");
             let end = start + byte_len;
-            for bytes in state_bytes[start..end].chunks_exact(std::mem::size_of::<f32>()) {
-                outputs.push(f32::from_ne_bytes(
-                    bytes.try_into().expect("control output should be f32"),
-                ));
+            for bytes in state_bytes[start..end].as_chunks::<4>().0 {
+                outputs.push(f32::from_ne_bytes(*bytes));
             }
         }
         outputs

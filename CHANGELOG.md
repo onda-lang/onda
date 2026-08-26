@@ -7,6 +7,82 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.7.6]
+
+### Added
+
+- Added statically allocated cooperative `task` declarations at the top level and inside procs.
+  Tasks use `yield` to suspend, `await` to advance from block-pre control flow, and
+  `task_name.reset()` to restart in constant time, allowing preparation such as convolution-kernel
+  or lookup-table construction to be spread across logical blocks without allocation or worker
+  threads. Each proc instance owns its continuations; task state participates in snapshots and
+  observes the existing segmented and zero-frame block schedule.
+- Added `pin` for persistent roots declared directly by `init`. Preserve-pinned initialization
+  reruns ordinary declaration initializers while retaining pinned roots and task continuations;
+  full initialization initializes the complete state image. Proc builtin `init(...)` events now
+  accept `all: bool = false`, with `all = true` selecting full initialization.
+- Added explicit `i32` and `i64` induction types with `for i: TYPE in ...`; unannotated loops
+  continue to use `i32`.
+- Added bare `return` to non-value-returning runtime `def` bodies for early exit. Bare and
+  value-bearing returns cannot be mixed, and `const def` remains value-returning.
+- Added allocation-only and initialized instance-construction variants to the Rust runtime, C API,
+  and Web Audio adapter, plus explicit preserve-pinned and full initialization operations. This
+  allows parameters and bindings to be configured before authored initialization runs.
+- Added incremental impulse-loading support to `std::convolution::ZeroLatencyConvolver` through
+  `begin_impulse` and `set_impulse_window`, together with `stage_window_count`,
+  `impulse_window_count`, and `impulse_window_end` helpers. The Embedded Room project now uses a
+  task to distribute impulse transformation over a configurable loading interval.
+- Added formatter, completion, navigation, document-symbol, validation, and semantic-highlighting
+  support for tasks, pinned state, private proc parameters, and explicitly typed loop induction.
+
+### Changed
+
+- Renamed the proc-parameter access modifier from `pin` to `private`, reserving `pin` for persistent
+  init state.
+- Instance creation is now allocation-only by default and no longer executes authored `init` code
+  or keeps a duplicate post-init state image. Stateful operations require successful full
+  initialization; the initialized convenience constructors preserve the previous ready-to-process
+  workflow.
+- Replaced reset-to-a-captured-image behavior with in-place initialization. Preserve-pinned mode
+  retains prepared state and suspended tasks, while full mode reinitializes every authored and
+  compiler-owned state root. Both successful paths avoid allocation.
+- Generated init, event, task, and process failures now invalidate the live instance. Subsequent
+  stateful operations are rejected, and audio hosts remain silent, until full initialization or
+  snapshot restoration succeeds.
+- Portable snapshots now include compiler-owned task continuations. Processor state metadata adds
+  an `authored` flag so hosts can serialize those entries while omitting them from authored-state
+  reflection; the snapshot format remains version 1.
+- Advanced the MIR schema to version 6 and the processor ABI to version 6. The raw init export is
+  now `onda_processor_init(params, state, mode)`, with named preserve-pinned and full modes; the
+  processor artifact descriptor remains format version 4.
+- Reworked convolution state so prepared impulse data survives preserve-pinned initialization while
+  signal history and processing counters are reinitialized.
+- Updated CPAL to 0.18.2, picking up PipeWire xrun reporting, non-blocking real-time promotion,
+  rtkit burst-limit handling, device naming and routing fixes, and corrected stream start and
+  24-bit format behavior. The `onda_cpal` test and doctest harnesses are enabled again because the
+  previous `libspa-sys` binding failure no longer reproduces with this dependency set.
+
+### Migration notes
+
+- Replace `pin` on proc parameters with `private`. Use `pin` only for persistent value bindings
+  declared directly by `init`. The new builtin proc-init argument also reserves `all` as a proc
+  parameter name.
+- Rust callers that need an immediately usable instance should replace `create_instance` with
+  `create_instance_initialized` (and likewise for the allocator-backed variant), or call
+  `init(&mut instance, InitMode::Full)` after configuring the allocation-only instance. Replace
+  `reset_instance_state` with `init`, and handle the `Result` now returned by
+  `Instance::snapshot_state_bytes()`.
+- C callers should use `onda_instance_create_initialized` for the previous construction behavior,
+  or call `onda_init(instance, ONDA_INIT_FULL)` after `onda_instance_create`. Replace
+  `onda_reset_instance_state` with the appropriate `onda_init` mode.
+- Web Audio callers should use `createOndaAudioProcessorInitialized` for the previous construction
+  behavior, or call `processor.init(ONDA_INIT_FULL)` after `createOndaAudioProcessor`. Replace
+  `processor.reset()` with `processor.init(ONDA_INIT_PRESERVE_PINNED)` or
+  `processor.init(ONDA_INIT_FULL)` according to the desired state-retention policy.
+- Raw processor hosts must accept ABI version 6, call `onda_processor_init` with an explicit mode,
+  and honor the fail-closed instance lifecycle. Serialized-MIR consumers must accept schema version
+  6 and descriptor consumers should use the state `authored` field when exposing reflection.
+
 ## [0.7.5]
 
 ### Added
@@ -478,6 +554,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.7.5]: https://github.com/onda-lang/onda/compare/0.7.5...0.7.6
 [0.7.5]: https://github.com/onda-lang/onda/compare/0.7.4...0.7.5
 [0.7.4]: https://github.com/onda-lang/onda/compare/0.7.3...0.7.4
 [0.7.3]: https://github.com/onda-lang/onda/compare/0.7.2...0.7.3

@@ -2781,7 +2781,7 @@ fn proc_local_def_name_prefers_local_resolution_over_top_level_def() {
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
-    for frame in output.chunks_exact(2) {
+    for frame in output.as_chunks::<2>().0 {
         assert_near(frame[0], 2.0, 1e-6);
 
         assert_near(frame[1], 101.0, 1e-6);

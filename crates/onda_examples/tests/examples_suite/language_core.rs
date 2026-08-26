@@ -4721,7 +4721,7 @@ fn graph_proc_array_indexed_param_destinations_and_output_sources_run() {
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
-    for frame in output.chunks_exact(3) {
+    for frame in output.as_chunks::<3>().0 {
         assert_near(frame[0], 0.25, 1e-6);
 
         assert_near(frame[1], 0.75, 1e-6);
