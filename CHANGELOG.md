@@ -16,6 +16,9 @@ release; earlier releases are available on the
   specialization, assertions, and generated code, with support in the Rust compiler API, native
   CLI (`--const` and `--list-consts`), C inspection and compile requests, and browser source,
   workspace, and project-image inspection and compilation.
+- Added `constants` mappings to `.ondaproject` manifests and immutable project images. Project
+  values act as compile defaults across native, run, and browser paths, while explicit host or CLI
+  inputs take precedence.
 - Added statically allocated cooperative `task` declarations at the top level and inside procs.
   Tasks use `yield` to suspend, `await` to advance from block-pre control flow, and
   `task_name.reset()` to restart in constant time, allowing preparation such as convolution-kernel
@@ -60,6 +63,7 @@ release; earlier releases are available on the
 - Advanced the MIR schema to version 6 and the processor ABI to version 6. The raw init export is
   now `onda_processor_init(params, state, mode)`, with named preserve-pinned and full modes; the
   processor artifact descriptor remains format version 4.
+- Advanced the project-image format to version 2 to preserve project constant bindings.
 - Reworked convolution state so prepared impulse data survives preserve-pinned initialization while
   signal history and processing counters are reinitialized.
 - Updated CPAL to 0.18.2, picking up PipeWire xrun reporting, non-blocking real-time promotion,

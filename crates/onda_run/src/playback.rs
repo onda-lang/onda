@@ -35,6 +35,7 @@ static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[derive(Clone)]
 pub struct PlaybackLaunch {
     pub input: PathBuf,
+    pub compile_inputs: onda_semantics::CompileInputs,
     pub dur_seconds: Option<u32>,
     pub sample_rate_hz: u32,
     pub block_frames: usize,
@@ -528,7 +529,18 @@ fn spawn_run_render_thread(
                 );
             }
             session
-                .start_run_with_initial_buffers(&launch.input, initial_buffers)
+                .start_run_with_options_inputs_and_initial_buffers(
+                    &launch.input,
+                    RunOptions {
+                        sample_rate: launch.sample_rate_hz as f32,
+                        block_size: launch.block_frames,
+                        fast_math: launch.fast_math,
+                        opt_level: launch.opt_level,
+                        ..RunOptions::default()
+                    },
+                    &launch.compile_inputs,
+                    initial_buffers,
+                )
                 .map_err(|err| format_run_build_error("daemon play start failed", &err))?;
 
             for (name, value) in &launch.param_sets {

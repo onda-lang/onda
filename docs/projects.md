@@ -52,6 +52,30 @@ The generated `my-project.ondaproject` starts as:
 }
 ```
 
+### Compile constants
+
+`constants` assigns project defaults to executable-root `config const` declarations. Values use
+ordinary JSON booleans, numbers, or arrays. Use a decimal string for an `i64` value so JSON tools
+cannot round it:
+
+```json
+{
+  "entry": "code/main.onda",
+  "constants": {
+    "Enabled": true,
+    "Channels": 8,
+    "Seed": "9007199254740993",
+    "Window": [0.0, 0.5, 1.0]
+  }
+}
+```
+
+The declaration in Onda source remains the type authority, and project compilation rejects
+unknown, ordinary (non-configurable), or mistyped constants. Project values replace the authored
+initializers for that project. An explicit host selection has higher precedence; for example,
+`onda compile synth.ondaproject --const Channels=2` overrides the manifest value only for that
+invocation.
+
 `entry` and buffer file paths are Unicode NFC-normalized, project-relative UTF-8 paths using `/`.
 Each path component is at most 255 UTF-8 bytes. Absolute paths, `.`, `..`, empty components,
 backslashes, control characters, Windows-reserved characters and device names, and components
@@ -205,6 +229,7 @@ The `onda_project` crate also defines `ProjectImage`, an immutable checkpoint in
 state, browser tooling, and other hosts. One image contains:
 
 - the relocated entry identity;
+- project-selected configuration constants;
 - the exact built-in standard-library fingerprint;
 - exact source documents;
 - resolved include/import edges;

@@ -1152,7 +1152,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
         let _program = ProgramHandle(program);
         let manifest = SourceManifestHandle(manifest);
 
-        assert_eq!(onda_project_image_format_version(), 1);
+        assert_eq!(onda_project_image_format_version(), 2);
         assert_eq!(onda_buffer_asset_format_version(), 1);
         assert!(CStr::from_ptr(onda_current_stdlib_digest())
             .to_bytes()

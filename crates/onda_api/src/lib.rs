@@ -37,9 +37,9 @@ use onda_runtime::{
     validate_outputs, InitMode, Instance, InstanceConfig,
 };
 use onda_semantics::{
-    analyze_with_options_and_inputs, inspect_compile_constants, lower_program_to_optimized_mir,
-    AnalysisOptions, CompileConstDescriptor, CompileConstKind, CompileInputs, ConstValue,
-    TypedBufferChannels, TypedConstValue, TypedProgram,
+    analyze_with_options_and_inputs, compile_inputs_from_literals, inspect_compile_constants,
+    lower_program_to_optimized_mir, AnalysisOptions, CompileConstDescriptor, CompileConstKind,
+    CompileInputs, ConstValue, TypedBufferChannels, TypedConstValue, TypedProgram,
 };
 
 pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESS_BEGIN_BLOCK as i32;
@@ -239,6 +239,15 @@ struct CompiledProgram {
 enum ProjectCompilation {
     Filesystem(ProjectFile),
     Image(Arc<ProjectImage>),
+}
+
+impl ProjectCompilation {
+    fn constants(&self) -> &BTreeMap<String, onda_project::ProjectConstValue> {
+        match self {
+            Self::Filesystem(project) => &project.manifest.constants,
+            Self::Image(image) => image.constants(),
+        }
+    }
 }
 
 enum ProjectAssets {
@@ -590,9 +599,10 @@ fn build_compile_constants(
 unsafe fn inspect_parsed_compile_constants(
     parsed: Program,
     options: &onda_compile_options_t,
+    project: Option<&ProjectCompilation>,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_compile_constants {
-    let inputs = match compile_inputs_from_options(options) {
+    let inputs = match merged_compile_inputs(&parsed, options, project) {
         Ok(inputs) => inputs,
         Err(diag) => {
             write_diag(out_diag, diag_to_c(&diag));
@@ -624,6 +634,37 @@ unsafe fn inspect_parsed_compile_constants(
             ptr::null_mut()
         }
     }
+}
+
+unsafe fn merged_compile_inputs(
+    parsed: &Program,
+    options: &onda_compile_options_t,
+    project: Option<&ProjectCompilation>,
+) -> Result<CompileInputs, Diagnostic> {
+    let analysis_options = AnalysisOptions {
+        sample_rate: options.sample_rate,
+        block_size: options.block_size as usize,
+    };
+    let explicit = compile_inputs_from_options(options)?;
+    let mut inputs = match project {
+        Some(project) => compile_inputs_from_literals(
+            parsed,
+            project
+                .constants()
+                .iter()
+                .filter(|(name, _)| !explicit.constants.contains_key(*name))
+                .map(|(name, value)| (name.clone(), value.onda_literal())),
+            analysis_options,
+        )
+        .map_err(|diagnostics| {
+            diagnostics.into_iter().next().unwrap_or_else(|| {
+                Diagnostic::internal("project constant resolution failed without a diagnostic")
+            })
+        })?,
+        None => CompileInputs::default(),
+    };
+    inputs.constants.extend(explicit.constants);
+    Ok(inputs)
 }
 
 unsafe fn parse_required_c_string(value: *const c_char, name: &str) -> Result<String, Diagnostic> {
@@ -1003,7 +1044,7 @@ pub unsafe extern "C" fn onda_inspect_compile_constants(
             return ptr::null_mut();
         }
     };
-    inspect_parsed_compile_constants(parsed, options, out_diag)
+    inspect_parsed_compile_constants(parsed, options, None, out_diag)
 }
 
 unsafe fn parse_c_program(src_utf8: *const c_char) -> Result<Program, Diagnostic> {
@@ -1058,7 +1099,7 @@ unsafe fn compile_parsed_program(
     project: Option<ProjectCompilation>,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
-    let compile_inputs = match compile_inputs_from_options(options) {
+    let compile_inputs = match merged_compile_inputs(&parsed, options, project.as_ref()) {
         Ok(inputs) => inputs,
         Err(diag) => {
             write_diag(out_diag, diag_to_c(&diag));
@@ -1518,11 +1559,12 @@ pub unsafe extern "C" fn onda_inspect_compile_constants_file(
         write_diag(out_diag, runtime_diag(message));
         return ptr::null_mut();
     }
-    let (parsed, _) = match load_c_file_program(file_path_utf8, out_sources, out_diag) {
+    let (parsed, project) = match load_c_file_program(file_path_utf8, out_sources, out_diag) {
         Some(loaded) => loaded,
         None => return ptr::null_mut(),
     };
-    inspect_parsed_compile_constants(parsed, options, out_diag)
+    let project = project.map(ProjectCompilation::Filesystem);
+    inspect_parsed_compile_constants(parsed, options, project.as_ref(), out_diag)
 }
 
 #[no_mangle]
@@ -1765,7 +1807,7 @@ pub unsafe extern "C" fn onda_inspect_compile_constants_source_graph(
         Some(parsed) => parsed,
         None => return ptr::null_mut(),
     };
-    inspect_parsed_compile_constants(parsed, options, out_diag)
+    inspect_parsed_compile_constants(parsed, options, None, out_diag)
 }
 
 unsafe fn load_c_source_graph(
@@ -3172,11 +3214,13 @@ pub unsafe extern "C" fn onda_project_image_inspect_compile_constants(
         write_diag(out_diag, runtime_diag(message));
         return ptr::null_mut();
     }
-    let parsed = match replay_project_image_sources(&(*image).inner, out_diag) {
+    let image = Arc::clone(&(*image).inner);
+    let parsed = match replay_project_image_sources(&image, out_diag) {
         Some(parsed) => parsed,
         None => return ptr::null_mut(),
     };
-    inspect_parsed_compile_constants(parsed, options, out_diag)
+    let project = ProjectCompilation::Image(image);
+    inspect_parsed_compile_constants(parsed, options, Some(&project), out_diag)
 }
 
 #[no_mangle]

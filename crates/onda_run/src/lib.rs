@@ -366,6 +366,10 @@ impl RunController {
         )
         .map_err(|error| error.to_string())?;
         let source_root = input.project().map(|project| project.root.as_path());
+        let constants = input
+            .project()
+            .map(|project| project.manifest.constants.clone())
+            .unwrap_or_default();
         let mut assets = std::collections::BTreeMap::new();
         let mut asset_file_names = std::collections::BTreeMap::new();
         if let Some(project) = input.project() {
@@ -413,6 +417,7 @@ impl RunController {
         let plan = project_io::package_project_plan(
             &self.onda_path,
             source_root,
+            constants,
             assets,
             &project_file_name,
             &asset_file_names,

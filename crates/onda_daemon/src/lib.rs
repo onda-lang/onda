@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
+use onda_semantics::CompileInputs;
 
 use onda_semantics::normalize_session_path;
 
@@ -116,11 +117,27 @@ impl DaemonSession {
         options: RunOptions,
         initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
     ) -> Result<&RunSession, RunBuildError> {
+        self.start_run_with_options_inputs_and_initial_buffers(
+            path,
+            options,
+            &CompileInputs::default(),
+            initial_buffers,
+        )
+    }
+
+    pub fn start_run_with_options_inputs_and_initial_buffers(
+        &mut self,
+        path: impl AsRef<Path>,
+        options: RunOptions,
+        inputs: &CompileInputs,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+    ) -> Result<&RunSession, RunBuildError> {
         let normalized = normalize_session_path(path.as_ref());
-        let run = RunSession::build_with_initial_buffers(
+        let run = RunSession::build_with_inputs_and_initial_buffers(
             &self.analysis,
             &normalized,
             options,
+            inputs,
             initial_buffers,
         )?;
         self.runs.insert(normalized.clone(), run);
@@ -132,12 +149,17 @@ impl DaemonSession {
 
     pub fn rebuild_run(&mut self, path: impl AsRef<Path>) -> Result<&RunSession, RunBuildError> {
         let normalized = normalize_session_path(path.as_ref());
-        let options = self
+        let (options, inputs) = self
             .runs
             .get(&normalized)
-            .map(|run| run.options())
-            .unwrap_or(self.config.run);
-        self.start_run_with_options(normalized, options)
+            .map(|run| (run.options(), run.compile_inputs().clone()))
+            .unwrap_or((self.config.run, CompileInputs::default()));
+        self.start_run_with_options_inputs_and_initial_buffers(
+            normalized,
+            options,
+            &inputs,
+            std::iter::empty(),
+        )
     }
 
     pub fn run(&self, path: impl AsRef<Path>) -> Option<&RunSession> {
