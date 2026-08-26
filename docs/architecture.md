@@ -257,7 +257,7 @@ Non-crate directories of note:
   compile` emits target-aware LLVM IR or objects through the same MIR lowering. There is no direct
   `TypedProgram`/frontend-AST LLVM backend.
 - Native JIT metadata and AOT sidecar metadata come from validated MIR plus codegen's selected byte
-  offsets. Parameter, state, audio/control I/O, buffer, event, export, and target information
+  offsets. Parameter, state, audio/control I/O, buffer, input-event, delegate, export, and target information
   therefore cannot drift from the executable layout through a separate `TypedProgram` walk. The
   processor descriptor also maps each packed snapshot segment to its physical state offset,
   records the little-endian scalar encoding and post-init restore base, and declares the
@@ -268,7 +268,7 @@ Non-crate directories of note:
   source and embedded `std/...` modules.
   `packages/onda_binaryen_web` consumes the current schema, including explicit control mirrors, checked slice
   construction, reference windows, and function attributes, and returns DSP Wasm plus physical
-  state, snapshot, interface, event, buffer, and import metadata.
+  state, snapshot, interface, input-event, delegate, buffer, and import metadata.
 - [`processor-abi.md`](processor-abi.md) defines the shared logical processor contract. LLVM emits
   relocatable objects for native and WebAssembly targets and leaves linking to the application;
   Binaryen emits a complete core-Wasm module because browsers expose no linker. Target triples
@@ -302,7 +302,14 @@ Non-crate directories of note:
   parameters are clamped once when stored and are not reclamped when read. Floating NaN maps to the
   range minimum at these generated clamp boundaries. Host-triggered events run synchronously via
   index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous
-  element bytes).
+  element bytes). Source delegates lower to direct synchronous subscription calls. Only top-level
+  publication remains explicit in MIR, where `PublishDelegate` is an observable runtime effect.
+  Process and input-event entries accept an optional caller-owned delegate batch, reset it per call,
+  append complete packed records without allocation, count whole-record overflow, and clear the
+  result on generated execution failure. Native and Binaryen backends share the same payload and
+  record layout. Web Audio copies decoded records to the message port after generated DSP returns;
+  the daemon and native run hosts likewise decode bounded batches outside generated execution and
+  expose recent occurrences in both run UIs.
 - Ordinary source indexing clamps each coordinate independently for every nonempty indexable
   surface. Integer storage ranges preserve `i32`/`i64` interval facts through MIR, and the shared
   bounds-proof pass removes clamping or checks when the complete coordinate interval is known to

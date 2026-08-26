@@ -48,6 +48,11 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
                     eliminated += prove_call_argument(context, *function, index, argument);
                 }
             }
+            StatementKind::PublishDelegate { args, .. } => {
+                for argument in args {
+                    eliminated += prove_publish_argument(context, argument);
+                }
+            }
             StatementKind::OutputStore {
                 output,
                 element,
@@ -108,6 +113,20 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
         }
     }
     eliminated
+}
+
+fn prove_publish_argument(context: &Context<'_>, argument: &mut CallArgument) -> u64 {
+    match argument {
+        CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => {
+            prove_place(context, place)
+        }
+        CallArgument::Buffer(buffer) => prove_buffer_ref(context, buffer),
+        CallArgument::BufferParam(parameter) => prove_buffer_param_ref(context, parameter),
+        CallArgument::Value(_)
+        | CallArgument::SliceElement { .. }
+        | CallArgument::SliceWindow { .. }
+        | CallArgument::BufferSpan(_) => 0,
+    }
 }
 
 fn prove_rvalue(context: &Context<'_>, value: &mut Rvalue) -> u64 {

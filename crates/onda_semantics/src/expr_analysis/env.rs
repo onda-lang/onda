@@ -36,6 +36,37 @@ impl FnSignature {
         }
     }
 
+    pub(crate) fn from_event_params(params: &[EventParamDecl]) -> Self {
+        let params = params
+            .iter()
+            .map(crate::event_param_as_fn_param)
+            .collect::<Vec<_>>();
+        let readonly_array_params = params
+            .iter()
+            .filter(|param| {
+                matches!(
+                    param.ty,
+                    Some(
+                        FnParamType::Array(_)
+                            | FnParamType::ArrayGeneric(_)
+                            | FnParamType::SizedArray { .. }
+                    )
+                )
+            })
+            .map(|param| param.name.clone())
+            .collect();
+        Self {
+            display_name: None,
+            requires_call_specialization: false,
+            params: params.iter().map(|param| param.name.clone()).collect(),
+            defaults: params.iter().map(|param| param.default.clone()).collect(),
+            param_types: params.iter().map(|param| param.ty.clone()).collect(),
+            type_params: Vec::new(),
+            return_type: None,
+            readonly_array_params,
+        }
+    }
+
     pub(crate) fn sync_defaults_from_def(&mut self, def: &FunctionDef) {
         self.defaults = def
             .params

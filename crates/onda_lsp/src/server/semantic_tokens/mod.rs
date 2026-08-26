@@ -32,6 +32,8 @@ pub(super) const SEMANTIC_TOKEN_TYPE_NAMESPACE: u32 = 6;
 pub(super) const SEMANTIC_TOKEN_TYPE_STATE: u32 = 7;
 pub(super) const SEMANTIC_TOKEN_TYPE_KEYWORD: u32 = 8;
 pub(super) const SEMANTIC_TOKEN_TYPE_NUMBER: u32 = 9;
+pub(super) const SEMANTIC_TOKEN_TYPE_EVENT: u32 = 10;
+pub(super) const SEMANTIC_TOKEN_TYPE_DELEGATE: u32 = 11;
 
 const SEMANTIC_TOKEN_LEGEND: &[&str] = &[
     "enumMember",
@@ -44,6 +46,8 @@ const SEMANTIC_TOKEN_LEGEND: &[&str] = &[
     "state",
     "keyword",
     "number",
+    "event",
+    "delegate",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +65,8 @@ pub(super) struct SemanticScope {
     consts: HashSet<String>,
     types: HashSet<String>,
     functions: HashSet<String>,
+    events: HashSet<String>,
+    delegates: HashSet<String>,
     state_variables: HashSet<String>,
     variables: HashSet<String>,
     ports: HashSet<String>,
@@ -79,6 +85,10 @@ impl SemanticScope {
             Some(SEMANTIC_TOKEN_TYPE_PARAMETER)
         } else if self.ports.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_PORT)
+        } else if self.events.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_EVENT)
+        } else if self.delegates.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_DELEGATE)
         } else if self.functions.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
         } else if self.state_variables.contains(name) {

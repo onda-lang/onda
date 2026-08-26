@@ -82,6 +82,7 @@ function audioWorkletNodeOptionsFromValidated(
       ),
       buffers: options.buffers ?? {},
       eventPayloadCapacityBytes: options.eventPayloadCapacityBytes,
+      delegateCapacityBytes: options.delegateCapacityBytes,
       initialize: options.initialize === true,
     },
   };
@@ -217,8 +218,13 @@ export class OndaAudioProcessor {
     this.paramControls = new WeakMap();
     this.nextRequestId = 1;
     this.pending = new Map();
+    this.delegateListeners = new Set();
     this.handleMessage = (event) => {
       const message = event.data ?? {};
+      if (message.type === "onda-delegates") {
+        for (const listener of this.delegateListeners) listener(message);
+        return;
+      }
       if (message.requestId === undefined) return;
       const pending = this.pending.get(message.requestId);
       if (!pending) return;
@@ -286,6 +292,14 @@ export class OndaAudioProcessor {
     return this.request("event", { event, values });
   }
 
+  onDelegates(listener) {
+    if (typeof listener !== "function") {
+      throw new TypeError("delegate listener must be a function");
+    }
+    this.delegateListeners.add(listener);
+    return () => this.delegateListeners.delete(listener);
+  }
+
   init(mode) {
     if (mode !== ONDA_INIT_PRESERVE_PINNED && mode !== ONDA_INIT_FULL) {
       return Promise.reject(new Error(`invalid Onda init mode '${String(mode)}'`));
@@ -316,6 +330,7 @@ export class OndaAudioProcessor {
     this.node.port.removeEventListener("message", this.handleMessage);
     for (const pending of this.pending.values()) pending.reject(reason);
     this.pending.clear();
+    this.delegateListeners.clear();
   }
 }
 

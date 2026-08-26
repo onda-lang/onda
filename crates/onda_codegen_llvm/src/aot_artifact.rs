@@ -15,6 +15,7 @@ pub use onda_processor_abi::IntegrationProfile as AotIntegrationProfile;
 #[cfg(feature = "llvm-orc")]
 use onda_processor_abi::{
     BufferMetadata as AotBufferMetadata, CompileInfo as AotCompileInfo,
+    DelegateMetadata as AotDelegateMetadata, DelegateParamMetadata as AotDelegateParamMetadata,
     EventMetadata as AotEventMetadata, EventParamMetadata as AotEventParamMetadata,
     Exports as AotExports, IntegerRangeEndpoint, IntegerRangeMetadata,
     IntegrationInfo as AotIntegrationInfo, IoMetadata as AotIoMetadata,
@@ -170,6 +171,7 @@ fn build_aot_metadata_from_descriptors(
             snapshot_byte_order: "little_endian".to_owned(),
             snapshot_restore_base: "post_init_physical_state_image".to_owned(),
             requires_full_blocks: false,
+            delegate_record_header_size_bytes: onda_processor_abi::DELEGATE_RECORD_HEADER_SIZE,
         },
         metadata: AotProgramMetadata {
             inputs: metadata.inputs.iter().map(map_io_metadata).collect(),
@@ -195,6 +197,12 @@ fn build_aot_metadata_from_descriptors(
                 .iter()
                 .enumerate()
                 .map(|(index, event)| map_event_metadata(index, event))
+                .collect(),
+            delegates: metadata
+                .delegates
+                .iter()
+                .enumerate()
+                .map(|(index, delegate)| map_delegate_metadata(index, delegate))
                 .collect(),
             states: metadata
                 .state_entries
@@ -286,6 +294,37 @@ fn map_event_metadata(index: usize, event: &crate::DeclaredEvent) -> AotEventMet
         payload_size_bytes: event.payload_bytes(),
         payload_min_size_bytes,
         has_dynamic_payload: event.payload_bytes().is_none(),
+        params,
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+fn map_delegate_metadata(index: usize, delegate: &crate::DeclaredDelegate) -> AotDelegateMetadata {
+    let mut has_preceding_slice = false;
+    let params = delegate
+        .params()
+        .iter()
+        .map(|param| {
+            let byte_offset = (!has_preceding_slice).then(|| param.byte_offset());
+            has_preceding_slice |= param.is_slice();
+            AotDelegateParamMetadata {
+                name: param.name().to_owned(),
+                type_repr: param.type_repr(),
+                scalar: primitive_type_name(param.elem_ty()).to_owned(),
+                array_len: param.array_len(),
+                is_slice: param.is_slice(),
+                byte_offset,
+                byte_size: param.byte_size(),
+                element_size_bytes: crate::primitives::primitive_type_bytes(param.elem_ty()),
+            }
+        })
+        .collect();
+    AotDelegateMetadata {
+        index,
+        name: delegate.name().to_owned(),
+        payload_size_bytes: delegate.payload_bytes(),
+        payload_min_size_bytes: delegate.payload_min_bytes(),
+        has_dynamic_payload: delegate.payload_bytes().is_none(),
         params,
     }
 }

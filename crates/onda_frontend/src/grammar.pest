@@ -3,7 +3,7 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | config_const_block | const_block | events_block | event_block | tasks_block | task_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
+block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | config_const_block | const_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ namespace_any_ref ~ NEWLINE* }
@@ -70,12 +70,21 @@ event_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ event_param_list? ~ NEWLINE* 
 event_param_list = { event_param_decl ~ (comma_sep ~ event_param_decl)* ~ comma_sep? }
 event_param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ event_param_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? }
 event_param_type = { array_type | fn_typed_array_param | type_name | named_type }
+delegates_block = { "delegates" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ delegate_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+delegate_block = { "delegate" ~ delegate_decl ~ NEWLINE* }
+delegate_list = { delegate_decl ~ (stmt_sep+ ~ delegate_decl)* ~ stmt_sep* }
+delegate_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ event_param_list? ~ NEWLINE* ~ ")" }
+when_block = { "when" ~ NEWLINE* ~ when_target ~ NEWLINE* ~ "(" ~ NEWLINE* ~ when_binding_list? ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
+when_target = { when_indexed_target | path_ident }
+when_indexed_target = { ident ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident }
+when_binding_list = { when_binding ~ (comma_sep ~ when_binding)* ~ comma_sep? }
+when_binding = { ident }
 tasks_block = { tasks_kw ~ NEWLINE* ~ "{" ~ NEWLINE* ~ task_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 task_block = { task_kw ~ task_decl ~ NEWLINE* }
 task_list = { task_decl ~ (stmt_sep+ ~ task_decl)* ~ stmt_sep* }
 task_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
-proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | tasks_block | task_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
+proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 def_block = { (const_kw ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
@@ -264,6 +273,7 @@ keyword = _{
     | "for" | "in" | "while" | "loop"
     | "break" | "continue" | "return" | "assert"
     | "tasks" | "task" | "await" | "yield"
+    | "delegates" | "delegate" | "when"
     | "use" | "as" | "pub" | "private" | "pin" | "config"
     | "true" | "false"
   ) ~ !ident_char

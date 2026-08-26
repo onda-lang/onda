@@ -1181,7 +1181,7 @@ sample:
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     for sample in decode_planar_i64(&out_i64_bytes) {
         assert_eq!(sample, 22);
@@ -1381,7 +1381,7 @@ sample {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -1446,7 +1446,7 @@ sample {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -1729,7 +1729,7 @@ sample {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -1788,7 +1788,7 @@ sample {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -1907,7 +1907,7 @@ sample {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -1981,7 +1981,7 @@ sample {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2365,7 +2365,7 @@ sample {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2433,7 +2433,7 @@ sample {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 

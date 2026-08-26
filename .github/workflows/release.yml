@@ -225,10 +225,12 @@ jobs:
           Copy-Item README.md $packageRoot
           Copy-Item CHANGELOG.md $packageRoot
           Copy-Item docs\syntax.md $docsDir
+          Copy-Item docs\delegates.md $docsDir
           Copy-Item docs\stdlib.md $docsDir
           Copy-Item examples $packageRoot -Recurse
 
           if (-not (Test-Path (Join-Path $docsDir "syntax.md")) -or
+              -not (Test-Path (Join-Path $docsDir "delegates.md")) -or
               -not (Test-Path (Join-Path $docsDir "stdlib.md"))) {
             throw "release documentation was not packaged under docs"
           }
@@ -332,10 +334,12 @@ jobs:
           cp README.md "$package_root/"
           cp CHANGELOG.md "$package_root/"
           cp docs/syntax.md "$docs_dir/"
+          cp docs/delegates.md "$docs_dir/"
           cp docs/stdlib.md "$docs_dir/"
           cp -R examples "$package_root/"
 
           test -f "$docs_dir/syntax.md"
+          test -f "$docs_dir/delegates.md"
           test -f "$docs_dir/stdlib.md"
 
           cmake \

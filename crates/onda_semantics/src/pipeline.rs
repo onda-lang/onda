@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use onda_frontend::Span;
 
 use crate::processor_lowering::{
-    coerce_typed_events, collect_runtime_state_roots, desugar_processors,
+    coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots, desugar_processors,
     guard_pinned_initializers, internal_proc_index_call_signature, lower_graph_blocks,
     nested_call_out_fn_name, nested_step_fn_name, prepare_processors_for_graph_inspection,
     proc_runtime_analysis_options, validated_sample_oversample_factor, ProcLoweringShape,
@@ -558,6 +558,22 @@ fn fold_host_sr_event(event: &mut EventDef, consts: &HashMap<String, TypedConstV
     fold_host_sr_stmts(&mut event.body, consts);
 }
 
+fn fold_host_sr_delegate(delegate: &mut DelegateDef, consts: &HashMap<String, TypedConstValue>) {
+    for param in &mut delegate.params {
+        fold_local_scalar_const_event_param_type(&mut param.ty, consts);
+        if let Some(default) = &mut param.default {
+            fold_local_scalar_const_expr(default, consts);
+        }
+    }
+}
+
+fn fold_host_sr_when(when: &mut WhenDef, consts: &HashMap<String, TypedConstValue>) {
+    if let Some(index) = &mut when.target.index {
+        fold_local_scalar_const_expr(index, consts);
+    }
+    fold_host_sr_stmts(&mut when.body, consts);
+}
+
 fn fold_host_sr_function(def: &mut FunctionDef, consts: &HashMap<String, TypedConstValue>) {
     for param in &mut def.params {
         fold_local_scalar_const_fn_param_type(&mut param.ty, consts);
@@ -760,6 +776,12 @@ fn fold_host_sr_proc(proc: &mut ProcessorDef, consts: &HashMap<String, TypedCons
     for event in &mut proc.events {
         fold_host_sr_event(event, consts);
     }
+    for delegate in &mut proc.delegates {
+        fold_host_sr_delegate(delegate, consts);
+    }
+    for when in &mut proc.whens {
+        fold_host_sr_when(when, consts);
+    }
     for task in &mut proc.tasks {
         fold_host_sr_stmts(&mut task.body, consts);
     }
@@ -803,6 +825,12 @@ fn fold_host_sr_block(block: &mut Block, consts: &HashMap<String, TypedConstValu
                 fold_host_sr_event(event, consts);
             }
         }
+        Block::Delegates(delegates) => {
+            for delegate in &mut delegates.delegates {
+                fold_host_sr_delegate(delegate, consts);
+            }
+        }
+        Block::When(when) => fold_host_sr_when(when, consts),
         Block::Tasks(tasks) => {
             for task in &mut tasks.tasks {
                 fold_host_sr_stmts(&mut task.body, consts);
@@ -3635,6 +3663,40 @@ fn fold_event_const_arrays(
     }
 }
 
+fn fold_delegate_const_arrays(
+    delegate: &mut DelegateDef,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &mut delegate.params {
+        fold_event_param_type_const_arrays(&mut param.ty, const_values, options, errors);
+        let target = event_array_default_target(&param.ty, options);
+        fold_fixed_array_default_const_arrays(
+            &mut param.default,
+            target,
+            &format!("delegate '{}.{}'", delegate.name, param.name),
+            const_values,
+            options,
+            errors,
+        );
+    }
+}
+
+fn fold_when_const_arrays(
+    when: &mut WhenDef,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(index) = &mut when.target.index {
+        fold_const_array_expr(index, const_values, options, errors, false);
+    }
+    for stmt in &mut when.body {
+        fold_stmt_const_arrays(stmt, const_values, options, errors);
+    }
+}
+
 fn fold_graph_const_arrays(
     graph: &mut GraphBlock,
     const_values: &HashMap<String, ConstValue>,
@@ -4035,6 +4097,39 @@ fn reject_forward_const_refs_event(
     }
 }
 
+fn reject_forward_const_refs_delegate(
+    delegate: &DelegateDef,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &delegate.params {
+        reject_forward_const_refs_event_param_type(
+            &param.ty,
+            visible_consts,
+            future_consts,
+            errors,
+        );
+        if let Some(default) = &param.default {
+            reject_forward_const_refs_expr(default, visible_consts, future_consts, errors);
+        }
+    }
+}
+
+fn reject_forward_const_refs_when(
+    when: &WhenDef,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(index) = &when.target.index {
+        reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
+    }
+    for stmt in &when.body {
+        reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+    }
+}
+
 fn reject_forward_const_refs_graph(
     graph: &GraphBlock,
     visible_consts: &HashMap<String, ConstValue>,
@@ -4081,6 +4176,14 @@ fn reject_forward_const_refs_in_block(
             for event in &events.events {
                 reject_forward_const_refs_event(event, visible_consts, future_consts, errors);
             }
+        }
+        Block::Delegates(delegates) => {
+            for delegate in &delegates.delegates {
+                reject_forward_const_refs_delegate(delegate, visible_consts, future_consts, errors);
+            }
+        }
+        Block::When(when) => {
+            reject_forward_const_refs_when(when, visible_consts, future_consts, errors)
         }
         Block::Tasks(tasks) => {
             for task in &tasks.tasks {
@@ -4219,6 +4322,12 @@ fn reject_forward_const_refs_in_block(
             for event in &proc.events {
                 reject_forward_const_refs_event(event, visible_consts, future_consts, errors);
             }
+            for delegate in &proc.delegates {
+                reject_forward_const_refs_delegate(delegate, visible_consts, future_consts, errors);
+            }
+            for when in &proc.whens {
+                reject_forward_const_refs_when(when, visible_consts, future_consts, errors);
+            }
             for stmt in &proc.init.body {
                 reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
             }
@@ -4293,6 +4402,14 @@ fn fold_const_array_exprs_in_block(
             for event in &mut events.events {
                 fold_event_const_arrays(event, const_values, options, errors);
             }
+        }
+        Block::Delegates(delegates) => {
+            for delegate in &mut delegates.delegates {
+                fold_delegate_const_arrays(delegate, const_values, options, errors);
+            }
+        }
+        Block::When(when) => {
+            fold_when_const_arrays(when, const_values, options, errors);
         }
         Block::Tasks(tasks) => {
             for task in &mut tasks.tasks {
@@ -4406,6 +4523,12 @@ fn fold_const_array_exprs_in_block(
             }
             for event in &mut proc.events {
                 fold_event_const_arrays(event, const_values, options, errors);
+            }
+            for delegate in &mut proc.delegates {
+                fold_delegate_const_arrays(delegate, const_values, options, errors);
+            }
+            for when in &mut proc.whens {
+                fold_when_const_arrays(when, const_values, options, errors);
             }
             for stmt in &mut proc.init.body {
                 fold_stmt_const_arrays(stmt, const_values, options, errors);
@@ -4597,6 +4720,31 @@ fn reject_const_shadowing_in_program(
                     reject_const_shadowing_event(event, &scope_ns, const_values, errors);
                 }
             }
+            Block::Delegates(delegates) => {
+                for delegate in &delegates.delegates {
+                    let scope_ns = symbol_namespace(&delegate.name);
+                    for param in &delegate.params {
+                        if let Some(const_name) = visible_const_symbol_for_local_name(
+                            &param.name,
+                            &scope_ns,
+                            const_values,
+                        ) {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "delegate parameter '{}' in '{}' conflicts with constant '{}'",
+                                    param.name, delegate.name, const_name
+                                ),
+                                param.loc.as_ref(),
+                            ));
+                        }
+                    }
+                }
+            }
+            Block::When(when) => {
+                for stmt in &when.body {
+                    reject_const_shadowing_stmt(stmt, "", const_values, errors);
+                }
+            }
             Block::Tasks(tasks) => {
                 for task in &tasks.tasks {
                     for stmt in &task.body {
@@ -4685,6 +4833,22 @@ fn reject_const_shadowing_in_program(
                 }
                 for event in &proc.events {
                     reject_const_shadowing_event(event, &scope_ns, const_values, errors);
+                }
+                for delegate in &proc.delegates {
+                    reject_const_shadowing_proc_decl(
+                        &proc.name,
+                        "delegate",
+                        &delegate.name,
+                        delegate.loc,
+                        &scope_ns,
+                        const_values,
+                        errors,
+                    );
+                }
+                for when in &proc.whens {
+                    for stmt in &when.body {
+                        reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
+                    }
                 }
                 for stmt in &proc.init.body {
                     reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
@@ -4789,6 +4953,12 @@ fn reject_const_assignments_in_program(
                     reject_const_assignments_event(event, const_values, errors);
                 }
             }
+            Block::Delegates(_) => {}
+            Block::When(when) => {
+                for stmt in &when.body {
+                    reject_const_assignments_stmt(stmt, const_values, errors);
+                }
+            }
             Block::Tasks(tasks) => {
                 for task in &tasks.tasks {
                     for stmt in &task.body {
@@ -4828,6 +4998,11 @@ fn reject_const_assignments_in_program(
             Block::Proc(proc) => {
                 for event in &proc.events {
                     reject_const_assignments_event(event, const_values, errors);
+                }
+                for when in &proc.whens {
+                    for stmt in &when.body {
+                        reject_const_assignments_stmt(stmt, const_values, errors);
+                    }
                 }
                 for stmt in &proc.init.body {
                     reject_const_assignments_stmt(stmt, const_values, errors);
@@ -5293,6 +5468,46 @@ fn fold_direct_const_def_event(
     }
 }
 
+fn fold_direct_const_def_delegate(
+    delegate: &mut DelegateDef,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &mut delegate.params {
+        fold_direct_const_def_event_param_type(
+            &mut param.ty,
+            artifacts,
+            options,
+            &format!("delegate '{}.{}'", delegate.name, param.name),
+            errors,
+        );
+        if let Some(default) = &mut param.default {
+            fold_direct_const_def_call_expr(
+                default,
+                artifacts,
+                options,
+                &format!("delegate '{}.{}'", delegate.name, param.name),
+                errors,
+            );
+        }
+    }
+}
+
+fn fold_direct_const_def_when(
+    when: &mut WhenDef,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(index) = &mut when.target.index {
+        fold_direct_const_def_call_expr(index, artifacts, options, "when target index", errors);
+    }
+    for stmt in &mut when.body {
+        fold_direct_const_def_stmt(stmt, artifacts, options, errors);
+    }
+}
+
 fn fold_direct_const_def_graph(
     graph: &mut GraphBlock,
     artifacts: &SemanticConstArtifacts,
@@ -5378,6 +5593,14 @@ fn fold_direct_const_def_calls_in_block(
             for event in &mut events.events {
                 fold_direct_const_def_event(event, artifacts, options, errors);
             }
+        }
+        Block::Delegates(delegates) => {
+            for delegate in &mut delegates.delegates {
+                fold_direct_const_def_delegate(delegate, artifacts, options, errors);
+            }
+        }
+        Block::When(when) => {
+            fold_direct_const_def_when(when, artifacts, options, errors);
         }
         Block::Tasks(tasks) => {
             for task in &mut tasks.tasks {
@@ -5602,6 +5825,12 @@ fn fold_direct_const_def_calls_in_block(
             }
             for event in &mut proc.events {
                 fold_direct_const_def_event(event, artifacts, options, errors);
+            }
+            for delegate in &mut proc.delegates {
+                fold_direct_const_def_delegate(delegate, artifacts, options, errors);
+            }
+            for when in &mut proc.whens {
+                fold_direct_const_def_when(when, artifacts, options, errors);
             }
             for stmt in &mut proc.init.body {
                 fold_direct_const_def_stmt(stmt, artifacts, options, errors);
@@ -6142,6 +6371,48 @@ fn preprocess_local_const_event(
     );
 }
 
+fn preprocess_local_const_delegate(
+    delegate: &mut DelegateDef,
+    inherited_consts: &HashMap<String, TypedConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &mut delegate.params {
+        if inherited_consts.contains_key(&param.name) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "delegate parameter '{}' in '{}' conflicts with local constant '{}'",
+                    param.name, delegate.name, param.name
+                ),
+                param.loc.as_ref(),
+            ));
+        }
+        fold_local_scalar_const_event_param_type(&mut param.ty, inherited_consts);
+        if let Some(default) = &mut param.default {
+            fold_local_scalar_const_expr(default, inherited_consts);
+        }
+    }
+}
+
+fn preprocess_local_const_when(
+    when: &mut WhenDef,
+    inherited_consts: &HashMap<String, TypedConstValue>,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(index) = &mut when.target.index {
+        fold_local_scalar_const_expr(index, inherited_consts);
+    }
+    preprocess_local_const_stmts(
+        &mut when.body,
+        inherited_consts,
+        artifacts,
+        options,
+        "when handler",
+        errors,
+    );
+}
+
 fn preprocess_local_const_graph(
     graph: &mut GraphBlock,
     inherited_consts: &HashMap<String, TypedConstValue>,
@@ -6325,6 +6596,14 @@ fn preprocess_local_consts_in_block(
                 preprocess_local_const_event(event, &empty_consts, artifacts, options, errors);
             }
         }
+        Block::Delegates(delegates) => {
+            for delegate in &mut delegates.delegates {
+                preprocess_local_const_delegate(delegate, &empty_consts, errors);
+            }
+        }
+        Block::When(when) => {
+            preprocess_local_const_when(when, &empty_consts, artifacts, options, errors)
+        }
         Block::Tasks(tasks) => {
             for task in &mut tasks.tasks {
                 preprocess_local_const_stmts(
@@ -6503,6 +6782,18 @@ fn preprocess_local_consts_in_block(
             for event in &mut proc.events {
                 preprocess_local_const_event(
                     event,
+                    &proc_consts.values,
+                    artifacts,
+                    proc_options,
+                    errors,
+                );
+            }
+            for delegate in &mut proc.delegates {
+                preprocess_local_const_delegate(delegate, &proc_consts.values, errors);
+            }
+            for when in &mut proc.whens {
+                preprocess_local_const_when(
+                    when,
                     &proc_consts.values,
                     artifacts,
                     proc_options,
@@ -8149,6 +8440,7 @@ pub fn analyze_with_options_and_inputs(
         top_level_proc_rewrite,
         pinned_proc_fields,
         compiler_owned_proc_fields,
+        top_level_delegates,
     } = desugar_processors(program, options, &const_array_infos, &mut errors);
     let mut pinned_state_roots = program
         .block(BlockKind::Init)
@@ -8226,6 +8518,7 @@ pub fn analyze_with_options_and_inputs(
         Some(Block::Events(v)) => v.events.clone(),
         _ => Vec::new(),
     };
+    let typed_delegates = coerce_typed_delegates(&top_level_delegates, options, &mut errors);
     let buffers = match program.block(BlockKind::Buffers) {
         Some(Block::Buffers(v)) => v.decls.clone(),
         _ => Vec::new(),
@@ -10241,9 +10534,58 @@ pub fn analyze_with_options_and_inputs(
         runtime_plans.extend(
             defs.iter()
                 .filter(|def| runtime_def_names.contains(&def.name))
-                .map(|def| RuntimeScopePlan {
-                    stmts: &def.body,
-                    ..helper_plan.clone()
+                .map(|def| {
+                    let mut plan = RuntimeScopePlan {
+                        stmts: &def.body,
+                        ..helper_plan.clone()
+                    };
+                    for param in &def.params {
+                        match param.ty.as_ref() {
+                            Some(FnParamType::Primitive(ty)) => {
+                                plan.runtime_known_scalars.insert(param.name.clone());
+                                plan.runtime_local_aliases.insert(param.name.clone(), *ty);
+                            }
+                            Some(FnParamType::Array(Some(elem))) => {
+                                plan.runtime_local_array_aliases.insert(
+                                    param.name.clone(),
+                                    LocalArrayAliasInfo {
+                                        len: 1,
+                                        static_len: None,
+                                        elem_ty: *elem,
+                                        elem_struct: None,
+                                        writable: false,
+                                    },
+                                );
+                            }
+                            Some(FnParamType::SizedArray {
+                                elem: Some(elem),
+                                size,
+                                ..
+                            }) => {
+                                let len =
+                                    crate::def_semantics::const_positive_usize_for_call_type(size)
+                                        .unwrap_or(1);
+                                plan.runtime_local_array_aliases.insert(
+                                    param.name.clone(),
+                                    LocalArrayAliasInfo {
+                                        len,
+                                        static_len: Some(len),
+                                        elem_ty: *elem,
+                                        elem_struct: None,
+                                        writable: false,
+                                    },
+                                );
+                            }
+                            _ => {
+                                // Runtime-context defs are compiler generated. Any
+                                // non-scalar payload shape is validated by its
+                                // originating event/delegate declaration and by the
+                                // ordinary function-call contract below.
+                                plan.runtime_known_scalars.insert(param.name.clone());
+                            }
+                        }
+                    }
+                    plan
                 }),
         );
         analyze_owner_runtime_scopes(&mut runtime_state, runtime_plans, &mut errors);
@@ -11177,6 +11519,7 @@ pub fn analyze_with_options_and_inputs(
             aggregate_layouts,
             defs: typed_defs,
             events: typed_events,
+            delegates: typed_delegates,
             def_sample_oversample_factors,
             proc_step_oversample_meta,
             proc_instance_oversample_factors,

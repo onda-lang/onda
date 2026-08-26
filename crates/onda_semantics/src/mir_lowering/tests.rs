@@ -44,6 +44,31 @@ fn empty_function(name: &str, kind: FunctionKind) -> Function {
 }
 
 #[test]
+fn top_level_delegate_lowers_to_descriptor_and_publication() {
+    let source = r#"
+delegate finished(reason: i32)
+init:
+  result: i32 = 0
+event trigger():
+  finished(7)
+when finished(reason):
+  result = reason
+sample:
+  out1 = f32(result)
+"#;
+    let parsed = parse_program(source).expect("delegate source should parse");
+    let typed = analyze(parsed).expect("delegate source should analyze");
+    let mir = lower_test_program(&typed).expect("delegate source should lower");
+    assert_eq!(mir.interface.delegates.len(), 1);
+    assert_eq!(mir.interface.delegates[0].name, "finished");
+    let dump = format_program(&mir);
+    assert!(
+        dump.contains("publish_delegate @delegate0"),
+        "delegate publication must survive MIR optimization:\n{dump}"
+    );
+}
+
+#[test]
 fn ranged_top_level_params_are_clamped_once_per_export_entry() {
     let source = r#"
 params:

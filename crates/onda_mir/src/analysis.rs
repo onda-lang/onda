@@ -33,6 +33,7 @@ impl MemoryRegionSet {
     pub const EVENT_PAYLOAD: Self = Self(1 << 7);
     pub const ARGUMENTS: Self = Self(1 << 8);
     pub const INDIRECT: Self = Self(1 << 9);
+    pub const DELEGATE_BATCH: Self = Self(1 << 10);
 
     pub const CALLER_VISIBLE: Self = Self(
         Self::STATE.0
@@ -44,7 +45,8 @@ impl MemoryRegionSet {
             | Self::CONST_DATA.0
             | Self::EVENT_PAYLOAD.0
             | Self::ARGUMENTS.0
-            | Self::INDIRECT.0,
+            | Self::INDIRECT.0
+            | Self::DELEGATE_BATCH.0,
     );
 
     pub const fn is_empty(self) -> bool {
@@ -1361,6 +1363,12 @@ fn scan_block(
                     args: args.clone(),
                 });
             }
+            StatementKind::PublishDelegate { args, .. } => {
+                effects.writes.insert(MemoryRegionSet::DELEGATE_BATCH);
+                for argument in args {
+                    scan_call_argument(argument, effects);
+                }
+            }
             StatementKind::OutputStore {
                 element,
                 bounds,
@@ -1883,6 +1891,7 @@ mod tests {
             attributes: FunctionAttributes {
                 origin: crate::FunctionOrigin::CompilerGenerated,
                 inline: InlineHint::Auto,
+                runtime_context: false,
             },
             params,
             results: Vec::new(),

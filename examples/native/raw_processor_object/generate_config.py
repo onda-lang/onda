@@ -13,7 +13,7 @@ from typing import Optional
 PROCESSOR_ARTIFACT_FORMAT = "onda-processor"
 # Synchronized from format-versions.json; do not edit these copies directly.
 PROCESSOR_ARTIFACT_FORMAT_VERSION = 4
-PROCESSOR_ABI_VERSION = 6
+PROCESSOR_ABI_VERSION = 7
 MAX_EXACT_HOST_INTEGER = (1 << 53) - 1
 
 SCALAR_FORMATS = {

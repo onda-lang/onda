@@ -1,0 +1,122 @@
+import std/delay
+import std/env
+import std/levels
+import std/osc
+import std/pitch
+
+const VoiceCount = 5
+const ScaleLength = 12
+const Scale: f32[ScaleLength] = [0.0, 2.0, 3.0, 7.0, 9.0, 12.0, 14.0, 15.0, 19.0, 21.0, 24.0, 26.0]
+const Starts: i32[VoiceCount] = [0, 2, 4, 7, 9]
+const Leaps: i32[VoiceCount] = [5, 7, 4, 9, 2]
+
+proc GlassBloom:
+  delegate faded(note: f32)
+
+  params:
+    decay_s = 0.7
+    brightness = 0.68
+
+  init:
+    current_note = 60.0
+    freq = 261.626
+    active = false
+    carrier = std::osc::Sine()
+    modulator = std::osc::Sine()
+    high_partial = std::osc::Sine()
+    air_partial = std::osc::Sine()
+    amplitude = std::env::DecayEnv(decay_s = decay_s)
+
+  event strike(note: f32, velocity: f32):
+    current_note = note
+    freq = std::pitch::note_to_hz(note)
+    carrier.reset()
+    modulator.reset()
+    high_partial.reset()
+    air_partial.reset()
+    amplitude.start(velocity)
+    active = true
+
+  sample:
+    envelope = amplitude(decay_s = decay_s)
+    tone = 0.0
+
+    if active:
+      modulation = modulator(freq = freq * 1.414) * envelope * (2.0 + brightness * 7.0)
+      fundamental = carrier(freq = freq, phase_offset = modulation)
+      high = high_partial(freq = freq * 2.756, phase_offset = modulation * 0.24)
+      air = air_partial(freq = freq * 5.404, phase_offset = modulation * 0.08)
+      tone = (fundamental * 0.68 + high * 0.24 + air * 0.08 * brightness) * envelope
+
+      if envelope < 0.008:
+        active = false
+        faded(current_note)
+
+    out1 = tone
+
+params:
+  auto_play = true
+  root_note = 50 {36, 72}
+  pace = 0.72 {0.25, 2.0, unit = "s"}
+  brightness = 0.68 {0.0, 1.0}
+  space = 0.44 {0.0, 0.8}
+  level = 0.48 {0.0, 1.0}
+
+delegate bloom_faded(voice: i32, note: f32)
+
+init:
+  blooms: GlassBloom[VoiceCount] = GlassBloom()
+  delay_l = std::delay::Delay(delay_s = 0.31, feedback = 0.42, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = 0.47, feedback = 0.38, mix = 1.0)
+  steps: i32[VoiceCount]
+  pans: f32[VoiceCount]
+  previous_auto_play = false
+  pending_bang = false
+  next_voice = 0
+
+event strike(note: f32 = 62.0, velocity: f32 = 0.72):
+  blooms[next_voice].decay_s = pace
+  blooms[next_voice].brightness = brightness
+  blooms[next_voice].strike(note, velocity)
+  next_voice = (next_voice + 1) % VoiceCount
+
+event bang():
+  pending_bang = true
+
+when blooms.faded(voice, note):
+  bloom_faded(voice, note)
+
+  if auto_play:
+    steps[voice] = (steps[voice] + Leaps[voice]) % ScaleLength
+    next_note = root_note + Scale[steps[voice]]
+    velocity = 0.48 + 0.07 * f32((steps[voice] + voice) % 5)
+    blooms[voice].decay_s = pace * (0.78 + 0.11 * f32(voice))
+    blooms[voice].brightness = brightness
+    blooms[voice].strike(next_note, velocity)
+
+sample:
+  if auto_play && !previous_auto_play:
+    pending_bang = true
+  previous_auto_play = auto_play
+
+  if pending_bang:
+    for i in 0..VoiceCount:
+      steps[i] = Starts[i]
+      blooms[i].decay_s = pace * (0.78 + 0.11 * f32(i))
+      blooms[i].brightness = brightness
+      blooms[i].strike(root_note + Scale[steps[i]], 0.54 + 0.06 * f32(i))
+      pans[i] = -0.84 + 1.68 * f32(i) / f32(VoiceCount - 1)
+    pending_bang = false
+
+  dry_l = 0.0
+  dry_r = 0.0
+  for i in 0..VoiceCount:
+    bloom = blooms[i]()
+    (gain_l, gain_r) = std::levels::pan_3db(pans[i])
+    dry_l = dry_l + bloom * gain_l
+    dry_r = dry_r + bloom * gain_r
+
+  wet_l = delay_l(dry_l + dry_r * 0.18)
+  wet_r = delay_r(dry_r + dry_l * 0.18)
+  out1 = tanh((dry_l + wet_l * space) * level)
+  out2 = tanh((dry_r + wet_r * space) * level)

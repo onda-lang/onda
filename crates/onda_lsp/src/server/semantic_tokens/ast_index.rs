@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use onda_frontend::{
-    AssignTarget, Block, BlockExec, EventDef, FunctionDef, NamespaceDecl, NamespaceItem,
-    ProcessorDef, Program, Span, Stmt, TaskDef,
+    AssignTarget, Block, BlockExec, DelegateDef, EventDef, FunctionDef, NamespaceDecl,
+    NamespaceItem, ProcessorDef, Program, Span, Stmt, TaskDef, WhenDef,
 };
 use onda_semantics::builtins::builtin_constant_names;
 
@@ -169,6 +169,8 @@ struct TopLevelRuntimeSections<'a> {
     parameters: Vec<String>,
     stmt_regions: Vec<RuntimeStmtRegion<'a>>,
     events: Vec<&'a EventDef>,
+    delegates: Vec<&'a DelegateDef>,
+    whens: Vec<&'a WhenDef>,
     tasks: Vec<&'a TaskDef>,
 }
 
@@ -190,10 +192,19 @@ fn build_top_level_runtime_scope(
         for task in &sections.tasks {
             owner.functions.insert(task.name.clone());
         }
+        for event in &sections.events {
+            owner.events.insert(event.name.clone());
+        }
+        for delegate in &sections.delegates {
+            owner.delegates.insert(delegate.name.clone());
+        }
     }
     build_runtime_stmt_regions(index, owner_idx, &sections.stmt_regions);
     for event in sections.events {
         build_event_scope(index, owner_idx, event);
+    }
+    for when in sections.whens {
+        build_when_scope(index, owner_idx, when);
     }
     for task in sections.tasks {
         build_task_scope(index, owner_idx, task);
@@ -249,6 +260,14 @@ fn collect_top_level_runtime_sections<'a>(blocks: &[&'a Block]) -> TopLevelRunti
             Block::Events(events) => {
                 extend_runtime_owner_span(&mut sections.span, events.loc);
                 sections.events.extend(events.events.iter());
+            }
+            Block::Delegates(delegates) => {
+                extend_runtime_owner_span(&mut sections.span, delegates.loc);
+                sections.delegates.extend(delegates.delegates.iter());
+            }
+            Block::When(when) => {
+                extend_runtime_owner_span(&mut sections.span, when.loc);
+                sections.whens.push(when);
             }
             Block::Tasks(tasks) => {
                 extend_runtime_owner_span(&mut sections.span, tasks.loc);
@@ -334,6 +353,12 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
         for def in &proc_def.local_defs {
             owner.functions.insert(def.name.clone());
         }
+        for event in &proc_def.events {
+            owner.events.insert(event.name.clone());
+        }
+        for delegate in &proc_def.delegates {
+            owner.delegates.insert(delegate.name.clone());
+        }
         for task in &proc_def.tasks {
             owner.functions.insert(task.name.clone());
         }
@@ -343,6 +368,9 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
 
     for event in &proc_def.events {
         build_event_scope(index, owner_idx, event);
+    }
+    for when in &proc_def.whens {
+        build_when_scope(index, owner_idx, when);
     }
     for def in &proc_def.local_defs {
         build_function_scope(index, Some(owner_idx), def);
@@ -413,13 +441,29 @@ fn build_event_scope(index: &mut SemanticScopeIndex, parent: usize, event: &Even
     let allows_implicit_ports = index.scopes[scope_idx].allows_implicit_ports;
     {
         let scope = &mut index.scopes[scope_idx].scope;
-        scope.functions.insert(event.name.clone());
+        scope.events.insert(event.name.clone());
         for param in &event.params {
             scope.parameters.insert(param.name.clone());
         }
         collect_stmt_symbols(&event.body, scope);
         prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
     }
+}
+
+fn build_when_scope(index: &mut SemanticScopeIndex, parent: usize, when: &WhenDef) {
+    let Some(scope_idx) = index.push_scope(Some(parent), span_for_when_scope(when)) else {
+        return;
+    };
+    let reserved = index.scopes[parent].scope.clone();
+    let allows_implicit_ports = index.scopes[scope_idx].allows_implicit_ports;
+    let scope = &mut index.scopes[scope_idx].scope;
+    for binding in &when.bindings {
+        if binding.name != "_" {
+            scope.parameters.insert(binding.name.clone());
+        }
+    }
+    collect_stmt_symbols(&when.body, scope);
+    prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
 }
 
 fn build_task_scope(index: &mut SemanticScopeIndex, parent: usize, task: &TaskDef) {
@@ -509,6 +553,12 @@ fn span_for_event_scope(event: &EventDef) -> Span {
         .unwrap_or(event.loc)
 }
 
+fn span_for_when_scope(when: &WhenDef) -> Span {
+    span_for_stmt_body(&when.body)
+        .map(|body_span| Span::spanning(when.loc, body_span))
+        .unwrap_or(when.loc)
+}
+
 fn span_for_task_scope(task: &TaskDef) -> Span {
     span_for_stmt_body(&task.body)
         .map(|body_span| Span::spanning(task.loc, body_span))
@@ -549,6 +599,12 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     }
     for event in &proc_def.events {
         span = Span::spanning(span, span_for_event_scope(event));
+    }
+    for delegate in &proc_def.delegates {
+        span = Span::spanning(span, delegate.loc);
+    }
+    for when in &proc_def.whens {
+        span = Span::spanning(span, span_for_when_scope(when));
     }
     for def in &proc_def.local_defs {
         span = Span::spanning(span, span_for_function_scope(def));
@@ -607,12 +663,28 @@ fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
         }
         Block::Events(events) => {
             for event in &events.events {
-                scope.functions.insert(event.name.clone());
+                scope.events.insert(event.name.clone());
                 for param in &event.params {
                     scope.parameters.insert(param.name.clone());
                 }
                 collect_stmt_symbols(&event.body, scope);
             }
+        }
+        Block::Delegates(delegates) => {
+            for delegate in &delegates.delegates {
+                scope.delegates.insert(delegate.name.clone());
+                for param in &delegate.params {
+                    scope.parameters.insert(param.name.clone());
+                }
+            }
+        }
+        Block::When(when) => {
+            for binding in &when.bindings {
+                if binding.name != "_" {
+                    scope.parameters.insert(binding.name.clone());
+                }
+            }
+            collect_stmt_symbols(&when.body, scope);
         }
         Block::Tasks(tasks) => {
             for task in &tasks.tasks {
@@ -682,11 +754,25 @@ fn collect_proc_symbols(proc_def: &ProcessorDef, scope: &mut SemanticScope) {
     collect_stmt_symbols(&proc_def.sample, scope);
     collect_stmt_symbols(&proc_def.block_post, scope);
     for event in &proc_def.events {
-        scope.functions.insert(event.name.clone());
+        scope.events.insert(event.name.clone());
         for param in &event.params {
             scope.parameters.insert(param.name.clone());
         }
         collect_stmt_symbols(&event.body, scope);
+    }
+    for delegate in &proc_def.delegates {
+        scope.delegates.insert(delegate.name.clone());
+        for param in &delegate.params {
+            scope.parameters.insert(param.name.clone());
+        }
+    }
+    for when in &proc_def.whens {
+        for binding in &when.bindings {
+            if binding.name != "_" {
+                scope.parameters.insert(binding.name.clone());
+            }
+        }
+        collect_stmt_symbols(&when.body, scope);
     }
     for def in &proc_def.local_defs {
         scope.functions.insert(def.name.clone());

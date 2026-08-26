@@ -34,7 +34,7 @@ use onda_runtime::{
     set_param_normalized as runtime_set_param_normalized,
     set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
     trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
-    validate_outputs, InitMode, Instance, InstanceConfig,
+    validate_outputs, DelegateBatch as RuntimeDelegateBatch, InitMode, Instance, InstanceConfig,
 };
 use onda_semantics::{
     analyze_with_options_and_inputs, inspect_compile_constants, lower_program_to_optimized_mir,
@@ -56,6 +56,8 @@ pub const ONDA_PRIMITIVE_BOOL: i32 = 4;
 pub const ONDA_COMPILE_CONST_KIND_SCALAR: i32 = 0;
 pub const ONDA_COMPILE_CONST_KIND_FIXED_ARRAY: i32 = 1;
 pub const ONDA_COMPILE_CONST_KIND_ARRAY: i32 = 2;
+pub const ONDA_DELEGATE_RECORD_HEADER_SIZE: u32 = onda_runtime::DELEGATE_RECORD_HEADER_SIZE as u32;
+const DELEGATE_RECORD_HEADER_SIZE: usize = ONDA_DELEGATE_RECORD_HEADER_SIZE as usize;
 
 fn execution_status_to_c(status: Result<u32, Diagnostic>) -> i32 {
     match status {
@@ -74,6 +76,95 @@ pub struct onda_diag_t {
     pub message: *const c_char,
     pub file: *const c_char,
     pub trace: *const c_char,
+}
+
+#[repr(C)]
+pub struct onda_delegate_batch_t {
+    pub storage: *mut u8,
+    pub capacity_bytes: u32,
+    pub used_bytes: u32,
+    pub record_count: u32,
+    pub overflow_count: u32,
+}
+
+#[repr(C)]
+pub struct onda_delegate_occurrence_t {
+    pub delegate_index: u32,
+    pub payload_size_bytes: u32,
+    pub payload: *const u8,
+}
+
+fn with_runtime_delegate_batch<T>(
+    batch: *mut onda_delegate_batch_t,
+    f: impl FnOnce(Option<&mut RuntimeDelegateBatch<'_>>) -> T,
+) -> T {
+    let Some(batch) = (unsafe { batch.as_mut() }) else {
+        return f(None);
+    };
+    let mut runtime_batch =
+        unsafe { RuntimeDelegateBatch::from_raw_parts(batch.storage, batch.capacity_bytes) };
+    runtime_batch.used_bytes = batch.used_bytes;
+    runtime_batch.record_count = batch.record_count;
+    runtime_batch.overflow_count = batch.overflow_count;
+    let result = f(Some(&mut runtime_batch));
+    batch.used_bytes = runtime_batch.used_bytes;
+    batch.record_count = runtime_batch.record_count;
+    batch.overflow_count = runtime_batch.overflow_count;
+    result
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_batch_reset(batch: *mut onda_delegate_batch_t) {
+    let Some(batch) = batch.as_mut() else {
+        return;
+    };
+    batch.used_bytes = 0;
+    batch.record_count = 0;
+    batch.overflow_count = 0;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_batch_occurrence_at(
+    batch: *const onda_delegate_batch_t,
+    index: u32,
+    occurrence: *mut onda_delegate_occurrence_t,
+) -> i32 {
+    let (Some(batch), Some(occurrence)) = (batch.as_ref(), occurrence.as_mut()) else {
+        return 0;
+    };
+    if batch.storage.is_null()
+        || batch.used_bytes > batch.capacity_bytes
+        || index >= batch.record_count
+    {
+        return 0;
+    }
+
+    let used = batch.used_bytes as usize;
+    let mut cursor = 0usize;
+    for current in 0..=index {
+        let Some(header_end) = cursor.checked_add(DELEGATE_RECORD_HEADER_SIZE) else {
+            return 0;
+        };
+        if header_end > used {
+            return 0;
+        }
+        let delegate_index = ptr::read_unaligned(batch.storage.add(cursor).cast::<u32>());
+        let payload_size_bytes = ptr::read_unaligned(batch.storage.add(cursor + 4).cast::<u32>());
+        let Some(record_end) = header_end.checked_add(payload_size_bytes as usize) else {
+            return 0;
+        };
+        if record_end > used {
+            return 0;
+        }
+        if current == index {
+            occurrence.delegate_index = delegate_index;
+            occurrence.payload_size_bytes = payload_size_bytes;
+            occurrence.payload = batch.storage.add(header_end);
+            return 1;
+        }
+        cursor = record_end;
+    }
+    0
 }
 
 #[repr(C)]
@@ -231,6 +322,8 @@ struct CompiledProgram {
     buffer_array_names: Vec<CString>,
     event_names: Vec<CString>,
     event_param_names: Vec<Vec<CString>>,
+    delegate_names: Vec<CString>,
+    delegate_param_names: Vec<Vec<CString>>,
     state_names: Vec<CString>,
     state_types: Vec<CString>,
     project_defaults: Option<ProjectDefaults>,
@@ -1344,6 +1437,40 @@ unsafe fn compile_parsed_program(
             return ptr::null_mut();
         }
     };
+    let delegate_names = match build_cstring_cache(
+        (0..jit.delegate_count())
+            .filter_map(|idx| jit.delegate_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "delegate name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let delegate_param_names = match build_nested_cstring_cache(
+        (0..jit.delegate_count())
+            .map(|delegate_idx| {
+                jit.delegate_descriptor(delegate_idx)
+                    .map(|delegate| {
+                        delegate
+                            .params()
+                            .iter()
+                            .map(|param| param.name().to_owned())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect(),
+        "delegate parameter name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
     let state_names = match build_cstring_cache(
         (0..jit.state_count())
             .filter_map(|idx| jit.state_name(idx).map(ToOwned::to_owned))
@@ -1384,6 +1511,8 @@ unsafe fn compile_parsed_program(
         buffer_array_names,
         event_names,
         event_param_names,
+        delegate_names,
+        delegate_param_names,
         state_names,
         state_types,
         project_defaults,
@@ -3539,6 +3668,7 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
     index: i32,
     payload_ptr: *const c_void,
     payload_bytes: i32,
+    delegate_batch: *mut onda_delegate_batch_t,
 ) -> i32 {
     if instance.is_null() || index < 0 || payload_bytes < 0 {
         return -1;
@@ -3551,7 +3681,10 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
     } else {
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
-    match trigger_event_by_index(&mut (*instance).inner, index as usize, payload) {
+    let result = with_runtime_delegate_batch(delegate_batch, |batch| {
+        trigger_event_by_index(&mut (*instance).inner, index as usize, payload, batch)
+    });
+    match result {
         Ok(_) => 0,
         Err(_) => -2,
     }
@@ -3563,6 +3696,7 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
     index: i32,
     payload_ptr: *const c_void,
     payload_bytes: i32,
+    delegate_batch: *mut onda_delegate_batch_t,
 ) -> i32 {
     if instance.is_null() || index < 0 || payload_bytes < 0 {
         return -1;
@@ -3575,10 +3709,11 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
     } else {
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
-    execution_status_to_c(trigger_event_by_index_unchecked(
-        &mut (*instance).inner,
-        index as usize,
-        payload,
+    execution_status_to_c(with_runtime_delegate_batch(
+        delegate_batch,
+        |batch| unsafe {
+            trigger_event_by_index_unchecked(&mut (*instance).inner, index as usize, payload, batch)
+        },
     ))
 }
 
@@ -3678,14 +3813,18 @@ pub unsafe extern "C" fn onda_reset_buffer_to_project_default(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_process_checked(instance: *mut onda_instance, frames: i32) -> i32 {
+pub unsafe extern "C" fn onda_process_checked(
+    instance: *mut onda_instance,
+    frames: i32,
+    delegate_batch: *mut onda_delegate_batch_t,
+) -> i32 {
     if instance.is_null() || frames < 0 {
         return -1;
     }
-    match process_checked(&mut (*instance).inner, frames as usize) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    with_runtime_delegate_batch(delegate_batch, |batch| {
+        process_checked(&mut (*instance).inner, frames as usize, batch)
+    })
+    .map_or(-2, |()| 0)
 }
 
 #[no_mangle]
@@ -3694,19 +3833,21 @@ pub unsafe extern "C" fn onda_process_checked_segment(
     start_frame: i32,
     frames: i32,
     flags: i32,
+    delegate_batch: *mut onda_delegate_batch_t,
 ) -> i32 {
     if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
         return -1;
     }
-    match process_checked_segment(
-        &mut (*instance).inner,
-        start_frame as usize,
-        frames as usize,
-        flags as u32,
-    ) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    with_runtime_delegate_batch(delegate_batch, |batch| {
+        process_checked_segment(
+            &mut (*instance).inner,
+            start_frame as usize,
+            frames as usize,
+            flags as u32,
+            batch,
+        )
+    })
+    .map_or(-2, |()| 0)
 }
 
 #[no_mangle]
@@ -3825,11 +3966,17 @@ pub unsafe extern "C" fn onda_validate_buffers(instance: *mut onda_instance) -> 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_process_unchecked(instance: *mut onda_instance) -> i32 {
+pub unsafe extern "C" fn onda_process_unchecked(
+    instance: *mut onda_instance,
+    delegate_batch: *mut onda_delegate_batch_t,
+) -> i32 {
     if instance.is_null() {
         return -1;
     }
-    execution_status_to_c(process_unchecked(&mut (*instance).inner))
+    execution_status_to_c(with_runtime_delegate_batch(
+        delegate_batch,
+        |batch| unsafe { process_unchecked(&mut (*instance).inner, batch) },
+    ))
 }
 
 #[no_mangle]
@@ -3849,15 +3996,22 @@ pub unsafe extern "C" fn onda_process_unchecked_segment(
     start_frame: i32,
     frames: i32,
     flags: i32,
+    delegate_batch: *mut onda_delegate_batch_t,
 ) -> i32 {
     if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
         return -1;
     }
-    execution_status_to_c(process_unchecked_segment(
-        &mut (*instance).inner,
-        start_frame as usize,
-        frames as usize,
-        flags as u32,
+    execution_status_to_c(with_runtime_delegate_batch(
+        delegate_batch,
+        |batch| unsafe {
+            process_unchecked_segment(
+                &mut (*instance).inner,
+                start_frame as usize,
+                frames as usize,
+                flags as u32,
+                batch,
+            )
+        },
     ))
 }
 
@@ -3915,6 +4069,14 @@ pub unsafe extern "C" fn onda_event_count(program: *const onda_program) -> i32 {
         return -1;
     }
     saturating_usize_to_i32((&*program).inner.jit.event_count())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_count(program: *const onda_program) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((&*program).inner.jit.delegate_count())
 }
 
 #[no_mangle]
@@ -4055,6 +4217,21 @@ unsafe fn event_param_descriptor<'a>(
         .and_then(|event| event.params().get(param_index as usize))
 }
 
+unsafe fn delegate_param_descriptor<'a>(
+    program: *const onda_program,
+    delegate_index: i32,
+    param_index: i32,
+) -> Option<&'a DeclaredEventParam> {
+    if program.is_null() || delegate_index < 0 || param_index < 0 {
+        return None;
+    }
+    (&*program)
+        .inner
+        .jit
+        .delegate_descriptor(delegate_index as usize)
+        .and_then(|delegate| delegate.params().get(param_index as usize))
+}
+
 unsafe fn state_descriptor<'a>(
     program: *const onda_program,
     index: i32,
@@ -4169,6 +4346,17 @@ pub unsafe extern "C" fn onda_event_name(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_delegate_name(
+    program: *const onda_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    cstr_ptr_at(&(&*program).inner.delegate_names, index)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_state_name(
     program: *const onda_program,
     index: i32,
@@ -4207,6 +4395,37 @@ pub unsafe extern "C" fn onda_event_param_name(
     let event_param_names = &*ptr::addr_of!((&*program).inner.event_param_names);
     event_param_names
         .get(event_index as usize)
+        .map_or(ptr::null(), |names| cstr_ptr_at(names, param_index))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_param_count(
+    program: *const onda_program,
+    delegate_index: i32,
+) -> i32 {
+    if program.is_null() || delegate_index < 0 {
+        return -1;
+    }
+    (&*program)
+        .inner
+        .jit
+        .delegate_descriptor(delegate_index as usize)
+        .and_then(|delegate| i32::try_from(delegate.params().len()).ok())
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_param_name(
+    program: *const onda_program,
+    delegate_index: i32,
+    param_index: i32,
+) -> *const c_char {
+    if program.is_null() || delegate_index < 0 || param_index < 0 {
+        return ptr::null();
+    }
+    let names = &*ptr::addr_of!((&*program).inner.delegate_param_names);
+    names
+        .get(delegate_index as usize)
         .map_or(ptr::null(), |names| cstr_ptr_at(names, param_index))
 }
 
@@ -4274,6 +4493,17 @@ pub unsafe extern "C" fn onda_event_index(
         return -1;
     }
     index_from_name(name, |key| (&*program).inner.jit.event_index(key))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_index(
+    program: *const onda_program,
+    name: *const c_char,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    index_from_name(name, |key| (&*program).inner.jit.delegate_index(key))
 }
 
 #[no_mangle]
@@ -4397,6 +4627,58 @@ pub unsafe extern "C" fn onda_event_payload_bytes(program: *const onda_program, 
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_delegate_payload_bytes(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    bytes_from_index(index, |idx| {
+        (&*program).inner.jit.delegate_payload_bytes(idx)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_payload_min_bytes(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    bytes_from_index(index, |idx| {
+        (&*program).inner.jit.delegate_payload_min_bytes(idx)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_record_bytes(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    bytes_from_index(index, |idx| {
+        (&*program).inner.jit.delegate_record_bytes(idx)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_record_min_bytes(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    bytes_from_index(index, |idx| {
+        (&*program).inner.jit.delegate_record_min_bytes(idx)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_event_param_elem_type(
     program: *const onda_program,
     event_index: i32,
@@ -4436,6 +4718,50 @@ pub unsafe extern "C" fn onda_event_param_offset_bytes(
     param_index: i32,
 ) -> i32 {
     event_param_descriptor(program, event_index, param_index)
+        .and_then(|param| i32::try_from(param.byte_offset()).ok())
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_param_elem_type(
+    program: *const onda_program,
+    delegate_index: i32,
+    param_index: i32,
+) -> i32 {
+    delegate_param_descriptor(program, delegate_index, param_index)
+        .map(|param| primitive_type_to_i32(param.elem_ty()))
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_param_array_len(
+    program: *const onda_program,
+    delegate_index: i32,
+    param_index: i32,
+) -> i32 {
+    delegate_param_descriptor(program, delegate_index, param_index)
+        .and_then(|param| i32::try_from(param.array_len()).ok())
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_param_is_slice(
+    program: *const onda_program,
+    delegate_index: i32,
+    param_index: i32,
+) -> i32 {
+    delegate_param_descriptor(program, delegate_index, param_index)
+        .map(|param| i32::from(param.is_slice()))
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_param_offset_bytes(
+    program: *const onda_program,
+    delegate_index: i32,
+    param_index: i32,
+) -> i32 {
+    delegate_param_descriptor(program, delegate_index, param_index)
         .and_then(|param| i32::try_from(param.byte_offset()).ok())
         .unwrap_or(-1)
 }
@@ -5312,6 +5638,47 @@ pub unsafe extern "C" fn onda_param_plain_to_normalized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosted_delegate_batch_is_independent_and_decodes_occurrences() {
+        let mut storage = [0_u8; 12];
+        storage[..4].copy_from_slice(&3_u32.to_ne_bytes());
+        storage[4..8].copy_from_slice(&4_u32.to_ne_bytes());
+        storage[8..].copy_from_slice(&17_i32.to_ne_bytes());
+        let mut batch = onda_delegate_batch_t {
+            storage: storage.as_mut_ptr(),
+            capacity_bytes: storage.len() as u32,
+            used_bytes: storage.len() as u32,
+            record_count: 1,
+            overflow_count: 2,
+        };
+        let mut occurrence = onda_delegate_occurrence_t {
+            delegate_index: 0,
+            payload_size_bytes: 0,
+            payload: ptr::null(),
+        };
+
+        assert_eq!(
+            unsafe { onda_delegate_batch_occurrence_at(&batch, 0, &mut occurrence) },
+            1
+        );
+        assert_eq!(occurrence.delegate_index, 3);
+        assert_eq!(occurrence.payload_size_bytes, 4);
+        assert_eq!(
+            unsafe { ptr::read_unaligned(occurrence.payload.cast::<i32>()) },
+            17
+        );
+        assert_eq!(
+            unsafe { onda_delegate_batch_occurrence_at(&batch, 1, &mut occurrence) },
+            0
+        );
+
+        unsafe { onda_delegate_batch_reset(&mut batch) };
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (0, 0, 0)
+        );
+    }
 
     #[test]
     fn owned_diagnostic_strings_escape_nul_and_dispose_idempotently() {

@@ -26,6 +26,7 @@ pub(crate) struct ProcApi {
     pub(crate) has_bound_params: bool,
     pub(crate) outputs: ProcOutputs,
     pub(crate) events: HashMap<String, ProcEventSpec>,
+    pub(crate) delegates: HashMap<String, ProcEventSpec>,
     pub(crate) buffers: Vec<ProcBufferSpec>,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,

@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut rendered = Vec::<f32>::with_capacity(render_frames * out_channels);
 
     for _ in 0..full_blocks {
-        process_checked(&mut instance, BLOCK_FRAMES)
+        process_checked(&mut instance, BLOCK_FRAMES, None)
             .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     }
     if tail_frames > 0 {
-        process_checked(&mut instance, BLOCK_FRAMES)
+        process_checked(&mut instance, BLOCK_FRAMES, None)
             .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,

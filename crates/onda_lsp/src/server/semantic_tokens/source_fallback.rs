@@ -112,6 +112,7 @@ enum SourceProcSectionKind {
     Buffers,
     Init,
     Events,
+    Delegates,
     Tasks,
     Block,
     Sample,
@@ -226,7 +227,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                         if let Some((event_name, params)) = parse_event_header(trimmed) {
                             index.scopes[proc_owner_idx]
                                 .scope
-                                .functions
+                                .events
                                 .insert(event_name.to_owned());
                             let idx = push_source_callable_scope(
                                 &mut index,
@@ -243,6 +244,14 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                             });
                             prev_nonempty_line = line_no;
                             continue;
+                        }
+                    }
+                    SourceProcSectionKind::Delegates => {
+                        if let Some((delegate_name, _)) = parse_event_header(trimmed) {
+                            index.scopes[proc_owner_idx]
+                                .scope
+                                .delegates
+                                .insert(delegate_name.to_owned());
                         }
                     }
                     SourceProcSectionKind::Tasks => {
@@ -290,7 +299,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
         if let Some((event_name, params)) = parse_singular_event_header(trimmed) {
             index.scopes[proc_owner_idx]
                 .scope
-                .functions
+                .events
                 .insert(event_name.to_owned());
             let idx = push_source_callable_scope(
                 &mut index,
@@ -305,6 +314,15 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                 indent,
                 kind: SourceProcScopeKind::Event,
             });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some((delegate_name, _)) = parse_singular_delegate_header(trimmed) {
+            index.scopes[proc_owner_idx]
+                .scope
+                .delegates
+                .insert(delegate_name.to_owned());
             prev_nonempty_line = line_no;
             continue;
         }
@@ -372,6 +390,7 @@ enum SourceTopLevelSectionKind {
     Buffers,
     Init,
     Events,
+    Delegates,
     Tasks,
     Block,
     Sample,
@@ -479,7 +498,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                         if let Some((event_name, params)) = parse_event_header(trimmed) {
                             index.scopes[section.owner_idx]
                                 .scope
-                                .functions
+                                .events
                                 .insert(event_name.to_owned());
                             let idx = push_source_callable_scope(
                                 &mut index,
@@ -496,6 +515,14 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                             });
                             prev_nonempty_line = line_no;
                             continue;
+                        }
+                    }
+                    SourceTopLevelSectionKind::Delegates => {
+                        if let Some((delegate_name, _)) = parse_event_header(trimmed) {
+                            index.scopes[section.owner_idx]
+                                .scope
+                                .delegates
+                                .insert(delegate_name.to_owned());
                         }
                     }
                     SourceTopLevelSectionKind::Tasks => {
@@ -540,7 +567,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
             });
             index.scopes[owner_idx]
                 .scope
-                .functions
+                .events
                 .insert(event_name.to_owned());
             let idx = push_source_callable_scope(
                 &mut index,
@@ -555,6 +582,21 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                 indent,
                 kind: SourceTopLevelScopeKind::Event,
             });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some((delegate_name, _)) = parse_singular_delegate_header(trimmed) {
+            let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
+                let idx = push_line_scope(&mut index, None, line_no, 0, true);
+                index.scopes[idx].end_line = u32::MAX;
+                index.scopes[idx].end_column = u32::MAX;
+                idx
+            });
+            index.scopes[owner_idx]
+                .scope
+                .delegates
+                .insert(delegate_name.to_owned());
             prev_nonempty_line = line_no;
             continue;
         }
@@ -790,6 +832,7 @@ fn detect_source_proc_section_header(trimmed: &str) -> Option<SourceProcSectionK
         ("buffers", SourceProcSectionKind::Buffers),
         ("init", SourceProcSectionKind::Init),
         ("events", SourceProcSectionKind::Events),
+        ("delegates", SourceProcSectionKind::Delegates),
         ("tasks", SourceProcSectionKind::Tasks),
         ("block", SourceProcSectionKind::Block),
         ("sample", SourceProcSectionKind::Sample),
@@ -806,6 +849,7 @@ fn detect_source_top_level_section_header(trimmed: &str) -> Option<SourceTopLeve
         ("buffers", SourceTopLevelSectionKind::Buffers),
         ("init", SourceTopLevelSectionKind::Init),
         ("events", SourceTopLevelSectionKind::Events),
+        ("delegates", SourceTopLevelSectionKind::Delegates),
         ("tasks", SourceTopLevelSectionKind::Tasks),
         ("block", SourceTopLevelSectionKind::Block),
         ("sample", SourceTopLevelSectionKind::Sample),
@@ -848,6 +892,13 @@ fn parse_def_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
 
 fn parse_singular_event_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
     let rest = trimmed.strip_prefix("event ")?.trim_start();
+    let name = extract_leading_ident(rest)?;
+    let after_name = &rest[name.len()..];
+    Some((name, extract_param_names_from_parens(after_name)))
+}
+
+fn parse_singular_delegate_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
+    let rest = trimmed.strip_prefix("delegate ")?.trim_start();
     let name = extract_leading_ident(rest)?;
     let after_name = &rest[name.len()..];
     Some((name, extract_param_names_from_parens(after_name)))

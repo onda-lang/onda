@@ -165,6 +165,9 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
     for event in &mut proc.events {
         rewrite_stmt_list_local_calls(&mut event.body, &local_names, &proc.name);
     }
+    for when in &mut proc.whens {
+        rewrite_stmt_list_local_calls(&mut when.body, &local_names, &proc.name);
+    }
     for task in &mut proc.tasks {
         rewrite_stmt_list_local_calls(&mut task.body, &local_names, &proc.name);
     }

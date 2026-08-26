@@ -87,6 +87,31 @@ Audio processor must expose at least one audio input or output, because an empty
 does not carry a render-quantum frame count. Control-only artifacts remain usable through the generic
 processor ABI in a non-Web-Audio host.
 
+## Delegates
+
+Top-level delegates are delivered after generated execution through `onDelegates()`. The worklet
+uses reusable storage allocated during construction; listeners run from the main-side message
+handler, not as callbacks inside generated DSP code.
+
+```js
+const processor = await createOndaAudioProcessorInitialized(context, artifact, {
+  delegateCapacityBytes: 128 * 1024,
+});
+
+const unsubscribe = processor.onDelegates(({ occurrences, overflowCount }) => {
+  for (const occurrence of occurrences) {
+    console.log(occurrence.name, occurrence.values);
+  }
+  if (overflowCount) console.warn(`${overflowCount} delegate records were dropped`);
+});
+```
+
+Capacity defaults to 64 KiB and can be set to zero to disable host collection. It is a host policy,
+not a compiler-computable exact whole-call size: occurrence counts and slice payload lengths may be
+runtime-dependent. A nonzero `overflowCount` means the delivered stream is incomplete; internal
+Onda `when` handlers still ran. See [Hosting Onda delegates](../../docs/delegates.md) for sizing and
+lifecycle details.
+
 ## Real-time behavior
 
 `createOndaAudioProcessor` compiles the processor's `WebAssembly.Module` concurrently with worklet

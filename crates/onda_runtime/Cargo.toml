@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_frontend = { path = "../onda_frontend" }
+onda_processor_abi = { path = "../onda_processor_abi" }
 onda_realtime = { path = "../onda_realtime" }
 
 [dev-dependencies]

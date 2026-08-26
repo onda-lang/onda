@@ -78,6 +78,7 @@ function metadata() {
       control_outputs: [],
       params: [],
       events: [],
+      delegates: [],
       buffers: [{
         name: "samples",
         scalar: "f32",
@@ -177,6 +178,48 @@ test("failed event execution invalidates the worklet", () => {
   );
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
+});
+
+test("worklet copies decoded delegate records to the message port", () => {
+  const descriptor = metadata();
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.delegates = [{
+    name: "report",
+    params: [
+      { name: "code", scalar: "i32", array_len: 1, is_slice: false, element_size_bytes: 4 },
+      { name: "values", scalar: "f32", array_len: 0, is_slice: true, element_size_bytes: 4 },
+    ],
+  }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      delegateCapacityBytes: 24,
+    },
+  });
+  const messages = [];
+  processor.port.postMessage = (message) => messages.push(message);
+  const view = new DataView(processor.memory.buffer);
+  const storage = processor.delegateStoragePtr;
+  view.setUint32(storage, 0, true);
+  view.setUint32(storage + 4, 16, true);
+  view.setInt32(storage + 8, 7, true);
+  view.setInt32(storage + 12, 2, true);
+  view.setFloat32(storage + 16, 1.25, true);
+  view.setFloat32(storage + 20, -2.5, true);
+  view.setUint32(processor.delegateBatchPtr + 8, 24, true);
+  view.setUint32(processor.delegateBatchPtr + 12, 1, true);
+  processor.flushDelegates("process segment");
+  assert.deepEqual(messages, [{
+    type: "onda-delegates",
+    operation: "process segment",
+    occurrences: [{
+      index: 0,
+      name: "report",
+      values: { code: 7, values: [1.25, -2.5] },
+    }],
+    overflowCount: 0,
+  }]);
 });
 
 test("worklet uses null pointers only for absent processor surfaces", () => {

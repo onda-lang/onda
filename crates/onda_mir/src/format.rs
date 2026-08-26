@@ -274,6 +274,17 @@ impl<'a> Formatter<'a> {
                     function_id(*function)
                 ));
             }
+            StatementKind::PublishDelegate { delegate, args } => {
+                let args = args
+                    .iter()
+                    .map(format_call_argument)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.line(format_args!(
+                    "{pad}publish_delegate @delegate{}({args}){source}",
+                    delegate.raw()
+                ));
+            }
             StatementKind::OutputStore {
                 output,
                 element,

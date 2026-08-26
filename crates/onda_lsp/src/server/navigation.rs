@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use onda_frontend::{
     inject_auto_std_prelude, is_language_type_name, parse_program,
     parse_program_file_with_overlays, ArrayElemType, AssignTarget, Block, BlockExec, BufferDecl,
-    ConstDecl, EventDef, EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef,
+    ConstDecl, DelegateDef, EventDef, EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef,
     NamespaceAliasDecl, NamespaceDecl, NamespaceItem, ParamDecl, PortDecl, ProcessorDef, Program,
-    Span, Stmt, StructDef, StructField, TaskDef, UseDecl,
+    Span, Stmt, StructDef, StructField, TaskDef, UseDecl, WhenDef,
 };
 use onda_semantics::builtins::{
     builtin_constant_type, builtin_instance_method_names, is_builtin_function_name,
@@ -384,6 +384,7 @@ enum DefinitionKind {
     Param,
     Buffer,
     Event,
+    Delegate,
     Task,
     Field,
     Method,
@@ -399,6 +400,7 @@ struct ProcInfo {
     params: HashMap<String, usize>,
     init: Option<usize>,
     events: HashMap<String, usize>,
+    delegates: HashMap<String, usize>,
     buffers: HashMap<String, usize>,
     local_defs: HashMap<String, usize>,
     has_private_params: bool,
@@ -730,6 +732,10 @@ impl NavigationIndex {
             let idx = self.add_event_definition(&full_name, event);
             info.events.insert(event.name.clone(), idx);
         }
+        for delegate in &proc_def.delegates {
+            let idx = self.add_delegate_definition(&full_name, delegate);
+            info.delegates.insert(delegate.name.clone(), idx);
+        }
         for def in &proc_def.local_defs {
             let idx = self.add_function_definition(
                 &full_name,
@@ -915,6 +921,43 @@ impl NavigationIndex {
         event_idx
     }
 
+    fn add_delegate_definition(&mut self, owner: &str, delegate: &DelegateDef) -> usize {
+        let params = delegate
+            .params
+            .iter()
+            .map(format_event_param_signature)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let delegate_owner = namespace_join(owner, &delegate.name);
+        let delegate_idx = self.add_definition(DefinitionInfo {
+            name: delegate.name.clone(),
+            full_name: delegate_owner.clone(),
+            kind: DefinitionKind::Delegate,
+            detail: format!("delegate {}({params})", delegate.name),
+            span: delegate.loc,
+            file_key: file_key_for_span(delegate.loc),
+            private: false,
+        });
+        let mut param_indices = HashMap::new();
+        for param in &delegate.params {
+            let idx = self.add_definition_once(DefinitionInfo {
+                name: param.name.clone(),
+                full_name: namespace_join(&delegate_owner, &param.name),
+                kind: DefinitionKind::Param,
+                detail: format!("delegate parameter {}", param.name),
+                span: param.loc,
+                file_key: file_key_for_span(param.loc),
+                private: false,
+            });
+            param_indices.entry(param.name.clone()).or_insert(idx);
+        }
+        self.event_params
+            .entry(delegate_owner)
+            .or_default()
+            .extend(param_indices);
+        delegate_idx
+    }
+
     fn add_task_definition(&mut self, owner: &str, task: &TaskDef) -> usize {
         self.add_definition_once(DefinitionInfo {
             name: task.name.clone(),
@@ -1090,6 +1133,11 @@ impl NavigationIndex {
                         }
                     }
                 }
+                Block::When(when) => {
+                    if let Some(owner_idx) = top_level_scope {
+                        self.collect_when_scope(owner_idx, "", when);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1142,6 +1190,16 @@ impl NavigationIndex {
                         let idx = self.add_event_definition("", event);
                         definitions.insert(event.name.clone(), idx);
                     }
+                }
+                Block::Delegates(delegates) => {
+                    extend_span(&mut span, delegates.loc);
+                    for delegate in &delegates.delegates {
+                        let idx = self.add_delegate_definition("", delegate);
+                        definitions.insert(delegate.name.clone(), idx);
+                    }
+                }
+                Block::When(when) => {
+                    extend_span(&mut span, span_for_when_scope(when));
                 }
                 Block::Tasks(task_block) => {
                     extend_span(&mut span, task_block.loc);
@@ -1257,6 +1315,10 @@ impl NavigationIndex {
             let idx = self.add_event_definition(&owner, event);
             definitions.insert(event.name.clone(), idx);
         }
+        for delegate in &proc_def.delegates {
+            let idx = self.add_delegate_definition(&owner, delegate);
+            definitions.insert(delegate.name.clone(), idx);
+        }
         for def in &proc_def.local_defs {
             let idx =
                 self.add_function_definition(&owner, def, DefinitionKind::Method, "proc-local def");
@@ -1315,6 +1377,9 @@ impl NavigationIndex {
         }
         for event in &proc_def.events {
             self.collect_event_scope(owner_idx, &owner, event);
+        }
+        for when in &proc_def.whens {
+            self.collect_when_scope(owner_idx, &owner, when);
         }
         for def in &proc_def.local_defs {
             self.collect_function_scope(Some(owner_idx), &owner, def, "proc-local def");
@@ -1548,6 +1613,46 @@ impl NavigationIndex {
             instances,
         )?;
         self.collect_nested_stmt_scopes(scope_idx, &event_owner, &event.body);
+        Some(scope_idx)
+    }
+
+    fn collect_when_scope(&mut self, parent: usize, owner: &str, when: &WhenDef) -> Option<usize> {
+        let handler_owner = format!("{}.__when_{}_{}", owner, when.loc.line, when.loc.column);
+        let mut definitions = HashMap::<String, usize>::new();
+        for binding in &when.bindings {
+            if binding.name == "_" {
+                continue;
+            }
+            let idx = self.add_definition_once(DefinitionInfo {
+                name: binding.name.clone(),
+                full_name: namespace_join(&handler_owner, &binding.name),
+                kind: DefinitionKind::Param,
+                detail: format!("delegate payload binding {}", binding.name),
+                span: binding.loc,
+                file_key: file_key_for_span(binding.loc),
+                private: false,
+            });
+            definitions.insert(binding.name.clone(), idx);
+        }
+        let inherited_names = self.inherited_runtime_definition_names(Some(parent));
+        self.collect_stmt_definitions_with_inherited(
+            &handler_owner,
+            &when.body,
+            false,
+            &inherited_names,
+            &mut definitions,
+        );
+        let mut instances = HashMap::<String, InstanceInfo>::new();
+        let scope_namespace = self.child_scope_namespace(Some(parent), owner);
+        self.collect_stmt_scope_instances(&when.body, &scope_namespace, false, &mut instances);
+        let scope_idx = self.push_scope(
+            Some(parent),
+            &scope_namespace,
+            span_for_when_scope(when),
+            definitions,
+            instances,
+        )?;
+        self.collect_nested_stmt_scopes(scope_idx, &handler_owner, &when.body);
         Some(scope_idx)
     }
 
@@ -2373,6 +2478,9 @@ impl NavigationIndex {
             if let Some(idx) = proc_info.events.get(member) {
                 return self.definitions.get(*idx);
             }
+            if let Some(idx) = proc_info.delegates.get(member) {
+                return self.definitions.get(*idx);
+            }
         } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
             if let Some(idx) = struct_info
                 .fields
@@ -2458,6 +2566,10 @@ impl NavigationIndex {
             if let Some(idx) = proc_info.events.get(member) {
                 let event = self.definitions.get(*idx)?;
                 return self.resolve_event_param(&event.full_name, arg);
+            }
+            if let Some(idx) = proc_info.delegates.get(member) {
+                let delegate = self.definitions.get(*idx)?;
+                return self.resolve_event_param(&delegate.full_name, arg);
             }
         } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
             if let Some(idx) = struct_info.methods.get(member) {
@@ -2640,6 +2752,20 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
                 children,
             ))
         }
+        Block::Delegates(delegates) => {
+            let children = delegates
+                .delegates
+                .iter()
+                .map(|delegate| document_symbol_for_delegate(delegate, source))
+                .collect::<Vec<_>>();
+            Some(document_symbol(
+                "delegates",
+                SYMBOL_KIND_EVENT,
+                delegates.loc,
+                source,
+                children,
+            ))
+        }
         Block::Tasks(tasks) => {
             let children = tasks
                 .tasks
@@ -2761,6 +2887,12 @@ fn document_symbol_for_proc(proc_def: &ProcessorDef, source: &str) -> Value {
     );
     children.extend(
         proc_def
+            .delegates
+            .iter()
+            .map(|delegate| document_symbol_for_delegate(delegate, source)),
+    );
+    children.extend(
+        proc_def
             .local_defs
             .iter()
             .map(|def| document_symbol_for_function(def, SYMBOL_KIND_METHOD, source)),
@@ -2808,6 +2940,16 @@ fn document_symbol_for_function(def: &FunctionDef, kind: u32, source: &str) -> V
 
 fn document_symbol_for_event(event: &EventDef, source: &str) -> Value {
     document_symbol(&event.name, SYMBOL_KIND_EVENT, event.loc, source, vec![])
+}
+
+fn document_symbol_for_delegate(delegate: &DelegateDef, source: &str) -> Value {
+    document_symbol(
+        &delegate.name,
+        SYMBOL_KIND_EVENT,
+        delegate.loc,
+        source,
+        vec![],
+    )
 }
 
 fn document_symbol_for_task(task: &TaskDef, source: &str) -> Value {
@@ -3984,6 +4126,12 @@ fn span_for_event_scope(event: &EventDef) -> Span {
         .unwrap_or(event.loc)
 }
 
+fn span_for_when_scope(when: &WhenDef) -> Span {
+    span_for_stmt_body(&when.body)
+        .map(|body_span| Span::spanning(when.loc, body_span))
+        .unwrap_or(when.loc)
+}
+
 fn span_for_task_scope(task: &TaskDef) -> Span {
     span_for_stmt_body(&task.body)
         .map(|body_span| Span::spanning(task.loc, body_span))
@@ -4022,6 +4170,12 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     }
     for event in &proc_def.events {
         span = Span::spanning(span, span_for_event_scope(event));
+    }
+    for delegate in &proc_def.delegates {
+        span = Span::spanning(span, delegate.loc);
+    }
+    for when in &proc_def.whens {
+        span = Span::spanning(span, span_for_when_scope(when));
     }
     for def in &proc_def.local_defs {
         span = Span::spanning(span, span_for_function_scope(def));
@@ -4675,5 +4829,44 @@ block:
             .as_array()
             .expect("proc document symbol children");
         assert!(children.iter().any(|symbol| symbol["name"] == "prepare"));
+    }
+
+    #[test]
+    fn delegate_hover_and_navigation_preserve_directional_identity() {
+        let source = r#"proc Child:
+  delegate stopped(reason: i32)
+  sample:
+    out1 = 0.0
+
+delegate finished(reason: i32)
+init:
+  child = Child()
+when child.stopped(reason):
+  seen = reason
+  finished(reason)
+sample:
+  out1 = child()
+"#;
+        let owner_hover =
+            hover_at(source, "finished(reason)", 1).expect("owner delegate call should hover");
+        assert!(owner_hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("delegate finished(reason: i32)")));
+        let child_hover = hover_at(source, "child.stopped", "child.".len() + 1)
+            .expect("subscription target should hover");
+        assert!(child_hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("delegate stopped(reason: i32)")));
+        let definition = definition_at(source, "child.stopped", "child.".len() + 1)
+            .expect("subscription target should navigate");
+        assert_eq!(definition["range"]["start"]["line"], json!(1));
+        let binding_hover = hover_at(source, "seen = reason", "seen = ".len() + 1)
+            .expect("when payload binding should hover in its body");
+        assert!(binding_hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("delegate payload binding reason")));
+        let binding_definition = definition_at(source, "seen = reason", "seen = ".len() + 1)
+            .expect("when payload binding should navigate to its declaration");
+        assert_eq!(binding_definition["range"]["start"]["line"], json!(8));
     }
 }

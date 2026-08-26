@@ -8309,3 +8309,101 @@ fn parses_decimal_literals_with_f64_precision() {
         other => panic!("expected number literal, got {other:?}"),
     }
 }
+
+#[test]
+fn parses_delegate_forms_and_static_subscription_targets_in_source_order() {
+    let source = r#"delegate first(value)
+delegates:
+  second(values: f32[])
+  third(flag: bool = true)
+
+when first(value):
+  result = value
+when child.second(values):
+  result = values[0]
+when children[2].third(flag):
+  result = f32(flag)
+when children.first(index, value):
+  result = f32(index + value)
+
+proc Child:
+  delegate local(value: i32)
+  delegates:
+    other(values: f64[2])
+  when local(value):
+    state = value
+  sample:
+    out1 = 0.0
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(source).expect("delegate syntax should parse");
+    let delegates = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Delegates(delegates) => Some(&delegates.delegates),
+            _ => None,
+        })
+        .expect("merged top-level delegates");
+    assert_eq!(
+        delegates
+            .iter()
+            .map(|delegate| delegate.name.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second", "third"]
+    );
+    assert!(matches!(
+        delegates[0].params[0].ty,
+        EventParamType::Scalar(PrimitiveType::F32)
+    ));
+    assert!(matches!(
+        delegates[1].params[0].ty,
+        EventParamType::Slice {
+            elem: PrimitiveType::F32
+        }
+    ));
+    assert!(delegates[2].params[0].default.is_some());
+
+    let whens = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::When(when) => Some(when),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(whens.len(), 4);
+    assert!(whens[0].target.receiver.is_empty());
+    assert_eq!(whens[1].target.receiver, ["child"]);
+    assert_eq!(whens[2].target.receiver, ["children"]);
+    assert!(whens[2].target.index.is_some());
+    assert_eq!(whens[3].bindings[0].name, "index");
+
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) => Some(proc),
+            _ => None,
+        })
+        .expect("processor");
+    assert_eq!(
+        proc.delegates
+            .iter()
+            .map(|delegate| delegate.name.as_str())
+            .collect::<Vec<_>>(),
+        ["local", "other"]
+    );
+    assert_eq!(proc.whens.len(), 1);
+}
+
+#[test]
+fn rejects_duplicate_delegates_across_singular_and_plural_forms() {
+    let errors = parse_program("delegate done()\ndelegates:\n  done(value: i32)\n")
+        .expect_err("duplicate delegates should fail during parsing");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("duplicate delegate declaration 'done'")));
+}

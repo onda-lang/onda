@@ -5,13 +5,14 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 6u
+#define ONDA_PROCESSOR_ABI_VERSION 7u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
@@ -22,6 +23,26 @@ typedef enum onda_processor_init_mode {
   ONDA_PROCESSOR_INIT_PRESERVE_PINNED = 0,
   ONDA_PROCESSOR_INIT_FULL = 1
 } onda_processor_init_mode_t;
+
+/* Bytes preceding the payload of every packed raw-ABI delegate occurrence. */
+enum { ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE = 8u };
+
+/* Caller-owned, call-scoped result storage. Process and event entries reset the three result
+ * counters. A NULL batch or storage pointer disables collection. Capacity is a host policy because
+ * occurrence counts and dynamic slice sizes may depend on runtime execution. */
+typedef struct onda_processor_delegate_batch {
+  uint8_t* storage;
+  uint32_t capacity_bytes;
+  uint32_t used_bytes;
+  uint32_t record_count;
+  uint32_t overflow_count;
+} onda_processor_delegate_batch_t;
+
+typedef struct onda_processor_delegate_occurrence {
+  uint32_t delegate_index;
+  uint32_t payload_size_bytes;
+  const uint8_t* payload;
+} onda_processor_delegate_occurrence_t;
 
 typedef uint32_t (*onda_processor_init_fn)(
   const void* params,
@@ -43,7 +64,8 @@ typedef uint32_t (*onda_processor_process_fn)(
   void* const* buffers,
   const int32_t* buffer_frames,
   const int32_t* buffer_channels,
-  const float* buffer_sample_rates
+  const float* buffer_sample_rates,
+  onda_processor_delegate_batch_t* delegate_batch
 );
 
 typedef uint32_t (*onda_processor_event_fn)(
@@ -53,7 +75,8 @@ typedef uint32_t (*onda_processor_event_fn)(
   void* const* buffers,
   const int32_t* buffer_frames,
   const int32_t* buffer_channels,
-  const float* buffer_sample_rates
+  const float* buffer_sample_rates,
+  onda_processor_delegate_batch_t* delegate_batch
 );
 
 enum {
@@ -103,6 +126,64 @@ typedef struct onda_processor_param_domain {
 #else
 #define ONDA_PROCESSOR_STATIC_INLINE static inline
 #endif
+
+/* Clears result counters without modifying caller-owned storage or capacity. */
+ONDA_PROCESSOR_STATIC_INLINE void onda_processor_delegate_batch_reset(
+  onda_processor_delegate_batch_t* batch
+) {
+  if (batch != NULL) {
+    batch->used_bytes = 0u;
+    batch->record_count = 0u;
+    batch->overflow_count = 0u;
+  }
+}
+
+/* Decodes one complete occurrence, returning 1 on success or 0 for invalid/malformed input. The
+ * payload view remains valid only until the backing storage is changed or reused. */
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_occurrence_at(
+  const onda_processor_delegate_batch_t* batch,
+  uint32_t index,
+  onda_processor_delegate_occurrence_t* occurrence
+) {
+  if (
+    batch == NULL ||
+    occurrence == NULL ||
+    batch->storage == NULL ||
+    batch->used_bytes > batch->capacity_bytes ||
+    index >= batch->record_count
+  ) {
+    return 0;
+  }
+  uint32_t cursor = 0u;
+  for (uint32_t current = 0u; current <= index; ++current) {
+    if (batch->used_bytes - cursor < ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE) {
+      return 0;
+    }
+    uint32_t delegate_index;
+    uint32_t payload_size;
+    memcpy(&delegate_index, batch->storage + cursor, sizeof(delegate_index));
+    memcpy(
+      &payload_size,
+      batch->storage + cursor + sizeof(delegate_index),
+      sizeof(payload_size)
+    );
+    if (
+      payload_size >
+      batch->used_bytes - cursor - ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE
+    ) {
+      return 0;
+    }
+    if (current == index) {
+      occurrence->delegate_index = delegate_index;
+      occurrence->payload_size_bytes = payload_size;
+      occurrence->payload =
+        batch->storage + cursor + ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE;
+      return 1;
+    }
+    cursor += ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE + payload_size;
+  }
+  return 0;
+}
 
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_float_grid_value_matches(
   onda_processor_param_scalar scalar,

@@ -18,7 +18,7 @@ import {
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
-const FIXTURE_MIR_SCHEMA_VERSION = 6;
+const FIXTURE_MIR_SCHEMA_VERSION = 7;
 
 function artifact() {
   const port = (name, arrayLen) => ({
@@ -93,6 +93,7 @@ function artifact() {
         snapshot_byte_order: "little_endian",
         snapshot_restore_base: "post_init_physical_state_image",
         requires_full_blocks: false,
+        delegate_record_header_size_bytes: 8,
       },
       exports: {
         memory: "memory",
@@ -109,6 +110,7 @@ function artifact() {
         params: [],
         buffers: [],
         events: [],
+        delegates: [],
       },
     },
   };

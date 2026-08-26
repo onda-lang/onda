@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,8 +13,9 @@ use onda_cpal::{
     SampleConsumer, SampleProducer, StreamErrorState,
 };
 use onda_daemon::{
-    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunEventInfo, RunEventValue,
-    RunOptions, RunParamInfo,
+    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
+    RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
+    RunSession,
 };
 use onda_project::{BufferAsset, ProjectLimits};
 use onda_semantics::AnalysisOptions;
@@ -23,11 +24,12 @@ use serde_json::{json, Value};
 
 use crate::{
     available_audio_devices, display_path, format_run_build_error, format_single_diagnostic,
-    run_buffer_json, run_event_json, run_param_json,
+    run_buffer_json, run_event_json, run_event_value_json, run_param_json,
 };
 
 const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
 const SCOPE_CAPACITY_FRAMES: usize = 4096;
+const DELEGATE_NOTIFICATION_CAPACITY: usize = 32;
 
 #[cfg(unix)]
 static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -63,6 +65,7 @@ struct PlaybackStartup {
     params: Vec<RunParamInfo>,
     buffers: Vec<RunBufferInfo>,
     events: Vec<RunEventInfo>,
+    delegates: Vec<RunDelegateInfo>,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
     current_input_device: Option<String>,
@@ -80,6 +83,13 @@ struct RenderThreadContext {
     render_error: Arc<Mutex<Option<String>>>,
     startup_tx: PlaybackReply<PlaybackStartup>,
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
+    delegate_transport: Option<DelegateTransport>,
+}
+
+#[derive(Clone)]
+struct DelegateTransport {
+    sender: mpsc::SyncSender<RunDelegateBatch>,
+    dropped_occurrences: Arc<AtomicU32>,
 }
 
 enum PlaybackControlCommand {
@@ -225,6 +235,20 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     } else {
         (None, None)
     };
+    let (delegate_transport, delegate_rx, dropped_delegate_occurrences) = if launch.control_json {
+        let (sender, receiver) = mpsc::sync_channel(DELEGATE_NOTIFICATION_CAPACITY);
+        let dropped = Arc::new(AtomicU32::new(0));
+        (
+            Some(DelegateTransport {
+                sender,
+                dropped_occurrences: Arc::clone(&dropped),
+            }),
+            Some(receiver),
+            Some(dropped),
+        )
+    } else {
+        (None, None, None)
+    };
 
     let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
     let render_thread = spawn_run_render_thread(
@@ -237,6 +261,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             render_error: Arc::clone(&render_error),
             startup_tx,
             control_rx,
+            delegate_transport,
         },
     );
     let startup = startup_rx
@@ -260,6 +285,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             "params": startup.params.iter().map(run_param_json).collect::<Vec<_>>(),
             "buffers": startup.buffers.iter().map(run_buffer_json).collect::<Vec<_>>(),
             "events": startup.events.iter().map(run_event_json).collect::<Vec<_>>(),
+            "delegates": startup.delegates.iter().map(run_delegate_json).collect::<Vec<_>>(),
             "outputChannels": startup.output_channels,
             "inputDevices": startup.input_devices,
             "outputDevices": startup.output_devices,
@@ -276,6 +302,8 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             control_tx,
             Arc::clone(&scope_ring),
             Arc::clone(&stop_flag),
+            delegate_rx.expect("delegate receiver should exist"),
+            dropped_delegate_occurrences.expect("delegate drop counter should exist"),
         ))
     } else {
         None
@@ -293,6 +321,13 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             eprintln!("{}", format_run_event_info(&startup.events));
         } else {
             println!("{}", format_run_event_info(&startup.events));
+        }
+    }
+    if launch.show_meta && !startup.delegates.is_empty() {
+        if launch.control_json {
+            eprintln!("{}", format_run_delegate_info(&startup.delegates));
+        } else {
+            println!("{}", format_run_delegate_info(&startup.delegates));
         }
     }
     if startup.output_channels == 0 {
@@ -432,6 +467,46 @@ fn format_run_event_info(events: &[RunEventInfo]) -> String {
     lines.join("\n")
 }
 
+fn format_run_delegate_info(delegates: &[RunDelegateInfo]) -> String {
+    let mut lines = Vec::with_capacity(delegates.len() + 1);
+    lines.push("Run delegates:".to_owned());
+    for delegate in delegates {
+        let params = delegate
+            .params
+            .iter()
+            .map(|param| format!("{}: {}", param.name, param.type_repr))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("  {}({params})", delegate.name));
+    }
+    lines.join("\n")
+}
+
+fn run_delegate_json(delegate: &RunDelegateInfo) -> Value {
+    json!({
+        "index": delegate.index,
+        "name": delegate.name,
+        "params": delegate.params.iter().map(|param| json!({
+            "index": param.index,
+            "name": param.name,
+            "type": param.type_repr,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn run_delegate_occurrence_json(occurrence: &RunDelegateOccurrence) -> Value {
+    let values = occurrence
+        .values
+        .iter()
+        .map(|entry| (entry.name.clone(), run_event_value_json(&entry.value)))
+        .collect::<serde_json::Map<_, _>>();
+    json!({
+        "index": occurrence.index,
+        "name": occurrence.name,
+        "values": values,
+    })
+}
+
 fn playback_status_message(path: &Path, dur_seconds: Option<u32>) -> String {
     match dur_seconds {
         Some(dur_seconds) => format!("Playing {} for {} seconds", display_path(path), dur_seconds),
@@ -487,6 +562,7 @@ fn spawn_run_render_thread(
             render_error,
             startup_tx,
             control_rx,
+            delegate_transport,
         } = context;
         configure_current_thread_fp_mode();
         let control_rx = control_rx;
@@ -553,6 +629,11 @@ fn spawn_run_render_thread(
             } else {
                 Vec::new()
             };
+            let delegates = if launch.show_meta || launch.control_json {
+                run.delegate_info()
+            } else {
+                Vec::new()
+            };
             let input_devices = Vec::new();
             let output_devices = Vec::new();
             let input_channels = run.input_channel_count();
@@ -566,6 +647,7 @@ fn spawn_run_render_thread(
                 params,
                 buffers,
                 events,
+                delegates,
                 input_devices,
                 output_devices,
                 current_input_device: launch.input_device.clone(),
@@ -728,12 +810,19 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.trigger_event(&name, &values).map_err(|diag| {
-                                        format_single_diagnostic(
-                                            "daemon play trigger event failed",
-                                            &diag,
-                                        )
-                                    })
+                                    run.trigger_event(&name, &values)
+                                        .map_err(|diag| {
+                                            format_single_diagnostic(
+                                                "daemon play trigger event failed",
+                                                &diag,
+                                            )
+                                        })
+                                        .and_then(|()| {
+                                            publish_run_delegate_batch(
+                                                run,
+                                                delegate_transport.as_ref(),
+                                            )
+                                        })
                                 });
                             if let Some(reply) = reply {
                                 let _ = reply.send(result);
@@ -806,7 +895,19 @@ fn spawn_run_render_thread(
             }
 
             match session.render_run_block_interleaved(&launch.input, &mut interleaved) {
-                Ok(()) => {}
+                Ok(()) => {
+                    let output_result = session
+                        .run_mut(&launch.input)
+                        .ok_or_else(|| "run is not active".to_owned())
+                        .and_then(|run| {
+                            publish_run_delegate_batch(run, delegate_transport.as_ref())
+                        });
+                    if let Err(error) = output_result {
+                        store_thread_error(&render_error, error);
+                        stop_flag.store(true, Ordering::Release);
+                        break;
+                    }
+                }
                 Err(diag) => {
                     store_thread_error(
                         &render_error,
@@ -832,6 +933,32 @@ fn spawn_run_render_thread(
             }
         }
     })
+}
+
+fn publish_run_delegate_batch(
+    run: &mut RunSession,
+    transport: Option<&DelegateTransport>,
+) -> Result<(), String> {
+    let batch = run.take_delegate_batch().map_err(|diagnostic| {
+        format_single_diagnostic("daemon play delegate decoding failed", &diagnostic)
+    })?;
+    if batch.occurrences.is_empty() && batch.overflow_count == 0 {
+        return Ok(());
+    }
+    let Some(transport) = transport else {
+        return Ok(());
+    };
+    if let Err(mpsc::TrySendError::Full(batch)) = transport.sender.try_send(batch) {
+        let dropped = u32::try_from(batch.occurrences.len())
+            .unwrap_or(u32::MAX)
+            .saturating_add(batch.overflow_count);
+        let _ = transport.dropped_occurrences.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(dropped)),
+        );
+    }
+    Ok(())
 }
 
 fn flush_pending_param_updates(
@@ -963,6 +1090,8 @@ fn spawn_run_control_server(
     control_tx: mpsc::Sender<PlaybackControlCommand>,
     scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
+    delegate_rx: mpsc::Receiver<RunDelegateBatch>,
+    dropped_delegate_occurrences: Arc<AtomicU32>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         if listener.set_nonblocking(true).is_err() {
@@ -972,9 +1101,14 @@ fn spawn_run_control_server(
         while !stop_flag.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if let Err(err) =
-                        handle_run_control_client(stream, &control_tx, &scope_ring, &stop_flag)
-                    {
+                    if let Err(err) = handle_run_control_client(
+                        stream,
+                        &control_tx,
+                        &scope_ring,
+                        &stop_flag,
+                        &delegate_rx,
+                        &dropped_delegate_occurrences,
+                    ) {
                         eprintln!("run control client error: {err}");
                     }
                 }
@@ -995,6 +1129,8 @@ fn handle_run_control_client(
     control_tx: &mpsc::Sender<PlaybackControlCommand>,
     scope_ring: &Arc<Mutex<ScopeRing>>,
     stop_flag: &Arc<AtomicBool>,
+    delegate_rx: &mpsc::Receiver<RunDelegateBatch>,
+    dropped_delegate_occurrences: &AtomicU32,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
@@ -1006,6 +1142,7 @@ fn handle_run_control_client(
     let mut writer = BufWriter::new(stream);
 
     while !stop_flag.load(Ordering::Acquire) {
+        write_pending_delegate_batch(&mut writer, delegate_rx, dropped_delegate_occurrences)?;
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => return Ok(()),
@@ -1033,6 +1170,25 @@ fn handle_run_control_client(
         }
     }
 
+    Ok(())
+}
+
+fn write_pending_delegate_batch(
+    writer: &mut impl Write,
+    receiver: &mpsc::Receiver<RunDelegateBatch>,
+    dropped_delegate_occurrences: &AtomicU32,
+) -> Result<(), String> {
+    while let Ok(batch) = receiver.try_recv() {
+        let transport_drop_count = dropped_delegate_occurrences.swap(0, Ordering::Relaxed);
+        let notification = json!({
+            "event": "delegates",
+            "occurrences": batch.occurrences.iter().map(run_delegate_occurrence_json).collect::<Vec<_>>(),
+            "overflowCount": batch.overflow_count,
+            "transportDropCount": transport_drop_count,
+        });
+        write_json_line(writer, &notification)
+            .map_err(|error| format!("failed to write delegate notification: {error}"))?;
+    }
     Ok(())
 }
 
@@ -1373,10 +1529,65 @@ fn run_control_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{run_control_response, PlaybackControlCommand, PlaybackControlRequest, ScopeRing};
-    use onda_daemon::RunEventValue;
+    use super::{
+        run_control_response, write_pending_delegate_batch, PlaybackControlCommand,
+        PlaybackControlRequest, ScopeRing,
+    };
+    use onda_daemon::{RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue};
     use serde_json::Value;
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{atomic::AtomicU32, mpsc, Arc, Mutex};
+
+    #[test]
+    fn run_delegate_notifications_preserve_payloads_and_drop_counts() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunDelegateBatch {
+                occurrences: vec![RunDelegateOccurrence {
+                    index: 2,
+                    name: "meter".to_owned(),
+                    values: vec![
+                        RunDelegateValue {
+                            name: "level".to_owned(),
+                            value: RunEventValue::Number(0.75),
+                        },
+                        RunDelegateValue {
+                            name: "bins".to_owned(),
+                            value: RunEventValue::Array(vec![
+                                RunEventValue::Number(0.25),
+                                RunEventValue::Number(0.5),
+                            ]),
+                        },
+                    ],
+                }],
+                overflow_count: 3,
+            })
+            .expect("delegate batch should be queued");
+
+        let dropped = AtomicU32::new(4);
+        let mut bytes = Vec::new();
+        write_pending_delegate_batch(&mut bytes, &receiver, &dropped)
+            .expect("delegate batch should be serialized");
+
+        let notification: Value =
+            serde_json::from_slice(&bytes).expect("delegate batch should be valid JSON");
+        assert_eq!(
+            notification,
+            serde_json::json!({
+                "event": "delegates",
+                "occurrences": [{
+                    "index": 2,
+                    "name": "meter",
+                    "values": {
+                        "level": 0.75,
+                        "bins": [0.25, 0.5],
+                    },
+                }],
+                "overflowCount": 3,
+                "transportDropCount": 4,
+            })
+        );
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn run_set_param_notification_enqueues_without_waiting_for_reply() {

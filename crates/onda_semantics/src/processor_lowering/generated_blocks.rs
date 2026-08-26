@@ -995,6 +995,7 @@ fn generate_nested_wrapper_defs(
     lowering_shapes: &HashMap<String, ProcLoweringShape>,
     struct_defs_by_name: &HashMap<String, StructDef>,
     proc_api: &HashMap<String, ProcApi>,
+    options: AnalysisOptions,
     nested_instances: &HashMap<String, ProcCallInstance>,
     ins_names: &HashSet<String>,
     managed_active_fields: &mut HashMap<String, usize>,
@@ -1600,6 +1601,24 @@ fn generate_nested_wrapper_defs(
                     proc_api,
                     &mut used_nested_managed_dynamic_arrays,
                     &mut dynamic_hook_temp_counter,
+                ));
+            }
+            let routed_handler =
+                proc_child_when_body(proc, callee_proc, &nested_path, &local_def.name, options);
+            if !routed_handler.is_empty() {
+                body.extend(rewrite_owner_proc_stmts(
+                    routed_handler,
+                    &proc.name,
+                    &shape.field_names,
+                    &shape.array_field_names,
+                    ins_names,
+                    &shape.field_array_slots,
+                    &shape.in_array_slots,
+                    &shape.nested_proc_array_slots,
+                    &shape.nested_fields,
+                    nested_instances,
+                    proc_api,
+                    errors,
                 ));
             }
             inject_bound_proc_param_hooks_in_stmts(
@@ -2241,6 +2260,7 @@ pub(super) fn generate_lowered_proc_blocks(
     lowering_shapes: &HashMap<String, ProcLoweringShape>,
     struct_defs_by_name: &HashMap<String, StructDef>,
     proc_api: &HashMap<String, ProcApi>,
+    options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> GeneratedProcBlocks {
     let mut generated_structs = Vec::<Block>::new();
@@ -2902,6 +2922,7 @@ pub(super) fn generate_lowered_proc_blocks(
             lowering_shapes,
             struct_defs_by_name,
             proc_api,
+            options,
             &nested_instances,
             &ins_names,
             &mut nested_managed_active_fields,

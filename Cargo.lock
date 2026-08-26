@@ -3718,6 +3718,7 @@ version = "0.7.6"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
+ "onda_processor_abi",
  "onda_realtime",
  "onda_semantics",
 ]

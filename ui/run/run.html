@@ -1138,6 +1138,23 @@
           <div class="buffers-list" id="events"></div>
         </div>
       </section>
+      <section class="events" id="delegates-section">
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="delegates-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Delegates"
+            ></button>
+            <div class="params-title">Delegates</div>
+          </div>
+        </div>
+        <div class="section-body" id="delegates-body">
+          <div class="buffers-list" id="delegates"></div>
+        </div>
+      </section>
       <section class="params" id="params-section">
         <div class="params-header params-toolbar">
           <div class="section-heading">
@@ -1318,6 +1335,10 @@
         sourceDirty: false,
         buffers: [],
         events: [],
+        delegates: [],
+        delegateOccurrences: [],
+        delegateOverflowCount: 0,
+        delegateTransportDropCount: 0,
         params: [],
         inputDevices: [],
         outputDevices: [],
@@ -1366,6 +1387,8 @@
       const buffersNode = document.getElementById("buffers");
       const eventsSection = document.getElementById("events-section");
       const eventsNode = document.getElementById("events");
+      const delegatesSection = document.getElementById("delegates-section");
+      const delegatesNode = document.getElementById("delegates");
       const paramsSection = document.getElementById("params-section");
       const paramsNode = document.getElementById("params");
       const scopeSection = document.getElementById("scope-section");
@@ -1377,6 +1400,8 @@
       const buffersBody = document.getElementById("buffers-body");
       const eventsToggle = document.getElementById("events-toggle");
       const eventsBody = document.getElementById("events-body");
+      const delegatesToggle = document.getElementById("delegates-toggle");
+      const delegatesBody = document.getElementById("delegates-body");
       const paramsToggle = document.getElementById("params-toggle");
       const paramsBody = document.getElementById("params-body");
       const paramLayoutButtons = [...document.querySelectorAll("[data-param-layout]")];
@@ -1395,6 +1420,7 @@
         scope: true,
         buffers: true,
         events: true,
+        delegates: true,
         params: true,
       };
       let paramLayout = restoreParamLayout();
@@ -1586,12 +1612,14 @@
           scope: scopeToggle,
           buffers: buffersToggle,
           events: eventsToggle,
+          delegates: delegatesToggle,
           params: paramsToggle,
         }[name];
         const body = {
           scope: scopeBody,
           buffers: buffersBody,
           events: eventsBody,
+          delegates: delegatesBody,
           params: paramsBody,
         }[name];
         if (toggle) {
@@ -1607,6 +1635,7 @@
           ["scope", scopeToggle],
           ["buffers", buffersToggle],
           ["events", eventsToggle],
+          ["delegates", delegatesToggle],
           ["params", paramsToggle],
         ].forEach(([name, toggle]) => {
           if (!toggle) {
@@ -2334,6 +2363,7 @@
         scopeSection.style.display = supportsScope && state.running ? "block" : "none";
         const hasBuffers = state.buffers.length > 0;
         const hasEvents = state.events.length > 0;
+        const hasDelegates = state.delegates.length > 0;
         const hasParams = state.params.length > 0;
         const canEditRun = canEditRunControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
@@ -2344,6 +2374,7 @@
             ? "Embedding buffers…"
             : "Embed in DAW project";
         eventsSection.style.display = hasEvents ? "" : "none";
+        delegatesSection.style.display = hasDelegates ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
         refreshDevicesButton.hidden = !supportsDeviceSelection;
         ioSettingsNode.hidden = !supportsDeviceSelection;
@@ -2582,6 +2613,56 @@
             });
 
             eventsNode.appendChild(card);
+          }
+        }
+
+        delegatesNode.replaceChildren();
+        if (hasDelegates) {
+          const signatures = document.createElement("div");
+          signatures.className = "param event-card";
+          for (const delegate of state.delegates) {
+            const row = document.createElement("div");
+            row.className = "event-head";
+            const params = Array.isArray(delegate.params)
+              ? delegate.params.map((param) => param.name + ": " + param.type).join(", ")
+              : "";
+            row.textContent = delegate.name + "(" + params + ")";
+            signatures.appendChild(row);
+          }
+          delegatesNode.appendChild(signatures);
+
+          const recent = Array.isArray(state.delegateOccurrences)
+            ? state.delegateOccurrences.slice(-16).reverse()
+            : [];
+          if (recent.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "Waiting for delegate occurrences…";
+            delegatesNode.appendChild(empty);
+          } else {
+            for (const occurrence of recent) {
+              const card = document.createElement("div");
+              card.className = "param event-card";
+              const head = document.createElement("div");
+              head.className = "event-head";
+              const name = document.createElement("div");
+              name.className = "param-name";
+              name.textContent = occurrence.name || "delegate";
+              const values = document.createElement("div");
+              values.className = "event-summary";
+              values.textContent = JSON.stringify(occurrence.values || {});
+              head.append(name, values);
+              card.appendChild(head);
+              delegatesNode.appendChild(card);
+            }
+          }
+          const dropped = Number(state.delegateOverflowCount || 0)
+            + Number(state.delegateTransportDropCount || 0);
+          if (dropped > 0) {
+            const warning = document.createElement("div");
+            warning.className = "error";
+            warning.textContent = dropped + " delegate occurrence(s) dropped";
+            delegatesNode.appendChild(warning);
           }
         }
 

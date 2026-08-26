@@ -75,7 +75,6 @@
     human-oriented `--dump-graph` inspection output.
 
 - Events follow-ups
-  - The output-event/delegate proposal is specified in [`delegates.md`](delegates.md).
   - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
   - Add deeper conformance tests for proc-event slice forwarding edge cases (aliases, nested field arrays, and diagnostic coverage).
   - Add deeper conformance tests for host slice-event payload layouts, truncation diagnostics, and mixed fixed/slice event signatures.

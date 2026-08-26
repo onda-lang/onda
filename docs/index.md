@@ -26,3 +26,7 @@ ports, and events.
 ## Use the toolchain
 
 [Precompiled releases](https://github.com/onda-lang/onda/releases/latest) are available for Linux x64, macOS arm64, and Windows x64. The [CLI and editor guide]({{ '/docs/tooling/' | relative_url }}) explains compilation, real-time playback, offline rendering, diagnostics, VS Code, Neovim, and the C embedding API.
+
+[Hosting delegates]({{ '/docs/delegates/' | relative_url }}) explains the call-scoped outbound
+record API across Rust, hosted C, raw processor objects, JavaScript, and Web Audio, including exact
+fixed-record sizing, dynamic capacity policy, decoding, and overflow handling.

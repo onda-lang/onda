@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|d| format!("bind output failed: {d:?}"))?;
 
     for _ in 0..blocks {
-        process_checked(&mut instance, BLOCK_FRAMES)
+        process_checked(&mut instance, BLOCK_FRAMES, None)
             .map_err(|d| format!("processing failed: {d:?}"))?;
         let out_f32 =
             unsafe { std::slice::from_raw_parts(out_bound.as_ptr().cast::<f32>(), BLOCK_FRAMES) };

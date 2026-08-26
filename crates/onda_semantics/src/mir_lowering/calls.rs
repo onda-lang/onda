@@ -2316,6 +2316,33 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
+        if let Some(delegate_index) = crate::processor_lowering::delegate_publish_index(name) {
+            if pending_dispatch.is_some() || returns_value {
+                return Err(self.error(
+                    "invalid generated delegate publication call shape",
+                    location,
+                ));
+            }
+            self.push_statement(
+                block,
+                StatementKind::PublishDelegate {
+                    delegate: onda_mir::DelegateId::new(delegate_index as u32),
+                    args: call_args,
+                },
+                location,
+            );
+            return Ok(Some(
+                result_types
+                    .iter()
+                    .copied()
+                    .map(|ty| LoweredValue {
+                        value: zero_value(ty),
+                        ty,
+                    })
+                    .collect(),
+            ));
+        }
+
         let result = if returns_value {
             let locals = result_types
                 .iter()

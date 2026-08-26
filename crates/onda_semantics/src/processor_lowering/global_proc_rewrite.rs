@@ -1371,6 +1371,13 @@ pub(super) fn rewrite_top_level_proc_calls(
                     );
                 }
             }
+            Block::When(when) => rewrite_proc_calls_in_stmts(
+                &mut when.body,
+                &global_proc_instances,
+                &global_proc_array_slots,
+                proc_api,
+                errors,
+            ),
             _ => {}
         }
     }

@@ -3,6 +3,12 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  decodeDelegateRecords,
+  readDelegateBatch,
+  writeDelegateBatch,
+} from "@onda-lang/processor-abi";
+
+import {
   MIR_SCHEMA_VERSION,
   ONDA_VERSION,
   OndaCompileError,
@@ -78,6 +84,73 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.equal(files.wasm.name, "gain.wasm");
   assert.equal(files.metadata.name, "gain.onda.json");
   assert.match(files.metadata.text, /"integrity"/);
+});
+
+test("compiles and publishes dynamic delegate payloads end to end", async () => {
+  const compiler = await createCompiler();
+  const { artifact } = await compiler.compileSource(`delegate report(code: i32, values: f32[], tags: i32[])
+
+event trigger(values: f32[], tags: i32[]):
+  report(7, values, tags)
+
+sample:
+  out1 = 0.0
+`);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const {
+    memory,
+    __heap_base: heapBase,
+    onda_processor_init: initialize,
+    onda_event_0: trigger,
+  } = instance.exports;
+  let heap = Number(heapBase.value);
+  const allocate = (size) => {
+    const address = heap;
+    heap = (heap + Math.max(size, 1) + 15) & ~15;
+    return address;
+  };
+  const params = allocate(artifact.metadata.runtime.param_size_bytes);
+  const state = allocate(artifact.metadata.runtime.state_size_bytes);
+  const payload = allocate(28);
+  const batchAddress = allocate(20);
+  const storageAddress = allocate(40);
+  const view = new DataView(memory.buffer);
+  let cursor = payload;
+  view.setInt32(cursor, 2, true);
+  cursor += 4;
+  view.setFloat32(cursor, 1.25, true);
+  cursor += 4;
+  view.setFloat32(cursor, -2.5, true);
+  cursor += 4;
+  view.setInt32(cursor, 3, true);
+  cursor += 4;
+  for (const tag of [11, -4, 99]) {
+    view.setInt32(cursor, tag, true);
+    cursor += 4;
+  }
+  writeDelegateBatch(memory, batchAddress, storageAddress, 40);
+  assert.equal(initialize(params, state, 1), 0);
+  assert.equal(trigger(payload, params, state, 0, 0, 0, 0, batchAddress), 0);
+  const batch = readDelegateBatch(memory, batchAddress);
+  assert.deepEqual(batch, {
+    storageAddress,
+    capacityBytes: 40,
+    usedBytes: 40,
+    recordCount: 1,
+    overflowCount: 0,
+  });
+  const records = decodeDelegateRecords(
+    new Uint8Array(memory.buffer, storageAddress, 40),
+    batch.usedBytes,
+    artifact.metadata.metadata.delegates,
+  );
+  assert.equal(records[0].name, "report");
+  assert.deepEqual(records[0].values, {
+    code: 7,
+    values: [1.25, -2.5],
+    tags: [11, -4, 99],
+  });
+  await compiler.dispose();
 });
 
 test("compile constants preserve every public JavaScript value type", async () => {

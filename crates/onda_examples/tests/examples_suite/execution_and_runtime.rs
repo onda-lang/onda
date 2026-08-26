@@ -604,7 +604,7 @@ fn graph_nodes_remain_addressable_from_top_level_events() {
         .event_index("set_gain")
         .expect("top-level graph event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &0.75_f32.to_ne_bytes())
+    trigger_event_by_index(&mut instance, idx, &0.75_f32.to_ne_bytes(), None)
         .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
@@ -634,7 +634,8 @@ fn stdlib_env_ar_runs_as_a_one_shot_envelope() {
 
     assert!(output.iter().all(|sample| sample.abs() <= 1e-6));
 
-    trigger_event_by_index(&mut instance, bang_idx, &[]).expect("bang trigger should succeed");
+    trigger_event_by_index(&mut instance, bang_idx, &[], None)
+        .expect("bang trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -1285,7 +1286,7 @@ fn bound_io_writes_directly_for_f32_arrays() {
 
     bind_output(&mut instance, 0, bound_out.as_mut_ptr(), bound_out.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let copied_bound = decode_planar_f32(&bound_out);
 
@@ -1320,7 +1321,7 @@ fn bound_io_writes_directly_for_f64_declared_types() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f64(&out_bytes);
 
@@ -1397,7 +1398,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -1415,7 +1416,7 @@ sample {
     set_param_by_index(&mut instance, 1, &9007199254740995_i64.to_ne_bytes())
         .expect("set i64 param");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -1510,7 +1511,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -1589,7 +1590,7 @@ sample {
 
     payload.extend_from_slice(&9007199254740993_i64.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("trigger event");
+    trigger_event_by_index(&mut instance, 0, &payload, None).expect("trigger event");
 
     let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
 
@@ -1611,7 +1612,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -1724,7 +1725,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -1863,7 +1864,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -1994,7 +1995,7 @@ sample {
 
     payload.extend_from_slice(&9007199254740993_i64.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("trigger event");
+    trigger_event_by_index(&mut instance, 0, &payload, None).expect("trigger event");
 
     let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
 
@@ -2016,7 +2017,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -2165,7 +2166,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -2222,7 +2223,7 @@ fn buffer_mono_read_uses_clamped_index_path() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2376,7 +2377,7 @@ fn indexed_access_supports_mono_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2419,7 +2420,7 @@ fn validate_bindings_and_process_unchecked_work() {
     validate_bindings(&mut instance).expect("validate bindings should succeed");
 
     unsafe {
-        process_unchecked(&mut instance).expect("unchecked process should succeed");
+        process_unchecked(&mut instance, None).expect("unchecked process should succeed");
     }
 
     let out = decode_planar_f32(&out_bytes);
@@ -2498,7 +2499,7 @@ fn validate_domains_allow_partial_revalidation() {
     validate_outputs(&mut instance).expect("validate outputs should succeed");
 
     unsafe {
-        process_unchecked(&mut instance).expect("unchecked process should succeed");
+        process_unchecked(&mut instance, None).expect("unchecked process should succeed");
     }
 
     let out_a = decode_planar_f32(&out_bytes);
@@ -2525,7 +2526,7 @@ fn validate_domains_allow_partial_revalidation() {
     validate_buffers(&mut instance).expect("validate buffers after rebind should succeed");
 
     unsafe {
-        process_unchecked(&mut instance).expect("unchecked process should succeed");
+        process_unchecked(&mut instance, None).expect("unchecked process should succeed");
     }
 
     let out_b = decode_planar_f32(&out_bytes);
@@ -2571,7 +2572,7 @@ fn buffer_stereo_two_dim_read_and_clamp_work() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2616,7 +2617,7 @@ fn buffer_stereo_two_dim_write_works() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2661,7 +2662,7 @@ fn indexed_access_supports_multichannel_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2719,7 +2720,7 @@ fn buffer_static_chans_returns_declared_channel_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2762,7 +2763,7 @@ fn buffer_dynamic_chans_returns_runtime_channel_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2804,7 +2805,7 @@ fn buffer_dynamic_len_returns_runtime_frame_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2842,7 +2843,7 @@ fn def_can_take_mono_buffer_typed_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2925,7 +2926,7 @@ fn def_can_take_stereo_buffer_typed_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3511,7 +3512,7 @@ fn stdlib_random_generic_rng_compile_and_run() {
     bind_output(&mut instance, 1, out2_bytes.as_mut_ptr(), out2_bytes.len()).expect("bind out2");
     bind_output(&mut instance, 2, out3_bytes.as_mut_ptr(), out3_bytes.len()).expect("bind out3");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out1 = decode_planar_f64(&out1_bytes);
     let out2 = decode_planar_f64(&out2_bytes);
@@ -3590,7 +3591,7 @@ fn stdlib_buffer_read_mono_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3635,7 +3636,7 @@ fn stdlib_buffer_read_linear_and_cubic_with_channel_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3675,7 +3676,7 @@ fn stdlib_buffer_is_auto_imported_for_arrays_and_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3715,7 +3716,7 @@ fn stdlib_lookup_write_array_and_buffer_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -4196,7 +4197,7 @@ sample:
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     for sample in decode_planar_i64(&out_i64_bytes) {
         assert_eq!(sample, 42);
@@ -6167,7 +6168,7 @@ fn def_can_infer_duck_typed_mono_buffer_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -6207,7 +6208,7 @@ fn def_duck_typed_buffer_inference_propagates_through_def_calls() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -6262,7 +6263,7 @@ fn def_duck_typed_buffer_param_allows_mixed_element_types() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -6302,7 +6303,7 @@ fn def_indexable_param_accepts_array_and_buffer_call_sites() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -6347,7 +6348,7 @@ fn def_indexable_param_supports_two_dimensional_buffer_indexing() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -6610,7 +6611,7 @@ block {
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK)
+    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK, None)
         .expect("process first segment");
     let first = decode_planar_f32(&out_bytes);
     assert_near(first[0], 100.0, 1e-6);
@@ -6622,6 +6623,7 @@ block {
         segment_frames,
         segment_frames,
         PROCESS_END_BLOCK,
+        None,
     )
     .expect("process final segment");
     let second = decode_planar_f32(&out_bytes);
@@ -6631,7 +6633,7 @@ block {
     assert_near(second[3], 100.0, 1e-6);
 
     out_bytes.fill(0);
-    process_checked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+    process_checked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK, None)
         .expect("process next block");
     let next = decode_planar_f32(&out_bytes);
     for sample in next {
@@ -6669,7 +6671,7 @@ block {
     prepare_unchecked_process(&mut instance).expect("prepare unchecked process");
 
     unsafe {
-        process_unchecked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK)
+        process_unchecked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK, None)
             .expect("process first unchecked segment");
     }
     let first = decode_planar_f32(&out_bytes);
@@ -6683,6 +6685,7 @@ block {
             segment_frames,
             segment_frames,
             PROCESS_END_BLOCK,
+            None,
         )
         .expect("process final unchecked segment");
     }
@@ -6694,7 +6697,7 @@ block {
 
     out_bytes.fill(0);
     unsafe {
-        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK, None)
             .expect("process next unchecked block");
     }
     let next = decode_planar_f32(&out_bytes);
@@ -6738,6 +6741,7 @@ sample {
         segment_start,
         segment_frames,
         PROCESS_FULL_BLOCK,
+        None,
     )
     .expect("process segment");
     let output = decode_planar_f32(&out_bytes);
@@ -6773,6 +6777,7 @@ sample 2 {
         segment_start,
         segment_frames,
         PROCESS_FULL_BLOCK,
+        None,
     )
     .expect("process oversampled segment");
     let output = decode_planar_f32(&out_bytes);
@@ -6836,7 +6841,7 @@ sample {
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK)
+    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK, None)
         .expect("process inactive first segment");
     let first = decode_planar_f32(&out_bytes);
     assert_near(first[0], 0.0, 1e-6);
@@ -6848,6 +6853,7 @@ sample {
         segment_frames,
         segment_frames,
         PROCESS_END_BLOCK,
+        None,
     )
     .expect("process active final segment");
     let second = decode_planar_f32(&out_bytes);
@@ -6857,7 +6863,7 @@ sample {
     assert_near(second[3], 100.0, 1e-6);
 
     out_bytes.fill(0);
-    process_checked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+    process_checked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK, None)
         .expect("process next block");
     let next = decode_planar_f32(&out_bytes);
     for sample in next {
@@ -7297,7 +7303,7 @@ fn proc_can_bind_and_read_top_level_buffer() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -8171,7 +8177,7 @@ fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() 
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -8318,7 +8324,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_rebound_buffer_on_process
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked with old buf2");
+    process_checked(&mut instance, frames, None).expect("process checked with old buf2");
 
     let out_old = decode_planar_f32(&out_bytes);
 
@@ -8339,7 +8345,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_rebound_buffer_on_process
     )
     .expect("bind buf2 new");
 
-    process_checked(&mut instance, frames).expect("process checked with new buf2");
+    process_checked(&mut instance, frames, None).expect("process checked with new buf2");
 
     let out_new = decode_planar_f32(&out_bytes);
 
@@ -8391,7 +8397,7 @@ fn checked_end_segment_uses_rebound_proc_array_buffer() {
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK)
+    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK, None)
         .expect("process begin segment with old buf2");
 
     let mut buf2_new = vec![0.5_f32; frames];
@@ -8412,6 +8418,7 @@ fn checked_end_segment_uses_rebound_proc_array_buffer() {
         segment_frames,
         segment_frames,
         PROCESS_END_BLOCK,
+        None,
     )
     .expect("process end segment after rebind");
     let out = decode_planar_f32(&out_bytes);
@@ -8472,7 +8479,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_validated_rebound_buffer_
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked with old buf2");
+    process_checked(&mut instance, frames, None).expect("process checked with old buf2");
 
     let out_seed = decode_planar_f32(&out_bytes);
 
@@ -8501,7 +8508,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_validated_rebound_buffer_
     // rebound host table, unchecked processing observes that current table rather than a
     // pointer-bearing processor cache.
     unsafe {
-        process_unchecked(&mut instance).expect("unchecked process after rebind");
+        process_unchecked(&mut instance, None).expect("unchecked process after rebind");
     }
 
     let out_unchecked = decode_planar_f32(&out_bytes);
@@ -8510,7 +8517,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_validated_rebound_buffer_
         assert_near(sample, 0.5, 1e-6);
     }
 
-    process_checked(&mut instance, frames).expect("process checked uses current binding");
+    process_checked(&mut instance, frames, None).expect("process checked uses current binding");
 
     let out_checked = decode_planar_f32(&out_bytes);
 
@@ -8563,7 +8570,7 @@ fn prepare_unchecked_process_uses_current_proc_array_buffer_binding() {
 
     prepare_unchecked_process(&mut instance).expect("prepare unchecked with old buf2");
     unsafe {
-        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK, None)
             .expect("unchecked process with old buf2");
     }
     let out_old = decode_planar_f32(&out_bytes);
@@ -8585,7 +8592,7 @@ fn prepare_unchecked_process_uses_current_proc_array_buffer_binding() {
 
     prepare_unchecked_process(&mut instance).expect("prepare unchecked after rebind");
     unsafe {
-        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK, None)
             .expect("unchecked process with refreshed refs");
     }
     let out_new = decode_planar_f32(&out_bytes);
@@ -8923,7 +8930,7 @@ fn proc_deep_nested_buffer_binding_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, None).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 

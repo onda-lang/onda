@@ -103,8 +103,39 @@ fn repo_source(rel: &str) -> (PathBuf, String) {
 fn reserved_words_include_singular_event_keyword() {
     assert!(is_reserved_word("event"));
     assert!(is_reserved_word("events"));
+    assert!(is_reserved_word("delegate"));
+    assert!(is_reserved_word("delegates"));
+    assert!(is_reserved_word("when"));
     assert!(is_reserved_word("private"));
     assert!(is_reserved_word("pin"));
+}
+
+#[test]
+fn semantic_tokens_distinguish_events_and_delegates() {
+    let source = concat!(
+        "delegate finished(reason: i32)\n",
+        "event trigger():\n",
+        "  finished(7)\n",
+        "when finished(reason):\n",
+        "  out1 = f32(reason)\n",
+        "sample:\n",
+        "  out1 = 0.0\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+    for line in [0, 2, 3] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, line, "finished"),
+            Some(SEMANTIC_TOKEN_TYPE_DELEGATE),
+        );
+    }
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 1, "trigger"),
+        Some(SEMANTIC_TOKEN_TYPE_EVENT),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 4, "reason"),
+        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
+    );
 }
 
 #[test]

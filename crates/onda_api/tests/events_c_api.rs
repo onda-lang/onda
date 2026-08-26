@@ -898,7 +898,10 @@ fn c_file_compile_accepts_filesystem_projects_with_defaults_and_watch_paths() {
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, output.len() as i32), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(output, [0.75; 4]);
 
         drop(instance);
@@ -1468,7 +1471,10 @@ sample { out1 = samples[0] }
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, output.len() as i32), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(output, [0.75; 4]);
 
         let mut host_samples = [0.25_f32];
@@ -1484,11 +1490,17 @@ sample { out1 = samples[0] }
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, output.len() as i32), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(output, [0.25; 4]);
 
         assert_eq!(onda_reset_buffer_to_project_default(instance.0, 0), 0);
-        assert_eq!(onda_process_checked(instance.0, output.len() as i32), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(output, [0.75; 4]);
     }
 }
@@ -1950,7 +1962,10 @@ block {
         );
         let instance = InstanceHandle(instance);
 
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
 
         let mut meter = [0_u8; 4];
         assert_eq!(
@@ -2016,16 +2031,19 @@ sample { out1 = amp }
         );
 
         assert_eq!(
-            onda_trigger_event_by_index(instance.0, 99, std::ptr::null(), 0),
+            onda_trigger_event_by_index(instance.0, 99, std::ptr::null(), 0, std::ptr::null_mut()),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         for sample in &out {
             assert_eq!(*sample, 0.0);
         }
 
         assert_eq!(
-            onda_trigger_event_by_index(instance.0, 0, std::ptr::null(), 0),
+            onda_trigger_event_by_index(instance.0, 0, std::ptr::null(), 0, std::ptr::null_mut()),
             -2
         );
 
@@ -2036,13 +2054,132 @@ sample { out1 = amp }
                 0,
                 payload.as_ptr().cast::<c_void>(),
                 payload.len() as i32,
+                std::ptr::null_mut(),
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         for sample in &out {
             assert!((*sample - 0.625).abs() < 1e-6);
         }
+    }
+}
+
+#[test]
+fn c_api_process_and_event_calls_use_the_optional_delegate_batch() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+delegate reported(value: i32)
+delegate spectrum(values: f32[])
+event fire(value: i32):
+  reported(value)
+init:
+  observed = 0.0
+when reported(value):
+  observed = f32(value)
+sample:
+  out1 = observed
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        assert_eq!(ONDA_DELEGATE_RECORD_HEADER_SIZE, 8);
+        assert_eq!(onda_delegate_payload_bytes(program.0, 0), 4);
+        assert_eq!(onda_delegate_payload_min_bytes(program.0, 0), 4);
+        assert_eq!(onda_delegate_record_bytes(program.0, 0), 12);
+        assert_eq!(onda_delegate_record_min_bytes(program.0, 0), 12);
+        assert_eq!(onda_delegate_payload_bytes(program.0, 1), -1);
+        assert_eq!(onda_delegate_payload_min_bytes(program.0, 1), 4);
+        assert_eq!(onda_delegate_record_bytes(program.0, 1), -1);
+        assert_eq!(onda_delegate_record_min_bytes(program.0, 1), 12);
+        assert_eq!(onda_delegate_record_bytes(program.0, 2), -1);
+
+        let mut output = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast::<c_void>(),
+                std::mem::size_of_val(output.as_slice()) as i32,
+            ),
+            0
+        );
+
+        let mut storage = vec![0_u8; onda_delegate_record_bytes(program.0, 0) as usize];
+        let mut batch = onda_delegate_batch_t {
+            storage: storage.as_mut_ptr(),
+            capacity_bytes: storage.len() as u32,
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        };
+        let payload = 17_i32.to_ne_bytes();
+        assert_eq!(
+            onda_trigger_event_by_index(
+                instance.0,
+                0,
+                payload.as_ptr().cast::<c_void>(),
+                payload.len() as i32,
+                &mut batch,
+            ),
+            0
+        );
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (12, 1, 0)
+        );
+
+        let mut occurrence = onda_delegate_occurrence_t {
+            delegate_index: 0,
+            payload_size_bytes: 0,
+            payload: std::ptr::null(),
+        };
+        assert_eq!(
+            onda_delegate_batch_occurrence_at(&batch, 0, &mut occurrence),
+            1
+        );
+        assert_eq!(occurrence.delegate_index, 0);
+        assert_eq!(occurrence.payload_size_bytes, 4);
+        assert_eq!(
+            std::ptr::read_unaligned(occurrence.payload.cast::<i32>()),
+            17
+        );
+
+        assert_eq!(onda_process_checked(instance.0, frames, &mut batch), 0);
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (0, 0, 0)
+        );
+        assert!(output.iter().all(|sample| *sample == 17.0));
+
+        let payload = 23_i32.to_ne_bytes();
+        assert_eq!(
+            onda_trigger_event_by_index(
+                instance.0,
+                0,
+                payload.as_ptr().cast::<c_void>(),
+                payload.len() as i32,
+                std::ptr::null_mut(),
+            ),
+            0
+        );
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
+        assert!(output.iter().all(|sample| *sample == 23.0));
     }
 }
 
@@ -2095,6 +2232,7 @@ sample { out1 = gate }
                 event_idx,
                 bad_payload.as_ptr().cast::<c_void>(),
                 bad_payload.len() as i32,
+                std::ptr::null_mut(),
             ),
             -2
         );
@@ -2109,10 +2247,14 @@ sample { out1 = gate }
                 event_idx,
                 payload.as_ptr().cast::<c_void>(),
                 payload.len() as i32,
+                std::ptr::null_mut(),
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         for sample in out {
             assert!((sample - 2.25).abs() < 1e-6);
         }
@@ -2159,7 +2301,10 @@ sample { out1 = amp + pinned }
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, frames), -2);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            -2
+        );
         assert_eq!(onda_init(instance.0, 0), -2);
         assert_eq!(onda_init(instance.0, 1), 0);
 
@@ -2170,16 +2315,23 @@ sample { out1 = amp + pinned }
                 0,
                 payload.as_ptr().cast::<c_void>(),
                 payload.len() as i32,
+                std::ptr::null_mut(),
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         for sample in &out {
             assert!((*sample - 2.0).abs() < 1e-6, "got {sample}");
         }
 
         assert_eq!(onda_init(instance.0, 0), 0);
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         for sample in &out {
             assert!((*sample - 1.5).abs() < 1e-6, "got {sample}");
         }
@@ -2191,17 +2343,24 @@ sample { out1 = amp + pinned }
                 0,
                 changed_payload.as_ptr().cast::<c_void>(),
                 changed_payload.len() as i32,
+                std::ptr::null_mut(),
             ),
             0
         );
         assert_eq!(onda_init(instance.0, 0), 0);
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         for sample in &out {
             assert!((*sample - 1.25).abs() < 1e-6);
         }
 
         assert_eq!(onda_init(instance.0, 1), 0);
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         for sample in &out {
             assert!((*sample - 1.0).abs() < 1e-6);
         }
@@ -2254,7 +2413,7 @@ sample {
             0
         );
         assert_eq!(onda_validate_bindings(instance), 0);
-        assert_eq!(onda_process_unchecked(instance), 0);
+        assert_eq!(onda_process_unchecked(instance, std::ptr::null_mut()), 0);
         assert!((out[0] - 0.5).abs() < 1e-6);
 
         onda_instance_destroy(instance);
@@ -2300,7 +2459,10 @@ fn c_api_custom_allocator_allocates_on_creation_thread_and_frees_on_instance_own
                 ),
                 0
             );
-            assert_eq!(onda_process_checked(instance, frames as i32), 0);
+            assert_eq!(
+                onda_process_checked(instance, frames as i32, std::ptr::null_mut()),
+                0
+            );
             onda_instance_destroy(instance);
             output
         })
@@ -2367,7 +2529,10 @@ sample {
             0
         );
 
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(out[0], 1.0);
         assert_eq!(out[frames as usize - 1], 512.0);
 
@@ -2383,7 +2548,10 @@ sample {
             state_bytes
         );
 
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(out[0], 513.0);
         assert_eq!(out[frames as usize - 1], 1024.0);
 
@@ -2395,7 +2563,10 @@ sample {
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(out[0], 513.0);
         assert_eq!(out[frames as usize - 1], 1024.0);
     }
@@ -2512,7 +2683,10 @@ sample { out1 = 0.25 }
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, 128), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, 128, std::ptr::null_mut()),
+            0
+        );
         for sample in out {
             assert!((sample - 0.25).abs() < 1e-6);
         }
@@ -2550,7 +2724,10 @@ sample { out1 = 0.25 }
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, sub_frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, sub_frames, std::ptr::null_mut()),
+            0
+        );
         for sample in &out[..sub_frames as usize] {
             assert!((*sample - 0.25).abs() < 1e-6);
         }
@@ -2603,7 +2780,13 @@ block {
         );
 
         assert_eq!(
-            onda_process_checked_segment(instance.0, 0, segment_frames, ONDA_PROCESS_BEGIN_BLOCK),
+            onda_process_checked_segment(
+                instance.0,
+                0,
+                segment_frames,
+                ONDA_PROCESS_BEGIN_BLOCK,
+                std::ptr::null_mut()
+            ),
             0
         );
         for sample in &out[..segment_frames as usize] {
@@ -2616,7 +2799,8 @@ block {
                 instance.0,
                 segment_frames,
                 segment_frames,
-                ONDA_PROCESS_END_BLOCK
+                ONDA_PROCESS_END_BLOCK,
+                std::ptr::null_mut()
             ),
             0
         );
@@ -2629,7 +2813,13 @@ block {
 
         out.fill(0.0);
         assert_eq!(
-            onda_process_checked_segment(instance.0, 0, frames, ONDA_PROCESS_FULL_BLOCK),
+            onda_process_checked_segment(
+                instance.0,
+                0,
+                frames,
+                ONDA_PROCESS_FULL_BLOCK,
+                std::ptr::null_mut()
+            ),
             0
         );
         for sample in &out {
@@ -2637,11 +2827,17 @@ block {
         }
 
         assert_eq!(
-            onda_process_checked_segment(instance.0, 0, frames, 1 << 8),
+            onda_process_checked_segment(instance.0, 0, frames, 1 << 8, std::ptr::null_mut()),
             -2
         );
         assert_eq!(
-            onda_process_checked_segment(instance.0, frames - 1, 2, ONDA_PROCESS_END_BLOCK),
+            onda_process_checked_segment(
+                instance.0,
+                frames - 1,
+                2,
+                ONDA_PROCESS_END_BLOCK,
+                std::ptr::null_mut()
+            ),
             -2
         );
     }
@@ -2698,7 +2894,8 @@ sample {
                 instance.0,
                 start_frame,
                 segment_frames,
-                ONDA_PROCESS_FULL_BLOCK
+                ONDA_PROCESS_FULL_BLOCK,
+                std::ptr::null_mut()
             ),
             0
         );
@@ -2757,7 +2954,13 @@ block {
         assert_eq!(onda_prepare_unchecked_process(instance.0), 0);
 
         assert_eq!(
-            onda_process_unchecked_segment(instance.0, 0, segment_frames, ONDA_PROCESS_BEGIN_BLOCK),
+            onda_process_unchecked_segment(
+                instance.0,
+                0,
+                segment_frames,
+                ONDA_PROCESS_BEGIN_BLOCK,
+                std::ptr::null_mut()
+            ),
             0
         );
         for sample in &out[..segment_frames as usize] {
@@ -2770,7 +2973,8 @@ block {
                 instance.0,
                 segment_frames,
                 segment_frames,
-                ONDA_PROCESS_END_BLOCK
+                ONDA_PROCESS_END_BLOCK,
+                std::ptr::null_mut()
             ),
             0
         );
@@ -2783,7 +2987,13 @@ block {
 
         out.fill(0.0);
         assert_eq!(
-            onda_process_unchecked_segment(instance.0, 0, frames, ONDA_PROCESS_FULL_BLOCK),
+            onda_process_unchecked_segment(
+                instance.0,
+                0,
+                frames,
+                ONDA_PROCESS_FULL_BLOCK,
+                std::ptr::null_mut()
+            ),
             0
         );
         for sample in &out {
@@ -2839,7 +3049,10 @@ sample { out1 = SAMPLE_RATE }
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, block_size), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, block_size, std::ptr::null_mut()),
+            0
+        );
         for sample in out {
             assert!((sample - sample_rate).abs() < 1e-3);
         }
@@ -2881,7 +3094,13 @@ sample:
         );
         assert_eq!(onda_prepare_unchecked_process(instance.0), 0);
         assert_eq!(
-            onda_process_unchecked_segment(instance.0, 0, 1, ONDA_PROCESS_BEGIN_BLOCK),
+            onda_process_unchecked_segment(
+                instance.0,
+                0,
+                1,
+                ONDA_PROCESS_BEGIN_BLOCK,
+                std::ptr::null_mut()
+            ),
             ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE,
             "generated runtime failures must cross the C ABI with their named status code"
         );
@@ -3075,7 +3294,10 @@ sample { out1 = 0.25 }
             onda_bind_buffer(instance.0, 0, std::ptr::null_mut(), 0, 0, 48_000.0, 0,),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, 512), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, 512, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(onda_reset_buffer_to_project_default(instance.0, 0), -2);
 
         let mut samples = [1.0_f32];
@@ -3091,7 +3313,10 @@ sample { out1 = 0.25 }
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, 512), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, 512, std::ptr::null_mut()),
+            0
+        );
         assert!(output.iter().all(|sample| (*sample - 0.25).abs() < 1e-6));
 
         assert_eq!(
@@ -3246,7 +3471,10 @@ sample {
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
 
         for sample in out1 {
             assert!(sample.abs() > 1e-9);
@@ -3292,7 +3520,10 @@ sample {
             ),
             0
         );
-        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            0
+        );
         for sample in out {
             assert!((sample - 512.0).abs() < 1e-6);
         }

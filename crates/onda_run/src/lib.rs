@@ -38,6 +38,7 @@ pub use project_io::{
 };
 
 const SCOPE_MAX_FRAMES: usize = 1024;
+const MAX_VISIBLE_DELEGATE_OCCURRENCES: usize = 64;
 const SOURCE_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_millis(500);
 /// Periodic controller polling interval used while a native run frontend is loaded.
@@ -96,6 +97,10 @@ pub struct RunState {
     pub output_channels: usize,
     pub buffers: Vec<Value>,
     pub events: Vec<Value>,
+    pub delegates: Vec<Value>,
+    pub delegate_occurrences: Vec<Value>,
+    pub delegate_overflow_count: u64,
+    pub delegate_transport_drop_count: u64,
     pub params: Vec<Value>,
     pub input_devices: Vec<String>,
     pub output_devices: Vec<String>,
@@ -116,6 +121,10 @@ impl RunState {
             output_channels: 0,
             buffers: Vec::new(),
             events: Vec::new(),
+            delegates: Vec::new(),
+            delegate_occurrences: Vec::new(),
+            delegate_overflow_count: 0,
+            delegate_transport_drop_count: 0,
             params: Vec::new(),
             input_devices: list_input_devices(),
             output_devices: list_output_devices(),
@@ -202,6 +211,7 @@ struct ReadyEvent {
     params: Vec<Value>,
     buffers: Vec<Value>,
     events: Vec<Value>,
+    delegates: Vec<Value>,
     output_channels: usize,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
@@ -217,6 +227,7 @@ struct RawReadyEvent {
     params: Option<Vec<RunParamWire>>,
     buffers: Option<Vec<Value>>,
     events: Option<Vec<Value>>,
+    delegates: Option<Vec<Value>>,
     #[serde(rename = "outputChannels")]
     output_channels: Option<usize>,
     #[serde(rename = "inputDevices")]
@@ -663,6 +674,9 @@ impl RunController {
         self.state.status = status.to_owned();
         self.state.error = None;
         self.state.output_channels = 0;
+        self.state.delegate_occurrences.clear();
+        self.state.delegate_overflow_count = 0;
+        self.state.delegate_transport_drop_count = 0;
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
 
@@ -803,6 +817,10 @@ impl RunController {
         );
         self.state.events = ready.events;
         apply_preserved_event_state(&mut self.state.events, &self.preserved_events);
+        self.state.delegates = ready.delegates;
+        self.state.delegate_occurrences.clear();
+        self.state.delegate_overflow_count = 0;
+        self.state.delegate_transport_drop_count = 0;
         self.state.path = ready.path;
         self.state.output_channels = ready.output_channels;
         if !ready.input_devices.is_empty() {
@@ -968,6 +986,7 @@ impl RunController {
         self.state.status = "Runtime error".to_owned();
         self.state.error = Some(error.unwrap_or_else(|| child_exit_error(code)));
         self.state.output_channels = 0;
+        self.state.delegate_occurrences.clear();
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
     }
@@ -975,6 +994,33 @@ impl RunController {
     fn handle_tcp_response(&mut self, line: &str) -> PollResult {
         let mut poll = PollResult::default();
         if let Ok(resp) = serde_json::from_str::<Value>(line) {
+            if resp.get("event").and_then(Value::as_str) == Some("delegates") {
+                if let Some(occurrences) = resp.get("occurrences").and_then(Value::as_array) {
+                    self.state
+                        .delegate_occurrences
+                        .extend(occurrences.iter().cloned());
+                    let excess = self
+                        .state
+                        .delegate_occurrences
+                        .len()
+                        .saturating_sub(MAX_VISIBLE_DELEGATE_OCCURRENCES);
+                    self.state.delegate_occurrences.drain(..excess);
+                }
+                self.state.delegate_overflow_count =
+                    self.state.delegate_overflow_count.saturating_add(
+                        resp.get("overflowCount")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                self.state.delegate_transport_drop_count =
+                    self.state.delegate_transport_drop_count.saturating_add(
+                        resp.get("transportDropCount")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                poll.state_changed = true;
+                return poll;
+            }
             let id = resp.get("id").and_then(Value::as_u64);
             let succeeded = resp.get("ok").and_then(Value::as_bool).unwrap_or(true);
             if let Some(command) = id.and_then(|id| self.pending_commands.remove(&id)) {
@@ -1372,6 +1418,7 @@ impl ChildSession {
                             params,
                             buffers: raw.buffers.unwrap_or_default(),
                             events: raw.events.unwrap_or_default(),
+                            delegates: raw.delegates.unwrap_or_default(),
                             output_channels: raw.output_channels.unwrap_or(0),
                             input_devices: raw.input_devices.unwrap_or_default(),
                             output_devices: raw.output_devices.unwrap_or_default(),

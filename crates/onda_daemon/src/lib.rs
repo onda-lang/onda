@@ -2,7 +2,8 @@ mod run_session;
 
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
-    InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo,
+    InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBuildError, RunDelegateBatch,
+    RunDelegateInfo, RunDelegateOccurrence, RunDelegateParamInfo, RunDelegateValue, RunEventInfo,
     RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo, RunSession,
 };
 
@@ -845,6 +846,57 @@ mod tests {
             .expect("run render after event should succeed");
         assert!((rendered[0][0] - 72.0).abs() < 1e-6);
         assert!((rendered[1][0] - 1.25).abs() < 1e-6);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_transports_delegate_payloads_from_event_and_process_calls() {
+        let dir = mk_temp_dir("run_delegates");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate report(code: i32, values: f32[])\n\ninit:\n  pending = true\n\nevent trigger(values: f32[]):\n  report(7, values)\n\nsample:\n  if pending:\n    pending = false\n    report(9, [0.25, 0.5])\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run(&main)
+            .expect("delegate run should compile and start");
+        let run = session.run_mut(&main).expect("active delegate run");
+        assert_eq!(run.delegate_info()[0].name, "report");
+        run.trigger_event(
+            "trigger",
+            &[RunEventValue::Array(vec![
+                RunEventValue::Number(1.25),
+                RunEventValue::Number(-2.5),
+            ])],
+        )
+        .expect("delegate-producing event should run");
+        let event_batch = run
+            .take_delegate_batch()
+            .expect("event delegate batch should decode");
+        assert_eq!(event_batch.overflow_count, 0);
+        assert_eq!(event_batch.occurrences.len(), 1);
+        assert_eq!(event_batch.occurrences[0].name, "report");
+        assert_eq!(
+            event_batch.occurrences[0].values[1].value,
+            RunEventValue::Array(vec![
+                RunEventValue::Number(1.25),
+                RunEventValue::Number(-2.5),
+            ])
+        );
+
+        run.render_block_interleaved(&mut vec![0.0; RunOptions::default().block_size])
+            .expect("delegate-producing process call should run");
+        let process_batch = run
+            .take_delegate_batch()
+            .expect("process delegate batch should decode");
+        assert_eq!(process_batch.occurrences.len(), 1);
+        assert_eq!(
+            process_batch.occurrences[0].values[0].value,
+            RunEventValue::Number(9.0)
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

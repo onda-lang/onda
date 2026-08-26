@@ -81,6 +81,7 @@ pub(super) fn build_graph_proc_surfaces(
                         timing: proc.outs_timing,
                     },
                     events: HashMap::new(),
+                    delegates: HashMap::new(),
                     buffers: Vec::new(),
                     has_block: false,
                     sample_oversample_factor: 1,

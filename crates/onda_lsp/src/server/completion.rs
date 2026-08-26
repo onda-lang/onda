@@ -6,10 +6,11 @@ use std::sync::OnceLock;
 use onda_frontend::{
     is_reserved_word, language_type_names, parse_program, parse_program_file_with_overlays,
     stdlib_module_names, ArrayElemType, Block, BufferBlock, BufferDecl, ConstDecl, DeclType,
-    EventDef, EventParamDecl, EventParamType, Expr, FnParamDecl, FnParamType, FunctionDef,
-    InitBlock, NamespaceAliasDecl, NamespaceDecl, NamespaceItem, NamespaceTemplateParam,
-    OutputTiming, ParamBlock, ParamDecl, PortBlock, PortDecl, ProcessorDef, Program, Span, Stmt,
-    StructDef, TaskDef, UseDecl, LANGUAGE_KEYWORDS, PARAM_SCALES, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    DelegateDef, EventDef, EventParamDecl, EventParamType, Expr, FnParamDecl, FnParamType,
+    FunctionDef, InitBlock, NamespaceAliasDecl, NamespaceDecl, NamespaceItem,
+    NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl, PortBlock, PortDecl, ProcessorDef,
+    Program, Span, Stmt, StructDef, TaskDef, UseDecl, WhenDef, LANGUAGE_KEYWORDS, PARAM_SCALES,
+    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 use onda_semantics::builtins::{
     builtin_constant_names, public_builtin_function_names, ARRAY_LEN_METHOD,
@@ -670,6 +671,7 @@ struct ProcInfo {
     outs: Vec<String>,
     params: Vec<ProcParamInfo>,
     events: Vec<EventInfo>,
+    delegates: Vec<EventInfo>,
     buffers: Vec<ProcBufferInfo>,
 }
 
@@ -939,6 +941,11 @@ impl CompletionIndex {
                 ))
                 .collect(),
             events: proc_def.events.iter().map(event_info_from_def).collect(),
+            delegates: proc_def
+                .delegates
+                .iter()
+                .map(delegate_info_from_def)
+                .collect(),
             buffers: proc_def
                 .buffers
                 .iter()
@@ -1192,6 +1199,11 @@ impl CompletionIndex {
                         }
                     }
                 }
+                Block::When(when) => {
+                    if let Some(owner_idx) = top_level_scope {
+                        self.collect_when_scope(owner_idx, when);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1285,6 +1297,15 @@ impl CompletionIndex {
                     for event in &events.events {
                         items.push(event_item(event));
                     }
+                }
+                Block::Delegates(delegates) => {
+                    extend_span(&mut span, delegates.loc);
+                    for delegate in &delegates.delegates {
+                        items.push(delegate_item(delegate));
+                    }
+                }
+                Block::When(when) => {
+                    extend_span(&mut span, span_for_when_scope(when));
                 }
                 Block::Tasks(task_block) => {
                     extend_span(&mut span, task_block.loc);
@@ -1434,6 +1455,9 @@ impl CompletionIndex {
         for event in &proc_def.events {
             items.push(event_item(event));
         }
+        for delegate in &proc_def.delegates {
+            items.push(delegate_item(delegate));
+        }
         for def in &proc_def.local_defs {
             let info = function_info_from_def(def);
             items.push(scope_function_item(
@@ -1488,6 +1512,9 @@ impl CompletionIndex {
         }
         for event in &proc_def.events {
             self.collect_event_scope(owner_idx, event);
+        }
+        for when in &proc_def.whens {
+            self.collect_when_scope(owner_idx, when);
         }
         for def in &proc_def.local_defs {
             self.collect_function_scope(Some(owner_idx), &scope_namespace, def, "proc-local def");
@@ -1713,6 +1740,28 @@ impl CompletionIndex {
             instances,
         )?;
         self.collect_nested_stmt_scopes(scope_idx, &event.body);
+        Some(scope_idx)
+    }
+
+    fn collect_when_scope(&mut self, parent: usize, when: &WhenDef) -> Option<usize> {
+        let mut items = when
+            .bindings
+            .iter()
+            .filter(|binding| binding.name != "_")
+            .map(|binding| argument_item(&binding.name, "delegate payload binding"))
+            .collect::<Vec<_>>();
+        self.collect_stmt_items(&when.body, "event local", false, &mut items);
+        let mut instances = HashMap::<String, InstanceInfo>::new();
+        let scope_namespace = self.child_scope_namespace(Some(parent), "");
+        self.collect_stmt_scope_instances(&when.body, &scope_namespace, false, &mut instances);
+        let scope_idx = self.push_scope(
+            Some(parent),
+            &scope_namespace,
+            span_for_when_scope(when),
+            items,
+            instances,
+        )?;
+        self.collect_nested_stmt_scopes(scope_idx, &when.body);
         Some(scope_idx)
     }
 
@@ -2325,6 +2374,25 @@ impl CompletionIndex {
         };
         let mut out = Vec::new();
         if let Some(proc_info) = self.procs.get(type_name) {
+            if self.in_when_target_context() {
+                return proc_info
+                    .delegates
+                    .iter()
+                    .map(|delegate| {
+                        CompletionItem::new(delegate.name.clone(), COMPLETION_ITEM_KIND_EVENT)
+                            .maybe_label_detail(Some(format!("({})", delegate.signature)))
+                            .detail(format!(
+                                "delegate {}({})",
+                                delegate.name, delegate.signature
+                            ))
+                            .sort_text(completion_sort_text(
+                                CompletionSortGroup::Event,
+                                &delegate.name,
+                            ))
+                    })
+                    .filter(|item| prefix_matches(&item.label, prefix))
+                    .collect();
+            }
             for name in &proc_info.ins {
                 out.push(
                     CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_PROPERTY)
@@ -2431,6 +2499,15 @@ impl CompletionIndex {
         out.into_iter()
             .filter(|item| prefix_matches(&item.label, prefix))
             .collect()
+    }
+
+    fn in_when_target_context(&self) -> bool {
+        let Some(line) = self.source.lines().nth(self.position.line as usize) else {
+            return false;
+        };
+        let end = byte_index_for_lsp_character(line, self.position.character);
+        line.get(..end)
+            .is_some_and(|prefix| prefix.trim_start().starts_with("when "))
     }
 
     fn buffer_member_items(&self) -> Vec<CompletionItem> {
@@ -3318,6 +3395,24 @@ fn event_item(event: &EventDef) -> CompletionItem {
         ))
 }
 
+fn delegate_item(delegate: &DelegateDef) -> CompletionItem {
+    let signature = delegate
+        .params
+        .iter()
+        .map(format_event_param_signature)
+        .collect::<Vec<_>>()
+        .join(", ");
+    CompletionItem::new(delegate.name.clone(), COMPLETION_ITEM_KIND_EVENT)
+        .maybe_label_detail(Some(format!("({signature})")))
+        .detail(format!("delegate {}({signature})", delegate.name))
+        .insert_text(format!("{}(", delegate.name))
+        .snippet(format!("{}($1)", delegate.name))
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::Event,
+            &delegate.name,
+        ))
+}
+
 fn task_item(task: &TaskDef) -> CompletionItem {
     CompletionItem::new(task.name.clone(), COMPLETION_ITEM_KIND_FUNCTION)
         .maybe_label_detail(Some("()".to_owned()))
@@ -3502,6 +3597,12 @@ fn span_for_event_scope(event: &EventDef) -> Span {
         .unwrap_or(event.loc)
 }
 
+fn span_for_when_scope(when: &WhenDef) -> Span {
+    span_for_stmt_body(&when.body)
+        .map(|body_span| Span::spanning(when.loc, body_span))
+        .unwrap_or(when.loc)
+}
+
 fn span_for_task_scope(task: &TaskDef) -> Span {
     span_for_stmt_body(&task.body)
         .map(|body_span| Span::spanning(task.loc, body_span))
@@ -3546,6 +3647,12 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     }
     for event in &proc_def.events {
         span = Span::spanning(span, span_for_event_scope(event));
+    }
+    for delegate in &proc_def.delegates {
+        span = Span::spanning(span, delegate.loc);
+    }
+    for when in &proc_def.whens {
+        span = Span::spanning(span, span_for_when_scope(when));
     }
     for def in &proc_def.local_defs {
         span = Span::spanning(span, span_for_function_scope(def));
@@ -4137,6 +4244,23 @@ fn event_info_from_def(event: &EventDef) -> EventInfo {
     }
 }
 
+fn delegate_info_from_def(delegate: &DelegateDef) -> EventInfo {
+    EventInfo {
+        name: delegate.name.clone(),
+        param_names: delegate
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect(),
+        signature: delegate
+            .params
+            .iter()
+            .map(format_event_param_signature)
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
 fn function_info_from_def(def: &FunctionDef) -> FunctionInfo {
     FunctionInfo {
         name: def.name.clone(),
@@ -4171,6 +4295,11 @@ fn proc_info_from_def(name: &str, proc_def: &ProcessorDef) -> ProcInfo {
             ))
             .collect(),
         events: proc_def.events.iter().map(event_info_from_def).collect(),
+        delegates: proc_def
+            .delegates
+            .iter()
+            .map(delegate_info_from_def)
+            .collect(),
         buffers: proc_def
             .buffers
             .iter()
@@ -5013,6 +5142,63 @@ mod tests {
                 })),
             "the event declaration helpers must not be offered inside a runtime block"
         );
+    }
+
+    #[test]
+    fn delegate_completions_are_labeled_and_child_members_are_subscription_only() {
+        let source = "delegate finished(reason: i32)\n\nsample:\n  finished(1)\n  out1 = 0.0\n";
+        let parsed = parse_program(source).expect("delegate source should parse");
+        let index = CompletionIndex::build(
+            Some(&parsed),
+            source,
+            None,
+            CompletionPosition {
+                line: 3,
+                character: 4,
+            },
+        );
+        let finished = index
+            .general_items("fin")
+            .into_iter()
+            .find(|item| item.label == "finished")
+            .expect("owner delegate should be completed");
+        assert_eq!(
+            finished.detail.as_deref(),
+            Some("delegate finished(reason: i32)")
+        );
+
+        let source = "proc Child:\n  event start():\n    return\n  delegate stopped(reason: i32)\n  sample:\n    out1 = 0.0\n\ninit:\n  child = Child()\n\nwhen child.stopped(reason):\n  out1 = f32(reason)\n\nsample:\n  out1 = child()\n";
+        let parsed = parse_program(source).expect("child delegate source should parse");
+        let index = CompletionIndex::build(
+            Some(&parsed),
+            source,
+            None,
+            CompletionPosition {
+                line: 10,
+                character: 11,
+            },
+        );
+        let members = index.member_items("child", "");
+        assert!(members.iter().any(|item| {
+            item.label == "stopped"
+                && item.detail.as_deref() == Some("delegate stopped(reason: i32)")
+        }));
+        assert!(members.iter().all(|item| item.label != "start"));
+        let body_index = CompletionIndex::build(
+            Some(&parsed),
+            source,
+            None,
+            CompletionPosition {
+                line: 11,
+                character: 19,
+            },
+        );
+        let binding = body_index
+            .general_items("rea")
+            .into_iter()
+            .find(|item| item.label == "reason")
+            .expect("when payload binding should be completed in its body");
+        assert_eq!(binding.detail.as_deref(), Some("delegate payload binding"));
     }
 
     fn position_at(source: &str, needle: &str, token_offset: usize) -> CompletionPosition {

@@ -189,7 +189,7 @@ fn collect_block_parameters(block: &Block, used: &mut [bool]) {
                 collect_place_parameters(destination, used);
                 collect_rvalue_parameters(value, used);
             }
-            StatementKind::Call { args, .. } => {
+            StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
                 for argument in args {
                     collect_call_argument_parameters(argument, used);
                 }
@@ -307,7 +307,7 @@ fn rewrite_block_parameters(block: &mut Block, mapping: &[Option<ParameterId>]) 
                 rewrite_place_parameter(destination, mapping);
                 rewrite_rvalue_parameters(value, mapping);
             }
-            StatementKind::Call { args, .. } => {
+            StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
                 for argument in args {
                     rewrite_call_argument_parameters(argument, mapping);
                 }

@@ -2,8 +2,8 @@ use std::io::{self, BufRead, BufWriter, Write};
 use std::path::Path;
 
 use onda_daemon::{
-    DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunEventValue, RunOptions,
-    RunParamInfo,
+    DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunDelegateBatch, RunDelegateInfo,
+    RunEventValue, RunOptions, RunParamInfo,
 };
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
@@ -248,6 +248,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                     "path": display_path(run.path()),
                     "version": run.version().map(|v| v.0),
                     "params": run.param_info().iter().map(run_param_json).collect::<Vec<_>>(),
+                    "delegates": run.delegate_info().iter().map(run_delegate_json).collect::<Vec<_>>(),
                     "output_channels": run.output_channel_count(),
                 })
             })
@@ -291,9 +292,20 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             path,
             include_sample_bits,
         } => session
-            .render_run_block(path)
-            .map(|channels| rendered_channels_json(channels, include_sample_bits))
-            .map_err(|diag| diagnostic_string("run_render failed", &diag)),
+            .run_mut(path)
+            .ok_or_else(|| "run is not active".to_owned())
+            .and_then(|run| {
+                let channels = run
+                    .render_block()
+                    .map_err(|diag| diagnostic_string("run_render failed", &diag))?;
+                let batch = run
+                    .take_delegate_batch()
+                    .map_err(|diag| diagnostic_string("run_render delegate decoding failed", &diag))?;
+                Ok(attach_run_delegate_batch(
+                    rendered_channels_json(channels, include_sample_bits),
+                    &batch,
+                ))
+            }),
         Request::RunRenderSegments {
             path,
             segments,
@@ -306,19 +318,31 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                     .into_iter()
                     .map(|segment| (segment.start_frame, segment.frames, segment.flags))
                     .collect::<Vec<_>>();
-                run.render_block_segments(&segments)
-                    .map_err(|diag| diagnostic_string("run_render_segments failed", &diag))
+                let channels = run
+                    .render_block_segments(&segments)
+                    .map_err(|diag| diagnostic_string("run_render_segments failed", &diag))?;
+                let batch = run.take_delegate_batch().map_err(|diag| {
+                    diagnostic_string("run_render_segments delegate decoding failed", &diag)
+                })?;
+                Ok(attach_run_delegate_batch(
+                    rendered_channels_json(channels, include_sample_bits),
+                    &batch,
+                ))
             })
-            .map(|channels| rendered_channels_json(channels, include_sample_bits)),
+            ,
         Request::RunTriggerEvent { path, name, values } => session
             .run_mut(path)
             .ok_or_else(|| "run is not active".to_owned())
             .and_then(|run| {
                 let values = values.into_iter().map(Into::into).collect::<Vec<_>>();
                 run.trigger_event(&name, &values)
-                    .map_err(|diag| diagnostic_string("run_trigger_event failed", &diag))
+                    .map_err(|diag| diagnostic_string("run_trigger_event failed", &diag))?;
+                let batch = run.take_delegate_batch().map_err(|diag| {
+                    diagnostic_string("run_trigger_event delegate decoding failed", &diag)
+                })?;
+                Ok(attach_run_delegate_batch(json!({ "status": "ok" }), &batch))
             })
-            .map(|_| json!({ "status": "ok" })),
+            ,
         Request::RunSnapshot { path } => session
             .run(path)
             .ok_or_else(|| "run is not active".to_owned())
@@ -364,6 +388,50 @@ fn rendered_channels_json(channels: Vec<Vec<f32>>, include_sample_bits: bool) ->
         result["channel_bits"] = json!(channel_bits);
     }
     result
+}
+
+fn run_delegate_json(delegate: &RunDelegateInfo) -> Value {
+    json!({
+        "index": delegate.index,
+        "name": delegate.name,
+        "params": delegate.params.iter().map(|param| json!({
+            "index": param.index,
+            "name": param.name,
+            "type_repr": param.type_repr,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn attach_run_delegate_batch(mut result: Value, batch: &RunDelegateBatch) -> Value {
+    let occurrences = batch
+        .occurrences
+        .iter()
+        .map(|occurrence| {
+            let values = occurrence
+                .values
+                .iter()
+                .map(|entry| (entry.name.clone(), run_event_value_json(&entry.value)))
+                .collect::<serde_json::Map<_, _>>();
+            json!({
+                "index": occurrence.index,
+                "name": occurrence.name,
+                "values": values,
+            })
+        })
+        .collect::<Vec<_>>();
+    result["delegate_occurrences"] = Value::Array(occurrences);
+    result["delegate_overflow_count"] = json!(batch.overflow_count);
+    result
+}
+
+fn run_event_value_json(value: &RunEventValue) -> Value {
+    match value {
+        RunEventValue::Bool(value) => Value::Bool(*value),
+        RunEventValue::Number(value) => json!(value),
+        RunEventValue::Array(values) => {
+            Value::Array(values.iter().map(run_event_value_json).collect())
+        }
+    }
 }
 
 fn diagnostic_json(diag: &Diagnostic) -> Value {

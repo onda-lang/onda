@@ -3,14 +3,15 @@ use std::{collections::HashMap, mem};
 
 use onda_codegen_llvm::{
     check_execution_status, jit_program_from_optimized_mir_with_options, DeclaredBufferChannels,
-    DeclaredEvent, DeclaredEventParam, JitProgram, MirCompileOptions, TargetOptLevel,
+    DeclaredDelegate, DeclaredEvent, DeclaredEventParam, JitProgram, MirCompileOptions,
+    TargetOptLevel,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, init, prepare_unchecked_process,
-    process_unchecked_segment, set_param_by_index, trigger_event_by_index, InitMode, Instance,
-    InstanceConfig,
+    process_unchecked_segment, set_param_by_index, trigger_event_by_index, DelegateBatch, InitMode,
+    Instance, InstanceConfig,
 };
 use onda_semantics::{AnalysisOptions, TypedProgram};
 
@@ -97,6 +98,39 @@ pub struct RunEventParamInfo {
     pub value: RunEventValue,
 }
 
+#[derive(Debug, Clone)]
+pub struct RunDelegateInfo {
+    pub index: usize,
+    pub name: String,
+    pub params: Vec<RunDelegateParamInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunDelegateParamInfo {
+    pub index: usize,
+    pub name: String,
+    pub type_repr: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunDelegateOccurrence {
+    pub index: usize,
+    pub name: String,
+    pub values: Vec<RunDelegateValue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunDelegateValue {
+    pub name: String,
+    pub value: RunEventValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunDelegateBatch {
+    pub occurrences: Vec<RunDelegateOccurrence>,
+    pub overflow_count: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEventValue {
     Bool(bool),
@@ -165,7 +199,13 @@ pub struct RunSession {
     buffer_bindings: Vec<Option<RunBufferBinding>>,
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
+    delegate_storage: Vec<u8>,
+    delegate_used: usize,
+    delegate_record_count: u32,
+    delegate_overflow_count: u32,
 }
+
+const RUN_DELEGATE_CAPACITY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
 struct RunBufferBinding {
@@ -250,6 +290,7 @@ impl RunSession {
             &param_runtime_values,
         )
         .map_err(RunBuildError::Runtime)?;
+        let has_delegates = jit.delegate_count() != 0;
 
         Ok(Self {
             path,
@@ -263,6 +304,14 @@ impl RunSession {
             buffer_bindings,
             input_buffers,
             output_buffers,
+            delegate_storage: if has_delegates {
+                vec![0; RUN_DELEGATE_CAPACITY_BYTES]
+            } else {
+                Vec::new()
+            },
+            delegate_used: 0,
+            delegate_record_count: 0,
+            delegate_overflow_count: 0,
         })
     }
 
@@ -373,6 +422,28 @@ impl RunSession {
             .collect()
     }
 
+    pub fn delegate_info(&self) -> Vec<RunDelegateInfo> {
+        (0..self.jit.delegate_count())
+            .filter_map(|index| {
+                let desc = self.jit.delegate_descriptor(index)?;
+                Some(RunDelegateInfo {
+                    index,
+                    name: desc.name().to_owned(),
+                    params: desc
+                        .params()
+                        .iter()
+                        .enumerate()
+                        .map(|(param_index, param)| RunDelegateParamInfo {
+                            index: param_index,
+                            name: param.name().to_owned(),
+                            type_repr: param.type_repr(),
+                        })
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+
     pub fn set_param_f64(&mut self, name: &str, value: f64) -> Result<(), Diagnostic> {
         let Some(index) = self.jit.param_index(name) else {
             return Err(Diagnostic::runtime(
@@ -435,7 +506,15 @@ impl RunSession {
             return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
         };
         let payload = event_payload_bytes(desc, values)?;
-        trigger_event_by_index(&mut self.instance, index, &payload)
+        self.begin_delegate_batch();
+        let mut batch = Self::next_delegate_batch(&mut self.delegate_storage, self.delegate_used);
+        let result = trigger_event_by_index(&mut self.instance, index, &payload, Some(&mut batch));
+        let batch_result = (batch.used_bytes, batch.record_count, batch.overflow_count);
+        self.finish_delegate_batch(batch_result);
+        if result.is_err() {
+            self.begin_delegate_batch();
+        }
+        result
     }
 
     pub fn render_block(&mut self) -> Result<Vec<Vec<f32>>, Diagnostic> {
@@ -504,6 +583,7 @@ impl RunSession {
         }
 
         self.apply_smoothed_params()?;
+        self.begin_delegate_batch();
         for buffer in &mut self.output_buffers {
             buffer.fill(0.0);
         }
@@ -511,10 +591,25 @@ impl RunSession {
         // and prepared during build/rebuild. Their backing allocations remain
         // stable for the lifetime of this instance.
         for &(start_frame, frames, flags) in segments {
-            unsafe {
-                let status =
-                    process_unchecked_segment(&mut self.instance, start_frame, frames, flags)?;
-                check_execution_status(status)?;
+            let mut batch =
+                Self::next_delegate_batch(&mut self.delegate_storage, self.delegate_used);
+            let result = unsafe {
+                process_unchecked_segment(
+                    &mut self.instance,
+                    start_frame,
+                    frames,
+                    flags,
+                    Some(&mut batch),
+                )
+            };
+            let batch_result = (batch.used_bytes, batch.record_count, batch.overflow_count);
+            self.finish_delegate_batch(batch_result);
+            match result.and_then(check_execution_status) {
+                Ok(()) => {}
+                Err(error) => {
+                    self.begin_delegate_batch();
+                    return Err(error);
+                }
             }
         }
 
@@ -532,6 +627,41 @@ impl RunSession {
         Ok(())
     }
 
+    pub fn take_delegate_batch(&mut self) -> Result<RunDelegateBatch, Diagnostic> {
+        let result = decode_run_delegate_batch(
+            &self.jit,
+            &self.delegate_storage[..self.delegate_used],
+            self.delegate_record_count,
+            self.delegate_overflow_count,
+        );
+        self.begin_delegate_batch();
+        result
+    }
+
+    fn begin_delegate_batch(&mut self) {
+        self.delegate_used = 0;
+        self.delegate_record_count = 0;
+        self.delegate_overflow_count = 0;
+    }
+
+    fn next_delegate_batch(storage: &mut [u8], used: usize) -> DelegateBatch<'_> {
+        if storage.is_empty() {
+            DelegateBatch::absent()
+        } else {
+            DelegateBatch::from_storage(&mut storage[used..])
+        }
+    }
+
+    fn finish_delegate_batch(&mut self, batch: (u32, u32, u32)) {
+        let (used_bytes, record_count, overflow_count) = batch;
+        self.delegate_used = self
+            .delegate_used
+            .saturating_add(used_bytes as usize)
+            .min(self.delegate_storage.len());
+        self.delegate_record_count = self.delegate_record_count.saturating_add(record_count);
+        self.delegate_overflow_count = self.delegate_overflow_count.saturating_add(overflow_count);
+    }
+
     pub fn snapshot_state_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
         self.instance.snapshot_state_bytes()
     }
@@ -539,6 +669,7 @@ impl RunSession {
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         self.instance.restore_state_bytes(bytes)?;
         prepare_unchecked_process(&mut self.instance)?;
+        self.begin_delegate_batch();
         Ok(())
     }
 
@@ -590,7 +721,9 @@ impl RunSession {
     /// processor state and parameter-smoothing history start fresh.
     pub fn restart(&mut self) -> Result<(), Diagnostic> {
         self.param_runtime_values = self.param_values.clone();
-        self.rebuild_instance()
+        self.rebuild_instance()?;
+        self.begin_delegate_batch();
+        Ok(())
     }
 
     pub fn bind_buffer_wav_path(
@@ -957,6 +1090,113 @@ fn scalar_run_event_value(ty: PrimitiveType, bytes: &[u8]) -> RunEventValue {
         PrimitiveType::Bool => RunEventValue::Bool(false),
         _ => RunEventValue::Number(0.0),
     }
+}
+
+fn decode_run_delegate_batch(
+    jit: &JitProgram,
+    storage: &[u8],
+    record_count: u32,
+    overflow_count: u32,
+) -> Result<RunDelegateBatch, Diagnostic> {
+    let mut cursor = 0usize;
+    let mut occurrences = Vec::with_capacity(record_count as usize);
+    while cursor < storage.len() {
+        let header = take_delegate_bytes(storage, &mut cursor, 8, "record header")?;
+        let delegate_index = native_u32(&header[..4]) as usize;
+        let payload_bytes = native_u32(&header[4..]) as usize;
+        let payload = take_delegate_bytes(storage, &mut cursor, payload_bytes, "payload")?;
+        let Some(delegate) = jit.delegate_descriptor(delegate_index) else {
+            return Err(invalid_delegate_record(format!(
+                "record references unknown delegate index {delegate_index}"
+            )));
+        };
+        occurrences.push(decode_run_delegate_occurrence(
+            delegate_index,
+            delegate,
+            payload,
+        )?);
+    }
+    if occurrences.len() != record_count as usize {
+        return Err(invalid_delegate_record(format!(
+            "record count is {record_count}, but packed storage contains {} records",
+            occurrences.len()
+        )));
+    }
+    Ok(RunDelegateBatch {
+        occurrences,
+        overflow_count,
+    })
+}
+
+fn decode_run_delegate_occurrence(
+    index: usize,
+    delegate: &DeclaredDelegate,
+    payload: &[u8],
+) -> Result<RunDelegateOccurrence, Diagnostic> {
+    let mut cursor = 0usize;
+    let mut values = Vec::with_capacity(delegate.params().len());
+    for param in delegate.params() {
+        let count = if param.is_slice() {
+            let bytes = take_delegate_bytes(payload, &mut cursor, 4, "slice length")?;
+            native_u32(bytes) as usize
+        } else {
+            param.array_len()
+        };
+        let scalar_bytes = event_scalar_bytes(param.elem_ty());
+        let byte_count = count
+            .checked_mul(scalar_bytes)
+            .ok_or_else(|| invalid_delegate_record("payload element count overflows usize"))?;
+        let bytes = take_delegate_bytes(payload, &mut cursor, byte_count, "parameter")?;
+        let value = if param.is_array() || param.is_slice() {
+            RunEventValue::Array(
+                bytes
+                    .chunks_exact(scalar_bytes)
+                    .map(|bytes| scalar_run_event_value(param.elem_ty(), bytes))
+                    .collect(),
+            )
+        } else {
+            scalar_run_event_value(param.elem_ty(), bytes)
+        };
+        values.push(RunDelegateValue {
+            name: param.name().to_owned(),
+            value,
+        });
+    }
+    if cursor != payload.len() {
+        return Err(invalid_delegate_record(format!(
+            "delegate '{}' payload has {} trailing bytes",
+            delegate.name(),
+            payload.len() - cursor
+        )));
+    }
+    Ok(RunDelegateOccurrence {
+        index,
+        name: delegate.name().to_owned(),
+        values,
+    })
+}
+
+fn take_delegate_bytes<'a>(
+    storage: &'a [u8],
+    cursor: &mut usize,
+    len: usize,
+    field: &str,
+) -> Result<&'a [u8], Diagnostic> {
+    let end = cursor
+        .checked_add(len)
+        .filter(|&end| end <= storage.len())
+        .ok_or_else(|| invalid_delegate_record(format!("partial {field}")))?;
+    let bytes = &storage[*cursor..end];
+    *cursor = end;
+    Ok(bytes)
+}
+
+fn native_u32(bytes: &[u8]) -> u32 {
+    u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn invalid_delegate_record(message: impl Into<String>) -> Diagnostic {
+    Diagnostic::runtime(format!("invalid delegate batch: {}", message.into()), 0, 0)
 }
 
 fn event_payload_bytes(

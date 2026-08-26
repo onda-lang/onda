@@ -63,6 +63,7 @@ pub struct JitProgram {
     control_outputs: Arc<Vec<DeclaredIo>>,
     params: Arc<Vec<DeclaredIo>>,
     events: Arc<Vec<DeclaredEvent>>,
+    delegates: Arc<Vec<DeclaredDelegate>>,
     buffers: Arc<Vec<DeclaredBuffer>>,
     buffer_arrays: Arc<Vec<DeclaredBufferArray>>,
     input_index: Arc<HashMap<String, usize>>,
@@ -70,6 +71,7 @@ pub struct JitProgram {
     control_output_index: Arc<HashMap<String, usize>>,
     param_index: Arc<HashMap<String, usize>>,
     event_index: Arc<HashMap<String, usize>>,
+    delegate_index: Arc<HashMap<String, usize>>,
     buffer_index: Arc<HashMap<String, usize>>,
     state_entries: Arc<Vec<DeclaredState>>,
     snapshot_segments: Arc<Vec<StateSnapshotSegment>>,
@@ -544,6 +546,14 @@ pub struct DeclaredEventParam {
     default_values: Option<Vec<ScalarValue>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DeclaredDelegate {
+    name: String,
+    params: Vec<DeclaredEventParam>,
+    payload_bytes: Option<usize>,
+    payload_min_bytes: usize,
+}
+
 /// Compiles validated MIR into the full runtime-facing JIT program contract.
 #[cfg(feature = "llvm-orc")]
 pub fn jit_program_from_mir(program: onda_mir::Program) -> Result<JitProgram, Vec<Diagnostic>> {
@@ -630,12 +640,14 @@ fn wrap_mir_orc_program(compiled: MirJitProgram) -> Result<JitProgram, Vec<Diagn
         control_output_index: Arc::new(metadata.control_output_index),
         param_index: Arc::new(metadata.param_index),
         event_index: Arc::new(metadata.event_index),
+        delegate_index: Arc::new(metadata.delegate_index),
         buffer_index: Arc::new(metadata.buffer_index),
         inputs: Arc::new(metadata.inputs),
         outputs: Arc::new(metadata.outputs),
         control_outputs: Arc::new(metadata.control_outputs),
         params: Arc::new(metadata.params),
         events: Arc::new(metadata.events),
+        delegates: Arc::new(metadata.delegates),
         buffers: Arc::new(metadata.buffers),
         buffer_arrays: Arc::new(metadata.buffer_arrays),
         state_entries: Arc::new(metadata.state_entries),
@@ -852,10 +864,623 @@ mod tests {
                 &buffer_frames,
                 &buffer_channels,
                 &buffer_sample_rates,
+                None,
             )
         }
         .expect("process should succeed");
         output[0]
+    }
+
+    #[test]
+    fn native_delegate_batch_preserves_order_and_payloads() {
+        let program = lower_and_jit(typed_program(
+            r#"
+delegates:
+  first(value: i32)
+  second(value: f32)
+event trigger():
+  first(7)
+  second(2.5)
+sample:
+  out1 = 0.0
+"#,
+        ))
+        .expect("delegate source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut storage = [0_u8; 24];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("event should publish delegates");
+
+        assert_eq!(batch.used_bytes, 24);
+        assert_eq!(batch.record_count, 2);
+        assert_eq!(batch.overflow_count, 0);
+        assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 0);
+        assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 4);
+        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 7);
+        assert_eq!(u32::from_ne_bytes(storage[12..16].try_into().unwrap()), 1);
+        assert_eq!(u32::from_ne_bytes(storage[16..20].try_into().unwrap()), 4);
+        assert_eq!(f32::from_ne_bytes(storage[20..24].try_into().unwrap()), 2.5);
+
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                99,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("a missing checked event should be a neutral call");
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (0, 0, 0)
+        );
+
+        batch.used_bytes = 12;
+        batch.record_count = 1;
+        batch.overflow_count = 3;
+        let status = unsafe {
+            program.trigger_event_by_index_unchecked(
+                &mut state,
+                &params,
+                99,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("a missing unchecked event should be a neutral call");
+        assert_eq!(status, onda_processor_abi::PROCESSOR_EXECUTION_OK);
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn native_delegate_batch_copies_multiple_and_empty_slices() {
+        let program = lower_and_jit(typed_program(
+            r#"
+delegate report(code: i32, values: f32[], tags: i32[])
+event trigger(values: f32[], tags: i32[]):
+  report(7, values, tags)
+sample:
+  out1 = 0.0
+"#,
+        ))
+        .expect("dynamic delegate source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&2_i32.to_ne_bytes());
+        payload.extend_from_slice(&1.25_f32.to_ne_bytes());
+        payload.extend_from_slice(&(-2.5_f32).to_ne_bytes());
+        payload.extend_from_slice(&3_i32.to_ne_bytes());
+        for value in [11_i32, -4, 99] {
+            payload.extend_from_slice(&value.to_ne_bytes());
+        }
+        let mut storage = [0_u8; 40];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &payload,
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("dynamic delegate should publish");
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (40, 1, 0)
+        );
+        assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 32);
+        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 7);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 2);
+        assert_eq!(
+            f32::from_ne_bytes(storage[16..20].try_into().unwrap()),
+            1.25
+        );
+        assert_eq!(
+            f32::from_ne_bytes(storage[20..24].try_into().unwrap()),
+            -2.5
+        );
+        assert_eq!(i32::from_ne_bytes(storage[24..28].try_into().unwrap()), 3);
+        assert_eq!(i32::from_ne_bytes(storage[28..32].try_into().unwrap()), 11);
+        assert_eq!(i32::from_ne_bytes(storage[32..36].try_into().unwrap()), -4);
+        assert_eq!(i32::from_ne_bytes(storage[36..40].try_into().unwrap()), 99);
+
+        let empty_payload = [0_u8; 8];
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &empty_payload,
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("empty delegate slices should publish");
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (20, 1, 0)
+        );
+        assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 12);
+        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 7);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[16..20].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn native_delegate_batch_drops_whole_records_and_keeps_later_records() {
+        let program = lower_and_jit(typed_program(
+            r#"
+delegates:
+  large(values: f32[])
+  small(value: i32)
+event trigger(values: f32[]):
+  large(values)
+  small(9)
+sample:
+  out1 = 0.0
+"#,
+        ))
+        .expect("overflow delegate source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&2_i32.to_ne_bytes());
+        payload.extend_from_slice(&1.0_f32.to_ne_bytes());
+        payload.extend_from_slice(&2.0_f32.to_ne_bytes());
+        let mut storage = [0_u8; 12];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &payload,
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("overflow does not fail delegate dispatch");
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (12, 1, 1)
+        );
+        assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 1);
+        assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 4);
+        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 9);
+    }
+
+    #[test]
+    fn native_delegate_batch_is_cleared_when_generated_execution_fails() {
+        let program = lower_and_jit(typed_program(
+            r#"
+delegate started()
+init:
+  observed = 0.0
+event trigger(values: f32[]):
+  started()
+  observed = values[0]
+sample:
+  out1 = observed
+"#,
+        ))
+        .expect("failing delegate source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut storage = [0_u8; 8];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+        batch.used_bytes = 7;
+        batch.record_count = 3;
+        batch.overflow_count = 2;
+        let result = unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &0_i32.to_ne_bytes(),
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        };
+        assert!(result.is_err(), "out-of-bounds event should fail");
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn task_delegate_publications_follow_resumption_and_batch_boundaries() {
+        let program = lower_and_jit(typed_program(
+            r#"
+delegate progress(value: i32)
+task worker():
+  progress(1)
+  yield
+  progress(2)
+  yield
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+        ))
+        .expect("task delegate source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let input_ptrs: Vec<*const u8> = Vec::new();
+        let mut output = [0.0_f32; 1];
+        let output_ptrs = [output.as_mut_ptr().cast::<u8>()];
+        let buffer_ptrs: Vec<*mut u8> = Vec::new();
+        let buffer_frames: Vec<i32> = Vec::new();
+        let buffer_channels: Vec<i32> = Vec::new();
+        let buffer_sample_rates: Vec<f32> = Vec::new();
+        let mut storage = [0_u8; 12];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+
+        for expected in [Some(1_i32), Some(2_i32), None] {
+            unsafe {
+                program.process_checked(
+                    &mut state,
+                    &params,
+                    0,
+                    1,
+                    1 | 2,
+                    &input_ptrs,
+                    &output_ptrs,
+                    &buffer_ptrs,
+                    &buffer_frames,
+                    &buffer_channels,
+                    &buffer_sample_rates,
+                    Some(&mut batch),
+                )
+            }
+            .expect("task resumption should process successfully");
+            match expected {
+                Some(value) => {
+                    assert_eq!((batch.used_bytes, batch.record_count), (12, 1));
+                    assert_eq!(
+                        i32::from_ne_bytes(storage[8..12].try_into().unwrap()),
+                        value
+                    );
+                }
+                None => assert_eq!((batch.used_bytes, batch.record_count), (0, 0)),
+            }
+            assert_eq!(batch.overflow_count, 0);
+        }
+    }
+
+    #[test]
+    fn proc_task_delegates_dispatch_through_parent_routes() {
+        let program = lower_and_jit(typed_program(
+            r#"
+proc Worker:
+  delegate progress(value: i32)
+  task run():
+    progress(3)
+    yield
+    progress(4)
+    yield
+  block:
+    await run()
+    sample:
+      out1 = 0.0
+
+delegate observed(value: i32)
+init:
+  worker = Worker()
+when worker.progress(value):
+  observed(value)
+sample:
+  out1 = worker()
+"#,
+        ))
+        .expect("proc task delegate source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let input_ptrs: Vec<*const u8> = Vec::new();
+        let mut output = [0.0_f32; 1];
+        let output_ptrs = [output.as_mut_ptr().cast::<u8>()];
+        let buffer_ptrs: Vec<*mut u8> = Vec::new();
+        let buffer_frames: Vec<i32> = Vec::new();
+        let buffer_channels: Vec<i32> = Vec::new();
+        let buffer_sample_rates: Vec<f32> = Vec::new();
+        let mut storage = [0_u8; 12];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+
+        for expected in [Some(3_i32), Some(4_i32), None] {
+            unsafe {
+                program.process_checked(
+                    &mut state,
+                    &params,
+                    0,
+                    1,
+                    1 | 2,
+                    &input_ptrs,
+                    &output_ptrs,
+                    &buffer_ptrs,
+                    &buffer_frames,
+                    &buffer_channels,
+                    &buffer_sample_rates,
+                    Some(&mut batch),
+                )
+            }
+            .expect("proc task resumption should process successfully");
+            match expected {
+                Some(value) => {
+                    assert_eq!((batch.used_bytes, batch.record_count), (12, 1));
+                    assert_eq!(
+                        i32::from_ne_bytes(storage[8..12].try_into().unwrap()),
+                        value
+                    );
+                }
+                None => assert_eq!((batch.used_bytes, batch.record_count), (0, 0)),
+            }
+            assert_eq!(batch.overflow_count, 0);
+        }
+    }
+
+    #[test]
+    fn nested_proc_delegate_promotion_reaches_the_host_once() {
+        let program = lower_and_jit(typed_program(
+            r#"
+proc Child:
+  delegate fired(value: i32)
+  event trigger(value: i32):
+    fired(value)
+  sample:
+    out1 = 0.0
+
+proc Parent:
+  delegate relayed(value: i32)
+  init:
+    child = Child()
+  event trigger(value: i32):
+    child.trigger(value)
+  when child.fired(value):
+    relayed(value)
+  sample:
+    out1 = child()
+
+delegate observed(value: i32)
+init:
+  parent = Parent()
+event trigger(value: i32):
+  parent.trigger(value)
+when parent.relayed(value):
+  observed(value)
+sample:
+  out1 = parent()
+"#,
+        ))
+        .expect("nested delegate promotion should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut storage = [0_u8; 12];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+        let payload = 19_i32.to_ne_bytes();
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &payload,
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("nested delegate promotion should execute");
+        assert_eq!(batch.record_count, 1);
+        assert_eq!(batch.overflow_count, 0);
+        assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 19);
+    }
+
+    #[test]
+    fn delegate_routes_preserve_source_order_depth_first_dispatch_and_instance_identity() {
+        let program = lower_and_jit(typed_program(
+            r#"
+proc Child:
+  delegate fired(value: i32)
+  event trigger(value: i32):
+    fired(value)
+  sample:
+    out1 = 0.0
+
+delegates:
+  observed(slot: i32, value: i32)
+  derived(value: i32 = 99)
+
+init:
+  left = Child()
+  right = Child()
+
+when left.fired(value):
+  observed(0, value)
+when left.fired(value):
+  observed(1, value)
+when right.fired(value):
+  observed(2, value)
+when observed(_, _):
+  derived()
+
+event trigger():
+  left.trigger(10)
+  right.trigger(20)
+
+sample:
+  out1 = left() + right()
+"#,
+        ))
+        .expect("distinct delegate routes should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut storage = [0_u8; 84];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("routed delegate dispatch should execute");
+
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (84, 6, 0)
+        );
+        let expected = [
+            (0_u32, vec![0_i32, 10]),
+            (1, vec![99]),
+            (0, vec![1, 10]),
+            (1, vec![99]),
+            (0, vec![2, 20]),
+            (1, vec![99]),
+        ];
+        let mut cursor = 0usize;
+        for (delegate, values) in expected {
+            assert_eq!(
+                u32::from_ne_bytes(storage[cursor..cursor + 4].try_into().unwrap()),
+                delegate
+            );
+            assert_eq!(
+                u32::from_ne_bytes(storage[cursor + 4..cursor + 8].try_into().unwrap()),
+                (values.len() * 4) as u32
+            );
+            cursor += 8;
+            for value in values {
+                assert_eq!(
+                    i32::from_ne_bytes(storage[cursor..cursor + 4].try_into().unwrap()),
+                    value
+                );
+                cursor += 4;
+            }
+        }
+        assert_eq!(cursor, storage.len());
+    }
+
+    #[test]
+    fn whole_proc_array_subscription_reports_the_actual_index() {
+        let program = lower_and_jit(typed_program(
+            r#"
+proc Child:
+  delegate fired(value: i32)
+  sample:
+    fired(23)
+    out1 = 0.0
+
+delegates:
+  observed(index: i32, value: i32)
+  selected(value: i32)
+init:
+  children: Child[2] = Child()
+when children.fired(index, value):
+  observed(index, value)
+when children[1].fired(value):
+  selected(value)
+sample:
+  out1 = children[0]() + children[1]()
+"#,
+        ))
+        .expect("whole-array delegate route should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut storage = [0_u8; 44];
+        let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
+        let mut output = [0.0_f32; 1];
+        let output_ptrs = [output.as_mut_ptr().cast::<u8>()];
+        unsafe {
+            program.process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &[],
+                &output_ptrs,
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut batch),
+            )
+        }
+        .expect("whole-array delegate route should publish");
+        assert_eq!(batch.record_count, 3);
+        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 23);
+        assert_eq!(i32::from_ne_bytes(storage[24..28].try_into().unwrap()), 1);
+        assert_eq!(i32::from_ne_bytes(storage[28..32].try_into().unwrap()), 23);
+        assert_eq!(u32::from_ne_bytes(storage[32..36].try_into().unwrap()), 1);
+        assert_eq!(i32::from_ne_bytes(storage[40..44].try_into().unwrap()), 23);
     }
     #[test]
     fn convenience_jit_uses_the_analyzed_program_configuration() {
@@ -1036,6 +1661,7 @@ sample:
                 &metadata_i32,
                 &metadata_i32,
                 &metadata_f32,
+                None,
             )
         }
         .unwrap();
@@ -1082,6 +1708,7 @@ sample:
                 &buffer_frames,
                 &buffer_channels,
                 &buffer_sample_rates,
+                None,
             )
         }
         .expect("process should succeed");

@@ -667,6 +667,65 @@ impl RunApp {
         }
     }
 
+    fn render_delegates(
+        &self,
+        ui: &mut egui::Ui,
+        delegates: &[Value],
+        occurrences: &[Value],
+        overflow_count: u64,
+        transport_drop_count: u64,
+    ) {
+        for delegate in delegates {
+            let Some(name) = delegate.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let params = delegate
+                .get("params")
+                .and_then(Value::as_array)
+                .map(|params| {
+                    params
+                        .iter()
+                        .filter_map(|param| {
+                            Some(format!(
+                                "{}: {}",
+                                param.get("name")?.as_str()?,
+                                param.get("type")?.as_str()?
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            ui.label(egui::RichText::new(format!("{name}({params})")).monospace());
+        }
+        ui.add_space(6.0);
+        if occurrences.is_empty() {
+            ui.label(egui::RichText::new("Waiting for delegate occurrences…").weak());
+        } else {
+            for occurrence in occurrences.iter().rev().take(16) {
+                let name = occurrence
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("delegate");
+                let values = occurrence
+                    .get("values")
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "{}".to_owned());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(name).strong().monospace());
+                    ui.label(egui::RichText::new(values).weak().monospace());
+                });
+            }
+        }
+        let dropped = overflow_count.saturating_add(transport_drop_count);
+        if dropped != 0 {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("{dropped} delegate occurrence(s) dropped"),
+            );
+        }
+    }
+
     fn render_params(&mut self, ui: &mut egui::Ui, params: Vec<Value>) {
         let gap = 8.0;
         let columns = param_grid_columns(ui.available_width(), self.param_layout);
@@ -1147,6 +1206,28 @@ impl eframe::App for RunApp {
                                 events_state.show_body_unindented(ui, |ui| {
                                     ui.add_space(8.0);
                                     self.render_events(ui, &state.events, state.connected);
+                                });
+                            });
+                        }
+
+                        if !state.delegates.is_empty() {
+                            ui.add_space(12.0);
+                            section_box(ui, "", |ui| {
+                                let mut delegates_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    ui.make_persistent_id("delegates-section"),
+                                    true,
+                                );
+                                render_section_header(ui, &mut delegates_state, "Delegates", |_| {});
+                                delegates_state.show_body_unindented(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    self.render_delegates(
+                                        ui,
+                                        &state.delegates,
+                                        &state.delegate_occurrences,
+                                        state.delegate_overflow_count,
+                                        state.delegate_transport_drop_count,
+                                    );
                                 });
                             });
                         }

@@ -410,6 +410,7 @@ fn lower_program_to_raw_mir(
 
     let mut globals = RuntimeGlobals::default();
     populate_interface(program, &mut mir, &mut globals)?;
+    populate_delegates(program, &mut mir)?;
     populate_state(program, &mut mir, &mut globals)?;
     populate_runtime_interface_views(program, &mut globals)?;
     populate_constant_data(program, &mut mir, &mut globals)?;
@@ -1837,6 +1838,44 @@ fn populate_constant_data(
     Ok(())
 }
 
+fn populate_delegates(
+    program: &TypedProgram,
+    mir: &mut onda_mir::Program,
+) -> Result<(), Vec<MirLoweringError>> {
+    for delegate in &program.delegates {
+        let mut params = Vec::with_capacity(delegate.params.len());
+        for param in &delegate.params {
+            let ty = match param.ty {
+                TypedEventParamType::Scalar(ty) => intern_scalar_type(&mut mir.types, ty),
+                TypedEventParamType::Array { elem, len } => {
+                    let len = u32::try_from(len).map_err(|_| {
+                        vec![MirLoweringError::new(
+                            format!(
+                                "delegate '{}' array parameter '{}' length does not fit u32",
+                                delegate.name, param.name
+                            ),
+                            SourceLoc::ZERO,
+                        )]
+                    })?;
+                    intern_array_type(&mut mir.types, elem, len)
+                }
+                TypedEventParamType::Slice { elem } => {
+                    intern_slice_type(&mut mir.types, elem, onda_mir::AccessMode::ReadOnly)
+                }
+            };
+            params.push(onda_mir::DelegateParam {
+                name: param.name.clone(),
+                ty,
+            });
+        }
+        mir.interface.delegates.push(onda_mir::Delegate {
+            name: delegate.name.clone(),
+            params,
+        });
+    }
+    Ok(())
+}
+
 fn lower_events(
     program: &TypedProgram,
     mir: &mut onda_mir::Program,
@@ -2017,6 +2056,7 @@ fn compiler_generated_function_attributes() -> FunctionAttributes {
     FunctionAttributes {
         origin: FunctionOrigin::CompilerGenerated,
         inline: InlineHint::Always,
+        runtime_context: true,
     }
 }
 
@@ -2024,6 +2064,7 @@ fn compiler_shared_function_attributes() -> FunctionAttributes {
     FunctionAttributes {
         origin: FunctionOrigin::CompilerGenerated,
         inline: InlineHint::Never,
+        runtime_context: true,
     }
 }
 

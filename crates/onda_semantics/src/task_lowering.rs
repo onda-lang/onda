@@ -209,6 +209,11 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
                 .iter()
                 .map(|event| (event.name.as_str(), "event")),
         )
+        .chain(
+            proc.delegates
+                .iter()
+                .map(|delegate| (delegate.name.as_str(), "delegate")),
+        )
         .chain(proc.ins.iter().map(|decl| (decl.name.as_str(), "input")))
         .chain(proc.outs.iter().map(|decl| (decl.name.as_str(), "output")))
         .chain(
@@ -252,6 +257,11 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
     }
     for event in &proc.events {
         for stmt in &event.body {
+            infer_io_from_stmt(stmt, &mut inferred);
+        }
+    }
+    for when in &proc.whens {
+        for stmt in &when.body {
             infer_io_from_stmt(stmt, &mut inferred);
         }
     }
@@ -316,6 +326,16 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         .flatten()
         .map(|event| event.name.clone())
         .collect::<HashSet<_>>();
+    let top_delegate_names = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Delegates(delegates) => Some(delegates.delegates.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .map(|delegate| delegate.name.clone())
+        .collect::<HashSet<_>>();
     if !top_tasks.is_empty() {
         let mut members = HashMap::<String, &'static str>::new();
         for (name, kind) in program.blocks.iter().filter_map(|block| match block {
@@ -329,6 +349,9 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         }
         for name in &top_event_names {
             members.entry(name.clone()).or_insert("top-level event");
+        }
+        for name in &top_delegate_names {
+            members.entry(name.clone()).or_insert("top-level delegate");
         }
         for block in &program.blocks {
             let declarations = match block {
@@ -401,6 +424,11 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                         for stmt in &event.body {
                             infer_io_from_stmt(stmt, &mut inferred);
                         }
+                    }
+                }
+                Block::When(when) => {
+                    for stmt in &when.body {
+                        infer_io_from_stmt(stmt, &mut inferred);
                     }
                 }
                 _ => {}
@@ -484,6 +512,13 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                     );
                 }
             }
+            Block::When(when) => validate_task_control_stmt_list(
+                &when.body,
+                &top_task_names,
+                TaskControlContext::Event,
+                errors,
+            ),
+            Block::Delegates(_) => {}
             Block::Tasks(_) => {}
             Block::Def(def) => validate_task_control_stmt_list(
                 &def.body,
@@ -571,6 +606,14 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         for event in &proc.events {
             validate_task_control_stmt_list(
                 &event.body,
+                &task_names,
+                TaskControlContext::Event,
+                errors,
+            );
+        }
+        for when in &proc.whens {
+            validate_task_control_stmt_list(
+                &when.body,
                 &task_names,
                 TaskControlContext::Event,
                 errors,
@@ -3559,6 +3602,13 @@ fn lower_top_level_tasks(
                     );
                 }
             }
+            Block::When(when) => rewrite_task_controls(
+                &mut when.body,
+                &task_names,
+                &buffer_names,
+                &unavailable,
+                TaskResumeResult::RuntimeField,
+            ),
             _ => {}
         }
     }
@@ -3726,9 +3776,19 @@ fn task_call_semantics(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> TaskCallSemantics {
     let mut defs = task_callable_defs(program);
+    let delegates = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Delegates(delegates) => Some(delegates.delegates.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
     let callable_symbols = defs
         .iter()
         .map(|def| def.name.clone())
+        .chain(delegates.iter().map(|delegate| delegate.name.clone()))
         .collect::<HashSet<_>>();
     desugar_task_callable_methods(
         &mut defs,
@@ -3744,10 +3804,16 @@ fn task_call_semantics(
         struct_defs,
         &HashMap::new(),
     );
-    let signatures = defs
+    let mut signatures = defs
         .iter()
         .map(|def| (def.name.clone(), FnSignature::from_def(def)))
-        .collect();
+        .collect::<HashMap<_, _>>();
+    signatures.extend(delegates.iter().map(|delegate| {
+        (
+            delegate.name.clone(),
+            FnSignature::from_event_params(&delegate.params),
+        )
+    }));
     TaskCallSemantics {
         overloads,
         callable_symbols,
@@ -3758,13 +3824,19 @@ fn task_call_semantics(
 
 fn proc_task_call_semantics(
     local_defs: &[FunctionDef],
+    delegates: &[DelegateDef],
     global: &TaskCallSemantics,
     env: &crate::def_semantics::CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> TaskCallSemantics {
+    let delegate_names = delegates
+        .iter()
+        .map(|delegate| delegate.name.as_str())
+        .collect::<HashSet<_>>();
     let local_names = local_defs
         .iter()
         .map(|def| def.name.as_str())
+        .chain(delegate_names.iter().copied())
         .collect::<HashSet<_>>();
     let overloads = global
         .overloads
@@ -3778,6 +3850,7 @@ fn proc_task_call_semantics(
         .iter()
         .cloned()
         .chain(local_defs.iter().map(|def| def.name.clone()))
+        .chain(delegates.iter().map(|delegate| delegate.name.clone()))
         .collect::<HashSet<_>>();
     desugar_task_callable_methods(&mut defs, env, struct_defs, &callable_symbols);
     let return_types = resolve_task_callable_return_types(
@@ -3793,6 +3866,14 @@ fn proc_task_call_semantics(
         defs.iter()
             .map(|def| (def.name.clone(), FnSignature::from_def(def))),
     );
+    signatures.extend(delegates.iter().map(|delegate| {
+        (
+            delegate.name.clone(),
+            FnSignature::from_event_params(&delegate.params),
+        )
+    }));
+    let mut return_types = return_types;
+    return_types.retain(|name, _| !delegate_names.contains(name.as_str()));
     TaskCallSemantics {
         overloads,
         callable_symbols,
@@ -3971,6 +4052,7 @@ pub(crate) fn lower_tasks(
         let preliminary_call_env = task_call_type_env(&owner_surface, &preliminary_owner_types);
         let proc_call_semantics = proc_task_call_semantics(
             &proc.local_defs,
+            &proc.delegates,
             &call_semantics,
             &preliminary_call_env,
             &struct_defs,
@@ -4079,6 +4161,15 @@ pub(crate) fn lower_tasks(
         for event in &mut proc.events {
             rewrite_task_controls(
                 &mut event.body,
+                &task_names,
+                &buffer_names,
+                &unavailable,
+                TaskResumeResult::Returned,
+            );
+        }
+        for when in &mut proc.whens {
+            rewrite_task_controls(
+                &mut when.body,
                 &task_names,
                 &buffer_names,
                 &unavailable,
@@ -5684,6 +5775,29 @@ block:
             lower_program_to_optimized_mir(&typed)
                 .expect("inferred callable task locals should lower to valid MIR");
         }
+    }
+
+    #[test]
+    fn tasks_can_publish_readonly_delegate_array_payloads() {
+        let typed = analyze(
+            parse_program(
+                r#"
+const Values: i32[2] = [3, 5]
+delegate progress(values: i32[2])
+task worker():
+  progress(Values)
+  yield
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+            )
+            .expect("task delegate source should parse"),
+        )
+        .expect("task should accept a const array as a readonly delegate payload");
+        lower_program_to_optimized_mir(&typed)
+            .expect("readonly task delegate payload should lower to valid MIR");
     }
 
     #[test]

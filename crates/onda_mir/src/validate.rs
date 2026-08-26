@@ -283,7 +283,9 @@ fn statement_uses_unchecked_bounds(statement: &StatementKind) -> bool {
         StatementKind::Assign { destination, value } => {
             place_uses_unchecked_bounds(destination) || rvalue_uses_unchecked_bounds(value)
         }
-        StatementKind::Call { args, .. } => args.iter().any(call_arg_uses_unchecked_bounds),
+        StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
+            args.iter().any(call_arg_uses_unchecked_bounds)
+        }
         StatementKind::BufferStore { buffer, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || buffer_ref_uses_unchecked_bounds(*buffer)
         }
@@ -695,6 +697,27 @@ impl Validator<'_> {
                 &format!("event '{}' handler", event.name),
             );
         }
+        for delegate in &self.program.interface.delegates {
+            for param in &delegate.params {
+                self.require_type(param.ty, None, SourceSpan::UNKNOWN);
+                match self.program.types.get(param.ty.index()) {
+                    Some(Type::Scalar(_)) | Some(Type::Array { .. }) => {}
+                    Some(Type::Slice {
+                        access: crate::AccessMode::ReadOnly,
+                        ..
+                    }) => {}
+                    Some(Type::Slice { .. }) => self.program_error(format!(
+                        "delegate '{}' parameter '{}' slice must be read-only",
+                        delegate.name, param.name
+                    )),
+                    Some(_) => self.program_error(format!(
+                        "delegate '{}' parameter '{}' must be a primitive scalar, fixed primitive array, or read-only primitive slice",
+                        delegate.name, param.name
+                    )),
+                    None => {}
+                }
+            }
+        }
 
         self.validate_entry_role_ownership();
         for index in 0..self.program.functions.len() {
@@ -702,6 +725,7 @@ impl Validator<'_> {
             let function = &self.program.functions[index];
             self.validate_function(id, function);
         }
+        self.validate_init_cannot_reach_publication();
         self.validate_acyclic_call_graph();
     }
 
@@ -744,6 +768,18 @@ impl Validator<'_> {
                     self.program_error(format!(
                         "event '{}' has duplicate parameter name '{}'",
                         event.name, param.name
+                    ));
+                }
+            }
+        }
+        for delegate in &self.program.interface.delegates {
+            insert(&delegate.name, "a delegate", &mut self.errors);
+            let mut delegate_params = HashSet::new();
+            for param in &delegate.params {
+                if !delegate_params.insert(param.name.as_str()) {
+                    self.program_error(format!(
+                        "delegate '{}' has duplicate parameter name '{}'",
+                        delegate.name, param.name
                     ));
                 }
             }
@@ -1004,6 +1040,32 @@ impl Validator<'_> {
             function.source,
             format!("recursive call cycle is not realtime-safe: {display}"),
         );
+    }
+
+    fn validate_init_cannot_reach_publication(&mut self) {
+        let init = self.program.entry_points.init.index();
+        if init >= self.program.functions.len() {
+            return;
+        }
+        let mut pending = vec![init];
+        let mut visited = vec![false; self.program.functions.len()];
+        while let Some(index) = pending.pop() {
+            if visited[index] {
+                continue;
+            }
+            visited[index] = true;
+            let function = &self.program.functions[index];
+            if block_contains_publication(&function.body) {
+                self.function_error(
+                    FunctionId::new(index as u32),
+                    function.source,
+                    "init entry point reaches delegate publication",
+                );
+            }
+            let mut callees = Vec::new();
+            collect_block_callees(&function.body, self.program.functions.len(), &mut callees);
+            pending.extend(callees);
+        }
     }
 
     fn validate_function(&mut self, id: FunctionId, function: &Function) {
@@ -1382,6 +1444,92 @@ impl Validator<'_> {
                                     "call to '{}' argument {index} does not match {} parameter type {}",
                                     callee_fn.name,
                                     passing_mode_name(param.mode),
+                                    self.type_name(param.ty)
+                                ),
+                            );
+                        }
+                    }
+                }
+                StatementKind::PublishDelegate { delegate, args } => {
+                    let Some(descriptor) = self.program.interface.delegates.get(delegate.index())
+                    else {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            format!("publication references missing delegate {}", delegate.raw()),
+                        );
+                        continue;
+                    };
+                    if matches!(function.kind, FunctionKind::Init) {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            "init entry point cannot publish delegates",
+                        );
+                    }
+                    if matches!(function.kind, FunctionKind::User)
+                        && !function.attributes.runtime_context
+                    {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            "delegate publication requires a runtime-context user function",
+                        );
+                    }
+                    if args.len() != descriptor.params.len() {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            format!(
+                                "publication of delegate '{}' has {} arguments but the descriptor declares {}",
+                                descriptor.name,
+                                args.len(),
+                                descriptor.params.len()
+                            ),
+                        );
+                    }
+                    for (index, argument) in args.iter().enumerate() {
+                        let CallArgument::Value(value) = argument else {
+                            self.function_error(
+                                function_id,
+                                statement.source,
+                                format!(
+                                    "publication of delegate '{}' argument {index} must be an evaluated value",
+                                    descriptor.name
+                                ),
+                            );
+                            continue;
+                        };
+                        self.validate_value(function_id, function, *value, statement.source);
+                        let Some(param) = descriptor.params.get(index) else {
+                            continue;
+                        };
+                        let matches = match self.program.types.get(param.ty.index()) {
+                            Some(Type::Scalar(_)) => {
+                                self.value_matches_type(function, *value, param.ty)
+                            }
+                            Some(Type::Array { element, .. }) => {
+                                let Some(Type::Scalar(expected)) =
+                                    self.program.types.get(element.index())
+                                else {
+                                    continue;
+                                };
+                                self.value_slice_type(function, *value)
+                                    .is_some_and(|(actual, _)| actual == *expected)
+                            }
+                            Some(Type::Slice { element, .. }) => self
+                                .value_slice_type(function, *value)
+                                .is_some_and(|(actual, _)| actual == *element),
+                            _ => false,
+                        };
+                        if !matches {
+                            self.function_error(
+                                function_id,
+                                statement.source,
+                                format!(
+                                    "publication of delegate '{}' argument {index} does not match payload parameter '{}' type {}",
+                                    descriptor.name,
+                                    param.name,
                                     self.type_name(param.ty)
                                 ),
                             );
@@ -1984,6 +2132,77 @@ impl Validator<'_> {
                 }
                 for result in results {
                     self.assignment_write_local(function, *result, false, state);
+                }
+            }
+            StatementKind::PublishDelegate { args, .. } => {
+                for argument in args {
+                    match argument {
+                        CallArgument::Value(value) => self.assignment_read_value(
+                            function_id,
+                            function,
+                            *value,
+                            statement.source,
+                            state,
+                        ),
+                        CallArgument::Place(place) => self.assignment_read_place(
+                            function_id,
+                            function,
+                            place,
+                            statement.source,
+                            state,
+                        ),
+                        CallArgument::SliceElement { slice, index, .. } => {
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *slice,
+                                statement.source,
+                                state,
+                            );
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *index,
+                                statement.source,
+                                state,
+                            );
+                        }
+                        CallArgument::ArrayWindow { array, start, .. } => {
+                            self.assignment_read_place(
+                                function_id,
+                                function,
+                                array,
+                                statement.source,
+                                state,
+                            );
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *start,
+                                statement.source,
+                                state,
+                            );
+                        }
+                        CallArgument::SliceWindow { slice, start, .. } => {
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *slice,
+                                statement.source,
+                                state,
+                            );
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *start,
+                                statement.source,
+                                state,
+                            );
+                        }
+                        CallArgument::Buffer(_)
+                        | CallArgument::BufferParam(_)
+                        | CallArgument::BufferSpan(_) => {}
+                    }
                 }
             }
             StatementKind::OutputStore {
@@ -4816,6 +5035,22 @@ fn collect_block_callees(block: &Block, function_count: usize, callees: &mut Vec
             _ => {}
         }
     }
+}
+
+fn block_contains_publication(block: &Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::PublishDelegate { .. } => true,
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => block_contains_publication(then_block) || block_contains_publication(else_block),
+            StatementKind::Loop { body } => block_contains_publication(body),
+            _ => false,
+        })
 }
 
 fn passing_mode_name(mode: crate::PassingMode) -> &'static str {

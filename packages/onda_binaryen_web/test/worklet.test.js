@@ -62,6 +62,7 @@ function f64PassthroughMir() {
       ],
       buffers: [],
       events: [],
+      delegates: [],
     },
     state: [],
     const_data: [],
@@ -69,7 +70,7 @@ function f64PassthroughMir() {
       {
         name: "onda_processor_init",
         kind: { kind: "init" },
-        attributes: { origin: "compiler_generated", inline: "always" },
+        attributes: { origin: "compiler_generated", inline: "always", runtime_context: false },
         params: [],
         results: [],
         locals: [],
@@ -79,7 +80,7 @@ function f64PassthroughMir() {
       {
         name: "onda_process",
         kind: { kind: "process" },
-        attributes: { origin: "compiler_generated", inline: "always" },
+        attributes: { origin: "compiler_generated", inline: "always", runtime_context: true },
         params: [
           { name: "start_frame", ty: 1, mode: "value" },
           { name: "frames", ty: 1, mode: "value" },

@@ -331,7 +331,8 @@ fn guard_preinitialized_zero_stores(
             StatementKind::OutputStore { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
-            | StatementKind::BufferParamStore { .. } => {}
+            | StatementKind::BufferParamStore { .. }
+            | StatementKind::PublishDelegate { .. } => {}
         }
 
         if guard {
@@ -448,6 +449,7 @@ fn collect_block_state_writes(
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
             | StatementKind::BufferParamStore { .. }
+            | StatementKind::PublishDelegate { .. }
             | StatementKind::Break
             | StatementKind::Continue
             | StatementKind::Return { .. } => {}
@@ -975,6 +977,12 @@ fn propagate_statement_values(
             }
             true
         }
+        StatementKind::PublishDelegate { args, .. } => {
+            for argument in args {
+                propagate_call_argument(argument, facts, stats);
+            }
+            true
+        }
         StatementKind::OutputStore {
             element,
             frame,
@@ -1403,6 +1411,7 @@ fn collect_mutated_locals(
             | StatementKind::SliceStore { .. }
             | StatementKind::SliceFill { .. }
             | StatementKind::SliceCopy { .. }
+            | StatementKind::PublishDelegate { .. }
             | StatementKind::Break
             | StatementKind::Continue
             | StatementKind::Return { .. } => {}
@@ -1453,6 +1462,7 @@ fn canonicalize_block(block: &mut Block, stats: &mut PassStats) {
             }
             StatementKind::Loop { body } => canonicalize_block(body, stats),
             StatementKind::Call { .. }
+            | StatementKind::PublishDelegate { .. }
             | StatementKind::OutputStore { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
@@ -1984,7 +1994,7 @@ fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
             collect_place_index_reads(destination, reads);
             collect_rvalue_reads(value, reads);
         }
-        StatementKind::Call { args, .. } => {
+        StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
             for argument in args {
                 match argument {
                     CallArgument::Value(value) => mark_value_read(*value, reads),
@@ -2222,7 +2232,7 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                 place(destination, false, referenced);
                 rvalue(v, referenced);
             }
-            StatementKind::Call { args, .. } => {
+            StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
                 for argument in args {
                     match argument {
                         CallArgument::Value(v) => value(*v, referenced),
@@ -2518,6 +2528,31 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
                 }
             }
         }
+        StatementKind::PublishDelegate { args, .. } => {
+            for argument in args {
+                match argument {
+                    CallArgument::Value(value) => rewrite_value(value, mapping),
+                    CallArgument::Place(place) => rewrite_place(place, mapping),
+                    CallArgument::ArrayWindow { array, start, .. } => {
+                        rewrite_place(array, mapping);
+                        rewrite_value(start, mapping);
+                    }
+                    CallArgument::SliceElement { slice, index, .. } => {
+                        rewrite_value(slice, mapping);
+                        rewrite_value(index, mapping);
+                    }
+                    CallArgument::SliceWindow { slice, start, .. } => {
+                        rewrite_value(slice, mapping);
+                        rewrite_value(start, mapping);
+                    }
+                    CallArgument::Buffer(buffer) => rewrite_buffer_ref(buffer, mapping),
+                    CallArgument::BufferParam(parameter) => {
+                        rewrite_buffer_param_ref(parameter, mapping);
+                    }
+                    CallArgument::BufferSpan(_) => {}
+                }
+            }
+        }
         StatementKind::OutputStore {
             element,
             frame,
@@ -2664,6 +2699,7 @@ mod tests {
         helper.attributes = FunctionAttributes {
             origin: crate::FunctionOrigin::CompilerGenerated,
             inline: crate::InlineHint::Always,
+            runtime_context: true,
         };
         helper.params.push(crate::FunctionParam {
             integer_range: None,

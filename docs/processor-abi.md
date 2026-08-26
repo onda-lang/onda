@@ -47,6 +47,7 @@ onda_process(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
+  delegate_batch: Ptr,
 ) -> i32
 
 onda_event_N(
@@ -57,6 +58,7 @@ onda_event_N(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
+  delegate_batch: Ptr,
 ) -> i32
 ```
 
@@ -70,9 +72,10 @@ continuations. Preserve-pinned initialization skips those guarded declarations a
 existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
 not transactional: a host that needs rollback must provide that policy itself.
 
-Processor ABI version 6 replaces the boolean-like `all` contract with this named mode enum. The
-instance-level C and WebAssembly host APIs use the same values. A failed initialization leaves the
-physical state indeterminate.
+Processor ABI version 7 adds the optional `delegate_batch` result to process and input-event entry
+points. Initialization remains unchanged. Version 6 replaced the boolean-like `all` contract with
+this named mode enum. The instance-level C and WebAssembly host APIs use the same values. A failed
+initialization leaves the physical state indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is
 `RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
@@ -82,6 +85,43 @@ must not be processed until the host successfully initializes or restores it.
 The process order intentionally places state, parameters, and audio tables before segment controls
 and optional buffer tables. This keeps the hottest pointers in argument registers on common native
 C ABIs without introducing a target-specific entry point.
+
+### Call-scoped delegate batches
+
+For complete hosted C, Rust, raw-ABI, and JavaScript examples, including capacity selection and
+overflow handling, see [Hosting Onda delegates](delegates.md).
+
+`delegate_batch` is null when the host does not need top-level delegate occurrences. Otherwise it
+points to this logical version-7 structure; native targets use native pointers and complete wasm32
+modules use little-endian 32-bit linear-memory offsets:
+
+```text
+storage: Ptr
+capacity_bytes: u32
+used_bytes: u32
+record_count: u32
+overflow_count: u32
+```
+
+The fixed header of each contiguous record is two `u32` values: declaration-order delegate index,
+then payload byte count. Payload bytes immediately follow. Scalar and fixed arrays are packed in
+parameter order. Each slice is encoded as an `i32` count followed by contiguous element bytes. The
+descriptor's `metadata.delegates` gives names, shapes, fixed size or dynamic minimum size, and
+static offsets. Scalar and header byte order is the artifact target's byte order.
+
+For one fixed-shape occurrence, exact storage is the eight-byte record header plus the descriptor's
+`payload_size_bytes`. A dynamic delegate has no exact pre-execution size; its descriptor reports
+`payload_min_size_bytes`, including each slice's four-byte length prefix but no slice elements.
+There is no exact whole-batch size because occurrence counts, delegate selection, and slice lengths
+may depend on runtime control flow. Capacity is a host policy, and `overflow_count` reports when it
+was insufficient.
+
+Every process or input-event entry resets `used_bytes`, `record_count`, and `overflow_count`. A
+complete record is appended only when it fits. Otherwise that newest record is discarded and the
+overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null batch or null
+storage is neutral and does not count overflow. Generated execution failure clears all three result
+counters before returning failure. The storage is caller-owned, never allocated or retained by the
+processor, and is not part of snapshots.
 
 ## Pointer and target profiles
 
@@ -124,8 +164,10 @@ relocatable `linking` section. It does not pretend that the object is directly i
 
 `include/onda_processor_abi.h` is the canonical C declaration of the current ABI entry points. An
 application links the emitted object, allocates storage from the exact paired descriptor, builds the
-input/output and external-buffer pointer tables, and calls `onda_processor_init`, `onda_process`, and any
-`onda_event_N` functions directly. No Onda runtime or compiler library is required.
+input/output and external-buffer pointer tables, optionally prepares an
+`onda_processor_delegate_batch_t`,
+and calls `onda_processor_init`, `onda_process`, and any `onda_event_N` functions directly. No Onda
+runtime or compiler library is required.
 
 The application must reject descriptor/ABI versions it does not implement and must verify that the
 descriptor's target, pointer width, byte order, and calling convention match the linked process. It
@@ -220,7 +262,7 @@ differs from the compile block owns a cursor and splits callbacks at logical blo
 pointer tables continue to address complete compile-block storage; generated code derives logical
 audio indices from `start_frame`.
 
-## Parameters, events, buffers, and control outputs
+## Parameters, events, delegates, buffers, and control outputs
 
 Parameter and event-payload storage follows the exact offsets and scalar shapes in the paired
 descriptor. A dynamic event slice contains its scalar data after the fixed payload header and stores

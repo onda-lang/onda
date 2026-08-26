@@ -118,6 +118,7 @@ impl NativeBenchmark {
                 &self.buffer_frames,
                 &self.buffer_channels,
                 &self.buffer_sample_rates,
+                None,
             )
         }
         .map_err(|error| format!("checked process failed: {error:?}").into())
@@ -137,6 +138,7 @@ impl NativeBenchmark {
                 &self.buffer_frames,
                 &self.buffer_channels,
                 &self.buffer_sample_rates,
+                None,
             )
         };
         assert_eq!(status, PROCESSOR_EXECUTION_OK);

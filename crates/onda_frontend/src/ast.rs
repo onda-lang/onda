@@ -25,6 +25,8 @@ pub enum Block {
     Params(ParamBlock),
     Const(ConstDecl),
     Events(EventBlock),
+    Delegates(DelegateBlock),
+    When(WhenDef),
     Tasks(TaskBlock),
     Buffers(BufferBlock),
     Assert(AssertDecl),
@@ -49,6 +51,8 @@ impl Block {
             Self::Params(_) => BlockKind::Params,
             Self::Const(_) => BlockKind::Const,
             Self::Events(_) => BlockKind::Events,
+            Self::Delegates(_) => BlockKind::Delegates,
+            Self::When(_) => BlockKind::When,
             Self::Tasks(_) => BlockKind::Tasks,
             Self::Buffers(_) => BlockKind::Buffers,
             Self::Assert(_) => BlockKind::Assert,
@@ -71,6 +75,8 @@ impl Block {
             Self::Params(params) => params.loc.into(),
             Self::Const(decl) => decl.loc.into(),
             Self::Events(events) => events.loc.into(),
+            Self::Delegates(delegates) => delegates.loc.into(),
+            Self::When(when) => when.loc.into(),
             Self::Tasks(tasks) => tasks.loc.into(),
             Self::Buffers(buffers) => buffers.loc.into(),
             Self::Assert(assert_decl) => assert_decl.loc.into(),
@@ -96,6 +102,8 @@ pub enum BlockKind {
     Params,
     Const,
     Events,
+    Delegates,
+    When,
     Tasks,
     Buffers,
     Assert,
@@ -199,6 +207,35 @@ impl<'a> IntoIterator for &'a mut ParamBlock {
 pub struct EventBlock {
     pub loc: Span,
     pub events: Vec<EventDef>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DelegateBlock {
+    pub loc: Span,
+    pub delegates: Vec<DelegateDef>,
+}
+
+impl Deref for DelegateBlock {
+    type Target = Vec<DelegateDef>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.delegates
+    }
+}
+
+impl DerefMut for DelegateBlock {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.delegates
+    }
+}
+
+impl<'a> IntoIterator for &'a DelegateBlock {
+    type Item = &'a DelegateDef;
+    type IntoIter = std::slice::Iter<'a, DelegateDef>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.delegates.iter()
+    }
 }
 
 impl Deref for EventBlock {
@@ -567,6 +604,8 @@ pub struct ProcessorDef {
     pub params_deferred_count: Option<Expr>,
     pub params_deferred_default_ty: Option<DeclType>,
     pub events: Vec<EventDef>,
+    pub delegates: Vec<DelegateDef>,
+    pub whens: Vec<WhenDef>,
     pub tasks: Vec<TaskDef>,
     pub buffers: Vec<BufferDecl>,
     pub buffers_deferred_count: Option<Expr>,
@@ -749,6 +788,40 @@ pub struct EventDef {
     pub name: String,
     pub params: Vec<EventParamDecl>,
     pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DelegateDef {
+    pub loc: Span,
+    pub name: String,
+    pub params: Vec<EventParamDecl>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhenDef {
+    pub loc: Span,
+    pub target: WhenTarget,
+    pub bindings: Vec<WhenBinding>,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhenTarget {
+    pub loc: Span,
+    /// Dot-separated receiver path preceding the delegate name. Empty for an
+    /// owner-local delegate. Semantic analysis enforces the one-child boundary.
+    pub receiver: Vec<String>,
+    /// Present only for `child[constant].delegate`.
+    pub index: Option<Expr>,
+    pub delegate: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhenBinding {
+    pub loc: Span,
+    /// `_` is retained explicitly so diagnostics and formatting preserve the
+    /// source binding position without introducing a symbol.
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -112,6 +112,8 @@ Top-level forms:
 | `kouts` | Block-rate control output ports. |
 | `buffers` | External host-bound buffers. |
 | `events`, `event` | Host-triggered event handlers. |
+| `delegates`, `delegate` | Typed occurrences reported to an owner or host. |
+| `when` | Static synchronous delegate subscription. |
 | `init` | Setup and persistent state. |
 | `block` | Per-block code. |
 | `sample` | Per-sample code. |
@@ -519,6 +521,60 @@ Rules:
 - Unknown top-level event indices are ignored at runtime.
 - A known top-level event with the wrong payload size is a runtime error.
 - Top-level host events with slice params use payload layout `i32 len` followed by contiguous element bytes.
+
+### Delegates and `when`
+
+Delegates report sparse typed occurrences in the opposite direction from events. An owner declares
+them with singular or plural syntax and triggers its own delegate with an ordinary statement call:
+
+```onda
+delegates:
+  meter_changed(value: f32)
+  analysis_ready(values: f32[])
+
+delegate stopped(reason: i32)
+
+event stop(reason: i32):
+  stopped(reason)
+```
+
+Delegate parameters have the same scalar, fixed-array, slice, generic specialization, default, and
+argument-binding rules as event parameters; an omitted type defaults to `f32`. Delegate calls have
+no result. They are valid in
+`sample`, structured `block` code, tasks, event and `when` handlers, and owner-local runtime defs.
+They are invalid in `init` and in runtime defs reachable from `init`. Only the declaring owner can
+call a delegate; `child.finished()` is not a callable surface.
+
+`when` installs a static synchronous subscription. It can observe the current owner or one direct
+child ownership layer:
+
+```onda
+when stopped(reason):
+  last_reason = reason
+
+when env.finished(reason):
+  stopped(reason)
+
+when voices[0].finished(reason):
+  first_reason = reason
+
+when voices.finished(index, reason):
+  voice_reason = reason
+```
+
+A selected proc-array index must be a compile-time constant. A whole fixed proc array adds a
+leading inferred `i32` element index; use `_` to ignore it. Bindings are read-only and otherwise
+follow event-handler scope rules. Handlers run immediately in declaration order. Nested delegate
+calls are depth-first, and recursive event/delegate dispatch is rejected.
+
+Top-level occurrences are copied before internal handlers run into the optional bounded delegate
+batch for the current process segment or input-event call. Missing storage discards only the host
+copy. A record that does not fit is dropped whole and increments the saturated overflow count;
+internal handlers still run. Batches are reset at entry and cleared on execution failure. Delegate
+history is not processor state and is not included in snapshots.
+
+Hosts collecting top-level occurrences should follow the allocation, decoding, and overflow
+guidance in [Hosting Onda delegates](delegates.md).
 
 ## 4. Executable Sections
 
@@ -1388,6 +1444,7 @@ A proc can contain:
 - `ins`
 - `params`
 - `events` and `event`
+- `delegates`, `delegate`, and `when`
 - `buffers`
 - `outs` or `kouts`
 - `init`
@@ -1396,7 +1453,7 @@ A proc can contain:
 - `graph`
 - Proc-local `def` helpers
 
-In practice, `init` and `events` are optional, and a proc normally has one
+In practice, `init`, events, delegates, and subscriptions are optional, and a proc normally has one
 execution body: `sample`, `block`, or `graph`.
 
 ### Proc Inputs, Params, Outputs, and Buffers

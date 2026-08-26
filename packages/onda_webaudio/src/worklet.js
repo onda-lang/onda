@@ -4,6 +4,9 @@ const ONDA_INIT_PRESERVE_PINNED = 0;
 const ONDA_INIT_FULL = 1;
 const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
 const DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES = 64 * 1024;
+const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
+const DELEGATE_BATCH_SIZE_BYTES = 20;
+const DELEGATE_RECORD_HEADER_SIZE_BYTES = 8;
 const HOST_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
 class OndaWasmProcessor extends AudioWorkletProcessor {
@@ -65,6 +68,9 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.paramInfo = Array.isArray(metadata.metadata?.params) ? metadata.metadata.params : [];
     this.eventInfo = Array.isArray(metadata.metadata?.events)
       ? metadata.metadata.events
+      : [];
+    this.delegateInfo = Array.isArray(metadata.metadata?.delegates)
+      ? metadata.metadata.delegates
       : [];
     this.controlOutputInfo = Array.isArray(metadata.metadata?.control_outputs)
       ? metadata.metadata.control_outputs
@@ -149,6 +155,23 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.eventPayloadPtr = this.eventPayloadCapacity
       ? this.alloc(this.eventPayloadCapacity, 8)
       : 0;
+    this.delegateCapacity = this.configuredDelegateCapacity(
+      processorOptions.delegateCapacityBytes,
+    );
+    this.delegateStoragePtr = this.delegateInfo.length && this.delegateCapacity
+      ? this.alloc(this.delegateCapacity, 8)
+      : 0;
+    this.delegateBatchPtr = this.delegateInfo.length
+      ? this.alloc(DELEGATE_BATCH_SIZE_BYTES, 4)
+      : 0;
+    if (this.delegateBatchPtr) {
+      const view = new DataView(this.memory.buffer);
+      view.setUint32(this.delegateBatchPtr, this.delegateStoragePtr, true);
+      view.setUint32(this.delegateBatchPtr + 4, this.delegateCapacity, true);
+      view.setUint32(this.delegateBatchPtr + 8, 0, true);
+      view.setUint32(this.delegateBatchPtr + 12, 0, true);
+      view.setUint32(this.delegateBatchPtr + 16, 0, true);
+    }
     this.writeParamDefaults();
     this.writeInitialParams(processorOptions.params ?? {});
     this.ensureInputCapacity(this.blockSize);
@@ -254,6 +277,21 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     ) {
       throw new Error(
         `event payload capacity must be an integer from ${minimum} through 2147483647 bytes`,
+      );
+    }
+    return capacity;
+  }
+
+  configuredDelegateCapacity(configuredCapacity) {
+    const capacity = configuredCapacity
+      ?? (this.delegateInfo.length ? DEFAULT_DELEGATE_CAPACITY_BYTES : 0);
+    if (
+      !Number.isSafeInteger(capacity)
+      || capacity < 0
+      || capacity > 0x7fff_ffff
+    ) {
+      throw new Error(
+        "delegate capacity must be an integer from 0 through 2147483647 bytes",
       );
     }
     return capacity;
@@ -654,9 +692,11 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.bufferFramesPtr,
         this.bufferChannelsPtr,
         this.bufferSampleRatesPtr,
+        this.delegateBatchPtr,
       ),
       `event '${event.name}'`,
     );
+    this.flushDelegates(`event '${event.name}'`);
   }
 
   eventValue(event, param, paramId, values) {
@@ -698,6 +738,84 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         ),
       ]),
     );
+  }
+
+  flushDelegates(operation) {
+    if (!this.delegateBatchPtr) return;
+    const view = this.memoryView();
+    const usedBytes = view.getUint32(this.delegateBatchPtr + 8, true);
+    const recordCount = view.getUint32(this.delegateBatchPtr + 12, true);
+    const overflowCount = view.getUint32(this.delegateBatchPtr + 16, true);
+    if (usedBytes > this.delegateCapacity) {
+      throw new Error("processor returned an invalid delegate byte count");
+    }
+    const occurrences = [];
+    let cursor = 0;
+    while (cursor < usedBytes) {
+      if (usedBytes - cursor < DELEGATE_RECORD_HEADER_SIZE_BYTES) {
+        throw new Error("processor returned a partial delegate record header");
+      }
+      const header = this.delegateStoragePtr + cursor;
+      const delegateIndex = view.getUint32(header, true);
+      const payloadBytes = view.getUint32(header + 4, true);
+      const payload = header + DELEGATE_RECORD_HEADER_SIZE_BYTES;
+      if (payloadBytes > usedBytes - cursor - DELEGATE_RECORD_HEADER_SIZE_BYTES) {
+        throw new Error("processor returned a partial delegate payload");
+      }
+      const delegate = this.delegateInfo[delegateIndex];
+      if (!delegate) {
+        throw new Error(`processor returned unknown delegate index ${delegateIndex}`);
+      }
+      occurrences.push({
+        index: delegateIndex,
+        name: delegate.name,
+        values: this.decodeDelegatePayload(delegate, payload, payloadBytes, view),
+      });
+      cursor += DELEGATE_RECORD_HEADER_SIZE_BYTES + payloadBytes;
+    }
+    if (occurrences.length !== recordCount) {
+      throw new Error("processor delegate count does not match packed storage");
+    }
+    if (occurrences.length || overflowCount) {
+      this.port.postMessage({
+        type: "onda-delegates",
+        operation,
+        occurrences,
+        overflowCount,
+      });
+    }
+  }
+
+  decodeDelegatePayload(delegate, address, payloadBytes, view) {
+    const end = address + payloadBytes;
+    const values = {};
+    for (const param of delegate.params) {
+      let length = Number(param.array_len);
+      if (param.is_slice) {
+        if (address + 4 > end) {
+          throw new Error(`delegate '${delegate.name}' has a truncated slice length`);
+        }
+        length = view.getInt32(address, true);
+        address += 4;
+        if (length < 0) {
+          throw new Error(`delegate '${delegate.name}' has a negative slice length`);
+        }
+      }
+      const elementSize = this.scalarByteSize(param.scalar);
+      const byteLength = length * elementSize;
+      if (!Number.isSafeInteger(byteLength) || address + byteLength > end) {
+        throw new Error(`delegate '${delegate.name}' has a truncated '${param.name}' payload`);
+      }
+      const entries = Array.from({ length }, (_, index) =>
+        this.readScalar(address + index * elementSize, param.scalar, view)
+      );
+      values[param.name] = !param.is_slice && length === 1 ? entries[0] : entries;
+      address += byteLength;
+    }
+    if (address !== end) {
+      throw new Error(`delegate '${delegate.name}' payload has trailing bytes`);
+    }
+    return values;
   }
 
   bindInitialBuffers(options) {
@@ -1258,6 +1376,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferFramesPtr,
       this.bufferChannelsPtr,
       this.bufferSampleRatesPtr,
+      this.delegateBatchPtr,
     );
   }
 
@@ -1309,6 +1428,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         });
         return true;
       }
+      this.flushDelegates("process");
       this.marshalOutputSegment(
         outputs,
         frames,

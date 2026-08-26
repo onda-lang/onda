@@ -25,6 +25,46 @@ validate artifacts without installing the compiler or duplicating the ABI schema
 The detailed TypeScript records mirror `onda_processor_abi::ProcessorDescriptor`; both packages
 validate the same checked-in conformance fixture.
 
+## Delegate batches
+
+The package exports `DELEGATE_RECORD_HEADER_SIZE_BYTES`, `DELEGATE_BATCH_SIZE_BYTES`,
+`writeDelegateBatch()`, `readDelegateBatch()`, and `decodeDelegateRecords()` for allocation-free
+call-scoped delegate collection. Descriptor entries expose exact fixed payload sizes or dynamic
+minimum sizes. A complete fixed record occupies the eight-byte header plus its payload; no exact
+whole-call capacity exists because occurrence counts and slice lengths may be runtime-dependent.
+
+```js
+import {
+  DELEGATE_RECORD_HEADER_SIZE_BYTES,
+  writeDelegateBatch,
+  readDelegateBatch,
+  decodeDelegateRecords,
+} from "@onda-lang/processor-abi";
+
+const delegates = artifact.metadata.metadata.delegates;
+const fixedRecordBytes = delegates.map((delegate) =>
+  delegate.payload_size_bytes == null
+    ? null
+    : DELEGATE_RECORD_HEADER_SIZE_BYTES + delegate.payload_size_bytes
+);
+
+writeDelegateBatch(memory, batchAddress, storageAddress, capacityBytes);
+// Pass batchAddress as the final onda_process or onda_event_N argument.
+const batch = readDelegateBatch(memory, batchAddress);
+const storage = new Uint8Array(memory.buffer, storageAddress, batch.usedBytes);
+const occurrences = decodeDelegateRecords(
+  storage,
+  batch.usedBytes,
+  delegates,
+  artifact.metadata.target.byte_order,
+);
+if (batch.overflowCount) reportOverflow(batch.overflowCount);
+```
+
+Allocate the descriptor and storage before realtime execution and consume records before the next
+call reuses them. See [Hosting Onda delegates](../../docs/delegates.md) for the complete lifecycle,
+capacity guidance, and APIs for other hosts.
+
 The current descriptor represents every bindable buffer-array slot as a physical
 `metadata.buffers` entry and records logical contiguous groups in `metadata.buffer_arrays`. At
 runtime all four descriptor tables are present when any buffer exists, but an individual sample

@@ -45,6 +45,7 @@ use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_bu
 
 const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 13;
 const INIT_ALL_CONTEXT_INDEX: u32 = 16;
+const DELEGATE_BATCH_CONTEXT_INDEX: u32 = 17;
 
 struct OwnedLlvm<T: Copy> {
     value: T,
@@ -172,6 +173,7 @@ type NativeProcessFn = unsafe extern "C" fn(
     *const i32,
     *const i32,
     *const f32,
+    *mut onda_processor_abi::DelegateBatch,
 ) -> u32;
 type NativeInitFn = unsafe extern "C" fn(*const u8, *mut u8, u32) -> u32;
 type NativeEventFn = unsafe extern "C" fn(
@@ -182,6 +184,7 @@ type NativeEventFn = unsafe extern "C" fn(
     *const i32,
     *const i32,
     *const f32,
+    *mut onda_processor_abi::DelegateBatch,
 ) -> u32;
 
 #[derive(Debug)]
@@ -223,7 +226,7 @@ impl Drop for NativeOrcProcess {
 /// packed parameter/event data, audio and control I/O, const data, user calls,
 /// structured control flow, scalar operations, casts, comparisons, and MIR
 /// intrinsics. Tuples and structs remain outside this lowering boundary. The
-/// external process symbol retains the 11-argument host ABI while the MIR body
+/// external process symbol retains the 12-argument host ABI while the MIR body
 /// consumes its validated `(start_frame, frames, flags)` value parameters and
 /// supports arbitrary legal block segments.
 pub struct MirJitProgram {
@@ -608,6 +611,7 @@ struct ModuleEmitter<'a> {
     fast_math: bool,
     ptr_ty: LLVMTypeRef,
     runtime_context_ty: LLVMTypeRef,
+    delegate_batch_ty: LLVMTypeRef,
     functions: Vec<FunctionDecl>,
     const_globals: Vec<LLVMValueRef>,
     host_alias_scopes: HostAliasScopes,
@@ -637,9 +641,16 @@ impl<'a> ModuleEmitter<'a> {
         let ptr_ty = LLVMPointerType(i8_ty, 0);
         let i1_ty = LLVMInt1TypeInContext(context);
         let i32_ty = LLVMInt32TypeInContext(context);
+        let mut delegate_batch_fields = [ptr_ty, i32_ty, i32_ty, i32_ty, i32_ty];
+        let delegate_batch_ty = LLVMStructTypeInContext(
+            context,
+            delegate_batch_fields.as_mut_ptr(),
+            delegate_batch_fields.len() as u32,
+            0,
+        );
         let mut runtime_fields = [
             ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
-            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty, i1_ty,
+            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty, i1_ty, ptr_ty,
         ];
         let runtime_context_ty = LLVMStructTypeInContext(
             context,
@@ -662,6 +673,7 @@ impl<'a> ModuleEmitter<'a> {
             fast_math,
             ptr_ty,
             runtime_context_ty,
+            delegate_batch_ty,
             functions,
             const_globals,
             host_alias_scopes,
@@ -702,7 +714,7 @@ unsafe fn declare_functions(
             FunctionKind::Process => {
                 let mut args = [
                     ptr_ty, ptr_ty, ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty,
-                    ptr_ty,
+                    ptr_ty, ptr_ty,
                 ];
                 (
                     "onda_process".to_owned(),
@@ -711,7 +723,9 @@ unsafe fn declare_functions(
                 )
             }
             FunctionKind::Event(event) => {
-                let mut args = [ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty];
+                let mut args = [
+                    ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
+                ];
                 (
                     format!("onda_event_{}", event.raw()),
                     LLVMFunctionType(i32_ty, args.as_mut_ptr(), args.len() as u32, 0),
@@ -1277,7 +1291,11 @@ unsafe fn emit_function_body(
             FunctionKind::User => LLVMGetParam(declaration.value, 0),
             _ => build_entry_runtime_context(module, declaration.value, function.kind, builder)?,
         };
-
+        // Direct buffer metadata is materialized in the entry block so it is
+        // invariant for the duration of an entry-point call. Keep its fallback
+        // operands there as well: delegate-batch reset introduces a branch, and
+        // values loaded after that branch would not dominate entry-block
+        // snapshots inserted by `snapshot_direct_buffer_field`.
         let fallback_buffer_read =
             load_context_field(module, builder, runtime_context, 14, "unbound_buffer_read")?;
         let fallback_buffer_write =
@@ -1299,6 +1317,17 @@ unsafe fn emit_function_body(
             fallback_buffer_write,
         };
         emitter.allocate_storage()?;
+        if !module.program.interface.delegates.is_empty()
+            && matches!(
+                function.kind,
+                FunctionKind::Process | FunctionKind::Event(_)
+            )
+        {
+            // Keep local allocas in the LLVM entry block so mem2reg/SROA can
+            // promote them. Batch reset branches before authored execution,
+            // after the entry ABI has only materialized its local views.
+            reset_delegate_batch(module, builder, runtime_context)?;
+        }
         emitter.lower_block(&function.body)?;
         if !current_block_terminated(builder) {
             if !matches!(function.kind, FunctionKind::User) {
@@ -1565,6 +1594,9 @@ impl FunctionEmitter<'_, '_> {
                 function,
                 args,
             } => self.lower_call(results, *function, args)?,
+            StatementKind::PublishDelegate { delegate, args } => {
+                self.lower_publish_delegate(*delegate, args)?
+            }
             StatementKind::OutputStore {
                 output,
                 element,
@@ -1625,6 +1657,519 @@ impl FunctionEmitter<'_, '_> {
             }
             StatementKind::Return { values } => self.lower_return(values)?,
         }
+        Ok(())
+    }
+
+    unsafe fn lower_publish_delegate(
+        &mut self,
+        delegate: onda_mir::DelegateId,
+        args: &[CallArgument],
+    ) -> Result<(), MirCodegenError> {
+        let descriptor = &self.module.program.interface.delegates[delegate.index()];
+        let i8_ty = LLVMInt8TypeInContext(self.module.context);
+        let i32_ty = LLVMInt32TypeInContext(self.module.context);
+        let i64_ty = LLVMInt64TypeInContext(self.module.context);
+        let mut payload_bytes = LLVMConstInt(i64_ty, 0, 0);
+        for (param, argument) in descriptor.params.iter().zip(args) {
+            let CallArgument::Value(value) = argument else {
+                return Err(MirCodegenError::invalid(
+                    "delegate publication payload is not an evaluated value",
+                ));
+            };
+            let bytes = match self.module.program.types[param.ty.index()] {
+                Type::Slice { element, .. } => {
+                    let parts = self.slice_parts(*value)?;
+                    let len = LLVMBuildZExt(
+                        self.builder,
+                        parts.len,
+                        i64_ty,
+                        c_name("delegate_slice_len_i64")?.as_ptr(),
+                    );
+                    LLVMBuildAdd(
+                        self.builder,
+                        LLVMConstInt(i64_ty, 4, 0),
+                        LLVMBuildMul(
+                            self.builder,
+                            len,
+                            LLVMConstInt(i64_ty, scalar_store_size(element), 0),
+                            c_name("delegate_slice_bytes")?.as_ptr(),
+                        ),
+                        c_name("delegate_dynamic_param_bytes")?.as_ptr(),
+                    )
+                }
+                _ => LLVMConstInt(
+                    i64_ty,
+                    fixed_payload_type_size(self.module.program, param.ty)?.ok_or_else(|| {
+                        MirCodegenError::invalid("delegate payload contains a nested dynamic type")
+                    })? as u64,
+                    0,
+                ),
+            };
+            payload_bytes = LLVMBuildAdd(
+                self.builder,
+                payload_bytes,
+                bytes,
+                c_name("delegate_payload_bytes")?.as_ptr(),
+            );
+        }
+
+        let batch = load_context_field(
+            self.module,
+            self.builder,
+            self.runtime_context,
+            DELEGATE_BATCH_CONTEXT_INDEX,
+            "delegate_batch",
+        )?;
+        let batch_present = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntNE,
+            batch,
+            LLVMConstPointerNull(self.module.ptr_ty),
+            c_name("delegate_batch_present")?.as_ptr(),
+        );
+        let inspect = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_delegate_inspect_batch",
+        )?;
+        let done = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_delegate_done",
+        )?;
+        LLVMBuildCondBr(self.builder, batch_present, inspect, done);
+        LLVMPositionBuilderAtEnd(self.builder, inspect);
+
+        let storage_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.delegate_batch_ty,
+            batch,
+            0,
+            c_name("delegate_storage_ptr")?.as_ptr(),
+        );
+        let storage = LLVMBuildLoad2(
+            self.builder,
+            self.module.ptr_ty,
+            storage_ptr,
+            c_name("delegate_storage")?.as_ptr(),
+        );
+        let storage_present = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntNE,
+            storage,
+            LLVMConstPointerNull(self.module.ptr_ty),
+            c_name("delegate_storage_present")?.as_ptr(),
+        );
+        let capacity_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.delegate_batch_ty,
+            batch,
+            1,
+            c_name("delegate_capacity_ptr")?.as_ptr(),
+        );
+        let used_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.delegate_batch_ty,
+            batch,
+            2,
+            c_name("delegate_used_ptr")?.as_ptr(),
+        );
+        let capacity = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            capacity_ptr,
+            c_name("delegate_capacity")?.as_ptr(),
+        );
+        let used = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            used_ptr,
+            c_name("delegate_used")?.as_ptr(),
+        );
+        let capacity_i64 = LLVMBuildZExt(
+            self.builder,
+            capacity,
+            i64_ty,
+            c_name("delegate_capacity_i64")?.as_ptr(),
+        );
+        let used_i64 = LLVMBuildZExt(
+            self.builder,
+            used,
+            i64_ty,
+            c_name("delegate_used_i64")?.as_ptr(),
+        );
+        let required = LLVMBuildAdd(
+            self.builder,
+            payload_bytes,
+            LLVMConstInt(
+                i64_ty,
+                onda_processor_abi::DELEGATE_RECORD_HEADER_SIZE as u64,
+                0,
+            ),
+            c_name("delegate_required")?.as_ptr(),
+        );
+        let used_valid = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntULE,
+            used_i64,
+            capacity_i64,
+            c_name("delegate_used_valid")?.as_ptr(),
+        );
+        let available = LLVMBuildSub(
+            self.builder,
+            capacity_i64,
+            used_i64,
+            c_name("delegate_available")?.as_ptr(),
+        );
+        let required_fits = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntULE,
+            required,
+            available,
+            c_name("delegate_required_fits")?.as_ptr(),
+        );
+        let fits = LLVMBuildAnd(
+            self.builder,
+            storage_present,
+            LLVMBuildAnd(
+                self.builder,
+                used_valid,
+                required_fits,
+                c_name("delegate_capacity_valid")?.as_ptr(),
+            ),
+            c_name("delegate_record_fits")?.as_ptr(),
+        );
+        let write = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_delegate_write",
+        )?;
+        let dropped = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_delegate_dropped",
+        )?;
+        let no_storage = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_delegate_no_storage",
+        )?;
+        let capacity_ok = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_delegate_capacity_ok",
+        )?;
+        LLVMBuildCondBr(self.builder, storage_present, write, no_storage);
+        LLVMPositionBuilderAtEnd(self.builder, no_storage);
+        LLVMBuildBr(self.builder, done);
+        LLVMPositionBuilderAtEnd(self.builder, write);
+        LLVMBuildCondBr(self.builder, fits, capacity_ok, dropped);
+
+        LLVMPositionBuilderAtEnd(self.builder, dropped);
+        let overflow_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.delegate_batch_ty,
+            batch,
+            4,
+            c_name("delegate_overflow_ptr")?.as_ptr(),
+        );
+        let overflow = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            overflow_ptr,
+            c_name("delegate_overflow")?.as_ptr(),
+        );
+        let saturated = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntEQ,
+            overflow,
+            LLVMConstInt(i32_ty, u64::from(u32::MAX), 0),
+            c_name("delegate_overflow_saturated")?.as_ptr(),
+        );
+        let incremented = LLVMBuildAdd(
+            self.builder,
+            overflow,
+            LLVMConstInt(i32_ty, 1, 0),
+            c_name("delegate_overflow_incremented")?.as_ptr(),
+        );
+        LLVMBuildStore(
+            self.builder,
+            LLVMBuildSelect(
+                self.builder,
+                saturated,
+                overflow,
+                incremented,
+                c_name("delegate_overflow_next")?.as_ptr(),
+            ),
+            overflow_ptr,
+        );
+        LLVMBuildBr(self.builder, done);
+
+        LLVMPositionBuilderAtEnd(self.builder, capacity_ok);
+        let record = LLVMBuildGEP2(
+            self.builder,
+            i8_ty,
+            storage,
+            [used_i64].as_mut_ptr(),
+            1,
+            c_name("delegate_record")?.as_ptr(),
+        );
+        let delegate_store = LLVMBuildStore(
+            self.builder,
+            LLVMConstInt(i32_ty, u64::from(delegate.raw()), 0),
+            record,
+        );
+        LLVMSetAlignment(delegate_store, 1);
+        let payload_size_ptr = LLVMBuildGEP2(
+            self.builder,
+            i8_ty,
+            record,
+            [LLVMConstInt(i64_ty, 4, 0)].as_mut_ptr(),
+            1,
+            c_name("delegate_payload_size_ptr")?.as_ptr(),
+        );
+        let payload_size_store = LLVMBuildStore(
+            self.builder,
+            LLVMBuildTrunc(
+                self.builder,
+                payload_bytes,
+                i32_ty,
+                c_name("delegate_payload_size")?.as_ptr(),
+            ),
+            payload_size_ptr,
+        );
+        LLVMSetAlignment(payload_size_store, 1);
+        let mut cursor = LLVMConstInt(
+            i64_ty,
+            onda_processor_abi::DELEGATE_RECORD_HEADER_SIZE as u64,
+            0,
+        );
+        for (param, argument) in descriptor.params.iter().zip(args) {
+            let CallArgument::Value(value) = argument else {
+                unreachable!("validated above")
+            };
+            let destination = LLVMBuildGEP2(
+                self.builder,
+                i8_ty,
+                record,
+                [cursor].as_mut_ptr(),
+                1,
+                c_name("delegate_payload_param")?.as_ptr(),
+            );
+            match self.module.program.types[param.ty.index()] {
+                Type::Scalar(scalar) => {
+                    let store =
+                        LLVMBuildStore(self.builder, self.lower_value(*value)?, destination);
+                    LLVMSetAlignment(store, 1);
+                    cursor = LLVMBuildAdd(
+                        self.builder,
+                        cursor,
+                        LLVMConstInt(i64_ty, scalar_store_size(scalar), 0),
+                        c_name("delegate_payload_cursor")?.as_ptr(),
+                    );
+                }
+                Type::Array { element, len } => {
+                    let Type::Scalar(element) = self.module.program.types[element.index()] else {
+                        return Err(MirCodegenError::invalid(
+                            "delegate fixed array element is not scalar",
+                        ));
+                    };
+                    let parts = self.slice_parts(*value)?;
+                    self.copy_slice_to_packed_payload(
+                        parts,
+                        LLVMConstInt(i32_ty, u64::from(len), 0),
+                        destination,
+                    )?;
+                    cursor = LLVMBuildAdd(
+                        self.builder,
+                        cursor,
+                        LLVMConstInt(i64_ty, u64::from(len) * scalar_store_size(element), 0),
+                        c_name("delegate_payload_cursor")?.as_ptr(),
+                    );
+                }
+                Type::Slice { element, .. } => {
+                    let parts = self.slice_parts(*value)?;
+                    let len_store = LLVMBuildStore(self.builder, parts.len, destination);
+                    LLVMSetAlignment(len_store, 1);
+                    let data = LLVMBuildGEP2(
+                        self.builder,
+                        i8_ty,
+                        destination,
+                        [LLVMConstInt(i64_ty, 4, 0)].as_mut_ptr(),
+                        1,
+                        c_name("delegate_slice_data")?.as_ptr(),
+                    );
+                    self.copy_slice_to_packed_payload(parts, parts.len, data)?;
+                    let data_bytes = LLVMBuildMul(
+                        self.builder,
+                        LLVMBuildZExt(
+                            self.builder,
+                            parts.len,
+                            i64_ty,
+                            c_name("delegate_slice_len_i64")?.as_ptr(),
+                        ),
+                        LLVMConstInt(i64_ty, scalar_store_size(element), 0),
+                        c_name("delegate_slice_data_bytes")?.as_ptr(),
+                    );
+                    cursor = LLVMBuildAdd(
+                        self.builder,
+                        cursor,
+                        LLVMBuildAdd(
+                            self.builder,
+                            LLVMConstInt(i64_ty, 4, 0),
+                            data_bytes,
+                            c_name("delegate_slice_param_bytes")?.as_ptr(),
+                        ),
+                        c_name("delegate_payload_cursor")?.as_ptr(),
+                    );
+                }
+                _ => {
+                    return Err(MirCodegenError::invalid(
+                        "unsupported delegate payload type",
+                    ));
+                }
+            }
+        }
+        let next_used = LLVMBuildTrunc(
+            self.builder,
+            LLVMBuildAdd(
+                self.builder,
+                used_i64,
+                required,
+                c_name("delegate_next_used_i64")?.as_ptr(),
+            ),
+            i32_ty,
+            c_name("delegate_next_used")?.as_ptr(),
+        );
+        LLVMBuildStore(self.builder, next_used, used_ptr);
+        let count_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.delegate_batch_ty,
+            batch,
+            3,
+            c_name("delegate_count_ptr")?.as_ptr(),
+        );
+        let count = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            count_ptr,
+            c_name("delegate_count")?.as_ptr(),
+        );
+        LLVMBuildStore(
+            self.builder,
+            LLVMBuildAdd(
+                self.builder,
+                count,
+                LLVMConstInt(i32_ty, 1, 0),
+                c_name("delegate_count_next")?.as_ptr(),
+            ),
+            count_ptr,
+        );
+        LLVMBuildBr(self.builder, done);
+        LLVMPositionBuilderAtEnd(self.builder, done);
+        Ok(())
+    }
+
+    unsafe fn copy_slice_to_packed_payload(
+        &mut self,
+        source: SliceParts,
+        len: LLVMValueRef,
+        destination: LLVMValueRef,
+    ) -> Result<(), MirCodegenError> {
+        let i8_ty = LLVMInt8TypeInContext(self.module.context);
+        let i32_ty = LLVMInt32TypeInContext(self.module.context);
+        let i64_ty = LLVMInt64TypeInContext(self.module.context);
+        let preheader = LLVMGetInsertBlock(self.builder);
+        let body = append_block(
+            self.module.context,
+            self.declaration.value,
+            "delegate_payload_copy",
+        )?;
+        let done = append_block(
+            self.module.context,
+            self.declaration.value,
+            "delegate_payload_copy_done",
+        )?;
+        let nonempty = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntNE,
+            len,
+            LLVMConstInt(i32_ty, 0, 0),
+            c_name("delegate_payload_nonempty")?.as_ptr(),
+        );
+        LLVMBuildCondBr(self.builder, nonempty, body, done);
+        LLVMPositionBuilderAtEnd(self.builder, body);
+        let index = LLVMBuildPhi(
+            self.builder,
+            i32_ty,
+            c_name("delegate_payload_index")?.as_ptr(),
+        );
+        let zero = LLVMConstInt(i32_ty, 0, 0);
+        LLVMAddIncoming(index, [zero].as_mut_ptr(), [preheader].as_mut_ptr(), 1);
+        let index_i64 = LLVMBuildZExt(
+            self.builder,
+            index,
+            i64_ty,
+            c_name("delegate_payload_index_i64")?.as_ptr(),
+        );
+        let source_offset = LLVMBuildMul(
+            self.builder,
+            index_i64,
+            LLVMBuildZExt(
+                self.builder,
+                source.stride_bytes,
+                i64_ty,
+                c_name("delegate_payload_stride_i64")?.as_ptr(),
+            ),
+            c_name("delegate_payload_source_offset")?.as_ptr(),
+        );
+        let source_ptr = LLVMBuildGEP2(
+            self.builder,
+            i8_ty,
+            source.read_ptr,
+            [source_offset].as_mut_ptr(),
+            1,
+            c_name("delegate_payload_source")?.as_ptr(),
+        );
+        let destination_offset = LLVMBuildMul(
+            self.builder,
+            index_i64,
+            LLVMConstInt(i64_ty, scalar_store_size(source.element), 0),
+            c_name("delegate_payload_destination_offset")?.as_ptr(),
+        );
+        let destination_ptr = LLVMBuildGEP2(
+            self.builder,
+            i8_ty,
+            destination,
+            [destination_offset].as_mut_ptr(),
+            1,
+            c_name("delegate_payload_destination")?.as_ptr(),
+        );
+        let value = LLVMBuildLoad2(
+            self.builder,
+            llvm_scalar_type(self.module.context, source.element),
+            source_ptr,
+            c_name("delegate_payload_value")?.as_ptr(),
+        );
+        LLVMSetAlignment(value, 1);
+        let store = LLVMBuildStore(self.builder, value, destination_ptr);
+        LLVMSetAlignment(store, 1);
+        let next = LLVMBuildAdd(
+            self.builder,
+            index,
+            LLVMConstInt(i32_ty, 1, 0),
+            c_name("delegate_payload_next_index")?.as_ptr(),
+        );
+        let again = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntULT,
+            next,
+            len,
+            c_name("delegate_payload_copy_more")?.as_ptr(),
+        );
+        LLVMBuildCondBr(self.builder, again, body, done);
+        LLVMAddIncoming(index, [next].as_mut_ptr(), [body].as_mut_ptr(), 1);
+        LLVMPositionBuilderAtEnd(self.builder, done);
         Ok(())
     }
 
@@ -2498,6 +3043,18 @@ impl FunctionEmitter<'_, '_> {
             RUNTIME_FAILURE_CONTEXT_INDEX,
         )?;
         LLVMBuildStore(self.builder, failure_status, failure_ptr);
+        if !self.module.program.interface.delegates.is_empty()
+            && matches!(
+                self.function.kind,
+                FunctionKind::Process | FunctionKind::Event(_)
+            )
+        {
+            // Nested helpers propagate failure through the runtime status slot.
+            // Clearing belongs at the generated host-call boundary; doing it
+            // here would give otherwise pure helpers a delegate-batch memory
+            // effect and inhibit interprocedural optimization.
+            reset_delegate_batch(self.module, self.builder, self.runtime_context)?;
+        }
         if matches!(self.function.kind, FunctionKind::User) {
             let result_ty = LLVMGetReturnType(self.declaration.ty);
             if LLVMGetTypeKind(result_ty) == llvm_sys::LLVMTypeKind::LLVMVoidTypeKind {
@@ -5294,6 +5851,53 @@ impl FunctionEmitter<'_, '_> {
     }
 }
 
+unsafe fn reset_delegate_batch(
+    module: &ModuleEmitter<'_>,
+    builder: LLVMBuilderRef,
+    runtime_context: LLVMValueRef,
+) -> Result<(), MirCodegenError> {
+    let batch = load_context_field(
+        module,
+        builder,
+        runtime_context,
+        DELEGATE_BATCH_CONTEXT_INDEX,
+        "delegate_batch",
+    )?;
+    let present = LLVMBuildICmp(
+        builder,
+        LLVMIntPredicate::LLVMIntNE,
+        batch,
+        LLVMConstPointerNull(module.ptr_ty),
+        c_name("delegate_batch_present")?.as_ptr(),
+    );
+    let reset = append_block(
+        module.context,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
+        "delegate_batch_reset",
+    )?;
+    let done = append_block(
+        module.context,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
+        "delegate_batch_reset_done",
+    )?;
+    LLVMBuildCondBr(builder, present, reset, done);
+    LLVMPositionBuilderAtEnd(builder, reset);
+    let zero = LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0);
+    for field in 2..=4 {
+        let pointer = LLVMBuildStructGEP2(
+            builder,
+            module.delegate_batch_ty,
+            batch,
+            field,
+            c_name("delegate_batch_counter")?.as_ptr(),
+        );
+        LLVMBuildStore(builder, zero, pointer);
+    }
+    LLVMBuildBr(builder, done);
+    LLVMPositionBuilderAtEnd(builder, done);
+    Ok(())
+}
+
 unsafe fn build_entry_runtime_context(
     module: &ModuleEmitter<'_>,
     function: LLVMValueRef,
@@ -5326,6 +5930,7 @@ unsafe fn build_entry_runtime_context(
         null,
         null,
         false_value,
+        null,
     ];
     let (fallback_read, fallback_write) = allocate_entry_fallback_buffers(module, builder)?;
     fields[14] = fallback_read;
@@ -5394,6 +5999,7 @@ unsafe fn build_entry_runtime_context(
                     LLVMGetParam(function, parameter),
                 )?;
             }
+            fields[DELEGATE_BATCH_CONTEXT_INDEX as usize] = LLVMGetParam(function, 11);
         }
         FunctionKind::Event(_) => {
             fields[12] = LLVMGetParam(function, 0);
@@ -5410,6 +6016,7 @@ unsafe fn build_entry_runtime_context(
                     LLVMGetParam(function, parameter),
                 )?;
             }
+            fields[DELEGATE_BATCH_CONTEXT_INDEX as usize] = LLVMGetParam(function, 7);
         }
         FunctionKind::User => unreachable!(),
     }
@@ -5908,7 +6515,8 @@ fn inspect_block(
             | StatementKind::BufferParamStore { .. }
             | StatementKind::SliceStore { .. }
             | StatementKind::SliceFill { .. }
-            | StatementKind::SliceCopy { .. } => {}
+            | StatementKind::SliceCopy { .. }
+            | StatementKind::PublishDelegate { .. } => {}
             StatementKind::If {
                 then_block,
                 else_block,
@@ -6316,6 +6924,7 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
+        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
     ) -> Result<(), Diagnostic> {
         let block_size = self.mir.config.block_size as usize;
         if start_frame > block_size || frames > block_size.saturating_sub(start_frame) {
@@ -6363,6 +6972,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
+                delegate_batch.map_or(std::ptr::null_mut(), |batch| batch as *mut _),
             )
         };
         crate::check_execution_status(status)?;
@@ -6389,6 +6999,7 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
+        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
     ) -> u32 {
         unsafe {
             (self.compiled.process)(
@@ -6403,6 +7014,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
+                delegate_batch.map_or(std::ptr::null_mut(), |batch| batch as *mut _),
             )
         }
     }
@@ -6424,6 +7036,7 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
+        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
     ) -> Result<(), Diagnostic> {
         let status = unsafe {
             self.trigger_event_by_index_with_status(
@@ -6435,6 +7048,7 @@ impl MirJitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
+                delegate_batch,
             )?
         };
         crate::check_execution_status(status)
@@ -6458,8 +7072,12 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
+        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
     ) -> Result<u32, Diagnostic> {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
+            if let Some(delegate_batch) = delegate_batch {
+                delegate_batch.reset();
+            }
             return Ok(0);
         };
         self.validate_event_payload(event_index, payload)?;
@@ -6480,6 +7098,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
+                delegate_batch.map_or(std::ptr::null_mut(), |batch| batch as *mut _),
             )
         };
         Ok(status)
@@ -6501,8 +7120,12 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
+        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
     ) -> u32 {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
+            if let Some(delegate_batch) = delegate_batch {
+                delegate_batch.reset();
+            }
             return 0;
         };
         unsafe {
@@ -6514,6 +7137,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
+                delegate_batch.map_or(std::ptr::null_mut(), |batch| batch as *mut _),
             )
         }
     }
@@ -7327,6 +7951,7 @@ mod tests {
                     buffer_frames,
                     buffer_channels,
                     buffer_sample_rates,
+                    None,
                 )
             }
         }
@@ -7352,6 +7977,7 @@ mod tests {
                     buffer_frames,
                     buffer_channels,
                     buffer_sample_rates,
+                    None,
                 )
             }
         }

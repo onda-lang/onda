@@ -682,6 +682,8 @@ pub(crate) fn specialize_generic_proc_template(
     let mut block_post = template.block_post.clone();
     let mut local_defs = template.local_defs.clone();
     let mut events = template.events.clone();
+    let mut delegates = template.delegates.clone();
+    let mut whens = template.whens.clone();
     let mut tasks = template.tasks.clone();
     for event in &mut events {
         for param in &mut event.params {
@@ -702,6 +704,31 @@ pub(crate) fn specialize_generic_proc_template(
                     &format!(
                         "processor '{}.{}' event parameter default",
                         template.name, event.name
+                    ),
+                    errors,
+                );
+            }
+        }
+    }
+    for delegate in &mut delegates {
+        for param in &mut delegate.params {
+            param.ty = specialize_generic_proc_event_param_type(
+                &param.ty,
+                &type_bindings,
+                &template.name,
+                &delegate.name,
+                &param.name,
+                DiagCtx::new(param.ty_loc.or(param.loc)),
+                errors,
+            );
+            if let Some(default) = &mut param.default {
+                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
+                substitute_call_type_args_with_bindings_expr(
+                    default,
+                    &type_bindings,
+                    &format!(
+                        "processor '{}.{}' delegate parameter default",
+                        template.name, delegate.name
                     ),
                     errors,
                 );
@@ -787,6 +814,28 @@ pub(crate) fn specialize_generic_proc_template(
         for stmt in &mut event.body {
             specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
         }
+    }
+    for when in &mut whens {
+        if let Some(index) = &mut when.target.index {
+            rewrite_generic_array_ctor_expr_types(index, &type_bindings, errors);
+            substitute_call_type_args_with_bindings_expr(
+                index,
+                &type_bindings,
+                &format!("processor '{}' when target", template.name),
+                errors,
+            );
+        }
+        for stmt in &mut when.body {
+            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
+            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
+            substitute_call_type_args_with_bindings_stmt(
+                stmt,
+                &type_bindings,
+                &format!("processor '{}' when handler", template.name),
+                errors,
+            );
+        }
+        expand_inline_array_ctor_initializers(&mut when.body);
     }
     for event in &mut events {
         for stmt in &mut event.body {
@@ -956,6 +1005,8 @@ pub(crate) fn specialize_generic_proc_template(
         params_deferred_count: None,
         params_deferred_default_ty: None,
         events,
+        delegates,
+        whens,
         tasks,
         buffers,
         buffers_deferred_count: None,

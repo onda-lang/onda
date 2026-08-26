@@ -123,7 +123,7 @@ fn slice_in_event_handler() {
 
     payload.extend_from_slice(&40.0_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("fill event should succeed");
+    trigger_event_by_index(&mut instance, 0, &payload, None).expect("fill event should succeed");
 
     let mut output = vec![0.0_f32; frames];
 

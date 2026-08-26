@@ -1,6 +1,6 @@
 use crate::{
-    AccessMode, BufferChannels, BufferId, ConstDataId, ConstantValue, ControlOutputId, EventId,
-    EventParamId, FieldId, FunctionId, InputId, IntegerRangeInvariant, LocalId, OutputId,
+    AccessMode, BufferChannels, BufferId, ConstDataId, ConstantValue, ControlOutputId, DelegateId,
+    EventId, EventParamId, FieldId, FunctionId, InputId, IntegerRangeInvariant, LocalId, OutputId,
     ParamControl, ParamId, ParameterId, ScalarType, ScalarValue, SourceFileId, StateId, Type,
     TypeId, ValueRange, MIR_SCHEMA_VERSION,
 };
@@ -255,6 +255,7 @@ pub struct Interface {
     #[serde(default)]
     pub buffer_arrays: Vec<BufferArray>,
     pub events: Vec<Event>,
+    pub delegates: Vec<Delegate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -408,6 +409,18 @@ pub struct EventParam {
     pub default: Option<ConstantValue>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Delegate {
+    pub name: String,
+    pub params: Vec<DelegateParam>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DelegateParam {
+    pub name: String,
+    pub ty: TypeId,
+}
+
 /// Per-instance storage. Full initialization clears the physical state image
 /// before the MIR `init` entry runs. The init body still describes every
 /// authored initializer so preserve-pinned initialization can restore
@@ -475,6 +488,9 @@ pub enum FunctionKind {
 pub struct FunctionAttributes {
     pub origin: FunctionOrigin,
     pub inline: InlineHint,
+    /// The function executes with access to the program runtime context.
+    /// Publication is valid only from such user functions.
+    pub runtime_context: bool,
 }
 
 impl Default for FunctionAttributes {
@@ -482,6 +498,7 @@ impl Default for FunctionAttributes {
         Self {
             origin: FunctionOrigin::Source,
             inline: InlineHint::Auto,
+            runtime_context: false,
         }
     }
 }
@@ -560,6 +577,12 @@ pub enum StatementKind {
     Call {
         results: Vec<LocalId>,
         function: FunctionId,
+        args: Vec<CallArgument>,
+    },
+    /// Copies one complete top-level delegate payload to the optional
+    /// call-scoped delegate batch.
+    PublishDelegate {
+        delegate: DelegateId,
         args: Vec<CallArgument>,
     },
     OutputStore {

@@ -1,7 +1,7 @@
 use onda_frontend::{
     ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec, BufferBlock,
     BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
-    ConstType, DeclType, EventDef, EventParamType, Expr, FieldType, FnParamType,
+    ConstType, DeclType, DelegateDef, EventDef, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp,
     ParamBlock, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program,
     SampleBlock, Stmt, StructDef, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
@@ -73,6 +73,8 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
                 format_event(event, indent + 1, out);
             }
         }
+        Block::Delegates(delegates) => format_delegates(delegates, indent, out),
+        Block::When(when) => format_when(when, indent, out),
         Block::Tasks(tasks) => format_tasks(&tasks.tasks, indent, out),
         Block::Buffers(buffers) => format_buffer_block("buffers", buffers, indent, out),
         Block::Assert(assert_decl) => {
@@ -445,6 +447,15 @@ fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
             format_event(event, indent + 2, out);
         }
     }
+    if !proc.delegates.is_empty() {
+        push_line(out, indent + 1, "delegates:");
+        for delegate in &proc.delegates {
+            format_delegate(delegate, indent + 2, out);
+        }
+    }
+    for when in &proc.whens {
+        format_when(when, indent + 1, out);
+    }
     if !proc.tasks.is_empty() {
         format_tasks(&proc.tasks, indent + 1, out);
     }
@@ -583,6 +594,41 @@ fn format_event(event: &EventDef, indent: usize, out: &mut String) {
     format_stmt_list(&event.body, indent + 1, out);
 }
 
+fn format_delegates(delegates: &onda_frontend::DelegateBlock, indent: usize, out: &mut String) {
+    push_line(out, indent, "delegates:");
+    for delegate in delegates {
+        format_delegate(delegate, indent + 1, out);
+    }
+}
+
+fn format_delegate(delegate: &DelegateDef, indent: usize, out: &mut String) {
+    let mut signature = format!("{}(", delegate.name);
+    signature.push_str(&format_event_params(&delegate.params));
+    signature.push(')');
+    push_line(out, indent, &signature);
+}
+
+fn format_when(when: &onda_frontend::WhenDef, indent: usize, out: &mut String) {
+    let mut target = when.target.receiver.join(".");
+    if let Some(index) = &when.target.index {
+        target.push('[');
+        target.push_str(&format_expr(index));
+        target.push(']');
+    }
+    if !target.is_empty() {
+        target.push('.');
+    }
+    target.push_str(&when.target.delegate);
+    let bindings = when
+        .bindings
+        .iter()
+        .map(|binding| binding.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    push_line(out, indent, &format!("when {target}({bindings}):"));
+    format_stmt_list(&when.body, indent + 1, out);
+}
+
 fn format_tasks(tasks: &[TaskDef], indent: usize, out: &mut String) {
     push_line(out, indent, "tasks:");
     for task in tasks {
@@ -593,23 +639,24 @@ fn format_tasks(tasks: &[TaskDef], indent: usize, out: &mut String) {
 
 pub fn format_event_signature(event: &EventDef) -> String {
     let mut header = format!("{}(", event.name);
-    header.push_str(
-        &event
-            .params
-            .iter()
-            .map(|param| {
-                let mut text = format!("{}: {}", param.name, format_event_param_type(&param.ty));
-                if let Some(default) = &param.default {
-                    text.push_str(" = ");
-                    text.push_str(&format_expr(default));
-                }
-                text
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
+    header.push_str(&format_event_params(&event.params));
     header.push_str("):");
     header
+}
+
+fn format_event_params(params: &[onda_frontend::EventParamDecl]) -> String {
+    params
+        .iter()
+        .map(|param| {
+            let mut text = format!("{}: {}", param.name, format_event_param_type(&param.ty));
+            if let Some(default) = &param.default {
+                text.push_str(" = ");
+                text.push_str(&format_expr(default));
+            }
+            text
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_stmt_list(stmts: &[Stmt], indent: usize, out: &mut String) {

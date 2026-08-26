@@ -15,6 +15,44 @@ typedef struct onda_project_image onda_project_image_t;
 typedef struct onda_project_materialization_plan onda_project_materialization_plan_t;
 typedef struct onda_compile_constants onda_compile_constants_t;
 
+/* Bytes preceding the payload of every packed hosted delegate occurrence. */
+enum { ONDA_DELEGATE_RECORD_HEADER_SIZE = 8u };
+
+/* Caller-owned, call-scoped storage for top-level delegate occurrences. This
+   hosted API type is independent of the generated processor ABI. Allocate storage before realtime
+   execution and consume records before the next call reuses the batch. Capacity is a host policy:
+   no exact whole-call size exists when occurrence counts or slice lengths are runtime-dependent. */
+typedef struct onda_delegate_batch {
+  uint8_t* storage;
+  uint32_t capacity_bytes;
+  uint32_t used_bytes;
+  uint32_t record_count;
+  uint32_t overflow_count;
+} onda_delegate_batch_t;
+
+/* A non-owning decoded view into one record in an onda_delegate_batch_t. */
+typedef struct onda_delegate_occurrence {
+  uint32_t delegate_index;
+  uint32_t payload_size_bytes;
+  const uint8_t* payload;
+} onda_delegate_occurrence_t;
+
+/* Clears the result counters without modifying storage or capacity. Process and event calls also
+   reset these counters when generated execution begins. */
+void onda_delegate_batch_reset(onda_delegate_batch_t* batch);
+/* Decodes one occurrence by index, returning 1 on success or 0 for invalid/malformed input. The
+   returned payload points into batch storage and remains valid only while that storage remains
+   unchanged. */
+int onda_delegate_batch_occurrence_at(
+  const onda_delegate_batch_t* batch,
+  uint32_t index,
+  onda_delegate_occurrence_t* occurrence
+);
+/* Process and event-dispatch functions accept a nullable delegate_batch. NULL
+   discards host-facing occurrences without affecting synchronous Onda `when`
+   handlers. A non-NULL batch is reset when generated execution begins. A nonzero overflow_count
+   after success means one or more complete host records were dropped for insufficient capacity. */
+
 /* Primitive element type identifiers used by metadata and buffer binding APIs. */
 enum {
   ONDA_PRIMITIVE_F32 = 0,
@@ -593,13 +631,14 @@ int onda_set_param_plain_f64(onda_instance_t* instance, int index, double plain)
 /* Sets a scalar parameter from a normalized host value in [0, 1]. */
 int onda_set_param_normalized(onda_instance_t* instance, int index, double normalized);
 
-/* Triggers one event by index with packed payload bytes; returns 0 on success, negative on error.
-   Unknown event indices are ignored and return success. */
+/* Triggers one event by index with packed payload bytes and optionally collects delegates; returns
+   0 on success, negative on error. Unknown event indices are ignored and return success. */
 int onda_trigger_event_by_index(
   onda_instance_t* instance,
   int index,
   const void* payload_ptr,
-  int payload_bytes
+  int payload_bytes,
+  onda_delegate_batch_t* delegate_batch
 );
 /* Triggers one event without payload/binding validation. The instance must have completed full
    initialization, and payload/buffer metadata must satisfy the ABI contract. Returns 0 on success,
@@ -608,7 +647,8 @@ int onda_trigger_event_by_index_unchecked(
   onda_instance_t* instance,
   int index,
   const void* payload_ptr,
-  int payload_bytes
+  int payload_bytes,
+  onda_delegate_batch_t* delegate_batch
 );
 
 /* Binds one input entry to host memory; returns 0 on success, negative on error.
@@ -679,11 +719,16 @@ enum {
   ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE = 1
 };
 
-/* Processes up to one logical block with current bindings and parameters; returns 0 on success.
+/* Processes up to one logical block with current bindings and parameters, optionally collecting
+   delegates; returns 0 on success.
    frames must be in [0, compile_time_block_size]. The runtime only reads/writes the first
    `frames` samples of each bound input/output entry for the current call. This convenience
    function runs block-pre and block-post hooks for this call. */
-int onda_process_checked(onda_instance_t* instance, int frames);
+int onda_process_checked(
+  onda_instance_t* instance,
+  int frames,
+  onda_delegate_batch_t* delegate_batch
+);
 /* Processes one segment of a logical block using full-block input/output bindings.
    The JIT loops local frames [0, frames) and reads/writes bound I/O at
    absolute frame start_frame + local_frame. Use ONDA_PROCESS_BEGIN_BLOCK on
@@ -693,7 +738,8 @@ int onda_process_checked_segment(
   onda_instance_t* instance,
   int start_frame,
   int frames,
-  int flags
+  int flags,
+  onda_delegate_batch_t* delegate_batch
 );
 /* Runs the Onda initializer in place. ONDA_INIT_FULL initializes the complete physical state and
    is required before processing a newly created instance. ONDA_INIT_PRESERVE_PINNED reruns ordinary
@@ -745,7 +791,10 @@ int onda_prepare_unchecked_process(onda_instance_t* instance);
 /* Processes a full logical block without revalidation. Calling before successful
    onda_prepare_unchecked_process, or after mutating a prepared binding, violates the API contract;
    returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
-int onda_process_unchecked(onda_instance_t* instance);
+int onda_process_unchecked(
+  onda_instance_t* instance,
+  onda_delegate_batch_t* delegate_batch
+);
 /* Processes one logical-block segment without revalidation. Successful full initialization and
    onda_prepare_unchecked_process are required. Use the same full-block binding, start_frame,
    frames, and flags contract as onda_process_checked_segment.
@@ -754,7 +803,8 @@ int onda_process_unchecked_segment(
   onda_instance_t* instance,
   int start_frame,
   int frames,
-  int flags
+  int flags,
+  onda_delegate_batch_t* delegate_batch
 );
 
 /* Returns declared input entry count, or -1 on invalid program handle. */
@@ -771,6 +821,7 @@ int onda_buffer_count(const onda_program_t* program);
 int onda_buffer_array_count(const onda_program_t* program);
 /* Returns declared event entry count, or -1 on invalid program handle. */
 int onda_event_count(const onda_program_t* program);
+int onda_delegate_count(const onda_program_t* program);
 /* Returns declared state entry count, or -1 on invalid program handle. */
 int onda_state_count(const onda_program_t* program);
 
@@ -790,12 +841,19 @@ int onda_buffer_array_first(const onda_program_t* program, int index);
 int onda_buffer_array_len(const onda_program_t* program, int index);
 /* Returns event name by index, or NULL if index/program is invalid. */
 const char* onda_event_name(const onda_program_t* program, int index);
+const char* onda_delegate_name(const onda_program_t* program, int index);
 /* Returns state entry name by index, or NULL if index/program is invalid. */
 const char* onda_state_name(const onda_program_t* program, int index);
 /* Returns event parameter count, or -1 if event/program is invalid. */
 int onda_event_param_count(const onda_program_t* program, int event_index);
 /* Returns event parameter name, or NULL if event/parameter/program is invalid. */
 const char* onda_event_param_name(const onda_program_t* program, int event_index, int param_index);
+int onda_delegate_param_count(const onda_program_t* program, int delegate_index);
+const char* onda_delegate_param_name(
+  const onda_program_t* program,
+  int delegate_index,
+  int param_index
+);
 
 /* Returns input index for a name, or -1 if not found/invalid. */
 int onda_input_index(const onda_program_t* program, const char* name);
@@ -809,6 +867,7 @@ int onda_param_index(const onda_program_t* program, const char* name);
 int onda_buffer_index(const onda_program_t* program, const char* name);
 /* Returns event index for a name, or -1 if not found/invalid. */
 int onda_event_index(const onda_program_t* program, const char* name);
+int onda_delegate_index(const onda_program_t* program, const char* name);
 
 /* Returns input type text (for example "f64[2]"), or NULL if invalid. */
 const char* onda_input_type(const onda_program_t* program, int index);
@@ -835,6 +894,19 @@ int onda_param_type_bytes(const onda_program_t* program, int index);
 int onda_state_type_bytes(const onda_program_t* program, int index);
 /* Returns event payload byte width for fixed-shape events, or -1 if invalid or dynamic. */
 int onda_event_payload_bytes(const onda_program_t* program, int index);
+/* Returns the exact payload byte width for a fixed-shape delegate, excluding the record header.
+   Returns -1 for an invalid index or a delegate containing a dynamic slice. */
+int onda_delegate_payload_bytes(const onda_program_t* program, int index);
+/* Returns the minimum payload byte width, excluding the record header, or -1 if invalid. Each
+   dynamic slice contributes its four-byte element count and zero element bytes to this minimum. */
+int onda_delegate_payload_min_bytes(const onda_program_t* program, int index);
+/* Returns the exact complete record size, including ONDA_DELEGATE_RECORD_HEADER_SIZE, for a
+   fixed-shape delegate. Returns -1 for an invalid index or dynamic payload. */
+int onda_delegate_record_bytes(const onda_program_t* program, int index);
+/* Returns the minimum complete record size including its header, or -1 if invalid. This is not the
+   capacity required by a whole process/event call, whose occurrence count and slice lengths may be
+   runtime-dependent. */
+int onda_delegate_record_min_bytes(const onda_program_t* program, int index);
 /* Returns event parameter element primitive type id, or -1 if invalid. */
 int onda_event_param_elem_type(const onda_program_t* program, int event_index, int param_index);
 /* Returns event parameter array length (1 for scalar, 0 for slice), or -1 if invalid. */
@@ -856,6 +928,26 @@ int onda_event_param_default_bytes(
   int param_index,
   void* out_bytes,
   int out_capacity
+);
+int onda_delegate_param_elem_type(
+  const onda_program_t* program,
+  int delegate_index,
+  int param_index
+);
+int onda_delegate_param_array_len(
+  const onda_program_t* program,
+  int delegate_index,
+  int param_index
+);
+int onda_delegate_param_is_slice(
+  const onda_program_t* program,
+  int delegate_index,
+  int param_index
+);
+int onda_delegate_param_offset_bytes(
+  const onda_program_t* program,
+  int delegate_index,
+  int param_index
 );
 /* Returns buffer element primitive type id, or -1 if invalid. */
 int onda_buffer_elem_type(const onda_program_t* program, int index);

@@ -9,15 +9,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use onda_frontend::{
     inject_auto_std_math, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
     BlockKind, BufferBlock, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn,
-    CallArg, CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DiagCtx, Diagnostic,
-    EventDef, EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType, FnReturnType,
-    FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl,
-    NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock,
-    ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BARE_RETURN_FN,
-    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
-    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
-    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    CallArg, CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DelegateDef, DiagCtx,
+    Diagnostic, EventDef, EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl,
+    FnParamType, FnReturnScalarType, FnReturnType, FunctionDef, GraphBlock, GraphEdge,
+    GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl, NamespaceCallArg, NamespaceDecl,
+    NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock, ParamDecl, ParamScale, PortBlock,
+    PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Stmt, StructDef,
+    StructField, UseDecl, WhenDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 
 pub(crate) fn path_or_ancestor_is_declared(path: &str, roots: &HashSet<String>) -> bool {
@@ -30,6 +30,32 @@ pub(crate) fn path_or_ancestor_is_declared(path: &str, roots: &HashSet<String>) 
             return false;
         };
         candidate = parent;
+    }
+}
+
+fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
+    let ty = match &param.ty {
+        EventParamType::Scalar(ty) => FnParamType::Primitive(*ty),
+        EventParamType::Array { elem, size } => FnParamType::SizedArray {
+            elem: Some(*elem),
+            generic_name: None,
+            size: size.clone(),
+        },
+        EventParamType::Slice { elem } => FnParamType::Array(Some(*elem)),
+        EventParamType::GenericScalar { name } => FnParamType::Struct(name.clone()),
+        EventParamType::GenericArray { elem, size } => FnParamType::SizedArray {
+            elem: None,
+            generic_name: Some(elem.clone()),
+            size: size.clone(),
+        },
+        EventParamType::GenericSlice { elem } => FnParamType::ArrayGeneric(elem.clone()),
+    };
+    FnParamDecl {
+        loc: param.loc,
+        name: param.name.clone(),
+        ty: Some(ty),
+        ty_loc: param.ty_loc,
+        default: param.default.clone(),
     }
 }
 
@@ -137,6 +163,7 @@ pub struct TypedProgram {
     pub aggregate_layouts: AggregateLayoutTable,
     pub defs: Vec<TypedFunction>,
     pub events: Vec<TypedEvent>,
+    pub delegates: Vec<TypedDelegate>,
     pub def_sample_oversample_factors: HashMap<String, usize>,
     pub proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub proc_instance_oversample_factors: HashMap<String, usize>,
@@ -167,6 +194,12 @@ pub struct TypedEvent {
     pub name: String,
     pub params: Vec<TypedEventParam>,
     pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedDelegate {
+    pub name: String,
+    pub params: Vec<TypedEventParam>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13086,5 +13119,298 @@ sample:
         );
         analyze_with_options_and_inputs(program, AnalysisOptions::default(), &inputs)
             .expect("the supplied initializer should replace the source default");
+    }
+
+    #[test]
+    fn delegates_dispatch_owner_when_handlers() {
+        let source = r#"
+delegate finished(reason: i32)
+
+init:
+  result: i32 = 0
+
+event trigger():
+  finished(7)
+
+when finished(reason):
+  result = reason
+
+sample:
+  out1 = f32(result)
+"#;
+        let program = parse_program(source).expect("delegate source should parse");
+        let typed = analyze(program).expect("delegate source should analyze");
+        assert_eq!(typed.delegates.len(), 1);
+        assert_eq!(typed.delegates[0].name, "finished");
+    }
+
+    #[test]
+    fn delegates_reject_init_reachability_through_runtime_defs() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+def publish():
+  finished()
+
+init:
+  publish()
+
+sample:
+  out1 = 0.0
+"#,
+            "init -> def publish -> delegate finished",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_value_use() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+sample:
+  result = finished()
+  out1 = result
+"#,
+            "has no result and must be used as a statement",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_owner_member_collisions() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+event finished():
+  return
+
+sample:
+  out1 = 0.0
+"#,
+            "delegate 'finished' conflicts with event 'finished'",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_recursive_event_dispatch_with_source_names() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+event restart():
+  finished()
+
+when finished():
+  restart()
+
+sample:
+  out1 = 0.0
+"#,
+            "event restart -> delegate finished -> when finished #1 -> event restart",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_child_dispatch_cycles_with_source_names() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+init:
+  child = Child()
+
+when child.fired():
+  child.trigger()
+
+sample:
+  out1 = child()
+"#,
+            "when child.fired #1 -> delegate Child.fired through child -> when child.fired #1",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_resetting_the_active_dispatching_task() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+task worker():
+  finished()
+  yield
+
+when finished():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_child_dispatch_resetting_the_active_parent_task() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+init:
+  child = Child()
+
+task worker():
+  child.trigger()
+  yield
+
+when child.fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = child()
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_forwarded_child_dispatch_resetting_the_active_task() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+def relay(targets):
+  targets[0].trigger()
+
+init:
+  children: Child[2] = Child()
+
+task worker():
+  relay(children)
+  yield
+
+when children[0].fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = children[0]() + children[1]()
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn indexed_child_dispatch_only_applies_the_selected_delegate_route() {
+        let source = r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[2] = Child()
+
+task worker():
+  children[0].trigger()
+  yield
+
+when children[1].fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = children[0]() + children[1]()
+"#;
+        let program = parse_program(source).expect("delegate route source should parse");
+        analyze(program).expect("an unrelated indexed route must not reset the active task");
+    }
+
+    #[test]
+    fn delegates_cannot_be_called_through_child_receivers() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate finished()
+  sample:
+    out1 = 0.0
+
+init:
+  child = Child()
+
+sample:
+  child.finished()
+  out1 = child()
+"#,
+            "cannot call delegate 'finished' through child receiver 'child'",
+        );
+    }
+
+    #[test]
+    fn delegates_cannot_be_called_through_indexed_child_receivers() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate finished()
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[2] = Child()
+
+sample:
+  children[0].finished()
+  out1 = children[0]() + children[1]()
+"#,
+            "cannot call delegate 'finished' through child receiver 'children'",
+        );
+    }
+
+    #[test]
+    fn delegate_effectful_top_level_defs_are_owner_local() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+def publish():
+  finished()
+
+proc Child:
+  sample:
+    publish()
+    out1 = 0.0
+
+init:
+  child = Child()
+
+sample:
+  out1 = child()
+"#,
+            "may publish a delegate owned by another owner",
+        );
     }
 }

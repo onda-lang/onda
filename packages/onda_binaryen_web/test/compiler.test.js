@@ -42,6 +42,7 @@ const statement = (kind, data) => ({
 const attributes = (origin = "source", inline = "auto") => ({
   origin,
   inline,
+  runtime_context: true,
 });
 const assign = (destination, rvalue) =>
   statement("assign", { destination, value: rvalue });
@@ -77,6 +78,7 @@ function callProcess(
   bufferFrames,
   bufferChannels,
   bufferSampleRates,
+  delegateBatch = 0,
 ) {
   return process(
     state,
@@ -90,6 +92,7 @@ function callProcess(
     bufferFrames,
     bufferChannels,
     bufferSampleRates,
+    delegateBatch,
   );
 }
 
@@ -171,6 +174,7 @@ function executableMir() {
       ],
       buffers: [],
       events: [],
+      delegates: [],
     },
     state: [{ name: "phase", ty: 0, persistence: "snapshot", authored: true }],
     const_data: [],
@@ -463,7 +467,7 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
   assert.equal(onda_processor_init(params, state, 1), 0);
-  assert.equal(onda_process.length, 11);
+  assert.equal(onda_process.length, 12);
   assert.equal(
     callProcess(onda_process, 0, outputTable, 0, 2, 1, params, state, 0, 0, 0, 0),
     0,
@@ -1026,7 +1030,7 @@ test("returns generated failures through nested MIR calls", async () => {
   mir.functions.push({
     name: "failing_quotient",
     kind: { kind: "user" },
-    attributes: { origin: "source", inline: "never" },
+    attributes: { origin: "source", inline: "never", runtime_context: true },
     params: [],
     results: [1],
     locals: [{ name: "result", ty: 1 }],
@@ -1104,7 +1108,7 @@ test("omits failure propagation after non-failing helper calls", () => {
     {
       name: "floating_quotient",
       kind: { kind: "user" },
-      attributes: { origin: "source", inline: "never" },
+      attributes: { origin: "source", inline: "never", runtime_context: true },
       params: [],
       results: [0],
       locals: [{ name: "result", ty: 0 }],
@@ -1126,7 +1130,7 @@ test("omits failure propagation after non-failing helper calls", () => {
     {
       name: "clamped_array_element",
       kind: { kind: "user" },
-      attributes: { origin: "source", inline: "never" },
+      attributes: { origin: "source", inline: "never", runtime_context: true },
       params: [],
       results: [0],
       locals: [
@@ -1175,7 +1179,7 @@ test("propagates checked fixed-array failures through helper calls", async () =>
   mir.functions.push({
     name: "checked_array_element",
     kind: { kind: "user" },
-    attributes: { origin: "source", inline: "never" },
+    attributes: { origin: "source", inline: "never", runtime_context: true },
     params: [],
     results: [0],
     locals: [
@@ -2213,7 +2217,7 @@ test("exports packed scalar and fixed-array event handlers", async () => {
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const { memory, __heap_base, onda_processor_init, onda_process, onda_event_0 } =
     instance.exports;
-  assert.equal(onda_event_0.length, 7);
+  assert.equal(onda_event_0.length, 8);
   let heap = Number(__heap_base.value);
   const params = heap;
   heap += 16;
@@ -2236,6 +2240,67 @@ test("exports packed scalar and fixed-array event handlers", async () => {
     [...new Float32Array(memory.buffer, output, 4)],
     [7.25, 7.5, 7.75, 8],
   );
+});
+
+test("publishes top-level delegates into the call-scoped delegate batch", async () => {
+  const mir = executableMir();
+  mir.interface.delegates.push({
+    name: "tick",
+    params: [{ name: "value", ty: 2 }],
+  });
+  mir.functions[1].body.statements.unshift(
+    statement("publish_delegate", {
+      delegate: 0,
+      args: [{ kind: "value", data: constant("i32", 42) }],
+    }),
+  );
+  const artifact = compileMir(mir, { optimize: false });
+  assert.equal(artifact.metadata.metadata.delegates[0].name, "tick");
+  assert.equal(artifact.metadata.runtime.delegate_record_header_size_bytes, 8);
+
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const params = heap;
+  heap += Math.max(16, artifact.metadata.runtime.param_size_bytes);
+  const state = heap;
+  heap += Math.max(16, artifact.metadata.runtime.state_size_bytes);
+  const outputTable = heap;
+  heap += 4;
+  const output = heap;
+  heap += 16;
+  const batch = heap;
+  heap += 20;
+  const storage = heap;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, output, true);
+  view.setUint32(batch, storage, true);
+  view.setUint32(batch + 4, 12, true);
+  assert.equal(onda_processor_init(params, state, 1), 0);
+  assert.equal(
+    callProcess(
+      onda_process,
+      0,
+      outputTable,
+      0,
+      0,
+      0,
+      params,
+      state,
+      0,
+      0,
+      0,
+      0,
+      batch,
+    ),
+    0,
+  );
+  assert.equal(view.getUint32(batch + 8, true), 12);
+  assert.equal(view.getUint32(batch + 12, true), 1);
+  assert.equal(view.getUint32(batch + 16, true), 0);
+  assert.equal(view.getUint32(storage, true), 0);
+  assert.equal(view.getUint32(storage + 4, true), 4);
+  assert.equal(view.getInt32(storage + 8, true), 42);
 });
 
 test("stores control outputs in their state-backed ABI slots", async () => {
