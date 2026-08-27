@@ -19,7 +19,7 @@ use ast_index::{
 };
 use source_fallback::{
     build_source_scope_index, identifier_is_in_import_path, identifier_is_in_use_namespace_name,
-    scan_identifiers,
+    identifier_is_when_delegate_target, scan_identifiers,
 };
 
 pub(super) const SEMANTIC_TOKEN_TYPE_ENUM_MEMBER: u32 = 0;
@@ -475,6 +475,16 @@ fn semantic_tokens_for_document_with_optional_parse(
                     start,
                     length,
                     token_type: SEMANTIC_TOKEN_TYPE_PORT,
+                    token_modifiers: 0,
+                });
+                return;
+            }
+            if identifier_is_when_delegate_target(&source_lines, line, start, length) {
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_DELEGATE,
                     token_modifiers: 0,
                 });
                 return;

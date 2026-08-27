@@ -3544,6 +3544,7 @@ version = "0.7.6"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
+ "onda_mir",
  "onda_project",
  "onda_runtime",
  "onda_semantics",
@@ -3718,9 +3719,11 @@ version = "0.7.6"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
+ "onda_mir",
  "onda_processor_abi",
  "onda_realtime",
  "onda_semantics",
+ "serde_json",
 ]
 
 [[package]]

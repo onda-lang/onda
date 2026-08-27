@@ -222,6 +222,41 @@ test("worklet copies decoded delegate records to the message port", () => {
   }]);
 });
 
+test("worklet transports raw print records without formatting", () => {
+  const descriptor = metadata();
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.log_sites = [{
+    index: 0,
+    label: "value",
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 10 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      printCapacityBytes: 16,
+    },
+  });
+  const messages = [];
+  processor.port.postMessage = (message) => messages.push(message);
+  const view = new DataView(processor.memory.buffer);
+  view.setUint32(processor.printStoragePtr, 0, true);
+  view.setUint32(processor.printStoragePtr + 4, 4, true);
+  view.setInt32(processor.printStoragePtr + 8, 42, true);
+  view.setUint32(processor.printBatchPtr + 8, 12, true);
+  view.setUint32(processor.printBatchPtr + 12, 1, true);
+  processor.flushPrint("process segment");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "onda-print-records");
+  assert.equal(messages[0].recordCount, 1);
+  assert.equal(messages[0].transportDropCount, 0);
+  assert.deepEqual([...messages[0].storage], [0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 0, 0]);
+});
+
 test("worklet uses null pointers only for absent processor surfaces", () => {
   const descriptor = metadata();
   descriptor.metadata.buffers = [];

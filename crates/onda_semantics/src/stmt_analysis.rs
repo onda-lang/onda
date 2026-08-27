@@ -790,6 +790,50 @@ pub(crate) fn validate_and_infer_stmt_expr_type(
     infer_stmt_expr_type(expr, env, errors)
 }
 
+pub(crate) fn non_printable_stmt_expr_type(
+    expr: &Expr,
+    env: StmtExprAnalysisEnv<'_>,
+) -> Option<(String, String)> {
+    match expr {
+        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } => {
+            Some(("value".to_owned(), "array".to_owned()))
+        }
+        Expr::Tuple { .. } => Some(("value".to_owned(), "tuple".to_owned())),
+        Expr::Slice { base, .. } => Some((base.clone(), "slice".to_owned())),
+        Expr::Var { name, .. } => {
+            if let Some(struct_name) = env
+                .expr_env
+                .struct_instances
+                .get(name)
+                .or_else(|| env.expr_env.param_structs.get(name))
+            {
+                return Some((name.clone(), struct_name.clone()));
+            }
+            if let Some(array) = env.local_array_aliases.get(name) {
+                let element = array
+                    .elem_struct
+                    .clone()
+                    .unwrap_or_else(|| format!("{:?}", array.elem_ty).to_ascii_lowercase());
+                let ty = array
+                    .static_len
+                    .map_or_else(|| format!("{element}[]"), |len| format!("{element}[{len}]"));
+                return Some((name.clone(), ty));
+            }
+            if env.expr_env.array_vars.contains_key(name) {
+                return Some((name.clone(), "array".to_owned()));
+            }
+            if env.expr_env.tuple_vars.contains_key(name) {
+                return Some((name.clone(), "tuple".to_owned()));
+            }
+            if let Some(proc_array) = env.expr_env.proc_array_roots.get(name) {
+                return Some((name.clone(), format!("{}[]", proc_array.proc_name)));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn infer_stmt_expr_type(
     expr: &Expr,
     env: StmtExprAnalysisEnv<'_>,

@@ -947,6 +947,19 @@ fn propagate_stmt_callee_buffer_requirements_to_params(
                 kinds,
             );
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    value,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -1519,6 +1532,19 @@ fn collect_stmt_field_usage(
                 usage,
                 errors,
             );
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                collect_expr_field_usage(
+                    value,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
+            }
         }
         Stmt::If {
             cond,

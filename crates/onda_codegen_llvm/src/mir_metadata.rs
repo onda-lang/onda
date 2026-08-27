@@ -788,6 +788,7 @@ mod tests {
                 block_size: 64,
             },
             source_files: Vec::new(),
+            log_sites: Vec::new(),
             types,
             structs: Vec::new(),
             interface: Interface {

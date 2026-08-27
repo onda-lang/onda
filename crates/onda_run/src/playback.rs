@@ -13,9 +13,9 @@ use onda_cpal::{
     SampleConsumer, SampleProducer, StreamErrorState,
 };
 use onda_daemon::{
-    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
-    RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
-    RunSession,
+    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunBuildError,
+    RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue,
+    RunOptions, RunParamInfo, RunPrintBatch, RunPrintEntry, RunSession,
 };
 use onda_project::{BufferAsset, ProjectLimits};
 use onda_semantics::AnalysisOptions;
@@ -30,6 +30,7 @@ use crate::{
 const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
 const SCOPE_CAPACITY_FRAMES: usize = 4096;
 const DELEGATE_NOTIFICATION_CAPACITY: usize = 32;
+const PRINT_NOTIFICATION_CAPACITY: usize = 32;
 
 #[cfg(unix)]
 static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -72,6 +73,20 @@ struct PlaybackStartup {
     current_output_device: Option<String>,
 }
 
+struct PlaybackStartupFailure {
+    message: String,
+    print_batch: Option<RunPrintBatch>,
+}
+
+impl From<String> for PlaybackStartupFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            print_batch: None,
+        }
+    }
+}
+
 type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
 type AudioDeviceLists = (Vec<String>, Vec<String>);
 
@@ -81,15 +96,23 @@ struct RenderThreadContext {
     scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
-    startup_tx: PlaybackReply<PlaybackStartup>,
+    startup_tx: mpsc::Sender<Result<PlaybackStartup, PlaybackStartupFailure>>,
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
     delegate_transport: Option<DelegateTransport>,
+    print_transport: PrintTransport,
 }
 
 #[derive(Clone)]
 struct DelegateTransport {
     sender: mpsc::SyncSender<RunDelegateBatch>,
     dropped_occurrences: Arc<AtomicU32>,
+}
+
+#[derive(Clone)]
+struct PrintTransport {
+    sender: mpsc::SyncSender<RunPrintBatch>,
+    dropped_occurrences: Arc<AtomicU32>,
+    pending_overflow: Arc<AtomicU32>,
 }
 
 enum PlaybackControlCommand {
@@ -113,6 +136,10 @@ enum PlaybackControlCommand {
     },
     GetDevices {
         reply: PlaybackReply<AudioDeviceLists>,
+    },
+    SetDelegateCollection {
+        enabled: bool,
+        reply: Option<PlaybackReply<()>>,
     },
     SetParam {
         name: String,
@@ -209,6 +236,24 @@ struct PlaybackControlRequest {
     max_frames: Option<usize>,
 }
 
+struct DelegateSubscriptionGuard {
+    control_tx: mpsc::Sender<PlaybackControlCommand>,
+    enabled: bool,
+}
+
+impl Drop for DelegateSubscriptionGuard {
+    fn drop(&mut self) {
+        if self.enabled {
+            let _ = self
+                .control_tx
+                .send(PlaybackControlCommand::SetDelegateCollection {
+                    enabled: false,
+                    reply: None,
+                });
+        }
+    }
+}
+
 pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let _signal_guard = install_run_signal_handlers();
     let audio_host = AudioHost::default();
@@ -249,6 +294,15 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     } else {
         (None, None, None)
     };
+    let (print_sender, print_receiver) = mpsc::sync_channel(PRINT_NOTIFICATION_CAPACITY);
+    let mut print_rx = Some(print_receiver);
+    let dropped_print_occurrences = Arc::new(AtomicU32::new(0));
+    let pending_print_overflow = Arc::new(AtomicU32::new(0));
+    let print_transport = PrintTransport {
+        sender: print_sender,
+        dropped_occurrences: Arc::clone(&dropped_print_occurrences),
+        pending_overflow: Arc::clone(&pending_print_overflow),
+    };
 
     let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
     let render_thread = spawn_run_render_thread(
@@ -262,11 +316,56 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             startup_tx,
             control_rx,
             delegate_transport,
+            print_transport,
         },
     );
     let startup = startup_rx
         .recv()
-        .map_err(|_| "run render thread exited before startup completed".to_owned())??;
+        .map_err(|_| "run render thread exited before startup completed".to_owned())?;
+    let startup = match startup {
+        Ok(startup) => startup,
+        Err(failure) => {
+            let _ = render_thread.join();
+            let message = failure.message;
+            let print_batch = failure.print_batch;
+            if launch.control_json {
+                let batch = print_batch.unwrap_or(RunPrintBatch {
+                    text: String::new(),
+                    entries: Vec::new(),
+                    overflow_count: 0,
+                    transport_drop_count: 0,
+                });
+                write_json_line(
+                    &mut BufWriter::new(std::io::stdout().lock()),
+                    &json!({
+                        "event": "startupFailed",
+                        "error": &message,
+                        "text": batch.text,
+                        "entries": batch.entries.iter().map(run_print_entry_json).collect::<Vec<_>>(),
+                        "overflowCount": batch.overflow_count,
+                        "transportDropCount": batch.transport_drop_count,
+                    }),
+                )
+                .map_err(|error| format!("failed to write run startup failure event: {error}"))?;
+            } else if let Some(batch) = print_batch {
+                let stdout = std::io::stdout();
+                let mut stdout = stdout.lock();
+                stdout
+                    .write_all(batch.text.as_bytes())
+                    .and_then(|()| stdout.flush())
+                    .map_err(|error| {
+                        format!("failed to write run startup print output: {error}")
+                    })?;
+                if batch.overflow_count != 0 || batch.transport_drop_count != 0 {
+                    eprintln!(
+                        "onda print delivery: {} generated record(s) overflowed, {} record(s) were dropped in transport",
+                        batch.overflow_count, batch.transport_drop_count
+                    );
+                }
+            }
+            return Err(message);
+        }
+    };
 
     let control_server = if launch.control_json {
         let Some(control_tx) = control_tx else {
@@ -299,14 +398,29 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         .map_err(|err| format!("failed to write run control startup event: {err}"))?;
         Some(spawn_run_control_server(
             listener,
-            control_tx,
-            Arc::clone(&scope_ring),
-            Arc::clone(&stop_flag),
-            delegate_rx.expect("delegate receiver should exist"),
-            dropped_delegate_occurrences.expect("delegate drop counter should exist"),
+            RunControlServerContext {
+                control_tx,
+                scope_ring: Arc::clone(&scope_ring),
+                stop_flag: Arc::clone(&stop_flag),
+                delegate_rx: delegate_rx.expect("delegate receiver should exist"),
+                dropped_delegate_occurrences: dropped_delegate_occurrences
+                    .expect("delegate drop counter should exist"),
+                print_rx: print_rx.take().expect("print receiver should be available"),
+                dropped_print_occurrences: Arc::clone(&dropped_print_occurrences),
+                pending_print_overflow: Arc::clone(&pending_print_overflow),
+            },
         ))
     } else {
         None
+    };
+    let print_output = if launch.control_json {
+        None
+    } else {
+        Some(spawn_run_print_stdout(
+            print_rx.take().expect("print receiver should be available"),
+            Arc::clone(&dropped_print_occurrences),
+            Arc::clone(&pending_print_overflow),
+        ))
     };
 
     if launch.show_meta && !startup.params.is_empty() {
@@ -333,7 +447,12 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     if startup.output_channels == 0 {
         stop_flag.store(true, Ordering::Release);
         let _ = render_thread.join();
-        drop(control_server);
+        if let Some(server) = control_server {
+            let _ = server.join();
+        }
+        if let Some(output) = print_output {
+            let _ = output.join();
+        }
         return Err("daemon play requires at least one output channel".to_owned());
     }
 
@@ -361,7 +480,12 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     )?;
     if stop_flag.load(Ordering::Acquire) {
         let _ = render_thread.join();
-        drop(control_server);
+        if let Some(server) = control_server {
+            let _ = server.join();
+        }
+        if let Some(output) = print_output {
+            let _ = output.join();
+        }
         return Ok(());
     }
 
@@ -387,13 +511,21 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         );
     }
 
-    wait_for_playback_completion(launch.dur_seconds, &stop_flag, &render_error, &error_state)?;
+    let playback_result =
+        wait_for_playback_completion(launch.dur_seconds, &stop_flag, &render_error, &error_state);
 
     stop_flag.store(true, Ordering::Release);
     drop(input_stream);
     drop(stream);
     let _ = render_thread.join();
-    drop(control_server);
+    if let Some(server) = control_server {
+        let _ = server.join();
+    }
+    if let Some(output) = print_output {
+        let _ = output.join();
+    }
+
+    playback_result?;
 
     if let Some(err) = error_state.message() {
         return Err(err);
@@ -563,6 +695,7 @@ fn spawn_run_render_thread(
             startup_tx,
             control_rx,
             delegate_transport,
+            print_transport,
         } = context;
         configure_current_thread_fp_mode();
         let control_rx = control_rx;
@@ -580,7 +713,7 @@ fn spawn_run_render_thread(
             },
         });
 
-        let startup = (|| -> Result<PlaybackStartup, String> {
+        let startup = (|| -> Result<PlaybackStartup, PlaybackStartupFailure> {
             let mut initial_buffers = Vec::with_capacity(
                 launch.project_buffer_bindings.len() + launch.buffer_bindings.len(),
             );
@@ -605,7 +738,18 @@ fn spawn_run_render_thread(
             }
             session
                 .start_run_with_initial_buffers(&launch.input, initial_buffers)
-                .map_err(|err| format_run_build_error("daemon play start failed", &err))?;
+                .map_err(|error| {
+                    let print_batch = match &error {
+                        RunBuildError::Initialization { print_batch, .. } => {
+                            print_batch.as_deref().cloned()
+                        }
+                        _ => None,
+                    };
+                    PlaybackStartupFailure {
+                        message: format_run_build_error("daemon play start failed", &error),
+                        print_batch,
+                    }
+                })?;
 
             for (name, value) in &launch.param_sets {
                 session
@@ -614,6 +758,13 @@ fn spawn_run_render_thread(
                     .set_param_f64(name, *value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
             }
+
+            publish_run_print_batch(
+                session
+                    .run_mut(&launch.input)
+                    .expect("run should be active after successful start"),
+                &print_transport,
+            )?;
 
             let run = session
                 .run(&launch.input)
@@ -708,12 +859,14 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.restart().map_err(|diag| {
+                                    let execution = run.restart().map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play restart failed",
                                             &diag,
                                         )
-                                    })
+                                    });
+                                    publish_run_print_batch(run, &print_transport)?;
+                                    execution
                                 });
                             playing = play_requested && result.is_ok();
                             if playing {
@@ -784,6 +937,15 @@ fn spawn_run_render_thread(
                         PlaybackControlCommand::GetDevices { reply } => {
                             let _ = reply.send(Ok(available_audio_devices()));
                         }
+                        PlaybackControlCommand::SetDelegateCollection { enabled, reply } => {
+                            let result = session
+                                .run_mut(&launch.input)
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .map(|run| run.set_delegate_collection_enabled(enabled));
+                            if let Some(reply) = reply {
+                                let _ = reply.send(result);
+                            }
+                        }
                         PlaybackControlCommand::SetParam { name, value, reply } => {
                             let entry = pending_param_updates.entry(name).or_insert_with(|| {
                                 PendingParamUpdate {
@@ -810,19 +972,16 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.trigger_event(&name, &values)
-                                        .map_err(|diag| {
+                                    let execution =
+                                        run.trigger_event(&name, &values).map_err(|diag| {
                                             format_single_diagnostic(
                                                 "daemon play trigger event failed",
                                                 &diag,
                                             )
-                                        })
-                                        .and_then(|()| {
-                                            publish_run_delegate_batch(
-                                                run,
-                                                delegate_transport.as_ref(),
-                                            )
-                                        })
+                                        });
+                                    publish_run_print_batch(run, &print_transport)?;
+                                    publish_run_delegate_batch(run, delegate_transport.as_ref())?;
+                                    execution
                                 });
                             if let Some(reply) = reply {
                                 let _ = reply.send(result);
@@ -838,12 +997,15 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.bind_buffer_wav_path(&name, &path).map_err(|diag| {
-                                        format_single_diagnostic(
-                                            "daemon play bind buffer failed",
-                                            &diag,
-                                        )
-                                    })
+                                    let result =
+                                        run.bind_buffer_wav_path(&name, &path).map_err(|diag| {
+                                            format_single_diagnostic(
+                                                "daemon play bind buffer failed",
+                                                &diag,
+                                            )
+                                        });
+                                    publish_run_print_batch(run, &print_transport)?;
+                                    result
                                 });
                             if result.is_ok() {
                                 playing = play_requested;
@@ -860,12 +1022,14 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.clear_buffer(&name).map_err(|diag| {
+                                    let result = run.clear_buffer(&name).map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play clear buffer failed",
                                             &diag,
                                         )
-                                    })
+                                    });
+                                    publish_run_print_batch(run, &print_transport)?;
+                                    result
                                 });
                             if result.is_ok() {
                                 playing = play_requested;
@@ -894,28 +1058,26 @@ fn spawn_run_render_thread(
                 }
             }
 
-            match session.render_run_block_interleaved(&launch.input, &mut interleaved) {
-                Ok(()) => {
-                    let output_result = session
-                        .run_mut(&launch.input)
-                        .ok_or_else(|| "run is not active".to_owned())
-                        .and_then(|run| {
-                            publish_run_delegate_batch(run, delegate_transport.as_ref())
-                        });
-                    if let Err(error) = output_result {
-                        store_thread_error(&render_error, error);
-                        stop_flag.store(true, Ordering::Release);
-                        break;
-                    }
-                }
-                Err(diag) => {
-                    store_thread_error(
-                        &render_error,
-                        format_single_diagnostic("daemon play render failed", &diag),
-                    );
-                    stop_flag.store(true, Ordering::Release);
-                    break;
-                }
+            let execution = session.render_run_block_interleaved(&launch.input, &mut interleaved);
+            let output_result = session
+                .run_mut(&launch.input)
+                .ok_or_else(|| "run is not active".to_owned())
+                .and_then(|run| {
+                    publish_run_print_batch(run, &print_transport)?;
+                    publish_run_delegate_batch(run, delegate_transport.as_ref())
+                });
+            if let Err(error) = output_result {
+                store_thread_error(&render_error, error);
+                stop_flag.store(true, Ordering::Release);
+                break;
+            }
+            if let Err(diag) = execution {
+                store_thread_error(
+                    &render_error,
+                    format_single_diagnostic("daemon play render failed", &diag),
+                );
+                stop_flag.store(true, Ordering::Release);
+                break;
             }
 
             if let Ok(mut ring) = scope_ring.try_lock() {
@@ -959,6 +1121,80 @@ fn publish_run_delegate_batch(
         );
     }
     Ok(())
+}
+
+fn publish_run_print_batch(run: &mut RunSession, transport: &PrintTransport) -> Result<(), String> {
+    let batch = run.take_print_batch().map_err(|diagnostic| {
+        format_single_diagnostic("daemon play print decoding failed", &diagnostic)
+    })?;
+    if batch.entries.is_empty() && batch.overflow_count == 0 {
+        return Ok(());
+    }
+    if let Err(mpsc::TrySendError::Full(batch)) = transport.sender.try_send(batch) {
+        atomic_saturating_add(
+            &transport.dropped_occurrences,
+            u32::try_from(batch.entries.len()).unwrap_or(u32::MAX),
+        );
+        atomic_saturating_add(&transport.pending_overflow, batch.overflow_count);
+    }
+    Ok(())
+}
+
+fn atomic_saturating_add(counter: &AtomicU32, value: u32) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(value))
+    });
+}
+
+fn run_print_entry_json(entry: &RunPrintEntry) -> Value {
+    json!({
+        "siteIndex": entry.site_index,
+        "label": entry.label,
+        "source": {
+            "file": entry.source_file,
+            "line": entry.line,
+            "column": entry.column,
+            "endLine": entry.end_line,
+            "endColumn": entry.end_column,
+        },
+        "lexicalOwner": entry.lexical_owner,
+        "declaration": entry.declaration,
+        "values": entry.values.iter().map(|value| json!({
+            "type": value.type_repr,
+            "value": run_event_value_json(&value.value),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn spawn_run_print_stdout(
+    receiver: mpsc::Receiver<RunPrintBatch>,
+    dropped_occurrences: Arc<AtomicU32>,
+    pending_overflow: Arc<AtomicU32>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while let Ok(batch) = receiver.recv() {
+            print!("{}", batch.text);
+            let generated = batch
+                .overflow_count
+                .saturating_add(pending_overflow.swap(0, Ordering::Relaxed));
+            let transported = batch
+                .transport_drop_count
+                .saturating_add(dropped_occurrences.swap(0, Ordering::Relaxed));
+            if generated != 0 || transported != 0 {
+                eprintln!(
+                    "onda print delivery: {generated} generated record(s) overflowed, {transported} record(s) were dropped in transport"
+                );
+            }
+        }
+        let generated = pending_overflow.swap(0, Ordering::Relaxed);
+        let transported = dropped_occurrences.swap(0, Ordering::Relaxed);
+        if generated != 0 || transported != 0 {
+            eprintln!(
+                "onda print delivery: {generated} generated record(s) overflowed, {transported} record(s) were dropped in transport"
+            );
+        }
+        let _ = std::io::stdout().flush();
+    })
 }
 
 fn flush_pending_param_updates(
@@ -1092,30 +1328,30 @@ fn run_event_value_from_json(value: Value) -> Result<RunEventValue, String> {
     }
 }
 
-fn spawn_run_control_server(
-    listener: TcpListener,
+struct RunControlServerContext {
     control_tx: mpsc::Sender<PlaybackControlCommand>,
     scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
     delegate_rx: mpsc::Receiver<RunDelegateBatch>,
     dropped_delegate_occurrences: Arc<AtomicU32>,
+    print_rx: mpsc::Receiver<RunPrintBatch>,
+    dropped_print_occurrences: Arc<AtomicU32>,
+    pending_print_overflow: Arc<AtomicU32>,
+}
+
+fn spawn_run_control_server(
+    listener: TcpListener,
+    context: RunControlServerContext,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         if listener.set_nonblocking(true).is_err() {
             return;
         }
 
-        while !stop_flag.load(Ordering::Acquire) {
+        while !context.stop_flag.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if let Err(err) = handle_run_control_client(
-                        stream,
-                        &control_tx,
-                        &scope_ring,
-                        &stop_flag,
-                        &delegate_rx,
-                        &dropped_delegate_occurrences,
-                    ) {
+                    if let Err(err) = handle_run_control_client(stream, &context) {
                         eprintln!("run control client error: {err}");
                     }
                 }
@@ -1133,12 +1369,12 @@ fn spawn_run_control_server(
 
 fn handle_run_control_client(
     stream: TcpStream,
-    control_tx: &mpsc::Sender<PlaybackControlCommand>,
-    scope_ring: &Arc<Mutex<ScopeRing>>,
-    stop_flag: &Arc<AtomicBool>,
-    delegate_rx: &mpsc::Receiver<RunDelegateBatch>,
-    dropped_delegate_occurrences: &AtomicU32,
+    context: &RunControlServerContext,
 ) -> Result<(), String> {
+    let mut delegate_subscription = DelegateSubscriptionGuard {
+        control_tx: context.control_tx.clone(),
+        enabled: false,
+    };
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .map_err(|err| format!("failed to set control socket read timeout: {err}"))?;
@@ -1148,8 +1384,18 @@ fn handle_run_control_client(
     let mut reader = BufReader::new(reader_stream);
     let mut writer = BufWriter::new(stream);
 
-    while !stop_flag.load(Ordering::Acquire) {
-        write_pending_delegate_batch(&mut writer, delegate_rx, dropped_delegate_occurrences)?;
+    while !context.stop_flag.load(Ordering::Acquire) {
+        write_pending_delegate_batch(
+            &mut writer,
+            &context.delegate_rx,
+            &context.dropped_delegate_occurrences,
+        )?;
+        write_pending_print_batches(
+            &mut writer,
+            &context.print_rx,
+            &context.dropped_print_occurrences,
+            &context.pending_print_overflow,
+        )?;
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => return Ok(()),
@@ -1170,13 +1416,87 @@ fn handle_run_control_client(
 
         let request: PlaybackControlRequest = serde_json::from_str(trimmed)
             .map_err(|err| format!("invalid control request json: {err}"))?;
-        let response = run_control_response(request, control_tx, scope_ring);
+        let delegate_subscription_request = match request.command.as_str() {
+            "subscribeDelegates" => Some(true),
+            "unsubscribeDelegates" => Some(false),
+            _ => None,
+        };
+        let response = run_control_response(request, &context.control_tx, &context.scope_ring);
+        let request_succeeded = response
+            .as_ref()
+            .and_then(|value| value.get("ok"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if request_succeeded {
+            if let Some(enabled) = delegate_subscription_request {
+                delegate_subscription.enabled = enabled;
+            }
+        }
         if let Some(response) = response {
             write_json_line(&mut writer, &response)
                 .map_err(|err| format!("failed to write control response: {err}"))?;
         }
     }
 
+    // The render producer may publish its last batch or loss counters while
+    // shutdown is being observed. Flush once after the stop transition so a
+    // connected control consumer sees terminal output even without a later
+    // authored print occurrence.
+    write_pending_delegate_batch(
+        &mut writer,
+        &context.delegate_rx,
+        &context.dropped_delegate_occurrences,
+    )?;
+    write_pending_print_batches(
+        &mut writer,
+        &context.print_rx,
+        &context.dropped_print_occurrences,
+        &context.pending_print_overflow,
+    )?;
+
+    Ok(())
+}
+
+fn write_pending_print_batches(
+    writer: &mut impl Write,
+    receiver: &mpsc::Receiver<RunPrintBatch>,
+    dropped_occurrences: &AtomicU32,
+    pending_overflow: &AtomicU32,
+) -> Result<(), String> {
+    let mut wrote_batch = false;
+    while let Ok(batch) = receiver.try_recv() {
+        wrote_batch = true;
+        let notification = json!({
+            "event": "print",
+            "text": batch.text,
+            "entries": batch.entries.iter().map(run_print_entry_json).collect::<Vec<_>>(),
+            "overflowCount": batch.overflow_count.saturating_add(
+                pending_overflow.swap(0, Ordering::Relaxed)
+            ),
+            "transportDropCount": batch.transport_drop_count.saturating_add(
+                dropped_occurrences.swap(0, Ordering::Relaxed)
+            ),
+        });
+        write_json_line(writer, &notification)
+            .map_err(|error| format!("failed to write print notification: {error}"))?;
+    }
+    if !wrote_batch {
+        let overflow_count = pending_overflow.swap(0, Ordering::Relaxed);
+        let transport_drop_count = dropped_occurrences.swap(0, Ordering::Relaxed);
+        if overflow_count != 0 || transport_drop_count != 0 {
+            write_json_line(
+                writer,
+                &json!({
+                    "event": "print",
+                    "text": "",
+                    "entries": [],
+                    "overflowCount": overflow_count,
+                    "transportDropCount": transport_drop_count,
+                }),
+            )
+            .map_err(|error| format!("failed to write print loss notification: {error}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -1335,6 +1655,27 @@ fn run_control_response(
                             "ok": false,
                             "error": err,
                         }),
+                    })
+                })
+        }
+        "subscribeDelegates" | "unsubscribeDelegates" => {
+            let enabled = request.command == "subscribeDelegates";
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::SetDelegateCollection {
+                    enabled,
+                    reply: Some(reply_tx),
+                })
+                .map_err(|_| "run control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "run control reply channel closed".to_owned())
+                })
+                .map(|result| {
+                    request_id.clone().map(|id| match result {
+                        Ok(()) => json!({ "id": id, "ok": true }),
+                        Err(err) => json!({ "id": id, "ok": false, "error": err }),
                     })
                 })
         }
@@ -1537,12 +1878,40 @@ fn run_control_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        run_control_response, write_pending_delegate_batch, PlaybackControlCommand,
-        PlaybackControlRequest, ScopeRing,
+        run_control_response, write_pending_delegate_batch, write_pending_print_batches,
+        DelegateSubscriptionGuard, PlaybackControlCommand, PlaybackControlRequest, ScopeRing,
     };
-    use onda_daemon::{RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue};
+    use onda_daemon::{
+        RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
+        RunPrintEntry, RunPrintValue,
+    };
     use serde_json::Value;
     use std::sync::{atomic::AtomicU32, mpsc, Arc, Mutex};
+
+    #[test]
+    fn delegate_collection_is_disabled_until_explicitly_subscribed() {
+        let (sender, receiver) = mpsc::channel();
+        drop(DelegateSubscriptionGuard {
+            control_tx: sender.clone(),
+            enabled: false,
+        });
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        drop(DelegateSubscriptionGuard {
+            control_tx: sender,
+            enabled: true,
+        });
+        assert!(matches!(
+            receiver.recv().expect("unsubscribe command"),
+            PlaybackControlCommand::SetDelegateCollection {
+                enabled: false,
+                reply: None,
+            }
+        ));
+    }
 
     #[test]
     fn run_delegate_notifications_preserve_payloads_and_drop_counts() {
@@ -1620,6 +1989,79 @@ mod tests {
         assert_eq!(
             notification["occurrences"][0]["values"]["value"],
             Value::String("9007199254740993".to_owned())
+        );
+    }
+
+    #[test]
+    fn run_print_notifications_preserve_text_source_values_and_loss_counts() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunPrintBatch {
+                text: "wide: 9007199254740993\n".to_owned(),
+                entries: vec![RunPrintEntry {
+                    site_index: 3,
+                    label: Some("wide".to_owned()),
+                    source_file: Some("voice.onda".to_owned()),
+                    line: 7,
+                    column: 3,
+                    end_line: 7,
+                    end_column: 24,
+                    lexical_owner: "Voice".to_owned(),
+                    declaration: Some("sample".to_owned()),
+                    values: vec![RunPrintValue {
+                        type_repr: "i64".to_owned(),
+                        value: RunEventValue::I64(9_007_199_254_740_993),
+                    }],
+                }],
+                overflow_count: 2,
+                transport_drop_count: 1,
+            })
+            .expect("print batch should be queued");
+
+        let dropped = AtomicU32::new(4);
+        let pending_overflow = AtomicU32::new(8);
+        let mut bytes = Vec::new();
+        write_pending_print_batches(&mut bytes, &receiver, &dropped, &pending_overflow)
+            .expect("print batch should serialize");
+
+        let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(notification["event"], "print");
+        assert_eq!(notification["text"], "wide: 9007199254740993\n");
+        assert_eq!(notification["overflowCount"], 10);
+        assert_eq!(notification["transportDropCount"], 5);
+        assert_eq!(notification["entries"][0]["source"]["file"], "voice.onda");
+        assert_eq!(notification["entries"][0]["lexicalOwner"], "Voice");
+        assert_eq!(
+            notification["entries"][0]["values"][0]["value"],
+            "9007199254740993"
+        );
+    }
+
+    #[test]
+    fn run_print_transport_reports_terminal_loss_without_a_later_batch() {
+        let (_sender, receiver) = mpsc::channel();
+        let dropped = AtomicU32::new(6);
+        let pending_overflow = AtomicU32::new(9);
+        let mut bytes = Vec::new();
+
+        write_pending_print_batches(&mut bytes, &receiver, &dropped, &pending_overflow)
+            .expect("loss-only print notification should serialize");
+
+        let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(
+            notification,
+            serde_json::json!({
+                "event": "print",
+                "text": "",
+                "entries": [],
+                "overflowCount": 9,
+                "transportDropCount": 6,
+            })
+        );
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            pending_overflow.load(std::sync::atomic::Ordering::Relaxed),
+            0
         );
     }
 

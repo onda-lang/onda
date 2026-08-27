@@ -117,6 +117,12 @@ known compatible receivers where possible, with read/write direction reflected i
 completion; their free-call forms remain available as intrinsic completion. Hover and signature
 help show the memory-safety contract.
 
+Runtime diagnostics and dispatch use the same language-aware surfaces: `print` completion, hover,
+and signature help describe its optional label and variadic printable scalar values; events and
+delegates expose their typed call signatures; and `when` targets, inferred bindings, owner entries,
+and nested locals participate in completion, hover, navigation, document symbols, and semantic
+tokens. Incomplete `when` bodies retain their handler and owner scopes for semantic highlighting.
+
 ## Editor support
 
 ### VS Code
@@ -130,6 +136,12 @@ The [Onda Neovim plugin](https://github.com/onda-lang/onda-nvim) provides filety
 ## Embedding Onda
 
 The public C interface lives in [`include/onda.h`](https://github.com/onda-lang/onda/blob/main/include/onda.h). It exposes compiler, instance, process, parameter, buffer, event, metadata, and state operations for non-Rust hosts.
+
+Its lifetime verbs encode ownership. `*_destroy` consumes an opaque Onda handle, while `*_dispose`
+releases Onda-owned members inside a caller-allocated value and resets that value. `*_reset` clears
+reusable results without releasing their caller-owned storage. `alloc` and `free` appear only as raw
+host allocator callbacks; memory returned by Onda must always go through its matching destroy or
+dispose function rather than the C runtime `free`.
 
 ### Compile-time configuration from C
 

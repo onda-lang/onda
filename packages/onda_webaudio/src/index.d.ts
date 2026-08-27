@@ -37,6 +37,8 @@ export interface OndaAudioProcessorOptions {
    * collection. Capacity is a host policy because occurrence counts and slice sizes may be dynamic.
    */
   delegateCapacityBytes?: number;
+  /** Reusable call-scoped storage for print records. Defaults to 64 KiB; zero disables delivery. */
+  printCapacityBytes?: number;
   /** Reusable module compiled outside the audio rendering thread. */
   compiledModule?: WebAssembly.Module;
   nodeOptions?: AudioWorkletNodeOptions;
@@ -90,10 +92,21 @@ export class OndaAudioProcessor {
       overflowCount: number;
     }) => void,
   ): () => boolean;
+  onPrint(
+    listener: (batch: {
+      type: "onda-print";
+      operation: string;
+      text: string;
+      entries: import("@onda-lang/processor-abi").OndaPrintEntry[];
+      overflowCount: number;
+      transportDropCount: number;
+    }) => void,
+  ): () => boolean;
   init(mode: OndaInitMode): Promise<any>;
   snapshot(): Promise<Uint8Array>;
   restoreSnapshot(snapshot: Uint8Array | ArrayBuffer): Promise<any>;
   readControlOutputs(): Promise<Record<string, unknown>>;
   readBuffer(buffer: string | number): Promise<any>;
+  /** Idempotently closes this adapter. Pending and subsequent operations reject. */
   close(reason?: Error): void;
 }

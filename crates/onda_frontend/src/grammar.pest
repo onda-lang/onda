@@ -134,7 +134,8 @@ port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_sep* }
 decl_type = { array_type | tuple_type | type_name | namespace_ref | qualified_ident }
 tuple_type = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
 decl_range = { "{" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)? ~ comma_sep? ~ NEWLINE* ~ "}" }
-param_unit = @{ "\"" ~ (("\\" ~ ("\"" | "\\" | "n" | "r" | "t")) | (!("\"" | "\\" | NEWLINE) ~ ANY))* ~ "\"" }
+quoted_text = @{ "\"" ~ (("\\" ~ ("\"" | "\\" | "n" | "r" | "t")) | (!("\"" | "\\" | NEWLINE) ~ ANY))* ~ "\"" }
+param_unit = @{ quoted_text }
 param_domain_value = _{ param_unit | expr }
 param_domain_named = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ param_domain_value }
 param_domain_item = { param_domain_named | param_unit | expr }
@@ -182,7 +183,7 @@ struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ N
 struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block }
 
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
-stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | const_decl | pinned_assign_stmt | assign_stmt | call_stmt }
+stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | print_stmt | const_decl | pinned_assign_stmt | assign_stmt | call_stmt }
 assign_stmt = { typed_assign_stmt | compound_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
 binding_pin = @{ "pin" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 pinnable_assign_stmt = { typed_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
@@ -210,6 +211,8 @@ slice_target = { (namespace_ref | path_ident) ~ (index_group ~ slice_group | sli
 return_stmt = { return_kw ~ expr? }
 yield_stmt = { yield_kw }
 await_stmt = { await_kw ~ ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ ")" }
+print_stmt = { "print" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ print_args ~ NEWLINE* ~ ")" }
+print_args = { (quoted_text ~ (comma_sep ~ expr)*) | (expr ~ (comma_sep ~ expr)*) }
 call_stmt = { call_expr }
 if_cond = { expr }
 if_stmt = { "if" ~ if_cond ~ stmt_block ~ elif_clause* ~ (NEWLINE* ~ "else" ~ stmt_block)? }
@@ -271,7 +274,7 @@ keyword = _{
     "import" | "include"
     | "if" | "elif" | "else"
     | "for" | "in" | "while" | "loop"
-    | "break" | "continue" | "return" | "assert"
+    | "break" | "continue" | "return" | "assert" | "print"
     | "tasks" | "task" | "await" | "yield"
     | "delegates" | "delegate" | "when"
     | "use" | "as" | "pub" | "private" | "pin" | "config"

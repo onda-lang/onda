@@ -333,6 +333,7 @@ fn guard_preinitialized_zero_stores(
             | StatementKind::BufferStore { .. }
             | StatementKind::BufferParamStore { .. }
             | StatementKind::PublishDelegate { .. } => {}
+            StatementKind::PublishLog { .. } => {}
         }
 
         if guard {
@@ -453,6 +454,7 @@ fn collect_block_state_writes(
             | StatementKind::Break
             | StatementKind::Continue
             | StatementKind::Return { .. } => {}
+            StatementKind::PublishLog { .. } => {}
         }
     }
 }
@@ -983,6 +985,12 @@ fn propagate_statement_values(
             }
             true
         }
+        StatementKind::PublishLog { arguments, .. } => {
+            for argument in arguments {
+                propagate_value(argument, facts, stats);
+            }
+            true
+        }
         StatementKind::OutputStore {
             element,
             frame,
@@ -1412,6 +1420,7 @@ fn collect_mutated_locals(
             | StatementKind::SliceFill { .. }
             | StatementKind::SliceCopy { .. }
             | StatementKind::PublishDelegate { .. }
+            | StatementKind::PublishLog { .. }
             | StatementKind::Break
             | StatementKind::Continue
             | StatementKind::Return { .. } => {}
@@ -1463,6 +1472,7 @@ fn canonicalize_block(block: &mut Block, stats: &mut PassStats) {
             StatementKind::Loop { body } => canonicalize_block(body, stats),
             StatementKind::Call { .. }
             | StatementKind::PublishDelegate { .. }
+            | StatementKind::PublishLog { .. }
             | StatementKind::OutputStore { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
@@ -2019,6 +2029,11 @@ fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
                 }
             }
         }
+        StatementKind::PublishLog { arguments, .. } => {
+            for value in arguments {
+                mark_value_read(*value, reads);
+            }
+        }
         StatementKind::OutputStore {
             element,
             frame,
@@ -2255,6 +2270,11 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                         }
                         CallArgument::BufferSpan(_) => {}
                     }
+                }
+            }
+            StatementKind::PublishLog { arguments, .. } => {
+                for item in arguments {
+                    value(*item, referenced);
                 }
             }
             StatementKind::OutputStore {
@@ -2551,6 +2571,11 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
                     }
                     CallArgument::BufferSpan(_) => {}
                 }
+            }
+        }
+        StatementKind::PublishLog { arguments, .. } => {
+            for value in arguments {
+                rewrite_value(value, mapping);
             }
         }
         StatementKind::OutputStore {

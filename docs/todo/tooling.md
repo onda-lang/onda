@@ -2,24 +2,10 @@
 
 ## Editor / daemon follow-ups
 
-- Expand `onda lsp` beyond diagnostics + semantic tokens:
-  add hover, go-to-definition, document symbols, completion, and cancellation-aware analysis scheduling.
-  - Hover:
-    - resolved symbol kind and type
-    - proc endpoint and param metadata
-    - namespace/template specialization info
-    - doc comments once the language has a comment convention
-  - Completion:
-    - top-level and namespace symbols
-    - stdlib modules and members
-    - proc endpoints after `instance.`
-    - event names after proc receivers
-    - fields/methods for structs
-  - Go-to-definition/references:
-    - local symbols
-    - imported and included files
-    - namespace-specialized declarations
-    - generated proc-local def symbols mapped back to source locations
+- Deepen language-server symbol information where the language has not defined enough source
+  metadata yet: namespace/template specialization details, doc comments once Onda has a comment
+  convention, references, and source mapping for generated proc-local symbols.
+- Add cancellation-aware analysis scheduling.
 - Improve diagnostic cadence:
   evaluate publish-on-change/debounced diagnostics in addition to the current open/save flow.
 - Stabilize daemon/editor transport boundaries:
@@ -29,6 +15,13 @@
   `onda lsp`, `Onda: Run File`, semantic tokens, and run webview controls.
 - Improve run panel UX:
   better knob/slider affordances, richer status/errors, and explicit device/runtime state display.
+- Improve print/delegate Log UX:
+  - report UI-history eviction separately from generated batch overflow and transport loss
+  - decide and consistently apply whether explicit processor restarts retain or clear visible history
+  - evaluate source navigation, per-site filtering, and a sample-scope print lint without silently
+    throttling, sampling, or changing authored execution
+  - introduce stable cross-recompile log-site identity only if editor navigation or retained-history
+    workflows need it; processor artifact site indices intentionally remain artifact-local
 - Broaden run buffer ingestion beyond current WAV-only `hound` path if warranted.
 
 ## Visual graph editor

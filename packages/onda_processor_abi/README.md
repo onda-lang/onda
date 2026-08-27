@@ -65,6 +65,16 @@ Allocate the descriptor and storage before realtime execution and consume record
 call reuses them. See [Hosting Onda delegates](../../docs/delegates.md) for the complete lifecycle,
 capacity guidance, and APIs for other hosts.
 
+## Print batches
+
+Print delivery uses an independent caller-owned batch with the same physical descriptor shape.
+`writePrintBatch()`, `readPrintBatch()`, and `decodePrintRecords()` preserve each site's concrete
+scalar types; `formatPrintBatch()` and `formatPrintRecords()` produce canonical newline-terminated
+text with exact `i64` and width-correct floating-point formatting. Use `writeExecutionOutput()` to
+pass independently nullable delegate and print batch addresses to init, process, or event exports.
+See [Hosting Onda print output](../../docs/printing.md) for the complete lifecycle and metadata
+contract.
+
 The current descriptor represents every bindable buffer-array slot as a physical
 `metadata.buffers` entry and records logical contiguous groups in `metadata.buffer_arrays`. At
 runtime all four descriptor tables are present when any buffer exists, but an individual sample

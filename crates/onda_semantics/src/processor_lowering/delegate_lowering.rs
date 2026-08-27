@@ -328,6 +328,11 @@ fn replace_when_bindings_stmt(
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             replace_when_bindings_expr(expr, replacements)
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                replace_when_bindings_expr(value, replacements);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -535,6 +540,11 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
                 }
                 Stmt::Expr { expr, .. } => collect_source_calls_expr(expr, true, calls),
                 Stmt::Return { expr, .. } => collect_source_calls_expr(expr, false, calls),
+                Stmt::Print { values, .. } => {
+                    for value in values {
+                        collect_source_calls_expr(value, false, calls);
+                    }
+                }
                 Stmt::If {
                     cond,
                     then_branch,
@@ -668,6 +678,11 @@ fn validate_delegate_uses(
                 }
                 Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                     visit_expr(expr, names, errors)
+                }
+                Stmt::Print { values, .. } => {
+                    for value in values {
+                        visit_expr(value, names, errors);
+                    }
                 }
                 Stmt::If {
                     cond,

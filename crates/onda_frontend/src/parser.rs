@@ -87,12 +87,13 @@ pub const LANGUAGE_KEYWORDS: &[&str] = &[
     "await",
     "yield",
     "assert",
+    "print",
     "true",
     "false",
 ];
 
 pub const RESERVED_IDENTIFIER_WORDS: &[&str] = &[
-    "while", "break", "continue", "private", "pin", "as", "pub", "config",
+    "while", "break", "continue", "private", "pin", "as", "pub", "config", "print",
 ];
 
 #[derive(Parser)]

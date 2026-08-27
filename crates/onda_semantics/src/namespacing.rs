@@ -446,6 +446,21 @@ pub(super) fn qualify_stmt_namespaced_symbols(
             context,
             None,
         ),
+        Stmt::Print { values, .. } => {
+            for value in values {
+                qualify_expr_namespaced_symbols(
+                    value,
+                    current_ns,
+                    callable_symbols,
+                    callable_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
+                    errors,
+                    context,
+                    None,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,

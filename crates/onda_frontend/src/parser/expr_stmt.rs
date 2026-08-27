@@ -265,6 +265,7 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
         Rule::return_stmt => parse_return_stmt(pair),
         Rule::yield_stmt => parse_yield_stmt(pair),
         Rule::await_stmt => parse_await_stmt(pair),
+        Rule::print_stmt => parse_print_stmt(pair),
         Rule::if_stmt => parse_if_stmt(pair),
         Rule::for_stmt => parse_for_stmt(pair),
         Rule::while_stmt => parse_while_stmt(pair),
@@ -277,6 +278,34 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
             "unexpected statement kind in parser",
         )]),
     }
+}
+
+fn parse_print_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
+    let Some(args) = pair
+        .into_inner()
+        .find(|child| child.as_rule() == Rule::print_args)
+    else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "print requires at least one argument",
+        )]);
+    };
+    let mut label = None;
+    let mut values = Vec::new();
+    for argument in args.into_inner() {
+        match argument.as_rule() {
+            Rule::quoted_text => label = Some(parse_quoted_text(&argument)?),
+            Rule::expr => values.push(parse_expr(argument)?),
+            _ => {}
+        }
+    }
+    Ok(Stmt::Print {
+        loc,
+        label,
+        values,
+        origin: None,
+    })
 }
 
 fn parse_pinned_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {

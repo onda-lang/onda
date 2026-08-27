@@ -126,7 +126,7 @@ fn process_interleaved(
         out_buffers.push(bytes);
     }
 
-    process_checked(instance, frames, None)?;
+    process_checked(instance, frames, onda_runtime::ExecutionOutput::none())?;
 
     for (idx, desc) in out_descs.iter().copied().enumerate() {
         let bytes = &out_buffers[idx];

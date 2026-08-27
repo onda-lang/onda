@@ -29,12 +29,17 @@ use onda_project::{
 };
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
-    init as runtime_init, prepare_unchecked_process, process_checked, process_checked_segment,
-    process_unchecked, process_unchecked_segment, read_control_output_bytes, set_param_by_index,
+    format_print_batch as runtime_format_print_batch,
+    format_print_batch_into as runtime_format_print_batch_into,
+    init_with_output as runtime_init_with_output, prepare_unchecked_process, process_checked,
+    process_checked_segment, process_unchecked, process_unchecked_segment,
+    read_control_output_bytes, set_param_by_index,
     set_param_normalized as runtime_set_param_normalized,
     set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
     trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
-    validate_outputs, DelegateBatch as RuntimeDelegateBatch, InitMode, Instance, InstanceConfig,
+    validate_outputs, DelegateBatch as RuntimeDelegateBatch,
+    ExecutionOutput as RuntimeExecutionOutput, InitMode, Instance, InstanceConfig,
+    PrintBatch as RuntimePrintBatch,
 };
 use onda_semantics::{
     analyze_with_options_and_inputs, inspect_compile_constants, lower_program_to_optimized_mir,
@@ -57,6 +62,7 @@ pub const ONDA_COMPILE_CONST_KIND_SCALAR: i32 = 0;
 pub const ONDA_COMPILE_CONST_KIND_FIXED_ARRAY: i32 = 1;
 pub const ONDA_COMPILE_CONST_KIND_ARRAY: i32 = 2;
 pub const ONDA_DELEGATE_RECORD_HEADER_SIZE: u32 = onda_runtime::DELEGATE_RECORD_HEADER_SIZE as u32;
+pub const ONDA_PRINT_RECORD_HEADER_SIZE: u32 = onda_runtime::PRINT_RECORD_HEADER_SIZE as u32;
 const DELEGATE_RECORD_HEADER_SIZE: usize = ONDA_DELEGATE_RECORD_HEADER_SIZE as usize;
 
 fn execution_status_to_c(status: Result<u32, Diagnostic>) -> i32 {
@@ -94,22 +100,95 @@ pub struct onda_delegate_occurrence_t {
     pub payload: *const u8,
 }
 
-fn with_runtime_delegate_batch<T>(
-    batch: *mut onda_delegate_batch_t,
-    f: impl FnOnce(Option<&mut RuntimeDelegateBatch<'_>>) -> T,
+#[repr(C)]
+pub struct onda_print_batch_t {
+    pub storage: *mut u8,
+    pub capacity_bytes: u32,
+    pub used_bytes: u32,
+    pub record_count: u32,
+    pub overflow_count: u32,
+}
+
+#[repr(C)]
+pub struct onda_print_occurrence_t {
+    pub site_index: u32,
+    pub payload_size_bytes: u32,
+    pub payload: *const u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct onda_source_span_t {
+    pub file_index: i32,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct onda_log_site_info_t {
+    pub label: *const c_char,
+    pub source: onda_source_span_t,
+    pub lexical_owner: *const c_char,
+    pub declaration: *const c_char,
+    pub argument_types: *const i32,
+    pub argument_count: u32,
+    pub payload_size_bytes: u32,
+}
+
+#[repr(C)]
+pub struct onda_execution_output_t {
+    pub delegate_batch: *mut onda_delegate_batch_t,
+    pub print_batch: *mut onda_print_batch_t,
+}
+
+#[repr(C)]
+pub struct onda_owned_string_t {
+    pub data: *mut c_char,
+    pub length: usize,
+}
+
+fn with_runtime_execution_output<T>(
+    output: *mut onda_execution_output_t,
+    f: impl FnOnce(RuntimeExecutionOutput<'_, '_>) -> T,
 ) -> T {
-    let Some(batch) = (unsafe { batch.as_mut() }) else {
-        return f(None);
+    let Some(output) = (unsafe { output.as_mut() }) else {
+        return f(RuntimeExecutionOutput::none());
     };
-    let mut runtime_batch =
-        unsafe { RuntimeDelegateBatch::from_raw_parts(batch.storage, batch.capacity_bytes) };
-    runtime_batch.used_bytes = batch.used_bytes;
-    runtime_batch.record_count = batch.record_count;
-    runtime_batch.overflow_count = batch.overflow_count;
-    let result = f(Some(&mut runtime_batch));
-    batch.used_bytes = runtime_batch.used_bytes;
-    batch.record_count = runtime_batch.record_count;
-    batch.overflow_count = runtime_batch.overflow_count;
+    let mut delegate = unsafe { output.delegate_batch.as_mut() }.map(|batch| {
+        let mut runtime =
+            unsafe { RuntimeDelegateBatch::from_raw_parts(batch.storage, batch.capacity_bytes) };
+        runtime.used_bytes = batch.used_bytes;
+        runtime.record_count = batch.record_count;
+        runtime.overflow_count = batch.overflow_count;
+        runtime
+    });
+    let mut print = unsafe { output.print_batch.as_mut() }.map(|batch| {
+        let mut runtime =
+            unsafe { RuntimePrintBatch::from_raw_parts(batch.storage, batch.capacity_bytes) };
+        runtime.used_bytes = batch.used_bytes;
+        runtime.record_count = batch.record_count;
+        runtime.overflow_count = batch.overflow_count;
+        runtime
+    });
+    let result = f(RuntimeExecutionOutput {
+        delegate_batch: delegate.as_mut(),
+        print_batch: print.as_mut(),
+    });
+    if let (Some(host), Some(runtime)) =
+        (unsafe { output.delegate_batch.as_mut() }, delegate.as_ref())
+    {
+        host.used_bytes = runtime.used_bytes;
+        host.record_count = runtime.record_count;
+        host.overflow_count = runtime.overflow_count;
+    }
+    if let (Some(host), Some(runtime)) = (unsafe { output.print_batch.as_mut() }, print.as_ref()) {
+        host.used_bytes = runtime.used_bytes;
+        host.record_count = runtime.record_count;
+        host.overflow_count = runtime.overflow_count;
+    }
     result
 }
 
@@ -158,6 +237,65 @@ pub unsafe extern "C" fn onda_delegate_batch_occurrence_at(
         }
         if current == index {
             occurrence.delegate_index = delegate_index;
+            occurrence.payload_size_bytes = payload_size_bytes;
+            occurrence.payload = batch.storage.add(header_end);
+            return 1;
+        }
+        cursor = record_end;
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_print_batch_reset(batch: *mut onda_print_batch_t) {
+    let Some(batch) = batch.as_mut() else { return };
+    batch.used_bytes = 0;
+    batch.record_count = 0;
+    batch.overflow_count = 0;
+}
+
+unsafe fn reset_c_execution_output(output: *mut onda_execution_output_t) {
+    let Some(output) = output.as_mut() else {
+        return;
+    };
+    onda_delegate_batch_reset(output.delegate_batch);
+    onda_print_batch_reset(output.print_batch);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_print_batch_occurrence_at(
+    batch: *const onda_print_batch_t,
+    index: u32,
+    occurrence: *mut onda_print_occurrence_t,
+) -> i32 {
+    let (Some(batch), Some(occurrence)) = (batch.as_ref(), occurrence.as_mut()) else {
+        return 0;
+    };
+    if batch.storage.is_null()
+        || batch.used_bytes > batch.capacity_bytes
+        || index >= batch.record_count
+    {
+        return 0;
+    }
+    let used = batch.used_bytes as usize;
+    let mut cursor = 0_usize;
+    for current in 0..=index {
+        let Some(header_end) = cursor.checked_add(ONDA_PRINT_RECORD_HEADER_SIZE as usize) else {
+            return 0;
+        };
+        if header_end > used {
+            return 0;
+        }
+        let site_index = ptr::read_unaligned(batch.storage.add(cursor).cast::<u32>());
+        let payload_size_bytes = ptr::read_unaligned(batch.storage.add(cursor + 4).cast::<u32>());
+        let Some(record_end) = header_end.checked_add(payload_size_bytes as usize) else {
+            return 0;
+        };
+        if record_end > used {
+            return 0;
+        }
+        if current == index {
+            occurrence.site_index = site_index;
             occurrence.payload_size_bytes = payload_size_bytes;
             occurrence.payload = batch.storage.add(header_end);
             return 1;
@@ -309,6 +447,11 @@ impl CCompileConstValues {
 
 struct CompiledProgram {
     jit: JitProgram,
+    source_file_paths: Vec<CString>,
+    log_site_labels: Vec<Option<CString>>,
+    log_site_owners: Vec<CString>,
+    log_site_declarations: Vec<Option<CString>>,
+    log_site_argument_types: Vec<Vec<i32>>,
     input_names: Vec<CString>,
     input_types: Vec<CString>,
     output_names: Vec<CString>,
@@ -761,6 +904,26 @@ fn build_nested_cstring_cache(
     Ok(out)
 }
 
+fn build_optional_cstring_cache(
+    strings: Vec<Option<String>>,
+    context: &str,
+) -> Result<Vec<Option<CString>>, Diagnostic> {
+    strings
+        .into_iter()
+        .map(|value| {
+            value
+                .map(|value| {
+                    CString::new(value).map_err(|_| {
+                        Diagnostic::internal(format!(
+                            "{context} contains NUL byte; cannot expose over C ABI"
+                        ))
+                    })
+                })
+                .transpose()
+        })
+        .collect()
+}
+
 unsafe fn write_source_manifest(
     out_manifest: *mut *mut onda_source_manifest,
     manifest: &SourceManifest,
@@ -966,6 +1129,119 @@ pub unsafe extern "C" fn onda_diag_dispose(diag: *mut onda_diag_t) {
     diag.column = 0;
     diag.end_line = 0;
     diag.end_column = 0;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_owned_string_dispose(text: *mut onda_owned_string_t) {
+    let Some(text) = text.as_mut() else { return };
+    if !text.data.is_null() {
+        drop(CString::from_raw(text.data));
+    }
+    text.data = ptr::null_mut();
+    text.length = 0;
+}
+
+unsafe fn format_host_print_batch(
+    instance: *const onda_instance,
+    batch: *const onda_print_batch_t,
+) -> Result<String, Diagnostic> {
+    with_host_print_batch(instance, batch, runtime_format_print_batch)
+}
+
+unsafe fn with_host_print_batch<T>(
+    instance: *const onda_instance,
+    batch: *const onda_print_batch_t,
+    operation: impl FnOnce(&Instance, &RuntimePrintBatch<'_>) -> Result<T, Diagnostic>,
+) -> Result<T, Diagnostic> {
+    let (Some(instance), Some(batch)) = (instance.as_ref(), batch.as_ref()) else {
+        return Err(Diagnostic::runtime(
+            "instance and print batch are required",
+            0,
+            0,
+        ));
+    };
+    let mut runtime = RuntimePrintBatch::from_raw_parts(batch.storage, batch.capacity_bytes);
+    runtime.used_bytes = batch.used_bytes;
+    runtime.record_count = batch.record_count;
+    runtime.overflow_count = batch.overflow_count;
+    operation(&instance.inner, &runtime)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_format_print_batch_into(
+    instance: *const onda_instance,
+    batch: *const onda_print_batch_t,
+    out_utf8: *mut c_char,
+    out_capacity: usize,
+    out_length: *mut usize,
+    out_diag: *mut onda_diag_t,
+) -> i32 {
+    let Some(out_length) = out_length.as_mut() else {
+        return -1;
+    };
+    let mut empty = [];
+    let output = if out_utf8.is_null() || out_capacity == 0 {
+        &mut empty[..]
+    } else {
+        // Reserve one byte for the C terminator. The public contract requires
+        // this entire region to be writable when out_utf8 is non-null.
+        slice::from_raw_parts_mut(out_utf8.cast::<u8>(), out_capacity - 1)
+    };
+    match with_host_print_batch(instance, batch, |instance, batch| {
+        runtime_format_print_batch_into(instance, batch, output)
+    }) {
+        Ok(required) => {
+            *out_length = required;
+            if !out_utf8.is_null() && out_capacity > required {
+                *out_utf8.add(required) = 0;
+            }
+            0
+        }
+        Err(diag) => {
+            *out_length = 0;
+            write_diag(out_diag, diag_to_c(&diag));
+            -2
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_format_print_batch(
+    instance: *const onda_instance,
+    batch: *const onda_print_batch_t,
+    out_text: *mut onda_owned_string_t,
+    out_diag: *mut onda_diag_t,
+) -> i32 {
+    let Some(out_text) = out_text.as_mut() else {
+        return -1;
+    };
+    if !out_text.data.is_null() || out_text.length != 0 {
+        return -1;
+    }
+    match format_host_print_batch(instance, batch) {
+        Ok(text) => match CString::new(text) {
+            Ok(text) => {
+                out_text.length = text.as_bytes().len();
+                out_text.data = text.into_raw();
+                0
+            }
+            Err(_) => {
+                write_diag(
+                    out_diag,
+                    diag_to_c(&Diagnostic::runtime(
+                        "formatted print text contains an embedded NUL",
+                        0,
+                        0,
+                    )),
+                );
+                -2
+            }
+        },
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            -2
+        }
+    }
 }
 
 fn diag_code_to_i32(code: DiagCode) -> i32 {
@@ -1270,6 +1546,80 @@ unsafe fn compile_parsed_program(
         None => None,
     };
 
+    let source_file_paths = match build_cstring_cache(
+        jit.mir()
+            .source_files
+            .iter()
+            .map(|source| source.path.clone())
+            .collect(),
+        "source file path",
+    ) {
+        Ok(values) => values,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let log_site_labels = match build_optional_cstring_cache(
+        jit.mir()
+            .log_sites
+            .iter()
+            .map(|site| site.label.clone())
+            .collect(),
+        "print label",
+    ) {
+        Ok(values) => values,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let log_site_owners = match build_cstring_cache(
+        jit.mir()
+            .log_sites
+            .iter()
+            .map(|site| site.lexical_owner.clone())
+            .collect(),
+        "log site lexical owner",
+    ) {
+        Ok(values) => values,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let log_site_declarations = match build_optional_cstring_cache(
+        jit.mir()
+            .log_sites
+            .iter()
+            .map(|site| site.declaration.clone())
+            .collect(),
+        "log site declaration",
+    ) {
+        Ok(values) => values,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let log_site_argument_types = jit
+        .mir()
+        .log_sites
+        .iter()
+        .map(|site| {
+            site.argument_types
+                .iter()
+                .map(|scalar| match scalar {
+                    onda_mir::ScalarType::F32 => ONDA_PRIMITIVE_F32,
+                    onda_mir::ScalarType::F64 => ONDA_PRIMITIVE_F64,
+                    onda_mir::ScalarType::I32 => ONDA_PRIMITIVE_I32,
+                    onda_mir::ScalarType::I64 => ONDA_PRIMITIVE_I64,
+                    onda_mir::ScalarType::Bool => ONDA_PRIMITIVE_BOOL,
+                })
+                .collect()
+        })
+        .collect();
+
     let input_names = match build_cstring_cache(
         (0..jit.input_count())
             .filter_map(|idx| jit.input_name(idx).map(ToOwned::to_owned))
@@ -1498,6 +1848,11 @@ unsafe fn compile_parsed_program(
 
     let inner = CompiledProgram {
         jit,
+        source_file_paths,
+        log_site_labels,
+        log_site_owners,
+        log_site_declarations,
+        log_site_argument_types,
         input_names,
         input_types,
         output_names,
@@ -3447,7 +3802,15 @@ pub unsafe extern "C" fn onda_instance_create(
     out_channels: i32,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
-    onda_instance_create_impl(program, in_channels, out_channels, None, false, out_diag)
+    onda_instance_create_impl(
+        program,
+        in_channels,
+        out_channels,
+        None,
+        false,
+        ptr::null_mut(),
+        out_diag,
+    )
 }
 
 #[no_mangle]
@@ -3455,9 +3818,18 @@ pub unsafe extern "C" fn onda_instance_create_initialized(
     program: *const onda_program,
     in_channels: i32,
     out_channels: i32,
+    output: *mut onda_execution_output_t,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
-    onda_instance_create_impl(program, in_channels, out_channels, None, true, out_diag)
+    onda_instance_create_impl(
+        program,
+        in_channels,
+        out_channels,
+        None,
+        true,
+        output,
+        out_diag,
+    )
 }
 
 #[no_mangle]
@@ -3481,6 +3853,7 @@ pub unsafe extern "C" fn onda_instance_create_with_allocator(
         out_channels,
         Some(allocator),
         false,
+        ptr::null_mut(),
         out_diag,
     )
 }
@@ -3491,6 +3864,7 @@ pub unsafe extern "C" fn onda_instance_create_initialized_with_allocator(
     in_channels: i32,
     out_channels: i32,
     allocator: *const onda_allocator_t,
+    output: *mut onda_execution_output_t,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
     let allocator = match runtime_allocator_from_c(allocator) {
@@ -3506,6 +3880,7 @@ pub unsafe extern "C" fn onda_instance_create_initialized_with_allocator(
         out_channels,
         Some(allocator),
         true,
+        output,
         out_diag,
     )
 }
@@ -3516,8 +3891,12 @@ unsafe fn onda_instance_create_impl(
     out_channels: i32,
     allocator: Option<RuntimeAllocator>,
     initialize: bool,
+    output: *mut onda_execution_output_t,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
+    if initialize {
+        reset_c_execution_output(output);
+    }
     if program.is_null() {
         write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
@@ -3557,7 +3936,10 @@ unsafe fn onda_instance_create_impl(
     }
 
     if initialize {
-        if let Err(error) = runtime_init(&mut instance, InitMode::Full) {
+        let result = with_runtime_execution_output(output, |output| {
+            runtime_init_with_output(&mut instance, InitMode::Full, output)
+        });
+        if let Err(error) = result {
             write_diag(out_diag, diag_to_c(&error));
             return ptr::null_mut();
         }
@@ -3668,8 +4050,9 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
     index: i32,
     payload_ptr: *const c_void,
     payload_bytes: i32,
-    delegate_batch: *mut onda_delegate_batch_t,
+    output: *mut onda_execution_output_t,
 ) -> i32 {
+    reset_c_execution_output(output);
     if instance.is_null() || index < 0 || payload_bytes < 0 {
         return -1;
     }
@@ -3681,8 +4064,8 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
     } else {
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
-    let result = with_runtime_delegate_batch(delegate_batch, |batch| {
-        trigger_event_by_index(&mut (*instance).inner, index as usize, payload, batch)
+    let result = with_runtime_execution_output(output, |output| {
+        trigger_event_by_index(&mut (*instance).inner, index as usize, payload, output)
     });
     match result {
         Ok(_) => 0,
@@ -3696,8 +4079,9 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
     index: i32,
     payload_ptr: *const c_void,
     payload_bytes: i32,
-    delegate_batch: *mut onda_delegate_batch_t,
+    output: *mut onda_execution_output_t,
 ) -> i32 {
+    reset_c_execution_output(output);
     if instance.is_null() || index < 0 || payload_bytes < 0 {
         return -1;
     }
@@ -3709,12 +4093,9 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
     } else {
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
-    execution_status_to_c(with_runtime_delegate_batch(
-        delegate_batch,
-        |batch| unsafe {
-            trigger_event_by_index_unchecked(&mut (*instance).inner, index as usize, payload, batch)
-        },
-    ))
+    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
+        trigger_event_by_index_unchecked(&mut (*instance).inner, index as usize, payload, output)
+    }))
 }
 
 #[no_mangle]
@@ -3816,13 +4197,14 @@ pub unsafe extern "C" fn onda_reset_buffer_to_project_default(
 pub unsafe extern "C" fn onda_process_checked(
     instance: *mut onda_instance,
     frames: i32,
-    delegate_batch: *mut onda_delegate_batch_t,
+    output: *mut onda_execution_output_t,
 ) -> i32 {
+    reset_c_execution_output(output);
     if instance.is_null() || frames < 0 {
         return -1;
     }
-    with_runtime_delegate_batch(delegate_batch, |batch| {
-        process_checked(&mut (*instance).inner, frames as usize, batch)
+    with_runtime_execution_output(output, |output| {
+        process_checked(&mut (*instance).inner, frames as usize, output)
     })
     .map_or(-2, |()| 0)
 }
@@ -3833,25 +4215,31 @@ pub unsafe extern "C" fn onda_process_checked_segment(
     start_frame: i32,
     frames: i32,
     flags: i32,
-    delegate_batch: *mut onda_delegate_batch_t,
+    output: *mut onda_execution_output_t,
 ) -> i32 {
+    reset_c_execution_output(output);
     if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
         return -1;
     }
-    with_runtime_delegate_batch(delegate_batch, |batch| {
+    with_runtime_execution_output(output, |output| {
         process_checked_segment(
             &mut (*instance).inner,
             start_frame as usize,
             frames as usize,
             flags as u32,
-            batch,
+            output,
         )
     })
     .map_or(-2, |()| 0)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_init(instance: *mut onda_instance, mode: i32) -> i32 {
+pub unsafe extern "C" fn onda_init(
+    instance: *mut onda_instance,
+    mode: i32,
+    output: *mut onda_execution_output_t,
+) -> i32 {
+    reset_c_execution_output(output);
     if instance.is_null() {
         return -1;
     }
@@ -3860,7 +4248,10 @@ pub unsafe extern "C" fn onda_init(instance: *mut onda_instance, mode: i32) -> i
         1 => InitMode::Full,
         _ => return -1,
     };
-    runtime_init(&mut (*instance).inner, mode).map_or(-2, |()| 0)
+    with_runtime_execution_output(output, |output| {
+        runtime_init_with_output(&mut (*instance).inner, mode, output)
+    })
+    .map_or(-2, |()| 0)
 }
 
 #[no_mangle]
@@ -3968,15 +4359,15 @@ pub unsafe extern "C" fn onda_validate_buffers(instance: *mut onda_instance) -> 
 #[no_mangle]
 pub unsafe extern "C" fn onda_process_unchecked(
     instance: *mut onda_instance,
-    delegate_batch: *mut onda_delegate_batch_t,
+    output: *mut onda_execution_output_t,
 ) -> i32 {
+    reset_c_execution_output(output);
     if instance.is_null() {
         return -1;
     }
-    execution_status_to_c(with_runtime_delegate_batch(
-        delegate_batch,
-        |batch| unsafe { process_unchecked(&mut (*instance).inner, batch) },
-    ))
+    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
+        process_unchecked(&mut (*instance).inner, output)
+    }))
 }
 
 #[no_mangle]
@@ -3996,23 +4387,21 @@ pub unsafe extern "C" fn onda_process_unchecked_segment(
     start_frame: i32,
     frames: i32,
     flags: i32,
-    delegate_batch: *mut onda_delegate_batch_t,
+    output: *mut onda_execution_output_t,
 ) -> i32 {
+    reset_c_execution_output(output);
     if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
         return -1;
     }
-    execution_status_to_c(with_runtime_delegate_batch(
-        delegate_batch,
-        |batch| unsafe {
-            process_unchecked_segment(
-                &mut (*instance).inner,
-                start_frame as usize,
-                frames as usize,
-                flags as u32,
-                batch,
-            )
-        },
-    ))
+    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
+        process_unchecked_segment(
+            &mut (*instance).inner,
+            start_frame as usize,
+            frames as usize,
+            flags as u32,
+            output,
+        )
+    }))
 }
 
 #[no_mangle]
@@ -4077,6 +4466,118 @@ pub unsafe extern "C" fn onda_delegate_count(program: *const onda_program) -> i3
         return -1;
     }
     saturating_usize_to_i32((&*program).inner.jit.delegate_count())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_file_count(program: *const onda_program) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    let program = &*program;
+    saturating_usize_to_i32(program.inner.source_file_paths.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_source_file_path(
+    program: *const onda_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    let program = &*program;
+    cstr_ptr_at(&program.inner.source_file_paths, index)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_log_site_count(program: *const onda_program) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    let program = &*program;
+    saturating_usize_to_i32(program.inner.log_site_labels.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_log_site_info(
+    program: *const onda_program,
+    index: i32,
+    out_info: *mut onda_log_site_info_t,
+) -> i32 {
+    if out_info.is_null() {
+        return -1;
+    }
+    ptr::write(
+        out_info,
+        onda_log_site_info_t {
+            label: ptr::null(),
+            source: onda_source_span_t {
+                file_index: -1,
+                line: 0,
+                column: 0,
+                end_line: 0,
+                end_column: 0,
+            },
+            lexical_owner: ptr::null(),
+            declaration: ptr::null(),
+            argument_types: ptr::null(),
+            argument_count: 0,
+            payload_size_bytes: 0,
+        },
+    );
+    if program.is_null() || index < 0 {
+        return -1;
+    }
+    let program = &(*program).inner;
+    let index = index as usize;
+    let Some(site) = program.jit.mir().log_sites.get(index) else {
+        return -1;
+    };
+    let Some(label) = program.log_site_labels.get(index) else {
+        return -1;
+    };
+    let Some(owner) = program.log_site_owners.get(index) else {
+        return -1;
+    };
+    let Some(declaration) = program.log_site_declarations.get(index) else {
+        return -1;
+    };
+    let Some(argument_types) = program.log_site_argument_types.get(index) else {
+        return -1;
+    };
+    let Ok(argument_count) = u32::try_from(argument_types.len()) else {
+        return -1;
+    };
+    let file_index = site
+        .source
+        .file
+        .and_then(|file| i32::try_from(file.index()).ok())
+        .unwrap_or(-1);
+    ptr::write(
+        out_info,
+        onda_log_site_info_t {
+            label: label.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+            source: onda_source_span_t {
+                file_index,
+                line: site.source.line,
+                column: site.source.column,
+                end_line: site.source.end_line,
+                end_column: site.source.end_column,
+            },
+            lexical_owner: owner.as_ptr(),
+            declaration: declaration
+                .as_ref()
+                .map_or(ptr::null(), |value| value.as_ptr()),
+            argument_types: if argument_types.is_empty() {
+                ptr::null()
+            } else {
+                argument_types.as_ptr()
+            },
+            argument_count,
+            payload_size_bytes: site.payload_size,
+        },
+    );
+    0
 }
 
 #[no_mangle]

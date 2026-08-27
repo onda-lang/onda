@@ -881,7 +881,8 @@ fn c_file_compile_accepts_filesystem_projects_with_defaults_and_watch_paths() {
         expected_watch_paths.sort();
         assert_eq!(watch_paths, expected_watch_paths);
 
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "project instance creation failed: {}",
@@ -1452,7 +1453,8 @@ sample { out1 = samples[0] }
         );
         onda_project_image_destroy(image);
 
-        let instance = onda_instance_create_initialized(program, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -1954,7 +1956,8 @@ block {
         assert!(onda_control_output_byte_offset(program.0, 1) >= 0);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 0, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 0, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2011,7 +2014,8 @@ sample { out1 = amp }
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2087,7 +2091,8 @@ sample:
 "#,
         );
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2125,6 +2130,10 @@ sample:
             record_count: 0,
             overflow_count: 0,
         };
+        let mut execution_output = onda_execution_output_t {
+            delegate_batch: &mut batch,
+            print_batch: std::ptr::null_mut(),
+        };
         let payload = 17_i32.to_ne_bytes();
         assert_eq!(
             onda_trigger_event_by_index(
@@ -2132,7 +2141,7 @@ sample:
                 0,
                 payload.as_ptr().cast::<c_void>(),
                 payload.len() as i32,
-                &mut batch,
+                &mut execution_output,
             ),
             0
         );
@@ -2157,7 +2166,10 @@ sample:
             17
         );
 
-        assert_eq!(onda_process_checked(instance.0, frames, &mut batch), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, &mut execution_output),
+            0
+        );
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
             (0, 0, 0)
@@ -2206,7 +2218,8 @@ sample { out1 = gate }
         assert_eq!(onda_event_payload_bytes(program.0, event_idx), -1);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2305,8 +2318,8 @@ sample { out1 = amp + pinned }
             onda_process_checked(instance.0, frames, std::ptr::null_mut()),
             -2
         );
-        assert_eq!(onda_init(instance.0, 0), -2);
-        assert_eq!(onda_init(instance.0, 1), 0);
+        assert_eq!(onda_init(instance.0, 0, std::ptr::null_mut()), -2);
+        assert_eq!(onda_init(instance.0, 1, std::ptr::null_mut()), 0);
 
         let payload = 0.5_f32.to_ne_bytes();
         assert_eq!(
@@ -2327,7 +2340,7 @@ sample { out1 = amp + pinned }
             assert!((*sample - 2.0).abs() < 1e-6, "got {sample}");
         }
 
-        assert_eq!(onda_init(instance.0, 0), 0);
+        assert_eq!(onda_init(instance.0, 0, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, frames, std::ptr::null_mut()),
             0
@@ -2347,7 +2360,7 @@ sample { out1 = amp + pinned }
             ),
             0
         );
-        assert_eq!(onda_init(instance.0, 0), 0);
+        assert_eq!(onda_init(instance.0, 0, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, frames, std::ptr::null_mut()),
             0
@@ -2356,7 +2369,7 @@ sample { out1 = amp + pinned }
             assert!((*sample - 1.25).abs() < 1e-6);
         }
 
-        assert_eq!(onda_init(instance.0, 1), 0);
+        assert_eq!(onda_init(instance.0, 1, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, frames, std::ptr::null_mut()),
             0
@@ -2365,8 +2378,193 @@ sample { out1 = amp + pinned }
             assert!((*sample - 1.0).abs() < 1e-6);
         }
 
-        assert_eq!(onda_init(std::ptr::null_mut(), 0), -1);
-        assert_eq!(onda_init(std::ptr::null_mut(), 1), -1);
+        assert_eq!(onda_init(std::ptr::null_mut(), 0, std::ptr::null_mut()), -1);
+        assert_eq!(onda_init(std::ptr::null_mut(), 1, std::ptr::null_mut()), -1);
+    }
+}
+
+#[test]
+fn c_api_formats_prints_from_initialized_and_process_calls() {
+    unsafe {
+        let program = compile_program(
+            "outs:\n  out1\ninit:\n  print(\"boot\", i64(9007199254740993))\nsample:\n  print(\"frame\", -0.0, true)\n  out1 = 0.0\n",
+        );
+        assert_eq!(onda_log_site_count(program.0), 2);
+        let mut site: onda_log_site_info_t = std::mem::zeroed();
+        assert_eq!(onda_log_site_info(program.0, 0, &mut site), 0);
+        assert_eq!(CStr::from_ptr(site.label).to_str().unwrap(), "boot");
+        assert!(!site.lexical_owner.is_null());
+        assert_eq!(site.argument_count, 1);
+        assert_eq!(site.payload_size_bytes, 8);
+        assert_eq!(
+            std::slice::from_raw_parts(site.argument_types, site.argument_count as usize),
+            &[ONDA_PRIMITIVE_I64]
+        );
+        if site.source.file_index >= 0 {
+            assert!(site.source.file_index < onda_source_file_count(program.0));
+            assert!(!onda_source_file_path(program.0, site.source.file_index).is_null());
+        }
+        assert_eq!(onda_log_site_info(program.0, 2, &mut site), -1);
+        assert!(site.label.is_null());
+
+        let mut storage = [0_u8; 256];
+        let mut prints = onda_print_batch_t {
+            storage: storage.as_mut_ptr(),
+            capacity_bytes: storage.len() as u32,
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        };
+        let mut execution_output = onda_execution_output_t {
+            delegate_batch: std::ptr::null_mut(),
+            print_batch: &mut prints,
+        };
+        let mut diag = empty_diag();
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, &mut execution_output, &mut *diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+        assert_eq!(prints.record_count, 1);
+
+        let mut text = onda_owned_string_t {
+            data: std::ptr::null_mut(),
+            length: 0,
+        };
+        assert_eq!(
+            onda_format_print_batch(instance.0, &prints, &mut text, &mut *diag),
+            0
+        );
+        assert_eq!(
+            std::str::from_utf8(std::slice::from_raw_parts(
+                text.data.cast::<u8>(),
+                text.length,
+            ))
+            .unwrap(),
+            "boot: 9007199254740993\n"
+        );
+        let original_text = text.data;
+        let original_length = text.length;
+        assert_eq!(
+            onda_format_print_batch(instance.0, &prints, &mut text, &mut *diag),
+            -1
+        );
+        assert_eq!((text.data, text.length), (original_text, original_length));
+        onda_owned_string_dispose(&mut text);
+        assert!(text.data.is_null());
+
+        let frames = 512;
+        let mut samples = vec![0.0_f32; frames];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                samples.as_mut_ptr().cast(),
+                std::mem::size_of_val(samples.as_slice()) as i32,
+            ),
+            0
+        );
+        assert_eq!(
+            onda_process_checked_segment(
+                instance.0,
+                0,
+                1,
+                ONDA_PROCESS_BEGIN_BLOCK,
+                &mut execution_output,
+            ),
+            0
+        );
+        let mut required = 0_usize;
+        assert_eq!(
+            onda_format_print_batch_into(
+                instance.0,
+                &prints,
+                std::ptr::null_mut(),
+                0,
+                &mut required,
+                &mut *diag,
+            ),
+            0
+        );
+        let mut insufficient = [0x55_i8; 4];
+        assert_eq!(
+            onda_format_print_batch_into(
+                instance.0,
+                &prints,
+                insufficient.as_mut_ptr(),
+                insufficient.len(),
+                &mut required,
+                &mut *diag,
+            ),
+            0
+        );
+        assert_eq!(insufficient, [0x55_i8; 4]);
+        let mut bytes = vec![0_i8; required + 1];
+        assert_eq!(
+            onda_format_print_batch_into(
+                instance.0,
+                &prints,
+                bytes.as_mut_ptr(),
+                bytes.len(),
+                &mut required,
+                &mut *diag,
+            ),
+            0
+        );
+        assert_eq!(
+            std::str::from_utf8(std::slice::from_raw_parts(
+                bytes.as_ptr().cast::<u8>(),
+                required,
+            ))
+            .unwrap(),
+            "frame: -0.0 true\n"
+        );
+
+        prints.record_count = 0;
+        assert_eq!(
+            onda_format_print_batch_into(
+                instance.0,
+                &prints,
+                std::ptr::null_mut(),
+                0,
+                &mut required,
+                &mut *diag,
+            ),
+            -2
+        );
+        prints.record_count = 1;
+
+        let mut delegates = onda_delegate_batch_t {
+            storage: std::ptr::null_mut(),
+            capacity_bytes: 0,
+            used_bytes: 17,
+            record_count: 2,
+            overflow_count: 3,
+        };
+        execution_output.delegate_batch = &mut delegates;
+        assert_eq!(
+            onda_process_checked_segment(instance.0, -1, 1, 0, &mut execution_output),
+            -1
+        );
+        assert_eq!(
+            (
+                prints.used_bytes,
+                prints.record_count,
+                prints.overflow_count
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            (
+                delegates.used_bytes,
+                delegates.record_count,
+                delegates.overflow_count
+            ),
+            (0, 0, 0)
+        );
     }
 }
 
@@ -2393,7 +2591,12 @@ sample {
         };
         let mut diag = empty_diag();
         let instance = onda_instance_create_initialized_with_allocator(
-            program.0, 0, 1, &allocator, &mut *diag,
+            program.0,
+            0,
+            1,
+            &allocator,
+            std::ptr::null_mut(),
+            &mut *diag,
         );
         assert!(
             !instance.is_null(),
@@ -2437,7 +2640,12 @@ fn c_api_custom_allocator_allocates_on_creation_thread_and_frees_on_instance_own
         };
         let mut diag = empty_diag();
         let instance = onda_instance_create_initialized_with_allocator(
-            program.0, 0, 1, &allocator, &mut *diag,
+            program.0,
+            0,
+            1,
+            &allocator,
+            std::ptr::null_mut(),
+            &mut *diag,
         );
         assert!(
             !instance.is_null(),
@@ -2510,7 +2718,8 @@ sample {
         assert!(onda_state_total_bytes(program.0) >= 4);
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2665,7 +2874,8 @@ sample { out1 = 0.25 }
         );
         let program = ProgramHandle(program);
 
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2706,7 +2916,8 @@ sample { out1 = 0.25 }
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2760,7 +2971,8 @@ block {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2860,7 +3072,8 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 1, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 1, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -2933,7 +3146,8 @@ block {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -3031,7 +3245,8 @@ sample { out1 = SAMPLE_RATE }
         );
         let program = ProgramHandle(program);
 
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -3075,7 +3290,8 @@ sample:
 "#,
         );
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -3272,7 +3488,8 @@ sample { out1 = 0.25 }
 "#,
         );
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -3443,7 +3660,8 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 2, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 2, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -3502,7 +3720,8 @@ sample {
         );
 
         let mut diag = empty_diag();
-        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut *diag);
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",

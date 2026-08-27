@@ -249,8 +249,12 @@ fn measure(
         let mut blocks = 0;
         while blocks < maximum_blocks {
             let block_started = Instant::now();
-            process_checked(&mut instance, block_size, None)
-                .map_err(|error| format!("processing failed: {error:?}"))?;
+            process_checked(
+                &mut instance,
+                block_size,
+                onda_runtime::ExecutionOutput::none(),
+            )
+            .map_err(|error| format!("processing failed: {error:?}"))?;
             peak_us = peak_us.max(block_started.elapsed().as_secs_f64() * 1_000_000.0);
             blocks += 1;
 

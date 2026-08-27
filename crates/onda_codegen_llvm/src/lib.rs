@@ -902,7 +902,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("event should publish delegates");
@@ -927,7 +930,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("a missing checked event should be a neutral call");
@@ -949,7 +955,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("a missing unchecked event should be a neutral call");
@@ -996,7 +1005,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("dynamic delegate should publish");
@@ -1031,7 +1043,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("empty delegate slices should publish");
@@ -1080,7 +1095,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("overflow does not fail delegate dispatch");
@@ -1127,7 +1145,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         };
         assert!(result.is_err(), "out-of-bounds event should fail");
@@ -1135,6 +1156,103 @@ sample:
             (batch.used_bytes, batch.record_count, batch.overflow_count),
             (0, 0, 0)
         );
+    }
+
+    #[test]
+    fn native_print_batch_is_retained_when_generated_execution_fails() {
+        let program = lower_and_jit(typed_program(
+            r#"
+init:
+  observed = 0.0
+event trigger(values: f32[]):
+  print("before failure", 7)
+  observed = values[0]
+sample:
+  out1 = observed
+"#,
+        ))
+        .expect("failing print source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut storage = [0_u8; 12];
+        let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
+        batch.used_bytes = 1;
+        batch.record_count = 9;
+        batch.overflow_count = 4;
+
+        let result = unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &0_i32.to_ne_bytes(),
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: std::ptr::null_mut(),
+                    print_batch: &mut batch,
+                }),
+            )
+        };
+
+        assert!(result.is_err(), "out-of-bounds event should fail");
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (12, 1, 0)
+        );
+        assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 0);
+        assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 4);
+        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 7);
+    }
+
+    #[test]
+    fn native_print_batch_drops_whole_records_and_keeps_later_records() {
+        let program = lower_and_jit(typed_program(
+            r#"
+event trigger():
+  print("large", f64(1.0))
+  print("small", true)
+sample:
+  out1 = 0.0
+"#,
+        ))
+        .expect("overflow print source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut storage = [0_u8; 9];
+        let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
+
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: std::ptr::null_mut(),
+                    print_batch: &mut batch,
+                }),
+            )
+        }
+        .expect("event should retain the later small print");
+
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (9, 1, 1)
+        );
+        assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 1);
+        assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 1);
+        assert_eq!(storage[8], 1);
     }
 
     #[test]
@@ -1182,7 +1300,10 @@ block:
                     &buffer_frames,
                     &buffer_channels,
                     &buffer_sample_rates,
-                    Some(&mut batch),
+                    Some(&mut onda_processor_abi::ExecutionOutput {
+                        delegate_batch: &mut batch,
+                        print_batch: std::ptr::null_mut(),
+                    }),
                 )
             }
             .expect("task resumption should process successfully");
@@ -1254,7 +1375,10 @@ sample:
                     &buffer_frames,
                     &buffer_channels,
                     &buffer_sample_rates,
-                    Some(&mut batch),
+                    Some(&mut onda_processor_abi::ExecutionOutput {
+                        delegate_batch: &mut batch,
+                        print_batch: std::ptr::null_mut(),
+                    }),
                 )
             }
             .expect("proc task resumption should process successfully");
@@ -1323,7 +1447,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("nested delegate promotion should execute");
@@ -1386,7 +1513,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("routed delegate dispatch should execute");
@@ -1470,7 +1600,10 @@ sample:
                 &[],
                 &[],
                 &[],
-                Some(&mut batch),
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut batch,
+                    print_batch: std::ptr::null_mut(),
+                }),
             )
         }
         .expect("whole-array delegate route should publish");

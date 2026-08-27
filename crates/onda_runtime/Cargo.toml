@@ -8,11 +8,13 @@ authors.workspace = true
 [dependencies]
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_frontend = { path = "../onda_frontend" }
+onda_mir = { path = "../onda_mir" }
 onda_processor_abi = { path = "../onda_processor_abi" }
 onda_realtime = { path = "../onda_realtime" }
 
 [dev-dependencies]
 onda_semantics = { path = "../onda_semantics" }
+serde_json = "1.0"
 
 [lib]
 path = "src/lib.rs"

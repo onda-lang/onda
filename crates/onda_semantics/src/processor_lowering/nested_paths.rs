@@ -169,6 +169,11 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_nested_field_paths_in_expr(expr, nested_fields)
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_nested_field_paths_in_expr(value, nested_fields);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -345,6 +350,11 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             remap_nested_symbols_in_expr(expr, remap)
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                remap_nested_symbols_in_expr(value, remap);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -515,6 +525,11 @@ pub(super) fn prefix_self_fields_in_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             prefix_self_fields_in_expr(expr, prefix, nested_field_names)
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                prefix_self_fields_in_expr(value, prefix, nested_field_names);
+            }
         }
         Stmt::If {
             cond,

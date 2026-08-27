@@ -1,10 +1,10 @@
 {
   "format": "onda-processor",
-  "format_version": 4,
+  "format_version": 5,
   "artifact_kind": "webassembly_module",
-  "abi_version": 7,
+  "abi_version": 8,
   "backend": "conformance-fixture",
-  "mir_schema_version": 7,
+  "mir_schema_version": 8,
   "target": {
     "triple": "wasm32-unknown-unknown",
     "cpu": "generic",
@@ -48,9 +48,12 @@
     "snapshot_byte_order": "little_endian",
     "snapshot_restore_base": "post_init_physical_state_image",
     "requires_full_blocks": false,
-    "delegate_record_header_size_bytes": 8
+    "delegate_record_header_size_bytes": 8,
+    "print_record_header_size_bytes": 8
   },
   "metadata": {
+    "source_files": [],
+    "log_sites": [],
     "inputs": [{
       "name": "in1",
       "type_repr": "f32",

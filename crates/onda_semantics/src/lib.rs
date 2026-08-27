@@ -766,6 +766,18 @@ mod tests {
     }
 
     #[test]
+    fn print_rejects_non_scalar_values_and_const_def_bodies() {
+        assert_analyze_error_contains(
+            "init:\n  values = [1, 2]\n  print(values)\nsample:\n  out1 = 0.0\n",
+            "print scalar values explicitly",
+        );
+        assert_analyze_error_contains(
+            "const def invalid() -> i32:\n  print(\"compile time\")\n  return 1\nsample:\n  out1 = 0.0\n",
+            "print is not allowed in const def",
+        );
+    }
+
+    #[test]
     fn rejects_pin_on_processor_instances_and_arrays() {
         let cases = [
             (
@@ -9598,6 +9610,7 @@ sample:
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 expr_contains_proc_index_sentinel(expr)
             }
+            Stmt::Print { values, .. } => values.iter().any(expr_contains_proc_index_sentinel),
             Stmt::If {
                 cond,
                 then_branch,
@@ -9686,6 +9699,9 @@ sample:
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 expr_contains_index_base(expr, expected_base)
             }
+            Stmt::Print { values, .. } => values
+                .iter()
+                .any(|expr| expr_contains_index_base(expr, expected_base)),
             Stmt::If {
                 cond,
                 then_branch,

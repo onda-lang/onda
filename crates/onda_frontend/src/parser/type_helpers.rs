@@ -342,7 +342,7 @@ fn parse_param_scale(pair: &Pair<'_, Rule>) -> Result<ParamScale, Vec<Diagnostic
     })
 }
 
-fn parse_param_unit(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
+pub(super) fn parse_quoted_text(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
     let raw = pair.as_str();
     let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
         return Err(vec![syntax_at_pair(
@@ -375,6 +375,10 @@ fn parse_param_unit(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
         });
     }
     Ok(unit)
+}
+
+fn parse_param_unit(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
+    parse_quoted_text(pair)
 }
 
 fn parse_named_param_domain_item(

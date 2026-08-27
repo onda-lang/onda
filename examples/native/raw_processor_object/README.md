@@ -139,12 +139,12 @@ The application performs the integration itself:
    `metadata.params[*].byte_offset`, ranges, scalar types, and `param_control`.
 5. Build flattened input/output pointer tables in metadata slot order.
 6. Build the four parallel external-buffer tables in `metadata.buffers` order.
-7. Call `onda_processor_init(params, state, ONDA_PROCESSOR_INIT_FULL)` once and reject a nonzero
+7. Call `onda_processor_init(params, state, ONDA_PROCESSOR_INIT_FULL, output)` once and reject a nonzero
    execution status.
 8. Encode fixed event defaults from `metadata.events` and call exports through a generated function
    table.
-9. Preallocate an optional call-scoped delegate batch from `metadata.delegates` when the host wants
-   top-level occurrences.
+9. Preallocate independent optional call-scoped delegate and print batches when the host wants
+   occurrences, and pass their pointers through one `onda_processor_execution_output_t`.
 10. Call `onda_process` once with `ONDA_PROCESSOR_FULL_BLOCK` for the complete block, stopping
    immediately if an event or process call returns a nonzero execution status.
 
@@ -183,16 +183,26 @@ are host support generated from the sidecar; they are not exports added to the p
 Hosts with their own descriptor loader can construct the same domain structure and call the ABI
 header functions directly without using the reference generator.
 
-### Delegate batches
+### Execution output batches
 
-Pass null as the final process/event argument when delegates are not collected. Otherwise allocate
-storage before realtime execution and reuse one `onda_processor_delegate_batch_t` per call:
+Pass null as the final init/process/event argument when no host-facing occurrences are collected.
+Otherwise allocate storage before realtime execution and group the independent batches in one
+`onda_processor_execution_output_t`:
 
 ```c
 uint8_t delegate_storage[4096];
 onda_processor_delegate_batch_t delegates = {
   .storage = delegate_storage,
   .capacity_bytes = sizeof(delegate_storage),
+};
+uint8_t print_storage[4096];
+onda_processor_print_batch_t prints = {
+  .storage = print_storage,
+  .capacity_bytes = sizeof(print_storage),
+};
+onda_processor_execution_output_t execution_output = {
+  .delegate_batch = &delegates,
+  .print_batch = &prints,
 };
 
 uint32_t status = onda_process(
@@ -207,7 +217,7 @@ uint32_t status = onda_process(
   buffer_frames,
   buffer_channels,
   buffer_sample_rates,
-  &delegates
+  &execution_output
 );
 if (status == ONDA_PROCESSOR_EXECUTION_OK) {
   for (uint32_t i = 0; i < delegates.record_count; ++i) {
@@ -221,6 +231,12 @@ if (status == ONDA_PROCESSOR_EXECUTION_OK) {
   }
 }
 ```
+
+Print records use `ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE` plus the fixed
+`metadata.log_sites[site_index].payload_size_bytes`. The host resolves labels, scalar types, and
+source spans through `metadata.log_sites` and `metadata.source_files`, then decodes or formats only
+after generated execution. Print and delegate capacities never compete. Print records emitted
+before a generated failure remain available; delegates are cleared on failure.
 
 For fixed payloads, one record occupies
 `ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE + payload_size_bytes`. Dynamic slice sizes and the

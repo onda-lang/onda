@@ -1,8 +1,8 @@
 use crate::{
     AccessMode, BufferChannels, BufferId, ConstDataId, ConstantValue, ControlOutputId, DelegateId,
-    EventId, EventParamId, FieldId, FunctionId, InputId, IntegerRangeInvariant, LocalId, OutputId,
-    ParamControl, ParamId, ParameterId, ScalarType, ScalarValue, SourceFileId, StateId, Type,
-    TypeId, ValueRange, MIR_SCHEMA_VERSION,
+    EventId, EventParamId, FieldId, FunctionId, InputId, IntegerRangeInvariant, LocalId, LogSiteId,
+    OutputId, ParamControl, ParamId, ParameterId, ScalarType, ScalarValue, SourceFileId, StateId,
+    Type, TypeId, ValueRange, MIR_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -34,6 +34,17 @@ impl SourceSpan {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceFile {
     pub path: String,
+}
+
+/// Static metadata for one concrete, specialized authored `print` statement.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LogSite {
+    pub label: Option<String>,
+    pub source: SourceSpan,
+    pub lexical_owner: String,
+    pub declaration: Option<String>,
+    pub argument_types: Vec<ScalarType>,
+    pub payload_size: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -103,6 +114,7 @@ pub struct Program {
     pub schema_version: u32,
     pub config: CompileConfig,
     pub source_files: Vec<SourceFile>,
+    pub log_sites: Vec<LogSite>,
     pub types: Vec<Type>,
     pub structs: Vec<StructType>,
     pub interface: Interface,
@@ -118,6 +130,7 @@ impl Program {
             schema_version: MIR_SCHEMA_VERSION,
             config,
             source_files: Vec::new(),
+            log_sites: Vec::new(),
             types: Vec::new(),
             structs: Vec::new(),
             interface: Interface::default(),
@@ -584,6 +597,11 @@ pub enum StatementKind {
     PublishDelegate {
         delegate: DelegateId,
         args: Vec<CallArgument>,
+    },
+    /// Copies one complete scalar payload to the optional call-scoped print batch.
+    PublishLog {
+        site: LogSiteId,
+        arguments: Vec<Value>,
     },
     OutputStore {
         output: OutputId,

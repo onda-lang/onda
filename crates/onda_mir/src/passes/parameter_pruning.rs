@@ -207,6 +207,7 @@ fn collect_block_parameters(block: &Block, used: &mut [bool]) {
             }
             StatementKind::Loop { body } => collect_block_parameters(body, used),
             StatementKind::OutputStore { .. }
+            | StatementKind::PublishLog { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
             | StatementKind::SliceStore { .. }
@@ -325,6 +326,7 @@ fn rewrite_block_parameters(block: &mut Block, mapping: &[Option<ParameterId>]) 
             }
             StatementKind::Loop { body } => rewrite_block_parameters(body, mapping),
             StatementKind::OutputStore { .. }
+            | StatementKind::PublishLog { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
             | StatementKind::SliceStore { .. }

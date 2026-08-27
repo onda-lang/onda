@@ -234,6 +234,7 @@ export interface OndaCompilerInstance {
   projectCapabilities(): Promise<OndaProjectCapabilities>;
   sendLspMessage(message: OndaLspMessage): Promise<OndaLspMessage[]>;
   setLspAnalysisOptions(options?: OndaLspAnalysisOptions): Promise<void>;
+  /** Idempotently releases compiler resources. All subsequent operations reject. */
   dispose(): Promise<void>;
 }
 

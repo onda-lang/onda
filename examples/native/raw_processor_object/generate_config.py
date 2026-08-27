@@ -12,8 +12,8 @@ from typing import Optional
 
 PROCESSOR_ARTIFACT_FORMAT = "onda-processor"
 # Synchronized from format-versions.json; do not edit these copies directly.
-PROCESSOR_ARTIFACT_FORMAT_VERSION = 4
-PROCESSOR_ABI_VERSION = 7
+PROCESSOR_ARTIFACT_FORMAT_VERSION = 5
+PROCESSOR_ABI_VERSION = 8
 MAX_EXACT_HOST_INTEGER = (1 << 53) - 1
 
 SCALAR_FORMATS = {
@@ -356,7 +356,7 @@ def generated_events(descriptor: dict) -> tuple[str, list[str], list[str], list[
             fail(f"event export {symbol!r} is not a C identifier")
         declarations.append(
             f"extern uint32_t {symbol}(const void*, const void*, void*, void* const*, "
-            "const int32_t*, const int32_t*, const float*);"
+            "const int32_t*, const int32_t*, const float*, onda_processor_execution_output_t*);"
         )
         functions.append(symbol)
         names.append(c_string(event["name"], "event name"))

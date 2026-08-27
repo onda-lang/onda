@@ -197,6 +197,17 @@ fn collect_proc_operator_helper_diags_from_stmt(
                 out,
             );
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                collect_proc_operator_helper_diags_from_expr(
+                    value,
+                    owner_proc,
+                    nested_instances,
+                    proc_api,
+                    out,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -493,6 +504,19 @@ fn collect_non_sample_proc_operator_diags_from_stmts(
                 aliases,
                 out,
             ),
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_non_sample_proc_operator_diags_from_expr(
+                        value,
+                        owner_proc,
+                        nested_instances,
+                        proc_array_slots,
+                        proc_api,
+                        aliases,
+                        out,
+                    );
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,
@@ -744,6 +768,11 @@ fn seed_called_proc_local_defs_from_stmts(
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 seed_called_proc_local_defs_from_expr(expr, def_names, pending, seen_pending);
+            }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    seed_called_proc_local_defs_from_expr(value, def_names, pending, seen_pending);
+                }
             }
             Stmt::If {
                 cond,
@@ -1198,6 +1227,7 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. } => false,
     }
@@ -2067,6 +2097,11 @@ fn validate_hook_safe_stmts(
             Stmt::Expr { expr, .. } => {
                 validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
             }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    validate_hook_safe_expr(value, ctx, frame, visiting, validated, errors);
+                }
+            }
             Stmt::Return { expr, .. } => {
                 if !is_bare_return_expr(expr) {
                     validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
@@ -2270,6 +2305,7 @@ fn reject_dynamic_bound_param_assignments(proc: &ProcessorDef, errors: &mut Vec<
                 Stmt::Const { .. }
                 | Stmt::Assign { .. }
                 | Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -2411,6 +2447,18 @@ fn validate_proc_local_def_surface_stmt(
                 dynamic_param_array_names,
             );
             validate_block_bound_surface_expr(expr, env, errors);
+        }
+        Stmt::Print { values, .. } => {
+            let env = proc_local_surface_expr_env(
+                scratch,
+                locals,
+                io_surface_names,
+                io_surface_array_names,
+                dynamic_param_array_names,
+            );
+            for value in values {
+                validate_block_bound_surface_expr(value, env, errors);
+            }
         }
         Stmt::If {
             cond,

@@ -288,6 +288,11 @@ pub(crate) fn rewrite_generic_array_ctor_stmt_types(
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_generic_array_ctor_expr_types(expr, type_bindings, errors);
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -407,7 +412,11 @@ pub(crate) fn specialize_generic_typed_decls(
                 specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
             }
         }
-        Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Expr { .. }
+        | Stmt::Print { .. }
+        | Stmt::Return { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => {}
     });
 }
 
@@ -1283,6 +1292,13 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_generic_proc_ctor_expr(
+                    value, templates, generated, errors, locals, current_ns,
+                );
+            }
         }
         Stmt::If {
             cond,

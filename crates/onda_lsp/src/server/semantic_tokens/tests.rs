@@ -106,6 +106,7 @@ fn reserved_words_include_singular_event_keyword() {
     assert!(is_reserved_word("delegate"));
     assert!(is_reserved_word("delegates"));
     assert!(is_reserved_word("when"));
+    assert!(is_reserved_word("print"));
     assert!(is_reserved_word("private"));
     assert!(is_reserved_word("pin"));
 }
@@ -134,6 +135,90 @@ fn semantic_tokens_distinguish_events_and_delegates() {
     );
     assert_eq!(
         token_type_at_text_on_line(&tokens, source, 4, "reason"),
+        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
+    );
+}
+
+#[test]
+fn semantic_tokens_mark_child_when_targets_as_delegates() {
+    let source = concat!(
+        "proc Child:\n",
+        "  delegate finished(reason: i32)\n",
+        "  sample:\n",
+        "    out1 = 0.0\n",
+        "init:\n",
+        "  child = Child()\n",
+        "  seen = 0\n",
+        "when child.finished(reason):\n",
+        "  seen = reason\n",
+        "sample:\n",
+        "  out1 = child()\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 7, "finished"),
+        Some(SEMANTIC_TOKEN_TYPE_DELEGATE),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 8, "reason"),
+        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 8, "seen"),
+        Some(SEMANTIC_TOKEN_TYPE_STATE),
+    );
+}
+
+#[test]
+fn source_fallback_preserves_when_bindings_and_owner_state() {
+    let source = concat!(
+        "outs:\n",
+        "  out1\n",
+        "init:\n",
+        "  seen = 0\n",
+        "delegate finished(reason: i32)\n",
+        "when finished(reason):\n",
+        "  seen = reason\n",
+        "  broken =\n",
+    );
+    assert!(parse_program(source).is_err());
+    let tokens = semantic_tokens_for_document(source, None);
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 6, "seen"),
+        Some(SEMANTIC_TOKEN_TYPE_STATE),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 6, "reason"),
+        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
+    );
+}
+
+#[test]
+fn source_fallback_preserves_proc_when_bindings_and_owner_entries() {
+    let source = concat!(
+        "proc Voice:\n",
+        "  outs:\n",
+        "    out1\n",
+        "  init:\n",
+        "    seen = 0\n",
+        "  delegate finished(reason: i32)\n",
+        "  when finished(reason):\n",
+        "    seen = reason\n",
+        "    out1 = f32(reason)\n",
+        "    broken =\n",
+    );
+    assert!(parse_program(source).is_err());
+    let tokens = semantic_tokens_for_document(source, None);
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 7, "seen"),
+        Some(SEMANTIC_TOKEN_TYPE_STATE),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 8, "out1"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 8, "reason"),
         Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
     );
 }

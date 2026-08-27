@@ -1,5 +1,6 @@
 import {
   createParamControl,
+  formatPrintRecords,
   validateProcessorArtifact,
   validateProcessorModule,
 } from "@onda-lang/processor-abi";
@@ -83,6 +84,7 @@ function audioWorkletNodeOptionsFromValidated(
       buffers: options.buffers ?? {},
       eventPayloadCapacityBytes: options.eventPayloadCapacityBytes,
       delegateCapacityBytes: options.delegateCapacityBytes,
+      printCapacityBytes: options.printCapacityBytes,
       initialize: options.initialize === true,
     },
   };
@@ -219,10 +221,36 @@ export class OndaAudioProcessor {
     this.nextRequestId = 1;
     this.pending = new Map();
     this.delegateListeners = new Set();
+    this.printListeners = new Set();
+    this.closed = false;
+    this.closeReason = null;
     this.handleMessage = (event) => {
       const message = event.data ?? {};
       if (message.type === "onda-delegates") {
         for (const listener of this.delegateListeners) listener(message);
+        return;
+      }
+      if (message.type === "onda-print-records") {
+        try {
+          const formatted = formatPrintRecords(
+            message.storage,
+            message.usedBytes,
+            this.metadata,
+            message.overflowCount,
+          );
+          if (formatted.entries.length !== message.recordCount) {
+            throw new Error("processor print count does not match packed storage");
+          }
+          const batch = {
+            type: "onda-print",
+            operation: message.operation,
+            ...formatted,
+            transportDropCount: message.transportDropCount,
+          };
+          for (const listener of this.printListeners) listener(batch);
+        } finally {
+          this.node.port.postMessage({ type: "print-ack" });
+        }
         return;
       }
       if (message.requestId === undefined) return;
@@ -240,6 +268,9 @@ export class OndaAudioProcessor {
   }
 
   request(type, fields = {}, transfer = []) {
+    if (this.closed) {
+      return Promise.reject(this.closeReason);
+    }
     const requestId = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
@@ -293,11 +324,21 @@ export class OndaAudioProcessor {
   }
 
   onDelegates(listener) {
+    this.assertOpen();
     if (typeof listener !== "function") {
       throw new TypeError("delegate listener must be a function");
     }
     this.delegateListeners.add(listener);
     return () => this.delegateListeners.delete(listener);
+  }
+
+  onPrint(listener) {
+    this.assertOpen();
+    if (typeof listener !== "function") {
+      throw new TypeError("print listener must be a function");
+    }
+    this.printListeners.add(listener);
+    return () => this.printListeners.delete(listener);
   }
 
   init(mode) {
@@ -327,10 +368,18 @@ export class OndaAudioProcessor {
   }
 
   close(reason = new Error("Onda AudioWorklet processor closed")) {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeReason = reason instanceof Error ? reason : new Error(String(reason));
     this.node.port.removeEventListener("message", this.handleMessage);
-    for (const pending of this.pending.values()) pending.reject(reason);
+    for (const pending of this.pending.values()) pending.reject(this.closeReason);
     this.pending.clear();
     this.delegateListeners.clear();
+    this.printListeners.clear();
+  }
+
+  assertOpen() {
+    if (this.closed) throw this.closeReason;
   }
 }
 

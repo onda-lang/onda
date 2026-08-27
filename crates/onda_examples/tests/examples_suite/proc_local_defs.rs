@@ -115,7 +115,13 @@ fn proc_local_def_void_call_from_event() {
         .event_index("reset")
         .expect("reset event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &[], None).expect("reset trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("reset trigger should succeed");
 
     process_interleaved(&mut instance, &input, &mut output, frames)
         .expect("process should succeed after reset");
@@ -231,7 +237,13 @@ fn proc_local_def_shared_helper_called_from_multiple_events() {
         .event_index("reset")
         .expect("reset event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &[], None).expect("reset trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("reset trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames)
         .expect("process should succeed after reset");
@@ -438,7 +450,13 @@ fn proc_local_def_transitive_call() {
         .event_index("reset")
         .expect("reset event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &[], None).expect("reset trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("reset trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames)
         .expect("process should succeed after reset");
@@ -1343,8 +1361,13 @@ fn proc_local_def_default_params() {
         .event_index("apply_default")
         .expect("event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &3.0_f32.to_le_bytes(), None)
-        .expect("trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &3.0_f32.to_le_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -1366,7 +1389,13 @@ fn proc_local_def_default_params() {
 
     payload.extend_from_slice(&0.5_f32.to_le_bytes());
 
-    trigger_event_by_index(&mut instance, idx2, &payload, None).expect("trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx2,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -1507,7 +1536,13 @@ fn proc_local_def_nested_proc_event_call() {
         .event_index("clear")
         .expect("clear event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &[], None).expect("trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames)
         .expect("process should succeed after clear");
@@ -1622,7 +1657,13 @@ fn proc_local_def_generic_proc() {
         .event_index("reset")
         .expect("reset event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &[], None).expect("trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("trigger should succeed");
 
     process_interleaved(&mut instance, &input, &mut output, frames)
         .expect("process should succeed after reset");

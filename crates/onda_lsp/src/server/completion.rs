@@ -22,6 +22,7 @@ use crate::formatting::{
     format_fn_param_type,
 };
 
+use super::language_intrinsics::{PRINT_NAME, PRINT_SIGNATURE};
 use super::namespace_resolution::{
     expand_namespace_alias_path, namespace_join, namespace_parent_of, namespace_segments_key,
     qualified_path_candidates as namespace_qualified_path_candidates,
@@ -691,8 +692,15 @@ struct ProcBufferInfo {
 #[derive(Debug, Clone)]
 struct EventInfo {
     name: String,
-    param_names: Vec<String>,
+    params: Vec<EventParamInfo>,
     signature: String,
+}
+
+#[derive(Debug, Clone)]
+struct EventParamInfo {
+    name: String,
+    ty: String,
+    indexable: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1174,6 +1182,17 @@ impl CompletionIndex {
 
     fn collect_scopes(&mut self, program: &Program) {
         let top_level_scope = self.collect_top_level_runtime_scope(&program.blocks);
+        let top_level_delegates = program
+            .blocks
+            .iter()
+            .filter(|block| self.span_belongs_to_current_file(block.loc().span()))
+            .filter_map(|block| match block {
+                Block::Delegates(delegates) => Some(delegates.delegates.as_slice()),
+                _ => None,
+            })
+            .flatten()
+            .map(delegate_info_from_def)
+            .collect::<Vec<_>>();
 
         for block in &program.blocks {
             if !self.span_belongs_to_current_file(block.loc().span()) {
@@ -1201,7 +1220,7 @@ impl CompletionIndex {
                 }
                 Block::When(when) => {
                     if let Some(owner_idx) = top_level_scope {
-                        self.collect_when_scope(owner_idx, when);
+                        self.collect_when_scope(owner_idx, when, &top_level_delegates);
                     }
                 }
                 _ => {}
@@ -1513,8 +1532,13 @@ impl CompletionIndex {
         for event in &proc_def.events {
             self.collect_event_scope(owner_idx, event);
         }
+        let delegates = proc_def
+            .delegates
+            .iter()
+            .map(delegate_info_from_def)
+            .collect::<Vec<_>>();
         for when in &proc_def.whens {
-            self.collect_when_scope(owner_idx, when);
+            self.collect_when_scope(owner_idx, when, &delegates);
         }
         for def in &proc_def.local_defs {
             self.collect_function_scope(Some(owner_idx), &scope_namespace, def, "proc-local def");
@@ -1743,15 +1767,39 @@ impl CompletionIndex {
         Some(scope_idx)
     }
 
-    fn collect_when_scope(&mut self, parent: usize, when: &WhenDef) -> Option<usize> {
-        let mut items = when
-            .bindings
-            .iter()
-            .filter(|binding| binding.name != "_")
-            .map(|binding| argument_item(&binding.name, "delegate payload binding"))
-            .collect::<Vec<_>>();
-        self.collect_stmt_items(&when.body, "event local", false, &mut items);
+    fn collect_when_scope(
+        &mut self,
+        parent: usize,
+        when: &WhenDef,
+        owner_delegates: &[EventInfo],
+    ) -> Option<usize> {
+        let binding_params = self.when_binding_params(parent, when, owner_delegates);
+        let mut items = Vec::new();
         let mut instances = HashMap::<String, InstanceInfo>::new();
+        for (index, binding) in when.bindings.iter().enumerate() {
+            if binding.name == "_" {
+                continue;
+            }
+            let detail = binding_params
+                .get(index)
+                .map(|param| format!("delegate payload binding: {}", param.ty))
+                .unwrap_or_else(|| "delegate payload binding".to_owned());
+            items.push(argument_item(&binding.name, &detail));
+            if binding_params
+                .get(index)
+                .is_some_and(|param| param.indexable)
+            {
+                instances.insert(
+                    binding.name.clone(),
+                    InstanceInfo::PrimitiveIndexable {
+                        readable: true,
+                        writable: false,
+                        has_len: true,
+                    },
+                );
+            }
+        }
+        self.collect_stmt_items(&when.body, "event local", false, &mut items);
         let scope_namespace = self.child_scope_namespace(Some(parent), "");
         self.collect_stmt_scope_instances(&when.body, &scope_namespace, false, &mut instances);
         let scope_idx = self.push_scope(
@@ -1763,6 +1811,70 @@ impl CompletionIndex {
         )?;
         self.collect_nested_stmt_scopes(scope_idx, &when.body);
         Some(scope_idx)
+    }
+
+    fn when_binding_params(
+        &self,
+        parent: usize,
+        when: &WhenDef,
+        owner_delegates: &[EventInfo],
+    ) -> Vec<EventParamInfo> {
+        let (delegate, whole_array) = if when.target.receiver.is_empty() {
+            (
+                owner_delegates
+                    .iter()
+                    .find(|delegate| delegate.name == when.target.delegate),
+                false,
+            )
+        } else if when.target.receiver.len() == 1 {
+            let receiver = &when.target.receiver[0];
+            let Some(InstanceInfo::UserType {
+                type_name,
+                is_array,
+            }) = self.resolve_instance_from_scope(Some(parent), receiver)
+            else {
+                return Vec::new();
+            };
+            (
+                self.procs.get(type_name).and_then(|proc_info| {
+                    proc_info
+                        .delegates
+                        .iter()
+                        .find(|delegate| delegate.name == when.target.delegate)
+                }),
+                *is_array && when.target.index.is_none(),
+            )
+        } else {
+            return Vec::new();
+        };
+        let Some(delegate) = delegate else {
+            return Vec::new();
+        };
+        let mut params = Vec::with_capacity(delegate.params.len() + usize::from(whole_array));
+        if whole_array {
+            params.push(EventParamInfo {
+                name: "index".to_owned(),
+                ty: "i32".to_owned(),
+                indexable: false,
+            });
+        }
+        params.extend(delegate.params.iter().cloned());
+        params
+    }
+
+    fn resolve_instance_from_scope(
+        &self,
+        mut current: Option<usize>,
+        name: &str,
+    ) -> Option<&InstanceInfo> {
+        while let Some(idx) = current {
+            let scope = &self.scopes[idx];
+            if let Some(instance) = scope.instances.get(name) {
+                return Some(instance);
+            }
+            current = scope.parent;
+        }
+        self.instances.get(name)
     }
 
     fn collect_stmt_scope(
@@ -1883,6 +1995,7 @@ impl CompletionIndex {
                 | Stmt::For { .. }
                 | Stmt::While { .. }
                 | Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -1925,6 +2038,7 @@ impl CompletionIndex {
                 Stmt::Const { .. }
                 | Stmt::Assign { .. }
                 | Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -2037,6 +2151,7 @@ impl CompletionIndex {
                 Stmt::For { .. } | Stmt::While { .. } => {}
                 Stmt::Const { .. }
                 | Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -2140,6 +2255,10 @@ impl CompletionIndex {
             }
         }
         for &keyword in LANGUAGE_KEYWORDS {
+            if keyword == PRINT_NAME {
+                out.push(print_item());
+                continue;
+            }
             out.push(
                 CompletionItem::new(keyword, COMPLETION_ITEM_KIND_KEYWORD)
                     .detail("keyword")
@@ -2375,16 +2494,17 @@ impl CompletionIndex {
         let mut out = Vec::new();
         if let Some(proc_info) = self.procs.get(type_name) {
             if self.in_when_target_context() {
+                let whole_array = *is_array && !receiver.contains('[');
                 return proc_info
                     .delegates
                     .iter()
                     .map(|delegate| {
+                        let signature = when_delegate_signature(delegate, whole_array);
                         CompletionItem::new(delegate.name.clone(), COMPLETION_ITEM_KIND_EVENT)
-                            .maybe_label_detail(Some(format!("({})", delegate.signature)))
-                            .detail(format!(
-                                "delegate {}({})",
-                                delegate.name, delegate.signature
-                            ))
+                            .maybe_label_detail(Some(format!("({signature})")))
+                            .detail(format!("delegate {}({signature})", delegate.name))
+                            .insert_text(format!("{}(", delegate.name))
+                            .snippet(format!("{}($1)", delegate.name))
                             .sort_text(completion_sort_text(
                                 CompletionSortGroup::Event,
                                 &delegate.name,
@@ -2557,9 +2677,9 @@ impl CompletionIndex {
                     if let Some(event) = proc_info.events.iter().find(|event| event.name == member)
                     {
                         return event
-                            .param_names
+                            .params
                             .iter()
-                            .map(|param| named_arg_item(param, "event parameter"))
+                            .map(|param| named_arg_item(&param.name, "event parameter"))
                             .collect();
                     }
                 }
@@ -2940,6 +3060,7 @@ impl CompletionIndex {
                 }
                 Stmt::For { .. } | Stmt::While { .. } => {}
                 Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -3410,6 +3531,18 @@ fn delegate_item(delegate: &DelegateDef) -> CompletionItem {
         .sort_text(completion_sort_text(
             CompletionSortGroup::Event,
             &delegate.name,
+        ))
+}
+
+fn print_item() -> CompletionItem {
+    CompletionItem::new(PRINT_NAME, COMPLETION_ITEM_KIND_FUNCTION)
+        .maybe_label_detail(Some(PRINT_SIGNATURE[PRINT_NAME.len()..].to_owned()))
+        .detail("runtime print statement")
+        .insert_text("print(")
+        .snippet("print($1)")
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::Keyword,
+            PRINT_NAME,
         ))
 }
 
@@ -4235,11 +4368,7 @@ fn completion_order_key(
 fn event_info_from_def(event: &EventDef) -> EventInfo {
     EventInfo {
         name: event.name.clone(),
-        param_names: event
-            .params
-            .iter()
-            .map(|param| param.name.clone())
-            .collect(),
+        params: event.params.iter().map(event_param_info).collect(),
         signature: event_signature(event),
     }
 }
@@ -4247,17 +4376,38 @@ fn event_info_from_def(event: &EventDef) -> EventInfo {
 fn delegate_info_from_def(delegate: &DelegateDef) -> EventInfo {
     EventInfo {
         name: delegate.name.clone(),
-        param_names: delegate
-            .params
-            .iter()
-            .map(|param| param.name.clone())
-            .collect(),
+        params: delegate.params.iter().map(event_param_info).collect(),
         signature: delegate
             .params
             .iter()
             .map(format_event_param_signature)
             .collect::<Vec<_>>()
             .join(", "),
+    }
+}
+
+fn event_param_info(param: &EventParamDecl) -> EventParamInfo {
+    EventParamInfo {
+        name: param.name.clone(),
+        ty: format_event_param_type(&param.ty),
+        indexable: matches!(
+            param.ty,
+            EventParamType::Array { .. }
+                | EventParamType::GenericArray { .. }
+                | EventParamType::Slice { .. }
+                | EventParamType::GenericSlice { .. }
+        ),
+    }
+}
+
+fn when_delegate_signature(delegate: &EventInfo, whole_array: bool) -> String {
+    if !whole_array {
+        return delegate.signature.clone();
+    }
+    if delegate.signature.is_empty() {
+        "index: i32".to_owned()
+    } else {
+        format!("index: i32, {}", delegate.signature)
     }
 }
 
@@ -5198,7 +5348,98 @@ mod tests {
             .into_iter()
             .find(|item| item.label == "reason")
             .expect("when payload binding should be completed in its body");
-        assert_eq!(binding.detail.as_deref(), Some("delegate payload binding"));
+        assert_eq!(
+            binding.detail.as_deref(),
+            Some("delegate payload binding: i32")
+        );
+    }
+
+    #[test]
+    fn print_completion_exposes_its_variadic_callable_shape() {
+        let source = "sample:\n  pri\n";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            CompletionPosition {
+                line: 1,
+                character: 5,
+            },
+            true,
+        );
+        let print = encoded_item(&result.items, "print");
+        assert_eq!(print["kind"], COMPLETION_ITEM_KIND_FUNCTION);
+        assert_eq!(
+            print["labelDetails"]["detail"],
+            "(...values: f32 | f64 | i32 | i64 | bool)"
+        );
+        assert_eq!(print["insertText"], "print($1)");
+        assert_eq!(print["insertTextFormat"], INSERT_TEXT_FORMAT_SNIPPET);
+    }
+
+    #[test]
+    fn when_bindings_preserve_array_types_and_whole_array_index() {
+        let source = r#"proc Child:
+  delegate ready(values: i32[])
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[2] = Child()
+
+when children.ready(index, values):
+  count = values.len()
+
+sample:
+  out1 = children[0]()
+"#;
+        let parsed = parse_program(source).expect("handler source should parse");
+        let index = CompletionIndex::build(
+            Some(&parsed),
+            source,
+            None,
+            position_at(source, "values.len", "values.".len()),
+        );
+        let index_binding = index
+            .general_items("ind")
+            .into_iter()
+            .find(|item| item.label == "index")
+            .expect("whole-array index binding should complete");
+        assert_eq!(
+            index_binding.detail.as_deref(),
+            Some("delegate payload binding: i32")
+        );
+        let values_binding = index
+            .general_items("val")
+            .into_iter()
+            .find(|item| item.label == "values")
+            .expect("slice payload binding should complete");
+        assert_eq!(
+            values_binding.detail.as_deref(),
+            Some("delegate payload binding: i32[]")
+        );
+        assert!(index
+            .member_items("values", "")
+            .iter()
+            .any(|item| item.label == "len"));
+
+        let target_index = CompletionIndex::build(
+            Some(&parsed),
+            source,
+            None,
+            position_at(source, "children.ready", "children.".len()),
+        );
+        let ready = target_index
+            .member_items("children", "")
+            .into_iter()
+            .find(|item| item.label == "ready")
+            .expect("child-array delegate should complete in a when target");
+        assert_eq!(
+            ready.detail.as_deref(),
+            Some("delegate ready(index: i32, values: i32[])")
+        );
     }
 
     fn position_at(source: &str, needle: &str, token_offset: usize) -> CompletionPosition {

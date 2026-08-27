@@ -110,6 +110,7 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
             | StatementKind::Break
             | StatementKind::Continue
             | StatementKind::Return { .. } => {}
+            StatementKind::PublishLog { .. } => {}
         }
     }
     eliminated

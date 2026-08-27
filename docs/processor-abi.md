@@ -33,7 +33,7 @@ signed 32-bit values. Public LLVM entry points use the target's C calling conven
 WebAssembly modules use ordinary core-Wasm function calls.
 
 ```text
-onda_processor_init(params: Ptr, state: Ptr, mode: InitMode) -> i32
+onda_processor_init(params: Ptr, state: Ptr, mode: InitMode, output: Ptr) -> i32
 
 onda_process(
   state: Ptr,
@@ -47,7 +47,7 @@ onda_process(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
-  delegate_batch: Ptr,
+  output: Ptr,
 ) -> i32
 
 onda_event_N(
@@ -58,7 +58,7 @@ onda_event_N(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
-  delegate_batch: Ptr,
+  output: Ptr,
 ) -> i32
 ```
 
@@ -72,10 +72,11 @@ continuations. Preserve-pinned initialization skips those guarded declarations a
 existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
 not transactional: a host that needs rollback must provide that policy itself.
 
-Processor ABI version 7 adds the optional `delegate_batch` result to process and input-event entry
-points. Initialization remains unchanged. Version 6 replaced the boolean-like `all` contract with
-this named mode enum. The instance-level C and WebAssembly host APIs use the same values. A failed
-initialization leaves the physical state indeterminate.
+Processor ABI version 8 adds print output to initialization and replaces the separate delegate-batch
+argument on process and event entries with one optional `ExecutionOutput`. Version 7 introduced
+delegate batches, and version 6 replaced the boolean-like `all` contract with this named mode enum.
+The instance-level C and WebAssembly host APIs use the same values. A failed initialization leaves
+the physical state indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is
 `RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
@@ -86,14 +87,23 @@ The process order intentionally places state, parameters, and audio tables befor
 and optional buffer tables. This keeps the hottest pointers in argument registers on common native
 C ABIs without introducing a target-specific entry point.
 
-### Call-scoped delegate batches
+### Call-scoped execution output
 
-For complete hosted C, Rust, raw-ABI, and JavaScript examples, including capacity selection and
-overflow handling, see [Hosting Onda delegates](delegates.md).
+For complete hosted C, Rust, raw-ABI, and JavaScript examples, including capacity selection,
+formatting, and overflow handling, see [Hosting Onda delegates](delegates.md) and
+[Hosting Onda print output](printing.md).
 
-`delegate_batch` is null when the host does not need top-level delegate occurrences. Otherwise it
-points to this logical version-7 structure; native targets use native pointers and complete wasm32
-modules use little-endian 32-bit linear-memory offsets:
+`output` is null when the host consumes neither occurrence stream. Otherwise it points to two
+independently nullable pointers:
+
+```text
+delegate_batch: Ptr
+print_batch: Ptr
+```
+
+Each present pointer addresses an independent caller-owned batch with this physical shape; native
+targets use native pointers and complete wasm32 modules use little-endian 32-bit linear-memory
+offsets:
 
 ```text
 storage: Ptr
@@ -103,11 +113,16 @@ record_count: u32
 overflow_count: u32
 ```
 
-The fixed header of each contiguous record is two `u32` values: declaration-order delegate index,
-then payload byte count. Payload bytes immediately follow. Scalar and fixed arrays are packed in
-parameter order. Each slice is encoded as an `i32` count followed by contiguous element bytes. The
-descriptor's `metadata.delegates` gives names, shapes, fixed size or dynamic minimum size, and
-static offsets. Scalar and header byte order is the artifact target's byte order.
+The fixed header of every contiguous record is two `u32` values followed immediately by payload
+bytes. A delegate record stores declaration-order delegate index and payload byte count. Scalar and
+fixed arrays are packed in parameter order; each slice is an `i32` count followed by contiguous
+elements. The descriptor's `metadata.delegates` supplies its layout.
+
+A print record stores log-site index and payload byte count. Its payload contains only the site's
+primitive scalar arguments without padding: four bytes for `f32`/`i32`, eight for `f64`/`i64`, and
+one zero-or-one byte for `bool`. `metadata.source_files` and `metadata.log_sites` supply labels,
+source spans, lexical ownership, argument types, and fixed payload sizes. Scalar and header byte
+order is the artifact target's byte order.
 
 For one fixed-shape occurrence, exact storage is the eight-byte record header plus the descriptor's
 `payload_size_bytes`. A dynamic delegate has no exact pre-execution size; its descriptor reports
@@ -116,12 +131,12 @@ There is no exact whole-batch size because occurrence counts, delegate selection
 may depend on runtime control flow. Capacity is a host policy, and `overflow_count` reports when it
 was insufficient.
 
-Every process or input-event entry resets `used_bytes`, `record_count`, and `overflow_count`. A
-complete record is appended only when it fits. Otherwise that newest record is discarded and the
-overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null batch or null
-storage is neutral and does not count overflow. Generated execution failure clears all three result
-counters before returning failure. The storage is caller-owned, never allocated or retained by the
-processor, and is not part of snapshots.
+Every init, process, or input-event entry resets the counters of each supplied batch. A complete
+record is appended only when it fits. Otherwise it is discarded whole and that batch's overflow
+counter saturates at `u32::MAX`; a later smaller record may still fit. Null output, batch, or storage
+is neutral and does not count overflow. Generated execution failure clears delegate results but
+retains print records and overflow already produced, because they may diagnose the failure. Storage
+is caller-owned, never allocated or retained by the processor, and is not part of snapshots.
 
 ## Pointer and target profiles
 
@@ -165,7 +180,7 @@ relocatable `linking` section. It does not pretend that the object is directly i
 `include/onda_processor_abi.h` is the canonical C declaration of the current ABI entry points. An
 application links the emitted object, allocates storage from the exact paired descriptor, builds the
 input/output and external-buffer pointer tables, optionally prepares an
-`onda_processor_delegate_batch_t`,
+an `onda_processor_execution_output_t` containing independently allocated delegate and print batches,
 and calls `onda_processor_init`, `onda_process`, and any `onda_event_N` functions directly. No Onda
 runtime or compiler library is required.
 
@@ -190,8 +205,9 @@ contract as an LLVM object and does not make Web Audio part of the ABI.
 
 The host allocates non-overlapping parameter and physical-state regions using the sizes and minimum
 alignments in `runtime`. It initializes parameter defaults from program metadata and calls
-`onda_processor_init(params, state, FULL)` before processing. Physical state uses the backend's selected
-target layout and is otherwise opaque.
+`onda_processor_init(params, state, FULL, output)` before processing. Pass null when initialization
+output is not consumed. Physical state uses the backend's selected target layout and is otherwise
+opaque.
 
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
 artifact descriptor. Scratch state is deliberately absent from snapshots.
@@ -207,7 +223,7 @@ persistent scalar elements in little-endian byte order, in metadata order, witho
 or scratch state. It includes pinned authored roots and compiler-owned task frames. This is
 distinct from the target-native physical state image, which can use another byte order or alignment.
 
-Restore begins with `onda_processor_init(params, state, FULL)`, then overlays every persistent entry
+Restore begins with `onda_processor_init(params, state, FULL, output)`, then overlays every persistent entry
 from the packed snapshot. This resets instance scratch while preserving persistent state and task
 continuations.
 A host converting between a big-endian physical target and the portable snapshot must encode

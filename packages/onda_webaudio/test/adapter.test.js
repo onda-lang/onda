@@ -18,7 +18,7 @@ import {
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
-const FIXTURE_MIR_SCHEMA_VERSION = 7;
+const FIXTURE_MIR_SCHEMA_VERSION = 8;
 
 function artifact() {
   const port = (name, arrayLen) => ({
@@ -94,6 +94,7 @@ function artifact() {
         snapshot_restore_base: "post_init_physical_state_image",
         requires_full_blocks: false,
         delegate_record_header_size_bytes: 8,
+        print_record_header_size_bytes: 8,
       },
       exports: {
         memory: "memory",
@@ -111,6 +112,8 @@ function artifact() {
         buffers: [],
         events: [],
         delegates: [],
+        source_files: [],
+        log_sites: [],
       },
     },
   };
@@ -149,6 +152,21 @@ class FakeNode {
     this.port = new FakePort();
   }
 }
+
+test("closed processors reject new work and settle pending requests", async () => {
+  const node = new FakeNode({}, ONDA_AUDIO_WORKLET_PROCESSOR_NAME, {});
+  const processor = new OndaAudioProcessor(node, artifact().metadata);
+  const pending = processor.trigger("note");
+  const reason = new Error("closed by host");
+
+  processor.close(reason);
+  processor.close();
+
+  await assert.rejects(pending, reason);
+  await assert.rejects(processor.trigger("note"), reason);
+  assert.throws(() => processor.onPrint(() => {}), reason);
+  assert.equal(node.port.messages.length, 1);
+});
 
 test("derives explicit Web Audio channel options from processor metadata", () => {
   const options = ondaAudioWorkletNodeOptions(artifact(), {
@@ -283,6 +301,44 @@ test("correlates control responses and preserves caller snapshot storage", async
   assert.equal(fullInitRequest.mode, ONDA_INIT_FULL);
   node.port.reply({ type: "onda-ok", requestId: fullInitRequest.requestId });
   await fullInit;
+  processor.close();
+});
+
+test("formats worklet print records on the main side", () => {
+  const source = artifact();
+  source.metadata.metadata.log_sites = [{
+    index: 0,
+    label: "value",
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 10 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+  const batches = [];
+  const unsubscribe = processor.onPrint((batch) => batches.push(batch));
+  const storage = new Uint8Array(12);
+  const view = new DataView(storage.buffer);
+  view.setUint32(0, 0, true);
+  view.setUint32(4, 4, true);
+  view.setInt32(8, 42, true);
+  node.port.reply({
+    type: "onda-print-records",
+    operation: "process",
+    storage,
+    usedBytes: storage.byteLength,
+    recordCount: 1,
+    overflowCount: 2,
+    transportDropCount: 3,
+  });
+  assert.equal(batches[0].text, "value: 42\n");
+  assert.equal(batches[0].entries[0].values[0].value, 42);
+  assert.equal(batches[0].overflowCount, 2);
+  assert.equal(batches[0].transportDropCount, 3);
+  assert.deepEqual(node.port.messages.at(-1), { type: "print-ack" });
+  assert.equal(unsubscribe(), true);
   processor.close();
 });
 

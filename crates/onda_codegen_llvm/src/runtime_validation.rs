@@ -6,6 +6,20 @@ use crate::{
     UninitializedRuntimeState,
 };
 
+fn reset_execution_output(output: Option<&mut onda_processor_abi::ExecutionOutput>) {
+    let Some(output) = output else { return };
+    // SAFETY: the raw ABI requires each non-null batch pointer in a supplied
+    // execution-output descriptor to reference its corresponding live batch.
+    unsafe {
+        if let Some(batch) = output.delegate_batch.as_mut() {
+            batch.reset();
+        }
+        if let Some(batch) = output.print_batch.as_mut() {
+            batch.reset();
+        }
+    }
+}
+
 pub(crate) fn validate_event_payload(
     desc: &DeclaredEvent,
     payload: &[u8],
@@ -120,6 +134,11 @@ pub(crate) fn validate_event_payload(
 }
 
 impl JitProgram {
+    #[cfg(feature = "llvm-orc")]
+    pub fn mir(&self) -> &onda_mir::Program {
+        self.compiled.mir()
+    }
+
     pub fn required_in_channels(&self) -> usize {
         self.inputs
             .iter()
@@ -483,7 +502,7 @@ impl JitProgram {
         snapshot: &[u8],
     ) -> Result<(), Diagnostic> {
         self.validate_state_snapshot(snapshot)?;
-        self.initialize_state_in_place(params, state, true)?;
+        self.initialize_state_in_place(params, state, true, None)?;
         self.overlay_state_snapshot(state, snapshot)
     }
 
@@ -588,14 +607,16 @@ impl JitProgram {
         &self,
         params: &[u8],
         state: &mut UninitializedRuntimeState,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<RuntimeState, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            self.compiled.initialize_allocated_state(params, state)
+            self.compiled
+                .initialize_allocated_state(params, state, output)
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (params, state);
+            let _ = (params, state, output);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
@@ -607,14 +628,16 @@ impl JitProgram {
         params: &[u8],
         state: &mut RuntimeState,
         all: bool,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            self.compiled.initialize_state_in_place(params, state, all)
+            self.compiled
+                .initialize_state_in_place(params, state, all, output)
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (params, state, all);
+            let _ = (params, state, all, output);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
@@ -644,7 +667,7 @@ impl JitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
@@ -661,7 +684,7 @@ impl JitProgram {
                     buffer_frames,
                     buffer_channels,
                     buffer_sample_rates,
-                    delegate_batch,
+                    output,
                 )
             }
         }
@@ -679,7 +702,7 @@ impl JitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                delegate_batch,
+                output,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -709,7 +732,7 @@ impl JitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
@@ -726,7 +749,7 @@ impl JitProgram {
                     buffer_frames,
                     buffer_channels,
                     buffer_sample_rates,
-                    delegate_batch,
+                    output,
                 )
             })
         }
@@ -744,7 +767,7 @@ impl JitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                delegate_batch,
+                output,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -769,7 +792,7 @@ impl JitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         let status = unsafe {
             self.trigger_event_by_index_with_status(
@@ -781,7 +804,7 @@ impl JitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                delegate_batch,
+                output,
             )?
         };
         crate::check_execution_status(status)
@@ -805,12 +828,10 @@ impl JitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
         let Some(desc) = self.event_descriptor(event_index) else {
-            if let Some(delegate_batch) = delegate_batch {
-                delegate_batch.reset();
-            }
+            reset_execution_output(output);
             return Ok(0);
         };
         validate_event_payload(desc, payload)?;
@@ -826,7 +847,7 @@ impl JitProgram {
                     buffer_frames,
                     buffer_channels,
                     buffer_sample_rates,
-                    delegate_batch,
+                    output,
                 )
             }
         }
@@ -841,7 +862,7 @@ impl JitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                delegate_batch,
+                output,
             );
             return Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -868,12 +889,10 @@ impl JitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
         if self.event_descriptor(event_index).is_none() {
-            if let Some(delegate_batch) = delegate_batch {
-                delegate_batch.reset();
-            }
+            reset_execution_output(output);
             return Ok(0);
         }
         #[cfg(feature = "llvm-orc")]
@@ -888,7 +907,7 @@ impl JitProgram {
                     buffer_frames,
                     buffer_channels,
                     buffer_sample_rates,
-                    delegate_batch,
+                    output,
                 )
             })
         }
@@ -903,7 +922,7 @@ impl JitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                delegate_batch,
+                output,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",

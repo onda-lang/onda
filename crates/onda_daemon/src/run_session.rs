@@ -9,9 +9,10 @@ use onda_codegen_llvm::{
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, init, prepare_unchecked_process,
-    process_unchecked_segment, set_param_by_index, trigger_event_by_index, DelegateBatch, InitMode,
-    Instance, InstanceConfig,
+    bind_buffer, bind_input, bind_output, create_instance, decode_print_batch_for_program,
+    format_print_batch_for_program, init_with_output, prepare_unchecked_process,
+    process_unchecked_segment, set_param_by_index, trigger_event_by_index, DelegateBatch,
+    ExecutionOutput, InitMode, Instance, InstanceConfig, PrintBatch, PrintValue,
 };
 use onda_semantics::{AnalysisOptions, TypedProgram};
 
@@ -132,6 +133,34 @@ pub struct RunDelegateBatch {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RunPrintBatch {
+    pub text: String,
+    pub entries: Vec<RunPrintEntry>,
+    pub overflow_count: u32,
+    pub transport_drop_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunPrintEntry {
+    pub site_index: u32,
+    pub label: Option<String>,
+    pub source_file: Option<String>,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub lexical_owner: String,
+    pub declaration: Option<String>,
+    pub values: Vec<RunPrintValue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunPrintValue {
+    pub type_repr: String,
+    pub value: RunEventValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum RunEventValue {
     Bool(bool),
     Number(f64),
@@ -150,6 +179,10 @@ pub enum RunBufferChannels {
 pub enum RunBuildError {
     Diagnostics(Vec<Diagnostic>),
     Runtime(Diagnostic),
+    Initialization {
+        diagnostic: Diagnostic,
+        print_batch: Option<Box<RunPrintBatch>>,
+    },
 }
 
 /// An external buffer supplied before a run instance is initialized.
@@ -204,9 +237,14 @@ pub struct RunSession {
     delegate_used: usize,
     delegate_record_count: u32,
     delegate_overflow_count: u32,
+    print_storage: Vec<u8>,
+    print_used: usize,
+    print_record_count: u32,
+    print_overflow_count: u32,
 }
 
 const RUN_DELEGATE_CAPACITY_BYTES: usize = 64 * 1024;
+const RUN_PRINT_CAPACITY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
 struct RunBufferBinding {
@@ -280,7 +318,13 @@ impl RunSession {
         }
         let param_values = HashMap::new();
         let param_runtime_values = HashMap::new();
-        let instance = create_bound_instance(
+        let mut print_storage = if jit.mir().log_sites.is_empty() {
+            Vec::new()
+        } else {
+            vec![0; RUN_PRINT_CAPACITY_BYTES]
+        };
+        let mut prints = Self::next_print_batch(&mut print_storage, 0);
+        let instance_result = create_bound_instance(
             &jit,
             options,
             &mut input_buffers,
@@ -289,9 +333,26 @@ impl RunSession {
             None,
             &param_values,
             &param_runtime_values,
-        )
-        .map_err(RunBuildError::Runtime)?;
-        let has_delegates = jit.delegate_count() != 0;
+            ExecutionOutput {
+                delegate_batch: None,
+                print_batch: Some(&mut prints),
+            },
+        );
+        let print_result = (
+            prints.used_bytes,
+            prints.record_count,
+            prints.overflow_count,
+        );
+        let instance = match instance_result {
+            Ok(instance) => instance,
+            Err(diagnostic) => {
+                let print_batch = decode_run_print_batch(&jit, &prints).ok().map(Box::new);
+                return Err(RunBuildError::Initialization {
+                    diagnostic,
+                    print_batch,
+                });
+            }
+        };
 
         Ok(Self {
             path,
@@ -305,14 +366,14 @@ impl RunSession {
             buffer_bindings,
             input_buffers,
             output_buffers,
-            delegate_storage: if has_delegates {
-                vec![0; RUN_DELEGATE_CAPACITY_BYTES]
-            } else {
-                Vec::new()
-            },
+            delegate_storage: Vec::new(),
             delegate_used: 0,
             delegate_record_count: 0,
             delegate_overflow_count: 0,
+            print_storage,
+            print_used: print_result.0 as usize,
+            print_record_count: print_result.1,
+            print_overflow_count: print_result.2,
         })
     }
 
@@ -445,6 +506,20 @@ impl RunSession {
             .collect()
     }
 
+    pub fn set_delegate_collection_enabled(&mut self, enabled: bool) {
+        self.begin_delegate_batch();
+        if enabled && self.delegate_storage.is_empty() && self.jit.delegate_count() != 0 {
+            self.delegate_storage = vec![0; RUN_DELEGATE_CAPACITY_BYTES];
+        } else if !enabled {
+            self.delegate_storage.clear();
+            self.delegate_storage.shrink_to_fit();
+        }
+    }
+
+    pub fn delegate_collection_enabled(&self) -> bool {
+        !self.delegate_storage.is_empty()
+    }
+
     pub fn set_param_f64(&mut self, name: &str, value: f64) -> Result<(), Diagnostic> {
         let Some(index) = self.jit.param_index(name) else {
             return Err(Diagnostic::runtime(
@@ -508,10 +583,26 @@ impl RunSession {
         };
         let payload = event_payload_bytes(desc, values)?;
         self.begin_delegate_batch();
+        self.begin_print_batch();
         let mut batch = Self::next_delegate_batch(&mut self.delegate_storage, self.delegate_used);
-        let result = trigger_event_by_index(&mut self.instance, index, &payload, Some(&mut batch));
+        let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
+        let result = trigger_event_by_index(
+            &mut self.instance,
+            index,
+            &payload,
+            ExecutionOutput {
+                delegate_batch: Some(&mut batch),
+                print_batch: Some(&mut prints),
+            },
+        );
         let batch_result = (batch.used_bytes, batch.record_count, batch.overflow_count);
+        let print_result = (
+            prints.used_bytes,
+            prints.record_count,
+            prints.overflow_count,
+        );
         self.finish_delegate_batch(batch_result);
+        self.finish_print_batch(print_result);
         if result.is_err() {
             self.begin_delegate_batch();
         }
@@ -585,6 +676,7 @@ impl RunSession {
 
         self.apply_smoothed_params()?;
         self.begin_delegate_batch();
+        self.begin_print_batch();
         for buffer in &mut self.output_buffers {
             buffer.fill(0.0);
         }
@@ -594,17 +686,27 @@ impl RunSession {
         for &(start_frame, frames, flags) in segments {
             let mut batch =
                 Self::next_delegate_batch(&mut self.delegate_storage, self.delegate_used);
+            let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
             let result = unsafe {
                 process_unchecked_segment(
                     &mut self.instance,
                     start_frame,
                     frames,
                     flags,
-                    Some(&mut batch),
+                    ExecutionOutput {
+                        delegate_batch: Some(&mut batch),
+                        print_batch: Some(&mut prints),
+                    },
                 )
             };
             let batch_result = (batch.used_bytes, batch.record_count, batch.overflow_count);
+            let print_result = (
+                prints.used_bytes,
+                prints.record_count,
+                prints.overflow_count,
+            );
             self.finish_delegate_batch(batch_result);
+            self.finish_print_batch(print_result);
             match result.and_then(check_execution_status) {
                 Ok(()) => {}
                 Err(error) => {
@@ -639,6 +741,21 @@ impl RunSession {
         result
     }
 
+    pub fn take_print_batch(&mut self) -> Result<RunPrintBatch, Diagnostic> {
+        let mut batch = unsafe {
+            PrintBatch::from_raw_parts(
+                self.print_storage.as_mut_ptr(),
+                self.print_storage.len() as u32,
+            )
+        };
+        batch.used_bytes = self.print_used as u32;
+        batch.record_count = self.print_record_count;
+        batch.overflow_count = self.print_overflow_count;
+        let result = decode_run_print_batch(&self.jit, &batch);
+        self.begin_print_batch();
+        result
+    }
+
     fn begin_delegate_batch(&mut self) {
         self.delegate_used = 0;
         self.delegate_record_count = 0;
@@ -663,15 +780,42 @@ impl RunSession {
         self.delegate_overflow_count = self.delegate_overflow_count.saturating_add(overflow_count);
     }
 
+    fn begin_print_batch(&mut self) {
+        self.print_used = 0;
+        self.print_record_count = 0;
+        self.print_overflow_count = 0;
+    }
+
+    fn next_print_batch(storage: &mut [u8], used: usize) -> PrintBatch<'_> {
+        if storage.is_empty() {
+            PrintBatch::absent()
+        } else {
+            PrintBatch::from_storage(&mut storage[used..])
+        }
+    }
+
+    fn finish_print_batch(&mut self, batch: (u32, u32, u32)) {
+        let (used_bytes, record_count, overflow_count) = batch;
+        self.print_used = self
+            .print_used
+            .saturating_add(used_bytes as usize)
+            .min(self.print_storage.len());
+        self.print_record_count = self.print_record_count.saturating_add(record_count);
+        self.print_overflow_count = self.print_overflow_count.saturating_add(overflow_count);
+    }
+
     pub fn snapshot_state_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
         self.instance.snapshot_state_bytes()
     }
 
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
-        self.instance.restore_state_bytes(bytes)?;
-        prepare_unchecked_process(&mut self.instance)?;
+        let result = self
+            .instance
+            .restore_state_bytes(bytes)
+            .and_then(|()| prepare_unchecked_process(&mut self.instance));
         self.begin_delegate_batch();
-        Ok(())
+        self.begin_print_batch();
+        result
     }
 
     pub fn set_input_block(&mut self, interleaved: &[f32], source_channels: usize) {
@@ -831,7 +975,9 @@ impl RunSession {
         &mut self,
         replacement: Option<BufferBindingReplacement<'_>>,
     ) -> Result<Instance, Diagnostic> {
-        create_bound_instance(
+        self.begin_print_batch();
+        let mut prints = Self::next_print_batch(&mut self.print_storage, 0);
+        let result = create_bound_instance(
             &self.jit,
             self.options,
             &mut self.input_buffers,
@@ -840,7 +986,18 @@ impl RunSession {
             replacement,
             &self.param_values,
             &self.param_runtime_values,
-        )
+            ExecutionOutput {
+                delegate_batch: None,
+                print_batch: Some(&mut prints),
+            },
+        );
+        let print_result = (
+            prints.used_bytes,
+            prints.record_count,
+            prints.overflow_count,
+        );
+        self.finish_print_batch(print_result);
+        result
     }
 
     fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
@@ -960,6 +1117,7 @@ fn create_bound_instance(
     mut replacement: Option<BufferBindingReplacement<'_>>,
     param_values: &HashMap<String, f64>,
     param_runtime_values: &HashMap<String, f64>,
+    output: ExecutionOutput<'_, '_>,
 ) -> Result<Instance, Diagnostic> {
     let config = InstanceConfig {
         sample_rate: options.sample_rate,
@@ -1019,13 +1177,38 @@ fn create_bound_instance(
         set_param_by_index(&mut instance, index, bytes.as_slice())?;
     }
 
-    init(&mut instance, InitMode::Full)?;
+    init_with_output(&mut instance, InitMode::Full, output)?;
     prepare_unchecked_process(&mut instance)?;
     Ok(instance)
 }
 
 fn should_smooth_run_param(ty: PrimitiveType) -> bool {
     matches!(ty, PrimitiveType::F32 | PrimitiveType::F64)
+}
+
+fn run_print_value(value: PrintValue) -> RunPrintValue {
+    match value {
+        PrintValue::F32(value) => RunPrintValue {
+            type_repr: "f32".to_owned(),
+            value: RunEventValue::Number(f64::from(value)),
+        },
+        PrintValue::F64(value) => RunPrintValue {
+            type_repr: "f64".to_owned(),
+            value: RunEventValue::Number(value),
+        },
+        PrintValue::I32(value) => RunPrintValue {
+            type_repr: "i32".to_owned(),
+            value: RunEventValue::Number(f64::from(value)),
+        },
+        PrintValue::I64(value) => RunPrintValue {
+            type_repr: "i64".to_owned(),
+            value: RunEventValue::I64(value),
+        },
+        PrintValue::Bool(value) => RunPrintValue {
+            type_repr: "bool".to_owned(),
+            value: RunEventValue::Bool(value),
+        },
+    }
 }
 
 fn default_run_event_value(param: &DeclaredEventParam) -> RunEventValue {
@@ -1092,6 +1275,43 @@ fn scalar_run_event_value(ty: PrimitiveType, bytes: &[u8]) -> RunEventValue {
         PrimitiveType::Bool => RunEventValue::Bool(false),
         _ => RunEventValue::Number(0.0),
     }
+}
+
+fn decode_run_print_batch(
+    jit: &JitProgram,
+    batch: &PrintBatch<'_>,
+) -> Result<RunPrintBatch, Diagnostic> {
+    let text = format_print_batch_for_program(jit, batch)?;
+    let entries = decode_print_batch_for_program(jit, batch)?
+        .into_iter()
+        .map(|occurrence| {
+            let site = occurrence.site;
+            let source_file = site.source.file.and_then(|file| {
+                jit.mir()
+                    .source_files
+                    .get(file.index())
+                    .map(|source| source.path.clone())
+            });
+            RunPrintEntry {
+                site_index: occurrence.site_index,
+                label: site.label.clone(),
+                source_file,
+                line: site.source.line,
+                column: site.source.column,
+                end_line: site.source.end_line,
+                end_column: site.source.end_column,
+                lexical_owner: site.lexical_owner.clone(),
+                declaration: site.declaration.clone(),
+                values: occurrence.values.into_iter().map(run_print_value).collect(),
+            }
+        })
+        .collect();
+    Ok(RunPrintBatch {
+        text,
+        entries,
+        overflow_count: batch.overflow_count,
+        transport_drop_count: 0,
+    })
 }
 
 fn decode_run_delegate_batch(

@@ -4,8 +4,8 @@ const PARAM_CONTROL = globalThis.__ONDA_PARAM_CONTROL_V2__;
 
 export const PROCESSOR_ARTIFACT_FORMAT = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 4;
-export const PROCESSOR_ABI_VERSION = 7;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 5;
+export const PROCESSOR_ABI_VERSION = 8;
 export const PROCESSOR_EXECUTION_OK = 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED = 0;
@@ -13,6 +13,9 @@ export const PROCESSOR_INIT_FULL = 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
 export const DELEGATE_RECORD_HEADER_SIZE_BYTES = 8;
 export const DELEGATE_BATCH_SIZE_BYTES = 20;
+export const PRINT_RECORD_HEADER_SIZE_BYTES = 8;
+export const PRINT_BATCH_SIZE_BYTES = 20;
+export const EXECUTION_OUTPUT_SIZE_BYTES = 8;
 
 export const {
   createParamDomain,
@@ -118,6 +121,11 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
     "runtime.snapshot_restore_base",
     "post_init_physical_state_image",
   );
+  requireLiteral(
+    metadata.runtime?.print_record_header_size_bytes,
+    "runtime.print_record_header_size_bytes",
+    PRINT_RECORD_HEADER_SIZE_BYTES,
+  );
   requireBoolean(metadata.runtime?.requires_full_blocks, "runtime.requires_full_blocks");
   requireLiteral(
     metadata.runtime?.delegate_record_header_size_bytes,
@@ -216,6 +224,8 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
     "buffers",
     "events",
     "delegates",
+    "source_files",
+    "log_sites",
   ]) {
     if (!Array.isArray(metadata.metadata[field])) {
       throw new OndaArtifactError(`metadata.${field} must be an array`);
@@ -274,6 +284,47 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
   metadata.metadata.delegates.forEach((entry, index) =>
     validateDelegateMetadata(entry, index, `metadata.delegates[${index}]`)
   );
+  metadata.metadata.source_files.forEach((entry, index) =>
+    requireString(entry?.path, `metadata.source_files[${index}].path`, true)
+  );
+  metadata.metadata.log_sites.forEach((entry, index) => {
+    const path = `metadata.log_sites[${index}]`;
+    requireInteger(entry?.index, `${path}.index`, 0);
+    if (entry.index !== index) {
+      throw new OndaArtifactError(`${path}.index must equal its descriptor index`);
+    }
+    if (entry.label !== null) requireString(entry.label, `${path}.label`, true);
+    if (entry.declaration !== null) requireString(entry.declaration, `${path}.declaration`, true);
+    requireString(entry?.lexical_owner, `${path}.lexical_owner`);
+    requireInteger(entry?.payload_size_bytes, `${path}.payload_size_bytes`, 0);
+    if (!Array.isArray(entry?.argument_types)) {
+      throw new OndaArtifactError(`${path}.argument_types must be an array`);
+    }
+    entry.argument_types.forEach((scalar, scalarIndex) => {
+      if (!["f32", "f64", "i32", "i64", "bool"].includes(scalar)) {
+        throw new OndaArtifactError(`${path}.argument_types[${scalarIndex}] is not printable`);
+      }
+    });
+    const expectedPayloadSize = entry.argument_types.reduce(
+      (size, scalar) => size + (scalar === "f64" || scalar === "i64" ? 8 : scalar === "bool" ? 1 : 4),
+      0,
+    );
+    if (entry.payload_size_bytes !== expectedPayloadSize) {
+      throw new OndaArtifactError(
+        `${path}.payload_size_bytes must be ${expectedPayloadSize} for its argument_types`,
+      );
+    }
+    const source = entry?.source;
+    if (source?.file !== null) {
+      requireInteger(source?.file, `${path}.source.file`, 0);
+      if (source.file >= metadata.metadata.source_files.length) {
+        throw new OndaArtifactError(`${path}.source.file references a missing source file`);
+      }
+    }
+    for (const field of ["line", "column", "end_line", "end_column"]) {
+      requireInteger(source?.[field], `${path}.source.${field}`, 0);
+    }
+  });
   const describedEventExports = metadata.metadata.events.map((event) => event.export);
   if (
     describedEventExports.length !== metadata.exports.events.length
@@ -860,6 +911,238 @@ export function readDelegateBatch(memory, batchAddress) {
     recordCount: view.getUint32(batchAddress + 12, true),
     overflowCount: view.getUint32(batchAddress + 16, true),
   };
+}
+
+export function writePrintBatch(memory, batchAddress, storageAddress, capacityBytes) {
+  const view = writableDataView(memory);
+  requireMemoryRange(view, batchAddress, PRINT_BATCH_SIZE_BYTES, "print batch");
+  requireInteger(storageAddress, "storageAddress", 0);
+  requireInteger(capacityBytes, "capacityBytes", 0);
+  if (storageAddress > 0xffff_ffff || capacityBytes > 0xffff_ffff) {
+    throw new OndaArtifactError("print batch addresses and sizes must fit u32");
+  }
+  view.setUint32(batchAddress, storageAddress, true);
+  view.setUint32(batchAddress + 4, capacityBytes, true);
+  view.setUint32(batchAddress + 8, 0, true);
+  view.setUint32(batchAddress + 12, 0, true);
+  view.setUint32(batchAddress + 16, 0, true);
+}
+
+export function readPrintBatch(memory, batchAddress) {
+  const view = writableDataView(memory);
+  requireMemoryRange(view, batchAddress, PRINT_BATCH_SIZE_BYTES, "print batch");
+  return {
+    storageAddress: view.getUint32(batchAddress, true),
+    capacityBytes: view.getUint32(batchAddress + 4, true),
+    usedBytes: view.getUint32(batchAddress + 8, true),
+    recordCount: view.getUint32(batchAddress + 12, true),
+    overflowCount: view.getUint32(batchAddress + 16, true),
+  };
+}
+
+export function writeExecutionOutput(
+  memory,
+  outputAddress,
+  delegateBatchAddress = 0,
+  printBatchAddress = 0,
+) {
+  const view = writableDataView(memory);
+  requireMemoryRange(view, outputAddress, EXECUTION_OUTPUT_SIZE_BYTES, "execution output");
+  requireInteger(delegateBatchAddress, "delegateBatchAddress", 0);
+  requireInteger(printBatchAddress, "printBatchAddress", 0);
+  view.setUint32(outputAddress, delegateBatchAddress, true);
+  view.setUint32(outputAddress + 4, printBatchAddress, true);
+}
+
+export function decodePrintRecords(
+  storage,
+  usedBytes,
+  logSites,
+  byteOrder = "little_endian",
+) {
+  const bytes = asUint8Array(storage);
+  requireInteger(usedBytes, "usedBytes", 0);
+  if (usedBytes > bytes.byteLength) {
+    throw new OndaArtifactError("print batch usedBytes exceeds storage");
+  }
+  if (!Array.isArray(logSites)) {
+    throw new OndaArtifactError("log-site metadata must be an array");
+  }
+  const littleEndian = byteOrder === "little_endian";
+  if (!littleEndian && byteOrder !== "big_endian") {
+    throw new OndaArtifactError("byteOrder must be little_endian or big_endian");
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, usedBytes);
+  const records = [];
+  let cursor = 0;
+  while (cursor < usedBytes) {
+    if (usedBytes - cursor < PRINT_RECORD_HEADER_SIZE_BYTES) {
+      throw new OndaArtifactError("print storage ends in a partial record header");
+    }
+    const siteIndex = view.getUint32(cursor, littleEndian);
+    const payloadByteLength = view.getUint32(cursor + 4, littleEndian);
+    const payloadOffset = cursor + PRINT_RECORD_HEADER_SIZE_BYTES;
+    const end = payloadOffset + payloadByteLength;
+    if (!Number.isSafeInteger(end) || end > usedBytes) {
+      throw new OndaArtifactError("print storage ends in a partial payload");
+    }
+    const site = logSites[siteIndex];
+    if (!site) {
+      throw new OndaArtifactError(`print record references unknown log site ${siteIndex}`);
+    }
+    if (payloadByteLength !== site.payload_size_bytes) {
+      throw new OndaArtifactError(
+        `print record ${siteIndex} has ${payloadByteLength} payload bytes; expected ${site.payload_size_bytes}`,
+      );
+    }
+    const values = [];
+    let valueOffset = payloadOffset;
+    for (const scalar of site.argument_types) {
+      switch (scalar) {
+        case "f32":
+          values.push({ type: scalar, value: view.getFloat32(valueOffset, littleEndian) });
+          valueOffset += 4;
+          break;
+        case "f64":
+          values.push({ type: scalar, value: view.getFloat64(valueOffset, littleEndian) });
+          valueOffset += 8;
+          break;
+        case "i32":
+          values.push({ type: scalar, value: view.getInt32(valueOffset, littleEndian) });
+          valueOffset += 4;
+          break;
+        case "i64":
+          values.push({ type: scalar, value: view.getBigInt64(valueOffset, littleEndian) });
+          valueOffset += 8;
+          break;
+        case "bool": {
+          const value = view.getUint8(valueOffset);
+          if (value > 1) throw new OndaArtifactError("print payload contains an invalid bool");
+          values.push({ type: scalar, value: value !== 0 });
+          valueOffset += 1;
+          break;
+        }
+        default:
+          throw new OndaArtifactError(`unsupported print scalar '${String(scalar)}'`);
+      }
+    }
+    if (valueOffset !== end) {
+      throw new OndaArtifactError(`print record ${siteIndex} payload has trailing bytes`);
+    }
+    records.push({
+      siteIndex,
+      label: site.label,
+      source: site.source,
+      lexicalOwner: site.lexical_owner,
+      declaration: site.declaration,
+      values,
+    });
+    cursor = end;
+  }
+  return records;
+}
+
+function shortestF32(value) {
+  for (let precision = 1; precision <= 9; precision += 1) {
+    const candidate = value.toPrecision(precision);
+    if (Object.is(Math.fround(Number(candidate)), value)) return candidate;
+  }
+  return value.toPrecision(9);
+}
+
+function canonicalFloat(value, width) {
+  if (Number.isNaN(value)) return "NaN";
+  if (value === Infinity) return "inf";
+  if (value === -Infinity) return "-inf";
+  if (Object.is(value, -0)) return "-0.0";
+  if (value === 0) return "0.0";
+  const negative = value < 0;
+  const shortest = width === 32 ? shortestF32(Math.fround(Math.abs(value))) : Math.abs(value).toString();
+  const [mantissa, exponentText] = shortest.toLowerCase().split("e");
+  let digits = mantissa.replace(".", "");
+  const leading = digits.match(/^0*/u)[0].length;
+  digits = digits.slice(leading);
+  const decimalPosition = (mantissa.indexOf(".") < 0 ? mantissa.length : mantissa.indexOf("."))
+    + (exponentText === undefined ? 0 : Number(exponentText)) - leading;
+  const magnitude = Math.abs(value);
+  let rendered;
+  if (magnitude >= 1e-6 && magnitude < 1e21) {
+    if (decimalPosition <= 0) {
+      rendered = `0.${"0".repeat(-decimalPosition)}${digits}`;
+    } else if (decimalPosition >= digits.length) {
+      rendered = `${digits}${"0".repeat(decimalPosition - digits.length)}.0`;
+    } else {
+      rendered = `${digits.slice(0, decimalPosition)}.${digits.slice(decimalPosition)}`;
+    }
+  } else {
+    digits = digits.replace(/0+$/u, "");
+    const coefficient = digits.length === 1 ? digits : `${digits[0]}.${digits.slice(1)}`;
+    rendered = `${coefficient}e${decimalPosition - 1}`;
+  }
+  return negative ? `-${rendered}` : rendered;
+}
+
+function canonicalPrintValue(entry) {
+  switch (entry.type) {
+    case "f32": return canonicalFloat(entry.value, 32);
+    case "f64": return canonicalFloat(entry.value, 64);
+    case "i32": return String(entry.value);
+    case "i64": return entry.value.toString();
+    case "bool": return entry.value ? "true" : "false";
+    default: throw new OndaArtifactError(`unsupported print scalar '${String(entry.type)}'`);
+  }
+}
+
+function escapedPrintLabel(label) {
+  return label
+    .replaceAll("\\", "\\\\")
+    .replaceAll("\0", "\\0")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t");
+}
+
+export function formatPrintBatch(memory, printBatchAddress, metadata) {
+  const batch = readPrintBatch(memory, printBatchAddress);
+  const bytes = asUint8Array(memory.buffer ?? memory);
+  if (batch.usedBytes > batch.capacityBytes) {
+    throw new OndaArtifactError("print batch usedBytes exceeds capacityBytes");
+  }
+  if (batch.storageAddress + batch.usedBytes > bytes.byteLength) {
+    throw new OndaArtifactError("print batch storage exceeds WebAssembly memory");
+  }
+  const formatted = formatPrintRecords(
+    bytes.subarray(batch.storageAddress, batch.storageAddress + batch.usedBytes),
+    batch.usedBytes,
+    metadata,
+    batch.overflowCount,
+  );
+  if (formatted.entries.length !== batch.recordCount) {
+    throw new OndaArtifactError("print batch recordCount does not match packed storage");
+  }
+  return formatted;
+}
+
+export function formatPrintRecords(storage, usedBytes, metadata, overflowCount = 0) {
+  requireInteger(overflowCount, "overflowCount", 0);
+  const records = decodePrintRecords(
+    storage,
+    usedBytes,
+    metadata.metadata?.log_sites ?? metadata.log_sites,
+    metadata.target?.byte_order ?? "little_endian",
+  );
+  let text = "";
+  for (const record of records) {
+    const values = record.values.map(canonicalPrintValue).join(" ");
+    if (record.label !== null) {
+      text += escapedPrintLabel(record.label);
+      if (values.length > 0) text += `: ${values}`;
+    } else {
+      text += values;
+    }
+    text += "\n";
+  }
+  return { text, entries: records, overflowCount };
 }
 
 export function decodeDelegateRecords(

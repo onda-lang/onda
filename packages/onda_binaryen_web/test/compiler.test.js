@@ -4,6 +4,11 @@ import test from "node:test";
 import binaryen from "binaryen";
 import * as backend from "../src/index.js";
 import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
+import {
+  formatPrintBatch,
+  writeExecutionOutput,
+  writePrintBatch,
+} from "@onda-lang/processor-abi";
 
 import {
   OndaBinaryenError,
@@ -78,7 +83,7 @@ function callProcess(
   bufferFrames,
   bufferChannels,
   bufferSampleRates,
-  delegateBatch = 0,
+  executionOutput = 0,
 ) {
   return process(
     state,
@@ -92,7 +97,7 @@ function callProcess(
     bufferFrames,
     bufferChannels,
     bufferSampleRates,
-    delegateBatch,
+    executionOutput,
   );
 }
 
@@ -148,6 +153,7 @@ function executableMir() {
     schema_version: backend.SUPPORTED_MIR_SCHEMA_VERSION,
     config: { sample_rate: 48_000, block_size: 4 },
     source_files: [],
+    log_sites: [],
     types: [type("scalar", "f32"), type("scalar", "bool"), type("scalar", "i32")],
     structs: [],
     interface: {
@@ -2271,11 +2277,15 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
   heap += 16;
   const batch = heap;
   heap += 20;
+  const executionOutput = heap;
+  heap += 8;
   const storage = heap;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
   view.setUint32(batch, storage, true);
   view.setUint32(batch + 4, 12, true);
+  view.setUint32(executionOutput, batch, true);
+  view.setUint32(executionOutput + 4, 0, true);
   assert.equal(onda_processor_init(params, state, 1), 0);
   assert.equal(
     callProcess(
@@ -2291,7 +2301,7 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
       0,
       0,
       0,
-      batch,
+      executionOutput,
     ),
     0,
   );
@@ -2301,6 +2311,76 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
   assert.equal(view.getUint32(storage, true), 0);
   assert.equal(view.getUint32(storage + 4, true), 4);
   assert.equal(view.getInt32(storage + 8, true), 42);
+});
+
+test("publishes init and process print records through execution output", async () => {
+  const mir = executableMir();
+  mir.source_files.push({ path: "main.onda" });
+  mir.log_sites.push(
+    {
+      label: "boot\n",
+      source: { file: 0, line: 2, column: 3, end_line: 2, end_column: 17 },
+      lexical_owner: "program",
+      declaration: "init",
+      argument_types: ["i32"],
+      payload_size: 4,
+    },
+    {
+      label: "frame",
+      source: { file: 0, line: 5, column: 3, end_line: 5, end_column: 27 },
+      lexical_owner: "program",
+      declaration: "sample",
+      argument_types: ["f32", "bool"],
+      payload_size: 5,
+    },
+  );
+  mir.functions[0].body.statements.push(statement("publish_log", {
+    site: 0,
+    arguments: [constant("i32", 7)],
+  }));
+  mir.functions[1].body.statements.unshift(statement("publish_log", {
+    site: 1,
+    arguments: [constant("f32", 1.25), constant("bool", true)],
+  }));
+
+  const artifact = compileMir(mir, { optimize: false });
+  assert.equal(artifact.metadata.runtime.print_record_header_size_bytes, 8);
+  assert.equal(artifact.metadata.metadata.log_sites[1].lexical_owner, "program");
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const allocate = (bytes, align = 4) => {
+    heap = Math.ceil(heap / align) * align;
+    const address = heap;
+    heap += bytes;
+    return address;
+  };
+  const params = allocate(Math.max(artifact.metadata.runtime.param_size_bytes, 1));
+  const state = allocate(Math.max(artifact.metadata.runtime.state_size_bytes, 1), 16);
+  const batch = allocate(20);
+  const storage = allocate(64, 8);
+  const output = allocate(8);
+  writePrintBatch(memory, batch, storage, 64);
+  writeExecutionOutput(memory, output, 0, batch);
+
+  assert.equal(onda_processor_init(params, state, 1, output), 0);
+  assert.deepEqual(formatPrintBatch(memory, batch, artifact.metadata), {
+    text: "boot\\n: 7\n",
+    entries: [{
+      siteIndex: 0,
+      label: "boot\n",
+      source: artifact.metadata.metadata.log_sites[0].source,
+      lexicalOwner: "program",
+      declaration: "init",
+      values: [{ type: "i32", value: 7 }],
+    }],
+    overflowCount: 0,
+  });
+  assert.equal(
+    onda_process(state, params, 0, 0, 0, 0, 0, 0, 0, 0, 0, output),
+    0,
+  );
+  assert.equal(formatPrintBatch(memory, batch, artifact.metadata).text, "frame: 1.25 true\n");
 });
 
 test("stores control outputs in their state-backed ABI slots", async () => {

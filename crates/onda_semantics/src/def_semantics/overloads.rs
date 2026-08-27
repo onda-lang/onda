@@ -903,6 +903,14 @@ fn rewrite_overloaded_calls_in_stmt_list_impl(
                 );
                 StatementFlow::Terminates
             }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    rewrite_overloaded_calls_in_expr_impl(
+                        value, env, context, owner, overloads, errors, resolved,
+                    );
+                }
+                StatementFlow::Continues
+            }
             Stmt::If {
                 cond,
                 then_branch,

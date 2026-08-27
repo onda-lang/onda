@@ -32,6 +32,34 @@ test("the shared run view only shows its scope when supported and during playbac
   assert.doesNotMatch(runView, /scopeSection\.style\.display = state\.connected/);
 });
 
+test("the shared run view keeps output compact and latched directly after the scope", async () => {
+  const [runView, runHost, egui] = await Promise.all([
+    readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
+    readFile(resolve(repoRoot, "crates/onda_run/src/lib.rs"), "utf8"),
+    readFile(resolve(repoRoot, "crates/onda_egui/src/lib.rs"), "utf8"),
+  ]);
+
+  assert.match(
+    runView,
+    /id="scope-section"[\s\S]*?<\/section>\s*<section class="events" id="log-section"/,
+  );
+  assert.match(runView, /\.log-output \{[\s\S]*?max-height: 120px/);
+  assert.match(
+    runView,
+    /\.log-output \{[\s\S]*?width: 100%;[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/,
+  );
+  assert.match(
+    runView,
+    /logSection\.style\.display = state\.logRevealed === true \? "" : "none"/,
+  );
+  assert.match(egui, /ScrollArea::vertical\(\)[\s\S]*?\.auto_shrink\(\[false, true\]\)/);
+  assert.match(runHost, /if !text\.is_empty\(\) \|\| !entries\.is_empty\(\) \{\s*self\.state\.log_revealed = true/);
+  const clearLog = runHost.match(/pub fn clear_log\(&mut self\) \{[\s\S]*?\n    \}/)?.[0];
+  assert.ok(clearLog);
+  assert.doesNotMatch(clearLog, /log_revealed/);
+  assert.doesNotMatch(runView, /Waiting for print output/);
+});
+
 test("the shared run view renders host features from explicit capabilities", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 

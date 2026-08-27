@@ -154,6 +154,9 @@ const { artifact, sourceFiles } = await compiler.compileSource(source, options);
 await compiler.dispose();
 ```
 
+`dispose()` is idempotent and terminal in both direct and worker modes. Every later compiler
+operation rejects with `OndaCompilerError`.
+
 Static hosts and bundlers may provide explicit `workerUrl` and `frontendWasm` URLs. The worker
 receives the frontend URL during initialization, so versioned or content-hashed compiler assets do
 not depend on the package's development directory layout.

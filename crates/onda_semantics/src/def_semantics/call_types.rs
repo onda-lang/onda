@@ -82,6 +82,7 @@ pub(crate) fn statement_flow(stmt: &Stmt) -> StatementFlow {
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::If { .. }
         | Stmt::For { .. }
         | Stmt::While { .. } => StatementFlow::Continues,

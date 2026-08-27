@@ -191,6 +191,7 @@ fn validate_task_control_stmts(
             }
             Stmt::Const { .. }
             | Stmt::Assign { .. }
+            | Stmt::Print { .. }
             | Stmt::Return { .. }
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => {}
@@ -1811,6 +1812,11 @@ fn uniquify_task_bindings(
                     Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                         rewrite_task_expr(expr, &self.visible);
                     }
+                    Stmt::Print { values, .. } => {
+                        for value in values {
+                            rewrite_task_expr(value, &self.visible);
+                        }
+                    }
                     Stmt::If {
                         cond,
                         then_branch,
@@ -2215,6 +2221,11 @@ fn rewrite_task_stmts(
                 }
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => rewrite_task_expr(expr, names),
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    rewrite_task_expr(value, names);
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,
@@ -2476,6 +2487,11 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_expr_uses(expr, &mut uses)
+            }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_expr_uses(value, &mut uses);
+                }
             }
             Stmt::Const { decl, .. } => collect_expr_uses(&decl.expr, &mut uses),
             _ => {}
@@ -2742,7 +2758,7 @@ fn task_stmt_can_remain_structured(stmt: &Stmt) -> bool {
         Stmt::For { body, .. } | Stmt::While { body, .. } => {
             !task_stmts_contain_resume_terminator(body)
         }
-        Stmt::Const { .. } | Stmt::Assign { .. } | Stmt::Expr { .. } => true,
+        Stmt::Const { .. } | Stmt::Assign { .. } | Stmt::Expr { .. } | Stmt::Print { .. } => true,
     }
 }
 

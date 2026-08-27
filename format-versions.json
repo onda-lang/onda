@@ -1,8 +1,8 @@
 {
-  "mir_schema": 7,
+  "mir_schema": 8,
   "buffer_asset": 1,
   "project_image": 1,
-  "processor_artifact": 4,
-  "processor_abi": 7,
+  "processor_artifact": 5,
+  "processor_abi": 8,
   "processor_snapshot": 1
 }

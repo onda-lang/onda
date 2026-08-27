@@ -34,6 +34,7 @@ impl MemoryRegionSet {
     pub const ARGUMENTS: Self = Self(1 << 8);
     pub const INDIRECT: Self = Self(1 << 9);
     pub const DELEGATE_BATCH: Self = Self(1 << 10);
+    pub const PRINT_BATCH: Self = Self(1 << 11);
 
     pub const CALLER_VISIBLE: Self = Self(
         Self::STATE.0
@@ -46,7 +47,8 @@ impl MemoryRegionSet {
             | Self::EVENT_PAYLOAD.0
             | Self::ARGUMENTS.0
             | Self::INDIRECT.0
-            | Self::DELEGATE_BATCH.0,
+            | Self::DELEGATE_BATCH.0
+            | Self::PRINT_BATCH.0,
     );
 
     pub const fn is_empty(self) -> bool {
@@ -1367,6 +1369,12 @@ fn scan_block(
                 effects.writes.insert(MemoryRegionSet::DELEGATE_BATCH);
                 for argument in args {
                     scan_call_argument(argument, effects);
+                }
+            }
+            StatementKind::PublishLog { arguments, .. } => {
+                effects.writes.insert(MemoryRegionSet::PRINT_BATCH);
+                for argument in arguments {
+                    scan_value(*argument, effects);
                 }
             }
             StatementKind::OutputStore {

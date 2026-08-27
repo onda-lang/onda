@@ -22,7 +22,9 @@ static onda_processor_param_domain integer_domain(
 
 int main(void) {
   assert(ONDA_DELEGATE_RECORD_HEADER_SIZE == 8u);
+  assert(ONDA_PRINT_RECORD_HEADER_SIZE == 8u);
   assert(ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE == 8u);
+  assert(ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE == 8u);
   uint8_t storage[16] = {0};
   onda_delegate_batch_t hosted_batch = {
     storage,
@@ -57,6 +59,28 @@ int main(void) {
   assert(processor_occurrence.payload_size_bytes == 4);
   assert(memcmp(processor_occurrence.payload, "test", 4) == 0);
   assert(!onda_processor_delegate_batch_occurrence_at(&batch, 1, &processor_occurrence));
+
+  onda_processor_print_batch_t print_batch = {
+    storage,
+    sizeof(storage),
+    0,
+    0,
+    0,
+  };
+  onda_processor_execution_output_t execution_output = {&batch, &print_batch};
+  assert(execution_output.delegate_batch == &batch);
+  assert(execution_output.print_batch == &print_batch);
+  onda_processor_print_batch_reset(&print_batch);
+  uint32_t print_header[2] = {5, 1};
+  memcpy(storage, print_header, sizeof(print_header));
+  storage[8] = 1;
+  print_batch.used_bytes = 9;
+  print_batch.record_count = 1;
+  onda_processor_print_occurrence_t print_occurrence;
+  assert(onda_processor_print_batch_occurrence_at(&print_batch, 0, &print_occurrence));
+  assert(print_occurrence.site_index == 5);
+  assert(print_occurrence.payload_size_bytes == 1);
+  assert(print_occurrence.payload[0] == 1);
 
   onda_processor_param_domain domain =
     integer_domain(ONDA_PROCESSOR_PARAM_SCALAR_I32, 0.0, 10.0, 1.0, 10);

@@ -285,6 +285,17 @@ impl<'a> Formatter<'a> {
                     delegate.raw()
                 ));
             }
+            StatementKind::PublishLog { site, arguments } => {
+                let arguments = arguments
+                    .iter()
+                    .map(|value| format_value(*value))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.line(format_args!(
+                    "{pad}publish_log @log{}({arguments}){source}",
+                    site.raw()
+                ));
+            }
             StatementKind::OutputStore {
                 output,
                 element,

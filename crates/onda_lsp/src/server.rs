@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 mod completion;
 mod diagnostics;
+mod language_intrinsics;
 mod namespace_resolution;
 mod navigation;
 mod param_domain;

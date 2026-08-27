@@ -34,7 +34,7 @@ use llvm_sys::{
 use onda_frontend::Diagnostic;
 use onda_mir::{
     Block, CallArgument, FunctionKind, Place, Program, Projection, Rvalue, ScalarType,
-    StatementKind, Type,
+    StatementKind, Type, Value,
 };
 
 use crate::{
@@ -46,6 +46,7 @@ use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_bu
 const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 13;
 const INIT_ALL_CONTEXT_INDEX: u32 = 16;
 const DELEGATE_BATCH_CONTEXT_INDEX: u32 = 17;
+const PRINT_BATCH_CONTEXT_INDEX: u32 = 18;
 
 struct OwnedLlvm<T: Copy> {
     value: T,
@@ -173,9 +174,10 @@ type NativeProcessFn = unsafe extern "C" fn(
     *const i32,
     *const i32,
     *const f32,
-    *mut onda_processor_abi::DelegateBatch,
+    *mut onda_processor_abi::ExecutionOutput,
 ) -> u32;
-type NativeInitFn = unsafe extern "C" fn(*const u8, *mut u8, u32) -> u32;
+type NativeInitFn =
+    unsafe extern "C" fn(*const u8, *mut u8, u32, *mut onda_processor_abi::ExecutionOutput) -> u32;
 type NativeEventFn = unsafe extern "C" fn(
     *const u8,
     *const u8,
@@ -184,7 +186,7 @@ type NativeEventFn = unsafe extern "C" fn(
     *const i32,
     *const i32,
     *const f32,
-    *mut onda_processor_abi::DelegateBatch,
+    *mut onda_processor_abi::ExecutionOutput,
 ) -> u32;
 
 #[derive(Debug)]
@@ -612,6 +614,8 @@ struct ModuleEmitter<'a> {
     ptr_ty: LLVMTypeRef,
     runtime_context_ty: LLVMTypeRef,
     delegate_batch_ty: LLVMTypeRef,
+    print_batch_ty: LLVMTypeRef,
+    execution_output_ty: LLVMTypeRef,
     functions: Vec<FunctionDecl>,
     const_globals: Vec<LLVMValueRef>,
     host_alias_scopes: HostAliasScopes,
@@ -648,9 +652,17 @@ impl<'a> ModuleEmitter<'a> {
             delegate_batch_fields.len() as u32,
             0,
         );
+        let print_batch_ty = delegate_batch_ty;
+        let mut execution_output_fields = [ptr_ty, ptr_ty];
+        let execution_output_ty = LLVMStructTypeInContext(
+            context,
+            execution_output_fields.as_mut_ptr(),
+            execution_output_fields.len() as u32,
+            0,
+        );
         let mut runtime_fields = [
             ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
-            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty, i1_ty, ptr_ty,
+            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty, i1_ty, ptr_ty, ptr_ty,
         ];
         let runtime_context_ty = LLVMStructTypeInContext(
             context,
@@ -674,6 +686,8 @@ impl<'a> ModuleEmitter<'a> {
             ptr_ty,
             runtime_context_ty,
             delegate_batch_ty,
+            print_batch_ty,
+            execution_output_ty,
             functions,
             const_globals,
             host_alias_scopes,
@@ -704,7 +718,7 @@ unsafe fn declare_functions(
     for (index, function) in program.functions.iter().enumerate() {
         let (name, fn_ty, internal) = match function.kind {
             FunctionKind::Init => {
-                let mut args = [ptr_ty, ptr_ty, i32_ty];
+                let mut args = [ptr_ty, ptr_ty, i32_ty, ptr_ty];
                 (
                     "onda_processor_init".to_owned(),
                     LLVMFunctionType(i32_ty, args.as_mut_ptr(), args.len() as u32, 0),
@@ -1287,8 +1301,27 @@ unsafe fn emit_function_body(
     let result = (|| {
         let entry = append_block(module.context, declaration.value, "entry")?;
         LLVMPositionBuilderAtEnd(builder, entry);
-        let runtime_context = match function.kind {
-            FunctionKind::User => LLVMGetParam(declaration.value, 0),
+        let (runtime_context, fallback_buffer_read, fallback_buffer_write) = match function.kind {
+            FunctionKind::User => {
+                let runtime_context = LLVMGetParam(declaration.value, 0);
+                (
+                    runtime_context,
+                    load_context_field(
+                        module,
+                        builder,
+                        runtime_context,
+                        14,
+                        "unbound_buffer_read",
+                    )?,
+                    load_context_field(
+                        module,
+                        builder,
+                        runtime_context,
+                        15,
+                        "unbound_buffer_write",
+                    )?,
+                )
+            }
             _ => build_entry_runtime_context(module, declaration.value, function.kind, builder)?,
         };
         // Direct buffer metadata is materialized in the entry block so it is
@@ -1296,10 +1329,6 @@ unsafe fn emit_function_body(
         // operands there as well: delegate-batch reset introduces a branch, and
         // values loaded after that branch would not dominate entry-block
         // snapshots inserted by `snapshot_direct_buffer_field`.
-        let fallback_buffer_read =
-            load_context_field(module, builder, runtime_context, 14, "unbound_buffer_read")?;
-        let fallback_buffer_write =
-            load_context_field(module, builder, runtime_context, 15, "unbound_buffer_write")?;
         let mut emitter = FunctionEmitter {
             module,
             function,
@@ -1318,15 +1347,15 @@ unsafe fn emit_function_body(
         };
         emitter.allocate_storage()?;
         if !module.program.interface.delegates.is_empty()
-            && matches!(
-                function.kind,
-                FunctionKind::Process | FunctionKind::Event(_)
-            )
+            && !matches!(function.kind, FunctionKind::User)
         {
             // Keep local allocas in the LLVM entry block so mem2reg/SROA can
             // promote them. Batch reset branches before authored execution,
             // after the entry ABI has only materialized its local views.
             reset_delegate_batch(module, builder, runtime_context)?;
+        }
+        if !module.program.log_sites.is_empty() && !matches!(function.kind, FunctionKind::User) {
+            reset_print_batch(module, builder, runtime_context)?;
         }
         emitter.lower_block(&function.body)?;
         if !current_block_terminated(builder) {
@@ -1596,6 +1625,9 @@ impl FunctionEmitter<'_, '_> {
             } => self.lower_call(results, *function, args)?,
             StatementKind::PublishDelegate { delegate, args } => {
                 self.lower_publish_delegate(*delegate, args)?
+            }
+            StatementKind::PublishLog { site, arguments } => {
+                self.lower_publish_log(*site, arguments)?
             }
             StatementKind::OutputStore {
                 output,
@@ -2062,6 +2094,274 @@ impl FunctionEmitter<'_, '_> {
                 count,
                 LLVMConstInt(i32_ty, 1, 0),
                 c_name("delegate_count_next")?.as_ptr(),
+            ),
+            count_ptr,
+        );
+        LLVMBuildBr(self.builder, done);
+        LLVMPositionBuilderAtEnd(self.builder, done);
+        Ok(())
+    }
+
+    unsafe fn lower_publish_log(
+        &mut self,
+        site: onda_mir::LogSiteId,
+        arguments: &[Value],
+    ) -> Result<(), MirCodegenError> {
+        let descriptor = &self.module.program.log_sites[site.index()];
+        let i8_ty = LLVMInt8TypeInContext(self.module.context);
+        let i32_ty = LLVMInt32TypeInContext(self.module.context);
+        let i64_ty = LLVMInt64TypeInContext(self.module.context);
+        let batch = load_context_field(
+            self.module,
+            self.builder,
+            self.runtime_context,
+            PRINT_BATCH_CONTEXT_INDEX,
+            "print_batch",
+        )?;
+        let batch_present = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntNE,
+            batch,
+            LLVMConstPointerNull(self.module.ptr_ty),
+            c_name("print_batch_present")?.as_ptr(),
+        );
+        let inspect = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_log_inspect_batch",
+        )?;
+        let done = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_log_done",
+        )?;
+        LLVMBuildCondBr(self.builder, batch_present, inspect, done);
+        LLVMPositionBuilderAtEnd(self.builder, inspect);
+
+        let storage_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.print_batch_ty,
+            batch,
+            0,
+            c_name("print_storage_ptr")?.as_ptr(),
+        );
+        let storage = LLVMBuildLoad2(
+            self.builder,
+            self.module.ptr_ty,
+            storage_ptr,
+            c_name("print_storage")?.as_ptr(),
+        );
+        let storage_present = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntNE,
+            storage,
+            LLVMConstPointerNull(self.module.ptr_ty),
+            c_name("print_storage_present")?.as_ptr(),
+        );
+        let capacity_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.print_batch_ty,
+            batch,
+            1,
+            c_name("print_capacity_ptr")?.as_ptr(),
+        );
+        let used_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.print_batch_ty,
+            batch,
+            2,
+            c_name("print_used_ptr")?.as_ptr(),
+        );
+        let capacity = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            capacity_ptr,
+            c_name("print_capacity")?.as_ptr(),
+        );
+        let used = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            used_ptr,
+            c_name("print_used")?.as_ptr(),
+        );
+        let capacity_i64 = LLVMBuildZExt(
+            self.builder,
+            capacity,
+            i64_ty,
+            c_name("print_capacity_i64")?.as_ptr(),
+        );
+        let used_i64 = LLVMBuildZExt(
+            self.builder,
+            used,
+            i64_ty,
+            c_name("print_used_i64")?.as_ptr(),
+        );
+        let required = LLVMConstInt(
+            i64_ty,
+            (onda_processor_abi::PRINT_RECORD_HEADER_SIZE + descriptor.payload_size as usize)
+                as u64,
+            0,
+        );
+        let used_valid = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntULE,
+            used_i64,
+            capacity_i64,
+            c_name("print_used_valid")?.as_ptr(),
+        );
+        let available = LLVMBuildSub(
+            self.builder,
+            capacity_i64,
+            used_i64,
+            c_name("print_available")?.as_ptr(),
+        );
+        let required_fits = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntULE,
+            required,
+            available,
+            c_name("print_required_fits")?.as_ptr(),
+        );
+        let fits = LLVMBuildAnd(
+            self.builder,
+            used_valid,
+            required_fits,
+            c_name("print_record_fits")?.as_ptr(),
+        );
+        let choose = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_log_choose",
+        )?;
+        let write = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_log_write",
+        )?;
+        let dropped = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_log_dropped",
+        )?;
+        LLVMBuildCondBr(self.builder, storage_present, choose, done);
+        LLVMPositionBuilderAtEnd(self.builder, choose);
+        LLVMBuildCondBr(self.builder, fits, write, dropped);
+
+        LLVMPositionBuilderAtEnd(self.builder, dropped);
+        let overflow_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.print_batch_ty,
+            batch,
+            4,
+            c_name("print_overflow_ptr")?.as_ptr(),
+        );
+        let overflow = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            overflow_ptr,
+            c_name("print_overflow")?.as_ptr(),
+        );
+        let saturated = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntEQ,
+            overflow,
+            LLVMConstInt(i32_ty, u64::from(u32::MAX), 0),
+            c_name("print_overflow_saturated")?.as_ptr(),
+        );
+        let incremented = LLVMBuildAdd(
+            self.builder,
+            overflow,
+            LLVMConstInt(i32_ty, 1, 0),
+            c_name("print_overflow_incremented")?.as_ptr(),
+        );
+        LLVMBuildStore(
+            self.builder,
+            LLVMBuildSelect(
+                self.builder,
+                saturated,
+                overflow,
+                incremented,
+                c_name("print_overflow_next")?.as_ptr(),
+            ),
+            overflow_ptr,
+        );
+        LLVMBuildBr(self.builder, done);
+
+        LLVMPositionBuilderAtEnd(self.builder, write);
+        let record = LLVMBuildGEP2(
+            self.builder,
+            i8_ty,
+            storage,
+            [used_i64].as_mut_ptr(),
+            1,
+            c_name("print_record")?.as_ptr(),
+        );
+        let site_store = LLVMBuildStore(
+            self.builder,
+            LLVMConstInt(i32_ty, u64::from(site.raw()), 0),
+            record,
+        );
+        LLVMSetAlignment(site_store, 1);
+        let size_ptr = LLVMBuildGEP2(
+            self.builder,
+            i8_ty,
+            record,
+            [LLVMConstInt(i64_ty, 4, 0)].as_mut_ptr(),
+            1,
+            c_name("print_payload_size_ptr")?.as_ptr(),
+        );
+        let size_store = LLVMBuildStore(
+            self.builder,
+            LLVMConstInt(i32_ty, u64::from(descriptor.payload_size), 0),
+            size_ptr,
+        );
+        LLVMSetAlignment(size_store, 1);
+        let mut cursor = onda_processor_abi::PRINT_RECORD_HEADER_SIZE as u64;
+        for (argument, scalar) in arguments.iter().zip(&descriptor.argument_types) {
+            let destination = LLVMBuildGEP2(
+                self.builder,
+                i8_ty,
+                record,
+                [LLVMConstInt(i64_ty, cursor, 0)].as_mut_ptr(),
+                1,
+                c_name("print_payload_value")?.as_ptr(),
+            );
+            let store = LLVMBuildStore(self.builder, self.lower_value(*argument)?, destination);
+            LLVMSetAlignment(store, 1);
+            cursor += scalar_store_size(*scalar);
+        }
+        let next_used = LLVMBuildAdd(
+            self.builder,
+            used,
+            LLVMConstInt(
+                i32_ty,
+                (onda_processor_abi::PRINT_RECORD_HEADER_SIZE + descriptor.payload_size as usize)
+                    as u64,
+                0,
+            ),
+            c_name("print_next_used")?.as_ptr(),
+        );
+        LLVMBuildStore(self.builder, next_used, used_ptr);
+        let count_ptr = LLVMBuildStructGEP2(
+            self.builder,
+            self.module.print_batch_ty,
+            batch,
+            3,
+            c_name("print_count_ptr")?.as_ptr(),
+        );
+        let count = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            count_ptr,
+            c_name("print_count")?.as_ptr(),
+        );
+        LLVMBuildStore(
+            self.builder,
+            LLVMBuildAdd(
+                self.builder,
+                count,
+                LLVMConstInt(i32_ty, 1, 0),
+                c_name("print_count_next")?.as_ptr(),
             ),
             count_ptr,
         );
@@ -3046,7 +3346,7 @@ impl FunctionEmitter<'_, '_> {
         if !self.module.program.interface.delegates.is_empty()
             && matches!(
                 self.function.kind,
-                FunctionKind::Process | FunctionKind::Event(_)
+                FunctionKind::Init | FunctionKind::Process | FunctionKind::Event(_)
             )
         {
             // Nested helpers propagate failure through the runtime status slot.
@@ -5898,12 +6198,59 @@ unsafe fn reset_delegate_batch(
     Ok(())
 }
 
+unsafe fn reset_print_batch(
+    module: &ModuleEmitter<'_>,
+    builder: LLVMBuilderRef,
+    runtime_context: LLVMValueRef,
+) -> Result<(), MirCodegenError> {
+    let batch = load_context_field(
+        module,
+        builder,
+        runtime_context,
+        PRINT_BATCH_CONTEXT_INDEX,
+        "print_batch",
+    )?;
+    let present = LLVMBuildICmp(
+        builder,
+        LLVMIntPredicate::LLVMIntNE,
+        batch,
+        LLVMConstPointerNull(module.ptr_ty),
+        c_name("print_batch_present")?.as_ptr(),
+    );
+    let reset = append_block(
+        module.context,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
+        "print_batch_reset",
+    )?;
+    let done = append_block(
+        module.context,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
+        "print_batch_reset_done",
+    )?;
+    LLVMBuildCondBr(builder, present, reset, done);
+    LLVMPositionBuilderAtEnd(builder, reset);
+    let zero = LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0);
+    for field in 2..=4 {
+        let pointer = LLVMBuildStructGEP2(
+            builder,
+            module.print_batch_ty,
+            batch,
+            field,
+            c_name("print_batch_counter")?.as_ptr(),
+        );
+        LLVMBuildStore(builder, zero, pointer);
+    }
+    LLVMBuildBr(builder, done);
+    LLVMPositionBuilderAtEnd(builder, done);
+    Ok(())
+}
+
 unsafe fn build_entry_runtime_context(
     module: &ModuleEmitter<'_>,
     function: LLVMValueRef,
     kind: FunctionKind,
     builder: LLVMBuilderRef,
-) -> Result<LLVMValueRef, MirCodegenError> {
+) -> Result<(LLVMValueRef, LLVMValueRef, LLVMValueRef), MirCodegenError> {
     let context = LLVMBuildAlloca(
         builder,
         module.runtime_context_ty,
@@ -5930,6 +6277,7 @@ unsafe fn build_entry_runtime_context(
         null,
         null,
         false_value,
+        null,
         null,
     ];
     let (fallback_read, fallback_write) = allocate_entry_fallback_buffers(module, builder)?;
@@ -5999,7 +6347,6 @@ unsafe fn build_entry_runtime_context(
                     LLVMGetParam(function, parameter),
                 )?;
             }
-            fields[DELEGATE_BATCH_CONTEXT_INDEX as usize] = LLVMGetParam(function, 11);
         }
         FunctionKind::Event(_) => {
             fields[12] = LLVMGetParam(function, 0);
@@ -6016,10 +6363,13 @@ unsafe fn build_entry_runtime_context(
                     LLVMGetParam(function, parameter),
                 )?;
             }
-            fields[DELEGATE_BATCH_CONTEXT_INDEX as usize] = LLVMGetParam(function, 7);
         }
         FunctionKind::User => unreachable!(),
     }
+    // Materialize the ordinary entry context before inspecting the nullable
+    // execution-output pointer. Direct buffer metadata snapshots are inserted
+    // in the entry block and must see these stores before that inspection
+    // introduces control flow.
     for (index, value) in fields.into_iter().enumerate() {
         let ptr = LLVMBuildStructGEP2(
             builder,
@@ -6030,7 +6380,40 @@ unsafe fn build_entry_runtime_context(
         );
         LLVMBuildStore(builder, value, ptr);
     }
-    Ok(context)
+
+    let needs_delegate_batch = !module.program.interface.delegates.is_empty();
+    let needs_print_batch = !module.program.log_sites.is_empty();
+    let (delegate_batch, print_batch) = if needs_delegate_batch || needs_print_batch {
+        let output = match kind {
+            FunctionKind::Init => LLVMGetParam(function, 3),
+            FunctionKind::Process => LLVMGetParam(function, 11),
+            FunctionKind::Event(_) => LLVMGetParam(function, 7),
+            FunctionKind::User => unreachable!(),
+        };
+        load_execution_output_batches(
+            module,
+            builder,
+            output,
+            needs_delegate_batch,
+            needs_print_batch,
+        )?
+    } else {
+        (null, null)
+    };
+    for (index, value) in [
+        (DELEGATE_BATCH_CONTEXT_INDEX, delegate_batch),
+        (PRINT_BATCH_CONTEXT_INDEX, print_batch),
+    ] {
+        let ptr = LLVMBuildStructGEP2(
+            builder,
+            module.runtime_context_ty,
+            context,
+            index,
+            c_name("runtime_field")?.as_ptr(),
+        );
+        LLVMBuildStore(builder, value, ptr);
+    }
+    Ok((context, fallback_read, fallback_write))
 }
 
 unsafe fn allocate_entry_fallback_buffers(
@@ -6060,6 +6443,85 @@ unsafe fn allocate_entry_fallback_buffers(
         8,
     );
     Ok((read, write))
+}
+
+unsafe fn load_execution_output_batches(
+    module: &ModuleEmitter<'_>,
+    builder: LLVMBuilderRef,
+    output: LLVMValueRef,
+    load_delegate: bool,
+    load_print: bool,
+) -> Result<(LLVMValueRef, LLVMValueRef), MirCodegenError> {
+    let null = LLVMConstPointerNull(module.ptr_ty);
+    let delegate_slot = LLVMBuildAlloca(
+        builder,
+        module.ptr_ty,
+        c_name("execution_delegate_batch_slot")?.as_ptr(),
+    );
+    let print_slot = LLVMBuildAlloca(
+        builder,
+        module.ptr_ty,
+        c_name("execution_print_batch_slot")?.as_ptr(),
+    );
+    LLVMBuildStore(builder, null, delegate_slot);
+    LLVMBuildStore(builder, null, print_slot);
+    let present = LLVMBuildICmp(
+        builder,
+        LLVMIntPredicate::LLVMIntNE,
+        output,
+        null,
+        c_name("execution_output_present")?.as_ptr(),
+    );
+    let load = append_block(
+        module.context,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
+        "execution_output_load",
+    )?;
+    let done = append_block(
+        module.context,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
+        "execution_output_loaded",
+    )?;
+    LLVMBuildCondBr(builder, present, load, done);
+    LLVMPositionBuilderAtEnd(builder, load);
+    for (index, slot, enabled) in [
+        (0_u32, delegate_slot, load_delegate),
+        (1_u32, print_slot, load_print),
+    ] {
+        if !enabled {
+            continue;
+        }
+        let pointer = LLVMBuildStructGEP2(
+            builder,
+            module.execution_output_ty,
+            output,
+            index,
+            c_name("execution_output_batch_ptr")?.as_ptr(),
+        );
+        let batch = LLVMBuildLoad2(
+            builder,
+            module.ptr_ty,
+            pointer,
+            c_name("execution_output_batch")?.as_ptr(),
+        );
+        LLVMBuildStore(builder, batch, slot);
+    }
+    LLVMBuildBr(builder, done);
+    LLVMPositionBuilderAtEnd(builder, done);
+    Ok((
+        LLVMBuildLoad2(
+            builder,
+            module.ptr_ty,
+            delegate_slot,
+            c_name("execution_delegate_batch")?.as_ptr(),
+        ),
+        LLVMBuildLoad2(
+            builder,
+            module.ptr_ty,
+            print_slot,
+            c_name("execution_print_batch")?.as_ptr(),
+        ),
+    ))
 }
 
 unsafe fn entry_buffer_descriptor_table(
@@ -6516,7 +6978,8 @@ fn inspect_block(
             | StatementKind::SliceStore { .. }
             | StatementKind::SliceFill { .. }
             | StatementKind::SliceCopy { .. }
-            | StatementKind::PublishDelegate { .. } => {}
+            | StatementKind::PublishDelegate { .. }
+            | StatementKind::PublishLog { .. } => {}
             StatementKind::If {
                 then_block,
                 else_block,
@@ -6787,7 +7250,7 @@ impl MirJitProgram {
         allocator: Option<RuntimeAllocator>,
     ) -> Result<RuntimeState, Diagnostic> {
         let mut state = self.allocate_state_with_allocator(allocator)?;
-        self.initialize_allocated_state(params, &mut state)
+        self.initialize_allocated_state(params, &mut state, None)
     }
 
     pub fn allocate_state_with_allocator(
@@ -6812,6 +7275,7 @@ impl MirJitProgram {
         &self,
         params: &[u8],
         state: &mut UninitializedRuntimeState,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<RuntimeState, Diagnostic> {
         if params.len() != self.layouts.params.size {
             return Err(Diagnostic::runtime(
@@ -6843,6 +7307,7 @@ impl MirJitProgram {
                 abi_const_ptr(params),
                 state_words.as_mut_ptr().cast::<u8>(),
                 1,
+                output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
         crate::check_execution_status(status)?;
@@ -6866,6 +7331,7 @@ impl MirJitProgram {
         params: &[u8],
         state: &mut RuntimeState,
         all: bool,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         if params.len() != self.layouts.params.size {
             return Err(Diagnostic::runtime(
@@ -6893,6 +7359,7 @@ impl MirJitProgram {
                 abi_const_ptr(params),
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
                 u32::from(all),
+                output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
         crate::check_execution_status(status)
@@ -6924,7 +7391,7 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         let block_size = self.mir.config.block_size as usize;
         if start_frame > block_size || frames > block_size.saturating_sub(start_frame) {
@@ -6972,7 +7439,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
-                delegate_batch.map_or(std::ptr::null_mut(), |batch| batch as *mut _),
+                output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
         crate::check_execution_status(status)?;
@@ -6999,7 +7466,7 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> u32 {
         unsafe {
             (self.compiled.process)(
@@ -7014,7 +7481,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
-                delegate_batch.map_or(std::ptr::null_mut(), |batch| batch as *mut _),
+                output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         }
     }
@@ -7036,7 +7503,7 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         let status = unsafe {
             self.trigger_event_by_index_with_status(
@@ -7048,7 +7515,7 @@ impl MirJitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                delegate_batch,
+                output,
             )?
         };
         crate::check_execution_status(status)
@@ -7072,11 +7539,20 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
-            if let Some(delegate_batch) = delegate_batch {
-                delegate_batch.reset();
+            if let Some(output) = output {
+                unsafe {
+                    output
+                        .delegate_batch
+                        .as_mut()
+                        .map(onda_processor_abi::DelegateBatch::reset);
+                    output
+                        .print_batch
+                        .as_mut()
+                        .map(onda_processor_abi::PrintBatch::reset);
+                }
             }
             return Ok(0);
         };
@@ -7098,7 +7574,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
-                delegate_batch.map_or(std::ptr::null_mut(), |batch| batch as *mut _),
+                output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
         Ok(status)
@@ -7120,11 +7596,20 @@ impl MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-        delegate_batch: Option<&mut onda_processor_abi::DelegateBatch>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> u32 {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
-            if let Some(delegate_batch) = delegate_batch {
-                delegate_batch.reset();
+            if let Some(output) = output {
+                unsafe {
+                    output
+                        .delegate_batch
+                        .as_mut()
+                        .map(onda_processor_abi::DelegateBatch::reset);
+                    output
+                        .print_batch
+                        .as_mut()
+                        .map(onda_processor_abi::PrintBatch::reset);
+                }
             }
             return 0;
         };
@@ -7137,7 +7622,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffer_frames),
                 abi_const_ptr(buffer_channels),
                 abi_const_ptr(buffer_sample_rates),
-                delegate_batch.map_or(std::ptr::null_mut(), |batch| batch as *mut _),
+                output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         }
     }

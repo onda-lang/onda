@@ -84,6 +84,40 @@ pub(super) fn identifier_is_in_use_namespace_name(
     start < target_start + decl_end
 }
 
+pub(super) fn identifier_is_when_delegate_target(
+    source_lines: &[&str],
+    line: u32,
+    start: u32,
+    length: u32,
+) -> bool {
+    let Some(line_text) = source_lines.get(line as usize).copied() else {
+        return false;
+    };
+    let start_column = start;
+    let Some(start_byte) = byte_index_for_utf16_column(line_text, start_column) else {
+        return false;
+    };
+    let Some(end_byte) = byte_index_for_utf16_column(line_text, start_column + length) else {
+        return false;
+    };
+    line_text[..start_byte].trim_start().starts_with("when ")
+        && line_text[end_byte..].trim_start().starts_with('(')
+}
+
+fn byte_index_for_utf16_column(text: &str, column: u32) -> Option<usize> {
+    let mut utf16 = 0_u32;
+    for (index, ch) in text.char_indices() {
+        if utf16 == column {
+            return Some(index);
+        }
+        utf16 += ch.len_utf16() as u32;
+        if utf16 > column {
+            return None;
+        }
+    }
+    (utf16 == column).then_some(text.len())
+}
+
 pub(super) fn is_reserved_word(name: &str) -> bool {
     onda_frontend::is_reserved_word(name)
 }
@@ -95,6 +129,7 @@ enum SourceProcScopeKind {
     Function,
     Event,
     Task,
+    When,
 }
 
 #[derive(Clone, Copy)]
@@ -327,6 +362,17 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
             continue;
         }
 
+        if let Some(bindings) = parse_when_header(trimmed) {
+            let idx = push_source_when_scope(&mut index, proc_owner_idx, line_no, bindings);
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceProcScopeKind::When,
+            });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
         if let Some(task_name) = parse_task_header(trimmed) {
             push_source_task_scope(
                 &mut index,
@@ -351,6 +397,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                         | SourceProcScopeKind::Function
                         | SourceProcScopeKind::Event
                         | SourceProcScopeKind::Task
+                        | SourceProcScopeKind::When
                 )
             })
             .map(|scope| scope.idx)
@@ -380,6 +427,7 @@ enum SourceTopLevelScopeKind {
     Function,
     Event,
     Task,
+    When,
 }
 
 #[derive(Clone, Copy)]
@@ -601,6 +649,23 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
             continue;
         }
 
+        if let Some(bindings) = parse_when_header(trimmed) {
+            let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
+                let idx = push_line_scope(&mut index, None, line_no, 0, true);
+                index.scopes[idx].end_line = u32::MAX;
+                index.scopes[idx].end_column = u32::MAX;
+                idx
+            });
+            let idx = push_source_when_scope(&mut index, owner_idx, line_no, bindings);
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceTopLevelScopeKind::When,
+            });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
         if let Some(task_name) = parse_task_header(trimmed) {
             let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
                 let idx = push_line_scope(&mut index, None, line_no, 0, true);
@@ -631,6 +696,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                         | SourceTopLevelScopeKind::Function
                         | SourceTopLevelScopeKind::Event
                         | SourceTopLevelScopeKind::Task
+                        | SourceTopLevelScopeKind::When
                 )
             })
             .map(|scope| scope.idx)
@@ -711,6 +777,19 @@ fn push_source_callable_scope(
     scope.functions.insert(name.to_owned());
     for param in params {
         scope.parameters.insert(param);
+    }
+    idx
+}
+
+fn push_source_when_scope(
+    index: &mut SemanticScopeIndex,
+    owner_idx: usize,
+    line_no: u32,
+    bindings: Vec<String>,
+) -> usize {
+    let idx = push_line_scope(index, Some(owner_idx), line_no, 0, true);
+    for binding in bindings.into_iter().filter(|binding| binding != "_") {
+        index.scopes[idx].scope.parameters.insert(binding);
     }
     idx
 }
@@ -914,6 +993,16 @@ fn parse_event_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
         return None;
     }
     Some((name, extract_param_names_from_parens(&trimmed[paren..])))
+}
+
+fn parse_when_header(trimmed: &str) -> Option<Vec<String>> {
+    let rest = trimmed.strip_prefix("when ")?.trim_start();
+    let paren = rest.find('(')?;
+    let target = rest[..paren].trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some(extract_param_names_from_parens(&rest[paren..]))
 }
 
 fn parse_task_header(trimmed: &str) -> Option<&str> {

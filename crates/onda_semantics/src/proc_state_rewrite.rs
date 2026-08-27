@@ -749,6 +749,30 @@ pub(crate) fn rewrite_proc_stmt_symbols(
         let source_loc = stmt.loc().cloned();
         match stmt {
             Stmt::Const { .. } => None,
+            Stmt::Print {
+                label,
+                values,
+                origin,
+                ..
+            } => {
+                let mut values = values.clone();
+                for value in &mut values {
+                    rewrite_proc_expr_symbols(
+                        value,
+                        owner_proc,
+                        field_names,
+                        field_array_slots,
+                        in_array_slots,
+                        errors,
+                    );
+                }
+                Some(Stmt::Print {
+                    loc: source_loc.into(),
+                    label: label.clone(),
+                    values,
+                    origin: origin.clone(),
+                })
+            }
             Stmt::Assign {
                 target,
                 decl_ty,

@@ -564,6 +564,11 @@ fn rewrite_struct_array_inline_field_stmt(
         Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_struct_array_inline_field_expr(expr, roots, defs, errors);
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_struct_array_inline_field_expr(value, roots, defs, errors);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,

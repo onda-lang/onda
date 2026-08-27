@@ -2050,6 +2050,22 @@ fn lower_named_proc_param_calls_in_stmt(
                 errors,
             );
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_proc_alias_calls_in_expr(value, aliases);
+                lower_named_proc_param_calls_in_expr(
+                    value,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    &mut prelude,
+                    temp_counter,
+                    false,
+                    errors,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -4238,6 +4254,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
             Stmt::Const { .. }
             | Stmt::Assign { .. }
             | Stmt::Expr { .. }
+            | Stmt::Print { .. }
             | Stmt::Return { .. }
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => {}
@@ -4402,6 +4419,11 @@ pub(super) fn normalize_proc_output_aliases_in_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             normalize_proc_output_aliases_in_expr(expr, proc_vars, proc_api);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                normalize_proc_output_aliases_in_expr(value, proc_vars, proc_api);
+            }
         }
         Stmt::If {
             cond,
@@ -4718,6 +4740,12 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             rewrite_proc_alias_calls_in_expr(expr, aliases);
             rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors)
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_proc_alias_calls_in_expr(value, aliases);
+                rewrite_proc_calls_in_expr(value, proc_vars, proc_array_slots, proc_api, errors);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -4963,6 +4991,11 @@ pub(super) fn rewrite_proc_array_param_field_reads(
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 rewrite_expr(expr, proc_arrays, proc_api)
             }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    rewrite_expr(value, proc_arrays, proc_api);
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,
@@ -5131,6 +5164,18 @@ fn collect_called_proc_instances_in_stmt(
                 proc_array_slots,
                 out,
             );
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                let mut value_for_collect = value.clone();
+                rewrite_proc_alias_call_sites_in_expr(&mut value_for_collect, aliases);
+                collect_called_proc_instances_in_expr(
+                    &value_for_collect,
+                    proc_vars,
+                    proc_array_slots,
+                    out,
+                );
+            }
         }
         Stmt::If {
             cond,
@@ -5647,6 +5692,17 @@ pub(crate) fn desugar_init_instance_method_calls(
                 callable_symbols,
             );
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                desugar_expr_instance_method_calls(
+                    value,
+                    struct_instances,
+                    struct_array_roots,
+                    current_ns,
+                    callable_symbols,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -5780,6 +5836,17 @@ pub(super) fn desugar_sample_instance_method_calls(
                 current_ns,
                 callable_symbols,
             );
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                desugar_expr_instance_method_calls(
+                    value,
+                    struct_instances,
+                    struct_array_roots,
+                    current_ns,
+                    callable_symbols,
+                );
+            }
         }
         Stmt::If {
             cond,

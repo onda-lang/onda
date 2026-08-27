@@ -7,20 +7,21 @@ use serde::{Deserialize, Serialize};
 
 pub const PROCESSOR_ARTIFACT_FORMAT: &str = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 4;
-pub const PROCESSOR_ABI_VERSION: u32 = 7;
+pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 5;
+pub const PROCESSOR_ABI_VERSION: u32 = 8;
 pub const PROCESSOR_EXECUTION_OK: u32 = 0;
 pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
 pub const PROCESSOR_INIT_PRESERVE_PINNED: u32 = 0;
 pub const PROCESSOR_INIT_FULL: u32 = 1;
 pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
-/// Version-7 delegate record header: delegate index followed by payload bytes.
+/// Packed occurrence headers: stream-local index followed by payload byte count.
 pub const DELEGATE_RECORD_HEADER_SIZE: usize = 8;
+pub const PRINT_RECORD_HEADER_SIZE: usize = 8;
 
 /// Caller-owned, call-scoped storage for top-level delegate occurrences.
 ///
-/// Generated process and event entries reset the three result counters at
+/// Generated init, process, and event entries reset the three result counters at
 /// entry. `storage` may be null; in that neutral configuration publication is
 /// discarded without counting overflow.
 #[repr(C)]
@@ -58,6 +59,61 @@ impl DelegateBatch {
         self.used_bytes = 0;
         self.record_count = 0;
         self.overflow_count = 0;
+    }
+}
+
+/// Caller-owned, call-scoped storage for authored print occurrences.
+#[repr(C)]
+#[derive(Debug)]
+pub struct PrintBatch {
+    pub storage: *mut u8,
+    pub capacity_bytes: u32,
+    pub used_bytes: u32,
+    pub record_count: u32,
+    pub overflow_count: u32,
+}
+
+impl PrintBatch {
+    pub fn from_storage(storage: &mut [u8]) -> Self {
+        Self {
+            storage: storage.as_mut_ptr(),
+            capacity_bytes: u32::try_from(storage.len()).unwrap_or(u32::MAX),
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        }
+    }
+
+    pub const fn absent() -> Self {
+        Self {
+            storage: std::ptr::null_mut(),
+            capacity_bytes: 0,
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.used_bytes = 0;
+        self.record_count = 0;
+        self.overflow_count = 0;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct ExecutionOutput {
+    pub delegate_batch: *mut DelegateBatch,
+    pub print_batch: *mut PrintBatch,
+}
+
+impl ExecutionOutput {
+    pub const fn none() -> Self {
+        Self {
+            delegate_batch: std::ptr::null_mut(),
+            print_batch: std::ptr::null_mut(),
+        }
     }
 }
 
@@ -171,10 +227,13 @@ pub struct RuntimeInfo {
     pub snapshot_restore_base: String,
     pub requires_full_blocks: bool,
     pub delegate_record_header_size_bytes: usize,
+    pub print_record_header_size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgramMetadata {
+    pub source_files: Vec<SourceFileMetadata>,
+    pub log_sites: Vec<LogSiteMetadata>,
     pub inputs: Vec<IoMetadata>,
     pub outputs: Vec<IoMetadata>,
     pub control_outputs: Vec<IoMetadata>,
@@ -185,6 +244,31 @@ pub struct ProgramMetadata {
     pub events: Vec<EventMetadata>,
     pub delegates: Vec<DelegateMetadata>,
     pub states: Vec<StateMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceFileMetadata {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceSpanMetadata {
+    pub file: Option<usize>,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogSiteMetadata {
+    pub index: usize,
+    pub label: Option<String>,
+    pub source: SourceSpanMetadata,
+    pub lexical_owner: String,
+    pub declaration: Option<String>,
+    pub argument_types: Vec<String>,
+    pub payload_size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,7 +404,7 @@ mod tests {
     #[test]
     fn shared_web_descriptor_fixture_round_trips_through_rust_schema() {
         let json = include_str!(
-            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v7.json"
+            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v8.json"
         );
         let descriptor: ProcessorDescriptor =
             serde_json::from_str(json).expect("shared descriptor should deserialize");

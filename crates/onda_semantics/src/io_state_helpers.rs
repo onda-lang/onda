@@ -144,6 +144,11 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
         }
         Stmt::Expr { expr, .. } => infer_io_from_expr(expr, acc),
         Stmt::Return { expr, .. } => infer_io_from_expr(expr, acc),
+        Stmt::Print { values, .. } => {
+            for value in values {
+                infer_io_from_expr(value, acc);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -417,7 +422,11 @@ fn register_scope_stmt_state(
             }
         }
         Stmt::If { .. } | Stmt::For { .. } | Stmt::While { .. } => {}
-        Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Expr { .. }
+        | Stmt::Print { .. }
+        | Stmt::Return { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => {}
     }
 }
 

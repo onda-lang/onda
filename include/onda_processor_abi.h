@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 7u
+#define ONDA_PROCESSOR_ABI_VERSION 8u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
@@ -25,11 +25,16 @@ typedef enum onda_processor_init_mode {
 } onda_processor_init_mode_t;
 
 /* Bytes preceding the payload of every packed raw-ABI delegate occurrence. */
-enum { ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE = 8u };
+enum {
+  ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE = 8u,
+  ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE = 8u
+};
 
-/* Caller-owned, call-scoped result storage. Process and event entries reset the three result
- * counters. A NULL batch or storage pointer disables collection. Capacity is a host policy because
- * occurrence counts and dynamic slice sizes may depend on runtime execution. */
+/* Caller-owned, call-scoped occurrence storage. Init, process, and event entries reset the three
+ * result counters. A NULL output, batch, or storage pointer disables that stream. Capacity is a
+ * host policy because occurrence counts and dynamic slice sizes may depend on runtime execution.
+ * Delegate and print batches are independent. Generated failure clears delegate results but
+ * retains print records already emitted. */
 typedef struct onda_processor_delegate_batch {
   uint8_t* storage;
   uint32_t capacity_bytes;
@@ -38,16 +43,36 @@ typedef struct onda_processor_delegate_batch {
   uint32_t overflow_count;
 } onda_processor_delegate_batch_t;
 
+typedef struct onda_processor_print_batch {
+  uint8_t* storage;
+  uint32_t capacity_bytes;
+  uint32_t used_bytes;
+  uint32_t record_count;
+  uint32_t overflow_count;
+} onda_processor_print_batch_t;
+
+typedef struct onda_processor_execution_output {
+  onda_processor_delegate_batch_t* delegate_batch;
+  onda_processor_print_batch_t* print_batch;
+} onda_processor_execution_output_t;
+
 typedef struct onda_processor_delegate_occurrence {
   uint32_t delegate_index;
   uint32_t payload_size_bytes;
   const uint8_t* payload;
 } onda_processor_delegate_occurrence_t;
 
+typedef struct onda_processor_print_occurrence {
+  uint32_t site_index;
+  uint32_t payload_size_bytes;
+  const uint8_t* payload;
+} onda_processor_print_occurrence_t;
+
 typedef uint32_t (*onda_processor_init_fn)(
   const void* params,
   void* state,
-  onda_processor_init_mode_t mode
+  onda_processor_init_mode_t mode,
+  onda_processor_execution_output_t* output
 );
 
 /* Buffer descriptor tables remain immutable during each call and do not
@@ -65,7 +90,7 @@ typedef uint32_t (*onda_processor_process_fn)(
   const int32_t* buffer_frames,
   const int32_t* buffer_channels,
   const float* buffer_sample_rates,
-  onda_processor_delegate_batch_t* delegate_batch
+  onda_processor_execution_output_t* output
 );
 
 typedef uint32_t (*onda_processor_event_fn)(
@@ -76,7 +101,7 @@ typedef uint32_t (*onda_processor_event_fn)(
   const int32_t* buffer_frames,
   const int32_t* buffer_channels,
   const float* buffer_sample_rates,
-  onda_processor_delegate_batch_t* delegate_batch
+  onda_processor_execution_output_t* output
 );
 
 enum {
@@ -138,6 +163,16 @@ ONDA_PROCESSOR_STATIC_INLINE void onda_processor_delegate_batch_reset(
   }
 }
 
+ONDA_PROCESSOR_STATIC_INLINE void onda_processor_print_batch_reset(
+  onda_processor_print_batch_t* batch
+) {
+  if (batch != NULL) {
+    batch->used_bytes = 0u;
+    batch->record_count = 0u;
+    batch->overflow_count = 0u;
+  }
+}
+
 /* Decodes one complete occurrence, returning 1 on success or 0 for invalid/malformed input. The
  * payload view remains valid only until the backing storage is changed or reused. */
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_occurrence_at(
@@ -181,6 +216,51 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_occurrence_at(
       return 1;
     }
     cursor += ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE + payload_size;
+  }
+  return 0;
+}
+
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_occurrence_at(
+  const onda_processor_print_batch_t* batch,
+  uint32_t index,
+  onda_processor_print_occurrence_t* occurrence
+) {
+  if (
+    batch == NULL ||
+    occurrence == NULL ||
+    batch->storage == NULL ||
+    batch->used_bytes > batch->capacity_bytes ||
+    index >= batch->record_count
+  ) {
+    return 0;
+  }
+  uint32_t cursor = 0u;
+  for (uint32_t current = 0u; current <= index; ++current) {
+    if (batch->used_bytes - cursor < ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE) {
+      return 0;
+    }
+    uint32_t site_index;
+    uint32_t payload_size;
+    memcpy(&site_index, batch->storage + cursor, sizeof(site_index));
+    memcpy(
+      &payload_size,
+      batch->storage + cursor + sizeof(site_index),
+      sizeof(payload_size)
+    );
+    if (
+      payload_size >
+      batch->used_bytes - cursor - ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE
+    ) {
+      return 0;
+    }
+    if (current == index) {
+      occurrence->site_index = site_index;
+      occurrence->payload_size_bytes = payload_size;
+      occurrence->payload =
+        batch->storage + cursor + ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE;
+      return 1;
+    }
+    cursor += ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE + payload_size;
   }
   return 0;
 }
@@ -519,7 +599,8 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_plain_to_normalized(
 uint32_t onda_processor_init(
   const void* params,
   void* state,
-  onda_processor_init_mode_t mode
+  onda_processor_init_mode_t mode,
+  onda_processor_execution_output_t* output
 );
 
 uint32_t onda_process(
@@ -533,7 +614,8 @@ uint32_t onda_process(
   void* const* buffers,
   const int32_t* buffer_frames,
   const int32_t* buffer_channels,
-  const float* buffer_sample_rates
+  const float* buffer_sample_rates,
+  onda_processor_execution_output_t* output
 );
 
 /* Event symbols are named onda_event_N in descriptor metadata order. */

@@ -277,6 +277,7 @@ fn lower_user_functions_to_mir(
         );
     }
     let mut source_files = mir.source_files.clone();
+    let mut log_sites = mir.log_sites.clone();
     let structs = program
         .structs
         .iter()
@@ -317,6 +318,7 @@ fn lower_user_functions_to_mir(
                 globals,
                 &mut types,
                 &mut source_files,
+                &mut log_sites,
             )
         } else {
             FunctionLowerer::new(
@@ -336,6 +338,7 @@ fn lower_user_functions_to_mir(
                 emitted_name,
                 &mut types,
                 &mut source_files,
+                &mut log_sites,
             )
         };
         match lowerer.lower() {
@@ -350,6 +353,7 @@ fn lower_user_functions_to_mir(
     mir.types = types;
     mir.const_data.extend(pending_const_data);
     mir.source_files = source_files;
+    mir.log_sites = log_sites;
     mir.functions.extend(functions);
     Ok(ids)
 }
@@ -432,6 +436,7 @@ fn lower_program_to_raw_mir(
         &globals,
         &mut mir.types,
         &mut mir.source_files,
+        &mut mir.log_sites,
     );
     init_lowerer.bind_init_all(crate::processor_lowering::TOP_LEVEL_INIT_ALL_NAME);
     let mut init = init_lowerer.lower().map_err(|error| vec![error])?;
@@ -451,6 +456,7 @@ fn lower_program_to_raw_mir(
         &globals,
         &mut mir.types,
         &mut mir.source_files,
+        &mut mir.log_sites,
     )
     .lower_process(
         &program.block_pre,
@@ -1977,6 +1983,7 @@ fn lower_events(
             globals,
             &mut mir.types,
             &mut mir.source_files,
+            &mut mir.log_sites,
         );
         lowerer
             .bind_event_params(event)
@@ -2443,6 +2450,11 @@ fn collect_calls_in_statements(statements: &[Stmt], calls: &mut Vec<DiscoveredCa
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_calls_in_expr(expr, calls);
             }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_calls_in_expr(value, calls);
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,
@@ -2790,6 +2802,7 @@ struct FunctionLowerer<'a> {
     emitted_name: String,
     types: &'a mut Vec<MirType>,
     source_files: &'a mut Vec<SourceFile>,
+    log_sites: &'a mut Vec<onda_mir::LogSite>,
     runtime_globals: Option<&'a RuntimeGlobals>,
     current_frame: Option<Value>,
     oversampled_inputs: HashMap<String, (LocalId, PrimitiveType)>,

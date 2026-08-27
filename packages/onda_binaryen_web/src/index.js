@@ -48,6 +48,14 @@ const DELEGATE_BATCH_CAPACITY_OFFSET = 4;
 const DELEGATE_BATCH_USED_OFFSET = 8;
 const DELEGATE_BATCH_RECORD_COUNT_OFFSET = 12;
 const DELEGATE_BATCH_OVERFLOW_OFFSET = 16;
+const PRINT_RECORD_HEADER_SIZE = 8;
+const PRINT_BATCH_STORAGE_OFFSET = 0;
+const PRINT_BATCH_CAPACITY_OFFSET = 4;
+const PRINT_BATCH_USED_OFFSET = 8;
+const PRINT_BATCH_RECORD_COUNT_OFFSET = 12;
+const PRINT_BATCH_OVERFLOW_OFFSET = 16;
+const EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET = 0;
+const EXECUTION_OUTPUT_PRINT_BATCH_OFFSET = 4;
 const RUNTIME_FAILURE_GLOBAL = "$onda.runtime_failure";
 const INIT_ALL_GLOBAL = "$onda.init_all";
 const MATH_KERNEL_INTRINSICS = new Set([
@@ -71,6 +79,7 @@ const POINTER_GLOBALS = Object.freeze({
   state: "$onda.state",
   eventPayload: "$onda.event_payload",
   delegateBatch: "$onda.delegate_batch",
+  printBatch: "$onda.print_batch",
   buffers: "$onda.buffers",
   bufferWrites: "$onda.buffer_writes",
   bufferFrames: "$onda.buffer_frames",
@@ -2350,6 +2359,33 @@ class MirCompiler {
     ];
   }
 
+  resetPrintBatch() {
+    const batch = () =>
+      this.module.global.get(POINTER_GLOBALS.printBatch, binaryen.i32);
+    const stores = [
+      PRINT_BATCH_USED_OFFSET,
+      PRINT_BATCH_RECORD_COUNT_OFFSET,
+      PRINT_BATCH_OVERFLOW_OFFSET,
+    ].map((offset) =>
+      this.module.i32.store(offset, 4, batch(), this.module.i32.const(0))
+    );
+    return [
+      this.module.if(
+        this.module.i32.ne(batch(), this.module.i32.const(0)),
+        this.module.block(null, stores),
+      ),
+    ];
+  }
+
+  executionOutputBatch(outputLocal, fieldOffset) {
+    const output = () => this.module.local.get(outputLocal, binaryen.i32);
+    return this.module.if(
+      this.module.i32.ne(output(), this.module.i32.const(0)),
+      this.module.i32.load(fieldOffset, 4, output()),
+      this.module.i32.const(0),
+    );
+  }
+
   fullInitClearRanges() {
     const ranges = [];
     let cursor = 0;
@@ -2409,8 +2445,14 @@ class MirCompiler {
       ),
       this.module.global.set(
         POINTER_GLOBALS.delegateBatch,
-        this.module.i32.const(0),
+        this.executionOutputBatch(3, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
       ),
+      this.module.global.set(
+        POINTER_GLOBALS.printBatch,
+        this.executionOutputBatch(3, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
+      ),
+      ...this.resetDelegateBatch(),
+      ...this.resetPrintBatch(),
       this.module.global.set(
         INIT_ALL_GLOBAL,
         this.module.i32.ne(
@@ -2431,7 +2473,12 @@ class MirCompiler {
     ], binaryen.i32);
     this.module.addFunction(
       "$onda.abi.init",
-      binaryen.createType([binaryen.i32, binaryen.i32, binaryen.i32]),
+      binaryen.createType([
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+      ]),
       binaryen.i32,
       [],
       initBody,
@@ -2475,9 +2522,14 @@ class MirCompiler {
     const processBody = this.module.block(null, [
       this.module.global.set(
         POINTER_GLOBALS.delegateBatch,
-        this.module.local.get(11, binaryen.i32),
+        this.executionOutputBatch(11, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.printBatch,
+        this.executionOutputBatch(11, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
       ),
       ...this.resetDelegateBatch(),
+      ...this.resetPrintBatch(),
       this.module.if(
         invalidRange,
         this.module.return(
@@ -2552,9 +2604,14 @@ class MirCompiler {
       const body = this.module.block(null, [
         this.module.global.set(
           POINTER_GLOBALS.delegateBatch,
-          this.module.local.get(7, binaryen.i32),
+          this.executionOutputBatch(7, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
+        ),
+        this.module.global.set(
+          POINTER_GLOBALS.printBatch,
+          this.executionOutputBatch(7, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
         ),
         ...this.resetDelegateBatch(),
+        ...this.resetPrintBatch(),
         ...this.resetRuntimeFailure(event.handler),
         this.module.global.set(
           POINTER_GLOBALS.eventPayload,
@@ -2643,6 +2700,8 @@ class MirCompiler {
         return this.compileCall(data, context);
       case "publish_delegate":
         return this.compilePublishDelegate(data, context);
+      case "publish_log":
+        return this.compilePublishLog(data, context);
       case "output_store":
         return this.compileOutputStore(data, context);
       case "control_output_store":
@@ -3019,6 +3078,146 @@ class MirCompiler {
       ),
     );
     return this.module.block(null, statements);
+  }
+
+  compilePublishLog(data, context) {
+    const site = this.mir.log_sites?.[data.site];
+    const args = data.arguments;
+    if (!site || !Array.isArray(args) || args.length !== site.argument_types?.length) {
+      this.fail(`log site id ${String(data.site)} has an invalid publication payload`);
+    }
+    if (context.function.attributes.runtime_context !== true) {
+      this.fail(`function '${context.function.name}' prints without runtime context`);
+    }
+
+    const payloadSize = site.payload_size;
+    const calculatedSize = site.argument_types.reduce(
+      (size, scalar) => size + this.scalarSize(scalar),
+      0,
+    );
+    if (!Number.isInteger(payloadSize) || payloadSize !== calculatedSize) {
+      this.fail(`log site id ${data.site} has an invalid payload size`);
+    }
+
+    const storageLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.storage`,
+    );
+    const capacityLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.capacity`,
+    );
+    const usedLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.used`,
+    );
+    const recordLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.record`,
+    );
+    const cursorLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.cursor`,
+    );
+    const batch = () =>
+      this.module.global.get(POINTER_GLOBALS.printBatch, binaryen.i32);
+    const field = (offset) =>
+      this.module.i32.add(batch(), this.module.i32.const(offset));
+    const local = (id) => this.module.local.get(id, binaryen.i32);
+    const requiredSize = payloadSize + PRINT_RECORD_HEADER_SIZE;
+    const overflowAddress = () => field(PRINT_BATCH_OVERFLOW_OFFSET);
+    const overflow = () => this.module.i32.load(0, 4, overflowAddress());
+    const drop = this.module.i32.store(
+      0,
+      4,
+      overflowAddress(),
+      this.module.select(
+        this.module.i32.eq(overflow(), this.module.i32.const(-1)),
+        overflow(),
+        this.module.i32.add(overflow(), this.module.i32.const(1)),
+      ),
+    );
+    const fits = this.module.i32.and(
+      this.module.i32.le_u(local(usedLocal), local(capacityLocal)),
+      this.module.i32.le_u(
+        this.module.i32.const(requiredSize),
+        this.module.i32.sub(local(capacityLocal), local(usedLocal)),
+      ),
+    );
+    const record = () => local(recordLocal);
+    const cursor = () => local(cursorLocal);
+    const write = [
+      this.module.local.set(
+        recordLocal,
+        this.module.i32.add(local(storageLocal), local(usedLocal)),
+      ),
+      this.module.i32.store(0, 1, record(), this.module.i32.const(data.site)),
+      this.module.i32.store(4, 1, record(), this.module.i32.const(payloadSize)),
+      this.module.local.set(
+        cursorLocal,
+        this.module.i32.add(record(), this.module.i32.const(PRINT_RECORD_HEADER_SIZE)),
+      ),
+    ];
+    for (const [index, scalar] of site.argument_types.entries()) {
+      write.push(
+        this.storePackedScalar(
+          scalar,
+          cursor(),
+          this.compileValue(args[index], context),
+        ),
+        this.module.local.set(
+          cursorLocal,
+          this.module.i32.add(cursor(), this.module.i32.const(this.scalarSize(scalar))),
+        ),
+      );
+    }
+    const usedAddress = () => field(PRINT_BATCH_USED_OFFSET);
+    const countAddress = () => field(PRINT_BATCH_RECORD_COUNT_OFFSET);
+    write.push(
+      this.module.i32.store(
+        0,
+        4,
+        usedAddress(),
+        this.module.i32.add(local(usedLocal), this.module.i32.const(requiredSize)),
+      ),
+      this.module.i32.store(
+        0,
+        4,
+        countAddress(),
+        this.module.i32.add(
+          this.module.i32.load(0, 4, countAddress()),
+          this.module.i32.const(1),
+        ),
+      ),
+    );
+    return this.module.if(
+      this.module.i32.ne(batch(), this.module.i32.const(0)),
+      this.module.block(null, [
+        this.module.local.set(
+          storageLocal,
+          this.module.i32.load(0, 4, field(PRINT_BATCH_STORAGE_OFFSET)),
+        ),
+        this.module.if(
+          this.module.i32.ne(local(storageLocal), this.module.i32.const(0)),
+          this.module.block(null, [
+            this.module.local.set(
+              capacityLocal,
+              this.module.i32.load(0, 4, field(PRINT_BATCH_CAPACITY_OFFSET)),
+            ),
+            this.module.local.set(
+              usedLocal,
+              this.module.i32.load(0, 4, field(PRINT_BATCH_USED_OFFSET)),
+            ),
+            this.module.if(fits, this.module.block(null, write), drop),
+          ]),
+        ),
+      ]),
+    );
   }
 
   compileDelegateBatchAppend(
@@ -6265,8 +6464,27 @@ class MirCompiler {
         param_align_bytes: 16,
         requires_full_blocks: false,
         delegate_record_header_size_bytes: DELEGATE_RECORD_HEADER_SIZE,
+        print_record_header_size_bytes: PRINT_RECORD_HEADER_SIZE,
       },
       metadata: {
+        source_files: (this.mir.source_files ?? []).map((file) => ({
+          path: file.path,
+        })),
+        log_sites: (this.mir.log_sites ?? []).map((site, index) => ({
+          index,
+          label: site.label ?? null,
+          source: {
+            file: site.source.file ?? null,
+            line: site.source.line,
+            column: site.source.column,
+            end_line: site.source.end_line,
+            end_column: site.source.end_column,
+          },
+          lexical_owner: site.lexical_owner,
+          declaration: site.declaration ?? null,
+          argument_types: [...site.argument_types],
+          payload_size_bytes: site.payload_size,
+        })),
         states: snapshot.entries,
         inputs: this.portMetadata(this.mir.interface.inputs, this.inputLayout),
         outputs: this.portMetadata(this.mir.interface.outputs, this.outputLayout),

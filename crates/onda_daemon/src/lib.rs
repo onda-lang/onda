@@ -4,7 +4,8 @@ pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, Ope
 pub use run_session::{
     InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBuildError, RunDelegateBatch,
     RunDelegateInfo, RunDelegateOccurrence, RunDelegateParamInfo, RunDelegateValue, RunEventInfo,
-    RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo, RunSession,
+    RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo, RunPrintBatch, RunPrintEntry,
+    RunPrintValue, RunSession,
 };
 
 use std::collections::HashMap;
@@ -344,6 +345,77 @@ mod tests {
             .render_run_block(&main)
             .expect("second run render should succeed");
         assert!(second[0].iter().all(|sample| (*sample - 0.5).abs() < 1e-6));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_collects_initialization_process_and_event_prints() {
+        let dir = mk_temp_dir("run_prints");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "outs:\n  out1\ninit:\n  print(\"boot\\n\", -0.0)\nevent report(value: i64):\n  print(\"event\", value)\nsample:\n  print(\"frame\", 7, true)\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    block_size: 2,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+
+        let init = run.take_print_batch().expect("init prints should decode");
+        assert_eq!(init.text, "boot\\n: -0.0\n");
+        assert_eq!(init.entries.len(), 1);
+        assert_eq!(init.entries[0].label.as_deref(), Some("boot\n"));
+        assert_eq!(init.entries[0].source_file.as_deref(), Some("main.onda"));
+
+        run.render_block().expect("process should run");
+        let process = run
+            .take_print_batch()
+            .expect("process prints should decode");
+        assert_eq!(process.text, "frame: 7 true\nframe: 7 true\n");
+        assert_eq!(process.entries.len(), 2);
+
+        run.trigger_event("report", &[RunEventValue::I64(9_007_199_254_740_993)])
+            .expect("event should run");
+        let event = run.take_print_batch().expect("event prints should decode");
+        assert_eq!(event.text, "event: 9007199254740993\n");
+        assert_eq!(event.entries[0].values[0].type_repr, "i64");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_initialization_returns_prints_emitted_before_the_failure() {
+        let dir = mk_temp_dir("run_failed_init_prints");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "params:\n  divisor: i32 = 0\nouts:\n  out1\ninit:\n  print(\"before failure\", 7)\n  value = i32(1) / divisor\nsample:\n  out1 = f32(value)\n",
+        );
+
+        let mut session = DaemonSession::default();
+        let error = session
+            .start_run(&main)
+            .expect_err("division by zero should fail generated initialization");
+        let RunBuildError::Initialization {
+            diagnostic,
+            print_batch: Some(batch),
+        } = error
+        else {
+            panic!("expected initialization failure with retained prints");
+        };
+        assert!(diagnostic.message.contains("runtime safety check"));
+        assert_eq!(batch.text, "before failure: 7\n");
+        assert_eq!(batch.entries.len(), 1);
+        assert_eq!(batch.entries[0].declaration.as_deref(), Some("init"));
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -864,6 +936,7 @@ mod tests {
             .start_run(&main)
             .expect("delegate run should compile and start");
         let run = session.run_mut(&main).expect("active delegate run");
+        run.set_delegate_collection_enabled(true);
         assert_eq!(run.delegate_info()[0].name, "report");
         run.trigger_event(
             "trigger",
@@ -937,6 +1010,7 @@ mod tests {
         let mut session = DaemonSession::default();
         session.start_run(&main).expect("run should start");
         let run = session.run_mut(&main).expect("active run");
+        run.set_delegate_collection_enabled(true);
         run.trigger_event("trigger", &[]).expect("event should run");
         let batch = run.take_delegate_batch().expect("batch should decode");
         assert_eq!(batch.occurrences.len(), 1);
@@ -957,6 +1031,7 @@ mod tests {
         let mut session = DaemonSession::default();
         session.start_run(&main).expect("run should start");
         let run = session.run_mut(&main).expect("active run");
+        run.set_delegate_collection_enabled(true);
         run.trigger_event("trigger", &[]).expect("event should run");
         let batch = run.take_delegate_batch().expect("batch should decode");
         assert_eq!(

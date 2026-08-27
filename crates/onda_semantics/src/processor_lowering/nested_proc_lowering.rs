@@ -938,6 +938,18 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
             proc_api,
             errors,
         ),
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_nested_proc_calls_in_expr(
+                    value,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,

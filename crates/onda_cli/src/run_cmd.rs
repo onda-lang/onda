@@ -3,7 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use onda_codegen_llvm::TargetOptLevel;
-use onda_daemon::{DaemonConfig, DaemonSession, InitialBufferBinding, RunOptions};
+use onda_daemon::{
+    DaemonConfig, DaemonSession, InitialBufferBinding, RunBuildError, RunOptions, RunPrintBatch,
+};
 use onda_project::ProjectLimits;
 use onda_run::{
     append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
@@ -248,9 +250,17 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         );
     }
 
-    session
-        .start_run_with_initial_buffers(input, initial_buffers)
-        .map_err(|err| format_run_build_error("daemon run start failed", &err))?;
+    if let Err(err) = session.start_run_with_initial_buffers(input, initial_buffers) {
+        if let RunBuildError::Initialization {
+            print_batch: Some(batch),
+            ..
+        } = &err
+        {
+            write_print_batch(batch)?;
+        }
+        return Err(format_run_build_error("daemon run start failed", &err));
+    }
+    write_run_prints(&mut session, input)?;
 
     if show_meta {
         let info = session
@@ -276,14 +286,16 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     let mut rendered = Vec::<f32>::new();
 
     for _ in 0..full_blocks {
-        let block = session
-            .render_run_block(input)
+        let execution = session.render_run_block(input);
+        write_run_prints(&mut session, input)?;
+        let block = execution
             .map_err(|diag| format_single_diagnostic("daemon run render failed", &diag))?;
         append_interleaved_block(&mut rendered, &block);
     }
     if tail_frames > 0 {
-        let block = session
-            .render_run_block(input)
+        let execution = session.render_run_block(input);
+        write_run_prints(&mut session, input)?;
+        let block = execution
             .map_err(|diag| format_single_diagnostic("daemon run render failed", &diag))?;
         let mut interleaved = Vec::<f32>::new();
         append_interleaved_block(&mut interleaved, &block);
@@ -305,6 +317,42 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         dur_seconds,
         output.display()
     );
+    Ok(())
+}
+
+fn write_run_prints(session: &mut DaemonSession, input: &Path) -> Result<(), String> {
+    let batch = session
+        .run_mut(input)
+        .expect("run should remain active while draining prints")
+        .take_print_batch()
+        .map_err(|diag| format_single_diagnostic("daemon run print decoding failed", &diag))?;
+    write_print_batch(&batch)
+}
+
+fn write_print_batch(batch: &RunPrintBatch) -> Result<(), String> {
+    if !batch.text.is_empty() {
+        use std::io::Write as _;
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        stdout
+            .write_all(batch.text.as_bytes())
+            .map_err(|error| format!("failed to write Onda print output: {error}"))?;
+        stdout
+            .flush()
+            .map_err(|error| format!("failed to flush Onda print output: {error}"))?;
+    }
+    if batch.overflow_count != 0 {
+        eprintln!(
+            "warning: {} Onda print occurrences exceeded the generated batch capacity",
+            batch.overflow_count
+        );
+    }
+    if batch.transport_drop_count != 0 {
+        eprintln!(
+            "warning: {} Onda print occurrences were dropped by the host transport",
+            batch.transport_drop_count
+        );
+    }
     Ok(())
 }
 

@@ -114,6 +114,7 @@ Top-level forms:
 | `events`, `event` | Host-triggered event handlers. |
 | `delegates`, `delegate` | Typed occurrences reported to an owner or host. |
 | `when` | Static synchronous delegate subscription. |
+| `print(...)` | Publish bounded host-facing diagnostic output from runtime code. |
 | `init` | Setup and persistent state. |
 | `block` | Per-block code. |
 | `sample` | Per-sample code. |
@@ -521,6 +522,43 @@ Rules:
 - Unknown top-level event indices are ignored at runtime.
 - A known top-level event with the wrong payload size is a runtime error.
 - Top-level host events with slice params use payload layout `i32 len` followed by contiguous element bytes.
+
+### Printing
+
+`print` is a compiler-known runtime statement. It accepts an optional leading quoted label followed
+by zero or more primitive scalar values:
+
+```onda
+init:
+  print("ready")
+
+sample:
+  print(phase)
+  print("voice", index, frequency, enabled)
+```
+
+The printable types are exactly `f32`, `f64`, `i32`, `i64`, and `bool`. Aggregates, buffers, and
+processor values are rejected; print their scalar members or metadata explicitly. The label is
+compile-time text rather than an Onda string value. It supports `\"`, `\\`, `\n`, `\r`, and `\t`
+escapes.
+
+Pure numeric literals use the ordinary unconstrained defaults in this statement: `print(3)` records
+an `i32`, while `print(3.0)` records an `f32`. Explicit constructors select `i64` or `f64`, and
+already-typed expressions retain their type.
+
+Each execution produces one ordered occurrence. Canonical host text renders a labelled occurrence
+as `label: value1 value2`, joins unlabelled values with one space, and terminates every occurrence
+with a newline. Label control characters are escaped in that text so an occurrence always occupies
+one physical line. Integer formatting is exact, including `i64`; floating-point formatting is the
+shortest width-correct round-trippable representation, with `.0` retained for integral values.
+
+`print` is valid in authored runtime statement scopes, including initialization, block/sample code,
+events, `when` handlers, tasks, and runtime defs reached from them. It is invalid in compile-time
+declarations, `const def` bodies, expressions, graphs, and declaration names. Arguments are always
+evaluated in source order even when the host elects not to collect print output.
+
+See [Hosting Onda print output](printing.md) for Rust, C, raw processor ABI, WebAssembly, Web Audio,
+CLI, and run-view integration.
 
 ### Delegates and `when`
 

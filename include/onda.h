@@ -8,15 +8,26 @@
 extern "C" {
 #endif
 
+/* Public lifetime verbs describe what is released:
+   - *_destroy consumes an opaque Onda handle and invalidates the pointer.
+   - *_dispose releases Onda-owned members of a caller-allocated value and resets that value.
+   - *_reset clears reusable results without releasing caller-owned storage.
+   - alloc/free are reserved for raw host allocator callbacks.
+   Never pass an Onda-owned pointer directly to the C runtime free function. */
+
 typedef struct onda_program onda_program_t;
 typedef struct onda_instance onda_instance_t;
 typedef struct onda_source_manifest onda_source_manifest_t;
 typedef struct onda_project_image onda_project_image_t;
 typedef struct onda_project_materialization_plan onda_project_materialization_plan_t;
 typedef struct onda_compile_constants onda_compile_constants_t;
+typedef struct onda_diag onda_diag_t;
 
 /* Bytes preceding the payload of every packed hosted delegate occurrence. */
-enum { ONDA_DELEGATE_RECORD_HEADER_SIZE = 8u };
+enum {
+  ONDA_DELEGATE_RECORD_HEADER_SIZE = 8u,
+  ONDA_PRINT_RECORD_HEADER_SIZE = 8u
+};
 
 /* Caller-owned, call-scoped storage for top-level delegate occurrences. This
    hosted API type is independent of the generated processor ABI. Allocate storage before realtime
@@ -37,6 +48,54 @@ typedef struct onda_delegate_occurrence {
   const uint8_t* payload;
 } onda_delegate_occurrence_t;
 
+/* Independent caller-owned storage for authored print occurrences. Records contain only typed
+   scalar payload bytes; use the formatting helpers below after generated execution. */
+typedef struct onda_print_batch {
+  uint8_t* storage;
+  uint32_t capacity_bytes;
+  uint32_t used_bytes;
+  uint32_t record_count;
+  uint32_t overflow_count;
+} onda_print_batch_t;
+
+typedef struct onda_print_occurrence {
+  uint32_t site_index;
+  uint32_t payload_size_bytes;
+  const uint8_t* payload;
+} onda_print_occurrence_t;
+
+typedef struct onda_source_span {
+  /* Artifact-local source-file index, or -1 when the span is unknown. */
+  int32_t file_index;
+  uint32_t line;
+  uint32_t column;
+  uint32_t end_line;
+  uint32_t end_column;
+} onda_source_span_t;
+
+/* Non-owning metadata for one concrete print site. String and argument-type
+   pointers remain valid until the program is destroyed. label and declaration
+   are nullable; argument_types is nullable exactly when argument_count is zero. */
+typedef struct onda_log_site_info {
+  const char* label;
+  onda_source_span_t source;
+  const char* lexical_owner;
+  const char* declaration;
+  const int32_t* argument_types;
+  uint32_t argument_count;
+  uint32_t payload_size_bytes;
+} onda_log_site_info_t;
+
+typedef struct onda_execution_output {
+  onda_delegate_batch_t* delegate_batch;
+  onda_print_batch_t* print_batch;
+} onda_execution_output_t;
+
+typedef struct onda_owned_string {
+  char* data;
+  size_t length;
+} onda_owned_string_t;
+
 /* Clears the result counters without modifying storage or capacity. Process and event calls also
    reset these counters when generated execution begins. */
 void onda_delegate_batch_reset(onda_delegate_batch_t* batch);
@@ -48,10 +107,42 @@ int onda_delegate_batch_occurrence_at(
   uint32_t index,
   onda_delegate_occurrence_t* occurrence
 );
-/* Process and event-dispatch functions accept a nullable delegate_batch. NULL
-   discards host-facing occurrences without affecting synchronous Onda `when`
-   handlers. A non-NULL batch is reset when generated execution begins. A nonzero overflow_count
-   after success means one or more complete host records were dropped for insufficient capacity. */
+void onda_print_batch_reset(onda_print_batch_t* batch);
+int onda_print_batch_occurrence_at(
+  const onda_print_batch_t* batch,
+  uint32_t index,
+  onda_print_occurrence_t* occurrence
+);
+/* Allocating convenience formatter. out_text must be empty ({ NULL, 0 }); dispose it before
+   passing it again. The function does not implicitly dispose an existing value. On success its
+   bytes are Onda-owned; do not install caller-owned memory in this structure. Use
+   onda_format_print_batch_into for caller-owned output storage. */
+int onda_format_print_batch(
+  const onda_instance_t* instance,
+  const onda_print_batch_t* batch,
+  onda_owned_string_t* out_text,
+  onda_diag_t* out_diag
+);
+/* Allocation-free formatter into caller-owned storage. out_length always receives the required
+   non-NUL byte count on valid input. The function writes nothing unless out_capacity can hold the
+   complete text and trailing NUL. out_utf8 must not overlap batch storage. No dispose call is
+   required for out_utf8. */
+int onda_format_print_batch_into(
+  const onda_instance_t* instance,
+  const onda_print_batch_t* batch,
+  char* out_utf8,
+  size_t out_capacity,
+  size_t* out_length,
+  onda_diag_t* out_diag
+);
+void onda_owned_string_dispose(onda_owned_string_t* text);
+/* Initialization, process, and event-dispatch functions accept a nullable
+   execution output whose two batch pointers are independently nullable. NULL
+   delegate delivery does not affect synchronous Onda `when` handlers. Each
+   supplied batch is reset when generated execution begins. A nonzero
+   overflow_count means one or more complete records were dropped for
+   insufficient capacity. Print records emitted before generated failure remain
+   available; delegate records are cleared on failure. */
 
 /* Primitive element type identifiers used by metadata and buffer binding APIs. */
 enum {
@@ -86,7 +177,7 @@ enum {
    Every non-NULL string is owned by Onda. Zero-initialize this structure before
    first use, call onda_diag_dispose before reusing it as an output, and call
    onda_diag_dispose once more when the diagnostic is no longer needed. */
-typedef struct {
+struct onda_diag {
   int code;
   int line;
   int column;
@@ -95,7 +186,7 @@ typedef struct {
   const char* message;
   const char* file;
   const char* trace;
-} onda_diag_t;
+};
 
 /* Releases all strings in diag and resets it to zero. Safe to call with NULL
    or repeatedly on the same diagnostic. Copies of a diagnostic share the same
@@ -198,6 +289,8 @@ typedef void* (*onda_alloc_fn)(void* context, size_t size, size_t align);
 typedef void (*onda_free_fn)(void* context, void* ptr, size_t size, size_t align);
 
 /* Host allocator used by custom instance creation.
+   This allocator is instance-scoped; programs, diagnostics, owned strings, and other library
+   objects continue to use Onda's allocator and their matching destroy/dispose functions.
    Onda calls alloc only synchronously during an allocator-backed create function; no operation on
    a successfully created instance calls alloc. free may be called during failed creation or later
    instance destruction. The context and callbacks must remain valid until every instance created
@@ -591,6 +684,7 @@ onda_instance_t* onda_instance_create_initialized(
   const onda_program_t* program,
   int in_channels,
   int out_channels,
+  onda_execution_output_t* output,
   onda_diag_t* out_diag
 );
 /* Creates a runtime instance whose instance-owned storage uses allocator.
@@ -611,6 +705,7 @@ onda_instance_t* onda_instance_create_initialized_with_allocator(
   int in_channels,
   int out_channels,
   const onda_allocator_t* allocator,
+  onda_execution_output_t* output,
   onda_diag_t* out_diag
 );
 /* Destroys an instance handle created by any onda_instance_create variant.
@@ -631,14 +726,15 @@ int onda_set_param_plain_f64(onda_instance_t* instance, int index, double plain)
 /* Sets a scalar parameter from a normalized host value in [0, 1]. */
 int onda_set_param_normalized(onda_instance_t* instance, int index, double normalized);
 
-/* Triggers one event by index with packed payload bytes and optionally collects delegates; returns
-   0 on success, negative on error. Unknown event indices are ignored and return success. */
+/* Triggers one event by index with packed payload bytes and optionally collects host-facing
+   execution output; returns 0 on success, negative on error. Unknown event indices are ignored and
+   return success. */
 int onda_trigger_event_by_index(
   onda_instance_t* instance,
   int index,
   const void* payload_ptr,
   int payload_bytes,
-  onda_delegate_batch_t* delegate_batch
+  onda_execution_output_t* output
 );
 /* Triggers one event without payload/binding validation. The instance must have completed full
    initialization, and payload/buffer metadata must satisfy the ABI contract. Returns 0 on success,
@@ -648,7 +744,7 @@ int onda_trigger_event_by_index_unchecked(
   int index,
   const void* payload_ptr,
   int payload_bytes,
-  onda_delegate_batch_t* delegate_batch
+  onda_execution_output_t* output
 );
 
 /* Binds one input entry to host memory; returns 0 on success, negative on error.
@@ -720,14 +816,14 @@ enum {
 };
 
 /* Processes up to one logical block with current bindings and parameters, optionally collecting
-   delegates; returns 0 on success.
+   host-facing execution output; returns 0 on success.
    frames must be in [0, compile_time_block_size]. The runtime only reads/writes the first
    `frames` samples of each bound input/output entry for the current call. This convenience
    function runs block-pre and block-post hooks for this call. */
 int onda_process_checked(
   onda_instance_t* instance,
   int frames,
-  onda_delegate_batch_t* delegate_batch
+  onda_execution_output_t* output
 );
 /* Processes one segment of a logical block using full-block input/output bindings.
    The JIT loops local frames [0, frames) and reads/writes bound I/O at
@@ -739,7 +835,7 @@ int onda_process_checked_segment(
   int start_frame,
   int frames,
   int flags,
-  onda_delegate_batch_t* delegate_batch
+  onda_execution_output_t* output
 );
 /* Runs the Onda initializer in place. ONDA_INIT_FULL initializes the complete physical state and
    is required before processing a newly created instance. ONDA_INIT_PRESERVE_PINNED reruns ordinary
@@ -748,7 +844,11 @@ int onda_process_checked_segment(
    instance state is indeterminate and stateful instance operations reject it until full
    initialization or snapshot restore succeeds. Returns 0 on success, -1 for an invalid handle or
    mode, or -2 when init execution fails. */
-int onda_init(onda_instance_t* instance, onda_init_mode_t mode);
+int onda_init(
+  onda_instance_t* instance,
+  onda_init_mode_t mode,
+  onda_execution_output_t* output
+);
 /* Returns the byte size of the instance state snapshot, or -1 on invalid instance handle. */
 int onda_instance_state_bytes(const onda_instance_t* instance);
 /*
@@ -793,7 +893,7 @@ int onda_prepare_unchecked_process(onda_instance_t* instance);
    returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
 int onda_process_unchecked(
   onda_instance_t* instance,
-  onda_delegate_batch_t* delegate_batch
+  onda_execution_output_t* output
 );
 /* Processes one logical-block segment without revalidation. Successful full initialization and
    onda_prepare_unchecked_process are required. Use the same full-block binding, start_frame,
@@ -804,7 +904,7 @@ int onda_process_unchecked_segment(
   int start_frame,
   int frames,
   int flags,
-  onda_delegate_batch_t* delegate_batch
+  onda_execution_output_t* output
 );
 
 /* Returns declared input entry count, or -1 on invalid program handle. */
@@ -822,6 +922,17 @@ int onda_buffer_array_count(const onda_program_t* program);
 /* Returns declared event entry count, or -1 on invalid program handle. */
 int onda_event_count(const onda_program_t* program);
 int onda_delegate_count(const onda_program_t* program);
+/* Returns the artifact-local source-file table used by print-site spans. */
+int onda_source_file_count(const onda_program_t* program);
+const char* onda_source_file_path(const onda_program_t* program, int index);
+/* Returns concrete print-site metadata. onda_log_site_info returns 0 on
+   success and -1 for an invalid program, index, or output pointer. */
+int onda_log_site_count(const onda_program_t* program);
+int onda_log_site_info(
+  const onda_program_t* program,
+  int index,
+  onda_log_site_info_t* out_info
+);
 /* Returns declared state entry count, or -1 on invalid program handle. */
 int onda_state_count(const onda_program_t* program);
 

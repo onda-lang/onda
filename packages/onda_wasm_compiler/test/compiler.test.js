@@ -4,8 +4,11 @@ import test from "node:test";
 
 import {
   decodeDelegateRecords,
+  formatPrintBatch,
   readDelegateBatch,
   writeDelegateBatch,
+  writeExecutionOutput,
+  writePrintBatch,
 } from "@onda-lang/processor-abi";
 
 import {
@@ -58,6 +61,8 @@ test("retries direct frontend initialization after a failure", async () => {
   const { artifact } = await compiler.compileSource(SOURCE);
   assert.equal(WebAssembly.validate(artifact.wasm), true);
   await compiler.dispose();
+  await compiler.dispose();
+  await assert.rejects(compiler.compileSource(SOURCE), /compiler was disposed/);
 });
 
 test("compiles Onda source to a complete processor artifact", async () => {
@@ -114,6 +119,7 @@ sample:
   const payload = allocate(28);
   const batchAddress = allocate(20);
   const storageAddress = allocate(40);
+  const executionOutputAddress = allocate(8);
   const view = new DataView(memory.buffer);
   let cursor = payload;
   view.setInt32(cursor, 2, true);
@@ -129,8 +135,9 @@ sample:
     cursor += 4;
   }
   writeDelegateBatch(memory, batchAddress, storageAddress, 40);
+  writeExecutionOutput(memory, executionOutputAddress, batchAddress, 0);
   assert.equal(initialize(params, state, 1), 0);
-  assert.equal(trigger(payload, params, state, 0, 0, 0, 0, batchAddress), 0);
+  assert.equal(trigger(payload, params, state, 0, 0, 0, 0, executionOutputAddress), 0);
   const batch = readDelegateBatch(memory, batchAddress);
   assert.deepEqual(batch, {
     storageAddress,
@@ -150,6 +157,45 @@ sample:
     values: [1.25, -2.5],
     tags: [11, -4, 99],
   });
+  await compiler.dispose();
+});
+
+test("compiles and formats authored prints end to end", async () => {
+  const compiler = await createCompiler();
+  const { artifact } = await compiler.compileSource(`event report(value: i64):
+  print("event", value)
+
+init:
+  print("boot")
+
+sample:
+  out1 = 0.0
+`);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base: heapBase, onda_processor_init: initialize, onda_event_0: report } =
+    instance.exports;
+  let heap = Number(heapBase.value);
+  const allocate = (size) => {
+    const address = heap;
+    heap = (heap + Math.max(size, 1) + 15) & ~15;
+    return address;
+  };
+  const params = allocate(artifact.metadata.runtime.param_size_bytes);
+  const state = allocate(artifact.metadata.runtime.state_size_bytes);
+  const payload = allocate(8);
+  const batch = allocate(20);
+  const storage = allocate(128);
+  const output = allocate(8);
+  writePrintBatch(memory, batch, storage, 128);
+  writeExecutionOutput(memory, output, 0, batch);
+  assert.equal(initialize(params, state, 1, output), 0);
+  assert.equal(formatPrintBatch(memory, batch, artifact.metadata).text, "boot\n");
+  new DataView(memory.buffer).setBigInt64(payload, 9_007_199_254_740_993n, true);
+  assert.equal(report(payload, params, state, 0, 0, 0, 0, output), 0);
+  assert.equal(
+    formatPrintBatch(memory, batch, artifact.metadata).text,
+    "event: 9007199254740993\n",
+  );
   await compiler.dispose();
 });
 
@@ -766,6 +812,8 @@ test("offers an asynchronous browser-worker client", async () => {
   );
   await compiler.dispose();
   assert.equal(compiler.worker.terminated, true);
+  await compiler.dispose();
+  await assert.rejects(compiler.compileSource(SOURCE), /compiler was disposed/);
 });
 
 test("terminates a worker whose frontend initialization fails", async () => {

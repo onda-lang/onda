@@ -11,6 +11,14 @@ release; earlier releases are available on the
 
 ### Added
 
+- Added typed `delegate` declarations and synchronous `when` subscriptions for sparse outbound
+  application occurrences. Top-level delegates can be collected through independent, bounded,
+  caller-owned batches in the Rust runtime, hosted C API, raw native/Wasm processor ABI, daemon,
+  control protocol, and Web Audio adapter without callbacks or allocation in generated execution.
+- Added the compiler-known `print(...)` statement for ordered host-facing diagnostics with exact
+  `f32`, `f64`, `i32`, `i64`, and `bool` values, optional static labels, lexical source metadata,
+  bounded caller-owned delivery, and canonical ready-to-write text formatting across Rust, C,
+  JavaScript, the CLI, Web Audio, and the native run views.
 - Added explicitly typed executable-root `config const` declarations for immutable host-selected
   compile-time variants. Overrides flow through ordinary constant evaluation, shapes,
   specialization, assertions, and generated code, with support in the Rust compiler API, native
@@ -42,6 +50,10 @@ release; earlier releases are available on the
 
 ### Changed
 
+- Standardized host lifecycle semantics: C opaque handles use `destroy`, caller-allocated values
+  with Onda-owned members use `dispose`, reusable caller storage uses `reset`, and `free` is reserved
+  for allocator callbacks. Caller-buffer print formatting is now allocation-free, while compiler
+  disposal and Web Audio processor closing are idempotent and terminal.
 - Renamed the proc-parameter access modifier from `pin` to `private`, reserving `pin` for persistent
   init state.
 - Instance creation is now allocation-only by default and no longer executes authored `init` code
@@ -57,9 +69,10 @@ release; earlier releases are available on the
 - Portable snapshots now include compiler-owned task continuations. Processor state metadata adds
   an `authored` flag so hosts can serialize those entries while omitting them from authored-state
   reflection; the snapshot format remains version 1.
-- Advanced the MIR schema to version 6 and the processor ABI to version 6. The raw init export is
-  now `onda_processor_init(params, state, mode)`, with named preserve-pinned and full modes; the
-  processor artifact descriptor remains format version 4.
+- Advanced the MIR schema to version 8, the processor artifact descriptor to format version 5, and
+  the processor ABI to version 8. Raw init, process, and event exports now accept a singular,
+  nullable `ExecutionOutput` containing independently nullable delegate and print batches; init
+  also takes the named preserve-pinned or full mode.
 - Reworked convolution state so prepared impulse data survives preserve-pinned initialization while
   signal history and processing counters are reinitialized.
 - Updated CPAL to 0.18.2, picking up PipeWire xrun reporting, non-blocking real-time promotion,
@@ -84,9 +97,10 @@ release; earlier releases are available on the
   behavior, or call `processor.init(ONDA_INIT_FULL)` after `createOndaAudioProcessor`. Replace
   `processor.reset()` with `processor.init(ONDA_INIT_PRESERVE_PINNED)` or
   `processor.init(ONDA_INIT_FULL)` according to the desired state-retention policy.
-- Raw processor hosts must accept ABI version 6, call `onda_processor_init` with an explicit mode,
-  and honor the fail-closed instance lifecycle. Serialized-MIR consumers must accept schema version
-  6 and descriptor consumers should use the state `authored` field when exposing reflection.
+- Raw processor hosts must accept ABI version 8 and artifact format version 5, pass an explicit init
+  mode and optional `ExecutionOutput`, and honor the fail-closed instance lifecycle. Serialized-MIR
+  consumers must accept schema version 8; descriptor consumers should use the state `authored`
+  field when exposing reflection and the source/log-site tables when decoding prints.
 
 ## [0.7.5]
 

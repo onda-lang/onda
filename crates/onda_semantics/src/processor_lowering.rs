@@ -3953,6 +3953,11 @@ graph:
             Stmt::Expr { expr, .. } => {
                 collect_offending_proc_event_calls_in_expr(expr, owner, offending)
             }
+            Stmt::Print { values, .. } => {
+                for expr in values {
+                    collect_offending_proc_event_calls_in_expr(expr, owner, offending);
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,

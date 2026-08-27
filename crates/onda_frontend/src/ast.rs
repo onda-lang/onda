@@ -1358,6 +1358,14 @@ pub enum Stmt {
         loc: Span,
         expr: Expr,
     },
+    Print {
+        loc: Span,
+        label: Option<String>,
+        values: Vec<Expr>,
+        /// Lexical source ownership attached by semantic analysis before
+        /// specialization and processor desugaring clone this statement.
+        origin: Option<PrintSourceOrigin>,
+    },
     Return {
         loc: Span,
         expr: Expr,
@@ -1391,12 +1399,20 @@ pub enum Stmt {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrintSourceOrigin {
+    pub source: Span,
+    pub lexical_owner: String,
+    pub declaration: String,
+}
+
 impl Stmt {
     pub fn loc(&self) -> SourceLoc {
         match self {
             Self::Const { loc, .. } => (*loc).into(),
             Self::Assign { loc, .. } => (*loc).into(),
             Self::Expr { loc, .. } => (*loc).into(),
+            Self::Print { loc, .. } => (*loc).into(),
             Self::Return { loc, .. } => (*loc).into(),
             Self::If { loc, .. } => (*loc).into(),
             Self::For { loc, .. } => (*loc).into(),

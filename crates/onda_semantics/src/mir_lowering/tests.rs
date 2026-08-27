@@ -69,6 +69,98 @@ sample:
 }
 
 #[test]
+fn print_sites_preserve_lexical_origins_through_nesting_and_specialization() {
+    let source = r#"
+def report(value):
+  print("report", value)
+
+proc Child:
+  sample:
+    print("child", 2)
+    out1 = 0.0
+
+proc Parent:
+  init:
+    child = Child()
+  sample:
+    print("parent", 3)
+    out1 = child()
+
+init:
+  parent = Parent()
+
+sample:
+  report(1)
+  report(1.5)
+  out1 = parent()
+"#;
+    let parsed = parse_program(source).expect("print origin source should parse");
+    let typed = analyze(parsed).expect("print origin source should analyze");
+    let mir = lower_test_program(&typed).expect("print origin source should lower");
+
+    let sites = |label: &str| {
+        mir.log_sites
+            .iter()
+            .filter(|site| site.label.as_deref() == Some(label))
+            .collect::<Vec<_>>()
+    };
+    let report = sites("report");
+    assert_eq!(
+        report.len(),
+        2,
+        "generic helper should emit two concrete sites"
+    );
+    assert!(report.iter().all(|site| {
+        site.lexical_owner == "program"
+            && site.declaration.as_deref() == Some("report")
+            && site.source.line == 3
+    }));
+    let child = sites("child");
+    assert!(!child.is_empty());
+    assert!(child.iter().all(|site| {
+        site.lexical_owner == "Child"
+            && site.declaration.as_deref() == Some("sample")
+            && site.source.line == 7
+    }));
+    let parent = sites("parent");
+    assert!(!parent.is_empty());
+    assert!(parent.iter().all(|site| {
+        site.lexical_owner == "Parent"
+            && site.declaration.as_deref() == Some("sample")
+            && site.source.line == 14
+    }));
+}
+
+#[test]
+fn print_literals_use_ordinary_defaults_and_explicit_types_are_preserved() {
+    let source = r#"
+init:
+  print("defaults", 3, 3.0)
+  print("explicit", i64(3), f64(3.0), true)
+sample:
+  out1 = 0.0
+"#;
+    let parsed = parse_program(source).expect("print type source should parse");
+    let typed = analyze(parsed).expect("print type source should analyze");
+    let mir = lower_test_program(&typed).expect("print type source should lower");
+
+    assert_eq!(
+        mir.log_sites[0].argument_types,
+        vec![onda_mir::ScalarType::I32, onda_mir::ScalarType::F32]
+    );
+    assert_eq!(mir.log_sites[0].payload_size, 8);
+    assert_eq!(
+        mir.log_sites[1].argument_types,
+        vec![
+            onda_mir::ScalarType::I64,
+            onda_mir::ScalarType::F64,
+            onda_mir::ScalarType::Bool,
+        ]
+    );
+    assert_eq!(mir.log_sites[1].payload_size, 17);
+}
+
+#[test]
 fn ranged_top_level_params_are_clamped_once_per_export_entry() {
     let source = r#"
 params:

@@ -245,6 +245,11 @@ fn collect_local_def_calls_in_stmt(
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             collect_local_def_calls_in_expr(expr, def_map, calls);
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                collect_local_def_calls_in_expr(value, def_map, calls);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -383,6 +388,11 @@ fn rewrite_stmt_local_calls(stmt: &mut Stmt, local_names: &HashSet<String>, owne
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_expr_local_calls(expr, local_names, owner_proc);
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_expr_local_calls(value, local_names, owner_proc);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -509,6 +519,11 @@ fn inject_owner_self_into_hidden_local_calls_in_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             inject_owner_self_into_hidden_local_calls_in_expr(expr, owner_proc, receiver);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                inject_owner_self_into_hidden_local_calls_in_expr(value, owner_proc, receiver);
+            }
         }
         Stmt::If {
             cond,
@@ -662,6 +677,16 @@ fn rewrite_nested_wrapper_local_calls_in_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_nested_wrapper_local_calls_in_expr(expr, callee_proc, owner_proc, nested_path);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_nested_wrapper_local_calls_in_expr(
+                    value,
+                    callee_proc,
+                    owner_proc,
+                    nested_path,
+                );
+            }
         }
         Stmt::If {
             cond,

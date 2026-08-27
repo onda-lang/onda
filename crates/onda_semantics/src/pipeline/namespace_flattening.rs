@@ -969,6 +969,11 @@ fn validate_template_stmt_refs(
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             validate_template_expr_refs(expr, current_ns, state, scope, context, errors);
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                validate_template_expr_refs(value, current_ns, state, scope, context, errors);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -4640,6 +4645,20 @@ fn rewrite_stmt_scoped(
                 errors,
                 local_scope,
             );
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_expr_scoped(
+                    value,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    local_scope,
+                );
+            }
         }
         Stmt::If {
             cond,

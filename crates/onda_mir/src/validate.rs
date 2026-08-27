@@ -286,6 +286,7 @@ fn statement_uses_unchecked_bounds(statement: &StatementKind) -> bool {
         StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
             args.iter().any(call_arg_uses_unchecked_bounds)
         }
+        StatementKind::PublishLog { .. } => false,
         StatementKind::BufferStore { buffer, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || buffer_ref_uses_unchecked_bounds(*buffer)
         }
@@ -639,6 +640,30 @@ impl Validator<'_> {
                         data.element
                     ));
                 }
+            }
+        }
+
+        for (index, site) in self.program.log_sites.iter().enumerate() {
+            if let Some(file) = site.source.file {
+                if file.index() >= self.program.source_files.len() {
+                    self.program_error(format!(
+                        "log site {index} source references missing file {}",
+                        file.raw()
+                    ));
+                }
+            }
+            let payload_size = site.argument_types.iter().fold(0_u32, |size, ty| {
+                size.saturating_add(match ty {
+                    crate::ScalarType::F32 | crate::ScalarType::I32 => 4,
+                    crate::ScalarType::F64 | crate::ScalarType::I64 => 8,
+                    crate::ScalarType::Bool => 1,
+                })
+            });
+            if site.payload_size != payload_size {
+                self.program_error(format!(
+                    "log site {index} payload size is {}, expected {payload_size}",
+                    site.payload_size
+                ));
             }
         }
 
@@ -1536,6 +1561,55 @@ impl Validator<'_> {
                         }
                     }
                 }
+                StatementKind::PublishLog { site, arguments } => {
+                    let Some(descriptor) = self.program.log_sites.get(site.index()) else {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            format!(
+                                "print publication references missing log site {}",
+                                site.raw()
+                            ),
+                        );
+                        continue;
+                    };
+                    if matches!(function.kind, FunctionKind::User)
+                        && !function.attributes.runtime_context
+                    {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            "print publication requires a runtime-context user function",
+                        );
+                    }
+                    if arguments.len() != descriptor.argument_types.len() {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            format!(
+                                "print publication at site {} has {} arguments but the descriptor declares {}",
+                                site.raw(),
+                                arguments.len(),
+                                descriptor.argument_types.len()
+                            ),
+                        );
+                    }
+                    for (index, value) in arguments.iter().enumerate() {
+                        self.validate_value(function_id, function, *value, statement.source);
+                        if let Some(expected) = descriptor.argument_types.get(index) {
+                            if self.value_scalar_type(function, *value) != Some(*expected) {
+                                self.function_error(
+                                    function_id,
+                                    statement.source,
+                                    format!(
+                                        "print publication at site {} argument {index} does not match {:?}",
+                                        site.raw(), expected
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
                 StatementKind::OutputStore {
                     output,
                     element,
@@ -2203,6 +2277,17 @@ impl Validator<'_> {
                         | CallArgument::BufferParam(_)
                         | CallArgument::BufferSpan(_) => {}
                     }
+                }
+            }
+            StatementKind::PublishLog { arguments, .. } => {
+                for value in arguments {
+                    self.assignment_read_value(
+                        function_id,
+                        function,
+                        *value,
+                        statement.source,
+                        state,
+                    );
                 }
             }
             StatementKind::OutputStore {

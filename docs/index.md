@@ -30,3 +30,7 @@ ports, and events.
 [Hosting delegates]({{ '/docs/delegates/' | relative_url }}) explains the call-scoped outbound
 record API across Rust, hosted C, raw processor objects, JavaScript, and Web Audio, including exact
 fixed-record sizing, dynamic capacity policy, decoding, and overflow handling.
+
+[Hosting print output]({{ '/docs/printing/' | relative_url }}) explains caller-owned print batches,
+canonical ready-to-write text, source-aware metadata, and delivery across C, Rust, WebAssembly,
+Web Audio, the CLI, and run hosts.

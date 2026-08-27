@@ -79,6 +79,16 @@
   - Add deeper conformance tests for proc-event slice forwarding edge cases (aliases, nested field arrays, and diagnostic coverage).
   - Add deeper conformance tests for host slice-event payload layouts, truncation diagnostics, and mixed fixed/slice event signatures.
 
+- Print value follow-ups
+  - Evaluate structured print values only after defining a bounded, host-independent representation
+    for arrays, slices, tuples, and structs. Preserve scalar-leaf types and avoid reflective dumping
+    of processors, buffers, or other runtime-owned objects.
+  - Revisit dynamic print text only as part of a general runtime-string design with explicit
+    ownership and realtime constraints. Static labels should remain allocation-free metadata.
+  - Consider optional processor-instance or proc-array-slot context for log occurrences if explicit
+    authored indices prove insufficient. Any design must keep lexical source ownership stable and
+    avoid adding hidden per-instance strings or callbacks to generated execution.
+
 - Musical scheduling / pattern follow-ups
   - Evaluate a small sample-accurate scheduling layer on top of events:
     - host-triggered events can carry target sample offsets inside the next block

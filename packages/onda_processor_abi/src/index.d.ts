@@ -1,7 +1,7 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 4;
-export const PROCESSOR_ABI_VERSION: 7;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 5;
+export const PROCESSOR_ABI_VERSION: 8;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED: 0;
@@ -203,9 +203,9 @@ export interface OndaStateMetadata {
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
-  format_version: 4;
+  format_version: 5;
   artifact_kind: OndaArtifactKind;
-  abi_version: 7;
+  abi_version: 8;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;
@@ -234,8 +234,11 @@ export interface OndaProcessorMetadata {
     snapshot_restore_base: "post_init_physical_state_image";
     requires_full_blocks: boolean;
     delegate_record_header_size_bytes: 8;
+    print_record_header_size_bytes: 8;
   };
   metadata: {
+    source_files: Array<{ path: string }>;
+    log_sites: OndaLogSiteMetadata[];
     inputs: OndaIoMetadata[];
     outputs: OndaIoMetadata[];
     control_outputs: OndaIoMetadata[];
@@ -256,6 +259,16 @@ export interface OndaProcessorMetadata {
     inline_functions_with_loops: boolean;
   };
   integrity?: { algorithm: string; wasm: string };
+}
+
+export interface OndaLogSiteMetadata {
+  index: number;
+  label: string | null;
+  source: { file: number | null; line: number; column: number; end_line: number; end_column: number };
+  lexical_owner: string;
+  declaration: string | null;
+  argument_types: Array<"f32" | "f64" | "i32" | "i64" | "bool">;
+  payload_size_bytes: number;
 }
 
 export interface OndaProcessorArtifact {
@@ -307,6 +320,16 @@ export interface OndaDelegateBatch {
   overflowCount: number;
 }
 
+export type OndaPrintBatch = OndaDelegateBatch;
+export interface OndaPrintEntry {
+  siteIndex: number;
+  label: string | null;
+  source: OndaLogSiteMetadata["source"];
+  lexicalOwner: string;
+  declaration: string | null;
+  values: Array<{ type: "f32" | "f64" | "i32" | "i64" | "bool"; value: number | bigint | boolean }>;
+}
+
 export interface OndaDelegateOccurrence {
   delegateIndex: number;
   name: string;
@@ -327,6 +350,39 @@ export function readDelegateBatch(
   memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
   batchAddress: number,
 ): OndaDelegateBatch;
+export function writePrintBatch(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  batchAddress: number,
+  storageAddress: number,
+  capacityBytes: number,
+): void;
+export function readPrintBatch(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  batchAddress: number,
+): OndaPrintBatch;
+export function writeExecutionOutput(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  outputAddress: number,
+  delegateBatchAddress?: number,
+  printBatchAddress?: number,
+): void;
+export function decodePrintRecords(
+  storage: Uint8Array | ArrayBuffer | ArrayBufferView,
+  usedBytes: number,
+  logSites: OndaLogSiteMetadata[],
+  byteOrder?: "little_endian" | "big_endian",
+): OndaPrintEntry[];
+export function formatPrintBatch(
+  memory: WebAssembly.Memory,
+  printBatchAddress: number,
+  metadata: OndaProcessorMetadata | { log_sites: OndaLogSiteMetadata[]; target?: OndaTargetInfo },
+): { text: string; entries: OndaPrintEntry[]; overflowCount: number };
+export function formatPrintRecords(
+  storage: Uint8Array | ArrayBuffer | ArrayBufferView,
+  usedBytes: number,
+  metadata: OndaProcessorMetadata | { log_sites: OndaLogSiteMetadata[]; target?: OndaTargetInfo },
+  overflowCount?: number,
+): { text: string; entries: OndaPrintEntry[]; overflowCount: number };
 /** Decode every complete record in used storage according to delegate metadata. */
 export function decodeDelegateRecords(
   storage: Uint8Array | ArrayBuffer | ArrayBufferView,

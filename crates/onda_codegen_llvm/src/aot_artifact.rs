@@ -55,7 +55,7 @@ pub(crate) fn build_mir_aot_metadata(
     param_align_bytes: usize,
 ) -> Result<AotMetadata, MirMetadataError> {
     let metadata = build_mir_program_metadata(program, layout)?;
-    Ok(build_aot_metadata_from_descriptors(
+    let mut descriptor = build_aot_metadata_from_descriptors(
         metadata,
         program.schema_version,
         program.interface.events.len(),
@@ -73,7 +73,39 @@ pub(crate) fn build_mir_aot_metadata(
         state_align_bytes,
         param_size_bytes,
         param_align_bytes,
-    ))
+    );
+    descriptor.metadata.source_files = program
+        .source_files
+        .iter()
+        .map(|file| onda_processor_abi::SourceFileMetadata {
+            path: file.path.clone(),
+        })
+        .collect();
+    descriptor.metadata.log_sites = program
+        .log_sites
+        .iter()
+        .enumerate()
+        .map(|(index, site)| onda_processor_abi::LogSiteMetadata {
+            index,
+            label: site.label.clone(),
+            source: onda_processor_abi::SourceSpanMetadata {
+                file: site.source.file.map(|file| file.index()),
+                line: site.source.line,
+                column: site.source.column,
+                end_line: site.source.end_line,
+                end_column: site.source.end_column,
+            },
+            lexical_owner: site.lexical_owner.clone(),
+            declaration: site.declaration.clone(),
+            argument_types: site
+                .argument_types
+                .iter()
+                .map(|scalar| format!("{scalar:?}").to_ascii_lowercase())
+                .collect(),
+            payload_size_bytes: site.payload_size as usize,
+        })
+        .collect();
+    Ok(descriptor)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -172,8 +204,11 @@ fn build_aot_metadata_from_descriptors(
             snapshot_restore_base: "post_init_physical_state_image".to_owned(),
             requires_full_blocks: false,
             delegate_record_header_size_bytes: onda_processor_abi::DELEGATE_RECORD_HEADER_SIZE,
+            print_record_header_size_bytes: onda_processor_abi::PRINT_RECORD_HEADER_SIZE,
         },
         metadata: AotProgramMetadata {
+            source_files: Vec::new(),
+            log_sites: Vec::new(),
             inputs: metadata.inputs.iter().map(map_io_metadata).collect(),
             outputs: metadata.outputs.iter().map(map_io_metadata).collect(),
             control_outputs: metadata

@@ -16,6 +16,88 @@ mod namespace_flattening;
 use crate::task_lowering::validate_task_source_model;
 use namespace_flattening::flatten_namespaces_for_semantics;
 
+fn annotate_print_origins(program: &mut Program) {
+    fn statements(body: &mut [Stmt], lexical_owner: &str, declaration: &str) {
+        for statement in body {
+            if let Stmt::Print { loc, origin, .. } = statement {
+                *origin = Some(onda_frontend::PrintSourceOrigin {
+                    source: *loc,
+                    lexical_owner: lexical_owner.to_owned(),
+                    declaration: declaration.to_owned(),
+                });
+            }
+            match statement {
+                Stmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    statements(then_branch, lexical_owner, declaration);
+                    statements(else_branch, lexical_owner, declaration);
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    statements(body, lexical_owner, declaration);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn when_declaration(when: &WhenDef) -> String {
+        format!("when {}", when.target.delegate)
+    }
+
+    for block in &mut program.blocks {
+        match block {
+            Block::Init(init) => statements(&mut init.body, "program", "init"),
+            Block::Block(exec) => {
+                statements(&mut exec.pre, "program", "block");
+                if let Some(sample) = &mut exec.sample {
+                    statements(&mut sample.body, "program", "block");
+                }
+                statements(&mut exec.post, "program", "block");
+            }
+            Block::Sample(sample) => statements(&mut sample.body, "program", "sample"),
+            Block::Def(def) => statements(&mut def.body, "program", &def.name),
+            Block::Events(events) => {
+                for event in &mut events.events {
+                    statements(&mut event.body, "program", &event.name);
+                }
+            }
+            Block::When(when) => {
+                let declaration = when_declaration(when);
+                statements(&mut when.body, "program", &declaration);
+            }
+            Block::Tasks(tasks) => {
+                for task in &mut tasks.tasks {
+                    statements(&mut task.body, "program", &task.name);
+                }
+            }
+            Block::Proc(processor) => {
+                let owner = processor.name.clone();
+                statements(&mut processor.init.body, &owner, "init");
+                statements(&mut processor.block_pre, &owner, "block");
+                statements(&mut processor.sample, &owner, "sample");
+                statements(&mut processor.block_post, &owner, "block");
+                for event in &mut processor.events {
+                    statements(&mut event.body, &owner, &event.name);
+                }
+                for when in &mut processor.whens {
+                    let declaration = when_declaration(when);
+                    statements(&mut when.body, &owner, &declaration);
+                }
+                for task in &mut processor.tasks {
+                    statements(&mut task.body, &owner, &task.name);
+                }
+                for def in &mut processor.local_defs {
+                    statements(&mut def.body, &owner, &def.name);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnostic>> {
     if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
         return Err(vec![Diagnostic::internal(
@@ -240,6 +322,7 @@ fn statements_return_value(statements: &[Stmt]) -> bool {
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. } => false,
     })
@@ -615,6 +698,11 @@ fn fold_host_sr_stmt(stmt: &mut Stmt, consts: &HashMap<String, TypedConstValue>)
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             fold_local_scalar_const_expr(expr, consts);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                fold_local_scalar_const_expr(value, consts);
+            }
         }
         Stmt::If {
             cond,
@@ -1504,6 +1592,12 @@ fn validate_const_def_stmt_shapes(
                     &loop_vars,
                     errors,
                 );
+            }
+            Stmt::Print { .. } => {
+                errors.push(Diagnostic::semantic_span(
+                    format!("print is not allowed in const def '{def_name}'"),
+                    stmt.loc(),
+                ));
             }
             Stmt::Expr { .. } | Stmt::While { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {
                 errors.push(Diagnostic::semantic_span(
@@ -3282,6 +3376,13 @@ fn eval_const_def_stmt_list(
                     return None;
                 }
             }
+            Stmt::Print { .. } => {
+                errors.push(Diagnostic::semantic_span(
+                    format!("print is not allowed in const def '{def_name}'"),
+                    stmt.loc(),
+                ));
+                return None;
+            }
             Stmt::Expr { .. } | Stmt::While { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {
                 errors.push(Diagnostic::semantic_span(
                     format!("const def '{def_name}' statement is not supported"),
@@ -3582,6 +3683,11 @@ fn fold_stmt_const_arrays(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             fold_const_array_expr(expr, const_values, options, errors, false);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                fold_const_array_expr(value, const_values, options, errors, false);
+            }
         }
         Stmt::If {
             cond,
@@ -4016,6 +4122,11 @@ fn reject_forward_const_refs_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                reject_forward_const_refs_expr(value, visible_consts, future_consts, errors);
+            }
         }
         Stmt::If {
             cond,
@@ -4642,6 +4753,7 @@ fn reject_const_shadowing_stmt(
         }
         Stmt::Const { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::Return { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. } => {}
@@ -4915,6 +5027,7 @@ fn reject_const_assignments_stmt(
         }
         Stmt::Const { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::Return { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. } => {}
@@ -5362,6 +5475,11 @@ fn fold_direct_const_def_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             fold_direct_const_def_call_expr(expr, artifacts, options, "expression", errors);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                fold_direct_const_def_call_expr(value, artifacts, options, "print value", errors);
+            }
         }
         Stmt::If {
             cond,
@@ -6199,6 +6317,11 @@ fn preprocess_local_const_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             fold_local_scalar_const_expr(expr, local_consts);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                fold_local_scalar_const_expr(value, local_consts);
+            }
         }
         Stmt::If {
             cond,
@@ -7749,6 +7872,11 @@ fn normalize_runtime_call_shape_exprs(
                 Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                     normalize_expr(expr, options);
                 }
+                Stmt::Print { values, .. } => {
+                    for value in values {
+                        normalize_expr(value, options);
+                    }
+                }
                 Stmt::If {
                     cond,
                     then_branch,
@@ -8244,6 +8372,7 @@ fn rewrite_integer_binding_ranges_in_list(
             Stmt::Const { .. }
             | Stmt::Assign { .. }
             | Stmt::Expr { .. }
+            | Stmt::Print { .. }
             | Stmt::Return { .. }
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => {}
@@ -8376,6 +8505,7 @@ pub fn analyze_with_options_and_inputs(
         .map(Block::loc)
         .find(|loc| !loc.is_zero());
     let mut program = preprocess_program_for_analysis_with_inputs(program, options, inputs)?;
+    annotate_print_origins(&mut program);
 
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
@@ -11990,6 +12120,19 @@ fn collect_def_proc_arg_oversample_factors_from_stmts(
     for stmt in stmts {
         match stmt {
             Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_def_proc_arg_oversample_factors_from_expr(
+                        value,
+                        sample_oversample_factor,
+                        defs_by_name,
+                        top_level_proc_rewrite,
+                        proc_api,
+                        out,
+                        errors,
+                    );
+                }
+            }
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_def_proc_arg_oversample_factors_from_expr(
                     expr,
@@ -12605,6 +12748,16 @@ fn collect_proc_call_diags_from_stmts(
                 out,
             ),
             Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_proc_call_diags_from_expr(
+                        value,
+                        proc_api,
+                        generated_proc_call_timing,
+                        out,
+                    );
+                }
+            }
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_proc_call_diags_from_expr(expr, proc_api, generated_proc_call_timing, out);
             }
@@ -13116,6 +13269,17 @@ fn mark_readonly_param_stmt_uses_as_mutable(
                 mutable_params,
             );
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                mark_readonly_param_expr_uses_as_mutable(
+                    value,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+        }
         Stmt::Const { decl, .. } => {
             mark_readonly_param_expr_uses_as_mutable(
                 &decl.expr,
@@ -13486,6 +13650,11 @@ fn rewrite_stmt_for_def_proc_block_guards(
     match &stmt {
         Stmt::Expr { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
             collect_guards(expr, proc_api, proc_block_active_symbols, &mut guards);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                collect_guards(value, proc_api, proc_block_active_symbols, &mut guards);
+            }
         }
         Stmt::If { cond, .. } | Stmt::While { cond, .. } => {
             collect_guards(cond, proc_api, proc_block_active_symbols, &mut guards);
@@ -13871,6 +14040,18 @@ fn collect_typed_def_owner_proc_hook_params_from_stmts(
     for stmt in stmts {
         match stmt {
             Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_typed_def_owner_proc_hook_params_from_expr(
+                        value,
+                        def,
+                        def_map,
+                        known_requirements,
+                        proc_api,
+                        out,
+                    );
+                }
+            }
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_typed_def_owner_proc_hook_params_from_expr(
                     expr,
@@ -14215,6 +14396,17 @@ fn collect_sample_owner_proc_hook_instances_from_stmts(
     for stmt in stmts {
         match stmt {
             Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_sample_owner_proc_hook_instances_from_expr(
+                        value,
+                        def_map,
+                        requirements,
+                        global_proc_instances,
+                        out,
+                    );
+                }
+            }
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_sample_owner_proc_hook_instances_from_expr(
                     expr,
@@ -14459,6 +14651,11 @@ fn collect_called_typed_defs_in_stmt(
 ) {
     match stmt {
         Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Print { values, .. } => {
+            for value in values {
+                collect_called_typed_defs_in_expr(value, def_names, pending, seen_pending);
+            }
+        }
         Stmt::Assign { target, expr, .. } => {
             collect_called_typed_defs_in_assign_target(target, def_names, pending, seen_pending);
             collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);

@@ -87,6 +87,41 @@ Audio processor must expose at least one audio input or output, because an empty
 does not carry a render-quantum frame count. Control-only artifacts remain usable through the generic
 processor ABI in a non-Web-Audio host.
 
+Call `processor.close()` when the adapter is no longer used. Closing is idempotent and terminal: it
+rejects pending requests, removes listeners, and makes subsequent operations fail immediately. The
+wrapped `AudioWorkletNode` and `AudioContext` remain caller-owned.
+
+## Prints
+
+Authored `print(...)` occurrences leave generated execution as bounded typed records. The worklet
+copies those records without formatting or allocating strings during audio rendering; the main-side
+adapter turns them into canonical, newline-terminated text:
+
+```js
+const processor = await createOndaAudioProcessorInitialized(context, artifact, {
+  printCapacityBytes: 128 * 1024,
+});
+
+const unsubscribe = processor.onPrint(({
+  text,
+  entries,
+  overflowCount,
+  transportDropCount,
+}) => {
+  logView.append(text);
+  if (overflowCount) console.warn(`${overflowCount} generated print records were dropped`);
+  if (transportDropCount) console.warn(`${transportDropCount} print records missed UI transport`);
+});
+```
+
+`text` is ready to write or display and contains one newline-terminated line per occurrence.
+`entries` retains typed values and source/log-site metadata for source-aware consumers. Generated
+batch overflow and bounded worklet-to-main transport loss are reported separately; loss-only
+notifications are delivered even when no later authored print arrives. Capacity defaults to 64 KiB
+and can be set to zero to suppress host delivery without suppressing argument evaluation.
+See [Hosting Onda print output](../../docs/printing.md) for scalar formatting, source metadata, and
+the equivalent Rust, C, and raw processor APIs.
+
 ## Delegates
 
 Top-level delegates are delivered after generated execution through `onDelegates()`. The worklet

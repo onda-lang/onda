@@ -667,61 +667,62 @@ impl RunApp {
         }
     }
 
-    fn render_delegates(
-        &self,
-        ui: &mut egui::Ui,
-        delegates: &[Value],
-        occurrences: &[Value],
-        overflow_count: u64,
-        transport_drop_count: u64,
-    ) {
-        for delegate in delegates {
-            let Some(name) = delegate.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let params = delegate
-                .get("params")
-                .and_then(Value::as_array)
-                .map(|params| {
-                    params
-                        .iter()
-                        .filter_map(|param| {
-                            Some(format!(
-                                "{}: {}",
-                                param.get("name")?.as_str()?,
-                                param.get("type")?.as_str()?
-                            ))
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            ui.label(egui::RichText::new(format!("{name}({params})")).monospace());
-        }
-        ui.add_space(6.0);
-        if occurrences.is_empty() {
-            ui.label(egui::RichText::new("Waiting for delegate occurrences…").weak());
-        } else {
-            for occurrence in occurrences.iter().rev().take(16) {
-                let name = occurrence
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("delegate");
-                let values = occurrence
-                    .get("values")
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "{}".to_owned());
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(name).strong().monospace());
-                    ui.label(egui::RichText::new(values).weak().monospace());
+    fn render_log(&self, ui: &mut egui::Ui, state: &onda_run::RunState) {
+        if !state.log_text.is_empty() {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .max_height(120.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for (index, line) in state.log_text.lines().enumerate() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(line).monospace());
+                            let source = state
+                                .log_entries
+                                .get(index)
+                                .and_then(|entry| entry.get("source"));
+                            let file = source
+                                .and_then(|source| source.get("file"))
+                                .and_then(Value::as_str);
+                            let line_number = source
+                                .and_then(|source| source.get("line"))
+                                .and_then(Value::as_u64);
+                            let owner = state
+                                .log_entries
+                                .get(index)
+                                .and_then(|entry| entry.get("lexicalOwner"))
+                                .and_then(Value::as_str);
+                            let context = match (file, line_number, owner) {
+                                (Some(file), Some(line), Some(owner)) => {
+                                    format!("{file}:{line} · {owner}")
+                                }
+                                (Some(file), Some(line), None) => format!("{file}:{line}"),
+                                (_, _, Some(owner)) => owner.to_owned(),
+                                _ => String::new(),
+                            };
+                            if !context.is_empty() {
+                                ui.label(egui::RichText::new(context).small().weak().monospace());
+                            }
+                        });
+                    }
                 });
-            }
         }
-        let dropped = overflow_count.saturating_add(transport_drop_count);
-        if dropped != 0 {
+        if state.print_overflow_count != 0 || state.print_transport_drop_count != 0 {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                format!("{dropped} delegate occurrence(s) dropped"),
+                format!(
+                    "prints: {} generated overflow · {} transport drops",
+                    state.print_overflow_count, state.print_transport_drop_count,
+                ),
+            );
+        }
+        if state.delegate_overflow_count != 0 || state.delegate_transport_drop_count != 0 {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "delegates: {} generated overflow · {} transport drops",
+                    state.delegate_overflow_count, state.delegate_transport_drop_count,
+                ),
             );
         }
     }
@@ -1117,7 +1118,7 @@ impl eframe::App for RunApp {
                                             );
                                         },
                                     );
-                                    if let Some(error) = state.error {
+                                    if let Some(error) = &state.error {
                                         ui.add_space(8.0);
                                         ui.colored_label(theme.error, error);
                                     }
@@ -1148,6 +1149,33 @@ impl eframe::App for RunApp {
                                         egui::vec2(ui.available_width(), 140.0),
                                         &theme,
                                     );
+                                });
+                            });
+                        }
+
+                        if state.log_revealed {
+                            ui.add_space(12.0);
+                            section_box(ui, "", |ui| {
+                                let mut log_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    ui.make_persistent_id("log-section"),
+                                    true,
+                                );
+                                let mut clear_log = false;
+                                render_section_header(ui, &mut log_state, "Log", |ui| {
+                                    clear_log = ui
+                                        .add(run_button("Clear").min_size(egui::vec2(48.0, 26.0)))
+                                        .clicked();
+                                });
+                                if clear_log {
+                                    self.controller
+                                        .as_mut()
+                                        .expect("loaded run controller")
+                                        .clear_log();
+                                }
+                                log_state.show_body_unindented(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    self.render_log(ui, &state);
                                 });
                             });
                         }
@@ -1206,28 +1234,6 @@ impl eframe::App for RunApp {
                                 events_state.show_body_unindented(ui, |ui| {
                                     ui.add_space(8.0);
                                     self.render_events(ui, &state.events, state.connected);
-                                });
-                            });
-                        }
-
-                        if !state.delegates.is_empty() {
-                            ui.add_space(12.0);
-                            section_box(ui, "", |ui| {
-                                let mut delegates_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                                    ui.ctx(),
-                                    ui.make_persistent_id("delegates-section"),
-                                    true,
-                                );
-                                render_section_header(ui, &mut delegates_state, "Delegates", |_| {});
-                                delegates_state.show_body_unindented(ui, |ui| {
-                                    ui.add_space(8.0);
-                                    self.render_delegates(
-                                        ui,
-                                        &state.delegates,
-                                        &state.delegate_occurrences,
-                                        state.delegate_overflow_count,
-                                        state.delegate_transport_drop_count,
-                                    );
                                 });
                             });
                         }

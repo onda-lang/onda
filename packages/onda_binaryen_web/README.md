@@ -30,16 +30,19 @@ such a boundary would need to reproduce every invariant enforced by `onda_mir`. 
 a JSON string, a MessagePack `ArrayBuffer`/typed-array view, or a decoded object. JSON remains useful
 for inspection; the browser compiler and test corpus use MessagePack as the production transport.
 
-The generated module exports `memory`, `__heap_base`, `onda_processor_init(params_ptr, state_ptr, mode)`, the
-12-argument processor `onda_process`, and one `onda_event_N` function per declared event. Process and
-event entries take an optional call-scoped delegate-batch pointer as their final argument. Each
-function returns zero on success or a positive generated execution-failure code. These are
+The generated module exports `memory`, `__heap_base`,
+`onda_processor_init(params_ptr, state_ptr, mode, output_ptr)`, the 12-argument processor
+`onda_process`, and one `onda_event_N` function per declared event. Init, process, and event entries
+take an optional call-scoped execution-output pointer carrying independent delegate and print
+batches. Each function returns zero on success or a positive generated execution-failure code. These are
 the complete wasm32-module profile of the generic
 [`Onda processor ABI`](../../docs/processor-abi.md), not a Web Audio-specific interface. The host
 owns allocation in linear memory. Metadata contains resolved target/integration facts,
 state/parameter layouts, state-backed control-output offsets, flattened audio-port channels, packed
-event/delegate payload layouts, and all exported ABI names. See
-[Hosting Onda delegates](../../docs/delegates.md) for batch sizing, decoding, and overflow handling.
+event/delegate payload layouts, print log sites, source tables, and all exported ABI names. See
+[Hosting Onda delegates](../../docs/delegates.md) and
+[Hosting Onda print output](../../docs/printing.md) for batch sizing, decoding, formatting, and
+overflow handling.
 
 `createProcessorArtifactFiles()` validates the final module, computes a SHA-256 digest, and returns
 a reusable `.wasm` plus `.onda.json` descriptor pair. `validateProcessorArtifact`,

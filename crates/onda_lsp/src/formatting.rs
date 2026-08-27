@@ -754,6 +754,14 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
                 push_line(out, indent, &format!("return {}", format_expr(expr)));
             }
         }
+        Stmt::Print { label, values, .. } => {
+            let mut arguments = Vec::with_capacity(values.len() + usize::from(label.is_some()));
+            if let Some(label) = label {
+                arguments.push(format_quoted_text(label));
+            }
+            arguments.extend(values.iter().map(format_expr));
+            push_line(out, indent, &format!("print({})", arguments.join(", ")));
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -1378,9 +1386,13 @@ pub fn format_param_decl(param: &ParamDecl) -> String {
 }
 
 fn format_param_unit(unit: &str) -> String {
-    let mut text = String::with_capacity(unit.len() + 2);
+    format_quoted_text(unit)
+}
+
+fn format_quoted_text(value: &str) -> String {
+    let mut text = String::with_capacity(value.len() + 2);
     text.push('"');
-    for ch in unit.chars() {
+    for ch in value.chars() {
         match ch {
             '"' => text.push_str("\\\""),
             '\\' => text.push_str("\\\\"),
@@ -1581,6 +1593,17 @@ proc Worker:
         assert!(formatted.contains("config const Size: i32 = 4\n"));
         assert!(formatted.contains("config const Values: f32[Size] = [0.0, 0.5, 1.0, 0.5]\n"));
         let reparsed = parse_program(&formatted).expect("formatted config constants should parse");
+        assert_eq!(format_program(&reparsed), formatted);
+    }
+
+    #[test]
+    fn formatting_preserves_print_labels_and_argument_order() {
+        let program =
+            parse_program("sample:\n  print(\"voice\\n\\\"phase\\\"\",index, phase, true)\n")
+                .expect("print statement should parse");
+        let formatted = format_program(&program);
+        assert!(formatted.contains("print(\"voice\\n\\\"phase\\\"\", index, phase, true)\n"));
+        let reparsed = parse_program(&formatted).expect("formatted print should remain parseable");
         assert_eq!(format_program(&reparsed), formatted);
     }
 }

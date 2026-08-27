@@ -354,6 +354,30 @@ pub(crate) fn analyze_init_stmt(
                 errors,
                 "return is only allowed inside def blocks",
             ),
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    let env = stmt_expr_env(common.scope_kind());
+                    if let Some((name, ty)) = non_printable_stmt_expr_type(value, env) {
+                        push_semantic(
+                            DiagCtx::new(value.loc().span()),
+                            errors,
+                            format!(
+                                "value '{name}' has non-printable type '{ty}'; print scalar values explicitly"
+                            ),
+                        );
+                        continue;
+                    }
+                    let before = errors.len();
+                    let ty = validate_and_infer_stmt_expr_type(value, env, errors);
+                    if ty.is_none() && errors.len() == before {
+                        push_semantic(
+                            DiagCtx::new(value.loc().span()),
+                            errors,
+                            "print values must resolve to f32, f64, i32, i64, or bool; print scalar values explicitly",
+                        );
+                    }
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,

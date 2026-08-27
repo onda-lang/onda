@@ -1926,6 +1926,7 @@ struct Voice {
     self.phase = self.phase + 1.0
   }
 }
+
 init {
   v = Voice(0.0)
 }
@@ -1948,6 +1949,42 @@ sample {
         Stmt::Expr { .. } => {}
         _ => panic!("first statement should be call expression statement"),
     }
+}
+
+#[test]
+fn parses_print_statements_and_decodes_labels() {
+    let program = parse_program(
+        "outs:\n  out1\nsample:\n  print(value)\n  print(\"line\\n\\t\\\"\\\\\")\n  print(\"value\", value, true)\n  out1 = 0.0\n",
+    )
+    .expect("print statements should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(statements) => Some(statements),
+            _ => None,
+        })
+        .expect("sample block");
+    assert!(matches!(
+        &sample[0],
+        Stmt::Print { label: None, values, .. } if values.len() == 1
+    ));
+    assert!(matches!(
+        &sample[1],
+        Stmt::Print { label: Some(label), values, .. }
+            if label == "line\n\t\"\\" && values.is_empty()
+    ));
+    assert!(matches!(
+        &sample[2],
+        Stmt::Print { label: Some(label), values, .. }
+            if label == "value" && values.len() == 2
+    ));
+}
+
+#[test]
+fn print_is_not_an_expression_or_declarable_name() {
+    assert!(parse_program("sample:\n  value = print(1)\n").is_err());
+    assert!(parse_program("def print(value):\n  return value\n").is_err());
 }
 
 #[test]
@@ -7413,6 +7450,9 @@ fn stmt_contains_var_with_suffix(stmt: &Stmt, suffix: &str) -> bool {
         Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             expr_contains_var_with_suffix(expr, suffix)
         }
+        Stmt::Print { values, .. } => values
+            .iter()
+            .any(|expr| expr_contains_var_with_suffix(expr, suffix)),
         Stmt::If {
             cond,
             then_branch,

@@ -390,6 +390,12 @@ mod platform {
                 }
                 true
             }
+            "clearLog" => {
+                if let Some(controller) = controller.as_mut() {
+                    controller.clear_log();
+                }
+                true
+            }
             "refreshDevices" => {
                 if let Some(controller) = controller.as_mut() {
                     controller.refresh_devices();
@@ -492,8 +498,11 @@ mod platform {
             "outputChannels": 0,
             "buffers": [],
             "events": [],
-            "delegates": [],
-            "delegateOccurrences": [],
+            "logText": "",
+            "logEntries": [],
+            "logRevealed": false,
+            "printOverflowCount": 0,
+            "printTransportDropCount": 0,
             "delegateOverflowCount": 0,
             "delegateTransportDropCount": 0,
             "params": [],
@@ -531,8 +540,11 @@ mod platform {
             "outputChannels": state.output_channels,
             "buffers": state.buffers,
             "events": state.events,
-            "delegates": state.delegates,
-            "delegateOccurrences": state.delegate_occurrences,
+            "logText": state.log_text,
+            "logEntries": state.log_entries,
+            "logRevealed": state.log_revealed,
+            "printOverflowCount": state.print_overflow_count,
+            "printTransportDropCount": state.print_transport_drop_count,
             "delegateOverflowCount": state.delegate_overflow_count,
             "delegateTransportDropCount": state.delegate_transport_drop_count,
             "params": state.params,

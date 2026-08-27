@@ -15,6 +15,8 @@ occurrences into bounded caller-owned storage.
 
 For language syntax and ownership rules, see [the language guide](syntax.md#delegates-and-when).
 For raw generated entry-point layouts, see [the processor ABI](processor-abi.md).
+For the independent diagnostic stream carried by the same execution-output container, see
+[Hosting Onda print output](printing.md).
 
 ## Delivery model
 
@@ -97,8 +99,12 @@ onda_delegate_batch_t batch = {
   .storage = storage,
   .capacity_bytes = capacity,
 };
+onda_execution_output_t output = {
+  .delegate_batch = &batch,
+  .print_batch = NULL,
+};
 
-int status = onda_process_checked(instance, frames, &batch);
+int status = onda_process_checked(instance, frames, &output);
 if (status == 0) {
   for (uint32_t i = 0; i < batch.record_count; ++i) {
     onda_delegate_occurrence_t occurrence;
@@ -129,9 +135,10 @@ are useful for payload validation. `onda_delegate_record_bytes` and
 `onda_delegate_record_min_bytes` include it and are the appropriate allocation queries. Exact-size
 queries return `-1` for dynamic payloads; every query returns `-1` for an invalid index.
 
-Passing `NULL` instead of `&batch` is the ordinary path when the host does not consume delegates.
-The same nullable argument is available on checked, unchecked, segmented-process, and input-event
-functions.
+Passing `NULL` as `output.delegate_batch`, or passing a null execution output, is the ordinary path
+when the host does not consume delegates. The same singular execution output is available on
+initialization, checked, unchecked, segmented-process, and input-event functions; its independent
+`print_batch` pointer may be present or absent without affecting delegate capacity.
 
 ## Rust runtime API
 
@@ -139,7 +146,7 @@ functions.
 returns payload views tied to that borrow:
 
 ```rust
-use onda_runtime::{process_checked, DelegateBatch};
+use onda_runtime::{process_checked, DelegateBatch, ExecutionOutput};
 
 let meter = instance.delegate_index("meter").expect("declared delegate");
 let record_budget = match instance.delegate_record_bytes(meter) {
@@ -151,7 +158,14 @@ let record_budget = match instance.delegate_record_bytes(meter) {
 let mut storage = vec![0_u8; 64 * record_budget];
 let mut batch = DelegateBatch::from_storage(&mut storage);
 
-process_checked(&mut instance, frames, Some(&mut batch))?;
+process_checked(
+    &mut instance,
+    frames,
+    ExecutionOutput {
+        delegate_batch: Some(&mut batch),
+        print_batch: None,
+    },
+)?;
 for occurrence in batch.occurrences() {
     if occurrence.delegate_index as usize == meter {
         consume_meter_payload(occurrence.payload);
@@ -163,7 +177,7 @@ if batch.overflow_count != 0 {
 # Ok::<(), onda_frontend::Diagnostic>(())
 ```
 
-Use `process_checked(..., None)` or the corresponding unchecked/event API when collection is not
+Use `ExecutionOutput::none()` or the corresponding unchecked/event API when collection is not
 needed. `Instance::delegate_descriptor` exposes parameter shapes for generic payload decoders.
 
 ## Raw processor ABI
@@ -179,10 +193,14 @@ onda_processor_delegate_batch_t batch = {
   .storage = storage,
   .capacity_bytes = sizeof(storage),
 };
+onda_processor_execution_output_t output = {
+  .delegate_batch = &batch,
+  .print_batch = NULL,
+};
 
 uint32_t status = onda_process(
   state, params, inputs, outputs, 0, frames, ONDA_PROCESSOR_FULL_BLOCK,
-  buffers, buffer_frames, buffer_channels, buffer_sample_rates, &batch
+  buffers, buffer_frames, buffer_channels, buffer_sample_rates, &output
 );
 if (status == ONDA_PROCESSOR_EXECUTION_OK) {
   for (uint32_t i = 0; i < batch.record_count; ++i) {
@@ -194,8 +212,9 @@ if (status == ONDA_PROCESSOR_EXECUTION_OK) {
 }
 ```
 
-Pass a null batch pointer when collection is not required. The raw and hosted batch types are
-intentionally independent even though they implement the same logical record contract.
+Pass a null `output.delegate_batch` or null output when collection is not required. The raw and
+hosted batch types are intentionally independent even though they implement the same logical
+record contract.
 
 ## JavaScript processor ABI
 
@@ -206,6 +225,7 @@ helpers:
 import {
   DELEGATE_RECORD_HEADER_SIZE_BYTES,
   writeDelegateBatch,
+  writeExecutionOutput,
   readDelegateBatch,
   decodeDelegateRecords,
 } from "@onda-lang/processor-abi";
@@ -217,9 +237,10 @@ const fixedRecordBytes = artifact.metadata.metadata.delegates.map((delegate) =>
 );
 
 writeDelegateBatch(memory, batchAddress, storageAddress, capacityBytes);
+writeExecutionOutput(memory, outputAddress, batchAddress, 0);
 const status = exports.onda_process(
   state, params, inputs, outputs, 0, frames, flags,
-  buffers, bufferFrames, bufferChannels, bufferSampleRates, batchAddress,
+  buffers, bufferFrames, bufferChannels, bufferSampleRates, outputAddress,
 );
 if (status === 0) {
   const batch = readDelegateBatch(memory, batchAddress);
