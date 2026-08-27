@@ -1076,12 +1076,19 @@ fn run_event_value_from_json(value: Value) -> Result<RunEventValue, String> {
             .as_f64()
             .map(RunEventValue::Number)
             .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
+        Value::String(value) => value
+            .parse::<i64>()
+            .map(RunEventValue::I64)
+            .map_err(|_| "triggerEvent string values must be decimal i64 integers".to_owned()),
         Value::Array(values) => values
             .into_iter()
             .map(run_event_value_from_json)
             .collect::<Result<Vec<_>, _>>()
             .map(RunEventValue::Array),
-        _ => Err("triggerEvent values must be numbers, booleans, or arrays".to_owned()),
+        _ => Err(
+            "triggerEvent values must be numbers, decimal i64 strings, booleans, or arrays"
+                .to_owned(),
+        ),
     }
 }
 
@@ -1587,6 +1594,33 @@ mod tests {
             })
         );
         assert_eq!(dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn run_delegate_notifications_encode_i64_as_decimal_strings() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunDelegateBatch {
+                occurrences: vec![RunDelegateOccurrence {
+                    index: 0,
+                    name: "wide".to_owned(),
+                    values: vec![RunDelegateValue {
+                        name: "value".to_owned(),
+                        value: RunEventValue::I64(9_007_199_254_740_993),
+                    }],
+                }],
+                overflow_count: 0,
+            })
+            .expect("delegate batch should be queued");
+
+        let mut bytes = Vec::new();
+        write_pending_delegate_batch(&mut bytes, &receiver, &AtomicU32::new(0))
+            .expect("delegate batch should serialize");
+        let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(
+            notification["occurrences"][0]["values"]["value"],
+            Value::String("9007199254740993".to_owned())
+        );
     }
 
     #[test]

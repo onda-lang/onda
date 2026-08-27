@@ -296,6 +296,7 @@ fn proc_value_name_scope(proc: &ProcessorDef) -> RewriteNameScope {
     scope.extend(proc.params.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.buffers.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.events.iter().map(|event| event.name.clone()));
+    scope.extend(proc.delegates.iter().map(|delegate| delegate.name.clone()));
     scope.extend(proc.tasks.iter().map(|task| task.name.clone()));
     scope.extend(proc.local_defs.iter().map(|def| def.name.clone()));
     collect_top_level_assignment_target_names(&proc.init.body, &mut scope.names);

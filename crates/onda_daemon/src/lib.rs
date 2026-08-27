@@ -900,4 +900,70 @@ mod tests {
 
         fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn when_bindings_do_not_shadow_owner_state() {
+        let dir = mk_temp_dir("run_delegate_binding_hygiene");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate fired(payload: i32)\n\ninit:\n  payload: i32 = 42\n  result: i32 = 0\n\nevent trigger():\n  fired(7)\n\nwhen fired(value):\n  result = payload\n\nsample:\n  out1 = f32(result)\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session.start_run(&main).expect("run should start");
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .trigger_event("trigger", &[])
+            .expect("event should run");
+        let rendered = session
+            .render_run_block(&main)
+            .expect("run render should succeed");
+        assert_eq!(rendered[0][0], 42.0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn namespaced_proc_delegate_calls_remain_owner_local() {
+        let dir = mk_temp_dir("run_namespaced_delegate");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "namespace N:\n  def fired():\n    return\n\n  proc Child:\n    delegate fired()\n    event trigger():\n      fired()\n    sample:\n      out1 = 0.0\n\ndelegate observed()\n\ninit:\n  child = N::Child()\n\nwhen child.fired():\n  observed()\n\nevent trigger():\n  child.trigger()\n\nsample:\n  out1 = child()\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session.start_run(&main).expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        run.trigger_event("trigger", &[]).expect("event should run");
+        let batch = run.take_delegate_batch().expect("batch should decode");
+        assert_eq!(batch.occurrences.len(), 1);
+        assert_eq!(batch.occurrences[0].name, "observed");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_delegate_batches_preserve_i64_payloads() {
+        let dir = mk_temp_dir("run_delegate_i64");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate report(value: i64)\n\nevent trigger():\n  report(9007199254740993)\n\nsample:\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session.start_run(&main).expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        run.trigger_event("trigger", &[]).expect("event should run");
+        let batch = run.take_delegate_batch().expect("batch should decode");
+        assert_eq!(
+            batch.occurrences[0].values[0].value,
+            RunEventValue::I64(9_007_199_254_740_993)
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }

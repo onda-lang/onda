@@ -10,6 +10,7 @@ const TOP_WHEN_PREFIX: &str = "__onda_when_";
 const SELF_WHEN_PREFIX: &str = "__onda_delegate_self_when_";
 const PROC_CHILD_WHEN_PREFIX: &str = "__onda_delegate_child_when_";
 const WHEN_INDEX_PARAM: &str = "__onda_when_index";
+const WHEN_PAYLOAD_PARAM_PREFIX: &str = "__onda_when_payload_";
 
 #[derive(Debug, Clone)]
 pub(super) struct PreparedDelegates {
@@ -77,7 +78,17 @@ fn when_handler_function(
     } else {
         None
     };
-    params.extend(delegate.params.iter().map(crate::event_param_as_fn_param));
+    let payload_params = delegate
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            let mut param = crate::event_param_as_fn_param(param);
+            param.name = format!("{WHEN_PAYLOAD_PARAM_PREFIX}{index}");
+            param
+        })
+        .collect::<Vec<_>>();
+    params.extend(payload_params.iter().cloned());
     FunctionDef {
         loc: when.loc,
         name,
@@ -86,7 +97,7 @@ fn when_handler_function(
         params,
         return_ty: None,
         return_ty_loc: Default::default(),
-        body: validate_and_bind_when(when, delegate, leading, owner, errors),
+        body: validate_and_bind_when(when, delegate, leading, &payload_params, owner, errors),
     }
 }
 
@@ -125,6 +136,7 @@ fn validate_and_bind_when(
     when: &WhenDef,
     delegate: &DelegateDef,
     leading_index: Option<Expr>,
+    payload_params: &[onda_frontend::FnParamDecl],
     owner: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
@@ -162,7 +174,7 @@ fn validate_and_bind_when(
         }
         offset = 1;
     }
-    for (binding, param) in when.bindings[offset..].iter().zip(&delegate.params) {
+    for (binding, param) in when.bindings[offset..].iter().zip(payload_params) {
         if binding.name != "_" {
             replacements.insert(binding.name.clone(), Expr::var(param.name.clone()));
         }
@@ -1625,12 +1637,378 @@ fn build_proc_delegate_effects(
     effects
 }
 
+fn rewrite_delegate_validation_stmts(
+    stmts: &mut [Stmt],
+    env: &mut crate::def_semantics::CallTypeEnv,
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    return_types: &HashMap<String, ReturnType>,
+) {
+    let mut ignored_errors = Vec::new();
+    crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
+        stmts,
+        env,
+        crate::def_semantics::CallTypeContext {
+            return_types,
+            struct_defs: &HashMap::new(),
+        },
+        crate::def_semantics::OverloadOwnerContext {
+            defer_dependent_calls: true,
+        },
+        overloads,
+        &mut ignored_errors,
+    );
+}
+
+fn rewrite_delegate_validation_function(
+    def: &mut FunctionDef,
+    env: &crate::def_semantics::CallTypeEnv,
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    return_types: &HashMap<String, ReturnType>,
+) {
+    let mut ignored_errors = Vec::new();
+    crate::def_semantics::rewrite_overloaded_calls_in_function(
+        def,
+        env,
+        crate::def_semantics::CallTypeContext {
+            return_types,
+            struct_defs: &HashMap::new(),
+        },
+        crate::def_semantics::OverloadOwnerContext {
+            defer_dependent_calls: true,
+        },
+        overloads,
+        &mut ignored_errors,
+    );
+}
+
+fn delegate_validation_return_types(
+    defs: &[FunctionDef],
+    env: &crate::def_semantics::CallTypeEnv,
+) -> HashMap<String, ReturnType> {
+    let signatures = defs
+        .iter()
+        .map(|def| (def.name.clone(), FnSignature::from_def(def)))
+        .collect::<HashMap<_, _>>();
+    crate::def_semantics::infer_known_def_return_types_with_seed(
+        defs,
+        &signatures,
+        env,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+}
+
+fn rewrite_delegate_validation_event(
+    event: &mut EventDef,
+    state_env: &crate::def_semantics::CallTypeEnv,
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    return_types: &HashMap<String, ReturnType>,
+) {
+    let mut env = state_env.clone();
+    for param in &event.params {
+        env.bind_function_param(&crate::event_param_as_fn_param(param), &[]);
+    }
+    rewrite_delegate_validation_stmts(&mut event.body, &mut env, overloads, return_types);
+}
+
+fn rewrite_delegate_validation_task(
+    task: &mut TaskDef,
+    state_env: &crate::def_semantics::CallTypeEnv,
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    return_types: &HashMap<String, ReturnType>,
+) {
+    let mut env = state_env.clone();
+    rewrite_delegate_validation_stmts(&mut task.body, &mut env, overloads, return_types);
+}
+
+fn rewrite_delegate_validation_when(
+    when: &mut WhenDef,
+    delegate: Option<&DelegateDef>,
+    takes_index: bool,
+    state_env: &crate::def_semantics::CallTypeEnv,
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    return_types: &HashMap<String, ReturnType>,
+) {
+    let mut env = state_env.clone();
+    let mut bindings = when.bindings.iter();
+    if takes_index {
+        if let Some(binding) = bindings.next() {
+            env.bind_function_param_type(
+                &binding.name,
+                Some(&FnParamType::Primitive(PrimitiveType::I32)),
+                &[],
+            );
+        }
+    }
+    if let Some(delegate) = delegate {
+        for (binding, param) in bindings.zip(&delegate.params) {
+            let param = crate::event_param_as_fn_param(param);
+            env.bind_function_param_type(&binding.name, param.ty.as_ref(), &[]);
+        }
+    }
+    rewrite_delegate_validation_stmts(&mut when.body, &mut env, overloads, return_types);
+}
+
+/// Delegate validation runs before the main overload pass because delegates
+/// are desugared into ordinary functions. Resolve the calls on a validation
+/// clone so the dispatch graph observes concrete overload identities without
+/// changing the source program or duplicating overload-selection rules.
+fn resolve_delegate_validation_overloads(program: &mut Program) {
+    let proc_delegate_defs = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Proc(proc) => Some(proc),
+            _ => None,
+        })
+        .flat_map(|proc| {
+            proc.delegates
+                .iter()
+                .map(move |delegate| ((proc.name.clone(), delegate.name.clone()), delegate.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+    let proc_names = proc_delegate_defs
+        .keys()
+        .map(|(proc_name, _)| proc_name.clone())
+        .collect::<HashSet<_>>();
+    let top_delegate_defs = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Delegates(delegates) => Some(delegates.delegates.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .map(|delegate| (delegate.name.clone(), delegate.clone()))
+        .collect::<HashMap<_, _>>();
+    let top_def_indices = program
+        .blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| matches!(block, Block::Def(_)).then_some(index))
+        .collect::<Vec<_>>();
+    let mut top_defs = top_def_indices
+        .iter()
+        .filter_map(|&index| match &program.blocks[index] {
+            Block::Def(def) => Some(def.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let (top_overloads, _) = crate::def_semantics::prepare_function_overloads(&mut top_defs);
+
+    let mut top_state_env = crate::def_semantics::CallTypeEnv::default();
+    let provisional_return_types = delegate_validation_return_types(&top_defs, &top_state_env);
+    if let Some(Block::Init(init)) = program
+        .blocks
+        .iter_mut()
+        .find(|block| matches!(block, Block::Init(_)))
+    {
+        rewrite_delegate_validation_stmts(
+            &mut init.body,
+            &mut top_state_env,
+            &top_overloads,
+            &provisional_return_types,
+        );
+    }
+    let top_return_types = delegate_validation_return_types(&top_defs, &top_state_env);
+    for def in &mut top_defs {
+        rewrite_delegate_validation_function(
+            def,
+            &top_state_env,
+            &top_overloads,
+            &top_return_types,
+        );
+    }
+    for (index, def) in top_def_indices.into_iter().zip(top_defs) {
+        program.blocks[index] = Block::Def(def);
+    }
+
+    let top_children = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Init(init) => Some(child_proc_instances(&init.body, &proc_names)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    for block in &mut program.blocks {
+        match block {
+            Block::Events(events) => {
+                for event in &mut events.events {
+                    rewrite_delegate_validation_event(
+                        event,
+                        &top_state_env,
+                        &top_overloads,
+                        &top_return_types,
+                    );
+                }
+            }
+            Block::Tasks(tasks) => {
+                for task in &mut tasks.tasks {
+                    rewrite_delegate_validation_task(
+                        task,
+                        &top_state_env,
+                        &top_overloads,
+                        &top_return_types,
+                    );
+                }
+            }
+            Block::When(when) => {
+                let child = when
+                    .target
+                    .receiver
+                    .first()
+                    .and_then(|receiver| top_children.get(receiver));
+                let delegate = child
+                    .and_then(|child| {
+                        proc_delegate_defs
+                            .get(&(child.proc_name.clone(), when.target.delegate.clone()))
+                    })
+                    .or_else(|| top_delegate_defs.get(&when.target.delegate));
+                rewrite_delegate_validation_when(
+                    when,
+                    delegate,
+                    child.is_some_and(|child| child.is_array && when.target.index.is_none()),
+                    &top_state_env,
+                    &top_overloads,
+                    &top_return_types,
+                );
+            }
+            Block::Sample(sample) => {
+                let mut env = top_state_env.clone();
+                rewrite_delegate_validation_stmts(
+                    &mut sample.body,
+                    &mut env,
+                    &top_overloads,
+                    &top_return_types,
+                );
+            }
+            Block::Block(exec) => {
+                for body in [
+                    exec.pre.as_mut_slice(),
+                    exec.sample
+                        .as_mut()
+                        .map(|sample| sample.body.as_mut_slice())
+                        .unwrap_or(&mut []),
+                    exec.post.as_mut_slice(),
+                ] {
+                    let mut env = top_state_env.clone();
+                    rewrite_delegate_validation_stmts(
+                        body,
+                        &mut env,
+                        &top_overloads,
+                        &top_return_types,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for proc in program.blocks.iter_mut().filter_map(|block| match block {
+        Block::Proc(proc) => Some(proc),
+        _ => None,
+    }) {
+        let local_public_names = proc
+            .local_defs
+            .iter()
+            .map(|def| def.name.clone())
+            .collect::<HashSet<_>>();
+        let (local_overloads, _) =
+            crate::def_semantics::prepare_function_overloads(&mut proc.local_defs);
+        let mut overloads = top_overloads
+            .iter()
+            .filter(|(name, _)| !local_public_names.contains(*name))
+            .map(|(name, candidates)| (name.clone(), candidates.clone()))
+            .collect::<HashMap<_, _>>();
+        overloads.extend(local_overloads);
+
+        let mut state_env = crate::def_semantics::CallTypeEnv::default();
+        let provisional_return_types =
+            delegate_validation_return_types(&proc.local_defs, &state_env);
+        rewrite_delegate_validation_stmts(
+            &mut proc.init.body,
+            &mut state_env,
+            &overloads,
+            &provisional_return_types,
+        );
+        let mut return_types = top_return_types.clone();
+        return_types.extend(delegate_validation_return_types(
+            &proc.local_defs,
+            &state_env,
+        ));
+        for def in &mut proc.local_defs {
+            rewrite_delegate_validation_function(def, &state_env, &overloads, &return_types);
+        }
+        for event in &mut proc.events {
+            rewrite_delegate_validation_event(event, &state_env, &overloads, &return_types);
+        }
+        for task in &mut proc.tasks {
+            rewrite_delegate_validation_task(task, &state_env, &overloads, &return_types);
+        }
+        let children = child_proc_instances(&proc.init.body, &proc_names);
+        for when in &mut proc.whens {
+            let child = when
+                .target
+                .receiver
+                .first()
+                .and_then(|receiver| children.get(receiver));
+            let delegate = child
+                .and_then(|child| {
+                    proc_delegate_defs.get(&(child.proc_name.clone(), when.target.delegate.clone()))
+                })
+                .or_else(|| {
+                    proc_delegate_defs.get(&(proc.name.clone(), when.target.delegate.clone()))
+                });
+            rewrite_delegate_validation_when(
+                when,
+                delegate,
+                child.is_some_and(|child| child.is_array && when.target.index.is_none()),
+                &state_env,
+                &overloads,
+                &return_types,
+            );
+        }
+        for body in [
+            proc.block_pre.as_mut_slice(),
+            proc.sample.as_mut_slice(),
+            proc.block_post.as_mut_slice(),
+        ] {
+            let mut env = state_env.clone();
+            rewrite_delegate_validation_stmts(body, &mut env, &overloads, &return_types);
+        }
+    }
+}
+
+fn delegate_validation_has_overloads(program: &Program) -> bool {
+    fn has_duplicate_names<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+        let mut seen = HashSet::new();
+        names.into_iter().any(|name| !seen.insert(name))
+    }
+
+    has_duplicate_names(program.blocks.iter().filter_map(|block| match block {
+        Block::Def(def) => Some(def.name.as_str()),
+        _ => None,
+    })) || program.blocks.iter().any(|block| match block {
+        Block::Proc(proc) => {
+            has_duplicate_names(proc.local_defs.iter().map(|def| def.name.as_str()))
+        }
+        _ => false,
+    })
+}
+
 pub(super) fn validate_delegate_source_model(
     program: &Program,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
     validate_delegate_member_names(program, errors);
+    let resolved_program = delegate_validation_has_overloads(program).then(|| {
+        let mut resolved = program.clone();
+        resolve_delegate_validation_overloads(&mut resolved);
+        resolved
+    });
+    let program = resolved_program.as_ref().unwrap_or(program);
     let proc_effects = build_proc_delegate_effects(program, options);
 
     let proc_delegates = program

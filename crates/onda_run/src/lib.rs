@@ -1302,6 +1302,7 @@ fn run_event_value_json(value: &RunEventValue) -> Value {
     match value {
         RunEventValue::Bool(value) => Value::Bool(*value),
         RunEventValue::Number(value) => json!(value),
+        RunEventValue::I64(value) => Value::String(value.to_string()),
         RunEventValue::Array(values) => {
             Value::Array(values.iter().map(run_event_value_json).collect())
         }

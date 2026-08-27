@@ -135,6 +135,7 @@ pub struct RunDelegateBatch {
 pub enum RunEventValue {
     Bool(bool),
     Number(f64),
+    I64(i64),
     Array(Vec<RunEventValue>),
 }
 
@@ -1056,6 +1057,7 @@ fn default_run_event_value(param: &DeclaredEventParam) -> RunEventValue {
 fn zero_run_event_value(ty: PrimitiveType) -> RunEventValue {
     match ty {
         PrimitiveType::Bool => RunEventValue::Bool(false),
+        PrimitiveType::I64 => RunEventValue::I64(0),
         _ => RunEventValue::Number(0.0),
     }
 }
@@ -1083,9 +1085,9 @@ fn scalar_run_event_value(ty: PrimitiveType, bytes: &[u8]) -> RunEventValue {
                 i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
             )
         }
-        PrimitiveType::I64 if bytes.len() == 8 => RunEventValue::Number(i64::from_ne_bytes([
+        PrimitiveType::I64 if bytes.len() == 8 => RunEventValue::I64(i64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]) as f64),
+        ])),
         PrimitiveType::Bool if !bytes.is_empty() => RunEventValue::Bool(bytes[0] != 0),
         PrimitiveType::Bool => RunEventValue::Bool(false),
         _ => RunEventValue::Number(0.0),
@@ -1282,9 +1284,13 @@ fn append_scalar_event_value(
         PrimitiveType::I32 => out.extend_from_slice(
             &(event_number_value(event_name, param, value)? as i32).to_ne_bytes(),
         ),
-        PrimitiveType::I64 => out.extend_from_slice(
-            &(event_number_value(event_name, param, value)? as i64).to_ne_bytes(),
-        ),
+        PrimitiveType::I64 => {
+            let value = match value {
+                RunEventValue::I64(value) => *value,
+                _ => event_number_value(event_name, param, value)? as i64,
+            };
+            out.extend_from_slice(&value.to_ne_bytes());
+        }
         PrimitiveType::Bool => {
             let encoded = match value {
                 RunEventValue::Bool(value) => {
@@ -1298,6 +1304,23 @@ fn append_scalar_event_value(
                     if *value == 0.0 {
                         0_i8
                     } else if *value == 1.0 {
+                        1_i8
+                    } else {
+                        return Err(Diagnostic::runtime(
+                            format!(
+                                "event '{}' parameter '{}' requires a boolean value, got {value}",
+                                event_name,
+                                param.name()
+                            ),
+                            0,
+                            0,
+                        ));
+                    }
+                }
+                RunEventValue::I64(value) => {
+                    if *value == 0 {
+                        0_i8
+                    } else if *value == 1 {
                         1_i8
                     } else {
                         return Err(Diagnostic::runtime(
@@ -1332,6 +1355,7 @@ fn event_number_value(
 ) -> Result<f64, Diagnostic> {
     match value {
         RunEventValue::Number(value) => Ok(*value),
+        RunEventValue::I64(value) => Ok(*value as f64),
         RunEventValue::Bool(value) => Err(Diagnostic::runtime(
             format!(
                 "event '{}' parameter '{}' requires a numeric {} value, got {}",

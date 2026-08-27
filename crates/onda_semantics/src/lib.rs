@@ -13164,6 +13164,102 @@ sample:
     }
 
     #[test]
+    fn delegate_reachability_uses_the_selected_overload() {
+        for source in [
+            r#"
+delegate finished()
+
+def helper(value: f32):
+  return
+
+def helper(value: i32):
+  finished()
+
+init:
+  helper(1.0)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+def helper(value: i32):
+  finished()
+
+def helper(value: f32):
+  return
+
+init:
+  helper(1.0)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished(value: f32)
+
+def helper(value: f32):
+  return
+
+def helper(value: i32):
+  finished(f32(value))
+
+when finished(value):
+  helper(value)
+
+sample:
+  out1 = 0.0
+"#,
+        ] {
+            let program = parse_program(source).expect("overloaded delegate source should parse");
+            analyze(program)
+                .expect("a call to the pure overload must not inherit another overload's effects");
+        }
+    }
+
+    #[test]
+    fn delegate_reachability_rejects_the_selected_effectful_overload() {
+        for source in [
+            r#"
+delegate finished()
+
+def helper(value: f32):
+  finished()
+
+def helper(value: i32):
+  return
+
+init:
+  helper(1.0)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+def helper(value: i32):
+  return
+
+def helper(value: f32):
+  finished()
+
+init:
+  helper(1.0)
+
+sample:
+  out1 = 0.0
+"#,
+        ] {
+            assert_analyze_error_contains(
+                source,
+                "init code in the top-level owner cannot call or reach a delegate",
+            );
+        }
+    }
+
+    #[test]
     fn delegates_reject_value_use() {
         assert_analyze_error_contains(
             r#"

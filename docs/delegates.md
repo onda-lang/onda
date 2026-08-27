@@ -262,6 +262,11 @@ unsubscribe();
 The default capacity is 64 KiB. A capacity of zero disables record storage. Listeners run on the
 main-side message handler, not inside generated DSP execution.
 
+Decoded `i64` payloads remain full-width integers. Native Rust hosts expose them as
+`RunEventValue::I64`, JSON transports encode them as canonical decimal strings, and the Web Audio
+adapter exposes JavaScript `BigInt` values. This avoids rounding payloads through an `f64` or
+JavaScript `Number` boundary.
+
 ## Lifetime and failure rules
 
 - Consume or copy occurrences before the next call that reuses the batch.

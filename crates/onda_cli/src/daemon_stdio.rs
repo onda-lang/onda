@@ -128,18 +128,25 @@ struct ProcessSegmentRequest {
     flags: u32,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum EventValueRequest {
     Bool(bool),
     Number(f64),
+    I64(String),
 }
 
-impl From<EventValueRequest> for RunEventValue {
-    fn from(value: EventValueRequest) -> Self {
+impl TryFrom<EventValueRequest> for RunEventValue {
+    type Error = String;
+
+    fn try_from(value: EventValueRequest) -> Result<Self, Self::Error> {
         match value {
-            EventValueRequest::Bool(value) => Self::Bool(value),
-            EventValueRequest::Number(value) => Self::Number(value),
+            EventValueRequest::Bool(value) => Ok(Self::Bool(value)),
+            EventValueRequest::Number(value) => Ok(Self::Number(value)),
+            EventValueRequest::I64(value) => value
+                .parse()
+                .map(Self::I64)
+                .map_err(|_| format!("invalid decimal i64 event value '{value}'")),
         }
     }
 }
@@ -334,7 +341,10 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             .run_mut(path)
             .ok_or_else(|| "run is not active".to_owned())
             .and_then(|run| {
-                let values = values.into_iter().map(Into::into).collect::<Vec<_>>();
+                let values = values
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<Vec<_>, _>>()?;
                 run.trigger_event(&name, &values)
                     .map_err(|diag| diagnostic_string("run_trigger_event failed", &diag))?;
                 let batch = run.take_delegate_batch().map_err(|diag| {
@@ -428,6 +438,7 @@ fn run_event_value_json(value: &RunEventValue) -> Value {
     match value {
         RunEventValue::Bool(value) => Value::Bool(*value),
         RunEventValue::Number(value) => json!(value),
+        RunEventValue::I64(value) => Value::String(value.to_string()),
         RunEventValue::Array(values) => {
             Value::Array(values.iter().map(run_event_value_json).collect())
         }
@@ -539,6 +550,18 @@ mod tests {
         assert_eq!(session.config().analysis.block_size, 256);
         assert_eq!(session.config().analysis.sample_rate, 44_100.0);
         assert!(session.config().run.fast_math);
+    }
+
+    #[test]
+    fn daemon_json_preserves_decimal_i64_event_values() {
+        let value = RunEventValue::try_from(EventValueRequest::I64("9007199254740993".to_owned()))
+            .expect("decimal i64 input should parse");
+        assert_eq!(value, RunEventValue::I64(9_007_199_254_740_993));
+        assert_eq!(
+            run_event_value_json(&value),
+            Value::String("9007199254740993".to_owned())
+        );
+        assert!(RunEventValue::try_from(EventValueRequest::I64("1.5".to_owned())).is_err());
     }
 
     #[test]
