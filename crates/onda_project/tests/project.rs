@@ -8,8 +8,8 @@ use onda_project::{
     load_buffer_file, resolve_project_input, resolve_project_watch_paths,
     validate_buffer_asset_metadata, validate_buffer_assets, AssetId, BufferAsset, BufferElement,
     BufferSamples, InlineBuffer, MaterializationPlan, PlannedFile, ProjectBufferChannels,
-    ProjectBufferDeclaration, ProjectImage, ProjectInput, ProjectLimits, ProjectManifest,
-    SourceDocument, SourceImage, SourceReferenceKind, SourceResolution,
+    ProjectBufferDeclaration, ProjectConstValue, ProjectImage, ProjectInput, ProjectLimits,
+    ProjectManifest, SourceDocument, SourceImage, SourceReferenceKind, SourceResolution,
     ONDA_PROJECT_DEFAULT_FILE_NAME,
 };
 use serde_json::json;
@@ -1303,6 +1303,61 @@ fn ondaproject_file_resolves_entry_and_typed_inline_buffers() {
     resolve_project_input(&directory, ProjectLimits::default())
         .expect_err("directories are not project entry points");
     fs::remove_dir_all(directory).expect("remove test directory");
+}
+
+#[test]
+fn project_constants_round_trip_through_images_and_materialization() {
+    let manifest: ProjectManifest = serde_json::from_value(json!({
+        "entry": "main.onda",
+        "constants": {
+            "Enabled": true,
+            "Count": 8,
+            "Wide": "9007199254740993",
+            "Window": [0.0, 0.5, 1.0]
+        }
+    }))
+    .expect("parse project constants");
+    manifest
+        .validate(&ProjectLimits::default())
+        .expect("validate project constants");
+    assert_eq!(manifest.constants["Enabled"], ProjectConstValue::Bool(true));
+    assert_eq!(
+        manifest.constants["Wide"].onda_literal(),
+        "i64(9007199254740993)"
+    );
+
+    let files = BTreeMap::from([
+        (
+            ONDA_PROJECT_DEFAULT_FILE_NAME.to_owned(),
+            manifest
+                .to_pretty_json()
+                .expect("manifest JSON")
+                .into_bytes(),
+        ),
+        (
+            "main.onda".to_owned(),
+            b"config const Enabled: bool = false\nconfig const Count: i32 = 0\nconfig const Wide: i64 = i64(0)\nconfig const Window: f64[] = []\nsample:\n  out1 = 0.0\n"
+                .to_vec(),
+        ),
+    ]);
+    let image = ProjectImage::from_materialized_files(&files, ProjectLimits::default())
+        .expect("load project constants into image");
+    assert_eq!(image.constants(), &manifest.constants);
+
+    let serialized = image.serialize().expect("serialize project image");
+    let restored = ProjectImage::deserialize(&serialized, ProjectLimits::default())
+        .expect("deserialize project image");
+    assert_eq!(restored.constants(), &manifest.constants);
+
+    let plan = restored.materialization_plan().expect("materialize image");
+    let manifest_file = plan
+        .files
+        .iter()
+        .find(|file| file.relative_path == ONDA_PROJECT_DEFAULT_FILE_NAME)
+        .expect("materialized manifest");
+    let materialized: ProjectManifest =
+        serde_json::from_slice(&manifest_file.bytes).expect("parse materialized manifest");
+    assert_eq!(materialized.constants, manifest.constants);
 }
 
 #[test]

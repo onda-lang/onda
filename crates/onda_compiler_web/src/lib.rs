@@ -22,7 +22,8 @@ use onda_project::{
     SourceImage,
 };
 use onda_semantics::{
-    analyze_with_options_and_inputs, lower_program_to_optimized_mir, AnalysisOptions, CompileInputs,
+    analyze_with_options_and_inputs, compile_inputs_from_literals, lower_program_to_optimized_mir,
+    AnalysisOptions, CompileInputs,
 };
 #[cfg(target_arch = "wasm32")]
 use onda_semantics::{
@@ -576,7 +577,9 @@ fn compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_request
         )
     })?;
     let source_files = virtual_paths(Path::new(""), &loaded.sources.files);
-    let lowered = lower_parsed_program(loaded.program, config, input_request)
+    let inputs = merged_project_compile_inputs(&loaded.program, &image, config, input_request)
+        .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
+    let lowered = lower_parsed_program(loaded.program, config, CompileInputRequest::Typed(&inputs))
         .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
     let mut declarations = Vec::new();
     let grouped_ids = lowered
@@ -640,6 +643,35 @@ fn compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_request
         source_files,
         source_image: Some(source_image),
     })
+}
+
+fn merged_project_compile_inputs(
+    program: &Program,
+    image: &ProjectImage,
+    config: onda_mir::CompileConfig,
+    request: CompileInputRequest<'_>,
+) -> Result<CompileInputs, Vec<CompilerDiagnostic>> {
+    let explicit = request.resolve(program)?;
+    let mut inputs = compile_inputs_from_literals(
+        program,
+        image
+            .constants()
+            .iter()
+            .filter(|(name, _)| !explicit.constants.contains_key(*name))
+            .map(|(name, value)| (name.clone(), value.onda_literal())),
+        AnalysisOptions {
+            sample_rate: config.sample_rate,
+            block_size: config.block_size as usize,
+        },
+    )
+    .map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| CompilerDiagnostic::source("semantic", diagnostic))
+            .collect::<Vec<_>>()
+    })?;
+    inputs.constants.extend(explicit.constants.clone());
+    Ok(inputs)
 }
 
 pub fn compile_source_to_mir_json_with_manifest(
@@ -1047,7 +1079,9 @@ fn inspect_project_image_compile_constants_with_request(
         )
     })?;
     let source_files = virtual_paths(Path::new(""), &loaded.sources.files);
-    inspect_parsed_compile_constants(loaded.program, config, input_request)
+    let inputs = merged_project_compile_inputs(&loaded.program, &image, config, input_request)
+        .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
+    inspect_parsed_compile_constants(loaded.program, config, CompileInputRequest::Typed(&inputs))
         .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files))
 }
 
@@ -2163,6 +2197,48 @@ sample:
         )
         .expect_err("host asset limits must be enforced before compilation");
         assert!(failure.diagnostics[0].message.contains("byte limit"));
+    }
+
+    #[test]
+    fn project_image_constants_are_defaults_but_explicit_inputs_win() {
+        let sources = SourceImage {
+            entry: "main.onda".to_owned(),
+            stdlib_digest: onda_project::current_stdlib_digest(),
+            documents: vec![onda_project::SourceDocument {
+                path: "main.onda".to_owned(),
+                contents: "config const Selected: i32 = missing\nnamespace Check:\n  assert(Selected == 2)\nsample:\n  out1 = f32(Selected)\n".to_owned(),
+            }],
+            resolutions: Vec::new(),
+        };
+        let image = ProjectImage::from_buffer_assets_with_constants(
+            sources,
+            std::collections::BTreeMap::from([(
+                "Selected".to_owned(),
+                onda_project::ProjectConstValue::Number(2.into()),
+            )]),
+            std::collections::BTreeMap::new(),
+        )
+        .expect("project image with constant");
+        let bytes = image.serialize().expect("serialize project image");
+        compile_project_image_to_mir_messagepack_with_manifest(&bytes, 48_000.0, 128)
+            .expect("project constant should replace the authored default");
+
+        let mut inputs = CompileInputs::default();
+        inputs.constants.insert(
+            "Selected".to_owned(),
+            ConstValue::Scalar(TypedConstValue::I32(3)),
+        );
+        let failure =
+            compile_project_image_to_mir_messagepack_with_inputs(&bytes, 48_000.0, 128, &inputs)
+                .expect_err("explicit host input should override the project constant");
+        assert!(
+            failure
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("assert")),
+            "unexpected diagnostics: {:?}",
+            failure.diagnostics
+        );
     }
 
     #[test]

@@ -18,7 +18,58 @@ pub const ONDA_PROJECT_DEFAULT_FILE_NAME: &str = "project.ondaproject";
 pub struct ProjectManifest {
     pub entry: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub constants: BTreeMap<String, ProjectConstValue>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub buffers: BTreeMap<String, ManifestBufferBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProjectConstValue {
+    Bool(bool),
+    Number(serde_json::Number),
+    I64(String),
+    Array(Vec<ProjectConstValue>),
+}
+
+impl ProjectConstValue {
+    pub fn onda_literal(&self) -> String {
+        match self {
+            Self::Bool(value) => value.to_string(),
+            Self::Number(value) => value.to_string(),
+            Self::I64(value) => format!("i64({value})"),
+            Self::Array(values) => format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(Self::onda_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+
+    fn validate(&self) -> Result<(), ProjectError> {
+        match self {
+            Self::I64(value) => {
+                value.parse::<i64>().map_err(|_| {
+                    ProjectError::new(format!(
+                        "project i64 constant value '{value}' is outside the signed 64-bit range"
+                    ))
+                })?;
+                Ok(())
+            }
+            Self::Array(values) => {
+                if values.iter().any(|value| matches!(value, Self::Array(_))) {
+                    return Err(ProjectError::new(
+                        "project constant arrays must contain primitive scalar values",
+                    ));
+                }
+                values.iter().try_for_each(Self::validate)
+            }
+            Self::Bool(_) | Self::Number(_) => Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -102,12 +153,14 @@ impl ProjectManifest {
     pub fn empty(entry: impl Into<String>) -> Self {
         Self {
             entry: entry.into(),
+            constants: BTreeMap::new(),
             buffers: BTreeMap::new(),
         }
     }
 
     pub fn validate(&self, limits: &ProjectLimits) -> Result<(), ProjectError> {
         validate_relative_project_path(&self.entry, limits)?;
+        validate_project_constants(&self.constants, limits)?;
         let binding_count = self.buffers.values().try_fold(0usize, |total, binding| {
             let count = match binding {
                 ManifestBufferBinding::File(_) | ManifestBufferBinding::Inline(_) => 1,
@@ -748,6 +801,44 @@ pub(crate) fn validate_project_buffer_name(
                 limits.max_buffer_bindings
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_project_constant_name(name: &str, limits: &ProjectLimits) -> Result<(), ProjectError> {
+    if name.is_empty() {
+        return Err(ProjectError::new(
+            "project constant names must not be empty",
+        ));
+    }
+    if name.len() > limits.max_path_component_bytes {
+        return Err(ProjectError::new(format!(
+            "project constant name exceeds the {} byte limit",
+            limits.max_path_component_bytes
+        )));
+    }
+    if name.contains('\0') {
+        return Err(ProjectError::new(
+            "project constant names must not contain NUL",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_project_constants(
+    constants: &BTreeMap<String, ProjectConstValue>,
+    limits: &ProjectLimits,
+) -> Result<(), ProjectError> {
+    if constants.len() > limits.max_constant_bindings {
+        return Err(ProjectError::new(format!(
+            "project contains {} constant bindings, exceeding the {} binding limit",
+            constants.len(),
+            limits.max_constant_bindings
+        )));
+    }
+    for (name, value) in constants {
+        validate_project_constant_name(name, limits)?;
+        value.validate()?;
     }
     Ok(())
 }

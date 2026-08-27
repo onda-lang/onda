@@ -149,8 +149,12 @@ fn project_packages_an_existing_source_and_typed_buffer() {
     assert!(destination.join("code/main.onda").is_file());
     let project_path = generated_project_path(&destination);
     assert!(project_path.is_file());
-    let resolved =
-        project_cmd::resolve_run_project(&project_path, &[]).expect("resolve packaged project");
+    let resolved = project_cmd::resolve_run_project(
+        &project_path,
+        &[],
+        onda_semantics::AnalysisOptions::default(),
+    )
+    .expect("resolve packaged project");
     assert_eq!(resolved.buffers.len(), 1);
     assert_eq!(resolved.buffers[0].0, "values");
     assert_eq!(
@@ -183,6 +187,7 @@ fn run_override_skips_the_superseded_manifest_asset() {
     let resolved = project_cmd::resolve_run_project(
         &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         &[("clip".to_owned(), root.join("override.wav"))],
+        onda_semantics::AnalysisOptions::default(),
     )
     .expect("override should supersede the missing manifest asset before loading");
     assert!(resolved.buffers.is_empty());
@@ -344,6 +349,89 @@ fn compile_constant_override_replaces_the_default_for_the_whole_compilation() {
     let _ = std::fs::remove_file(&source_path);
 
     result.expect("the CLI override should drive derived constants and assertions");
+}
+
+#[test]
+fn project_constants_are_defaults_and_cli_constants_take_precedence() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "onda-project-const-test-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).expect("create project constant test directory");
+    std::fs::write(
+        root.join("main.onda"),
+        "config const Selected: i32 = missing_default\nnamespace Check:\n  assert(Selected == 2)\nsample:\n  out1 = f32(Selected)\n",
+    )
+    .expect("write project entry");
+    std::fs::write(
+        root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        r#"{
+  "entry": "main.onda",
+  "constants": {
+    "Selected": 2
+  }
+}
+"#,
+    )
+    .expect("write project manifest");
+
+    let resolved = project_cmd::resolve_run_project(
+        &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        &[],
+        onda_semantics::AnalysisOptions::default(),
+    )
+    .expect("resolve project constants for run");
+    assert!(matches!(
+        resolved.compile_inputs.constants.get("Selected"),
+        Some(onda_semantics::ConstValue::Scalar(
+            onda_semantics::TypedConstValue::I32(2)
+        ))
+    ));
+
+    run_compile(compile_cmd::CompileRequest {
+        input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        emit: CompileEmit::Check,
+        output: None,
+        meta_out: None,
+        sample_rate_hz: 48_000,
+        block_frames: 32,
+        dump_graph: false,
+        const_overrides: &[],
+        list_consts: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    })
+    .expect("the project constant should replace the invalid authored default");
+
+    std::fs::write(
+        root.join("main.onda"),
+        "config const Selected: i32 = missing_default\nnamespace Check:\n  assert(Selected == 3)\nsample:\n  out1 = f32(Selected)\n",
+    )
+    .expect("rewrite project entry for CLI precedence");
+
+    let overrides = [("Selected".to_owned(), "3".to_owned())];
+    let result = run_compile(compile_cmd::CompileRequest {
+        input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        emit: CompileEmit::Check,
+        output: None,
+        meta_out: None,
+        sample_rate_hz: 48_000,
+        block_frames: 32,
+        dump_graph: false,
+        const_overrides: &overrides,
+        list_consts: false,
+        show_meta: false,
+        fast_math: false,
+        target: TargetConfig::host(),
+    });
+    std::fs::remove_dir_all(root).expect("remove project constant test directory");
+
+    result.expect("the CLI constant should override the project default");
 }
 
 #[test]

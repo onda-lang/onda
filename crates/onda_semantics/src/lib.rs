@@ -249,6 +249,92 @@ pub struct CompileInputs {
     pub constants: BTreeMap<String, ConstValue>,
 }
 
+/// Resolves host-readable Onda literals against the declared `config const`
+/// types. Callers may merge the resulting maps in precedence order before
+/// semantic analysis.
+pub fn compile_inputs_from_literals(
+    program: &Program,
+    literals: impl IntoIterator<Item = (String, String)>,
+    options: AnalysisOptions,
+) -> Result<CompileInputs, Vec<Diagnostic>> {
+    let mut inputs = CompileInputs::default();
+    for (name, raw_value) in literals {
+        let decl = program.blocks.iter().find_map(|block| match block {
+            Block::Const(decl) if decl.name == name => Some(decl),
+            _ => None,
+        });
+        let Some(decl) = decl else {
+            return Err(vec![Diagnostic::semantic(
+                format!("unknown configuration constant '{name}'"),
+                0,
+                0,
+            )]);
+        };
+        if !decl.configurable {
+            return Err(vec![Diagnostic::semantic_span(
+                format!(
+                    "constant '{name}' is not host-configurable; declare it with 'config const'"
+                ),
+                decl.loc.as_ref(),
+            )]);
+        }
+        let Some(declared_ty) = decl.ty.as_ref() else {
+            return Err(vec![Diagnostic::semantic_span(
+                format!("configuration constant '{name}' requires an explicit type"),
+                decl.loc.as_ref(),
+            )]);
+        };
+        let value = compile_input_from_literal(&name, &raw_value, declared_ty, decl, options)?;
+        inputs.constants.insert(name, value);
+    }
+    Ok(inputs)
+}
+
+fn compile_input_from_literal(
+    name: &str,
+    raw_value: &str,
+    declared_ty: &ConstType,
+    decl: &ConstDecl,
+    options: AnalysisOptions,
+) -> Result<ConstValue, Vec<Diagnostic>> {
+    let source = format!("const OndaHostValue = {raw_value}\n");
+    let literal_program = onda_frontend::parse_program(&source)?;
+    let mut blocks = literal_program.blocks.into_iter();
+    let expr = match (blocks.next(), blocks.next()) {
+        (Some(Block::Const(value)), None) => value.expr,
+        _ => {
+            return Err(vec![Diagnostic::semantic_span(
+                format!(
+                    "invalid configuration value for '{name}': expected exactly one expression"
+                ),
+                decl.loc.as_ref(),
+            )]);
+        }
+    };
+    let ty = match declared_ty {
+        ConstType::Array { elem, .. } => ConstType::Slice { elem: *elem },
+        other => other.clone(),
+    };
+    let synthetic = Program {
+        blocks: vec![Block::Const(ConstDecl {
+            loc: decl.loc,
+            name: name.to_owned(),
+            ty: Some(ty),
+            expr,
+            configurable: true,
+        })],
+    };
+    let mut descriptors = inspect_compile_constants(synthetic, options, &CompileInputs::default())?;
+    descriptors
+        .pop()
+        .map(|descriptor| descriptor.value)
+        .ok_or_else(|| {
+            vec![Diagnostic::internal(format!(
+                "failed to resolve configuration value for '{name}'"
+            ))]
+        })
+}
+
 /// The resolved source shape of one host-configurable constant.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum CompileConstKind {

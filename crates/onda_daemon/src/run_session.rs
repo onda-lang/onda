@@ -14,7 +14,7 @@ use onda_runtime::{
     process_unchecked_segment, set_param_by_index, trigger_event_by_index, DelegateBatch,
     ExecutionOutput, InitMode, Instance, InstanceConfig, PrintBatch, PrintValue,
 };
-use onda_semantics::{AnalysisOptions, TypedProgram};
+use onda_semantics::{AnalysisOptions, CompileInputs, TypedProgram};
 
 use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 
@@ -225,6 +225,7 @@ pub struct RunSession {
     path: PathBuf,
     version: Option<DocumentVersion>,
     options: RunOptions,
+    compile_inputs: CompileInputs,
     typed: TypedProgram,
     jit: JitProgram,
     instance: Instance,
@@ -275,8 +276,25 @@ impl RunSession {
         options: RunOptions,
         initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
     ) -> Result<Self, RunBuildError> {
+        Self::build_with_inputs_and_initial_buffers(
+            analysis,
+            path,
+            options,
+            &CompileInputs::default(),
+            initial_buffers,
+        )
+    }
+
+    pub fn build_with_inputs_and_initial_buffers(
+        analysis: &AnalysisSession,
+        path: impl AsRef<Path>,
+        options: RunOptions,
+        inputs: &CompileInputs,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+    ) -> Result<Self, RunBuildError> {
         let path = normalize_session_path(path.as_ref());
-        let snapshot = analysis.analyze_document(&path, options.analysis_options());
+        let snapshot =
+            analysis.analyze_document_with_inputs(&path, options.analysis_options(), inputs);
         let version = snapshot.version;
         let Some(typed) = snapshot.typed else {
             return Err(RunBuildError::Diagnostics(snapshot.diagnostics));
@@ -358,6 +376,7 @@ impl RunSession {
             path,
             version,
             options,
+            compile_inputs: inputs.clone(),
             typed,
             jit,
             instance,
@@ -387,6 +406,10 @@ impl RunSession {
 
     pub fn options(&self) -> RunOptions {
         self.options
+    }
+
+    pub fn compile_inputs(&self) -> &CompileInputs {
+        &self.compile_inputs
     }
 
     pub fn typed_program(&self) -> &TypedProgram {

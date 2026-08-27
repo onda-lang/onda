@@ -290,6 +290,7 @@ impl ProjectImage {
             .documents
             .sort_by(|left, right| left.path.cmp(&right.path));
         sources.validate(&limits)?;
+        let constants = manifest.constants.clone();
         let mut buffer_bindings = BTreeMap::new();
         let mut assets = BTreeMap::new();
         let mut file_assets = BTreeMap::<String, AssetId>::new();
@@ -375,7 +376,7 @@ impl ProjectImage {
                 }
             }
         }
-        let image = Self::new(sources, buffer_bindings, assets)?;
+        let image = Self::new_with_constants(sources, constants, buffer_bindings, assets)?;
         image.validate(&limits)?;
         Ok(image)
     }
@@ -471,6 +472,7 @@ impl ProjectImage {
         }
         let manifest = ProjectManifest {
             entry: sources.entry.clone(),
+            constants: self.constants().clone(),
             buffers,
         };
 

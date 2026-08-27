@@ -43,9 +43,18 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             param_sets,
             buffer_bindings,
         } => {
-            let project = crate::project_cmd::resolve_run_project(&input, &buffer_bindings)?;
+            let analysis_options = AnalysisOptions {
+                sample_rate: sample_rate_hz as f32,
+                block_size: block_frames,
+            };
+            let project = crate::project_cmd::resolve_run_project(
+                &input,
+                &buffer_bindings,
+                analysis_options,
+            )?;
             play_run_realtime(PlaybackLaunch {
                 input: project.entry,
+                compile_inputs: project.compile_inputs,
                 dur_seconds,
                 sample_rate_hz,
                 block_frames,
@@ -80,7 +89,15 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             param_sets,
             buffer_bindings,
         } => {
-            let project = crate::project_cmd::resolve_run_project(&input, &buffer_bindings)?;
+            let analysis_options = AnalysisOptions {
+                sample_rate: sample_rate_hz as f32,
+                block_size: block_frames,
+            };
+            let project = crate::project_cmd::resolve_run_project(
+                &input,
+                &buffer_bindings,
+                analysis_options,
+            )?;
             run_daemon_run(DaemonRenderRequest {
                 input: &project.entry,
                 output: &output,
@@ -93,6 +110,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 param_sets: &param_sets,
                 buffer_bindings: &buffer_bindings,
                 project_buffer_bindings: &project.buffers,
+                compile_inputs: &project.compile_inputs,
             })
         }
         RunCommand::Window {
@@ -169,18 +187,30 @@ fn run_daemon_diagnose(
 ) -> Result<(), String> {
     let project_input = crate::project_cmd::resolve_entry(input)?;
     let input = project_input.entry_path();
+    let analysis_options = AnalysisOptions {
+        sample_rate: sample_rate_hz as f32,
+        block_size: block_frames,
+    };
+    let compile_inputs = match project_input.project() {
+        Some(project) if !project.manifest.constants.is_empty() => {
+            let parsed = onda_frontend::parse_program_file(input)
+                .map_err(|diags| format_diagnostics("parse failed", &diags))?;
+            crate::project_cmd::project_compile_inputs(&project_input, &parsed, analysis_options)?
+        }
+        Some(_) | None => onda_semantics::CompileInputs::default(),
+    };
     let session = DaemonSession::new(DaemonConfig {
-        analysis: AnalysisOptions {
-            sample_rate: sample_rate_hz as f32,
-            block_size: block_frames,
-        },
+        analysis: analysis_options,
         run: RunOptions {
             sample_rate: sample_rate_hz as f32,
             block_size: block_frames,
             ..RunOptions::default()
         },
     });
-    let snapshot = session.analyze_document(input);
+    let snapshot =
+        session
+            .analysis()
+            .analyze_document_with_inputs(input, analysis_options, &compile_inputs);
     if snapshot.diagnostics.is_empty() {
         println!("ok");
         return Ok(());
@@ -203,6 +233,7 @@ struct DaemonRenderRequest<'a> {
     param_sets: &'a [(String, f64)],
     buffer_bindings: &'a [(String, PathBuf)],
     project_buffer_bindings: &'a [(String, onda_project::BufferAsset, Option<PathBuf>)],
+    compile_inputs: &'a onda_semantics::CompileInputs,
 }
 
 fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
@@ -218,6 +249,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         param_sets,
         buffer_bindings,
         project_buffer_bindings,
+        compile_inputs,
     } = request;
     let mut session = DaemonSession::new(DaemonConfig {
         analysis: AnalysisOptions {
@@ -250,7 +282,18 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         );
     }
 
-    if let Err(err) = session.start_run_with_initial_buffers(input, initial_buffers) {
+    if let Err(err) = session.start_run_with_options_inputs_and_initial_buffers(
+        input,
+        RunOptions {
+            sample_rate: sample_rate_hz as f32,
+            block_size: block_frames,
+            fast_math,
+            opt_level,
+            ..RunOptions::default()
+        },
+        compile_inputs,
+        initial_buffers,
+    ) {
         if let RunBuildError::Initialization {
             print_batch: Some(batch),
             ..

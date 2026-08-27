@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use onda_frontend::{load_program_file_with_overlays, Diagnostic, Program, SourceManifest};
 
 use crate::{
-    analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, MirLoweringError,
-    TypedProgram,
+    analyze_with_options_and_inputs, lower_program_to_optimized_mir, AnalysisOptions,
+    CompileInputs, MirLoweringError, TypedProgram,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -91,6 +91,15 @@ impl AnalysisSession {
         path: impl AsRef<Path>,
         options: AnalysisOptions,
     ) -> AnalysisSnapshot {
+        self.analyze_document_with_inputs(path, options, &CompileInputs::default())
+    }
+
+    pub fn analyze_document_with_inputs(
+        &self,
+        path: impl AsRef<Path>,
+        options: AnalysisOptions,
+        inputs: &CompileInputs,
+    ) -> AnalysisSnapshot {
         let path = normalize_session_path(path.as_ref());
         let version = self
             .open_documents
@@ -114,7 +123,7 @@ impl AnalysisSession {
         let sources = loaded.sources;
         let parsed = loaded.program;
 
-        match analyze_with_options(parsed.clone(), options) {
+        match analyze_with_options_and_inputs(parsed.clone(), options, inputs) {
             Ok(typed) => match lower_program_to_optimized_mir(&typed) {
                 Ok(mir) => AnalysisSnapshot {
                     path,

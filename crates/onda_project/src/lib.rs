@@ -19,8 +19,8 @@ pub use image::{
 };
 pub use manifest::{
     is_project_file_path, resolve_project_input, resolve_project_watch_paths, InlineBuffer,
-    ManifestBufferBinding, ManifestBufferElementBinding, ProjectFile, ProjectInput,
-    ProjectManifest, ProjectWatchPaths, ONDA_PROJECT_DEFAULT_FILE_NAME,
+    ManifestBufferBinding, ManifestBufferElementBinding, ProjectConstValue, ProjectFile,
+    ProjectInput, ProjectManifest, ProjectWatchPaths, ONDA_PROJECT_DEFAULT_FILE_NAME,
     ONDA_PROJECT_FILE_EXTENSION,
 };
 pub use materialize::{new_project_plan, MaterializationPlan, PlannedFile};
@@ -37,6 +37,7 @@ pub struct ProjectLimits {
     pub max_source_bytes: usize,
     pub max_assets: usize,
     pub max_buffer_bindings: usize,
+    pub max_constant_bindings: usize,
     pub max_asset_bytes: usize,
     pub max_total_asset_bytes: usize,
     pub max_manifest_bytes: usize,
@@ -52,6 +53,7 @@ impl Default for ProjectLimits {
             max_source_bytes: 64 * 1024 * 1024,
             max_assets: 4096,
             max_buffer_bindings: 4096,
+            max_constant_bindings: 4096,
             max_asset_bytes: 1024 * 1024 * 1024,
             max_total_asset_bytes: 2 * 1024 * 1024 * 1024,
             max_manifest_bytes: 64 * 1024 * 1024,

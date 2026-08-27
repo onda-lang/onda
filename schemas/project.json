@@ -11,6 +11,18 @@
     "entry": {
       "$ref": "#/$defs/portablePath"
     },
+    "constants": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 255,
+        "pattern": "^[^\\u0000]+$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/constantValue"
+      }
+    },
     "buffers": {
       "type": "object",
       "default": {},
@@ -36,6 +48,25 @@
     }
   },
   "$defs": {
+    "constantScalar": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "type": "number" },
+        {
+          "type": "string",
+          "pattern": "^-?(?:0|[1-9][0-9]*)$"
+        }
+      ]
+    },
+    "constantValue": {
+      "oneOf": [
+        { "$ref": "#/$defs/constantScalar" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/constantScalar" }
+        }
+      ]
+    },
     "bufferBinding": {
       "oneOf": [
         {

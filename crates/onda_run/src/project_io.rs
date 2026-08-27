@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use onda_project::{
     is_project_file_path, load_buffer_file, new_project_plan, validate_buffer_assets, BufferAsset,
     BufferElement, MaterializationPlan, ProjectBufferChannels, ProjectBufferDeclaration,
-    ProjectImage, ProjectLimits, SourceImage, ONDA_PROJECT_FILE_EXTENSION,
+    ProjectConstValue, ProjectImage, ProjectLimits, SourceImage, ONDA_PROJECT_FILE_EXTENSION,
 };
 
 pub fn create_empty_project(destination: &Path) -> Result<(), String> {
@@ -37,13 +37,21 @@ pub fn package_project_from_files(
             asset_file_names.insert(name.clone(), file_name.to_owned());
         }
     }
-    let plan = package_project_plan(source, None, assets, &project_file_name, &asset_file_names)?;
+    let plan = package_project_plan(
+        source,
+        None,
+        BTreeMap::new(),
+        assets,
+        &project_file_name,
+        &asset_file_names,
+    )?;
     publish_project_plan(destination, &plan)
 }
 
 pub fn package_project_plan(
     source: &Path,
     source_root: Option<&Path>,
+    constants: BTreeMap<String, ProjectConstValue>,
     assets: BTreeMap<String, BufferAsset>,
     project_file_name: &str,
     asset_file_names: &BTreeMap<String, String>,
@@ -69,7 +77,20 @@ pub fn package_project_plan(
     let loaded = onda_frontend::load_program_file(&entry).map_err(|error| {
         format_diagnostics("failed to load the source project", &error.diagnostics)
     })?;
-    let typed = onda_semantics::analyze(loaded.program.clone()).map_err(|diagnostics| {
+    let inputs = onda_semantics::compile_inputs_from_literals(
+        &loaded.program,
+        constants
+            .iter()
+            .map(|(name, value)| (name.clone(), value.onda_literal())),
+        onda_semantics::AnalysisOptions::default(),
+    )
+    .map_err(|diagnostics| format_diagnostics("cannot resolve project constants", &diagnostics))?;
+    let typed = onda_semantics::analyze_with_options_and_inputs(
+        loaded.program.clone(),
+        onda_semantics::AnalysisOptions::default(),
+        &inputs,
+    )
+    .map_err(|diagnostics| {
         format_diagnostics(
             "cannot package a project which does not compile",
             &diagnostics,
@@ -94,7 +115,7 @@ pub fn package_project_plan(
         ProjectLimits::default(),
     )
     .map_err(|error| error.to_string())?;
-    ProjectImage::from_buffer_assets(sources, assets)
+    ProjectImage::from_buffer_assets_with_constants(sources, constants, assets)
         .and_then(|image| {
             image.materialization_plan_with_file_names(project_file_name, asset_file_names)
         })
@@ -387,6 +408,7 @@ mod tests {
         let error = package_project_plan(
             &alias,
             None,
+            BTreeMap::new(),
             BTreeMap::new(),
             "project.ondaproject",
             &BTreeMap::new(),

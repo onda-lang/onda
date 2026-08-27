@@ -8,12 +8,12 @@ use sha2::{Digest, Sha256};
 
 use crate::manifest::{
     parse_buffer_element_name, portable_path_collision_key, validate_project_buffer_name,
-    validate_relative_project_path,
+    validate_project_constants, validate_relative_project_path,
 };
-use crate::{BufferAsset, BufferElement, ProjectError, ProjectLimits};
+use crate::{BufferAsset, BufferElement, ProjectConstValue, ProjectError, ProjectLimits};
 
 // Synchronized from format-versions.json; do not edit this copy directly.
-pub const ONDA_PROJECT_IMAGE_FORMAT_VERSION: u32 = 1;
+pub const ONDA_PROJECT_IMAGE_FORMAT_VERSION: u32 = 2;
 const ONDA_PROJECT_IMAGE_MAGIC: &[u8; 8] = b"ONDAPRJ\0";
 const ONDA_PROJECT_IMAGE_HEADER_BYTES: usize = 8 + 4 + 8;
 
@@ -67,6 +67,7 @@ pub struct SourceImage {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectImage {
     sources: SourceImage,
+    constants: BTreeMap<String, ProjectConstValue>,
     buffer_bindings: BTreeMap<String, AssetId>,
     assets: BTreeMap<AssetId, BufferAsset>,
     content_digest: [u8; 32],
@@ -118,6 +119,7 @@ struct WireProjectImage {
     format_version: u32,
     content_digest: String,
     sources: SourceImage,
+    constants: BTreeMap<String, ProjectConstValue>,
     buffer_bindings: BTreeMap<String, AssetId>,
     assets: Vec<WireAsset>,
 }
@@ -171,6 +173,14 @@ impl ProjectImage {
         sources: SourceImage,
         buffers: BTreeMap<String, BufferAsset>,
     ) -> Result<Self, ProjectError> {
+        Self::from_buffer_assets_with_constants(sources, BTreeMap::new(), buffers)
+    }
+
+    pub fn from_buffer_assets_with_constants(
+        sources: SourceImage,
+        constants: BTreeMap<String, ProjectConstValue>,
+        buffers: BTreeMap<String, BufferAsset>,
+    ) -> Result<Self, ProjectError> {
         let mut buffer_bindings = BTreeMap::new();
         let mut assets = BTreeMap::new();
         for (name, asset) in buffers {
@@ -178,11 +188,20 @@ impl ProjectImage {
             buffer_bindings.insert(name, id.clone());
             assets.entry(id).or_insert(asset);
         }
-        Self::new(sources, buffer_bindings, assets)
+        Self::new_with_constants(sources, constants, buffer_bindings, assets)
     }
 
     pub fn new(
+        sources: SourceImage,
+        buffer_bindings: BTreeMap<String, AssetId>,
+        assets: BTreeMap<AssetId, BufferAsset>,
+    ) -> Result<Self, ProjectError> {
+        Self::new_with_constants(sources, BTreeMap::new(), buffer_bindings, assets)
+    }
+
+    pub fn new_with_constants(
         mut sources: SourceImage,
+        constants: BTreeMap<String, ProjectConstValue>,
         buffer_bindings: BTreeMap<String, AssetId>,
         assets: BTreeMap<AssetId, BufferAsset>,
     ) -> Result<Self, ProjectError> {
@@ -192,6 +211,7 @@ impl ProjectImage {
         sources.resolutions.sort();
         let mut image = Self {
             sources,
+            constants,
             buffer_bindings,
             assets,
             content_digest: [0; 32],
@@ -213,6 +233,10 @@ impl ProjectImage {
         &self.sources
     }
 
+    pub fn constants(&self) -> &BTreeMap<String, ProjectConstValue> {
+        &self.constants
+    }
+
     pub fn buffer_bindings(&self) -> &BTreeMap<String, AssetId> {
         &self.buffer_bindings
     }
@@ -223,6 +247,7 @@ impl ProjectImage {
 
     pub fn validate(&self, limits: &ProjectLimits) -> Result<(), ProjectError> {
         self.sources.validate(limits)?;
+        validate_project_constants(&self.constants, limits)?;
         if self.assets.len() > limits.max_assets {
             return Err(ProjectError::new(format!(
                 "project contains {} assets, exceeding the {} asset limit",
@@ -335,6 +360,7 @@ impl ProjectImage {
             format_version: ONDA_PROJECT_IMAGE_FORMAT_VERSION,
             content_digest: self.content_digest_string(),
             sources: self.sources.clone(),
+            constants: self.constants.clone(),
             buffer_bindings: self.buffer_bindings.clone(),
             assets,
         };
@@ -466,6 +492,7 @@ impl ProjectImage {
         sources.resolutions.sort();
         let mut image = Self {
             sources,
+            constants: wire.constants,
             buffer_bindings: wire.buffer_bindings,
             assets,
             content_digest: [0; 32],
@@ -480,7 +507,7 @@ impl ProjectImage {
 
     fn calculate_content_digest(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(b"onda-project-image-content-v1\0");
+        hasher.update(b"onda-project-image-content-v2\0");
         hash_string(&mut hasher, &self.sources.entry);
         hash_string(&mut hasher, &self.sources.stdlib_digest);
         for document in &self.sources.documents {
@@ -497,6 +524,13 @@ impl ProjectImage {
             }]);
             hash_string(&mut hasher, &resolution.specifier);
             hash_string(&mut hasher, &resolution.target);
+        }
+        for (name, value) in &self.constants {
+            hash_string(&mut hasher, name);
+            let encoded = serde_json::to_vec(value)
+                .expect("validated project constants must serialize to JSON");
+            hasher.update((encoded.len() as u64).to_le_bytes());
+            hasher.update(encoded);
         }
         for (name, id) in &self.buffer_bindings {
             hash_string(&mut hasher, name);

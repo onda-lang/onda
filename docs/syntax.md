@@ -1200,7 +1200,8 @@ const SampleCount: i32 = Channels * BLOCK_SIZE
 - Ordinary constants cannot be overridden. With no host input, the source initializer is used.
 
 The native CLI accepts repeatable `--const Name=value` inputs using Onda literal syntax and
-`--list-consts` prints the resolved configuration surface.
+`--list-consts` prints the resolved configuration surface. An `.ondaproject` may provide defaults
+in its `constants` map; explicit CLI inputs override matching project values.
 
 `const def` declares compile-time helper functions:
 
