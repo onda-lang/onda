@@ -1,6 +1,6 @@
 use onda_codegen_llvm::{
-    DeclaredBufferChannels, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState,
-    UninitializedRuntimeState,
+    BufferDescriptorTables, DeclaredBufferChannels, JitProgram, RuntimeAllocator, RuntimeBuffer,
+    RuntimeState, UninitializedRuntimeState,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_realtime::configure_current_thread_audio_fp_mode;
@@ -1195,10 +1195,12 @@ impl Instance {
                     &self.params,
                     state,
                     bytes,
-                    &self.buffer_ptrs,
-                    &self.buffer_frames,
-                    &self.buffer_channels,
-                    &self.buffer_sample_rates,
+                    BufferDescriptorTables::new(
+                        &self.buffer_ptrs,
+                        &self.buffer_frames,
+                        &self.buffer_channels,
+                        &self.buffer_sample_rates,
+                    ),
                 )
             }
         })
@@ -1415,10 +1417,12 @@ pub fn init_with_output(
             let initialized = instance.program.initialize_allocated_state(
                 &instance.params,
                 state,
-                &instance.buffer_ptrs,
-                &instance.buffer_frames,
-                &instance.buffer_channels,
-                &instance.buffer_sample_rates,
+                BufferDescriptorTables::new(
+                    &instance.buffer_ptrs,
+                    &instance.buffer_frames,
+                    &instance.buffer_channels,
+                    &instance.buffer_sample_rates,
+                ),
                 output,
             )?;
             instance.state = InstanceState::Allocated(AllocatedState {
@@ -1438,10 +1442,12 @@ pub fn init_with_output(
                 &instance.params,
                 state,
                 matches!(mode, InitMode::Full),
-                &instance.buffer_ptrs,
-                &instance.buffer_frames,
-                &instance.buffer_channels,
-                &instance.buffer_sample_rates,
+                BufferDescriptorTables::new(
+                    &instance.buffer_ptrs,
+                    &instance.buffer_frames,
+                    &instance.buffer_channels,
+                    &instance.buffer_sample_rates,
+                ),
                 output,
             )
         }),

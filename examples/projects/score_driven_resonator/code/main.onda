@@ -62,6 +62,7 @@ init:
   pending_bang = false
 
 event bang():
+  print("yo")
   pending_bang = true
 
 block:

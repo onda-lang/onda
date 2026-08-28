@@ -32,6 +32,27 @@ test("the shared run view only shows its scope when supported and during playbac
   assert.doesNotMatch(runView, /scopeSection\.style\.display = state\.connected/);
 });
 
+test("the native buffer cards render bounded peak-preserving waveform previews", async () => {
+  const [runView, daemon] = await Promise.all([
+    readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
+    readFile(resolve(repoRoot, "crates/onda_daemon/src/run_session.rs"), "utf8"),
+  ]);
+
+  assert.match(runView, /className = "buffer-waveform"/);
+  assert.match(runView, /Math\.max\(1, Math\.abs\(waveform\.minValue\)/);
+  assert.match(runView, /for \(const value of \[-1, 1\]\)/);
+  assert.match(runView, /Math\.abs\(guideY\(1\) - zeroY\) >= 2/);
+  assert.match(runView, /bufferWaveformRangeLabel\(waveform\)/);
+  assert.match(runView, /maximum > 0 \? sampleY\(maximum\) : zeroY/);
+  assert.match(runView, /minimum < 0 \? sampleY\(minimum\) : zeroY/);
+  assert.match(runView, /context\.arc\(x, maximumY, markerRadius/);
+  assert.match(runView, /context\.globalAlpha = 0\.4/);
+  assert.match(runView, /const guideY = value => snapToPixelCenter\(valueY\(value\)\)/);
+  assert.match(daemon, /RUN_BUFFER_WAVEFORM_COLUMNS: usize = 128/);
+  assert.match(daemon, /minimums: Vec<f64>/);
+  assert.match(daemon, /maximums: Vec<f64>/);
+});
+
 test("the shared run view keeps output compact and latched directly after the scope", async () => {
   const [runView, runHost, egui] = await Promise.all([
     readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
@@ -48,6 +69,12 @@ test("the shared run view keeps output compact and latched directly after the sc
     runView,
     /\.log-output \{[\s\S]*?width: 100%;[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/,
   );
+  assert.match(
+    runView,
+    /\.log-line \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) max-content/,
+  );
+  assert.match(runView, /function logEntryContext\(entry\)/);
+  assert.match(runView, /context\.className = "log-context"/);
   assert.match(
     runView,
     /logSection\.style\.display = state\.logRevealed === true \? "" : "none"/,

@@ -54,6 +54,51 @@ pub fn check_execution_status(status: u32) -> Result<(), Diagnostic> {
     }
 }
 
+/// Borrowed structure-of-arrays view of external-buffer ABI descriptors.
+///
+/// The four tables must have identical lengths and corresponding entries must
+/// describe the same buffer. Entry points validate both that invariant and the
+/// expected program-specific buffer count before entering generated code.
+#[derive(Debug, Clone, Copy)]
+pub struct BufferDescriptorTables<'a> {
+    pub(crate) pointers: &'a [*mut u8],
+    pub(crate) frames: &'a [i32],
+    pub(crate) channels: &'a [i32],
+    pub(crate) sample_rates: &'a [f32],
+}
+
+impl<'a> BufferDescriptorTables<'a> {
+    pub const fn new(
+        pointers: &'a [*mut u8],
+        frames: &'a [i32],
+        channels: &'a [i32],
+        sample_rates: &'a [f32],
+    ) -> Self {
+        Self {
+            pointers,
+            frames,
+            channels,
+            sample_rates,
+        }
+    }
+
+    pub const fn pointers(self) -> &'a [*mut u8] {
+        self.pointers
+    }
+
+    pub const fn frames(self) -> &'a [i32] {
+        self.frames
+    }
+
+    pub const fn channels(self) -> &'a [i32] {
+        self.channels
+    }
+
+    pub const fn sample_rates(self) -> &'a [f32] {
+        self.sample_rates
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct JitProgram {
     sample_rate: f32,
@@ -1717,7 +1762,12 @@ sample:
             .expect("state should clone");
         unsafe { live.bytes_mut() }.fill(0xff);
         program
-            .restore_state_snapshot(&params, &mut live, &snapshot, &[], &[], &[], &[])
+            .restore_state_snapshot(
+                &params,
+                &mut live,
+                &snapshot,
+                BufferDescriptorTables::new(&[], &[], &[], &[]),
+            )
             .expect("snapshot should restore");
         assert_eq!(live.bytes(), initial.bytes());
     }
@@ -1746,7 +1796,12 @@ sample:
         snapshot[0..8].copy_from_slice(&(99_i64).to_le_bytes());
         snapshot[8..12].copy_from_slice(&(-1_i32).to_le_bytes());
         program
-            .restore_state_snapshot(&params, &mut live, &snapshot, &[], &[], &[], &[])
+            .restore_state_snapshot(
+                &params,
+                &mut live,
+                &snapshot,
+                BufferDescriptorTables::new(&[], &[], &[], &[]),
+            )
             .expect("snapshot should restore");
         program
             .write_state_snapshot(&live, &mut snapshot)

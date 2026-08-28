@@ -1398,6 +1398,12 @@ fn run_buffer_json(buffer: &onda_daemon::RunBufferInfo) -> Value {
         "loadedFrames": buffer.loaded_frames,
         "loadedChannels": buffer.loaded_channels,
         "loadedSampleRate": buffer.loaded_sample_rate_hz,
+        "waveform": buffer.waveform.as_ref().map(|waveform| json!({
+            "minValue": waveform.min_value,
+            "maxValue": waveform.max_value,
+            "minimums": waveform.minimums,
+            "maximums": waveform.maximums,
+        })),
     })
 }
 

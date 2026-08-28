@@ -2,10 +2,10 @@ mod run_session;
 
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
-    InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBuildError, RunDelegateBatch,
-    RunDelegateInfo, RunDelegateOccurrence, RunDelegateParamInfo, RunDelegateValue, RunEventInfo,
-    RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo, RunPrintBatch, RunPrintEntry,
-    RunPrintValue, RunSession,
+    InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBufferWaveform, RunBuildError,
+    RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence, RunDelegateParamInfo,
+    RunDelegateValue, RunEventInfo, RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo,
+    RunPrintBatch, RunPrintEntry, RunPrintValue, RunSession,
 };
 
 use std::collections::HashMap;
@@ -483,6 +483,11 @@ mod tests {
         assert_eq!(loaded.loaded_frames, Some(4));
         assert_eq!(loaded.loaded_channels, Some(1));
         assert_eq!(loaded.loaded_sample_rate_hz, Some(48_000.0));
+        let waveform = loaded.waveform.as_ref().expect("loaded waveform preview");
+        assert!((waveform.min_value - 0.1).abs() < 1e-6);
+        assert!((waveform.max_value - 0.4).abs() < 1e-6);
+        assert_eq!(waveform.minimums.len(), 4);
+        assert_eq!(waveform.maximums.len(), 4);
 
         let partially_bound = session
             .render_run_block(&main)
@@ -605,6 +610,17 @@ mod tests {
                 .expect("valid i32 buffer asset"),
             )
             .expect("i32 buffer bind should succeed");
+
+        let info = session.run(&main).expect("active run").buffer_info();
+        let waveform = info[0].waveform.as_ref().expect("typed waveform preview");
+        assert_eq!(waveform.min_value, -2.0);
+        assert_eq!(waveform.max_value, 4.0);
+        assert_eq!(waveform.minimums.len(), 128);
+        assert_eq!(waveform.maximums.len(), 128);
+        assert_eq!(waveform.minimums[0], -2.0);
+        assert_eq!(waveform.maximums[0], 4.0);
+        assert!(waveform.minimums[1..].iter().all(|value| *value == 0.0));
+        assert!(waveform.maximums[1..].iter().all(|value| *value == 0.0));
 
         let rendered = session
             .render_run_block(&main)

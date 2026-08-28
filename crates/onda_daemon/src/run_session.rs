@@ -82,6 +82,15 @@ pub struct RunBufferInfo {
     pub loaded_frames: Option<usize>,
     pub loaded_channels: Option<usize>,
     pub loaded_sample_rate_hz: Option<f32>,
+    pub waveform: Option<RunBufferWaveform>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunBufferWaveform {
+    pub min_value: f64,
+    pub max_value: f64,
+    pub minimums: Vec<f64>,
+    pub maximums: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +255,7 @@ pub struct RunSession {
 
 const RUN_DELEGATE_CAPACITY_BYTES: usize = 64 * 1024;
 const RUN_PRINT_CAPACITY_BYTES: usize = 64 * 1024;
+const RUN_BUFFER_WAVEFORM_COLUMNS: usize = 128;
 
 #[derive(Debug)]
 struct RunBufferBinding {
@@ -254,6 +264,7 @@ struct RunBufferBinding {
     channels: usize,
     sample_rate_hz: f32,
     loaded_path: Option<PathBuf>,
+    waveform: RunBufferWaveform,
 }
 
 struct BufferBindingReplacement<'a> {
@@ -479,6 +490,7 @@ impl RunSession {
                     loaded_frames: binding.map(|binding| binding.frames),
                     loaded_channels: binding.map(|binding| binding.channels),
                     loaded_sample_rate_hz: binding.map(|binding| binding.sample_rate_hz),
+                    waveform: binding.map(|binding| binding.waveform.clone()),
                 }
             })
             .collect()
@@ -1118,6 +1130,11 @@ fn validated_buffer_binding(
             0,
         ));
     }
+    let waveform = buffer_waveform(
+        &asset.samples,
+        asset.frames as usize,
+        asset.channels as usize,
+    );
     Ok((
         index,
         RunBufferBinding {
@@ -1126,8 +1143,87 @@ fn validated_buffer_binding(
             channels: asset.channels as usize,
             sample_rate_hz: asset.sample_rate,
             loaded_path,
+            waveform,
         },
     ))
+}
+
+fn buffer_waveform(samples: &BufferSamples, frames: usize, channels: usize) -> RunBufferWaveform {
+    match samples {
+        BufferSamples::Bool(values) => {
+            buffer_waveform_values(values, frames, channels, |value| f64::from(*value != 0))
+        }
+        BufferSamples::I32(values) => {
+            buffer_waveform_values(values, frames, channels, |value| f64::from(*value))
+        }
+        BufferSamples::I64(values) => {
+            buffer_waveform_values(values, frames, channels, |value| *value as f64)
+        }
+        BufferSamples::F32(values) => {
+            buffer_waveform_values(values, frames, channels, |value| f64::from(*value))
+        }
+        BufferSamples::F64(values) => {
+            buffer_waveform_values(values, frames, channels, |value| *value)
+        }
+    }
+}
+
+fn buffer_waveform_values<T>(
+    values: &[T],
+    frames: usize,
+    channels: usize,
+    to_f64: impl Fn(&T) -> f64,
+) -> RunBufferWaveform {
+    let column_count = frames.min(RUN_BUFFER_WAVEFORM_COLUMNS);
+    let mut minimums = Vec::with_capacity(column_count);
+    let mut maximums = Vec::with_capacity(column_count);
+    let mut min_value = f64::INFINITY;
+    let mut max_value = f64::NEG_INFINITY;
+
+    for column in 0..column_count {
+        let start_frame = proportional_index(column, frames, column_count);
+        let end_frame = proportional_index(column + 1, frames, column_count);
+        let start = start_frame.saturating_mul(channels).min(values.len());
+        let end = end_frame.saturating_mul(channels).min(values.len());
+        let mut column_min = f64::INFINITY;
+        let mut column_max = f64::NEG_INFINITY;
+        for value in &values[start..end] {
+            let value = to_f64(value);
+            if !value.is_finite() {
+                continue;
+            }
+            column_min = column_min.min(value);
+            column_max = column_max.max(value);
+        }
+        if !column_min.is_finite() {
+            column_min = 0.0;
+            column_max = 0.0;
+        }
+        min_value = min_value.min(column_min);
+        max_value = max_value.max(column_max);
+        minimums.push(column_min);
+        maximums.push(column_max);
+    }
+
+    if !min_value.is_finite() {
+        min_value = 0.0;
+        max_value = 0.0;
+    }
+    RunBufferWaveform {
+        min_value,
+        max_value,
+        minimums,
+        maximums,
+    }
+}
+
+fn proportional_index(index: usize, length: usize, divisions: usize) -> usize {
+    if divisions == 0 {
+        return 0;
+    }
+    let quotient = length / divisions;
+    let remainder = length % divisions;
+    quotient * index + remainder * index / divisions
 }
 
 #[allow(clippy::too_many_arguments)]

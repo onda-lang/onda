@@ -1,6 +1,8 @@
 use onda_frontend::Diagnostic;
 use onda_mir::{BufferChannels, Program, TypeId};
 
+use crate::BufferDescriptorTables;
+
 use super::{audio_port_shape, scalar_store_size};
 
 pub(super) fn abi_const_ptr<T>(values: &[T]) -> *const T {
@@ -138,24 +140,21 @@ fn audio_channel_error(
 
 pub(super) fn validate_buffer_abi(
     program: &Program,
-    buffer_ptrs: &[*mut u8],
-    buffer_frames: &[i32],
-    buffer_channels: &[i32],
-    buffer_sample_rates: &[f32],
+    buffers: BufferDescriptorTables<'_>,
 ) -> Result<(), Diagnostic> {
     let expected = program.interface.buffers.len();
-    if buffer_ptrs.len() != expected
-        || buffer_frames.len() != expected
-        || buffer_channels.len() != expected
-        || buffer_sample_rates.len() != expected
+    if buffers.pointers.len() != expected
+        || buffers.frames.len() != expected
+        || buffers.channels.len() != expected
+        || buffers.sample_rates.len() != expected
     {
         return Err(Diagnostic::runtime(
             format!(
                 "runtime buffer metadata count mismatch: ptrs={}, frames={}, chans={}, samplerates={}, expected={expected}",
-                buffer_ptrs.len(),
-                buffer_frames.len(),
-                buffer_channels.len(),
-                buffer_sample_rates.len(),
+                buffers.pointers.len(),
+                buffers.frames.len(),
+                buffers.channels.len(),
+                buffers.sample_rates.len(),
             ),
             0,
             0,
@@ -163,10 +162,10 @@ pub(super) fn validate_buffer_abi(
     }
 
     for index in 0..expected {
-        let frames = buffer_frames[index];
-        let channels = buffer_channels[index];
-        let pointer_is_null = buffer_ptrs[index].is_null();
-        let sample_rate = buffer_sample_rates[index];
+        let frames = buffers.frames[index];
+        let channels = buffers.channels[index];
+        let pointer_is_null = buffers.pointers[index].is_null();
+        let sample_rate = buffers.sample_rates[index];
         if !sample_rate.is_finite() || sample_rate <= 0.0 {
             return Err(Diagnostic::runtime(
                 format!(
@@ -189,7 +188,7 @@ pub(super) fn validate_buffer_abi(
         let alignment =
             usize::try_from(scalar_store_size(program.interface.buffers[index].element))
                 .expect("primitive scalar alignment fits usize");
-        if !pointer_is_null && !buffer_ptrs[index].addr().is_multiple_of(alignment) {
+        if !pointer_is_null && !buffers.pointers[index].addr().is_multiple_of(alignment) {
             return Err(Diagnostic::runtime(
                 format!("runtime buffer {index} pointer requires {alignment}-byte alignment"),
                 0,

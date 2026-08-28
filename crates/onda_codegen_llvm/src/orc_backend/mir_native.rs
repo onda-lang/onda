@@ -38,7 +38,8 @@ use onda_mir::{
 };
 
 use crate::{
-    RuntimeAllocator, RuntimeState, TargetOptLevel, UninitRuntimeBuffer, UninitializedRuntimeState,
+    BufferDescriptorTables, RuntimeAllocator, RuntimeState, TargetOptLevel, UninitRuntimeBuffer,
+    UninitializedRuntimeState,
 };
 
 use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_buffer_abi};
@@ -47,6 +48,24 @@ const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 13;
 const INIT_ALL_CONTEXT_INDEX: u32 = 16;
 const DELEGATE_BATCH_CONTEXT_INDEX: u32 = 17;
 const PRINT_BATCH_CONTEXT_INDEX: u32 = 18;
+
+struct OwnedBufferDescriptorTables {
+    pointers: Vec<*mut u8>,
+    frames: Vec<i32>,
+    channels: Vec<i32>,
+    sample_rates: Vec<f32>,
+}
+
+impl OwnedBufferDescriptorTables {
+    fn as_borrowed(&self) -> BufferDescriptorTables<'_> {
+        BufferDescriptorTables::new(
+            &self.pointers,
+            &self.frames,
+            &self.channels,
+            &self.sample_rates,
+        )
+    }
+}
 
 struct OwnedLlvm<T: Copy> {
     value: T,
@@ -7274,22 +7293,11 @@ impl MirJitProgram {
         allocator: Option<RuntimeAllocator>,
     ) -> Result<RuntimeState, Diagnostic> {
         let mut state = self.allocate_state_with_allocator(allocator)?;
-        let (buffer_ptrs, buffer_frames, buffer_channels, buffer_sample_rates) =
-            self.neutral_buffer_descriptors()?;
-        self.initialize_allocated_state(
-            params,
-            &mut state,
-            &buffer_ptrs,
-            &buffer_frames,
-            &buffer_channels,
-            &buffer_sample_rates,
-            None,
-        )
+        let buffers = self.neutral_buffer_descriptors()?;
+        self.initialize_allocated_state(params, &mut state, buffers.as_borrowed(), None)
     }
 
-    fn neutral_buffer_descriptors(
-        &self,
-    ) -> Result<(Vec<*mut u8>, Vec<i32>, Vec<i32>, Vec<f32>), Diagnostic> {
+    fn neutral_buffer_descriptors(&self) -> Result<OwnedBufferDescriptorTables, Diagnostic> {
         let count = self.mir.interface.buffers.len();
         let channels = self
             .mir
@@ -7303,12 +7311,12 @@ impl MirJitProgram {
                 }),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((
-            vec![std::ptr::null_mut(); count],
-            vec![1; count],
+        Ok(OwnedBufferDescriptorTables {
+            pointers: vec![std::ptr::null_mut(); count],
+            frames: vec![1; count],
             channels,
-            vec![self.mir.config.sample_rate; count],
-        ))
+            sample_rates: vec![self.mir.config.sample_rate; count],
+        })
     }
 
     pub fn allocate_state_with_allocator(
@@ -7333,10 +7341,7 @@ impl MirJitProgram {
         &self,
         params: &[u8],
         state: &mut UninitializedRuntimeState,
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
+        buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<RuntimeState, Diagnostic> {
         if params.len() != self.layouts.params.size {
@@ -7360,13 +7365,7 @@ impl MirJitProgram {
                 0,
             ));
         }
-        validate_buffer_abi(
-            &self.mir,
-            buffer_ptrs,
-            buffer_frames,
-            buffer_channels,
-            buffer_sample_rates,
-        )?;
+        validate_buffer_abi(&self.mir, buffers)?;
         let state_words = state
             .state_words
             .as_mut()
@@ -7376,10 +7375,10 @@ impl MirJitProgram {
                 abi_const_ptr(params),
                 state_words.as_mut_ptr().cast::<u8>(),
                 1,
-                abi_const_ptr(buffer_ptrs),
-                abi_const_ptr(buffer_frames),
-                abi_const_ptr(buffer_channels),
-                abi_const_ptr(buffer_sample_rates),
+                abi_const_ptr(buffers.pointers),
+                abi_const_ptr(buffers.frames),
+                abi_const_ptr(buffers.channels),
+                abi_const_ptr(buffers.sample_rates),
                 output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
@@ -7404,10 +7403,7 @@ impl MirJitProgram {
         params: &[u8],
         state: &mut RuntimeState,
         all: bool,
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
+        buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         if params.len() != self.layouts.params.size {
@@ -7431,22 +7427,16 @@ impl MirJitProgram {
                 0,
             ));
         }
-        validate_buffer_abi(
-            &self.mir,
-            buffer_ptrs,
-            buffer_frames,
-            buffer_channels,
-            buffer_sample_rates,
-        )?;
+        validate_buffer_abi(&self.mir, buffers)?;
         let status = unsafe {
             (self.compiled.init)(
                 abi_const_ptr(params),
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
                 u32::from(all),
-                abi_const_ptr(buffer_ptrs),
-                abi_const_ptr(buffer_frames),
-                abi_const_ptr(buffer_channels),
-                abi_const_ptr(buffer_sample_rates),
+                abi_const_ptr(buffers.pointers),
+                abi_const_ptr(buffers.frames),
+                abi_const_ptr(buffers.channels),
+                abi_const_ptr(buffers.sample_rates),
                 output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
@@ -7505,10 +7495,12 @@ impl MirJitProgram {
         self.validate_runtime_regions(state, params)?;
         validate_buffer_abi(
             &self.mir,
-            buffer_ptrs,
-            buffer_frames,
-            buffer_channels,
-            buffer_sample_rates,
+            BufferDescriptorTables::new(
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+            ),
         )?;
         let start_frame = u32::try_from(start_frame)
             .map_err(|_| Diagnostic::runtime("start frame does not fit u32", 0, 0))?;
@@ -7648,10 +7640,12 @@ impl MirJitProgram {
         self.validate_runtime_regions(state, params)?;
         validate_buffer_abi(
             &self.mir,
-            buffer_ptrs,
-            buffer_frames,
-            buffer_channels,
-            buffer_sample_rates,
+            BufferDescriptorTables::new(
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+            ),
         )?;
         let status = unsafe {
             event(
@@ -8410,6 +8404,19 @@ mod tests {
             .expect("source should lower to MIR")
             .into_program();
         (typed, mir)
+    }
+
+    fn validate_test_buffer_abi(
+        program: &Program,
+        pointers: &[*mut u8],
+        frames: &[i32],
+        channels: &[i32],
+        sample_rates: &[f32],
+    ) -> Result<(), Diagnostic> {
+        validate_buffer_abi(
+            program,
+            BufferDescriptorTables::new(pointers, frames, channels, sample_rates),
+        )
     }
 
     fn trusted_optimized(
@@ -10395,17 +10402,17 @@ sample:
         let mut storage = [0_u64; 1];
         let pointer = storage.as_mut_ptr().cast::<u8>();
         let pointers = [pointer];
-        let overflow = validate_buffer_abi(&mir, &pointers, &[i32::MAX], &[2], &[48_000.0])
+        let overflow = validate_test_buffer_abi(&mir, &pointers, &[i32::MAX], &[2], &[48_000.0])
             .expect_err("wrapping buffer element count must be rejected");
         assert!(overflow.message.contains("exceeds i32"));
 
         let byte_overflow =
-            validate_buffer_abi(&mir, &pointers, &[i32::MAX / 8 + 1], &[1], &[48_000.0])
+            validate_test_buffer_abi(&mir, &pointers, &[i32::MAX / 8 + 1], &[1], &[48_000.0])
                 .expect_err("f64 byte extent must fit i32 even when element count does");
         assert!(byte_overflow.message.contains("byte extent"));
 
         for sample_rate in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            let error = validate_buffer_abi(&mir, &pointers, &[1], &[1], &[sample_rate])
+            let error = validate_test_buffer_abi(&mir, &pointers, &[1], &[1], &[sample_rate])
                 .expect_err("invalid sample rate metadata must be rejected");
             assert!(error.message.contains("finite positive sample rate"));
         }
@@ -10731,23 +10738,24 @@ sample:
         );
         let mut storage = [0_u32; 1];
         let pointer = storage.as_mut_ptr().cast::<u8>();
-        validate_buffer_abi(&mir, &[pointer], &[1], &[1], &[48_000.0])
+        validate_test_buffer_abi(&mir, &[pointer], &[1], &[1], &[48_000.0])
             .expect("positive, non-null buffer binding should be accepted");
-        validate_buffer_abi(&mir, &[std::ptr::null_mut()], &[1], &[1], &[48_000.0])
+        validate_test_buffer_abi(&mir, &[std::ptr::null_mut()], &[1], &[1], &[48_000.0])
             .expect("positive null buffer descriptor should represent an unbound buffer");
 
         let null = std::ptr::null_mut();
         for (pointer, frames, channels) in [(null, 0, 0), (pointer, 0, 0), (pointer, 1, 0)] {
-            let error = validate_buffer_abi(&mir, &[pointer], &[frames], &[channels], &[48_000.0])
-                .expect_err("raw processor ABI requires every descriptor to be prepared");
+            let error =
+                validate_test_buffer_abi(&mir, &[pointer], &[frames], &[channels], &[48_000.0])
+                    .expect_err("raw processor ABI requires every descriptor to be prepared");
             assert!(error.message.contains("requires positive dimensions"));
         }
 
-        let error = validate_buffer_abi(&mir, &[null], &[0], &[0], &[f32::NAN])
+        let error = validate_test_buffer_abi(&mir, &[null], &[0], &[0], &[f32::NAN])
             .expect_err("invalid sample-rate metadata must be rejected");
         assert!(error.message.contains("finite positive sample rate"));
 
-        let error = validate_buffer_abi(&mir, &[pointer], &[1], &[2], &[48_000.0])
+        let error = validate_test_buffer_abi(&mir, &[pointer], &[1], &[2], &[48_000.0])
             .expect_err("non-empty bindings must honor declared channel constraints");
         assert!(
             error.message.contains("requires 1 channels"),
@@ -10757,7 +10765,7 @@ sample:
 
         let mut aligned_storage = [0_u32; 2];
         let misaligned = aligned_storage.as_mut_ptr().cast::<u8>().wrapping_add(1);
-        let error = validate_buffer_abi(&mir, &[misaligned], &[1], &[1], &[48_000.0])
+        let error = validate_test_buffer_abi(&mir, &[misaligned], &[1], &[1], &[48_000.0])
             .expect_err("non-empty bindings must honor scalar alignment");
         assert!(error.message.contains("requires 4-byte alignment"));
     }

@@ -2,8 +2,8 @@ use onda_frontend::Diagnostic;
 
 use crate::primitives::primitive_type_bytes;
 use crate::{
-    DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState,
-    UninitializedRuntimeState,
+    BufferDescriptorTables, DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer,
+    RuntimeState, UninitializedRuntimeState,
 };
 
 fn reset_execution_output(output: Option<&mut onda_processor_abi::ExecutionOutput>) {
@@ -500,22 +500,10 @@ impl JitProgram {
         params: &[u8],
         state: &mut RuntimeState,
         snapshot: &[u8],
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
+        buffers: BufferDescriptorTables<'_>,
     ) -> Result<(), Diagnostic> {
         self.validate_state_snapshot(snapshot)?;
-        self.initialize_state_in_place(
-            params,
-            state,
-            true,
-            buffer_ptrs,
-            buffer_frames,
-            buffer_channels,
-            buffer_sample_rates,
-            None,
-        )?;
+        self.initialize_state_in_place(params, state, true, buffers, None)?;
         self.overlay_state_snapshot(state, snapshot)
     }
 
@@ -620,35 +608,17 @@ impl JitProgram {
         &self,
         params: &[u8],
         state: &mut UninitializedRuntimeState,
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
+        buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<RuntimeState, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            self.compiled.initialize_allocated_state(
-                params,
-                state,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-                output,
-            )
+            self.compiled
+                .initialize_allocated_state(params, state, buffers, output)
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (
-                params,
-                state,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-                output,
-            );
+            let _ = (params, state, buffers, output);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
@@ -660,37 +630,17 @@ impl JitProgram {
         params: &[u8],
         state: &mut RuntimeState,
         all: bool,
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
+        buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            self.compiled.initialize_state_in_place(
-                params,
-                state,
-                all,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-                output,
-            )
+            self.compiled
+                .initialize_state_in_place(params, state, all, buffers, output)
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (
-                params,
-                state,
-                all,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-                output,
-            );
+            let _ = (params, state, all, buffers, output);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
