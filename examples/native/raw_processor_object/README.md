@@ -220,11 +220,10 @@ uint32_t status = onda_process(
   &execution_output
 );
 if (status == ONDA_PROCESSOR_EXECUTION_OK) {
-  for (uint32_t i = 0; i < delegates.record_count; ++i) {
-    onda_processor_delegate_occurrence_t occurrence;
-    if (onda_processor_delegate_batch_occurrence_at(&delegates, i, &occurrence)) {
-      consume_delegate(&occurrence);
-    }
+  onda_processor_batch_cursor_t cursor = {0};
+  onda_processor_delegate_occurrence_t occurrence;
+  while (onda_processor_delegate_batch_next(&delegates, &cursor, &occurrence)) {
+    consume_delegate(&occurrence);
   }
   if (delegates.overflow_count != 0u) {
     report_delegate_overflow(delegates.overflow_count);

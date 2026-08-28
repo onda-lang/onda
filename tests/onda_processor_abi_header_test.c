@@ -25,7 +25,7 @@ int main(void) {
   assert(ONDA_PRINT_RECORD_HEADER_SIZE == 8u);
   assert(ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE == 8u);
   assert(ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE == 8u);
-  uint8_t storage[16] = {0};
+  uint8_t storage[24] = {0};
   onda_delegate_batch_t hosted_batch = {
     storage,
     sizeof(storage),
@@ -51,14 +51,22 @@ int main(void) {
   uint32_t header[2] = {3, 4};
   memcpy(storage, header, sizeof(header));
   memcpy(storage + sizeof(header), "test", 4);
-  batch.used_bytes = 12;
-  batch.record_count = 1;
+  uint32_t second_header[2] = {4, 4};
+  memcpy(storage + 12, second_header, sizeof(second_header));
+  memcpy(storage + 20, "next", 4);
+  batch.used_bytes = 24;
+  batch.record_count = 2;
   onda_processor_delegate_occurrence_t processor_occurrence;
-  assert(onda_processor_delegate_batch_occurrence_at(&batch, 0, &processor_occurrence));
+  onda_processor_batch_cursor_t cursor = {0};
+  assert(onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence));
   assert(processor_occurrence.delegate_index == 3);
   assert(processor_occurrence.payload_size_bytes == 4);
   assert(memcmp(processor_occurrence.payload, "test", 4) == 0);
-  assert(!onda_processor_delegate_batch_occurrence_at(&batch, 1, &processor_occurrence));
+  assert(onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence));
+  assert(processor_occurrence.delegate_index == 4);
+  assert(memcmp(processor_occurrence.payload, "next", 4) == 0);
+  assert(!onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence));
+  assert(onda_processor_delegate_batch_occurrence_at(&batch, 1, &processor_occurrence));
 
   onda_processor_print_batch_t print_batch = {
     storage,
@@ -77,7 +85,8 @@ int main(void) {
   print_batch.used_bytes = 9;
   print_batch.record_count = 1;
   onda_processor_print_occurrence_t print_occurrence;
-  assert(onda_processor_print_batch_occurrence_at(&print_batch, 0, &print_occurrence));
+  onda_processor_batch_cursor_t print_cursor = {0};
+  assert(onda_processor_print_batch_next(&print_batch, &print_cursor, &print_occurrence));
   assert(print_occurrence.site_index == 5);
   assert(print_occurrence.payload_size_bytes == 1);
   assert(print_occurrence.payload[0] == 1);

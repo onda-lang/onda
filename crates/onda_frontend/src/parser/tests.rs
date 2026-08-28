@@ -1954,7 +1954,7 @@ sample {
 #[test]
 fn parses_print_statements_and_decodes_labels() {
     let program = parse_program(
-        "outs:\n  out1\nsample:\n  print(value)\n  print(\"line\\n\\t\\\"\\\\\")\n  print(\"value\", value, true)\n  out1 = 0.0\n",
+        "outs:\n  out1\nsample:\n  print()\n  print(value)\n  print(\"line\\n\\t\\\"\\\\\")\n  print(\"value\", value, true)\n  out1 = 0.0\n",
     )
     .expect("print statements should parse");
     let sample = program
@@ -1967,15 +1967,19 @@ fn parses_print_statements_and_decodes_labels() {
         .expect("sample block");
     assert!(matches!(
         &sample[0],
-        Stmt::Print { label: None, values, .. } if values.len() == 1
+        Stmt::Print { label: None, values, .. } if values.is_empty()
     ));
     assert!(matches!(
         &sample[1],
+        Stmt::Print { label: None, values, .. } if values.len() == 1
+    ));
+    assert!(matches!(
+        &sample[2],
         Stmt::Print { label: Some(label), values, .. }
             if label == "line\n\t\"\\" && values.is_empty()
     ));
     assert!(matches!(
-        &sample[2],
+        &sample[3],
         Stmt::Print { label: Some(label), values, .. }
             if label == "value" && values.len() == 2
     ));

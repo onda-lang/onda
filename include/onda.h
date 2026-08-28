@@ -64,6 +64,12 @@ typedef struct onda_print_occurrence {
   const uint8_t* payload;
 } onda_print_occurrence_t;
 
+/* Zero-initialize before iterating a delegate or print batch. Treat fields as opaque. */
+typedef struct onda_batch_cursor {
+  uint32_t byte_offset;
+  uint32_t record_index;
+} onda_batch_cursor_t;
+
 typedef struct onda_source_span {
   /* Artifact-local source-file index, or -1 when the span is unknown. */
   int32_t file_index;
@@ -99,15 +105,28 @@ typedef struct onda_owned_string {
 /* Clears the result counters without modifying storage or capacity. Process and event calls also
    reset these counters when generated execution begins. */
 void onda_delegate_batch_reset(onda_delegate_batch_t* batch);
+/* Advances a cursor and decodes the next occurrence in constant time. Returns 0 at the end or for
+   invalid/malformed input. The returned payload has the same lifetime as batch storage. */
+int onda_delegate_batch_next(
+  const onda_delegate_batch_t* batch,
+  onda_batch_cursor_t* cursor,
+  onda_delegate_occurrence_t* occurrence
+);
 /* Decodes one occurrence by index, returning 1 on success or 0 for invalid/malformed input. The
    returned payload points into batch storage and remains valid only while that storage remains
-   unchanged. */
+   unchanged. Repeated indexed iteration is quadratic; use onda_delegate_batch_next instead. */
 int onda_delegate_batch_occurrence_at(
   const onda_delegate_batch_t* batch,
   uint32_t index,
   onda_delegate_occurrence_t* occurrence
 );
 void onda_print_batch_reset(onda_print_batch_t* batch);
+int onda_print_batch_next(
+  const onda_print_batch_t* batch,
+  onda_batch_cursor_t* cursor,
+  onda_print_occurrence_t* occurrence
+);
+/* Repeated indexed iteration is quadratic; use onda_print_batch_next instead. */
 int onda_print_batch_occurrence_at(
   const onda_print_batch_t* batch,
   uint32_t index,

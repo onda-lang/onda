@@ -2032,6 +2032,7 @@ fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
     TypedFunction {
         name: name.to_owned(),
         runtime_context: false,
+        publishes_print: false,
         method_of: None,
         type_params: Vec::new(),
         params: Vec::new(),
@@ -2075,11 +2076,14 @@ fn compiler_shared_function_attributes() -> FunctionAttributes {
     }
 }
 
-fn source_function_attributes(name: &str) -> FunctionAttributes {
+fn source_function_attributes(name: &str, publishes_print: bool) -> FunctionAttributes {
     if crate::internal_names::is_compiler_generated_function_name(name) {
         compiler_generated_function_attributes()
     } else {
-        FunctionAttributes::default()
+        FunctionAttributes {
+            runtime_context: publishes_print,
+            ..FunctionAttributes::default()
+        }
     }
 }
 

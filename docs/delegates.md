@@ -106,12 +106,9 @@ onda_execution_output_t output = {
 
 int status = onda_process_checked(instance, frames, &output);
 if (status == 0) {
-  for (uint32_t i = 0; i < batch.record_count; ++i) {
-    onda_delegate_occurrence_t occurrence;
-    if (!onda_delegate_batch_occurrence_at(&batch, i, &occurrence)) {
-      /* The batch descriptor is malformed. */
-      break;
-    }
+  onda_batch_cursor_t cursor = {0};
+  onda_delegate_occurrence_t occurrence;
+  while (onda_delegate_batch_next(&batch, &cursor, &occurrence)) {
 
     if (occurrence.delegate_index == (uint32_t)delegate &&
         occurrence.payload_size_bytes == sizeof(float)) {
@@ -203,11 +200,10 @@ uint32_t status = onda_process(
   buffers, buffer_frames, buffer_channels, buffer_sample_rates, &output
 );
 if (status == ONDA_PROCESSOR_EXECUTION_OK) {
-  for (uint32_t i = 0; i < batch.record_count; ++i) {
-    onda_processor_delegate_occurrence_t occurrence;
-    if (onda_processor_delegate_batch_occurrence_at(&batch, i, &occurrence)) {
-      consume_delegate(&occurrence);
-    }
+  onda_processor_batch_cursor_t cursor = {0};
+  onda_processor_delegate_occurrence_t occurrence;
+  while (onda_processor_delegate_batch_next(&batch, &cursor, &occurrence)) {
+    consume_delegate(&occurrence);
   }
 }
 ```

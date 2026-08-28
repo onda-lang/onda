@@ -282,22 +282,18 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
 
 fn parse_print_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&pair);
-    let Some(args) = pair
+    let args = pair
         .into_inner()
-        .find(|child| child.as_rule() == Rule::print_args)
-    else {
-        return Err(vec![syntax_at_loc(
-            loc.as_ref(),
-            "print requires at least one argument",
-        )]);
-    };
+        .find(|child| child.as_rule() == Rule::print_args);
     let mut label = None;
     let mut values = Vec::new();
-    for argument in args.into_inner() {
-        match argument.as_rule() {
-            Rule::quoted_text => label = Some(parse_quoted_text(&argument)?),
-            Rule::expr => values.push(parse_expr(argument)?),
-            _ => {}
+    if let Some(args) = args {
+        for argument in args.into_inner() {
+            match argument.as_rule() {
+                Rule::quoted_text => label = Some(parse_quoted_text(&argument)?),
+                Rule::expr => values.push(parse_expr(argument)?),
+                _ => {}
+            }
         }
     }
     Ok(Stmt::Print {

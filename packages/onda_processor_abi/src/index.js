@@ -950,6 +950,9 @@ export function writeExecutionOutput(
   requireMemoryRange(view, outputAddress, EXECUTION_OUTPUT_SIZE_BYTES, "execution output");
   requireInteger(delegateBatchAddress, "delegateBatchAddress", 0);
   requireInteger(printBatchAddress, "printBatchAddress", 0);
+  if (delegateBatchAddress > 0xffff_ffff || printBatchAddress > 0xffff_ffff) {
+    throw new OndaArtifactError("execution output addresses must fit u32");
+  }
   view.setUint32(outputAddress, delegateBatchAddress, true);
   view.setUint32(outputAddress + 4, printBatchAddress, true);
 }

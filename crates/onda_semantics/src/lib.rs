@@ -467,6 +467,8 @@ pub struct TypedFunction {
     /// Compiler-owned helpers that execute with access to the program's
     /// runtime state and interface rather than in the lexical `def` scope.
     pub(crate) runtime_context: bool,
+    /// Authored lexical functions whose body directly publishes print output.
+    pub(crate) publishes_print: bool,
     pub method_of: Option<String>,
     pub type_params: Vec<String>,
     pub params: Vec<String>,

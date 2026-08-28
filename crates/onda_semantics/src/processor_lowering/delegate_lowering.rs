@@ -2017,6 +2017,16 @@ pub(super) fn validate_delegate_source_model(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let uses_delegates = program.blocks.iter().any(|block| match block {
+        Block::Delegates(delegates) => !delegates.delegates.is_empty(),
+        Block::When(_) => true,
+        Block::Proc(proc) => !proc.delegates.is_empty() || !proc.whens.is_empty(),
+        _ => false,
+    });
+    if !uses_delegates {
+        return;
+    }
+
     validate_delegate_member_names(program, errors);
     let resolved_program = delegate_validation_has_overloads(program).then(|| {
         let mut resolved = program.clone();

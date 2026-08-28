@@ -26,8 +26,9 @@ typedef enum onda_processor_init_mode {
 
 /* Bytes preceding the payload of every packed raw-ABI delegate occurrence. */
 enum {
-  ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE = 8u,
-  ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE = 8u
+  ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE = 8u,
+  ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE = ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE,
+  ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE = ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
 };
 
 /* Caller-owned, call-scoped occurrence storage. Init, process, and event entries reset the three
@@ -67,6 +68,12 @@ typedef struct onda_processor_print_occurrence {
   uint32_t payload_size_bytes;
   const uint8_t* payload;
 } onda_processor_print_occurrence_t;
+
+/* Zero-initialize before iterating a delegate or print batch. Treat fields as opaque. */
+typedef struct onda_processor_batch_cursor {
+  uint32_t byte_offset;
+  uint32_t record_index;
+} onda_processor_batch_cursor_t;
 
 typedef uint32_t (*onda_processor_init_fn)(
   const void* params,
@@ -173,51 +180,98 @@ ONDA_PROCESSOR_STATIC_INLINE void onda_processor_print_batch_reset(
   }
 }
 
-/* Decodes one complete occurrence, returning 1 on success or 0 for invalid/malformed input. The
- * payload view remains valid only until the backing storage is changed or reused. */
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_next_record(
+  const uint8_t* storage,
+  uint32_t capacity_bytes,
+  uint32_t used_bytes,
+  uint32_t record_count,
+  onda_processor_batch_cursor_t* cursor,
+  uint32_t* record_index,
+  uint32_t* payload_size,
+  const uint8_t** payload
+) {
+  if (
+    storage == NULL || cursor == NULL || record_index == NULL || payload_size == NULL ||
+    payload == NULL || used_bytes > capacity_bytes || cursor->record_index >= record_count ||
+    cursor->byte_offset > used_bytes ||
+    used_bytes - cursor->byte_offset < ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
+  ) {
+    return 0;
+  }
+  uint32_t next_record_index;
+  uint32_t next_payload_size;
+  memcpy(&next_record_index, storage + cursor->byte_offset, sizeof(next_record_index));
+  memcpy(
+    &next_payload_size,
+    storage + cursor->byte_offset + sizeof(next_record_index),
+    sizeof(next_payload_size)
+  );
+  if (
+    next_payload_size >
+    used_bytes - cursor->byte_offset - ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
+  ) {
+    return 0;
+  }
+  *record_index = next_record_index;
+  *payload_size = next_payload_size;
+  *payload = storage + cursor->byte_offset + ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE;
+  cursor->byte_offset += ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE + next_payload_size;
+  cursor->record_index += 1u;
+  return 1;
+}
+
+/* Advances a cursor and decodes the next occurrence in constant time. Returns 0 at the end or for
+ * invalid/malformed input. The payload view remains valid until storage is changed or reused. */
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_next(
+  const onda_processor_delegate_batch_t* batch,
+  onda_processor_batch_cursor_t* cursor,
+  onda_processor_delegate_occurrence_t* occurrence
+) {
+  return batch != NULL && occurrence != NULL && onda_processor_batch_next_record(
+    batch->storage,
+    batch->capacity_bytes,
+    batch->used_bytes,
+    batch->record_count,
+    cursor,
+    &occurrence->delegate_index,
+    &occurrence->payload_size_bytes,
+    &occurrence->payload
+  );
+}
+
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_next(
+  const onda_processor_print_batch_t* batch,
+  onda_processor_batch_cursor_t* cursor,
+  onda_processor_print_occurrence_t* occurrence
+) {
+  return batch != NULL && occurrence != NULL && onda_processor_batch_next_record(
+    batch->storage,
+    batch->capacity_bytes,
+    batch->used_bytes,
+    batch->record_count,
+    cursor,
+    &occurrence->site_index,
+    &occurrence->payload_size_bytes,
+    &occurrence->payload
+  );
+}
+
+/* Indexed access is convenient for isolated records. Use the cursor APIs for linear iteration. */
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_occurrence_at(
   const onda_processor_delegate_batch_t* batch,
   uint32_t index,
   onda_processor_delegate_occurrence_t* occurrence
 ) {
-  if (
-    batch == NULL ||
-    occurrence == NULL ||
-    batch->storage == NULL ||
-    batch->used_bytes > batch->capacity_bytes ||
-    index >= batch->record_count
-  ) {
+  if (batch == NULL || index >= batch->record_count) {
     return 0;
   }
-  uint32_t cursor = 0u;
+  onda_processor_batch_cursor_t cursor = { 0u, 0u };
   for (uint32_t current = 0u; current <= index; ++current) {
-    if (batch->used_bytes - cursor < ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE) {
+    if (!onda_processor_delegate_batch_next(batch, &cursor, occurrence)) {
       return 0;
     }
-    uint32_t delegate_index;
-    uint32_t payload_size;
-    memcpy(&delegate_index, batch->storage + cursor, sizeof(delegate_index));
-    memcpy(
-      &payload_size,
-      batch->storage + cursor + sizeof(delegate_index),
-      sizeof(payload_size)
-    );
-    if (
-      payload_size >
-      batch->used_bytes - cursor - ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE
-    ) {
-      return 0;
-    }
-    if (current == index) {
-      occurrence->delegate_index = delegate_index;
-      occurrence->payload_size_bytes = payload_size;
-      occurrence->payload =
-        batch->storage + cursor + ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE;
-      return 1;
-    }
-    cursor += ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE + payload_size;
   }
-  return 0;
+  return 1;
 }
 
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_occurrence_at(
@@ -225,44 +279,16 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_occurrence_at(
   uint32_t index,
   onda_processor_print_occurrence_t* occurrence
 ) {
-  if (
-    batch == NULL ||
-    occurrence == NULL ||
-    batch->storage == NULL ||
-    batch->used_bytes > batch->capacity_bytes ||
-    index >= batch->record_count
-  ) {
+  if (batch == NULL || index >= batch->record_count) {
     return 0;
   }
-  uint32_t cursor = 0u;
+  onda_processor_batch_cursor_t cursor = { 0u, 0u };
   for (uint32_t current = 0u; current <= index; ++current) {
-    if (batch->used_bytes - cursor < ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE) {
+    if (!onda_processor_print_batch_next(batch, &cursor, occurrence)) {
       return 0;
     }
-    uint32_t site_index;
-    uint32_t payload_size;
-    memcpy(&site_index, batch->storage + cursor, sizeof(site_index));
-    memcpy(
-      &payload_size,
-      batch->storage + cursor + sizeof(site_index),
-      sizeof(payload_size)
-    );
-    if (
-      payload_size >
-      batch->used_bytes - cursor - ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE
-    ) {
-      return 0;
-    }
-    if (current == index) {
-      occurrence->site_index = site_index;
-      occurrence->payload_size_bytes = payload_size;
-      occurrence->payload =
-        batch->storage + cursor + ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE;
-      return 1;
-    }
-    cursor += ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE + payload_size;
   }
-  return 0;
+  return 1;
 }
 
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_float_grid_value_matches(

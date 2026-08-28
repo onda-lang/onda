@@ -1256,6 +1256,50 @@ sample:
     }
 
     #[test]
+    fn native_empty_print_publishes_an_empty_record() {
+        let program = lower_and_jit(typed_program(
+            r#"
+event trigger():
+  print()
+sample:
+  out1 = 0.0
+"#,
+        ))
+        .expect("empty print source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut storage = [0_u8; 8];
+        let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
+
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: std::ptr::null_mut(),
+                    print_batch: &mut batch,
+                }),
+            )
+        }
+        .expect("empty print should publish");
+
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (8, 1, 0)
+        );
+        assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 0);
+        assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 0);
+    }
+
+    #[test]
     fn task_delegate_publications_follow_resumption_and_batch_boundaries() {
         let program = lower_and_jit(typed_program(
             r#"

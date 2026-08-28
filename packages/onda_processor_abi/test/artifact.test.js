@@ -22,6 +22,7 @@ import {
   validateProcessorModule,
   validateProcessorMetadata,
   writeDelegateBatch,
+  writeExecutionOutput,
   writePrintBatch,
 } from "../src/index.js";
 
@@ -772,4 +773,16 @@ test("prepares and decodes call-scoped delegate batches", () => {
     name: "report",
     values: { code: 7, values: [1.25, -2.5] },
   }]);
+});
+
+test("rejects execution-output addresses outside wasm32", () => {
+  const memory = new ArrayBuffer(16);
+  assert.throws(
+    () => writeExecutionOutput(memory, 0, 0x1_0000_0000, 0),
+    /must fit u32/,
+  );
+  assert.throws(
+    () => writeExecutionOutput(memory, 0, 0, 0x1_0000_0000),
+    /must fit u32/,
+  );
 });

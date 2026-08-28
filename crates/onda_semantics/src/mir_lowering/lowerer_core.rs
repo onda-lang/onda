@@ -1137,7 +1137,7 @@ impl<'a> FunctionLowerer<'a> {
             } else if self.runtime_globals.is_some() {
                 compiler_generated_function_attributes()
             } else {
-                source_function_attributes(&self.function.name)
+                source_function_attributes(&self.function.name, self.function.publishes_print)
             },
             params: self.params,
             results: self.results,

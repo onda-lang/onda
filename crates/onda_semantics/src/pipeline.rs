@@ -328,6 +328,24 @@ fn statements_return_value(statements: &[Stmt]) -> bool {
     })
 }
 
+fn statements_publish_print(statements: &[Stmt]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Stmt::Print { .. } => true,
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => statements_publish_print(then_branch) || statements_publish_print(else_branch),
+        Stmt::For { body, .. } | Stmt::While { body, .. } => statements_publish_print(body),
+        Stmt::Const { .. }
+        | Stmt::Assign { .. }
+        | Stmt::Expr { .. }
+        | Stmt::Return { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => false,
+    })
+}
+
 fn collect_typed_nested_proc_arrays(
     owner_struct: &str,
     proc_name: &str,
@@ -11474,6 +11492,7 @@ pub fn analyze_with_options_and_inputs(
                     .unwrap_or_default();
                 TypedFunction {
                     runtime_context: runtime_def_names.contains(&d.name),
+                    publishes_print: statements_publish_print(&d.body),
                     method_of: method_self_struct_internal.get(&d.name).cloned(),
                     type_params: d.type_params.clone(),
                     param_defaults: d.params.iter().map(|p| p.default.clone()).collect(),

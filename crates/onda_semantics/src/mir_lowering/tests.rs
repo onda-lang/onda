@@ -132,6 +132,39 @@ sample:
 }
 
 #[test]
+fn non_generic_print_helper_is_lowered_with_runtime_context() {
+    let source = r#"
+def report(value: i32):
+  print("value", value)
+
+sample:
+  report(1)
+  out1 = 0.0
+"#;
+    let parsed = parse_program(source).expect("print helper source should parse");
+    let typed = analyze(parsed).expect("print helper source should analyze");
+    let report = typed
+        .defs
+        .iter()
+        .find(|function| function.name == "report")
+        .expect("typed report helper");
+    assert!(!report.runtime_context);
+    assert!(report.publishes_print);
+
+    let mir = lower_test_program(&typed).expect("print helper source should lower");
+    assert_eq!(mir.log_sites.len(), 1);
+    assert_eq!(mir.log_sites[0].label.as_deref(), Some("value"));
+    let report = mir
+        .functions
+        .iter()
+        .find(|function| function.name == "report")
+        .expect("MIR report helper");
+    assert!(report.attributes.runtime_context);
+    assert_eq!(report.attributes.origin, onda_mir::FunctionOrigin::Source);
+    assert_eq!(report.attributes.inline, onda_mir::InlineHint::Auto);
+}
+
+#[test]
 fn print_literals_use_ordinary_defaults_and_explicit_types_are_preserved() {
     let source = r#"
 init:
