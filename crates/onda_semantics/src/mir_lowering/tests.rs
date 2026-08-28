@@ -69,10 +69,15 @@ sample:
 }
 
 #[test]
-fn print_sites_preserve_lexical_origins_through_nesting_and_specialization() {
+fn print_sites_preserve_lexical_origins_through_nesting_methods_and_specialization() {
     let source = r#"
 def report(value):
   print("report", value)
+
+struct Logger:
+  value: i32
+  def emit(self):
+    print("method", self.value)
 
 proc Child:
   sample:
@@ -88,10 +93,12 @@ proc Parent:
 
 init:
   parent = Parent()
+  logger = Logger(value = 7)
 
 sample:
   report(1)
   report(1.5)
+  logger.emit()
   out1 = parent()
 "#;
     let parsed = parse_program(source).expect("print origin source should parse");
@@ -115,19 +122,26 @@ sample:
             && site.declaration.as_deref() == Some("report")
             && site.source.line == 3
     }));
+    let method = sites("method");
+    assert_eq!(method.len(), 1);
+    assert!(method.iter().all(|site| {
+        site.lexical_owner == "Logger"
+            && site.declaration.as_deref() == Some("emit")
+            && site.source.line == 8
+    }));
     let child = sites("child");
     assert!(!child.is_empty());
     assert!(child.iter().all(|site| {
         site.lexical_owner == "Child"
             && site.declaration.as_deref() == Some("sample")
-            && site.source.line == 7
+            && site.source.line == 12
     }));
     let parent = sites("parent");
     assert!(!parent.is_empty());
     assert!(parent.iter().all(|site| {
         site.lexical_owner == "Parent"
             && site.declaration.as_deref() == Some("sample")
-            && site.source.line == 14
+            && site.source.line == 19
     }));
 }
 

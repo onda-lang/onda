@@ -73,6 +73,12 @@ fn annotate_print_origins(program: &mut Program) {
                     statements(&mut task.body, "program", &task.name);
                 }
             }
+            Block::Struct(struct_def) => {
+                let owner = struct_def.name.clone();
+                for method in &mut struct_def.methods {
+                    statements(&mut method.body, &owner, &method.name);
+                }
+            }
             Block::Proc(processor) => {
                 let owner = processor.name.clone();
                 statements(&mut processor.init.body, &owner, "init");
