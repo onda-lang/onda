@@ -61,13 +61,13 @@ Tagged releases attach portable tarballs and publish the four public npm package
 
 - [CHANGELOG.md](CHANGELOG.md): release history and migration notes
 - [docs/syntax.md](docs/syntax.md): language syntax and semantics
-- [docs/api.md](docs/api.md): complete hosted C API and library integration reference
-- [docs/processor-abi.md](docs/processor-abi.md): raw processor-object API, ABI, and target profiles
-- [docs/web-api.md](docs/web-api.md): complete JavaScript and WebAssembly package API
 - [docs/stdlib.md](docs/stdlib.md): generated standard-library API reference
 - [docs/architecture.md](docs/architecture.md): compiler architecture and codebase navigation
 - [docs/projects.md](docs/projects.md): project manifests, typed buffer assets, and project images
 - [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
+- [docs/api.md](docs/api.md): complete hosted C API and library integration reference
+- [docs/processor-abi.md](docs/processor-abi.md): raw processor-object API, ABI, and target profiles
+- [docs/web-api.md](docs/web-api.md): complete JavaScript and WebAssembly package API
 - [packages/onda_wasm_compiler](packages/onda_wasm_compiler/README.md): packaged source-to-WebAssembly compiler and `onda-wasm` CLI
 - [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): current MIR-to-Wasm backend
 - [packages/onda_processor_abi](packages/onda_processor_abi/README.md): compiler-free artifact schema, validation, and integrity helpers
