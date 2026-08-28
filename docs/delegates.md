@@ -1,22 +1,16 @@
----
-title: Hosting delegates
-description: Collect, size, decode, and handle overflow for Onda delegate occurrences.
-permalink: /docs/delegates/
-section: reference
-eyebrow: Host integration
----
+# Delegate host integration
 
-# Hosting Onda delegates
+This is an internal integration reference for Onda hosts and backend maintainers. The public
+language syntax and semantics live in [the language guide](syntax.md#delegates-and-when).
 
 Delegates carry sparse typed occurrences from Onda code to its containing owner and, for top-level
 delegates, to the host. They are the opposite-direction companion to input events. Static `when`
 handlers run synchronously inside generated code; optional host collection copies top-level
 occurrences into bounded caller-owned storage.
 
-For language syntax and ownership rules, see [the language guide](syntax.md#delegates-and-when).
 For raw generated entry-point layouts, see [the processor ABI](processor-abi.md).
 For the independent diagnostic stream carried by the same execution-output container, see
-[Hosting Onda print output](printing.md).
+[print host integration](printing.md).
 
 ## Delivery model
 
@@ -131,6 +125,11 @@ free(storage);
 are useful for payload validation. `onda_delegate_record_bytes` and
 `onda_delegate_record_min_bytes` include it and are the appropriate allocation queries. Exact-size
 queries return `-1` for dynamic payloads; every query returns `-1` for an invalid index.
+
+Parameter offsets are fixed through the first slice's length prefix. A parameter following a slice
+has a runtime-dependent position, so hosted Rust metadata returns `None`, the C offset query returns
+`-1`, and artifact metadata uses `null`. Generic decoders must advance through each slice's element
+count and data rather than treating the minimum empty-slice layout as an actual offset.
 
 Passing `NULL` as `output.delegate_batch`, or passing a null execution output, is the ordinary path
 when the host does not consume delegates. The same singular execution output is available on

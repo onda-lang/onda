@@ -19,7 +19,7 @@ description: Expressive and performant JIT-compiled audio programming language
   <section class="home-example">
     <div class="section-title">
       <h2>Code example</h2>
-      <p>A subtractive synth with resonant filters and oversampled saturation</p>
+      <p>A stereo subtractive synth with resonant filters and oversampled saturation</p>
     </div>
     <div class="home-example-code">
 <pre><code class="language-onda">{% include home-example.onda %}</code></pre>

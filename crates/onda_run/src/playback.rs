@@ -107,6 +107,7 @@ struct RenderThreadContext {
 struct DelegateTransport {
     sender: mpsc::SyncSender<RunDelegateBatch>,
     dropped_occurrences: Arc<AtomicU32>,
+    pending_overflow: Arc<AtomicU32>,
 }
 
 #[derive(Clone)]
@@ -281,20 +282,24 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     } else {
         (None, None)
     };
-    let (delegate_transport, delegate_rx, dropped_delegate_occurrences) = if launch.control_json {
-        let (sender, receiver) = mpsc::sync_channel(DELEGATE_NOTIFICATION_CAPACITY);
-        let dropped = Arc::new(AtomicU32::new(0));
-        (
-            Some(DelegateTransport {
-                sender,
-                dropped_occurrences: Arc::clone(&dropped),
-            }),
-            Some(receiver),
-            Some(dropped),
-        )
-    } else {
-        (None, None, None)
-    };
+    let (delegate_transport, delegate_rx, dropped_delegate_occurrences, pending_delegate_overflow) =
+        if launch.control_json {
+            let (sender, receiver) = mpsc::sync_channel(DELEGATE_NOTIFICATION_CAPACITY);
+            let dropped = Arc::new(AtomicU32::new(0));
+            let pending_overflow = Arc::new(AtomicU32::new(0));
+            (
+                Some(DelegateTransport {
+                    sender,
+                    dropped_occurrences: Arc::clone(&dropped),
+                    pending_overflow: Arc::clone(&pending_overflow),
+                }),
+                Some(receiver),
+                Some(dropped),
+                Some(pending_overflow),
+            )
+        } else {
+            (None, None, None, None)
+        };
     let (print_sender, print_receiver) = mpsc::sync_channel(PRINT_NOTIFICATION_CAPACITY);
     let mut print_rx = Some(print_receiver);
     let dropped_print_occurrences = Arc::new(AtomicU32::new(0));
@@ -406,6 +411,8 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
                 delegate_rx: delegate_rx.expect("delegate receiver should exist"),
                 dropped_delegate_occurrences: dropped_delegate_occurrences
                     .expect("delegate drop counter should exist"),
+                pending_delegate_overflow: pending_delegate_overflow
+                    .expect("delegate overflow counter should exist"),
                 print_rx: print_rx.take().expect("print receiver should be available"),
                 dropped_print_occurrences: Arc::clone(&dropped_print_occurrences),
                 pending_print_overflow: Arc::clone(&pending_print_overflow),
@@ -1123,13 +1130,11 @@ fn publish_run_delegate_batch(
         return Ok(());
     };
     if let Err(mpsc::TrySendError::Full(batch)) = transport.sender.try_send(batch) {
-        let dropped = u32::try_from(batch.occurrences.len())
-            .unwrap_or(u32::MAX)
-            .saturating_add(batch.overflow_count);
-        let _ = transport.dropped_occurrences.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(current.saturating_add(dropped)),
+        record_transport_loss(
+            &transport.dropped_occurrences,
+            &transport.pending_overflow,
+            batch.occurrences.len(),
+            batch.overflow_count,
         );
     }
     Ok(())
@@ -1143,13 +1148,27 @@ fn publish_run_print_batch(run: &mut RunSession, transport: &PrintTransport) -> 
         return Ok(());
     }
     if let Err(mpsc::TrySendError::Full(batch)) = transport.sender.try_send(batch) {
-        atomic_saturating_add(
+        record_transport_loss(
             &transport.dropped_occurrences,
-            u32::try_from(batch.entries.len()).unwrap_or(u32::MAX),
+            &transport.pending_overflow,
+            batch.entries.len(),
+            batch.overflow_count,
         );
-        atomic_saturating_add(&transport.pending_overflow, batch.overflow_count);
     }
     Ok(())
+}
+
+fn record_transport_loss(
+    dropped_occurrences: &AtomicU32,
+    pending_overflow: &AtomicU32,
+    occurrence_count: usize,
+    overflow_count: u32,
+) {
+    atomic_saturating_add(
+        dropped_occurrences,
+        u32::try_from(occurrence_count).unwrap_or(u32::MAX),
+    );
+    atomic_saturating_add(pending_overflow, overflow_count);
 }
 
 fn atomic_saturating_add(counter: &AtomicU32, value: u32) {
@@ -1346,6 +1365,7 @@ struct RunControlServerContext {
     stop_flag: Arc<AtomicBool>,
     delegate_rx: mpsc::Receiver<RunDelegateBatch>,
     dropped_delegate_occurrences: Arc<AtomicU32>,
+    pending_delegate_overflow: Arc<AtomicU32>,
     print_rx: mpsc::Receiver<RunPrintBatch>,
     dropped_print_occurrences: Arc<AtomicU32>,
     pending_print_overflow: Arc<AtomicU32>,
@@ -1401,6 +1421,7 @@ fn handle_run_control_client(
             &mut writer,
             &context.delegate_rx,
             &context.dropped_delegate_occurrences,
+            &context.pending_delegate_overflow,
         )?;
         write_pending_print_batches(
             &mut writer,
@@ -1458,6 +1479,7 @@ fn handle_run_control_client(
         &mut writer,
         &context.delegate_rx,
         &context.dropped_delegate_occurrences,
+        &context.pending_delegate_overflow,
     )?;
     write_pending_print_batches(
         &mut writer,
@@ -1516,17 +1538,38 @@ fn write_pending_delegate_batch(
     writer: &mut impl Write,
     receiver: &mpsc::Receiver<RunDelegateBatch>,
     dropped_delegate_occurrences: &AtomicU32,
+    pending_delegate_overflow: &AtomicU32,
 ) -> Result<(), String> {
+    let mut wrote_batch = false;
     while let Ok(batch) = receiver.try_recv() {
+        wrote_batch = true;
         let transport_drop_count = dropped_delegate_occurrences.swap(0, Ordering::Relaxed);
         let notification = json!({
             "event": "delegates",
             "occurrences": batch.occurrences.iter().map(run_delegate_occurrence_json).collect::<Vec<_>>(),
-            "overflowCount": batch.overflow_count,
+            "overflowCount": batch.overflow_count.saturating_add(
+                pending_delegate_overflow.swap(0, Ordering::Relaxed)
+            ),
             "transportDropCount": transport_drop_count,
         });
         write_json_line(writer, &notification)
             .map_err(|error| format!("failed to write delegate notification: {error}"))?;
+    }
+    if !wrote_batch {
+        let overflow_count = pending_delegate_overflow.swap(0, Ordering::Relaxed);
+        let transport_drop_count = dropped_delegate_occurrences.swap(0, Ordering::Relaxed);
+        if overflow_count != 0 || transport_drop_count != 0 {
+            write_json_line(
+                writer,
+                &json!({
+                    "event": "delegates",
+                    "occurrences": [],
+                    "overflowCount": overflow_count,
+                    "transportDropCount": transport_drop_count,
+                }),
+            )
+            .map_err(|error| format!("failed to write delegate loss notification: {error}"))?;
+        }
     }
     Ok(())
 }
@@ -1952,8 +1995,9 @@ mod tests {
             .expect("delegate batch should be queued");
 
         let dropped = AtomicU32::new(4);
+        let pending_overflow = AtomicU32::new(5);
         let mut bytes = Vec::new();
-        write_pending_delegate_batch(&mut bytes, &receiver, &dropped)
+        write_pending_delegate_batch(&mut bytes, &receiver, &dropped, &pending_overflow)
             .expect("delegate batch should be serialized");
 
         let notification: Value =
@@ -1970,11 +2014,15 @@ mod tests {
                         "bins": [0.25, 0.5],
                     },
                 }],
-                "overflowCount": 3,
+                "overflowCount": 8,
                 "transportDropCount": 4,
             })
         );
         assert_eq!(dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            pending_overflow.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]
@@ -1995,12 +2043,44 @@ mod tests {
             .expect("delegate batch should be queued");
 
         let mut bytes = Vec::new();
-        write_pending_delegate_batch(&mut bytes, &receiver, &AtomicU32::new(0))
-            .expect("delegate batch should serialize");
+        write_pending_delegate_batch(
+            &mut bytes,
+            &receiver,
+            &AtomicU32::new(0),
+            &AtomicU32::new(0),
+        )
+        .expect("delegate batch should serialize");
         let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
         assert_eq!(
             notification["occurrences"][0]["values"]["value"],
             Value::String("9007199254740993".to_owned())
+        );
+    }
+
+    #[test]
+    fn run_delegate_transport_reports_terminal_loss_without_a_later_batch() {
+        let (_sender, receiver) = mpsc::channel();
+        let dropped = AtomicU32::new(6);
+        let pending_overflow = AtomicU32::new(9);
+        let mut bytes = Vec::new();
+
+        write_pending_delegate_batch(&mut bytes, &receiver, &dropped, &pending_overflow)
+            .expect("loss-only delegate notification should serialize");
+
+        let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(
+            notification,
+            serde_json::json!({
+                "event": "delegates",
+                "occurrences": [],
+                "overflowCount": 9,
+                "transportDropCount": 6,
+            })
+        );
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            pending_overflow.load(std::sync::atomic::Ordering::Relaxed),
+            0
         );
     }
 

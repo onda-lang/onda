@@ -20,7 +20,7 @@ the standalone sources directly in the browser playground.
 [`soundscapes/glass_garden.onda`](soundscapes/glass_garden.onda) is a generative glass-bell garden:
 each resonance reports when it has faded, and that completion starts the voice's next bloom. The
 top-level `bloom_faded` delegate also lets a host follow the evolving pattern; see
-[Hosting Onda delegates](../docs/delegates.md) for storage sizing, decoding, and overflow handling.
+[Delegates and `when`](../docs/syntax.md#delegates-and-when) for the language semantics.
 
 Run or render a standalone example from the repository or an extracted release:
 

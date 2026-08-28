@@ -1,21 +1,16 @@
----
-title: Hosting print output
-description: Collect and format Onda print occurrences across Rust, C, WebAssembly, and Web Audio.
-permalink: /docs/printing/
-section: reference
-eyebrow: Host integration
----
+# Print host integration
 
-# Hosting Onda print output
+This is an internal integration reference for Onda hosts and backend maintainers. The public
+language syntax and semantics live in [the language guide](syntax.md#printing).
 
 An authored `print(...)` statement evaluates its scalar arguments in source order and publishes one
 typed occurrence. Generated DSP code never allocates text or calls a host formatter. The host may
 supply a bounded caller-owned print batch through `ExecutionOutput`; after execution it can format
 the batch as canonical, newline-terminated UTF-8.
 
-For language syntax and placement rules, see [the language guide](syntax.md#printing). For the raw
-entry-point layout, see [the processor ABI](processor-abi.md#call-scoped-execution-output). Prints
-and [delegates](delegates.md) share an execution-output container but never share capacity.
+For the raw entry-point layout, see
+[the processor ABI](processor-abi.md#call-scoped-execution-output). Prints and
+[delegates](delegates.md) share an execution-output container but never share capacity.
 
 Print and delegate batches are independent. Exhausting print capacity cannot drop delegates, and
 omitting print storage suppresses delivery without changing Onda execution. Records that do not fit

@@ -552,13 +552,17 @@ with a newline. Label control characters are escaped in that text so an occurren
 one physical line. Integer formatting is exact, including `i64`; floating-point formatting is the
 shortest width-correct round-trippable representation, with `.0` retained for integral values.
 
+Print collection is optional and bounded per initialization, process segment, or event call.
+Omitting host storage suppresses delivery without suppressing argument evaluation. Records that do
+not fit are dropped whole and increment a saturated overflow count. Successful records remain
+available in source order, including records emitted before a later runtime failure in the same
+call. Print output is diagnostic execution output, not processor state, and is not included in
+snapshots.
+
 `print` is valid in authored runtime statement scopes, including initialization, block/sample code,
 events, `when` handlers, tasks, and runtime defs reached from them. It is invalid in compile-time
 declarations, `const def` bodies, expressions, graphs, and declaration names. Arguments are always
 evaluated in source order even when the host elects not to collect print output.
-
-See [Hosting Onda print output](printing.md) for Rust, C, raw processor ABI, WebAssembly, Web Audio,
-CLI, and run-view integration.
 
 ### Delegates and `when`
 
@@ -610,9 +614,6 @@ batch for the current process segment or input-event call. Missing storage disca
 copy. A record that does not fit is dropped whole and increments the saturated overflow count;
 internal handlers still run. Batches are reset at entry and cleared on execution failure. Delegate
 history is not processor state and is not included in snapshots.
-
-Hosts collecting top-level occurrences should follow the allocation, decoding, and overflow
-guidance in [Hosting Onda delegates](delegates.md).
 
 ## 4. Executable Sections
 

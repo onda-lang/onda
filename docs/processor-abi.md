@@ -1,4 +1,12 @@
-# Onda processor ABI
+---
+title: Processor API and ABI reference
+description: Host compiled Onda processor objects directly through the portable native and WebAssembly ABI.
+permalink: /docs/processor-api/
+section: reference
+eyebrow: Processor integration
+---
+
+# Processor API and ABI reference
 
 This document specifies the backend-neutral contract between a compiled Onda processor and its
 host. The contract is not WebAssembly-specific: LLVM native objects, LLVM WebAssembly objects, and
@@ -89,9 +97,9 @@ C ABIs without introducing a target-specific entry point.
 
 ### Call-scoped execution output
 
-For complete hosted C, Rust, raw-ABI, and JavaScript examples, including capacity selection,
-formatting, and overflow handling, see [Hosting Onda delegates](delegates.md) and
-[Hosting Onda print output](printing.md).
+For the language semantics, see [delegates](syntax.md#delegates) and
+[printing](syntax.md#printing). The internal [delegate](delegates.md) and
+[print](printing.md) integration notes contain cross-host implementation details.
 
 `output` is null when the host consumes neither occurrence stream. Otherwise it points to two
 independently nullable pointers:
@@ -180,7 +188,7 @@ relocatable `linking` section. It does not pretend that the object is directly i
 `include/onda_processor_abi.h` is the canonical C declaration of the current ABI entry points. An
 application links the emitted object, allocates storage from the exact paired descriptor, builds the
 input/output and external-buffer pointer tables, optionally prepares an
-an `onda_processor_execution_output_t` containing independently allocated delegate and print batches,
+`onda_processor_execution_output_t` containing independently allocated delegate and print batches,
 and calls `onda_processor_init`, `onda_process`, and any `onda_event_N` functions directly. No Onda
 runtime or compiler library is required.
 
@@ -379,3 +387,53 @@ typed views over processor memory, uses a bulk-copy fast path for full-block f32
 host linear-memory allocation after construction. Dynamic event payload storage is preallocated to a
 configurable capacity; an oversized event fails rather than growing linear memory while audio is
 running.
+
+## C header reference
+
+The release SDK installs `include/onda_processor_abi.h` and this document together. The header is
+self-contained and header-only except for the processor-specific `onda_processor_init`,
+`onda_process`, and generated `onda_event_N` symbols supplied by the compiled object. Include it
+from C or C++; no `libonda` linkage is required to call a processor object.
+
+The public declarations fall into four groups:
+
+- ABI versions, execution results, initialization modes, and segmented-processing flags.
+- Function-pointer signatures and the generated init, process, and event entry points.
+- Caller-owned delegate, print, execution-output, occurrence, and cursor records.
+- Inline batch iteration and parameter-domain validation/conversion helpers.
+
+The inline batch iterators validate record boundaries before returning a payload view. Sequential
+iteration with `onda_processor_delegate_batch_next` or `onda_processor_print_batch_next` is linear
+in record count and constant-space. The random-access convenience functions rescan from the start
+and are therefore linear in the requested index; use a cursor when consuming a whole batch.
+
+All parameter conversion helpers are allocation-free and constant-time. Prepare and validate a
+domain once when constructing host controls rather than validating descriptor text on the audio
+thread.
+
+### Complete function index
+
+This index is checked against `include/onda_processor_abi.h` so newly exposed functions cannot be
+released without appearing in this reference.
+
+<!-- BEGIN PROCESSOR C API FUNCTION INDEX -->
+onda_process
+onda_processor_batch_next_record
+onda_processor_delegate_batch_next
+onda_processor_delegate_batch_occurrence_at
+onda_processor_delegate_batch_reset
+onda_processor_float_grid_value_matches
+onda_processor_init
+onda_processor_integer_domain_value_is_valid
+onda_processor_lincurve_normalized_to_unit
+onda_processor_lincurve_unit_to_normalized
+onda_processor_linear_plain_to_unit
+onda_processor_linear_unit_to_plain
+onda_processor_param_constrain_plain
+onda_processor_param_domain_is_valid
+onda_processor_param_normalized_to_plain
+onda_processor_param_plain_to_normalized
+onda_processor_print_batch_next
+onda_processor_print_batch_occurrence_at
+onda_processor_print_batch_reset
+<!-- END PROCESSOR C API FUNCTION INDEX -->

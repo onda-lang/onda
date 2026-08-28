@@ -5,6 +5,8 @@ artifacts. It validates current-format descriptors and complete core-WebAssembly
 loads integrity-associated `.wasm`/`.onda.json` pairs, and provides the shared TypeScript surface
 used by `@onda-lang/wasm-compiler`, `@onda-lang/binaryen-web`, and `@onda-lang/webaudio`.
 
+See [api.md](api.md) for the complete public Web API shared with the released package.
+
 ```js
 import {
   createParamControl,
@@ -62,8 +64,8 @@ if (batch.overflowCount) reportOverflow(batch.overflowCount);
 ```
 
 Allocate the descriptor and storage before realtime execution and consume records before the next
-call reuses them. See [Hosting Onda delegates](../../docs/delegates.md) for the complete lifecycle,
-capacity guidance, and APIs for other hosts.
+call reuses them. See the internal [delegate host integration](../../docs/delegates.md) reference
+for the complete lifecycle, capacity guidance, and APIs for other hosts.
 
 ## Print batches
 
@@ -72,8 +74,8 @@ Print delivery uses an independent caller-owned batch with the same physical des
 scalar types; `formatPrintBatch()` and `formatPrintRecords()` produce canonical newline-terminated
 text with exact `i64` and width-correct floating-point formatting. Use `writeExecutionOutput()` to
 pass independently nullable delegate and print batch addresses to init, process, or event exports.
-See [Hosting Onda print output](../../docs/printing.md) for the complete lifecycle and metadata
-contract.
+See the internal [print host integration](../../docs/printing.md) reference for the complete
+lifecycle and metadata contract.
 
 The current descriptor represents every bindable buffer-array slot as a physical
 `metadata.buffers` entry and records logical contiguous groups in `metadata.buffer_arrays`. At

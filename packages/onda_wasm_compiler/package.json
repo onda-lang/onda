@@ -44,6 +44,7 @@
     "bin",
     "dist",
     "src",
+    "api.md",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
@@ -54,9 +55,9 @@
     "check:versions": "node ../../scripts/sync-package-versions.mjs --check",
     "test": "npm run build && npm run test:built",
     "test:built": "node --test ./test/*.test.js",
-    "test:pack": "node ./scripts/test-package.mjs",
-    "test:pack:built": "node ./scripts/test-package.mjs --skip-build",
-    "prepack": "npm run build"
+    "test:pack": "node ../../scripts/stage-web-api-docs.mjs && node ./scripts/test-package.mjs",
+    "test:pack:built": "node ../../scripts/stage-web-api-docs.mjs && node ./scripts/test-package.mjs --skip-build",
+    "prepack": "npm run build && node ../../scripts/stage-web-api-docs.mjs"
   },
   "dependencies": {
     "@onda-lang/processor-abi": "0.7.6",

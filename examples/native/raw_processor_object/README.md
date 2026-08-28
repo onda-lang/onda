@@ -240,7 +240,8 @@ before a generated failure remain available; delegates are cleared on failure.
 For fixed payloads, one record occupies
 `ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE + payload_size_bytes`. Dynamic slice sizes and the
 number of occurrences depend on runtime execution, so whole-batch capacity remains a host policy.
-See [Hosting Onda delegates](../../../docs/delegates.md) for detailed sizing and lifecycle guidance.
+See the internal [delegate host integration](../../../docs/delegates.md) reference for detailed
+sizing and lifecycle guidance.
 
 The sidecar also determines when pointers are absent. Pass null for a surface only when its
 descriptor count or storage size is zero:

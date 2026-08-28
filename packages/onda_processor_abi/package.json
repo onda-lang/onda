@@ -22,11 +22,13 @@
   },
   "files": [
     "src",
+    "api.md",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "prepack": "node ../../scripts/stage-web-api-docs.mjs"
   },
   "publishConfig": {
     "access": "public"

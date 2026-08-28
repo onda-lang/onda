@@ -532,6 +532,7 @@ pub struct DeclaredEvent {
     name: String,
     params: Vec<DeclaredEventParam>,
     payload_bytes: Option<usize>,
+    payload_min_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -541,7 +542,7 @@ pub struct DeclaredEventParam {
     array_len: usize,
     is_array: bool,
     is_slice: bool,
-    byte_offset: usize,
+    byte_offset: Option<usize>,
     default_bytes: Option<Vec<u8>>,
     default_values: Option<Vec<ScalarValue>>,
 }

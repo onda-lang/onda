@@ -1,5 +1,7 @@
 # Onda Web Audio adapter
 
+See [api.md](api.md) for the complete public Web API shared with the released package.
+
 This optional package hosts a complete wasm32 Onda processor artifact in an `AudioWorklet`. It is a
 reference adapter for the generic Onda processor ABI; Web Audio is not required by the compiler or
 by native and relocatable-WebAssembly object consumers.
@@ -119,8 +121,8 @@ const unsubscribe = processor.onPrint(({
 batch overflow and bounded worklet-to-main transport loss are reported separately; loss-only
 notifications are delivered even when no later authored print arrives. Capacity defaults to 64 KiB
 and can be set to zero to suppress host delivery without suppressing argument evaluation.
-See [Hosting Onda print output](../../docs/printing.md) for scalar formatting, source metadata, and
-the equivalent Rust, C, and raw processor APIs.
+See the internal [print host integration](../../docs/printing.md) reference for scalar formatting,
+source metadata, and the equivalent Rust, C, and raw processor APIs.
 
 ## Delegates
 
@@ -153,8 +155,8 @@ not a compiler-computable exact whole-call size: occurrence counts and slice pay
 runtime-dependent. The worklet supplies delegate storage to generated code only while at least one
 listener is registered, and decoding happens on the main side. `overflowCount` reports insufficient
 configured capacity; `transportDropCount` separately reports records discarded by the bounded
-worklet-to-main queue. Internal Onda `when` handlers still run in either case. See
-[Hosting Onda delegates](../../docs/delegates.md) for sizing and lifecycle details.
+worklet-to-main queue. Internal Onda `when` handlers still run in either case. See the internal
+[delegate host integration](../../docs/delegates.md) reference for sizing and lifecycle details.
 
 ## Real-time behavior
 

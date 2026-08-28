@@ -12,6 +12,12 @@ export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
 export const DELEGATE_RECORD_HEADER_SIZE_BYTES: 8;
 /** wasm32 byte size of the call-scoped delegate batch descriptor. */
 export const DELEGATE_BATCH_SIZE_BYTES: 20;
+/** Bytes preceding the payload of every packed print occurrence. */
+export const PRINT_RECORD_HEADER_SIZE_BYTES: 8;
+/** wasm32 byte size of the call-scoped print batch descriptor. */
+export const PRINT_BATCH_SIZE_BYTES: 20;
+/** wasm32 byte size of the call-scoped execution-output descriptor. */
+export const EXECUTION_OUTPUT_SIZE_BYTES: 8;
 
 export type OndaScalarType = "f32" | "f64" | "i32" | "i64" | "bool";
 export type OndaArtifactKind = "webassembly_module" | "relocatable_object";

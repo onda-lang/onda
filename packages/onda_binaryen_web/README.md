@@ -1,5 +1,7 @@
 # Onda Binaryen Web Backend
 
+See [api.md](api.md) for the complete public Web API shared with the released package.
+
 This package consumes Onda's versioned MIR as compact MessagePack, JSON, or an already-decoded
 object and emits an executable WebAssembly DSP module with Binaryen.js. It runs in browsers and Node
 without LLVM, `wasm-ld`, or an Onda toolchain in the code-generation environment.
@@ -40,9 +42,9 @@ the complete wasm32-module profile of the generic
 owns allocation in linear memory. Metadata contains resolved target/integration facts,
 state/parameter layouts, state-backed control-output offsets, flattened audio-port channels, packed
 event/delegate payload layouts, print log sites, source tables, and all exported ABI names. See
-[Hosting Onda delegates](../../docs/delegates.md) and
-[Hosting Onda print output](../../docs/printing.md) for batch sizing, decoding, formatting, and
-overflow handling.
+the internal [delegate host integration](../../docs/delegates.md) and
+[print host integration](../../docs/printing.md) references for batch sizing, decoding, formatting,
+and overflow handling.
 
 `createProcessorArtifactFiles()` validates the final module, computes a SHA-256 digest, and returns
 a reusable `.wasm` plus `.onda.json` descriptor pair. `validateProcessorArtifact`,

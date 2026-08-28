@@ -375,7 +375,7 @@ fn build_events(
 ) -> Result<Vec<DeclaredEvent>, MirMetadataError> {
     let mut events = Vec::with_capacity(program.interface.events.len());
     for (event_index, event) in program.interface.events.iter().enumerate() {
-        let (params, computed_fixed_size, _) = build_payload_descriptor(
+        let (params, computed_fixed_size, payload_min_bytes) = build_payload_descriptor(
             program,
             "event",
             &event.name,
@@ -395,6 +395,7 @@ fn build_events(
             name: event.name.clone(),
             params,
             payload_bytes: fixed_sizes[event_index],
+            payload_min_bytes,
         });
     }
     Ok(events)
@@ -451,7 +452,7 @@ fn build_payload_descriptor<'a>(
                     array_len: 1,
                     is_array: false,
                     is_slice: false,
-                    byte_offset: minimum_wire_offset,
+                    byte_offset: fixed_size.map(|_| minimum_wire_offset),
                     default_bytes: default
                         .map(|value| constant_bytes(program, value, ty))
                         .transpose()?,
@@ -484,7 +485,7 @@ fn build_payload_descriptor<'a>(
                     array_len: len,
                     is_array: true,
                     is_slice: false,
-                    byte_offset: minimum_wire_offset,
+                    byte_offset: fixed_size.map(|_| minimum_wire_offset),
                     default_bytes: default
                         .map(|value| constant_bytes(program, value, ty))
                         .transpose()?,
@@ -510,7 +511,7 @@ fn build_payload_descriptor<'a>(
                     array_len: 0,
                     is_array: false,
                     is_slice: true,
-                    byte_offset: minimum_wire_offset,
+                    byte_offset: fixed_size.map(|_| minimum_wire_offset),
                     default_bytes: None,
                     default_values: None,
                 });
@@ -1042,15 +1043,16 @@ mod tests {
 
         let note = &metadata.events[0];
         assert_eq!(note.payload_bytes(), Some(12));
-        assert_eq!(note.params()[0].byte_offset(), 0);
-        assert_eq!(note.params()[1].byte_offset(), 4);
+        assert_eq!(note.params()[0].byte_offset(), Some(0));
+        assert_eq!(note.params()[1].byte_offset(), Some(4));
         assert_eq!(note.params()[1].default_bytes().unwrap().len(), 8);
         let curve = &metadata.events[1];
         assert_eq!(curve.payload_bytes(), None);
-        assert_eq!(curve.params()[0].byte_offset(), 0);
-        assert_eq!(curve.params()[1].byte_offset(), 1);
+        assert_eq!(curve.payload_min_bytes(), 13);
+        assert_eq!(curve.params()[0].byte_offset(), Some(0));
+        assert_eq!(curve.params()[1].byte_offset(), Some(1));
         assert!(curve.params()[1].is_slice());
-        assert_eq!(curve.params()[2].byte_offset(), 5);
+        assert_eq!(curve.params()[2].byte_offset(), None);
 
         assert_eq!(metadata.input_index["stereo"], 1);
         assert_eq!(metadata.output_index["counter"], 1);

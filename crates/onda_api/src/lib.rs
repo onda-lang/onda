@@ -5309,7 +5309,8 @@ pub unsafe extern "C" fn onda_event_param_offset_bytes(
     param_index: i32,
 ) -> i32 {
     event_param_descriptor(program, event_index, param_index)
-        .and_then(|param| i32::try_from(param.byte_offset()).ok())
+        .and_then(DeclaredEventParam::byte_offset)
+        .and_then(|offset| i32::try_from(offset).ok())
         .unwrap_or(-1)
 }
 
@@ -5353,7 +5354,8 @@ pub unsafe extern "C" fn onda_delegate_param_offset_bytes(
     param_index: i32,
 ) -> i32 {
     delegate_param_descriptor(program, delegate_index, param_index)
-        .and_then(|param| i32::try_from(param.byte_offset()).ok())
+        .and_then(DeclaredEventParam::byte_offset)
+        .and_then(|offset| i32::try_from(offset).ok())
         .unwrap_or(-1)
 }
 

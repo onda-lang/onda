@@ -227,6 +227,10 @@ impl DeclaredEvent {
     pub fn payload_bytes(&self) -> Option<usize> {
         self.payload_bytes
     }
+
+    pub fn payload_min_bytes(&self) -> usize {
+        self.payload_min_bytes
+    }
 }
 
 impl DeclaredDelegate {
@@ -268,7 +272,9 @@ impl DeclaredEventParam {
         self.is_slice
     }
 
-    pub fn byte_offset(&self) -> usize {
+    /// Returns the fixed byte offset, or `None` when a preceding slice makes
+    /// this parameter's position depend on the runtime payload.
+    pub fn byte_offset(&self) -> Option<usize> {
         self.byte_offset
     }
 

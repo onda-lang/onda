@@ -40,6 +40,7 @@ try {
   ]));
   const packedPaths = new Set(compilerPack.files.map((file) => file.path));
   for (const required of [
+    "api.md",
     "bin/onda-wasm.js",
     "dist/frontend/onda_compiler_web_bg.wasm",
     "dist/build.json",
@@ -121,7 +122,7 @@ process.stdout.write(String(artifact.wasm.byteLength));
 }
 
 function packWorkspacePackage(root) {
-  return firstPackRecord(runJson("npm", [
+  const packed = firstPackRecord(runJson("npm", [
     "pack",
     root,
     "--json",
@@ -129,6 +130,10 @@ function packWorkspacePackage(root) {
     "--pack-destination",
     temporary,
   ]));
+  if (!packed.files.some((file) => file.path === "api.md")) {
+    throw new Error(`packed ${packed.name} is missing api.md`);
+  }
+  return packed;
 }
 
 function firstPackRecord(result) {

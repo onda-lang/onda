@@ -2196,6 +2196,37 @@ sample:
 }
 
 #[test]
+fn c_api_delegate_metadata_marks_offsets_after_slices_as_dynamic() {
+    unsafe {
+        let program = compile_program(
+            r#"
+delegate report(code: i32, values: f32[], tag: i64)
+sample:
+  out1 = 0.0
+"#,
+        );
+
+        assert_eq!(onda_delegate_count(program.0), 1);
+        assert_eq!(onda_delegate_param_count(program.0, 0), 3);
+
+        assert_eq!(onda_delegate_param_elem_type(program.0, 0, 0), 2);
+        assert_eq!(onda_delegate_param_array_len(program.0, 0, 0), 1);
+        assert_eq!(onda_delegate_param_is_slice(program.0, 0, 0), 0);
+        assert_eq!(onda_delegate_param_offset_bytes(program.0, 0, 0), 0);
+
+        assert_eq!(onda_delegate_param_elem_type(program.0, 0, 1), 0);
+        assert_eq!(onda_delegate_param_array_len(program.0, 0, 1), 0);
+        assert_eq!(onda_delegate_param_is_slice(program.0, 0, 1), 1);
+        assert_eq!(onda_delegate_param_offset_bytes(program.0, 0, 1), 4);
+
+        assert_eq!(onda_delegate_param_elem_type(program.0, 0, 2), 3);
+        assert_eq!(onda_delegate_param_array_len(program.0, 0, 2), 1);
+        assert_eq!(onda_delegate_param_is_slice(program.0, 0, 2), 0);
+        assert_eq!(onda_delegate_param_offset_bytes(program.0, 0, 2), -1);
+    }
+}
+
+#[test]
 fn c_api_slice_events_report_dynamic_payload_and_dispatch() {
     unsafe {
         let frames = 512_i32;

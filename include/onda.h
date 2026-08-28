@@ -1043,7 +1043,8 @@ int onda_event_param_elem_type(const onda_program_t* program, int event_index, i
 int onda_event_param_array_len(const onda_program_t* program, int event_index, int param_index);
 /* Returns 1 if the event parameter is a slice, 0 if not, -1 if invalid. */
 int onda_event_param_is_slice(const onda_program_t* program, int event_index, int param_index);
-/* Returns event parameter byte offset within the packed payload, or -1 if invalid. */
+/* Returns the event parameter byte offset within the packed payload. Returns -1 if invalid or if a
+   preceding dynamic slice makes the offset runtime-dependent. */
 int onda_event_param_offset_bytes(const onda_program_t* program, int event_index, int param_index);
 /* Returns 1 if the event parameter has a default, 0 if not, -1 if invalid. */
 int onda_event_param_has_default(const onda_program_t* program, int event_index, int param_index);
@@ -1074,6 +1075,8 @@ int onda_delegate_param_is_slice(
   int delegate_index,
   int param_index
 );
+/* Returns the delegate parameter byte offset within the packed payload. Returns -1 if invalid or
+   if a preceding dynamic slice makes the offset runtime-dependent. */
 int onda_delegate_param_offset_bytes(
   const onda_program_t* program,
   int delegate_index,

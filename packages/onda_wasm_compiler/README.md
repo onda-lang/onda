@@ -1,5 +1,7 @@
 # Onda WebAssembly compiler
 
+See [api.md](api.md) for the complete public Web API shared with the released package.
+
 `@onda-lang/wasm-compiler` compiles Onda source or an in-memory multi-file project to a complete,
 self-contained WebAssembly processor artifact. It runs in modern browsers and Node.js and does not
 require LLVM, a Wasm linker, Rust, or `wasm-pack` after installation.
