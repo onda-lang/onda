@@ -202,7 +202,9 @@ const processor = await createOndaAudioProcessorInitialized(context, artifact, {
 
 Hosts may instead pass a flat array in physical descriptor order or key individual physical names
 such as `"bank[1]"`. Logical group metadata determines the contiguous slot range; no sample data is
-copied when Onda selects a slot while processing.
+copied when Onda selects a slot while processing. Initial descriptors are installed before the
+initialized constructor runs full initialization, so authored top-level and proc init code can
+preprocess the supplied samples once before rendering begins.
 
 Artifact descriptors and module exports are validated by the shared, compiler-free
 `@onda-lang/processor-abi` package before anything reaches the rendering thread.

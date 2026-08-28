@@ -641,6 +641,7 @@ Typical uses:
 - Create arrays and tuples.
 - Construct structs.
 - Construct proc instances.
+- Read, write, or inspect currently bound buffers, including buffers forwarded to proc instances.
 - Perform one-time setup.
 
 Host `init(PRESERVE_PINNED)` preserves pinned roots and task continuations while
@@ -652,6 +653,15 @@ single state image and allocate no memory on the successful path. Their
 execution cost depends on the authored initializer; a runtime failure leaves
 instance state indeterminate. Initialized convenience creation is equivalent to
 allocating storage, writing parameter defaults, and running `init(FULL)`.
+
+Initialization observes the buffer bindings current for that call. Unbound buffers retain their
+neutral behavior: reads return zero, writes are discarded, and metadata reports the neutral
+one-frame descriptor. A later rebind is visible immediately to subsequent block, sample, event,
+and init entry points, but does not implicitly rerun initialization or change state that an earlier
+initializer derived from the old binding. A host that wants to refresh such derived state requests
+initialization explicitly. This allows hosts with buffers available at startup to perform one-time
+preprocessing in `init` instead of adding setup work to block or sample callbacks. Proc init has the
+same access to its declared buffer surface, including buffers supplied by its constructor.
 
 Section default scalar types are supported:
 
@@ -1647,7 +1657,9 @@ Proc-event rules:
 Every proc also gets a reserved builtin `init(...)` event. It mirrors the proc
 params in declaration order and adds `all: bool = false`, assigns
 provided values into params, reruns that proc instance's `init`, then runs bound
-param hooks. Omitted args use defaults.
+param hooks. Omitted args use defaults. The call forwards the proc instance's
+current buffer bindings, so it can explicitly refresh state derived from a
+buffer that the host rebound after construction.
 
 By default the call preserves pinned roots and compiler-pinned state such as
 task continuations while reinitializing resettable roots. Passing

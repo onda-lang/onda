@@ -6192,33 +6192,17 @@ block:
     }
 
     #[test]
-    fn init_buffer_len_is_rejected_semantically() {
+    fn init_buffer_len_is_allowed_semantically() {
         let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  n = src.len()\nsample:\n  out1 = 0.0\n";
         let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("buffer len in init should fail");
-        let diag = errors
-            .iter()
-            .find(|diag| diag.message.contains("buffer method 'src.len()'"))
-            .expect("missing init buffer len diagnostic");
-
-        assert!(diag.message.contains("not allowed in init"));
-        assert_eq!((diag.line, diag.column), (6, 7));
-        assert_eq!(diag.end_line, 6);
+        analyze(program).expect("buffer len in init should analyze");
     }
 
     #[test]
-    fn init_buffer_index_is_rejected_semantically() {
+    fn init_buffer_index_is_allowed_semantically() {
         let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  first = src[0]\nsample:\n  out1 = 0.0\n";
         let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("buffer indexing in init should fail");
-        let diag = errors
-            .iter()
-            .find(|diag| diag.message.contains("buffer indexing 'src[...]'"))
-            .expect("missing init buffer indexing diagnostic");
-
-        assert!(diag.message.contains("not allowed in init"));
-        assert_eq!((diag.line, diag.column), (6, 11));
-        assert_eq!(diag.end_line, 6);
+        analyze(program).expect("buffer indexing in init should analyze");
     }
 
     #[test]

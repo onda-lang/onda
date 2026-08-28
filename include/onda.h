@@ -800,9 +800,10 @@ int onda_bind_output(
    unbinds the slot, regardless of sample_rate. An unbound slot remains processable through neutral
    one-frame storage: reads return zero and writes are discarded. Otherwise, ptr must be non-null and
    remain valid, correctly sized for positive frame/channel counts, and at a stable address until
-   this slot is rebound/unbound or the instance is destroyed.
-   ptr memory must be readable during processing and naturally aligned for elem_type;
-   it must also be writable when the buffer declaration permits writes. Misaligned
+   this slot is rebound/unbound or the instance is destroyed. A replacement is visible to subsequent
+   init, event, and processing calls; rebinding does not itself rerun initialization.
+   ptr memory must be readable during calls that can access it and naturally aligned for elem_type;
+   it must also be writable when onda_buffer_may_write reports 1. Misaligned
    bindings are rejected.
    Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
 int onda_bind_buffer(
@@ -859,7 +860,9 @@ int onda_process_checked_segment(
 /* Runs the Onda initializer in place. ONDA_INIT_FULL initializes the complete physical state and
    is required before processing a newly created instance. ONDA_INIT_PRESERVE_PINNED reruns ordinary
    authored initializers while preserving pinned state and task continuations, and is only valid
-   after successful full initialization. The successful path performs no allocation. On failure,
+   after successful full initialization. Current external-buffer bindings are prepared before
+   authored initialization runs; unbound slots use neutral descriptors. The successful path
+   performs no allocation. On failure,
    instance state is indeterminate and stateful instance operations reject it until full
    initialization or snapshot restore succeeds. Returns 0 on success, -1 for an invalid handle or
    mode, or -2 when init execution fails. */
@@ -1090,8 +1093,8 @@ int onda_buffer_elem_type_bytes(const onda_program_t* program, int index);
 int onda_buffer_channels_kind(const onda_program_t* program, int index);
 /* Returns static channel count (mono=1), or -1 for dynamic/invalid. */
 int onda_buffer_channels_static(const onda_program_t* program, int index);
-/* Returns 1 if reachable program code may write the physical buffer slot,
-   including when a collection selector cannot be resolved statically. Returns
+/* Returns 1 if program code reachable from top-level/proc init, events, or processing may write the
+   physical buffer slot, including when a collection selector cannot be resolved statically. Returns
    0 only when no reachable write is possible, or -1 for an invalid program/index. */
 int onda_buffer_may_write(const onda_program_t* program, int index);
 

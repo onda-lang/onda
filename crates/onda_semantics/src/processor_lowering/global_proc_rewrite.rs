@@ -1037,25 +1037,28 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 constructor_setup_indices.insert(rewritten_init.len());
                                 rewritten_init.push(assign);
                             }
+                            let mut init_args = vec![
+                                CallArg {
+                                    name: None,
+                                    expr: proc_instance_self_expr(var, &global_proc_array_slots),
+                                },
+                                CallArg {
+                                    name: None,
+                                    expr: Expr::var(TOP_LEVEL_INIT_ALL_NAME),
+                                },
+                            ];
+                            init_args.extend(
+                                buffer_args
+                                    .into_iter()
+                                    .map(|expr| CallArg { name: None, expr }),
+                            );
                             rewritten_init.push(Stmt::Expr {
                                 loc: Default::default(),
                                 expr: Expr::UserCall {
                                     loc: Default::default(),
                                     name: format!("{ctor_name}{PROC_INIT_FN_SUFFIX}"),
                                     type_args: Vec::new(),
-                                    args: vec![
-                                        CallArg {
-                                            name: None,
-                                            expr: proc_instance_self_expr(
-                                                var,
-                                                &global_proc_array_slots,
-                                            ),
-                                        },
-                                        CallArg {
-                                            name: None,
-                                            expr: Expr::var(TOP_LEVEL_INIT_ALL_NAME),
-                                        },
-                                    ],
+                                    args: init_args,
                                 },
                             });
                         } else {

@@ -384,7 +384,19 @@ async function renderWasmBlocks(artifact, scenario) {
     view.setFloat32(bufferSampleRates + index * 4, sampleRate, true);
   });
 
-  requireExecutionSuccess(onda_processor_init(params, state, 1), "processor init");
+  requireExecutionSuccess(
+    onda_processor_init(
+      params,
+      state,
+      1,
+      bufferPointers,
+      bufferFrames,
+      bufferChannels,
+      bufferSampleRates,
+      0,
+    ),
+    "processor init",
+  );
   const processSegment = (startFrame, frames, flags) => requireExecutionSuccess(
     onda_process(
       state,
@@ -431,7 +443,19 @@ async function renderWasmBlocks(artifact, scenario) {
       if (savedSnapshot === null) {
         throw new Error("Wasm parity restore has no preceding snapshot");
       }
-      requireExecutionSuccess(onda_processor_init(params, state, 1), "processor restore init");
+      requireExecutionSuccess(
+        onda_processor_init(
+          params,
+          state,
+          1,
+          bufferPointers,
+          bufferFrames,
+          bufferChannels,
+          bufferSampleRates,
+          0,
+        ),
+        "processor restore init",
+      );
       restoreWasmState(memory, state, metadata, savedSnapshot);
       continue;
     }

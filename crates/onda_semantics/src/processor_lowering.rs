@@ -34,7 +34,7 @@ const BUILTIN_PROC_INIT_EVENT_NAME: &str = "init";
 const INIT_ALL_PARAM_NAME: &str = "all";
 pub(crate) const TOP_LEVEL_INIT_ALL_NAME: &str = "__onda_init_all";
 
-fn is_builtin_proc_init_event_name(name: &str) -> bool {
+pub(crate) fn is_builtin_proc_init_event_name(name: &str) -> bool {
     name == BUILTIN_PROC_INIT_EVENT_NAME
 }
 

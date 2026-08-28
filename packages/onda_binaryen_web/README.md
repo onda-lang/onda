@@ -33,7 +33,8 @@ a JSON string, a MessagePack `ArrayBuffer`/typed-array view, or a decoded object
 for inspection; the browser compiler and test corpus use MessagePack as the production transport.
 
 The generated module exports `memory`, `__heap_base`,
-`onda_processor_init(params_ptr, state_ptr, mode, output_ptr)`, the 12-argument processor
+the 8-argument `onda_processor_init(params_ptr, state_ptr, mode, buffers_ptr,
+buffer_frames_ptr, buffer_channels_ptr, buffer_sample_rates_ptr, output_ptr)`, the 12-argument processor
 `onda_process`, and one `onda_event_N` function per declared event. Init, process, and event entries
 take an optional call-scoped execution-output pointer carrying independent delegate and print
 batches. Each function returns zero on success or a positive generated execution-failure code. These are

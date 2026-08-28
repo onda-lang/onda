@@ -473,6 +473,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.paramsPtr,
       this.statePtr,
       mode,
+      this.bufferPointersPtr,
+      this.bufferFramesPtr,
+      this.bufferChannelsPtr,
+      this.bufferSampleRatesPtr,
       this.executionOutputPtr,
     );
     this.flushPrint("processor init");

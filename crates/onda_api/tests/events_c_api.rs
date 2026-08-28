@@ -1416,7 +1416,8 @@ fn project_instances_share_immutable_defaults_and_allow_host_overrides() {
             br#"
 outs { out1 }
 buffers { samples: buffer<f32> }
-sample { out1 = samples[0] }
+init { value = samples[0] }
+sample { out1 = value }
 "#
             .to_vec(),
         ];
@@ -1496,9 +1497,16 @@ sample { out1 = samples[0] }
             onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
             0
         );
+        assert_eq!(output, [0.75; 4]);
+        assert_eq!(onda_init(instance.0, 1, std::ptr::null_mut()), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
+            0
+        );
         assert_eq!(output, [0.25; 4]);
 
         assert_eq!(onda_reset_buffer_to_project_default(instance.0, 0), 0);
+        assert_eq!(onda_init(instance.0, 1, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
             0
@@ -3477,6 +3485,8 @@ outs { out1 }
 buffers {
   method_write_buf: buffer<f32>
   method_read_buf: buffer<f32>
+  init_write_buf: buffer<f32>
+  proc_init_write_buf: buffer<f32>
 }
 def touch(buf: buffer<f32>):
   buf[0] = 0.5
@@ -3490,8 +3500,17 @@ proc Writer:
   sample:
     touch(b)
     out1 = in1
+proc InitWriter:
+  buffers:
+    b: f32
+  init:
+    b[0] = 0.75
+  sample:
+    out1 = 0.0
 init:
+  init_write_buf[0] = 0.25
   w = Writer(b = method_write_buf)
+  init_writer = InitWriter(b = proc_init_write_buf)
 sample:
   out1 = w(method_read_buf[0])
 "#,
@@ -3499,12 +3518,20 @@ sample:
 
         let write_name = CString::new("method_write_buf").expect("valid cstr");
         let read_name = CString::new("method_read_buf").expect("valid cstr");
+        let init_write_name = CString::new("init_write_buf").expect("valid cstr");
+        let proc_init_write_name = CString::new("proc_init_write_buf").expect("valid cstr");
         let write_idx = onda_buffer_index(program.0, write_name.as_ptr());
         let read_idx = onda_buffer_index(program.0, read_name.as_ptr());
+        let init_write_idx = onda_buffer_index(program.0, init_write_name.as_ptr());
+        let proc_init_write_idx = onda_buffer_index(program.0, proc_init_write_name.as_ptr());
         assert!(write_idx >= 0);
         assert!(read_idx >= 0);
+        assert!(init_write_idx >= 0);
+        assert!(proc_init_write_idx >= 0);
         assert_eq!(onda_buffer_may_write(program.0, write_idx), 1);
         assert_eq!(onda_buffer_may_write(program.0, read_idx), 0);
+        assert_eq!(onda_buffer_may_write(program.0, init_write_idx), 1);
+        assert_eq!(onda_buffer_may_write(program.0, proc_init_write_idx), 1);
     }
 }
 

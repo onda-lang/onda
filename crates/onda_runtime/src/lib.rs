@@ -1177,6 +1177,9 @@ impl Instance {
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         configure_current_thread_audio_fp_mode();
         self.program.validate_state_snapshot(bytes)?;
+        if !self.buffers_validated {
+            validate_buffers(self)?;
+        }
         let was_pending = matches!(self.state, InstanceState::Pending(_));
         if was_pending {
             init(self, InitMode::Full)?;
@@ -1188,8 +1191,15 @@ impl Instance {
             if was_pending {
                 self.program.overlay_state_snapshot(state, bytes)
             } else {
-                self.program
-                    .restore_state_snapshot(&self.params, state, bytes)
+                self.program.restore_state_snapshot(
+                    &self.params,
+                    state,
+                    bytes,
+                    &self.buffer_ptrs,
+                    &self.buffer_frames,
+                    &self.buffer_channels,
+                    &self.buffer_sample_rates,
+                )
             }
         })
     }
@@ -1397,12 +1407,20 @@ pub fn init_with_output(
 ) -> Result<(), Diagnostic> {
     configure_current_thread_audio_fp_mode();
     reset_execution_output(&mut output);
+    if !instance.buffers_validated {
+        validate_buffers(instance)?;
+    }
     with_processor_execution_output(output, |output| match (&mut instance.state, mode) {
         (InstanceState::Pending(state), InitMode::Full) => {
-            let initialized =
-                instance
-                    .program
-                    .initialize_allocated_state(&instance.params, state, output)?;
+            let initialized = instance.program.initialize_allocated_state(
+                &instance.params,
+                state,
+                &instance.buffer_ptrs,
+                &instance.buffer_frames,
+                &instance.buffer_channels,
+                &instance.buffer_sample_rates,
+                output,
+            )?;
             instance.state = InstanceState::Allocated(AllocatedState {
                 storage: initialized,
                 initialized: true,
@@ -1420,6 +1438,10 @@ pub fn init_with_output(
                 &instance.params,
                 state,
                 matches!(mode, InitMode::Full),
+                &instance.buffer_ptrs,
+                &instance.buffer_frames,
+                &instance.buffer_channels,
+                &instance.buffer_sample_rates,
                 output,
             )
         }),
@@ -1732,8 +1754,10 @@ pub unsafe fn bind_output(
 ///
 /// When this call binds the slot, `ptr` must remain valid for `frames * channels` elements of
 /// `elem_ty`, with the element's required alignment, until rebound/unbound or instance destruction.
-/// The region must be writable when the declaration permits writes, and all bound host regions must
-/// be mutually non-overlapping while processing. Unbind calls do not access `ptr`.
+/// A replacement is visible to subsequent init, event, and processing calls; rebinding does not
+/// itself rerun initialization. The region must be writable when buffer-write analysis reports a
+/// reachable write, and all bound host regions must be mutually non-overlapping while accessed.
+/// Unbind calls do not access `ptr`.
 pub unsafe fn bind_buffer(
     instance: &mut Instance,
     index: usize,
@@ -2851,6 +2875,127 @@ sample:
             .expect("state should restore");
         assert!(instance.buffers_validated);
         assert_eq!(instance.buffer_ptrs[0], bound_ptr);
+    }
+
+    #[test]
+    fn top_level_and_proc_init_observe_current_buffer_bindings() {
+        let parsed = parse_program(
+            r#"
+proc Reader:
+  buffers:
+    source: f32
+
+  init:
+    first = source[0]
+    frames = source.len()
+
+  sample:
+    out1 = first + f32(frames)
+
+buffers:
+  source: f32
+
+init:
+  selected = source[1]
+  reader = Reader(source = source)
+
+event refresh():
+  reader.init()
+
+sample:
+  out1 = selected + reader() + source[0]
+"#,
+        )
+        .expect("source should parse");
+        let typed = analyze_with_options(
+            parsed,
+            AnalysisOptions {
+                sample_rate: 48_000.0,
+                block_size: 1,
+            },
+        )
+        .expect("source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed).expect("source should lower");
+        let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
+        let config = InstanceConfig {
+            sample_rate: 48_000.0,
+            frames_per_block: 1,
+            in_channels: 0,
+            out_channels: 1,
+        };
+
+        let mut neutral = create_instance_initialized(program.clone(), config)
+            .expect("neutral instance should initialize");
+        let mut neutral_output = [0.0_f32; 1];
+        unsafe {
+            bind_output(
+                &mut neutral,
+                0,
+                neutral_output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&neutral_output),
+            )
+            .expect("neutral output should bind");
+        }
+        process_checked(&mut neutral, 1, ExecutionOutput::none())
+            .expect("neutral instance should process");
+        assert_eq!(neutral_output, [1.0]);
+
+        let mut bound = create_instance(program, config).expect("instance should allocate");
+        let mut samples = [2.0_f32, 5.0];
+        let mut bound_output = [0.0_f32; 1];
+        unsafe {
+            bind_buffer(
+                &mut bound,
+                0,
+                samples.as_mut_ptr().cast(),
+                samples.len(),
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .expect("buffer should bind");
+            bind_output(
+                &mut bound,
+                0,
+                bound_output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&bound_output),
+            )
+            .expect("bound output should bind");
+        }
+        init(&mut bound, InitMode::Full).expect("bound instance should initialize");
+        process_checked(&mut bound, 1, ExecutionOutput::none())
+            .expect("bound instance should process");
+        assert_eq!(bound_output, [11.0]);
+
+        let mut replacement = [7.0_f32, 11.0];
+        unsafe {
+            bind_buffer(
+                &mut bound,
+                0,
+                replacement.as_mut_ptr().cast(),
+                replacement.len(),
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .expect("replacement buffer should bind");
+        }
+        process_checked(&mut bound, 1, ExecutionOutput::none())
+            .expect("replacement binding should be visible without reinitialization");
+        assert_eq!(bound_output, [16.0]);
+
+        let refresh = bound.event_index("refresh").expect("refresh event");
+        trigger_event_by_index(&mut bound, refresh, &[], ExecutionOutput::none())
+            .expect("proc init event should run against the current binding");
+        process_checked(&mut bound, 1, ExecutionOutput::none())
+            .expect("reinitialized proc should process");
+        assert_eq!(bound_output, [21.0]);
+
+        init(&mut bound, InitMode::Full)
+            .expect("top-level init should run against the replacement binding");
+        process_checked(&mut bound, 1, ExecutionOutput::none())
+            .expect("fully reinitialized instance should process");
+        assert_eq!(bound_output, [27.0]);
     }
 
     #[test]

@@ -41,7 +41,16 @@ signed 32-bit values. Public LLVM entry points use the target's C calling conven
 WebAssembly modules use ordinary core-Wasm function calls.
 
 ```text
-onda_processor_init(params: Ptr, state: Ptr, mode: InitMode, output: Ptr) -> i32
+onda_processor_init(
+  params: Ptr,
+  state: Ptr,
+  mode: InitMode,
+  buffers: Ptr,
+  buffer_frames: Ptr,
+  buffer_channels: Ptr,
+  buffer_sample_rates: Ptr,
+  output: Ptr,
+) -> i32
 
 onda_process(
   state: Ptr,
@@ -80,11 +89,12 @@ continuations. Preserve-pinned initialization skips those guarded declarations a
 existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
 not transactional: a host that needs rollback must provide that policy itself.
 
-Processor ABI version 8 adds print output to initialization and replaces the separate delegate-batch
-argument on process and event entries with one optional `ExecutionOutput`. Version 7 introduced
-delegate batches, and version 6 replaced the boolean-like `all` contract with this named mode enum.
-The instance-level C and WebAssembly host APIs use the same values. A failed initialization leaves
-the physical state indeterminate.
+Processor ABI version 9 supplies current external-buffer descriptors to initialization. Version 8
+added print output to initialization and replaced the separate delegate-batch argument on process
+and event entries with one optional `ExecutionOutput`. Version 7 introduced delegate batches, and
+version 6 replaced the boolean-like `all` contract with this named mode enum. The instance-level C
+and WebAssembly host APIs use the same values. A failed initialization leaves the physical state
+indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is
 `RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
@@ -213,9 +223,16 @@ contract as an LLVM object and does not make Web Audio part of the ABI.
 
 The host allocates non-overlapping parameter and physical-state regions using the sizes and minimum
 alignments in `runtime`. It initializes parameter defaults from program metadata and calls
-`onda_processor_init(params, state, FULL, output)` before processing. Pass null when initialization
-output is not consumed. Physical state uses the backend's selected target layout and is otherwise
-opaque.
+`onda_processor_init(params, state, FULL, buffers, buffer_frames, buffer_channels,
+buffer_sample_rates, output)` before processing. The four buffer tables describe the bindings
+current for this initialization call and follow the same rules as process and event calls. Pass
+null for `output` when initialization output is not consumed. Physical state uses the backend's
+selected target layout and is otherwise opaque.
+
+Hosts may replace buffer descriptors between entry-point calls. The next init, event, or process
+call observes the replacement; rebinding alone does not execute initialization or recompute state
+previously derived from a buffer. Supplying bindings to init is intended for one-time preprocessing
+when the host already owns the source buffers before processing begins.
 
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
 artifact descriptor. Scratch state is deliberately absent from snapshots.
@@ -231,9 +248,10 @@ persistent scalar elements in little-endian byte order, in metadata order, witho
 or scratch state. It includes pinned authored roots and compiler-owned task frames. This is
 distinct from the target-native physical state image, which can use another byte order or alignment.
 
-Restore begins with `onda_processor_init(params, state, FULL, output)`, then overlays every persistent entry
-from the packed snapshot. This resets instance scratch while preserving persistent state and task
-continuations.
+Restore begins with `onda_processor_init(params, state, FULL, buffers, buffer_frames,
+buffer_channels, buffer_sample_rates, output)`, using the current bindings, then overlays every
+persistent entry from the packed snapshot. This resets instance scratch while preserving persistent
+state and task continuations.
 A host converting between a big-endian physical target and the portable snapshot must encode
 and decode each scalar according to metadata rather than copying physical bytes wholesale.
 
@@ -351,8 +369,9 @@ Fixed resource arrays occupy contiguous physical slots. `metadata.buffer_arrays`
 logical group name, its first physical slot, and its length, so hosts can bind a whole bank without
 parsing generated slot names. Selection clamps once and computes `first + selector` in constant
 time. Each physical slot has its own `metadata.buffers[first + slot].may_write` value. A false value
-proves that reachable processor code does not write that slot; selectors that cannot be resolved
-statically conservatively mark every slot they may select.
+proves that code reachable from init, process, or an exported event does not write that slot;
+selectors that cannot be resolved statically conservatively mark every slot they may select. Init
+writes include writes reached transitively through top-level and proc initializer helpers.
 
 Samples use interleaved frame-major storage. Metadata declares scalar width, read/write access, and
 mono, static, or dynamic channel constraints. Every sample-rate entry is finite and positive,

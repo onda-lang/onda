@@ -30,7 +30,7 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 test("validates the descriptor fixture shared with the Rust schema", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v8.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v9.json", import.meta.url),
     "utf8",
   ));
   assert.equal(
@@ -448,7 +448,7 @@ test("rejects i64 control domains that are not exact through host numbers", () =
 
 test("validates parameter-control semantics before accepting a descriptor", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v8.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v9.json", import.meta.url),
     "utf8",
   ));
 
@@ -577,7 +577,7 @@ test("rejects runtime semantics not implemented by the current processor ABI", (
 
 test("rejects metadata layouts outside or overlapping their runtime regions", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v8.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v9.json", import.meta.url),
     "utf8",
   ));
 

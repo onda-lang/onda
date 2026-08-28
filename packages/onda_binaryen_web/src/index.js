@@ -2444,12 +2444,32 @@ class MirCompiler {
         this.module.local.get(1, binaryen.i32),
       ),
       this.module.global.set(
+        POINTER_GLOBALS.buffers,
+        this.module.local.get(3, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.bufferWrites,
+        this.module.local.get(3, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.bufferFrames,
+        this.module.local.get(4, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.bufferChannels,
+        this.module.local.get(5, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.bufferSampleRates,
+        this.module.local.get(6, binaryen.i32),
+      ),
+      this.module.global.set(
         POINTER_GLOBALS.delegateBatch,
-        this.executionOutputBatch(3, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
+        this.executionOutputBatch(7, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
       ),
       this.module.global.set(
         POINTER_GLOBALS.printBatch,
-        this.executionOutputBatch(3, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
+        this.executionOutputBatch(7, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
       ),
       ...this.resetDelegateBatch(),
       ...this.resetPrintBatch(),
@@ -2474,6 +2494,10 @@ class MirCompiler {
     this.module.addFunction(
       "$onda.abi.init",
       binaryen.createType([
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
         binaryen.i32,
         binaryen.i32,
         binaryen.i32,

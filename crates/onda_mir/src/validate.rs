@@ -4513,13 +4513,13 @@ impl Validator<'_> {
     ) {
         if !matches!(
             function.kind,
-            FunctionKind::Process | FunctionKind::Event(_)
+            FunctionKind::Init | FunctionKind::Process | FunctionKind::Event(_)
         ) {
             self.function_error(
                 function_id,
                 source,
                 format!(
-                    "{operation} requires process or event host-buffer capability; user functions must receive buffers as parameters"
+                    "{operation} requires init, process, or event host-buffer capability; user functions must receive buffers as parameters"
                 ),
             );
         }

@@ -33,8 +33,8 @@ use llvm_sys::{
 
 use onda_frontend::Diagnostic;
 use onda_mir::{
-    Block, CallArgument, FunctionKind, Place, Program, Projection, Rvalue, ScalarType,
-    StatementKind, Type, Value,
+    Block, BufferChannels, CallArgument, FunctionKind, Place, Program, Projection, Rvalue,
+    ScalarType, StatementKind, Type, Value,
 };
 
 use crate::{
@@ -176,8 +176,16 @@ type NativeProcessFn = unsafe extern "C" fn(
     *const f32,
     *mut onda_processor_abi::ExecutionOutput,
 ) -> u32;
-type NativeInitFn =
-    unsafe extern "C" fn(*const u8, *mut u8, u32, *mut onda_processor_abi::ExecutionOutput) -> u32;
+type NativeInitFn = unsafe extern "C" fn(
+    *const u8,
+    *mut u8,
+    u32,
+    *const *mut u8,
+    *const i32,
+    *const i32,
+    *const f32,
+    *mut onda_processor_abi::ExecutionOutput,
+) -> u32;
 type NativeEventFn = unsafe extern "C" fn(
     *const u8,
     *const u8,
@@ -718,7 +726,9 @@ unsafe fn declare_functions(
     for (index, function) in program.functions.iter().enumerate() {
         let (name, fn_ty, internal) = match function.kind {
             FunctionKind::Init => {
-                let mut args = [ptr_ty, ptr_ty, i32_ty, ptr_ty];
+                let mut args = [
+                    ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
+                ];
                 (
                     "onda_processor_init".to_owned(),
                     LLVMFunctionType(i32_ty, args.as_mut_ptr(), args.len() as u32, 0),
@@ -6287,6 +6297,17 @@ unsafe fn build_entry_runtime_context(
         FunctionKind::Init => {
             fields[5] = LLVMGetParam(function, 0);
             fields[6] = LLVMGetParam(function, 1);
+            let buffers =
+                entry_buffer_descriptor_table(module, builder, LLVMGetParam(function, 3))?;
+            fields[7] = buffers;
+            fields[8] = buffers;
+            for (field, parameter) in (9..=11).zip(4..=6) {
+                fields[field] = entry_buffer_descriptor_table(
+                    module,
+                    builder,
+                    LLVMGetParam(function, parameter),
+                )?;
+            }
             let all_value = LLVMGetParam(function, 2);
             let all = LLVMBuildICmp(
                 builder,
@@ -6296,37 +6317,6 @@ unsafe fn build_entry_runtime_context(
                 c_name("init_all")?.as_ptr(),
             );
             fields[INIT_ALL_CONTEXT_INDEX as usize] = all;
-            let clear = append_block(module.context, function, "init_clear")?;
-            let initialized = append_block(module.context, function, "init_cleared")?;
-            LLVMBuildCondBr(builder, all, clear, initialized);
-
-            LLVMPositionBuilderAtEnd(builder, clear);
-            // Pinned declarations run on this path and fully overwrite their
-            // slots. Clear only the complementary byte ranges so large pinned
-            // arrays are not written twice. Padding remains in the clear set,
-            // keeping the complete physical state image initialized.
-            for range in full_init_clear_ranges(module.program, module.layouts) {
-                let destination = byte_offset_ptr(
-                    module.context,
-                    builder,
-                    fields[6],
-                    range.start,
-                    "init_clear_range",
-                )?;
-                LLVMBuildMemSet(
-                    builder,
-                    destination,
-                    LLVMConstInt(LLVMInt8TypeInContext(module.context), 0, 0),
-                    LLVMConstInt(
-                        LLVMInt64TypeInContext(module.context),
-                        (range.end - range.start) as u64,
-                        0,
-                    ),
-                    alignment_at_byte_offset(module.layouts.state.alignment, range.start) as u32,
-                );
-            }
-            LLVMBuildBr(builder, initialized);
-            LLVMPositionBuilderAtEnd(builder, initialized);
         }
         FunctionKind::Process => {
             fields[6] = LLVMGetParam(function, 0);
@@ -6370,7 +6360,7 @@ unsafe fn build_entry_runtime_context(
     // execution-output pointer. Direct buffer metadata snapshots are inserted
     // in the entry block and must see these stores before that inspection
     // introduces control flow.
-    for (index, value) in fields.into_iter().enumerate() {
+    for (index, value) in fields.iter().copied().enumerate() {
         let ptr = LLVMBuildStructGEP2(
             builder,
             module.runtime_context_ty,
@@ -6385,7 +6375,7 @@ unsafe fn build_entry_runtime_context(
     let needs_print_batch = !module.program.log_sites.is_empty();
     let (delegate_batch, print_batch) = if needs_delegate_batch || needs_print_batch {
         let output = match kind {
-            FunctionKind::Init => LLVMGetParam(function, 3),
+            FunctionKind::Init => LLVMGetParam(function, 7),
             FunctionKind::Process => LLVMGetParam(function, 11),
             FunctionKind::Event(_) => LLVMGetParam(function, 7),
             FunctionKind::User => unreachable!(),
@@ -6412,6 +6402,40 @@ unsafe fn build_entry_runtime_context(
             c_name("runtime_field")?.as_ptr(),
         );
         LLVMBuildStore(builder, value, ptr);
+    }
+    if matches!(kind, FunctionKind::Init) {
+        let all = fields[INIT_ALL_CONTEXT_INDEX as usize];
+        let clear = append_block(module.context, function, "init_clear")?;
+        let initialized = append_block(module.context, function, "init_cleared")?;
+        LLVMBuildCondBr(builder, all, clear, initialized);
+
+        LLVMPositionBuilderAtEnd(builder, clear);
+        // Pinned declarations run on this path and fully overwrite their
+        // slots. Clear only the complementary byte ranges so large pinned
+        // arrays are not written twice. Padding remains in the clear set,
+        // keeping the complete physical state image initialized.
+        for range in full_init_clear_ranges(module.program, module.layouts) {
+            let destination = byte_offset_ptr(
+                module.context,
+                builder,
+                fields[6],
+                range.start,
+                "init_clear_range",
+            )?;
+            LLVMBuildMemSet(
+                builder,
+                destination,
+                LLVMConstInt(LLVMInt8TypeInContext(module.context), 0, 0),
+                LLVMConstInt(
+                    LLVMInt64TypeInContext(module.context),
+                    (range.end - range.start) as u64,
+                    0,
+                ),
+                alignment_at_byte_offset(module.layouts.state.alignment, range.start) as u32,
+            );
+        }
+        LLVMBuildBr(builder, initialized);
+        LLVMPositionBuilderAtEnd(builder, initialized);
     }
     Ok((context, fallback_read, fallback_write))
 }
@@ -7250,7 +7274,41 @@ impl MirJitProgram {
         allocator: Option<RuntimeAllocator>,
     ) -> Result<RuntimeState, Diagnostic> {
         let mut state = self.allocate_state_with_allocator(allocator)?;
-        self.initialize_allocated_state(params, &mut state, None)
+        let (buffer_ptrs, buffer_frames, buffer_channels, buffer_sample_rates) =
+            self.neutral_buffer_descriptors()?;
+        self.initialize_allocated_state(
+            params,
+            &mut state,
+            &buffer_ptrs,
+            &buffer_frames,
+            &buffer_channels,
+            &buffer_sample_rates,
+            None,
+        )
+    }
+
+    fn neutral_buffer_descriptors(
+        &self,
+    ) -> Result<(Vec<*mut u8>, Vec<i32>, Vec<i32>, Vec<f32>), Diagnostic> {
+        let count = self.mir.interface.buffers.len();
+        let channels = self
+            .mir
+            .interface
+            .buffers
+            .iter()
+            .map(|buffer| match buffer.channels {
+                BufferChannels::Mono | BufferChannels::Dynamic => Ok(1),
+                BufferChannels::Static(channels) => i32::try_from(channels).map_err(|_| {
+                    Diagnostic::runtime("buffer channel count does not fit i32", 0, 0)
+                }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((
+            vec![std::ptr::null_mut(); count],
+            vec![1; count],
+            channels,
+            vec![self.mir.config.sample_rate; count],
+        ))
     }
 
     pub fn allocate_state_with_allocator(
@@ -7275,6 +7333,10 @@ impl MirJitProgram {
         &self,
         params: &[u8],
         state: &mut UninitializedRuntimeState,
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<RuntimeState, Diagnostic> {
         if params.len() != self.layouts.params.size {
@@ -7298,6 +7360,13 @@ impl MirJitProgram {
                 0,
             ));
         }
+        validate_buffer_abi(
+            &self.mir,
+            buffer_ptrs,
+            buffer_frames,
+            buffer_channels,
+            buffer_sample_rates,
+        )?;
         let state_words = state
             .state_words
             .as_mut()
@@ -7307,6 +7376,10 @@ impl MirJitProgram {
                 abi_const_ptr(params),
                 state_words.as_mut_ptr().cast::<u8>(),
                 1,
+                abi_const_ptr(buffer_ptrs),
+                abi_const_ptr(buffer_frames),
+                abi_const_ptr(buffer_channels),
+                abi_const_ptr(buffer_sample_rates),
                 output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
@@ -7331,6 +7404,10 @@ impl MirJitProgram {
         params: &[u8],
         state: &mut RuntimeState,
         all: bool,
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         if params.len() != self.layouts.params.size {
@@ -7354,11 +7431,22 @@ impl MirJitProgram {
                 0,
             ));
         }
+        validate_buffer_abi(
+            &self.mir,
+            buffer_ptrs,
+            buffer_frames,
+            buffer_channels,
+            buffer_sample_rates,
+        )?;
         let status = unsafe {
             (self.compiled.init)(
                 abi_const_ptr(params),
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
                 u32::from(all),
+                abi_const_ptr(buffer_ptrs),
+                abi_const_ptr(buffer_frames),
+                abi_const_ptr(buffer_channels),
+                abi_const_ptr(buffer_sample_rates),
                 output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };

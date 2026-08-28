@@ -404,6 +404,7 @@ fn declaration_only_primitive_array_fill(stmt: &Stmt) -> Option<Stmt> {
 fn build_builtin_proc_init_event_parts<F>(
     receiver_ty: &str,
     param_specs: &[ProcParamSpec],
+    buffer_specs: &[ProcBufferSpec],
     mut target_for_slot: F,
     init_fn_name: String,
 ) -> (Vec<onda_frontend::FnParamDecl>, Vec<Stmt>)
@@ -493,22 +494,40 @@ where
         default: Some(Expr::bool(false)),
     });
 
+    event_params.extend(
+        buffer_specs
+            .iter()
+            .map(|buffer| onda_frontend::FnParamDecl {
+                loc: Default::default(),
+                name: buffer.name.clone(),
+                ty: Some(proc_buffer_fn_param_type(buffer)),
+                ty_loc: Default::default(),
+                default: None,
+            }),
+    );
+
+    let mut init_args = vec![
+        CallArg {
+            name: None,
+            expr: Expr::var("self"),
+        },
+        CallArg {
+            name: None,
+            expr: Expr::var(INIT_ALL_PARAM_NAME),
+        },
+    ];
+    init_args.extend(buffer_specs.iter().map(|buffer| CallArg {
+        name: None,
+        expr: Expr::var(buffer.name.clone()),
+    }));
+
     event_body.push(Stmt::Expr {
         loc: Default::default(),
         expr: Expr::UserCall {
             loc: Default::default(),
             name: init_fn_name,
             type_args: Vec::new(),
-            args: vec![
-                CallArg {
-                    name: None,
-                    expr: Expr::var("self"),
-                },
-                CallArg {
-                    name: None,
-                    expr: Expr::var(INIT_ALL_PARAM_NAME),
-                },
-            ],
+            args: init_args,
         },
     });
 
@@ -1519,27 +1538,37 @@ fn generate_nested_wrapper_defs(
             nested_init_fn_name(&proc.name, &nested_path),
             callee_sample_oversample_factor,
         );
+        let mut nested_init_params = vec![
+            onda_frontend::FnParamDecl {
+                loc: Default::default(),
+                name: "self".to_owned(),
+                ty: Some(FnParamType::Struct(proc.name.clone())),
+                ty_loc: Default::default(),
+                default: None,
+            },
+            onda_frontend::FnParamDecl {
+                loc: Default::default(),
+                name: INIT_ALL_PARAM_NAME.to_owned(),
+                ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
+                ty_loc: Default::default(),
+                default: None,
+            },
+        ];
+        nested_init_params.extend(callee_shape.buffer_specs.iter().map(|buffer| {
+            onda_frontend::FnParamDecl {
+                loc: Default::default(),
+                name: buffer.name.clone(),
+                ty: Some(proc_buffer_fn_param_type(buffer)),
+                ty_loc: Default::default(),
+                default: None,
+            }
+        }));
         nested_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
             is_const: false,
             type_params: Vec::new(),
             name: nested_init_fn_name(&proc.name, &nested_path),
-            params: vec![
-                onda_frontend::FnParamDecl {
-                    loc: Default::default(),
-                    name: "self".to_owned(),
-                    ty: Some(FnParamType::Struct(proc.name.clone())),
-                    ty_loc: Default::default(),
-                    default: None,
-                },
-                onda_frontend::FnParamDecl {
-                    loc: Default::default(),
-                    name: INIT_ALL_PARAM_NAME.to_owned(),
-                    ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
-                    ty_loc: Default::default(),
-                    default: None,
-                },
-            ],
+            params: nested_init_params,
             return_ty: None,
             return_ty_loc: Default::default(),
             body: nested_init_body,
@@ -1844,6 +1873,7 @@ fn generate_nested_wrapper_defs(
                         build_builtin_proc_init_event_parts(
                             &proc.name,
                             &callee_shape.param_specs,
+                            &callee_shape.buffer_specs,
                             |slot| nested_field_name(&nested_path, slot),
                             nested_init_fn_name(&proc.name, &nested_path),
                         )
@@ -2888,27 +2918,40 @@ pub(super) fn generate_lowered_proc_blocks(
         init_body.extend(after_init_bind_hook_stmts(&proc.name, &shape.param_specs));
         let init_fn_name = format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX);
         def_sample_oversample_factors.insert(init_fn_name.clone(), proc_sample_oversample_factor);
+        let mut init_params = vec![
+            onda_frontend::FnParamDecl {
+                loc: Default::default(),
+                name: "self".to_owned(),
+                ty: Some(FnParamType::Struct(proc.name.clone())),
+                ty_loc: Default::default(),
+                default: None,
+            },
+            onda_frontend::FnParamDecl {
+                loc: Default::default(),
+                name: INIT_ALL_PARAM_NAME.to_owned(),
+                ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
+                ty_loc: Default::default(),
+                default: None,
+            },
+        ];
+        init_params.extend(
+            shape
+                .buffer_specs
+                .iter()
+                .map(|buffer| onda_frontend::FnParamDecl {
+                    loc: Default::default(),
+                    name: buffer.name.clone(),
+                    ty: Some(proc_buffer_fn_param_type(buffer)),
+                    ty_loc: Default::default(),
+                    default: None,
+                }),
+        );
         generated_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
             is_const: false,
             type_params: Vec::new(),
             name: init_fn_name,
-            params: vec![
-                onda_frontend::FnParamDecl {
-                    loc: Default::default(),
-                    name: "self".to_owned(),
-                    ty: Some(FnParamType::Struct(proc.name.clone())),
-                    ty_loc: Default::default(),
-                    default: None,
-                },
-                onda_frontend::FnParamDecl {
-                    loc: Default::default(),
-                    name: INIT_ALL_PARAM_NAME.to_owned(),
-                    ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
-                    ty_loc: Default::default(),
-                    default: None,
-                },
-            ],
+            params: init_params,
             return_ty: None,
             return_ty_loc: Default::default(),
             body: init_body,
@@ -2947,6 +2990,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     build_builtin_proc_init_event_parts(
                         &proc.name,
                         &shape.param_specs,
+                        &shape.buffer_specs,
                         |slot| format!("self.{slot}"),
                         format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX),
                     )

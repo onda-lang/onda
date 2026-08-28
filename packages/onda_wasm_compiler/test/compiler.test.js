@@ -91,6 +91,76 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.match(files.metadata.text, /"integrity"/);
 });
 
+test("initialization observes bound buffers in top-level and proc init", async () => {
+  const compiler = await createCompiler();
+  const { artifact } = await compiler.compileSource(`proc Reader:
+  buffers:
+    source: f32
+  init:
+    first = source[0]
+  sample:
+    out1 = first
+
+buffers:
+  source: f32
+init:
+  selected = source[1]
+  reader = Reader(source = source)
+sample:
+  out1 = selected + reader()
+`);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const {
+    memory,
+    __heap_base: heapBase,
+    onda_processor_init: initialize,
+  } = instance.exports;
+  let heap = Number(heapBase.value);
+  const allocate = (size, align = 4) => {
+    heap = Math.ceil(heap / align) * align;
+    const address = heap;
+    heap += Math.max(size, 1);
+    return address;
+  };
+  const params = allocate(artifact.metadata.runtime.param_size_bytes);
+  const state = allocate(artifact.metadata.runtime.state_size_bytes, 16);
+  const samples = allocate(8);
+  const bufferPointers = allocate(4);
+  const bufferFrames = allocate(4);
+  const bufferChannels = allocate(4);
+  const bufferSampleRates = allocate(4);
+  const view = new DataView(memory.buffer);
+  view.setFloat32(samples, 2.0, true);
+  view.setFloat32(samples + 4, 5.0, true);
+  view.setUint32(bufferPointers, samples, true);
+  view.setInt32(bufferFrames, 2, true);
+  view.setInt32(bufferChannels, 1, true);
+  view.setFloat32(bufferSampleRates, 48_000, true);
+
+  assert.equal(initialize(
+    params,
+    state,
+    1,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+    0,
+  ), 0);
+
+  const stateInfo = artifact.metadata.metadata.states;
+  const stateValue = (name) => {
+    const entry = stateInfo.find((candidate) => candidate.name === name);
+    assert.ok(entry, `missing state metadata for ${name}`);
+    return view.getFloat32(
+      state + Number(entry.physical_state_byte_offset),
+      true,
+    );
+  };
+  assert.equal(stateValue("reader.first"), 2.0);
+  assert.equal(stateValue("selected"), 5.0);
+});
+
 test("compiles and publishes dynamic delegate payloads end to end", async () => {
   const compiler = await createCompiler();
   const { artifact } = await compiler.compileSource(`delegate report(code: i32, values: f32[], tags: i32[])
@@ -136,7 +206,7 @@ sample:
   }
   writeDelegateBatch(memory, batchAddress, storageAddress, 40);
   writeExecutionOutput(memory, executionOutputAddress, batchAddress, 0);
-  assert.equal(initialize(params, state, 1), 0);
+  assert.equal(initialize(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(trigger(payload, params, state, 0, 0, 0, 0, executionOutputAddress), 0);
   const batch = readDelegateBatch(memory, batchAddress);
   assert.deepEqual(batch, {
@@ -188,7 +258,7 @@ sample:
   const output = allocate(8);
   writePrintBatch(memory, batch, storage, 128);
   writeExecutionOutput(memory, output, 0, batch);
-  assert.equal(initialize(params, state, 1, output), 0);
+  assert.equal(initialize(params, state, 1, 0, 0, 0, 0, output), 0);
   assert.equal(formatPrintBatch(memory, batch, artifact.metadata).text, "boot\n");
   new DataView(memory.buffer).setBigInt64(payload, 9_007_199_254_740_993n, true);
   assert.equal(report(payload, params, state, 0, 0, 0, 0, output), 0);

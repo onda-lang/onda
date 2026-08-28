@@ -396,7 +396,8 @@ The shared `double` host-control surface exactly represents integers only throug
 `onda_buffer_channels_static` describe one physical slot. Channel kinds are
 `ONDA_BUFFER_CHANNELS_MONO`, `ONDA_BUFFER_CHANNELS_STATIC`, and
 `ONDA_BUFFER_CHANNELS_DYNAMIC`. `onda_buffer_may_write` reports whether any reachable generated path
-may write the slot.
+may write the slot, including paths reachable from top-level or proc initialization as well as
+events and processing.
 
 ### Event and delegate parameters
 
@@ -454,6 +455,12 @@ instance is destroyed and must support the threads/concurrency used by the host.
 - `ONDA_INIT_PRESERVE_PINNED` reinitializes ordinary state while preserving pinned state and task
   continuations. It is valid only after successful full initialization.
 
+Initialization prepares and observes the instance's current external-buffer bindings. Project
+defaults are installed before initialized project creation runs authored initialization; ordinary
+unbound slots use their neutral descriptors. Rebinding does not rerun initialization automatically;
+call `onda_init` when state derived by an earlier initializer should be recomputed from the new
+binding.
+
 The successful path allocates nothing. A failed initialization leaves state indeterminate; the
 instance rejects stateful operations until a full initialization or snapshot restore succeeds.
 
@@ -481,7 +488,9 @@ bindings before execution.
 ### External buffers
 
 `onda_bind_buffer` installs one zero-copy physical buffer slot using a primitive type, positive
-frames/channels, and sample rate. The memory must be writable when `onda_buffer_may_write` is true.
+frames/channels, and sample rate. A replacement binding is used by subsequent init, event, and
+processing calls without reconstructing the instance. The memory must be writable when
+`onda_buffer_may_write` is true.
 
 Either of these forms unbinds a buffer:
 

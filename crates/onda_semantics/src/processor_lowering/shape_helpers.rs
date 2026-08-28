@@ -2835,6 +2835,24 @@ pub(super) fn compute_proc_shape(
             );
         }
     }
+    for buffer in &buffer_specs {
+        let channels = match buffer.channels {
+            TypedBufferChannels::Mono => BufferChannelInfo::Mono,
+            TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(ch),
+            TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
+        };
+        insert_declared_symbol(
+            &mut state_type_hints,
+            &mut declared_symbols,
+            buffer.name.clone(),
+            DeclaredSymbolInfo::Buffer {
+                elem_ty: buffer.elem_ty,
+                channels,
+                array_len: buffer.array_len,
+                is_array: buffer.is_array,
+            },
+        );
+    }
 
     let proc_ns = namespace_of_symbol(&proc.name);
     let proc_locals = HashSet::<String>::new();
@@ -2927,26 +2945,6 @@ pub(super) fn compute_proc_shape(
             &proc_state_array_struct_roots,
             &typed_struct_defs,
             errors,
-        );
-    }
-
-    // Add buffer prefix entries so has_declared_buffer_symbol / validate_buffer_param_call_arg work
-    for buffer in &buffer_specs {
-        let channels = match buffer.channels {
-            TypedBufferChannels::Mono => BufferChannelInfo::Mono,
-            TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(ch),
-            TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
-        };
-        insert_declared_symbol(
-            &mut proc_state_scalars,
-            &mut proc_declared_symbols,
-            buffer.name.clone(),
-            DeclaredSymbolInfo::Buffer {
-                elem_ty: buffer.elem_ty,
-                channels,
-                array_len: buffer.array_len,
-                is_array: buffer.is_array,
-            },
         );
     }
 

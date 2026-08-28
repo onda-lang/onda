@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 8u
+#define ONDA_PROCESSOR_ABI_VERSION 9u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
@@ -79,6 +79,10 @@ typedef uint32_t (*onda_processor_init_fn)(
   const void* params,
   void* state,
   onda_processor_init_mode_t mode,
+  void* const* buffers,
+  const int32_t* buffer_frames,
+  const int32_t* buffer_channels,
+  const float* buffer_sample_rates,
   onda_processor_execution_output_t* output
 );
 
@@ -619,13 +623,19 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_plain_to_normalized(
  * storage pointers are NULL exactly when the paired descriptor reports that
  * surface count or storage size as zero.
  */
-/* Initializes processor state. FULL initializes the complete physical state and is required before
-   any process or event call on newly allocated storage. PRESERVE_PINNED reruns ordinary authored
-   initializers while preserving pinned roots and task continuations, and is valid only after FULL. */
+/* Initializes processor state against the supplied current buffer descriptors. Descriptors may be
+   replaced between entry-point calls; replacement alone does not rerun initialization. FULL
+   initializes the complete physical state and is required before any process or event call on newly
+   allocated storage. PRESERVE_PINNED reruns ordinary authored initializers while preserving pinned
+   roots and task continuations, and is valid only after FULL. */
 uint32_t onda_processor_init(
   const void* params,
   void* state,
   onda_processor_init_mode_t mode,
+  void* const* buffers,
+  const int32_t* buffer_frames,
+  const int32_t* buffer_channels,
+  const float* buffer_sample_rates,
   onda_processor_execution_output_t* output
 );
 

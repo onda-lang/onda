@@ -1717,7 +1717,7 @@ sample:
             .expect("state should clone");
         unsafe { live.bytes_mut() }.fill(0xff);
         program
-            .restore_state_snapshot(&params, &mut live, &snapshot)
+            .restore_state_snapshot(&params, &mut live, &snapshot, &[], &[], &[], &[])
             .expect("snapshot should restore");
         assert_eq!(live.bytes(), initial.bytes());
     }
@@ -1746,7 +1746,7 @@ sample:
         snapshot[0..8].copy_from_slice(&(99_i64).to_le_bytes());
         snapshot[8..12].copy_from_slice(&(-1_i32).to_le_bytes());
         program
-            .restore_state_snapshot(&params, &mut live, &snapshot)
+            .restore_state_snapshot(&params, &mut live, &snapshot, &[], &[], &[], &[])
             .expect("snapshot should restore");
         program
             .write_state_snapshot(&live, &mut snapshot)

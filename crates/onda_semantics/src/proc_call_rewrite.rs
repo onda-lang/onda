@@ -2,7 +2,8 @@ use super::*;
 use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 use crate::processor_lowering::{
-    proc_local_bind_hidden_def_name, proc_local_nested_bind_hidden_def_name,
+    is_builtin_proc_init_event_name, proc_local_bind_hidden_def_name,
+    proc_local_nested_bind_hidden_def_name,
 };
 use onda_frontend::Span;
 
@@ -4643,7 +4644,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                         };
 
                         if let Some((array_base, index_expr, slots, access)) = dynamic_index {
-                            let Some((proc_name, api, _slot_instances)) =
+                            let Some((proc_name, api, slot_instances)) =
                                 resolve_proc_array_dispatch_context(
                                     &slots,
                                     proc_vars,
@@ -4683,6 +4684,15 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 expr: proc_index_selector_expr(&array_base, &index_expr, access),
                             });
                             rewritten.extend(expanded);
+                            if is_builtin_proc_init_event_name(event_name) {
+                                rewritten.extend(dynamic_proc_array_buffer_call_args(
+                                    &slot_instances,
+                                    &api,
+                                    &array_base,
+                                    &index_expr,
+                                    errors,
+                                ));
+                            }
                             *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                             *args = rewritten;
                             handled_proc_stmt_call = true;
@@ -4725,6 +4735,14 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 errors,
                             );
                             rewritten.extend(expanded);
+                            if is_builtin_proc_init_event_name(event_name) {
+                                rewritten.extend(expand_proc_buffer_call_args(
+                                    instance,
+                                    api,
+                                    &format!("{base}.{event_name}"),
+                                    errors,
+                                ));
+                            }
                             *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                             *args = rewritten;
                             handled_proc_stmt_call = true;

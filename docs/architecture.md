@@ -280,9 +280,12 @@ Non-crate directories of note:
 - Native checked and prepared-unchecked processing install the shared audio-thread denormal policy;
   on x86 this enables FTZ/DAZ once per thread before executing DSP.
 - Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).
-- Runtime processing uses prepared buffer descriptor tables (`process_checked`); omitted slots are
-  prepared as neutral descriptors rather than blocking processing. Segment variants exist for hosts
-  that split a logical block around sample-accurate events:
+- Runtime init, events, and processing use prepared buffer descriptor tables; omitted slots are
+  prepared as neutral descriptors rather than blocking execution. Rebinding invalidates the tables,
+  and the next checked entry-point call observes the replacement without implicitly rerunning init.
+  Buffer-write metadata conservatively joins writes reachable from init, process, and exported
+  events, including generated proc-init paths. Segment variants exist for hosts that split a logical
+  block around sample-accurate events:
   - `process_checked_segment(instance, start_frame, frames, flags)`
   - `prepare_unchecked_process(instance)` / `process_unchecked_segment(...)`
   - unchecked preparation validates the current bindings; buffer references resolve directly

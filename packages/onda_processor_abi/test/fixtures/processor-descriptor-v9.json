@@ -2,7 +2,7 @@
   "format": "onda-processor",
   "format_version": 5,
   "artifact_kind": "webassembly_module",
-  "abi_version": 8,
+  "abi_version": 9,
   "backend": "conformance-fixture",
   "mir_schema_version": 8,
   "target": {

@@ -223,7 +223,16 @@ int main(void) {
   }
 
   if (!execution_succeeded(
-        onda_processor_init(params, state, ONDA_PROCESSOR_INIT_FULL, NULL),
+        onda_processor_init(
+          params,
+          state,
+          ONDA_PROCESSOR_INIT_FULL,
+          buffers,
+          buffer_frames,
+          buffer_channels,
+          buffer_sample_rates,
+          NULL
+        ),
         "processor init"
       )) {
     goto cleanup;

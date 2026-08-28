@@ -400,7 +400,19 @@ async function prepareWasmBenchmark(artifact) {
     );
     view.setFloat32(bufferSampleRates + index * 4, sampleRate, true);
   });
-  requireExecutionSuccess(onda_processor_init(params, state, 1), "processor init");
+  requireExecutionSuccess(
+    onda_processor_init(
+      params,
+      state,
+      1,
+      bufferPointers,
+      bufferFrames,
+      bufferChannels,
+      bufferSampleRates,
+      0,
+    ),
+    "processor init",
+  );
   const process = () => requireExecutionSuccess(
     onda_process(
       state,
