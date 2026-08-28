@@ -146,7 +146,9 @@ control socket sends ordered `print` notifications with `text`, structured `entr
 `overflowCount`, and `transportDropCount`.
 
 The Web Audio worklet transports raw records through a bounded queue and performs no string
-formatting in the render callback. Subscribe on the main side with `processor.onPrint(...)`.
+formatting in the render callback. Collection is active only while a main-side listener exists.
+Subscribe with `processor.onPrint(...)`, or pass the factory's construction-time `onPrint` option
+when output from `createOndaAudioProcessorInitialized(...)` initialization must be observed.
 Generated batch overflow and worklet-to-main transport loss are separate, and a loss-only
 notification is delivered even when no later authored print occurs.
 

@@ -52,6 +52,9 @@ function audioWorkletNodeOptionsFromValidated(
   options,
   validateCompiledModule,
 ) {
+  if (options.onPrint !== undefined && typeof options.onPrint !== "function") {
+    throw new TypeError("initial print listener must be a function");
+  }
   const inputChannels = flattenedAudioChannelCount(metadata.metadata.inputs);
   const outputChannels = flattenedAudioChannelCount(metadata.metadata.outputs);
   if (inputChannels > 32 || outputChannels > 32) {
@@ -86,6 +89,8 @@ function audioWorkletNodeOptionsFromValidated(
       eventPayloadCapacityBytes: options.eventPayloadCapacityBytes,
       delegateCapacityBytes: options.delegateCapacityBytes,
       printCapacityBytes: options.printCapacityBytes,
+      printCollectionEnabled: options.onPrint !== undefined,
+      printSubscriptionId: options.onPrint === undefined ? 0 : 1,
       initialize: options.initialize === true,
     },
   };
@@ -198,7 +203,7 @@ async function createOndaAudioProcessorImpl(context, artifact, options, initiali
       false,
     ),
   );
-  return new OndaAudioProcessor(node, validated.metadata);
+  return new OndaAudioProcessor(node, validated.metadata, options.onPrint);
 }
 
 export async function compileOndaProcessorModule(artifact) {
@@ -214,7 +219,13 @@ async function compileValidatedProcessorModule({ wasm, metadata }) {
 }
 
 export class OndaAudioProcessor {
-  constructor(node, metadata = null) {
+  constructor(node, metadata = null, initialPrintListener = undefined) {
+    if (
+      initialPrintListener !== undefined
+      && typeof initialPrintListener !== "function"
+    ) {
+      throw new TypeError("initial print listener must be a function");
+    }
     this.node = node;
     this.metadata = metadata;
     this.paramInfo = metadata?.metadata?.params ?? null;
@@ -223,7 +234,10 @@ export class OndaAudioProcessor {
     this.pending = new Map();
     this.delegateListeners = new Set();
     this.delegateSubscriptionId = 0;
-    this.printListeners = new Set();
+    this.printListeners = new Set(
+      initialPrintListener === undefined ? [] : [initialPrintListener],
+    );
+    this.printSubscriptionId = initialPrintListener === undefined ? 0 : 1;
     this.closed = false;
     this.closeReason = null;
     this.handleMessage = (event) => {
@@ -262,6 +276,10 @@ export class OndaAudioProcessor {
       }
       if (message.type === "onda-print-records") {
         try {
+          if (
+            message.subscriptionId !== this.printSubscriptionId
+            || this.printListeners.size === 0
+          ) return;
           const formatted = formatPrintRecords(
             message.storage,
             message.usedBytes,
@@ -393,8 +411,34 @@ export class OndaAudioProcessor {
     if (typeof listener !== "function") {
       throw new TypeError("print listener must be a function");
     }
+    const wasEmpty = this.printListeners.size === 0;
     this.printListeners.add(listener);
-    return () => this.printListeners.delete(listener);
+    if (wasEmpty) {
+      this.printSubscriptionId = this.printSubscriptionId === Number.MAX_SAFE_INTEGER
+        ? 1
+        : this.printSubscriptionId + 1;
+      try {
+        this.node.port.postMessage({
+          type: "print-subscription",
+          enabled: true,
+          subscriptionId: this.printSubscriptionId,
+        });
+      } catch (error) {
+        this.printListeners.delete(listener);
+        throw error;
+      }
+    }
+    return () => {
+      const removed = this.printListeners.delete(listener);
+      if (removed && this.printListeners.size === 0) {
+        this.node.port.postMessage({
+          type: "print-subscription",
+          enabled: false,
+          subscriptionId: this.printSubscriptionId,
+        });
+      }
+      return removed;
+    };
   }
 
   init(mode) {
@@ -433,6 +477,17 @@ export class OndaAudioProcessor {
           type: "delegate-subscription",
           enabled: false,
           subscriptionId: this.delegateSubscriptionId,
+        });
+      } catch {
+        // The underlying node may already be gone; local closure still proceeds.
+      }
+    }
+    if (this.printListeners.size !== 0) {
+      try {
+        this.node.port.postMessage({
+          type: "print-subscription",
+          enabled: false,
+          subscriptionId: this.printSubscriptionId,
         });
       } catch {
         // The underlying node may already be gone; local closure still proceeds.

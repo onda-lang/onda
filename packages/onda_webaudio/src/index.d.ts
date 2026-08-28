@@ -17,9 +17,21 @@ export {
   paramPlainToNormalized,
 } from "@onda-lang/processor-abi";
 import type {
+  OndaPrintEntry,
   OndaProcessorArtifact,
   OndaProcessorMetadata,
 } from "@onda-lang/processor-abi";
+
+export interface OndaAudioPrintBatch {
+  type: "onda-print";
+  operation: string;
+  text: string;
+  entries: OndaPrintEntry[];
+  overflowCount: number;
+  transportDropCount: number;
+}
+
+export type OndaAudioPrintListener = (batch: OndaAudioPrintBatch) => void;
 
 export interface OndaAudioProcessorOptions {
   workletUrl?: string | URL;
@@ -39,6 +51,11 @@ export interface OndaAudioProcessorOptions {
   delegateCapacityBytes?: number;
   /** Reusable call-scoped storage for print records. Defaults to 64 KiB; zero disables delivery. */
   printCapacityBytes?: number;
+  /**
+   * Factory-only initial print listener. Pass this to capture output from
+   * createOndaAudioProcessorInitialized() initialization.
+   */
+  onPrint?: OndaAudioPrintListener;
   /** Reusable module compiled outside the audio rendering thread. */
   compiledModule?: WebAssembly.Module;
   nodeOptions?: AudioWorkletNodeOptions;
@@ -94,16 +111,8 @@ export class OndaAudioProcessor {
       transportDropCount: number;
     }) => void,
   ): () => boolean;
-  onPrint(
-    listener: (batch: {
-      type: "onda-print";
-      operation: string;
-      text: string;
-      entries: import("@onda-lang/processor-abi").OndaPrintEntry[];
-      overflowCount: number;
-      transportDropCount: number;
-    }) => void,
-  ): () => boolean;
+  /** Collection is active only while at least one listener is registered. */
+  onPrint(listener: OndaAudioPrintListener): () => boolean;
   init(mode: OndaInitMode): Promise<any>;
   snapshot(): Promise<Uint8Array>;
   restoreSnapshot(snapshot: Uint8Array | ArrayBuffer): Promise<any>;

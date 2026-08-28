@@ -39,10 +39,15 @@ const { artifact } = await compiler.compileSource(source, {
   blockSize: 128,
 });
 
+const print = ({ text }) => console.debug(text);
 const processor = await createOndaAudioProcessorInitialized(
   audioContext,
   artifact,
-  { params: { gain: 0.5 } },
+  {
+    params: { gain: 0.5 },
+    // A construction-time listener also receives prints emitted by init.
+    onPrint: print,
+  },
 );
 processor.node.connect(audioContext.destination);
 
@@ -51,7 +56,6 @@ const stopDelegates = processor.onDelegates(({ occurrences }) => {
     console.log(occurrence.name, occurrence.values);
   }
 });
-const stopPrint = processor.onPrint(({ text }) => console.debug(text));
 ```
 
 Compilation is an offline operation and may allocate. Constructing the adapter compiles or accepts
@@ -182,9 +186,11 @@ The package root re-exports the common artifact validation and file helpers. The
 - `flattenedAudioChannelCount(ports?)` totals declared physical channels with validation.
 
 `OndaAudioProcessorOptions` accepts initial plain parameter values, external buffers, event,
-delegate, and print capacities, a precompiled module, custom node options, and an
-`AudioWorkletNode` constructor. The artifact sample rate must equal the context sample rate and it
-must expose at least one audio input or output.
+delegate, and print capacities, an optional construction-time `onPrint` listener, a precompiled
+module, custom node options, and an `AudioWorkletNode` constructor. Pass `onPrint` when using the
+initialized constructor if initialization output must be observed; registering a listener after
+construction cannot replay output from an execution that has already completed. The artifact sample
+rate must equal the context sample rate and it must expose at least one audio input or output.
 
 ### `OndaAudioProcessor`
 
@@ -200,8 +206,9 @@ The adapter exposes its `node` and validated `metadata`, plus these operations:
 
 Delegate and print batches report `overflowCount` for generated-storage loss and
 `transportDropCount` for bounded worklet-to-main queue loss. Loss-only notifications can arrive
-without occurrences. Setting the corresponding capacity to zero disables host delivery while
-preserving language evaluation semantics.
+without occurrences. Collection is enabled only while the corresponding listener set is nonempty;
+setting the capacity to zero disables host delivery even with listeners while preserving language
+evaluation semantics.
 
 `ONDA_INIT_FULL` clears and initializes all physical state. `ONDA_INIT_PRESERVE_PINNED` retains
 pinned state according to the processor ABI. The package also re-exports the prepared and one-shot
@@ -373,6 +380,8 @@ ONDA_INIT_FULL
 ONDA_INIT_PRESERVE_PINNED
 OndaAudioProcessor
 OndaAudioProcessorOptions
+OndaAudioPrintBatch
+OndaAudioPrintListener
 OndaInitMode
 OndaParamDomain
 OndaPreparedParamControl

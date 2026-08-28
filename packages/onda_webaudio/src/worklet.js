@@ -195,13 +195,22 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       view.setUint32(this.printBatchPtr + 12, 0, true);
       view.setUint32(this.printBatchPtr + 16, 0, true);
     }
+    this.printCollectionEnabled = processorOptions.printCollectionEnabled === true
+      && this.printStoragePtr !== 0;
+    this.printSubscriptionId = Number.isSafeInteger(processorOptions.printSubscriptionId)
+      ? processorOptions.printSubscriptionId
+      : 0;
     this.executionOutputPtr = this.delegateBatchPtr || this.printBatchPtr
       ? this.alloc(EXECUTION_OUTPUT_SIZE_BYTES, 4)
       : 0;
     if (this.executionOutputPtr) {
       const view = new DataView(this.memory.buffer);
       view.setUint32(this.executionOutputPtr, 0, true);
-      view.setUint32(this.executionOutputPtr + 4, this.printBatchPtr, true);
+      view.setUint32(
+        this.executionOutputPtr + 4,
+        this.printCollectionEnabled ? this.printBatchPtr : 0,
+        true,
+      );
     }
     this.delegateCollectionEnabled = false;
     this.delegateSubscriptionId = 0;
@@ -662,6 +671,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "delegate-subscription") {
         this.setDelegateSubscription(message.enabled, message.subscriptionId);
+      } else if (message.type === "print-subscription") {
+        this.setPrintSubscription(message.enabled, message.subscriptionId);
       } else if (message.type === "delegate-ack") {
         this.ackRecordTransport(this.delegateTransport);
       } else if (message.type === "print-ack") {
@@ -833,7 +844,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   flushPrint(operation) {
-    if (!this.printBatchPtr) return;
+    if (!this.printCollectionEnabled || !this.printBatchPtr) return;
     const view = this.memoryView();
     const usedBytes = view.getUint32(this.printBatchPtr + 8, true);
     const recordCount = view.getUint32(this.printBatchPtr + 12, true);
@@ -904,7 +915,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       transportDropCount,
       ...(transport === this.delegateTransport
         ? { subscriptionId: this.delegateSubscriptionId }
-        : {}),
+        : { subscriptionId: this.printSubscriptionId }),
     }, [storage.buffer]);
   }
 
@@ -944,6 +955,26 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       view.setUint32(
         this.executionOutputPtr,
         this.delegateCollectionEnabled ? this.delegateBatchPtr : 0,
+        true,
+      );
+    }
+  }
+
+  setPrintSubscription(enabled, subscriptionId) {
+    this.printCollectionEnabled = enabled === true && this.printStoragePtr !== 0;
+    this.printSubscriptionId = Number.isSafeInteger(subscriptionId)
+      ? subscriptionId
+      : 0;
+    this.printTransport.pendingDrops = 0;
+    this.printTransport.pendingOverflow = 0;
+    if (this.printBatchPtr) {
+      const view = this.memoryView();
+      view.setUint32(this.printBatchPtr + 8, 0, true);
+      view.setUint32(this.printBatchPtr + 12, 0, true);
+      view.setUint32(this.printBatchPtr + 16, 0, true);
+      view.setUint32(
+        this.executionOutputPtr + 4,
+        this.printCollectionEnabled ? this.printBatchPtr : 0,
         true,
       );
     }

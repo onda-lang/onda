@@ -271,11 +271,26 @@ test("worklet transports raw print records without formatting", () => {
     argument_types: ["i32"],
     payload_size_bytes: 4,
   }];
+  const inactive = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      printCapacityBytes: 16,
+    },
+  });
+  assert.notEqual(inactive.printBatchPtr, 0);
+  assert.equal(
+    new DataView(inactive.memory.buffer).getUint32(inactive.executionOutputPtr + 4, true),
+    0,
+  );
+
   const processor = new Processor({
     processorOptions: {
       wasmBytes: wasm,
       metadata: descriptor,
       printCapacityBytes: 16,
+      printCollectionEnabled: true,
+      printSubscriptionId: 7,
     },
   });
   const messages = [];
@@ -289,9 +304,19 @@ test("worklet transports raw print records without formatting", () => {
   processor.flushPrint("process segment");
   assert.equal(messages.length, 1);
   assert.equal(messages[0].type, "onda-print-records");
+  assert.equal(messages[0].subscriptionId, 7);
   assert.equal(messages[0].recordCount, 1);
   assert.equal(messages[0].transportDropCount, 0);
   assert.deepEqual([...messages[0].storage], [0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 0, 0]);
+
+  processor.handleMessage({
+    type: "print-subscription",
+    enabled: false,
+    subscriptionId: 7,
+  });
+  assert.equal(view.getUint32(processor.executionOutputPtr + 4, true), 0);
+  processor.flushPrint("process segment");
+  assert.equal(messages.length, 1);
 });
 
 test("worklet uses null pointers only for absent processor surfaces", () => {

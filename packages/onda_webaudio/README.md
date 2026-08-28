@@ -102,17 +102,12 @@ adapter turns them into canonical, newline-terminated text:
 ```js
 const processor = await createOndaAudioProcessorInitialized(context, artifact, {
   printCapacityBytes: 128 * 1024,
-});
-
-const unsubscribe = processor.onPrint(({
-  text,
-  entries,
-  overflowCount,
-  transportDropCount,
-}) => {
-  logView.append(text);
-  if (overflowCount) console.warn(`${overflowCount} generated print records were dropped`);
-  if (transportDropCount) console.warn(`${transportDropCount} print records missed UI transport`);
+  // Register during construction to include output from authored init code.
+  onPrint: ({ text, entries, overflowCount, transportDropCount }) => {
+    logView.append(text);
+    if (overflowCount) console.warn(`${overflowCount} generated print records were dropped`);
+    if (transportDropCount) console.warn(`${transportDropCount} print records missed UI transport`);
+  },
 });
 ```
 
@@ -120,7 +115,10 @@ const unsubscribe = processor.onPrint(({
 `entries` retains typed values and source/log-site metadata for source-aware consumers. Generated
 batch overflow and bounded worklet-to-main transport loss are reported separately; loss-only
 notifications are delivered even when no later authored print arrives. Capacity defaults to 64 KiB
-and can be set to zero to suppress host delivery without suppressing argument evaluation.
+and can be set to zero to suppress host delivery without suppressing argument evaluation. Print
+collection is inactive while no listener is registered, avoiding record packing and transport work
+in the render callback. Listeners added later with `processor.onPrint(...)` receive subsequent
+executions; use the construction option above when initialized-code output must be observed.
 See the internal [print host integration](../../docs/printing.md) reference for scalar formatting,
 source metadata, and the equivalent Rust, C, and raw processor APIs.
 

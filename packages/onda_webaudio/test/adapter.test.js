@@ -192,6 +192,10 @@ test("rejects unknown initial parameters before worklet construction", () => {
     () => ondaAudioWorkletNodeOptions(artifact(), { params: [1] }),
     /unknown Onda parameter '0'/,
   );
+  assert.throws(
+    () => ondaAudioWorkletNodeOptions(artifact(), { onPrint: true }),
+    /initial print listener must be a function/,
+  );
 });
 
 test("rejects invalid processor channel metadata", () => {
@@ -234,6 +238,49 @@ test("initialized creation requests full initialization in the worklet construct
     AudioWorkletNode: FakeNode,
   });
   assert.equal(processor.node.options.processorOptions.initialize, true);
+  assert.equal(processor.node.options.processorOptions.printCollectionEnabled, false);
+});
+
+test("initialized creation installs its print listener before worklet output arrives", async () => {
+  const source = artifact();
+  source.metadata.metadata.log_sites = [{
+    index: 0,
+    label: "init",
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 10 },
+    lexical_owner: "program",
+    declaration: "init",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  const context = {
+    sampleRate: 48_000,
+    audioWorklet: { addModule: async () => {} },
+  };
+  const batches = [];
+  const processor = await createOndaAudioProcessorInitialized(context, source, {
+    AudioWorkletNode: FakeNode,
+    onPrint: (batch) => batches.push(batch),
+  });
+  assert.equal(processor.node.options.processorOptions.printCollectionEnabled, true);
+  assert.equal(processor.node.options.processorOptions.printSubscriptionId, 1);
+
+  const storage = new Uint8Array(12);
+  const view = new DataView(storage.buffer);
+  view.setUint32(0, 0, true);
+  view.setUint32(4, 4, true);
+  view.setInt32(8, 42, true);
+  processor.node.port.reply({
+    type: "onda-print-records",
+    operation: "processor init",
+    storage,
+    usedBytes: storage.byteLength,
+    recordCount: 1,
+    overflowCount: 0,
+    transportDropCount: 0,
+    subscriptionId: 1,
+  });
+  assert.equal(batches[0].text, "init: 42\n");
+  processor.close();
 });
 
 test("rejects a processor compiled for a different AudioContext sample rate", async () => {
@@ -319,6 +366,9 @@ test("formats worklet print records on the main side", () => {
   const processor = new OndaAudioProcessor(node, source.metadata);
   const batches = [];
   const unsubscribe = processor.onPrint((batch) => batches.push(batch));
+  const subscription = node.port.messages.at(-1);
+  assert.equal(subscription.type, "print-subscription");
+  assert.equal(subscription.enabled, true);
   const storage = new Uint8Array(12);
   const view = new DataView(storage.buffer);
   view.setUint32(0, 0, true);
@@ -332,6 +382,7 @@ test("formats worklet print records on the main side", () => {
     recordCount: 1,
     overflowCount: 2,
     transportDropCount: 3,
+    subscriptionId: subscription.subscriptionId,
   });
   assert.equal(batches[0].text, "value: 42\n");
   assert.equal(batches[0].entries[0].values[0].value, 42);
@@ -339,6 +390,23 @@ test("formats worklet print records on the main side", () => {
   assert.equal(batches[0].transportDropCount, 3);
   assert.deepEqual(node.port.messages.at(-1), { type: "print-ack" });
   assert.equal(unsubscribe(), true);
+  assert.deepEqual(node.port.messages.at(-1), {
+    type: "print-subscription",
+    enabled: false,
+    subscriptionId: subscription.subscriptionId,
+  });
+  node.port.reply({
+    type: "onda-print-records",
+    operation: "stale process",
+    storage,
+    usedBytes: storage.byteLength,
+    recordCount: 1,
+    overflowCount: 0,
+    transportDropCount: 0,
+    subscriptionId: subscription.subscriptionId,
+  });
+  assert.equal(batches.length, 1);
+  assert.deepEqual(node.port.messages.at(-1), { type: "print-ack" });
   processor.close();
 });
 
