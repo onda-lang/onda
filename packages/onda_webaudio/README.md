@@ -133,19 +133,28 @@ const processor = await createOndaAudioProcessorInitialized(context, artifact, {
   delegateCapacityBytes: 128 * 1024,
 });
 
-const unsubscribe = processor.onDelegates(({ occurrences, overflowCount }) => {
+const unsubscribe = processor.onDelegates(({
+  occurrences,
+  overflowCount,
+  transportDropCount,
+}) => {
   for (const occurrence of occurrences) {
     console.log(occurrence.name, occurrence.values);
   }
   if (overflowCount) console.warn(`${overflowCount} delegate records were dropped`);
+  if (transportDropCount) {
+    console.warn(`${transportDropCount} delegate records were dropped in transport`);
+  }
 });
 ```
 
 Capacity defaults to 64 KiB and can be set to zero to disable host collection. It is a host policy,
 not a compiler-computable exact whole-call size: occurrence counts and slice payload lengths may be
-runtime-dependent. A nonzero `overflowCount` means the delivered stream is incomplete; internal
-Onda `when` handlers still ran. See [Hosting Onda delegates](../../docs/delegates.md) for sizing and
-lifecycle details.
+runtime-dependent. The worklet supplies delegate storage to generated code only while at least one
+listener is registered, and decoding happens on the main side. `overflowCount` reports insufficient
+configured capacity; `transportDropCount` separately reports records discarded by the bounded
+worklet-to-main queue. Internal Onda `when` handlers still run in either case. See
+[Hosting Onda delegates](../../docs/delegates.md) for sizing and lifecycle details.
 
 ## Real-time behavior
 

@@ -81,8 +81,9 @@ export class OndaAudioProcessor {
   setParamNormalized(param: string | number, value: number): Promise<any>;
   trigger(event: string | number, values?: Record<string, unknown> | unknown[]): Promise<any>;
   /**
-   * Subscribe to batches decoded after generated execution. A nonzero overflowCount means complete
-   * records were dropped for insufficient configured capacity. Returns an unsubscribe function.
+   * Subscribe to batches decoded after generated execution. Collection is active only while at
+   * least one listener is registered. overflowCount reports configured-capacity loss and
+   * transportDropCount reports bounded worklet-to-main queue loss. Returns an unsubscribe function.
    */
   onDelegates(
     listener: (batch: {
@@ -90,6 +91,7 @@ export class OndaAudioProcessor {
       operation: string;
       occurrences: Array<{ index: number; name: string; values: Record<string, unknown> }>;
       overflowCount: number;
+      transportDropCount: number;
     }) => void,
   ): () => boolean;
   onPrint(

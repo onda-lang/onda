@@ -583,6 +583,133 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
     calls
 }
 
+type ChildReceiverAliases = HashMap<String, ChildReceiverRef>;
+
+fn collect_source_calls_with_aliases(
+    stmts: &[Stmt],
+    initial_aliases: &ChildReceiverAliases,
+    children: &HashMap<String, ChildProcInstance>,
+) -> Vec<(SourceCall, ChildReceiverAliases)> {
+    fn collect_expr(
+        expr: &Expr,
+        statement_root: bool,
+        aliases: &ChildReceiverAliases,
+        calls: &mut Vec<(SourceCall, ChildReceiverAliases)>,
+    ) {
+        let mut nested = Vec::new();
+        collect_source_calls_expr(expr, statement_root, &mut nested);
+        calls.extend(nested.into_iter().map(|call| (call, aliases.clone())));
+    }
+
+    fn merge_aliases(
+        base: ChildReceiverAliases,
+        mut lhs: ChildReceiverAliases,
+        rhs: &ChildReceiverAliases,
+    ) -> ChildReceiverAliases {
+        lhs.retain(|name, receiver| rhs.get(name) == Some(receiver));
+        lhs.extend(base);
+        lhs
+    }
+
+    fn visit(
+        stmts: &[Stmt],
+        aliases: &mut ChildReceiverAliases,
+        children: &HashMap<String, ChildProcInstance>,
+        calls: &mut Vec<(SourceCall, ChildReceiverAliases)>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Const { decl, .. } => {
+                    collect_expr(&decl.expr, false, aliases, calls);
+                }
+                Stmt::Assign { target, expr, .. } => {
+                    match target {
+                        AssignTarget::Index { index, .. } => {
+                            collect_expr(index, false, aliases, calls);
+                        }
+                        AssignTarget::Slice {
+                            selector,
+                            channel,
+                            start,
+                            end,
+                            ..
+                        } => {
+                            for coordinate in [selector, channel, start, end].into_iter().flatten()
+                            {
+                                collect_expr(coordinate, false, aliases, calls);
+                            }
+                        }
+                        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
+                    }
+                    collect_expr(expr, false, aliases, calls);
+                    match target {
+                        AssignTarget::Var(name) => {
+                            if let Some(receiver) = child_receiver_ref(expr, aliases, children) {
+                                aliases.insert(name.clone(), receiver);
+                            } else {
+                                aliases.remove(name);
+                            }
+                        }
+                        AssignTarget::Tuple(names) => {
+                            for name in names {
+                                aliases.remove(name);
+                            }
+                        }
+                        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+                    }
+                }
+                Stmt::Expr { expr, .. } => collect_expr(expr, true, aliases, calls),
+                Stmt::Return { expr, .. } => collect_expr(expr, false, aliases, calls),
+                Stmt::Print { values, .. } => {
+                    for value in values {
+                        collect_expr(value, false, aliases, calls);
+                    }
+                }
+                Stmt::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    collect_expr(cond, false, aliases, calls);
+                    let base_aliases = aliases.clone();
+                    let mut then_aliases = aliases.clone();
+                    let mut else_aliases = aliases.clone();
+                    visit(then_branch, &mut then_aliases, children, calls);
+                    visit(else_branch, &mut else_aliases, children, calls);
+                    *aliases = merge_aliases(base_aliases, then_aliases, &else_aliases);
+                }
+                Stmt::For {
+                    step,
+                    start,
+                    end,
+                    body,
+                    ..
+                } => {
+                    collect_expr(start, false, aliases, calls);
+                    collect_expr(end, false, aliases, calls);
+                    if let Some(step) = step {
+                        collect_expr(step, false, aliases, calls);
+                    }
+                    let mut body_aliases = aliases.clone();
+                    visit(body, &mut body_aliases, children, calls);
+                }
+                Stmt::While { cond, body, .. } => {
+                    collect_expr(cond, false, aliases, calls);
+                    let mut body_aliases = aliases.clone();
+                    visit(body, &mut body_aliases, children, calls);
+                }
+                Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            }
+        }
+    }
+
+    let mut calls = Vec::new();
+    let mut aliases = initial_aliases.clone();
+    visit(stmts, &mut aliases, children, &mut calls);
+    calls
+}
+
 fn collect_delegate_value_uses_expr(
     expr: &Expr,
     delegate_names: &HashSet<String>,
@@ -801,10 +928,53 @@ struct ProcDelegateEffects {
     event_delegates: HashMap<String, HashSet<String>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ChildReceiverRef {
     receiver: String,
     index: Option<Expr>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ChildReceiverIndexKey {
+    None,
+    Constant(i64),
+    Dynamic,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct DefExpansionKey {
+    name: String,
+    bindings: Vec<(String, String, ChildReceiverIndexKey)>,
+}
+
+fn def_expansion_key(
+    name: &str,
+    aliases: &ChildReceiverAliases,
+    options: AnalysisOptions,
+) -> DefExpansionKey {
+    let mut bindings = aliases
+        .iter()
+        .map(|(parameter, receiver)| {
+            let index = match receiver.index.as_ref() {
+                None => ChildReceiverIndexKey::None,
+                Some(index) => quiet_const_index(index, options).map_or(
+                    ChildReceiverIndexKey::Dynamic,
+                    ChildReceiverIndexKey::Constant,
+                ),
+            };
+            (parameter.clone(), receiver.receiver.clone(), index)
+        })
+        .collect::<Vec<_>>();
+    bindings.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+    DefExpansionKey {
+        name: name.to_owned(),
+        bindings,
+    }
+}
+
+fn deduplicate_targets(targets: &mut Vec<usize>) {
+    targets.sort_unstable();
+    targets.dedup();
 }
 
 struct OwnerDispatchGraph<'a> {
@@ -916,8 +1086,9 @@ fn source_call_targets<'a>(
     by_name: &HashMap<String, usize>,
     callables: &mut Vec<SourceCallable<'a>>,
     edges: &mut Vec<Vec<usize>>,
-    aliases: &HashMap<String, ChildReceiverRef>,
-    expanding_defs: &mut HashSet<String>,
+    aliases: &ChildReceiverAliases,
+    expansion_cache: &mut HashMap<DefExpansionKey, Vec<usize>>,
+    expanding_defs: &mut HashSet<DefExpansionKey>,
 ) -> Vec<usize> {
     if let Some(name) = call.local_name() {
         let mut targets = by_name.get(name).copied().into_iter().collect::<Vec<_>>();
@@ -925,11 +1096,23 @@ fn source_call_targets<'a>(
             return targets;
         };
         let bound = bind_child_receiver_aliases(def, call, aliases, children);
-        if bound.is_empty() || !expanding_defs.insert(def.name.clone()) {
+        if bound.is_empty() {
             return targets;
         }
-        for nested in collect_source_calls(&def.body) {
-            targets.extend(source_call_targets(
+        let key = def_expansion_key(&def.name, &bound, options);
+        if let Some(cached) = expansion_cache.get(&key) {
+            targets.extend(cached.iter().copied());
+            deduplicate_targets(&mut targets);
+            return targets;
+        }
+        if !expanding_defs.insert(key.clone()) {
+            return targets;
+        }
+        let mut expanded = Vec::new();
+        for (nested, nested_aliases) in
+            collect_source_calls_with_aliases(&def.body, &bound, children)
+        {
+            expanded.extend(source_call_targets(
                 &nested,
                 owner,
                 children,
@@ -938,11 +1121,16 @@ fn source_call_targets<'a>(
                 by_name,
                 callables,
                 edges,
-                &bound,
+                &nested_aliases,
+                expansion_cache,
                 expanding_defs,
             ));
         }
-        expanding_defs.remove(&def.name);
+        deduplicate_targets(&mut expanded);
+        expanding_defs.remove(&key);
+        expansion_cache.insert(key, expanded.clone());
+        targets.extend(expanded);
+        deduplicate_targets(&mut targets);
         return targets;
     }
     let Some((receiver, event, call_index)) = call.qualified_target() else {
@@ -1022,11 +1210,11 @@ fn owner_dispatch_graph<'a>(
         .collect::<HashMap<_, _>>();
     let base_calls = callables
         .iter()
-        .map(|callable| collect_source_calls(callable.body))
+        .map(|callable| collect_source_calls_with_aliases(callable.body, &HashMap::new(), children))
         .collect::<Vec<_>>();
     let base_len = callables.len();
     let mut edges = vec![Vec::new(); base_len];
-    let aliases = HashMap::new();
+    let mut expansion_cache = HashMap::new();
     let mut expanding_defs = HashSet::new();
     let when_offset = owner.defs.len() + owner.events.len() + owner.delegates.len();
     for index in 0..base_len {
@@ -1041,7 +1229,7 @@ fn owner_dispatch_graph<'a>(
             }
             continue;
         }
-        for call in &base_calls[index] {
+        for (call, aliases) in &base_calls[index] {
             let targets = source_call_targets(
                 call,
                 owner,
@@ -1051,15 +1239,18 @@ fn owner_dispatch_graph<'a>(
                 &by_name,
                 &mut callables,
                 &mut edges,
-                &aliases,
+                aliases,
+                &mut expansion_cache,
                 &mut expanding_defs,
             );
             edges[index].extend(targets);
         }
+        deduplicate_targets(&mut edges[index]);
     }
 
     let mut init_roots = Vec::new();
-    for call in collect_source_calls(owner.init) {
+    for (call, aliases) in collect_source_calls_with_aliases(owner.init, &HashMap::new(), children)
+    {
         init_roots.extend(source_call_targets(
             &call,
             owner,
@@ -1070,13 +1261,17 @@ fn owner_dispatch_graph<'a>(
             &mut callables,
             &mut edges,
             &aliases,
+            &mut expansion_cache,
             &mut expanding_defs,
         ));
     }
+    deduplicate_targets(&mut init_roots);
     let mut task_roots = HashMap::new();
     for task in &owner.tasks {
         let mut roots = Vec::new();
-        for call in collect_source_calls(&task.body) {
+        for (call, aliases) in
+            collect_source_calls_with_aliases(&task.body, &HashMap::new(), children)
+        {
             roots.extend(source_call_targets(
                 &call,
                 owner,
@@ -1087,9 +1282,11 @@ fn owner_dispatch_graph<'a>(
                 &mut callables,
                 &mut edges,
                 &aliases,
+                &mut expansion_cache,
                 &mut expanding_defs,
             ));
         }
+        deduplicate_targets(&mut roots);
         task_roots.insert(task.name.clone(), roots);
     }
 
@@ -1397,13 +1594,14 @@ fn validate_qualified_delegate_calls(
     proc_delegates: &HashMap<String, HashSet<String>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    for call in collect_source_calls(body) {
+    for (call, aliases) in collect_source_calls_with_aliases(body, &HashMap::new(), children) {
         let Some((receiver, member, _)) = call.qualified_target() else {
             continue;
         };
-        let root_end = receiver.find(['[', '.']).unwrap_or(receiver.len());
-        let root = &receiver[..root_end];
-        let Some(child) = children.get(root) else {
+        let resolved = aliases
+            .get(receiver)
+            .map_or(receiver, |alias| alias.receiver.as_str());
+        let Some(child) = children.get(resolved) else {
             continue;
         };
         if proc_delegates

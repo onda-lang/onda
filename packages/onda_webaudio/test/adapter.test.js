@@ -342,6 +342,76 @@ test("formats worklet print records on the main side", () => {
   processor.close();
 });
 
+test("subscribes lazily and decodes delegate records on the main side", () => {
+  const source = artifact();
+  source.metadata.metadata.delegates = [{
+    name: "report",
+    params: [
+      {
+        name: "code",
+        scalar: "i32",
+        array_len: 1,
+        is_slice: false,
+        element_size_bytes: 4,
+      },
+      {
+        name: "values",
+        scalar: "f32",
+        array_len: 0,
+        is_slice: true,
+        element_size_bytes: 4,
+      },
+    ],
+  }];
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+  const batches = [];
+  const unsubscribe = processor.onDelegates((batch) => batches.push(batch));
+  const subscription = node.port.messages.at(-1);
+  assert.equal(subscription.type, "delegate-subscription");
+  assert.equal(subscription.enabled, true);
+
+  const storage = new Uint8Array(24);
+  const view = new DataView(storage.buffer);
+  view.setUint32(0, 0, true);
+  view.setUint32(4, 16, true);
+  view.setInt32(8, 7, true);
+  view.setInt32(12, 2, true);
+  view.setFloat32(16, 1.25, true);
+  view.setFloat32(20, -2.5, true);
+  node.port.reply({
+    type: "onda-delegate-records",
+    operation: "process",
+    storage,
+    usedBytes: storage.byteLength,
+    recordCount: 1,
+    overflowCount: 2,
+    transportDropCount: 3,
+    subscriptionId: subscription.subscriptionId,
+  });
+
+  assert.deepEqual(batches, [{
+    type: "onda-delegates",
+    operation: "process",
+    occurrences: [{
+      index: 0,
+      name: "report",
+      values: { code: 7, values: [1.25, -2.5] },
+    }],
+    overflowCount: 2,
+    transportDropCount: 3,
+  }]);
+  assert.deepEqual(node.port.messages.at(-1), { type: "delegate-ack" });
+
+  assert.equal(unsubscribe(), true);
+  assert.deepEqual(node.port.messages.at(-1), {
+    type: "delegate-subscription",
+    enabled: false,
+    subscriptionId: subscription.subscriptionId,
+  });
+  processor.close();
+});
+
 test("converts normalized parameters before posting a plain worklet write", async () => {
   const source = artifact();
   source.metadata.metadata.params = [{

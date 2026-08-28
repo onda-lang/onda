@@ -13489,6 +13489,29 @@ block:
     }
 
     #[test]
+    fn delegates_track_child_event_dispatch_through_local_aliases() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[1] = Child()
+  child = children[0]
+  child.trigger()
+
+sample:
+  out1 = children[0]()
+"#,
+            "init code in the top-level owner cannot call or reach a delegate",
+        );
+    }
+
+    #[test]
     fn delegates_reject_forwarded_child_dispatch_resetting_the_active_task() {
         assert_analyze_error_contains(
             r#"
@@ -13587,6 +13610,69 @@ sample:
   out1 = children[0]() + children[1]()
 "#,
             "cannot call delegate 'finished' through child receiver 'children'",
+        );
+    }
+
+    #[test]
+    fn delegates_cannot_be_called_through_child_receiver_aliases() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate finished()
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[1] = Child()
+
+sample:
+  child = children[0]
+  child.finished()
+  out1 = children[0]()
+"#,
+            "cannot call delegate 'finished' through child receiver 'child'",
+        );
+    }
+
+    #[test]
+    fn delegate_dispatch_analysis_reuses_repeated_helper_expansions() {
+        let mut source = String::from(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+def leaf(target):
+  target.trigger()
+"#,
+        );
+        for depth in 0..20 {
+            let callee = if depth == 0 {
+                "leaf".to_owned()
+            } else {
+                format!("helper{}", depth - 1)
+            };
+            source.push_str(&format!(
+                "\ndef helper{depth}(target):\n  {callee}(target)\n  {callee}(target)\n"
+            ));
+        }
+        source.push_str(
+            r#"
+init:
+  child = Child()
+  helper19(child)
+
+sample:
+  out1 = child()
+"#,
+        );
+
+        assert_analyze_error_contains(
+            &source,
+            "init code in the top-level owner cannot call or reach a delegate",
         );
     }
 

@@ -1,5 +1,6 @@
 import {
   createParamControl,
+  decodeDelegateRecords,
   formatPrintRecords,
   validateProcessorArtifact,
   validateProcessorModule,
@@ -221,13 +222,42 @@ export class OndaAudioProcessor {
     this.nextRequestId = 1;
     this.pending = new Map();
     this.delegateListeners = new Set();
+    this.delegateSubscriptionId = 0;
     this.printListeners = new Set();
     this.closed = false;
     this.closeReason = null;
     this.handleMessage = (event) => {
       const message = event.data ?? {};
-      if (message.type === "onda-delegates") {
-        for (const listener of this.delegateListeners) listener(message);
+      if (message.type === "onda-delegate-records") {
+        try {
+          if (
+            message.subscriptionId !== this.delegateSubscriptionId
+            || this.delegateListeners.size === 0
+          ) return;
+          const records = decodeDelegateRecords(
+            message.storage,
+            message.usedBytes,
+            this.metadata?.metadata?.delegates,
+            this.metadata?.target?.byte_order,
+          );
+          if (records.length !== message.recordCount) {
+            throw new Error("processor delegate count does not match packed storage");
+          }
+          const batch = {
+            type: "onda-delegates",
+            operation: message.operation,
+            occurrences: records.map((record) => ({
+              index: record.delegateIndex,
+              name: record.name,
+              values: record.values,
+            })),
+            overflowCount: message.overflowCount,
+            transportDropCount: message.transportDropCount,
+          };
+          for (const listener of this.delegateListeners) listener(batch);
+        } finally {
+          this.node.port.postMessage({ type: "delegate-ack" });
+        }
         return;
       }
       if (message.type === "onda-print-records") {
@@ -328,8 +358,34 @@ export class OndaAudioProcessor {
     if (typeof listener !== "function") {
       throw new TypeError("delegate listener must be a function");
     }
+    const wasEmpty = this.delegateListeners.size === 0;
     this.delegateListeners.add(listener);
-    return () => this.delegateListeners.delete(listener);
+    if (wasEmpty) {
+      this.delegateSubscriptionId = this.delegateSubscriptionId === Number.MAX_SAFE_INTEGER
+        ? 1
+        : this.delegateSubscriptionId + 1;
+      try {
+        this.node.port.postMessage({
+          type: "delegate-subscription",
+          enabled: true,
+          subscriptionId: this.delegateSubscriptionId,
+        });
+      } catch (error) {
+        this.delegateListeners.delete(listener);
+        throw error;
+      }
+    }
+    return () => {
+      const removed = this.delegateListeners.delete(listener);
+      if (removed && this.delegateListeners.size === 0) {
+        this.node.port.postMessage({
+          type: "delegate-subscription",
+          enabled: false,
+          subscriptionId: this.delegateSubscriptionId,
+        });
+      }
+      return removed;
+    };
   }
 
   onPrint(listener) {
@@ -371,6 +427,17 @@ export class OndaAudioProcessor {
     if (this.closed) return;
     this.closed = true;
     this.closeReason = reason instanceof Error ? reason : new Error(String(reason));
+    if (this.delegateListeners.size !== 0) {
+      try {
+        this.node.port.postMessage({
+          type: "delegate-subscription",
+          enabled: false,
+          subscriptionId: this.delegateSubscriptionId,
+        });
+      } catch {
+        // The underlying node may already be gone; local closure still proceeds.
+      }
+    }
     this.node.port.removeEventListener("message", this.handleMessage);
     for (const pending of this.pending.values()) pending.reject(this.closeReason);
     this.pending.clear();

@@ -265,19 +265,29 @@ const processor = await createOndaAudioProcessorInitialized(context, artifact, {
   delegateCapacityBytes: 128 * 1024,
 });
 
-const unsubscribe = processor.onDelegates(({ occurrences, overflowCount }) => {
+const unsubscribe = processor.onDelegates(({
+  occurrences,
+  overflowCount,
+  transportDropCount,
+}) => {
   for (const occurrence of occurrences) {
     console.log(occurrence.name, occurrence.values);
   }
   if (overflowCount) console.warn(`${overflowCount} delegate records were dropped`);
+  if (transportDropCount) {
+    console.warn(`${transportDropCount} delegate records were dropped in transport`);
+  }
 });
 
 // Later:
 unsubscribe();
 ```
 
-The default capacity is 64 KiB. A capacity of zero disables record storage. Listeners run on the
-main-side message handler, not inside generated DSP execution.
+The default capacity is 64 KiB. A capacity of zero disables record storage. The worklet passes a
+null delegate-batch pointer while there are no listeners. With listeners, it copies bounded raw
+record batches to the main side, where payload decoding and listener callbacks run. The adapter
+reports generated-capacity loss as `overflowCount` and bounded transport-queue loss separately as
+`transportDropCount`.
 
 Decoded `i64` payloads remain full-width integers. Native Rust hosts expose them as
 `RunEventValue::I64`, JSON transports encode them as canonical decimal strings, and the Web Audio

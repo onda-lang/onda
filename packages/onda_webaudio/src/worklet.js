@@ -6,9 +6,8 @@ const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
 const DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_PRINT_CAPACITY_BYTES = 64 * 1024;
-const MAX_PRINT_TRANSPORT_BATCHES = 32;
+const MAX_RECORD_TRANSPORT_BATCHES = 32;
 const DELEGATE_BATCH_SIZE_BYTES = 20;
-const DELEGATE_RECORD_HEADER_SIZE_BYTES = 8;
 const PRINT_BATCH_SIZE_BYTES = 20;
 const EXECUTION_OUTPUT_SIZE_BYTES = 8;
 const HOST_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
@@ -201,12 +200,13 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       : 0;
     if (this.executionOutputPtr) {
       const view = new DataView(this.memory.buffer);
-      view.setUint32(this.executionOutputPtr, this.delegateBatchPtr, true);
+      view.setUint32(this.executionOutputPtr, 0, true);
       view.setUint32(this.executionOutputPtr + 4, this.printBatchPtr, true);
     }
-    this.printTransportInFlight = 0;
-    this.pendingPrintTransportDrops = 0;
-    this.pendingPrintOverflow = 0;
+    this.delegateCollectionEnabled = false;
+    this.delegateSubscriptionId = 0;
+    this.delegateTransport = this.createRecordTransport("onda-delegate-records");
+    this.printTransport = this.createRecordTransport("onda-print-records");
     this.writeParamDefaults();
     this.writeInitialParams(processorOptions.params ?? {});
     this.ensureInputCapacity(this.blockSize);
@@ -656,9 +656,12 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       } else if (message.type === "restore-snapshot") {
         this.restoreSnapshot(message.snapshot ?? message.bytes);
         this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "delegate-subscription") {
+        this.setDelegateSubscription(message.enabled, message.subscriptionId);
+      } else if (message.type === "delegate-ack") {
+        this.ackRecordTransport(this.delegateTransport);
       } else if (message.type === "print-ack") {
-        this.printTransportInFlight = Math.max(0, this.printTransportInFlight - 1);
-        this.flushPendingPrintLoss();
+        this.ackRecordTransport(this.printTransport);
       } else {
         throw new Error(`unknown Onda worklet operation '${String(message.type)}'`);
       }
@@ -790,7 +793,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   flushDelegates(operation) {
-    if (!this.delegateBatchPtr) return;
+    if (!this.delegateCollectionEnabled || !this.delegateBatchPtr) return;
     const view = this.memoryView();
     const usedBytes = view.getUint32(this.delegateBatchPtr + 8, true);
     const recordCount = view.getUint32(this.delegateBatchPtr + 12, true);
@@ -798,41 +801,27 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (usedBytes > this.delegateCapacity) {
       throw new Error("processor returned an invalid delegate byte count");
     }
-    const occurrences = [];
-    let cursor = 0;
-    while (cursor < usedBytes) {
-      if (usedBytes - cursor < DELEGATE_RECORD_HEADER_SIZE_BYTES) {
-        throw new Error("processor returned a partial delegate record header");
-      }
-      const header = this.delegateStoragePtr + cursor;
-      const delegateIndex = view.getUint32(header, true);
-      const payloadBytes = view.getUint32(header + 4, true);
-      const payload = header + DELEGATE_RECORD_HEADER_SIZE_BYTES;
-      if (payloadBytes > usedBytes - cursor - DELEGATE_RECORD_HEADER_SIZE_BYTES) {
-        throw new Error("processor returned a partial delegate payload");
-      }
-      const delegate = this.delegateInfo[delegateIndex];
-      if (!delegate) {
-        throw new Error(`processor returned unknown delegate index ${delegateIndex}`);
-      }
-      occurrences.push({
-        index: delegateIndex,
-        name: delegate.name,
-        values: this.decodeDelegatePayload(delegate, payload, payloadBytes, view),
-      });
-      cursor += DELEGATE_RECORD_HEADER_SIZE_BYTES + payloadBytes;
+    if (!usedBytes && !recordCount && !overflowCount) {
+      this.flushPendingRecordLoss(this.delegateTransport);
+      return;
     }
-    if (occurrences.length !== recordCount) {
-      throw new Error("processor delegate count does not match packed storage");
-    }
-    if (occurrences.length || overflowCount) {
-      this.port.postMessage({
-        type: "onda-delegates",
-        operation,
-        occurrences,
-        overflowCount,
-      });
-    }
+    if (this.deferSaturatedRecordBatch(
+      this.delegateTransport,
+      recordCount,
+      overflowCount,
+    )) return;
+    const storage = new Uint8Array(
+      this.memory.buffer,
+      this.delegateStoragePtr,
+      usedBytes,
+    ).slice();
+    this.postRecordBatch(
+      this.delegateTransport,
+      operation,
+      storage,
+      recordCount,
+      overflowCount,
+    );
   }
 
   saturatedAdd(lhs, rhs) {
@@ -849,56 +838,81 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       throw new Error("processor returned an invalid print byte count");
     }
     if (!usedBytes && !recordCount && !overflowCount) {
-      this.flushPendingPrintLoss();
+      this.flushPendingRecordLoss(this.printTransport);
       return;
     }
-    if (this.printTransportInFlight >= MAX_PRINT_TRANSPORT_BATCHES) {
-      this.pendingPrintTransportDrops = this.saturatedAdd(
-        this.pendingPrintTransportDrops,
-        recordCount,
-      );
-      this.pendingPrintOverflow = this.saturatedAdd(
-        this.pendingPrintOverflow,
-        overflowCount,
-      );
-      return;
-    }
+    if (this.deferSaturatedRecordBatch(
+      this.printTransport,
+      recordCount,
+      overflowCount,
+    )) return;
     const storage = new Uint8Array(
       this.memory.buffer,
       this.printStoragePtr,
       usedBytes,
     ).slice();
-    this.postPrintRecords(operation, storage, recordCount, overflowCount);
-  }
-
-  postPrintRecords(operation, storage, recordCount, overflowCount) {
-    const transportDropCount = this.pendingPrintTransportDrops;
-    const combinedOverflow = this.saturatedAdd(
-      this.pendingPrintOverflow,
+    this.postRecordBatch(
+      this.printTransport,
+      operation,
+      storage,
+      recordCount,
       overflowCount,
     );
-    this.pendingPrintTransportDrops = 0;
-    this.pendingPrintOverflow = 0;
-    this.printTransportInFlight += 1;
+  }
+
+  createRecordTransport(messageType) {
+    return {
+      messageType,
+      inFlight: 0,
+      pendingDrops: 0,
+      pendingOverflow: 0,
+    };
+  }
+
+  deferSaturatedRecordBatch(transport, recordCount, overflowCount) {
+    if (transport.inFlight >= MAX_RECORD_TRANSPORT_BATCHES) {
+      transport.pendingDrops = this.saturatedAdd(transport.pendingDrops, recordCount);
+      transport.pendingOverflow = this.saturatedAdd(
+        transport.pendingOverflow,
+        overflowCount,
+      );
+      return true;
+    }
+    return false;
+  }
+
+  postRecordBatch(transport, operation, storage, recordCount, overflowCount) {
+    const transportDropCount = transport.pendingDrops;
+    const combinedOverflow = this.saturatedAdd(
+      transport.pendingOverflow,
+      overflowCount,
+    );
+    transport.pendingDrops = 0;
+    transport.pendingOverflow = 0;
+    transport.inFlight += 1;
     this.port.postMessage({
-      type: "onda-print-records",
+      type: transport.messageType,
       operation,
       storage,
       usedBytes: storage.byteLength,
       recordCount,
       overflowCount: combinedOverflow,
       transportDropCount,
+      ...(transport === this.delegateTransport
+        ? { subscriptionId: this.delegateSubscriptionId }
+        : {}),
     }, [storage.buffer]);
   }
 
-  flushPendingPrintLoss() {
+  flushPendingRecordLoss(transport) {
     if (
-      this.printTransportInFlight >= MAX_PRINT_TRANSPORT_BATCHES
-      || (!this.pendingPrintTransportDrops && !this.pendingPrintOverflow)
+      transport.inFlight >= MAX_RECORD_TRANSPORT_BATCHES
+      || (!transport.pendingDrops && !transport.pendingOverflow)
     ) {
       return;
     }
-    this.postPrintRecords(
+    this.postRecordBatch(
+      transport,
       "transport",
       new Uint8Array(0),
       0,
@@ -906,36 +920,29 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     );
   }
 
-  decodeDelegatePayload(delegate, address, payloadBytes, view) {
-    const end = address + payloadBytes;
-    const values = {};
-    for (const param of delegate.params) {
-      let length = Number(param.array_len);
-      if (param.is_slice) {
-        if (address + 4 > end) {
-          throw new Error(`delegate '${delegate.name}' has a truncated slice length`);
-        }
-        length = view.getInt32(address, true);
-        address += 4;
-        if (length < 0) {
-          throw new Error(`delegate '${delegate.name}' has a negative slice length`);
-        }
-      }
-      const elementSize = this.scalarByteSize(param.scalar);
-      const byteLength = length * elementSize;
-      if (!Number.isSafeInteger(byteLength) || address + byteLength > end) {
-        throw new Error(`delegate '${delegate.name}' has a truncated '${param.name}' payload`);
-      }
-      const entries = Array.from({ length }, (_, index) =>
-        this.readScalar(address + index * elementSize, param.scalar, view)
+  ackRecordTransport(transport) {
+    transport.inFlight = Math.max(0, transport.inFlight - 1);
+    this.flushPendingRecordLoss(transport);
+  }
+
+  setDelegateSubscription(enabled, subscriptionId) {
+    this.delegateCollectionEnabled = enabled === true && this.delegateStoragePtr !== 0;
+    this.delegateSubscriptionId = Number.isSafeInteger(subscriptionId)
+      ? subscriptionId
+      : 0;
+    this.delegateTransport.pendingDrops = 0;
+    this.delegateTransport.pendingOverflow = 0;
+    if (this.delegateBatchPtr) {
+      const view = this.memoryView();
+      view.setUint32(this.delegateBatchPtr + 8, 0, true);
+      view.setUint32(this.delegateBatchPtr + 12, 0, true);
+      view.setUint32(this.delegateBatchPtr + 16, 0, true);
+      view.setUint32(
+        this.executionOutputPtr,
+        this.delegateCollectionEnabled ? this.delegateBatchPtr : 0,
+        true,
       );
-      values[param.name] = !param.is_slice && length === 1 ? entries[0] : entries;
-      address += byteLength;
     }
-    if (address !== end) {
-      throw new Error(`delegate '${delegate.name}' payload has trailing bytes`);
-    }
-    return values;
   }
 
   bindInitialBuffers(options) {

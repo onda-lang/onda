@@ -180,7 +180,7 @@ test("failed event execution invalidates the worklet", () => {
   assert.equal(processor.process, processor.processPending);
 });
 
-test("worklet copies decoded delegate records to the message port", () => {
+test("worklet captures raw delegate records only while subscribed", () => {
   const descriptor = metadata();
   descriptor.metadata.buffers = [];
   descriptor.metadata.delegates = [{
@@ -200,6 +200,19 @@ test("worklet copies decoded delegate records to the message port", () => {
   const messages = [];
   processor.port.postMessage = (message) => messages.push(message);
   const view = new DataView(processor.memory.buffer);
+  assert.equal(view.getUint32(processor.executionOutputPtr, true), 0);
+  processor.flushDelegates("unsubscribed process segment");
+  assert.equal(messages.length, 0);
+
+  processor.handleMessage({
+    type: "delegate-subscription",
+    enabled: true,
+    subscriptionId: 7,
+  });
+  assert.equal(
+    view.getUint32(processor.executionOutputPtr, true),
+    processor.delegateBatchPtr,
+  );
   const storage = processor.delegateStoragePtr;
   view.setUint32(storage, 0, true);
   view.setUint32(storage + 4, 16, true);
@@ -210,16 +223,40 @@ test("worklet copies decoded delegate records to the message port", () => {
   view.setUint32(processor.delegateBatchPtr + 8, 24, true);
   view.setUint32(processor.delegateBatchPtr + 12, 1, true);
   processor.flushDelegates("process segment");
-  assert.deepEqual(messages, [{
-    type: "onda-delegates",
-    operation: "process segment",
-    occurrences: [{
-      index: 0,
-      name: "report",
-      values: { code: 7, values: [1.25, -2.5] },
-    }],
-    overflowCount: 0,
-  }]);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "onda-delegate-records");
+  assert.equal(messages[0].operation, "process segment");
+  assert.equal(messages[0].recordCount, 1);
+  assert.equal(messages[0].overflowCount, 0);
+  assert.equal(messages[0].transportDropCount, 0);
+  assert.equal(messages[0].subscriptionId, 7);
+  assert.deepEqual([...messages[0].storage], [
+    0, 0, 0, 0, 16, 0, 0, 0,
+    7, 0, 0, 0, 2, 0, 0, 0,
+    0, 0, 160, 63, 0, 0, 32, 192,
+  ]);
+
+  processor.handleMessage({ type: "delegate-ack" });
+  assert.equal(processor.delegateTransport.inFlight, 0);
+
+  processor.delegateTransport.inFlight = 32;
+  view.setUint32(processor.delegateBatchPtr + 16, 2, true);
+  processor.flushDelegates("saturated process segment");
+  assert.equal(messages.length, 1);
+  assert.equal(processor.delegateTransport.pendingDrops, 1);
+  processor.handleMessage({ type: "delegate-ack" });
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1].operation, "transport");
+  assert.equal(messages[1].recordCount, 0);
+  assert.equal(messages[1].overflowCount, 2);
+  assert.equal(messages[1].transportDropCount, 1);
+
+  processor.handleMessage({
+    type: "delegate-subscription",
+    enabled: false,
+    subscriptionId: 7,
+  });
+  assert.equal(view.getUint32(processor.executionOutputPtr, true), 0);
 });
 
 test("worklet transports raw print records without formatting", () => {
