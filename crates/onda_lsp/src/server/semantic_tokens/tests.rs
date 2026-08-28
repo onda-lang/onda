@@ -112,6 +112,20 @@ fn reserved_words_include_singular_event_keyword() {
 }
 
 #[test]
+fn semantic_tokens_highlight_print_like_a_function_call() {
+    let source = "init:\n  print(1, true)\nsample:\n  out1 = 0.0\n";
+    for tokens in [
+        semantic_tokens_for_document(source, None),
+        semantic_tokens_for_document_source_only(source, None),
+    ] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 1, "print"),
+            Some(SEMANTIC_TOKEN_TYPE_FUNCTION),
+        );
+    }
+}
+
+#[test]
 fn semantic_tokens_distinguish_events_and_delegates() {
     let source = concat!(
         "delegate finished(reason: i32)\n",
@@ -137,6 +151,25 @@ fn semantic_tokens_distinguish_events_and_delegates() {
         token_type_at_text_on_line(&tokens, source, 4, "reason"),
         Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
     );
+}
+
+#[test]
+fn semantic_tokens_mark_proc_delegate_calls_as_delegates() {
+    let source = concat!(
+        "proc Voice:\n",
+        "  delegate finished()\n",
+        "  event trigger():\n",
+        "    finished()\n",
+        "  sample:\n",
+        "    out1 = 0.0\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+    for line in [1, 3] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, line, "finished"),
+            Some(SEMANTIC_TOKEN_TYPE_DELEGATE),
+        );
+    }
 }
 
 #[test]

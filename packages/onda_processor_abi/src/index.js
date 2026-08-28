@@ -1097,12 +1097,25 @@ function canonicalPrintValue(entry) {
 }
 
 function escapedPrintLabel(label) {
-  return label
-    .replaceAll("\\", "\\\\")
-    .replaceAll("\0", "\\0")
-    .replaceAll("\n", "\\n")
-    .replaceAll("\r", "\\r")
-    .replaceAll("\t", "\\t");
+  let escaped = "";
+  for (const character of label) {
+    switch (character) {
+      case "\0": escaped += "\\0"; break;
+      case "\\": escaped += "\\\\"; break;
+      case "\n": escaped += "\\n"; break;
+      case "\r": escaped += "\\r"; break;
+      case "\t": escaped += "\\t"; break;
+      default: {
+        const codePoint = character.codePointAt(0);
+        const mustEscape = codePoint <= 0x1f
+          || (codePoint >= 0x7f && codePoint <= 0x9f)
+          || codePoint === 0x2028
+          || codePoint === 0x2029;
+        escaped += mustEscape ? `\\u{${codePoint.toString(16)}}` : character;
+      }
+    }
+  }
+  return escaped;
 }
 
 export function formatPrintBatch(memory, printBatchAddress, metadata) {

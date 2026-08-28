@@ -726,7 +726,16 @@ impl Validator<'_> {
             for param in &delegate.params {
                 self.require_type(param.ty, None, SourceSpan::UNKNOWN);
                 match self.program.types.get(param.ty.index()) {
-                    Some(Type::Scalar(_)) | Some(Type::Array { .. }) => {}
+                    Some(Type::Scalar(_)) => {}
+                    Some(Type::Array { element, .. }) => {
+                        if !matches!(self.program.types.get(element.index()), Some(Type::Scalar(_)))
+                        {
+                            self.program_error(format!(
+                                "delegate '{}' parameter '{}' fixed array element must be a primitive scalar",
+                                delegate.name, param.name
+                            ));
+                        }
+                    }
                     Some(Type::Slice {
                         access: crate::AccessMode::ReadOnly,
                         ..
@@ -1534,13 +1543,12 @@ impl Validator<'_> {
                                 self.value_matches_type(function, *value, param.ty)
                             }
                             Some(Type::Array { element, .. }) => {
-                                let Some(Type::Scalar(expected)) =
-                                    self.program.types.get(element.index())
-                                else {
-                                    continue;
-                                };
-                                self.value_slice_type(function, *value)
-                                    .is_some_and(|(actual, _)| actual == *expected)
+                                match self.program.types.get(element.index()) {
+                                    Some(Type::Scalar(expected)) => self
+                                        .value_slice_type(function, *value)
+                                        .is_some_and(|(actual, _)| actual == *expected),
+                                    _ => false,
+                                }
                             }
                             Some(Type::Slice { element, .. }) => self
                                 .value_slice_type(function, *value)
@@ -5271,11 +5279,11 @@ fn intrinsic_name(intrinsic: crate::Intrinsic) -> &'static str {
 mod tests {
     use crate::{
         AccessMode, Buffer, BufferChannels, BufferId, BufferRef, CallArgument, CompareOp,
-        CompileConfig, ConstantValue, Event, EventId, EventParam, FieldId, Function, FunctionId,
-        FunctionKind, FunctionParam, Intrinsic, Local, LocalId, Output, OutputId, Param, ParamId,
-        PassingMode, Place, PlaceBase, Program, Projection, Rvalue, ScalarType, ScalarValue,
-        SliceSource, SourceSpan, StatePersistence, StateSlot, Statement, StatementKind,
-        StructField, StructType, Type, TypeId, Value,
+        CompileConfig, ConstantValue, Delegate, DelegateParam, Event, EventId, EventParam, FieldId,
+        Function, FunctionId, FunctionKind, FunctionParam, Intrinsic, Local, LocalId, Output,
+        OutputId, Param, ParamId, PassingMode, Place, PlaceBase, Program, Projection, Rvalue,
+        ScalarType, ScalarValue, SliceSource, SourceSpan, StatePersistence, StateSlot, Statement,
+        StatementKind, StructField, StructType, Type, TypeId, Value,
     };
 
     fn function(name: &str, kind: FunctionKind) -> Function {
@@ -5321,6 +5329,35 @@ mod tests {
     #[test]
     fn accepts_well_formed_empty_program() {
         assert!(super::validate(&empty_program()).is_ok());
+    }
+
+    #[test]
+    fn delegate_fixed_arrays_require_primitive_elements() {
+        let mut program = empty_program();
+        program.structs.push(StructType {
+            name: "Payload".to_owned(),
+            fields: Vec::new(),
+        });
+        program.types.extend([
+            Type::Struct(crate::StructId::new(0)),
+            Type::Array {
+                element: test_type(0),
+                len: 2,
+            },
+        ]);
+        program.interface.delegates.push(Delegate {
+            name: "invalid".to_owned(),
+            params: vec![DelegateParam {
+                name: "values".to_owned(),
+                ty: test_type(1),
+            }],
+        });
+
+        let errors = super::validate(&program)
+            .expect_err("delegate arrays with aggregate elements must fail validation");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("fixed array element must be a primitive scalar")));
     }
 
     #[test]

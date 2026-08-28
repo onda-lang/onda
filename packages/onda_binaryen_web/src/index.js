@@ -1575,10 +1575,15 @@ class MirCompiler {
       if (value.kind === "call" && Number.isInteger(value.data?.function)) {
         callees[functionId].add(value.data.function);
       }
+      const fixedDelegatePayloadMayFail = value.kind === "publish_delegate"
+        && this.mir.interface.delegates[value.data?.delegate]?.params.some(
+          (param) => this.type(param.ty).kind === "array",
+        );
       const bounds = value.data?.bounds;
       if (
         value.kind === "process_frame"
         || value.kind === "slice_copy"
+        || fixedDelegatePayloadMayFail
         || binaryMayFail(functionId, value)
         || (checkedBoundsKinds.has(value.kind) && bounds === "checked")
         || (dynamicBoundsKinds.has(value.kind) && bounds !== "unchecked")
@@ -3359,7 +3364,23 @@ class MirCompiler {
       this.module.global.get(POINTER_GLOBALS.delegateBatch, binaryen.i32);
     const record = () => this.module.local.get(recordLocal, binaryen.i32);
     const cursor = () => this.module.local.get(cursorLocal, binaryen.i32);
-    const statements = [
+    const statements = [];
+    for (const [paramId, param] of delegate.params.entries()) {
+      const type = this.type(param.ty);
+      if (type.kind !== "array") continue;
+      const argument = args[paramId];
+      const sliceLength = () => this.compileSliceValue(argument.data, context)[2];
+      statements.push(
+        this.module.if(
+          this.module.i32.ne(
+            sliceLength(),
+            this.module.i32.const(type.data.len),
+          ),
+          this.raiseRuntimeFailure(context),
+        ),
+      );
+    }
+    statements.push(
       this.module.local.set(recordLocal, this.module.i32.add(storage(), used())),
       this.module.i32.store(0, 1, record(), this.module.i32.const(delegateId)),
       this.module.i32.store(4, 1, record(), payload()),
@@ -3370,7 +3391,7 @@ class MirCompiler {
           this.module.i32.const(DELEGATE_RECORD_HEADER_SIZE),
         ),
       ),
-    ];
+    );
     for (const [paramId, param] of delegate.params.entries()) {
       const type = this.type(param.ty);
       const argument = args[paramId];

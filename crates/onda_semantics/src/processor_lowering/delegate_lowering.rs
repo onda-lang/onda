@@ -1,5 +1,8 @@
 use super::*;
-use crate::internal_names::METHOD_RECEIVER_ARG;
+use crate::internal_names::{
+    METHOD_RECEIVER_ARG, PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
+};
+use crate::proc_state_rewrite::PROC_FIELD_SENTINEL_PREFIX;
 use onda_frontend::{Span, TaskDef};
 use std::collections::BTreeMap;
 
@@ -416,14 +419,20 @@ struct DelegateOwner<'a> {
     whens: Vec<&'a WhenDef>,
     tasks: Vec<&'a TaskDef>,
     init: &'a [Stmt],
-    executable_bodies: Vec<&'a [Stmt]>,
+    executable_scopes: Vec<ExecutableScope<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct ExecutableScope<'a> {
+    block_pre: &'a [Stmt],
+    sample: &'a [Stmt],
+    block_post: &'a [Stmt],
 }
 
 #[derive(Clone)]
 struct SourceCall {
     name: String,
     loc: Span,
-    statement_root: bool,
     indexed_receiver: Option<(String, Expr)>,
     args: Vec<CallArg>,
 }
@@ -442,7 +451,7 @@ impl SourceCall {
     }
 }
 
-fn collect_source_calls_expr(expr: &Expr, statement_root: bool, calls: &mut Vec<SourceCall>) {
+fn collect_source_calls_expr(expr: &Expr, calls: &mut Vec<SourceCall>) {
     match expr {
         Expr::UserCall {
             loc, name, args, ..
@@ -459,15 +468,14 @@ fn collect_source_calls_expr(expr: &Expr, statement_root: bool, calls: &mut Vec<
             calls.push(SourceCall {
                 name: name.clone(),
                 loc: *loc,
-                statement_root,
                 indexed_receiver,
                 args: args.clone(),
             });
             for arg in args {
-                collect_source_calls_expr(&arg.expr, false, calls);
+                collect_source_calls_expr(&arg.expr, calls);
             }
         }
-        Expr::Index { index, .. } => collect_source_calls_expr(index, false, calls),
+        Expr::Index { index, .. } => collect_source_calls_expr(index, calls),
         Expr::Slice {
             selector,
             channel,
@@ -476,34 +484,34 @@ fn collect_source_calls_expr(expr: &Expr, statement_root: bool, calls: &mut Vec<
             ..
         } => {
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_source_calls_expr(coordinate, false, calls);
+                collect_source_calls_expr(coordinate, calls);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
-            collect_source_calls_expr(&spec.size, false, calls);
+            collect_source_calls_expr(&spec.size, calls);
             if let Some(values) = init {
                 for value in values {
-                    collect_source_calls_expr(value, false, calls);
+                    collect_source_calls_expr(value, calls);
                 }
             }
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                collect_source_calls_expr(arg, false, calls);
+                collect_source_calls_expr(arg, calls);
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            collect_source_calls_expr(lhs, false, calls);
-            collect_source_calls_expr(rhs, false, calls);
+            collect_source_calls_expr(lhs, calls);
+            collect_source_calls_expr(rhs, calls);
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_source_calls_expr(expr, false, calls);
+            collect_source_calls_expr(expr, calls);
         }
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
-                collect_source_calls_expr(value, false, calls);
+                collect_source_calls_expr(value, calls);
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
@@ -515,12 +523,12 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
         for stmt in stmts {
             match stmt {
                 Stmt::Const { decl, .. } => {
-                    collect_source_calls_expr(&decl.expr, false, calls);
+                    collect_source_calls_expr(&decl.expr, calls);
                 }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
                         AssignTarget::Index { index, .. } => {
-                            collect_source_calls_expr(index, false, calls);
+                            collect_source_calls_expr(index, calls);
                         }
                         AssignTarget::Slice {
                             selector,
@@ -531,18 +539,19 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
                         } => {
                             for coordinate in [selector, channel, start, end].into_iter().flatten()
                             {
-                                collect_source_calls_expr(coordinate, false, calls);
+                                collect_source_calls_expr(coordinate, calls);
                             }
                         }
                         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
                     }
-                    collect_source_calls_expr(expr, false, calls);
+                    collect_source_calls_expr(expr, calls);
                 }
-                Stmt::Expr { expr, .. } => collect_source_calls_expr(expr, true, calls),
-                Stmt::Return { expr, .. } => collect_source_calls_expr(expr, false, calls),
+                Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                    collect_source_calls_expr(expr, calls)
+                }
                 Stmt::Print { values, .. } => {
                     for value in values {
-                        collect_source_calls_expr(value, false, calls);
+                        collect_source_calls_expr(value, calls);
                     }
                 }
                 Stmt::If {
@@ -551,7 +560,7 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
                     else_branch,
                     ..
                 } => {
-                    collect_source_calls_expr(cond, false, calls);
+                    collect_source_calls_expr(cond, calls);
                     visit(then_branch, calls);
                     visit(else_branch, calls);
                 }
@@ -562,15 +571,15 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
                     body,
                     ..
                 } => {
-                    collect_source_calls_expr(start, false, calls);
-                    collect_source_calls_expr(end, false, calls);
+                    collect_source_calls_expr(start, calls);
+                    collect_source_calls_expr(end, calls);
                     if let Some(step) = step {
-                        collect_source_calls_expr(step, false, calls);
+                        collect_source_calls_expr(step, calls);
                     }
                     visit(body, calls);
                 }
                 Stmt::While { cond, body, .. } => {
-                    collect_source_calls_expr(cond, false, calls);
+                    collect_source_calls_expr(cond, calls);
                     visit(body, calls);
                 }
                 Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -592,12 +601,11 @@ fn collect_source_calls_with_aliases(
 ) -> Vec<(SourceCall, ChildReceiverAliases)> {
     fn collect_expr(
         expr: &Expr,
-        statement_root: bool,
         aliases: &ChildReceiverAliases,
         calls: &mut Vec<(SourceCall, ChildReceiverAliases)>,
     ) {
         let mut nested = Vec::new();
-        collect_source_calls_expr(expr, statement_root, &mut nested);
+        collect_source_calls_expr(expr, &mut nested);
         calls.extend(nested.into_iter().map(|call| (call, aliases.clone())));
     }
 
@@ -620,12 +628,12 @@ fn collect_source_calls_with_aliases(
         for stmt in stmts {
             match stmt {
                 Stmt::Const { decl, .. } => {
-                    collect_expr(&decl.expr, false, aliases, calls);
+                    collect_expr(&decl.expr, aliases, calls);
                 }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
                         AssignTarget::Index { index, .. } => {
-                            collect_expr(index, false, aliases, calls);
+                            collect_expr(index, aliases, calls);
                         }
                         AssignTarget::Slice {
                             selector,
@@ -636,12 +644,12 @@ fn collect_source_calls_with_aliases(
                         } => {
                             for coordinate in [selector, channel, start, end].into_iter().flatten()
                             {
-                                collect_expr(coordinate, false, aliases, calls);
+                                collect_expr(coordinate, aliases, calls);
                             }
                         }
                         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
                     }
-                    collect_expr(expr, false, aliases, calls);
+                    collect_expr(expr, aliases, calls);
                     match target {
                         AssignTarget::Var(name) => {
                             if let Some(receiver) = child_receiver_ref(expr, aliases, children) {
@@ -658,11 +666,12 @@ fn collect_source_calls_with_aliases(
                         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
                     }
                 }
-                Stmt::Expr { expr, .. } => collect_expr(expr, true, aliases, calls),
-                Stmt::Return { expr, .. } => collect_expr(expr, false, aliases, calls),
+                Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                    collect_expr(expr, aliases, calls)
+                }
                 Stmt::Print { values, .. } => {
                     for value in values {
-                        collect_expr(value, false, aliases, calls);
+                        collect_expr(value, aliases, calls);
                     }
                 }
                 Stmt::If {
@@ -671,7 +680,7 @@ fn collect_source_calls_with_aliases(
                     else_branch,
                     ..
                 } => {
-                    collect_expr(cond, false, aliases, calls);
+                    collect_expr(cond, aliases, calls);
                     let base_aliases = aliases.clone();
                     let mut then_aliases = aliases.clone();
                     let mut else_aliases = aliases.clone();
@@ -686,16 +695,16 @@ fn collect_source_calls_with_aliases(
                     body,
                     ..
                 } => {
-                    collect_expr(start, false, aliases, calls);
-                    collect_expr(end, false, aliases, calls);
+                    collect_expr(start, aliases, calls);
+                    collect_expr(end, aliases, calls);
                     if let Some(step) = step {
-                        collect_expr(step, false, aliases, calls);
+                        collect_expr(step, aliases, calls);
                     }
                     let mut body_aliases = aliases.clone();
                     visit(body, &mut body_aliases, children, calls);
                 }
                 Stmt::While { cond, body, .. } => {
-                    collect_expr(cond, false, aliases, calls);
+                    collect_expr(cond, aliases, calls);
                     let mut body_aliases = aliases.clone();
                     visit(body, &mut body_aliases, children, calls);
                 }
@@ -713,17 +722,21 @@ fn collect_source_calls_with_aliases(
 fn collect_delegate_value_uses_expr(
     expr: &Expr,
     delegate_names: &HashSet<String>,
+    value_bindings: &HashSet<String>,
+    statement_root: bool,
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
-        Expr::Var { loc, name } if delegate_names.contains(name) => {
+        Expr::Var { loc, name }
+            if delegate_names.contains(name) && !value_bindings.contains(name) =>
+        {
             errors.push(Diagnostic::semantic_span(
                 format!("delegate '{name}' is callable only and cannot be used as a value"),
                 *loc,
             ));
         }
         Expr::Index { index, .. } => {
-            collect_delegate_value_uses_expr(index, delegate_names, errors)
+            collect_delegate_value_uses_expr(index, delegate_names, value_bindings, false, errors)
         }
         Expr::Slice {
             selector,
@@ -733,39 +746,83 @@ fn collect_delegate_value_uses_expr(
             ..
         } => {
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_delegate_value_uses_expr(coordinate, delegate_names, errors);
+                collect_delegate_value_uses_expr(
+                    coordinate,
+                    delegate_names,
+                    value_bindings,
+                    false,
+                    errors,
+                );
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
-            collect_delegate_value_uses_expr(&spec.size, delegate_names, errors);
+            collect_delegate_value_uses_expr(
+                &spec.size,
+                delegate_names,
+                value_bindings,
+                false,
+                errors,
+            );
             if let Some(values) = init {
                 for value in values {
-                    collect_delegate_value_uses_expr(value, delegate_names, errors);
+                    collect_delegate_value_uses_expr(
+                        value,
+                        delegate_names,
+                        value_bindings,
+                        false,
+                        errors,
+                    );
                 }
             }
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                collect_delegate_value_uses_expr(arg, delegate_names, errors);
+                collect_delegate_value_uses_expr(
+                    arg,
+                    delegate_names,
+                    value_bindings,
+                    false,
+                    errors,
+                );
             }
         }
-        Expr::UserCall { args, .. } => {
+        Expr::UserCall {
+            loc, name, args, ..
+        } => {
+            if delegate_names.contains(name) && !value_bindings.contains(name) && !statement_root {
+                errors.push(Diagnostic::semantic_span(
+                    format!("delegate call '{name}' has no result and must be used as a statement"),
+                    *loc,
+                ));
+            }
             for arg in args {
-                collect_delegate_value_uses_expr(&arg.expr, delegate_names, errors);
+                collect_delegate_value_uses_expr(
+                    &arg.expr,
+                    delegate_names,
+                    value_bindings,
+                    false,
+                    errors,
+                );
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            collect_delegate_value_uses_expr(lhs, delegate_names, errors);
-            collect_delegate_value_uses_expr(rhs, delegate_names, errors);
+            collect_delegate_value_uses_expr(lhs, delegate_names, value_bindings, false, errors);
+            collect_delegate_value_uses_expr(rhs, delegate_names, value_bindings, false, errors);
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_delegate_value_uses_expr(expr, delegate_names, errors)
+            collect_delegate_value_uses_expr(expr, delegate_names, value_bindings, false, errors)
         }
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
-                collect_delegate_value_uses_expr(value, delegate_names, errors);
+                collect_delegate_value_uses_expr(
+                    value,
+                    delegate_names,
+                    value_bindings,
+                    false,
+                    errors,
+                );
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
@@ -775,18 +832,40 @@ fn collect_delegate_value_uses_expr(
 fn validate_delegate_uses(
     stmts: &[Stmt],
     delegate_names: &HashSet<String>,
+    initial_bindings: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
-) {
-    fn visit_expr(expr: &Expr, names: &HashSet<String>, errors: &mut Vec<Diagnostic>) {
-        collect_delegate_value_uses_expr(expr, names, errors);
+) -> HashSet<String> {
+    use crate::def_semantics::call_types::StatementFlow;
+
+    fn visit_expr(
+        expr: &Expr,
+        names: &HashSet<String>,
+        bindings: &HashSet<String>,
+        statement_root: bool,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        collect_delegate_value_uses_expr(expr, names, bindings, statement_root, errors);
     }
-    fn visit(stmts: &[Stmt], names: &HashSet<String>, errors: &mut Vec<Diagnostic>) {
+    fn visit(
+        stmts: &[Stmt],
+        names: &HashSet<String>,
+        bindings: &mut HashSet<String>,
+        errors: &mut Vec<Diagnostic>,
+    ) -> StatementFlow {
         for stmt in stmts {
-            match stmt {
-                Stmt::Const { decl, .. } => visit_expr(&decl.expr, names, errors),
+            let flow = match stmt {
+                Stmt::Const { decl, .. } => {
+                    visit_expr(&decl.expr, names, bindings, false, errors);
+                    if names.contains(&decl.name) {
+                        bindings.insert(decl.name.clone());
+                    }
+                    StatementFlow::Continues
+                }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
-                        AssignTarget::Index { index, .. } => visit_expr(index, names, errors),
+                        AssignTarget::Index { index, .. } => {
+                            visit_expr(index, names, bindings, false, errors)
+                        }
                         AssignTarget::Slice {
                             selector,
                             channel,
@@ -796,20 +875,40 @@ fn validate_delegate_uses(
                         } => {
                             for coordinate in [selector, channel, start, end].into_iter().flatten()
                             {
-                                visit_expr(coordinate, names, errors);
+                                visit_expr(coordinate, names, bindings, false, errors);
                             }
                         }
                         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
                     }
-                    visit_expr(expr, names, errors);
+                    visit_expr(expr, names, bindings, false, errors);
+                    match target {
+                        AssignTarget::Var(name) if names.contains(name) => {
+                            bindings.insert(name.clone());
+                        }
+                        AssignTarget::Tuple(targets) => {
+                            bindings.extend(
+                                targets.iter().filter(|name| names.contains(*name)).cloned(),
+                            );
+                        }
+                        AssignTarget::Var(_)
+                        | AssignTarget::Index { .. }
+                        | AssignTarget::Slice { .. } => {}
+                    }
+                    StatementFlow::Continues
                 }
-                Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                    visit_expr(expr, names, errors)
+                Stmt::Expr { expr, .. } => {
+                    visit_expr(expr, names, bindings, true, errors);
+                    StatementFlow::Continues
+                }
+                Stmt::Return { expr, .. } => {
+                    visit_expr(expr, names, bindings, false, errors);
+                    StatementFlow::Terminates
                 }
                 Stmt::Print { values, .. } => {
                     for value in values {
-                        visit_expr(value, names, errors);
+                        visit_expr(value, names, bindings, false, errors);
                     }
+                    StatementFlow::Continues
                 }
                 Stmt::If {
                     cond,
@@ -817,48 +916,72 @@ fn validate_delegate_uses(
                     else_branch,
                     ..
                 } => {
-                    visit_expr(cond, names, errors);
-                    visit(then_branch, names, errors);
-                    visit(else_branch, names, errors);
+                    visit_expr(cond, names, bindings, false, errors);
+                    let mut then_bindings = bindings.clone();
+                    let mut else_bindings = bindings.clone();
+                    let then_flow = visit(then_branch, names, &mut then_bindings, errors);
+                    let else_flow = visit(else_branch, names, &mut else_bindings, errors);
+                    match (then_flow, else_flow) {
+                        (StatementFlow::Continues, StatementFlow::Terminates) => {
+                            *bindings = then_bindings;
+                        }
+                        (StatementFlow::Terminates, StatementFlow::Continues) => {
+                            *bindings = else_bindings;
+                        }
+                        (StatementFlow::Continues, StatementFlow::Continues)
+                        | (StatementFlow::Terminates, StatementFlow::Terminates) => {
+                            then_bindings.retain(|name| else_bindings.contains(name));
+                            *bindings = then_bindings;
+                        }
+                    }
+                    if then_flow == StatementFlow::Terminates
+                        && else_flow == StatementFlow::Terminates
+                    {
+                        StatementFlow::Terminates
+                    } else {
+                        StatementFlow::Continues
+                    }
                 }
                 Stmt::For {
+                    var,
                     step,
                     start,
                     end,
                     body,
                     ..
                 } => {
-                    visit_expr(start, names, errors);
-                    visit_expr(end, names, errors);
+                    visit_expr(start, names, bindings, false, errors);
+                    visit_expr(end, names, bindings, false, errors);
                     if let Some(step) = step {
-                        visit_expr(step, names, errors);
+                        visit_expr(step, names, bindings, false, errors);
                     }
-                    visit(body, names, errors);
+                    let mut body_bindings = bindings.clone();
+                    if names.contains(var) {
+                        body_bindings.insert(var.clone());
+                    }
+                    visit(body, names, &mut body_bindings, errors);
+                    StatementFlow::Continues
                 }
                 Stmt::While { cond, body, .. } => {
-                    visit_expr(cond, names, errors);
-                    visit(body, names, errors);
+                    visit_expr(cond, names, bindings, false, errors);
+                    let mut body_bindings = bindings.clone();
+                    visit(body, names, &mut body_bindings, errors);
+                    StatementFlow::Continues
                 }
-                Stmt::Break { .. } | Stmt::Continue { .. } => {}
+                Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
+            };
+            if flow == StatementFlow::Terminates {
+                return flow;
             }
         }
+        StatementFlow::Continues
     }
-
-    for call in collect_source_calls(stmts) {
-        let Some(name) = call.local_name() else {
-            continue;
-        };
-        if delegate_names.contains(name) && !call.statement_root {
-            errors.push(Diagnostic::semantic_span(
-                format!(
-                    "delegate call '{}' has no result and must be used as a statement",
-                    name
-                ),
-                call.loc,
-            ));
-        }
-    }
-    visit(stmts, delegate_names, errors);
+    let mut bindings = initial_bindings
+        .intersection(delegate_names)
+        .cloned()
+        .collect();
+    visit(stmts, delegate_names, &mut bindings, errors);
+    bindings
 }
 
 fn task_reset_names(stmts: &[Stmt], task_names: &HashSet<String>) -> HashSet<String> {
@@ -926,6 +1049,7 @@ fn when_target_label(when: &WhenDef) -> String {
 #[derive(Clone, Default)]
 struct ProcDelegateEffects {
     event_delegates: HashMap<String, HashSet<String>>,
+    step_delegates: HashSet<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -982,6 +1106,7 @@ struct OwnerDispatchGraph<'a> {
     by_name: HashMap<String, usize>,
     edges: Vec<Vec<usize>>,
     init_roots: Vec<usize>,
+    executable_roots: Vec<usize>,
     task_roots: HashMap<String, Vec<usize>>,
 }
 
@@ -1076,6 +1201,103 @@ fn bind_child_receiver_aliases(
     bound
 }
 
+fn child_step_receiver(
+    call: &SourceCall,
+    aliases: &ChildReceiverAliases,
+    children: &HashMap<String, ChildProcInstance>,
+) -> Option<ChildReceiverRef> {
+    let call_name = call
+        .name
+        .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
+        .unwrap_or(&call.name);
+    if call_name.split_once('.').map_or(call_name, |entry| entry.0) == PROC_INDEX_CALL_SENTINEL {
+        let base = call.args.iter().find_map(|arg| {
+            (arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG)).then_some(&arg.expr)
+        })?;
+        let index = call.args.iter().find_map(|arg| {
+            (arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG)).then_some(&arg.expr)
+        })?;
+        let Expr::Var { name: base, .. } = base else {
+            return None;
+        };
+        let mut receiver = aliases
+            .get(base)
+            .cloned()
+            .unwrap_or_else(|| ChildReceiverRef {
+                receiver: base.clone(),
+                index: None,
+            });
+        let child = children.get(&receiver.receiver)?;
+        if !child.is_array || receiver.index.is_some() {
+            return None;
+        }
+        receiver.index = Some(index.clone());
+        return Some(receiver);
+    }
+    let name = call.local_name()?;
+    if let Some(alias) = aliases.get(name) {
+        return Some(alias.clone());
+    }
+    children.get(name).map(|_| ChildReceiverRef {
+        receiver: name.to_owned(),
+        index: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn child_delegate_targets<'a>(
+    call: &SourceCall,
+    owner: &'a DelegateOwner<'a>,
+    receiver: &str,
+    call_index: Option<&Expr>,
+    child: &ChildProcInstance,
+    delegates: &HashSet<String>,
+    options: AnalysisOptions,
+    callables: &mut Vec<SourceCallable<'a>>,
+    edges: &mut Vec<Vec<usize>>,
+) -> Vec<usize> {
+    let mut delegates = delegates.iter().collect::<Vec<_>>();
+    delegates.sort();
+    let when_offset = owner.defs.len() + owner.events.len() + owner.delegates.len();
+    let receiver_label = if child.is_array {
+        match call_index.and_then(|index| quiet_const_index(index, options)) {
+            Some(index) => format!("{receiver}[{index}]"),
+            None => format!("{receiver}[...]"),
+        }
+    } else {
+        receiver.to_owned()
+    };
+    let mut targets = Vec::with_capacity(delegates.len());
+    for delegate in delegates {
+        let node = callables.len();
+        callables.push(SourceCallable {
+            label: format!(
+                "delegate {}.{delegate} through {receiver_label}",
+                child.proc_name
+            ),
+            name: None,
+            kind: SourceCallableKind::Delegate,
+            loc: call.loc,
+            body: &[],
+        });
+        edges.push(
+            owner
+                .whens
+                .iter()
+                .enumerate()
+                .filter_map(|(ordinal, when)| {
+                    when_matches_child_dispatch(
+                        when, receiver, call_index, child, delegate, options,
+                    )
+                    .then_some(when_offset + ordinal)
+                })
+                .collect(),
+        );
+        targets.push(node);
+    }
+    targets
+}
+
 #[allow(clippy::too_many_arguments)]
 fn source_call_targets<'a>(
     call: &SourceCall,
@@ -1090,6 +1312,25 @@ fn source_call_targets<'a>(
     expansion_cache: &mut HashMap<DefExpansionKey, Vec<usize>>,
     expanding_defs: &mut HashSet<DefExpansionKey>,
 ) -> Vec<usize> {
+    if let Some(receiver) = child_step_receiver(call, aliases, children) {
+        let Some(child) = children.get(&receiver.receiver) else {
+            return Vec::new();
+        };
+        let Some(effects) = proc_effects.get(&child.proc_name) else {
+            return Vec::new();
+        };
+        return child_delegate_targets(
+            call,
+            owner,
+            &receiver.receiver,
+            receiver.index.as_ref(),
+            child,
+            &effects.step_delegates,
+            options,
+            callables,
+            edges,
+        );
+    }
     if let Some(name) = call.local_name() {
         let mut targets = by_name.get(name).copied().into_iter().collect::<Vec<_>>();
         let Some(def) = owner.defs.iter().find(|def| def.name == name) else {
@@ -1154,46 +1395,9 @@ fn source_call_targets<'a>(
         return Vec::new();
     };
 
-    let mut delegates = delegates.iter().collect::<Vec<_>>();
-    delegates.sort();
-    let when_offset = owner.defs.len() + owner.events.len() + owner.delegates.len();
-    let receiver_label = if child.is_array {
-        match call_index.and_then(|index| quiet_const_index(index, options)) {
-            Some(index) => format!("{receiver}[{index}]"),
-            None => format!("{receiver}[...]"),
-        }
-    } else {
-        receiver.to_owned()
-    };
-    let mut targets = Vec::with_capacity(delegates.len());
-    for delegate in delegates {
-        let node = callables.len();
-        callables.push(SourceCallable {
-            label: format!(
-                "delegate {}.{delegate} through {receiver_label}",
-                child.proc_name
-            ),
-            name: None,
-            kind: SourceCallableKind::Delegate,
-            loc: call.loc,
-            body: &[],
-        });
-        edges.push(
-            owner
-                .whens
-                .iter()
-                .enumerate()
-                .filter_map(|(ordinal, when)| {
-                    when_matches_child_dispatch(
-                        when, receiver, call_index, child, delegate, options,
-                    )
-                    .then_some(when_offset + ordinal)
-                })
-                .collect(),
-        );
-        targets.push(node);
-    }
-    targets
+    child_delegate_targets(
+        call, owner, receiver, call_index, child, delegates, options, callables, edges,
+    )
 }
 
 fn owner_dispatch_graph<'a>(
@@ -1266,6 +1470,29 @@ fn owner_dispatch_graph<'a>(
         ));
     }
     deduplicate_targets(&mut init_roots);
+    let mut executable_roots = Vec::new();
+    for scope in &owner.executable_scopes {
+        for body in [scope.block_pre, scope.sample, scope.block_post] {
+            for (call, aliases) in
+                collect_source_calls_with_aliases(body, &HashMap::new(), children)
+            {
+                executable_roots.extend(source_call_targets(
+                    &call,
+                    owner,
+                    children,
+                    proc_effects,
+                    options,
+                    &by_name,
+                    &mut callables,
+                    &mut edges,
+                    &aliases,
+                    &mut expansion_cache,
+                    &mut expanding_defs,
+                ));
+            }
+        }
+    }
+    deduplicate_targets(&mut executable_roots);
     let mut task_roots = HashMap::new();
     for task in &owner.tasks {
         let mut roots = Vec::new();
@@ -1295,6 +1522,7 @@ fn owner_dispatch_graph<'a>(
         by_name,
         edges,
         init_roots,
+        executable_roots,
         task_roots,
     }
 }
@@ -1440,17 +1668,37 @@ fn validate_owner_dispatch(
         .iter()
         .map(|delegate| delegate.name.clone())
         .collect::<HashSet<_>>();
-    for body in owner
-        .executable_bodies
-        .iter()
-        .copied()
-        .chain(std::iter::once(owner.init))
-        .chain(owner.defs.iter().map(|def| def.body.as_slice()))
-        .chain(owner.events.iter().map(|event| event.body.as_slice()))
-        .chain(owner.whens.iter().map(|when| when.body.as_slice()))
-        .chain(owner.tasks.iter().map(|task| task.body.as_slice()))
-    {
-        validate_delegate_uses(body, &delegate_names, errors);
+    let no_bindings = HashSet::new();
+    validate_delegate_uses(owner.init, &delegate_names, &no_bindings, errors);
+    for scope in &owner.executable_scopes {
+        let block_bindings =
+            validate_delegate_uses(scope.block_pre, &delegate_names, &no_bindings, errors);
+        validate_delegate_uses(scope.sample, &delegate_names, &block_bindings, errors);
+        validate_delegate_uses(scope.block_post, &delegate_names, &block_bindings, errors);
+    }
+    for def in &owner.defs {
+        let bindings = def.params.iter().map(|param| param.name.clone()).collect();
+        validate_delegate_uses(&def.body, &delegate_names, &bindings, errors);
+    }
+    for event in &owner.events {
+        let bindings = event
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect();
+        validate_delegate_uses(&event.body, &delegate_names, &bindings, errors);
+    }
+    for when in &owner.whens {
+        let bindings = when
+            .bindings
+            .iter()
+            .filter(|binding| binding.name != "_")
+            .map(|binding| binding.name.clone())
+            .collect();
+        validate_delegate_uses(&when.body, &delegate_names, &bindings, errors);
+    }
+    for task in &owner.tasks {
+        validate_delegate_uses(&task.body, &delegate_names, &no_bindings, errors);
     }
 
     let graph = owner_dispatch_graph(owner, children, proc_effects, options);
@@ -1803,7 +2051,11 @@ fn build_proc_delegate_effects(
             whens: proc.whens.iter().collect(),
             tasks: proc.tasks.iter().collect(),
             init: &proc.init.body,
-            executable_bodies: vec![&proc.block_pre, &proc.sample, &proc.block_post],
+            executable_scopes: vec![ExecutableScope {
+                block_pre: &proc.block_pre,
+                sample: &proc.sample,
+                block_post: &proc.block_post,
+            }],
         };
         let graph = owner_dispatch_graph(&owner, &children, effects, options);
         let event_delegates = proc
@@ -1817,9 +2069,19 @@ fn build_proc_delegate_effects(
                 ))
             })
             .collect();
+        let step_delegates = graph
+            .executable_roots
+            .iter()
+            .flat_map(|root| {
+                reachable_owner_delegates(*root, &graph.callables, &graph.edges).into_iter()
+            })
+            .collect();
         effects.insert(
             proc_name.to_owned(),
-            ProcDelegateEffects { event_delegates },
+            ProcDelegateEffects {
+                event_delegates,
+                step_delegates,
+            },
         );
         visiting.remove(proc_name);
     }
@@ -2302,15 +2564,31 @@ pub(super) fn validate_delegate_source_model(
         })
         .unwrap_or(&[]);
     let mut top_executable = Vec::new();
+    let mut top_executable_scopes = Vec::new();
     for block in &program.blocks {
         match block {
-            Block::Sample(sample) => top_executable.push(sample.body.as_slice()),
+            Block::Sample(sample) => {
+                top_executable.push(sample.body.as_slice());
+                top_executable_scopes.push(ExecutableScope {
+                    block_pre: &[],
+                    sample: sample.body.as_slice(),
+                    block_post: &[],
+                });
+            }
             Block::Block(exec) => {
                 top_executable.push(exec.pre.as_slice());
                 if let Some(sample) = &exec.sample {
                     top_executable.push(sample.body.as_slice());
                 }
                 top_executable.push(exec.post.as_slice());
+                top_executable_scopes.push(ExecutableScope {
+                    block_pre: exec.pre.as_slice(),
+                    sample: exec
+                        .sample
+                        .as_ref()
+                        .map_or(&[], |sample| sample.body.as_slice()),
+                    block_post: exec.post.as_slice(),
+                });
             }
             _ => {}
         }
@@ -2325,7 +2603,7 @@ pub(super) fn validate_delegate_source_model(
             whens: top_whens.clone(),
             tasks: top_tasks.clone(),
             init: top_init,
-            executable_bodies: top_executable.clone(),
+            executable_scopes: top_executable_scopes,
         },
         &top_children,
         &proc_effects,
@@ -2401,7 +2679,11 @@ pub(super) fn validate_delegate_source_model(
                 whens: proc.whens.iter().collect(),
                 tasks: proc.tasks.iter().collect(),
                 init: &proc.init.body,
-                executable_bodies: vec![&proc.block_pre, &proc.sample, &proc.block_post],
+                executable_scopes: vec![ExecutableScope {
+                    block_pre: &proc.block_pre,
+                    sample: &proc.sample,
+                    block_post: &proc.block_post,
+                }],
             },
             &children,
             &proc_effects,

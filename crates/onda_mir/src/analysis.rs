@@ -1365,10 +1365,28 @@ fn scan_block(
                     args: args.clone(),
                 });
             }
-            StatementKind::PublishDelegate { args, .. } => {
+            StatementKind::PublishDelegate { delegate, args } => {
                 effects.writes.insert(MemoryRegionSet::DELEGATE_BATCH);
                 for argument in args {
                     scan_call_argument(argument, effects);
+                }
+                if program
+                    .interface
+                    .delegates
+                    .get(delegate.index())
+                    .is_some_and(|delegate| {
+                        delegate.params.iter().any(|param| {
+                            matches!(
+                                program.types.get(param.ty.index()),
+                                Some(Type::Array { .. })
+                            )
+                        })
+                    })
+                {
+                    // Fixed-array publications accept evaluated slice values.
+                    // Backends verify their runtime length before copying the
+                    // descriptor's fixed element count.
+                    effects.may_fail = true;
                 }
             }
             StatementKind::PublishLog { arguments, .. } => {

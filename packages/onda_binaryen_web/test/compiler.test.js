@@ -2323,6 +2323,85 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
   assert.equal(view.getInt32(storage + 8, true), 42);
 });
 
+test("fails safely before copying a short fixed-array delegate payload", async () => {
+  const mir = executableMir();
+  mir.types.push(
+    type("array", { element: 2, len: 2 }),
+    type("slice", { element: "i32", access: "read_only" }),
+  );
+  mir.const_data.push({
+    name: "short_values",
+    element: "i32",
+    values: [{ type: "i32", value: 7 }],
+  });
+  mir.interface.delegates.push({
+    name: "values",
+    params: [{ name: "items", ty: 3 }],
+  });
+  mir.functions[1].locals.push({ name: "short_values", ty: 4 });
+  mir.functions[1].body.statements.unshift(
+    assign(place("local", 6), {
+      kind: "make_slice",
+      data: {
+        source: { kind: "const_data", data: 0 },
+        start: constant("i32", 0),
+        len: constant("i32", 1),
+        bounds: "unchecked",
+        access: "read_only",
+      },
+    }),
+    statement("publish_delegate", {
+      delegate: 0,
+      args: [{ kind: "value", data: local(6) }],
+    }),
+  );
+
+  const artifact = compileMir(mir, { optimize: false });
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const params = heap;
+  heap += Math.max(16, artifact.metadata.runtime.param_size_bytes);
+  const state = heap;
+  heap += Math.max(16, artifact.metadata.runtime.state_size_bytes);
+  const outputTable = heap;
+  heap += 4;
+  const batch = heap;
+  heap += 20;
+  const executionOutput = heap;
+  heap += 8;
+  const storage = heap;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, storage + 32, true);
+  view.setUint32(batch, storage, true);
+  view.setUint32(batch + 4, 16, true);
+  view.setUint32(executionOutput, batch, true);
+  view.setUint32(executionOutput + 4, 0, true);
+
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+  assert.equal(
+    callProcess(
+      onda_process,
+      0,
+      outputTable,
+      0,
+      0,
+      3,
+      params,
+      state,
+      0,
+      0,
+      0,
+      0,
+      executionOutput,
+    ),
+    PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+  );
+  assert.equal(view.getUint32(batch + 8, true), 0);
+  assert.equal(view.getUint32(batch + 12, true), 0);
+  assert.equal(view.getUint32(batch + 16, true), 0);
+});
+
 test("publishes init and process print records through execution output", async () => {
   const mir = executableMir();
   mir.source_files.push({ path: "main.onda" });

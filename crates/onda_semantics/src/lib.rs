@@ -13362,6 +13362,122 @@ sample:
     }
 
     #[test]
+    fn delegate_names_can_be_shadowed_by_value_bindings() {
+        for source in [
+            r#"
+delegate finished(finished: i32)
+
+init:
+  result: i32 = 0
+
+event update(finished: i32):
+  result = finished
+
+when finished(finished):
+  result = finished
+
+sample:
+  out1 = f32(result)
+"#,
+            r#"
+delegate finished()
+
+def identity(finished: i32) -> i32:
+  return finished
+
+sample:
+  finished = identity(1)
+  out1 = f32(finished)
+"#,
+            r#"
+delegate i()
+
+sample:
+  result: i32 = 0
+  for i in 0..1:
+    result = i
+  out1 = f32(result)
+"#,
+            r#"
+delegate finished()
+
+block:
+  finished: i32 = 1
+  sample:
+    out1 = f32(finished)
+  print(finished)
+"#,
+            r#"
+proc Voice:
+  delegate finished()
+
+  def identity(finished: i32) -> i32:
+    return finished
+
+  sample:
+    finished = identity(1)
+    out1 = f32(finished)
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice()
+"#,
+            r#"
+proc Voice:
+  outs:
+    out1
+  sample:
+    out1 = 0.25
+
+delegate voice()
+
+def run(voice: Voice) -> f32:
+  return voice()
+
+init:
+  child = Voice()
+
+sample:
+  out1 = run(child)
+"#,
+            r#"
+delegate finished()
+
+def choose(flag: bool) -> i32:
+  if flag:
+    return 0
+  else:
+    finished = 1
+  return finished
+
+sample:
+  out1 = f32(choose(false))
+"#,
+        ] {
+            let program = parse_program(source).expect("shadowing source should parse");
+            analyze(program).expect("a value binding should shadow the delegate name");
+        }
+    }
+
+    #[test]
+    fn delegates_reject_unshadowed_bare_value_use() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+def invalid() -> i32:
+  return finished
+
+sample:
+  out1 = 0.0
+"#,
+            "delegate 'finished' is callable only and cannot be used as a value",
+        );
+    }
+
+    #[test]
     fn delegates_reject_owner_member_collisions() {
         assert_analyze_error_contains(
             r#"
@@ -13470,6 +13586,66 @@ block:
 "#,
             "cannot dispatch a delegate whose synchronous handler may reset that active task",
         );
+    }
+
+    #[test]
+    fn delegates_reject_child_step_resetting_the_active_parent_task() {
+        for source in [
+            r#"
+proc Child:
+  kouts:
+    value
+  delegate fired()
+  block:
+    fired()
+    value = 0.0
+
+init:
+  child = Child()
+
+task worker():
+  value = child()
+  yield
+
+when child.fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+            r#"
+proc Child:
+  kouts:
+    value
+  delegate fired()
+  block:
+    fired()
+    value = 0.0
+
+init:
+  children: Child[2] = Child()
+  index: i32 = 0
+
+task worker():
+  value = children[index]()
+  yield
+
+when children[0].fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+        ] {
+            assert_analyze_error_contains(
+                source,
+                "cannot dispatch a delegate whose synchronous handler may reset that active task",
+            );
+        }
     }
 
     #[test]

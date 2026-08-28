@@ -381,6 +381,16 @@ fn semantic_tokens_for_document_with_optional_parse(
                 });
                 return;
             }
+            if name == "print" && is_call {
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_FUNCTION,
+                    token_modifiers: 0,
+                });
+                return;
+            }
             if is_semantic_keyword(name, &source_lines, line, start) {
                 tokens.push(SemanticToken {
                     line,

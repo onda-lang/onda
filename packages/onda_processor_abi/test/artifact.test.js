@@ -167,6 +167,29 @@ test("formats packed print records with width-aware canonical scalars", () => {
   );
 });
 
+test("escapes every print-label record separator", () => {
+  const storage = new Uint8Array(8);
+  const metadata = {
+    target: { byte_order: "little_endian" },
+    metadata: {
+      log_sites: [{
+        index: 0,
+        label: "\0\\\n\r\t\u0007\u000b\u000c\u007f\u0085\u2028\u2029sound",
+        source: { file: null, line: 1, column: 1, end_line: 1, end_column: 1 },
+        lexical_owner: "program",
+        declaration: "sample",
+        argument_types: [],
+        payload_size_bytes: 0,
+      }],
+    },
+  };
+
+  assert.equal(
+    formatPrintRecords(storage, storage.byteLength, metadata).text,
+    "\\0\\\\\\n\\r\\t\\u{7}\\u{b}\\u{c}\\u{7f}\\u{85}\\u{2028}\\u{2029}sound\n",
+  );
+});
+
 test("matches native canonical formatting for deterministic randomized float bits", () => {
   const fixture = JSON.parse(readFileSync(
     new URL("./fixtures/print-float-parity.json", import.meta.url),

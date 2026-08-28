@@ -136,7 +136,9 @@ const { text, entries, overflowCount } = formatPrintBatch(
 ```
 
 The formatter preserves exact `i64` values and applies the same width-specific canonical float
-formatting as native hosts.
+formatting as native hosts. Labels use `\0`, `\\`, `\n`, `\r`, and `\t` for the common
+escapes; other control characters and the Unicode line and paragraph separators use lowercase
+`\u{hex}` escapes. Consequently, every formatted occurrence occupies exactly one physical line.
 
 ## CLI, control clients, and Web Audio
 

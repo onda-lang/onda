@@ -1967,6 +1967,35 @@ impl FunctionEmitter<'_, '_> {
         LLVMBuildBr(self.builder, done);
 
         LLVMPositionBuilderAtEnd(self.builder, capacity_ok);
+        let mut fixed_array_length_invalid = None;
+        for (param, argument) in descriptor.params.iter().zip(args) {
+            let Type::Array { len, .. } = self.module.program.types[param.ty.index()] else {
+                continue;
+            };
+            let CallArgument::Value(value) = argument else {
+                unreachable!("validated above")
+            };
+            let parts = self.slice_parts(*value)?;
+            let wrong_length = LLVMBuildICmp(
+                self.builder,
+                LLVMIntPredicate::LLVMIntNE,
+                parts.len,
+                LLVMConstInt(i32_ty, u64::from(len), 0),
+                c_name("delegate_fixed_array_wrong_length")?.as_ptr(),
+            );
+            fixed_array_length_invalid = Some(match fixed_array_length_invalid {
+                Some(previous) => LLVMBuildOr(
+                    self.builder,
+                    previous,
+                    wrong_length,
+                    c_name("delegate_fixed_array_length_invalid")?.as_ptr(),
+                ),
+                None => wrong_length,
+            });
+        }
+        if let Some(fixed_array_length_invalid) = fixed_array_length_invalid {
+            self.emit_failure_if(fixed_array_length_invalid, "delegate_fixed_array_length_ok")?;
+        }
         let record = LLVMBuildGEP2(
             self.builder,
             i8_ty,

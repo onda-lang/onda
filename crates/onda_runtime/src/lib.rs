@@ -552,6 +552,9 @@ fn write_escaped_print_label(output: &mut impl fmt::Write, label: &str) -> fmt::
             '\n' => output.write_str("\\n")?,
             '\r' => output.write_str("\\r")?,
             '\t' => output.write_str("\\t")?,
+            character if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') => {
+                write!(output, "\\u{{{:x}}}", character as u32)?;
+            }
             _ => output.write_char(character)?,
         }
     }
@@ -2516,6 +2519,21 @@ mod tests {
                 entry["text"].as_str().expect("f64 text")
             );
         }
+    }
+
+    #[test]
+    fn print_labels_escape_every_record_separator() {
+        let mut escaped = String::new();
+        write_escaped_print_label(
+            &mut escaped,
+            "\0\\\n\r\t\u{7}\u{b}\u{c}\u{7f}\u{85}\u{2028}\u{2029}sound",
+        )
+        .expect("writing to a String should succeed");
+
+        assert_eq!(
+            escaped,
+            "\\0\\\\\\n\\r\\t\\u{7}\\u{b}\\u{c}\\u{7f}\\u{85}\\u{2028}\\u{2029}sound"
+        );
     }
 
     #[test]

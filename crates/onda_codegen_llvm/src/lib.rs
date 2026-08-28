@@ -1705,6 +1705,32 @@ sample:
         assert_eq!(u32::from_ne_bytes(storage[32..36].try_into().unwrap()), 1);
         assert_eq!(i32::from_ne_bytes(storage[40..44].try_into().unwrap()), 23);
     }
+
+    #[test]
+    fn native_fixed_delegate_payload_checks_runtime_slice_length() {
+        let typed = typed_program(
+            r#"
+const Values: i32[2] = [3, 5]
+delegate progress(values: i32[2])
+event trigger():
+  progress(Values)
+sample:
+  out1 = 0.0
+"#,
+        );
+        let ir = lower_to_llvm_ir_with_options(
+            typed,
+            SourceCompileOptions {
+                opt_level: TargetOptLevel::O0,
+                ..SourceCompileOptions::default()
+            },
+        )
+        .expect("fixed-array delegate source should lower to LLVM IR");
+
+        assert!(ir.contains("delegate_fixed_array_wrong_length"));
+        assert!(ir.contains("delegate_fixed_array_length_ok"));
+    }
+
     #[test]
     fn convenience_jit_uses_the_analyzed_program_configuration() {
         let typed = typed_program_with_options("sample:\n  out1 = SR\n", 44_100.0, 64);
