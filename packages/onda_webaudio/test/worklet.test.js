@@ -114,11 +114,15 @@ test("failed live initialization returns the worklet to the silent pending state
     },
   });
   const originalCheckExecutionStatus = processor.checkExecutionStatus;
+  let outputFlushes = 0;
+  processor.flushPrint = () => { outputFlushes += 1; };
+  processor.flushDelegates = () => { outputFlushes += 1; };
   processor.checkExecutionStatus = () => {
     throw new Error("simulated processor init failure");
   };
 
   assert.throws(() => processor.init(1), /simulated processor init failure/);
+  assert.equal(outputFlushes, 0);
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
   assert.throws(() => processor.init(0), /full initialization is required/);
@@ -236,20 +240,30 @@ test("worklet captures raw delegate records only while subscribed", () => {
     0, 0, 160, 63, 0, 0, 32, 192,
   ]);
 
-  processor.handleMessage({ type: "delegate-ack" });
+  const firstStorage = messages[0].storage;
+  processor.handleMessage({ type: "delegate-ack", storage: firstStorage });
   assert.equal(processor.delegateTransport.inFlight, 0);
+  assert.equal(processor.delegateTransport.availableBuffers.length, 1);
+
+  processor.flushDelegates("reused process segment");
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1].storage.buffer, firstStorage.buffer);
+  processor.handleMessage({
+    type: "delegate-ack",
+    storage: messages[1].storage,
+  });
 
   processor.delegateTransport.inFlight = 32;
   view.setUint32(processor.delegateBatchPtr + 16, 2, true);
   processor.flushDelegates("saturated process segment");
-  assert.equal(messages.length, 1);
+  assert.equal(messages.length, 2);
   assert.equal(processor.delegateTransport.pendingDrops, 1);
   processor.handleMessage({ type: "delegate-ack" });
-  assert.equal(messages.length, 2);
-  assert.equal(messages[1].operation, "transport");
-  assert.equal(messages[1].recordCount, 0);
-  assert.equal(messages[1].overflowCount, 2);
-  assert.equal(messages[1].transportDropCount, 1);
+  assert.equal(messages.length, 3);
+  assert.equal(messages[2].operation, "transport");
+  assert.equal(messages[2].recordCount, 0);
+  assert.equal(messages[2].overflowCount, 2);
+  assert.equal(messages[2].transportDropCount, 1);
 
   processor.handleMessage({
     type: "delegate-subscription",

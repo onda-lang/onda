@@ -2608,6 +2608,50 @@ fn c_api_formats_prints_from_initialized_and_process_calls() {
 }
 
 #[test]
+fn c_api_clears_prints_when_initialized_construction_fails() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params:
+  divisor: i32 = 0
+outs:
+  out1
+init:
+  print("before failure", 42)
+  value = 1 / divisor
+sample:
+  out1 = f32(value)
+"#,
+        );
+        let mut storage = [0_u8; 64];
+        let mut prints = onda_print_batch_t {
+            storage: storage.as_mut_ptr(),
+            capacity_bytes: storage.len() as u32,
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        };
+        let mut output = onda_execution_output_t {
+            delegate_batch: std::ptr::null_mut(),
+            print_batch: &mut prints,
+        };
+        let mut diag = empty_diag();
+        let instance = onda_instance_create_initialized(program.0, 0, 1, &mut output, &mut *diag);
+        assert!(instance.is_null(), "initialization unexpectedly succeeded");
+        assert_eq!(
+            (
+                prints.used_bytes,
+                prints.record_count,
+                prints.overflow_count
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(diag.code, onda_frontend::DiagCode::Runtime as i32);
+        assert!(diag_message(&diag).contains("runtime safety check"));
+    }
+}
+
+#[test]
 fn c_api_custom_allocator_instance_uses_allocator_and_frees_it() {
     unsafe {
         let frames = 512_i32;

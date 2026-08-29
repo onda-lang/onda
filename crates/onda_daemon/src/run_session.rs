@@ -188,10 +188,6 @@ pub enum RunBufferChannels {
 pub enum RunBuildError {
     Diagnostics(Vec<Diagnostic>),
     Runtime(Diagnostic),
-    Initialization {
-        diagnostic: Diagnostic,
-        print_batch: Option<Box<RunPrintBatch>>,
-    },
 }
 
 /// An external buffer supplied before a run instance is initialized.
@@ -372,16 +368,7 @@ impl RunSession {
             prints.record_count,
             prints.overflow_count,
         );
-        let instance = match instance_result {
-            Ok(instance) => instance,
-            Err(diagnostic) => {
-                let print_batch = decode_run_print_batch(&jit, &prints).ok().map(Box::new);
-                return Err(RunBuildError::Initialization {
-                    diagnostic,
-                    print_batch,
-                });
-            }
-        };
+        let instance = instance_result.map_err(RunBuildError::Runtime)?;
 
         Ok(Self {
             path,

@@ -161,7 +161,8 @@ void onda_owned_string_dispose(onda_owned_string_t* text);
    supplied batch is reset when generated execution begins. A nonzero
    overflow_count means one or more complete records were dropped for
    insufficient capacity. Print records emitted before generated failure remain
-   available; delegate records are cleared on failure. */
+   available while an instance survives; initialized constructors clear both
+   batches when they return NULL. Delegate records are cleared on failure. */
 
 /* Primitive element type identifiers used by metadata and buffer binding APIs. */
 enum {
@@ -698,7 +699,8 @@ onda_instance_t* onda_instance_create(
   onda_diag_t* out_diag
 );
 /* Creates a ready-to-process runtime instance by performing onda_instance_create followed by
-   ONDA_INIT_FULL after immutable project defaults have been bound. */
+   ONDA_INIT_FULL after immutable project defaults have been bound. If creation or initialization
+   fails, output batches are cleared and out_diag is the only result. */
 onda_instance_t* onda_instance_create_initialized(
   const onda_program_t* program,
   int in_channels,

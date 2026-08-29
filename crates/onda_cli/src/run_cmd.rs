@@ -3,9 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use onda_codegen_llvm::TargetOptLevel;
-use onda_daemon::{
-    DaemonConfig, DaemonSession, InitialBufferBinding, RunBuildError, RunOptions, RunPrintBatch,
-};
+use onda_daemon::{DaemonConfig, DaemonSession, InitialBufferBinding, RunOptions, RunPrintBatch};
 use onda_project::ProjectLimits;
 use onda_run::{
     append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
@@ -282,27 +280,20 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         );
     }
 
-    if let Err(err) = session.start_run_with_options_inputs_and_initial_buffers(
-        input,
-        RunOptions {
-            sample_rate: sample_rate_hz as f32,
-            block_size: block_frames,
-            fast_math,
-            opt_level,
-            ..RunOptions::default()
-        },
-        compile_inputs,
-        initial_buffers,
-    ) {
-        if let RunBuildError::Initialization {
-            print_batch: Some(batch),
-            ..
-        } = &err
-        {
-            write_print_batch(batch)?;
-        }
-        return Err(format_run_build_error("daemon run start failed", &err));
-    }
+    session
+        .start_run_with_options_inputs_and_initial_buffers(
+            input,
+            RunOptions {
+                sample_rate: sample_rate_hz as f32,
+                block_size: block_frames,
+                fast_math,
+                opt_level,
+                ..RunOptions::default()
+            },
+            compile_inputs,
+            initial_buffers,
+        )
+        .map_err(|err| format_run_build_error("daemon run start failed", &err))?;
     write_run_prints(&mut session, input)?;
 
     if show_meta {

@@ -270,7 +270,7 @@ export class OndaAudioProcessor {
           };
           for (const listener of this.delegateListeners) listener(batch);
         } finally {
-          this.node.port.postMessage({ type: "delegate-ack" });
+          this.returnRecordStorage("delegate-ack", message.storage);
         }
         return;
       }
@@ -297,7 +297,7 @@ export class OndaAudioProcessor {
           };
           for (const listener of this.printListeners) listener(batch);
         } finally {
-          this.node.port.postMessage({ type: "print-ack" });
+          this.returnRecordStorage("print-ack", message.storage);
         }
         return;
       }
@@ -313,6 +313,14 @@ export class OndaAudioProcessor {
     };
     node.port.addEventListener("message", this.handleMessage);
     node.port.start?.();
+  }
+
+  returnRecordStorage(type, storage) {
+    if (storage instanceof Uint8Array) {
+      this.node.port.postMessage({ type, storage }, [storage.buffer]);
+    } else {
+      this.node.port.postMessage({ type });
+    }
   }
 
   request(type, fields = {}, transfer = []) {

@@ -13,9 +13,9 @@ use onda_cpal::{
     SampleConsumer, SampleProducer, StreamErrorState,
 };
 use onda_daemon::{
-    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunBuildError,
-    RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue,
-    RunOptions, RunParamInfo, RunPrintBatch, RunPrintEntry, RunSession,
+    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
+    RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
+    RunPrintBatch, RunPrintEntry, RunSession,
 };
 use onda_project::{BufferAsset, ProjectLimits};
 use onda_semantics::AnalysisOptions;
@@ -74,20 +74,6 @@ struct PlaybackStartup {
     current_output_device: Option<String>,
 }
 
-struct PlaybackStartupFailure {
-    message: String,
-    print_batch: Option<RunPrintBatch>,
-}
-
-impl From<String> for PlaybackStartupFailure {
-    fn from(message: String) -> Self {
-        Self {
-            message,
-            print_batch: None,
-        }
-    }
-}
-
 type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
 type AudioDeviceLists = (Vec<String>, Vec<String>);
 
@@ -97,7 +83,7 @@ struct RenderThreadContext {
     scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
-    startup_tx: mpsc::Sender<Result<PlaybackStartup, PlaybackStartupFailure>>,
+    startup_tx: PlaybackReply<PlaybackStartup>,
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
     delegate_transport: Option<DelegateTransport>,
     print_transport: PrintTransport,
@@ -327,51 +313,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     );
     let startup = startup_rx
         .recv()
-        .map_err(|_| "run render thread exited before startup completed".to_owned())?;
-    let startup = match startup {
-        Ok(startup) => startup,
-        Err(failure) => {
-            let _ = render_thread.join();
-            let message = failure.message;
-            let print_batch = failure.print_batch;
-            if launch.control_json {
-                let batch = print_batch.unwrap_or(RunPrintBatch {
-                    text: String::new(),
-                    entries: Vec::new(),
-                    overflow_count: 0,
-                    transport_drop_count: 0,
-                });
-                write_json_line(
-                    &mut BufWriter::new(std::io::stdout().lock()),
-                    &json!({
-                        "event": "startupFailed",
-                        "error": &message,
-                        "text": batch.text,
-                        "entries": batch.entries.iter().map(run_print_entry_json).collect::<Vec<_>>(),
-                        "overflowCount": batch.overflow_count,
-                        "transportDropCount": batch.transport_drop_count,
-                    }),
-                )
-                .map_err(|error| format!("failed to write run startup failure event: {error}"))?;
-            } else if let Some(batch) = print_batch {
-                let stdout = std::io::stdout();
-                let mut stdout = stdout.lock();
-                stdout
-                    .write_all(batch.text.as_bytes())
-                    .and_then(|()| stdout.flush())
-                    .map_err(|error| {
-                        format!("failed to write run startup print output: {error}")
-                    })?;
-                if batch.overflow_count != 0 || batch.transport_drop_count != 0 {
-                    eprintln!(
-                        "onda print delivery: {} generated record(s) overflowed, {} record(s) were dropped in transport",
-                        batch.overflow_count, batch.transport_drop_count
-                    );
-                }
-            }
-            return Err(message);
-        }
-    };
+        .map_err(|_| "run render thread exited before startup completed".to_owned())??;
 
     let control_server = if launch.control_json {
         let Some(control_tx) = control_tx else {
@@ -721,7 +663,7 @@ fn spawn_run_render_thread(
             },
         });
 
-        let startup = (|| -> Result<PlaybackStartup, PlaybackStartupFailure> {
+        let startup = (|| -> Result<PlaybackStartup, String> {
             let mut initial_buffers = Vec::with_capacity(
                 launch.project_buffer_bindings.len() + launch.buffer_bindings.len(),
             );
@@ -757,18 +699,7 @@ fn spawn_run_render_thread(
                     &launch.compile_inputs,
                     initial_buffers,
                 )
-                .map_err(|error| {
-                    let print_batch = match &error {
-                        RunBuildError::Initialization { print_batch, .. } => {
-                            print_batch.as_deref().cloned()
-                        }
-                        _ => None,
-                    };
-                    PlaybackStartupFailure {
-                        message: format_run_build_error("daemon play start failed", &error),
-                        print_batch,
-                    }
-                })?;
+                .map_err(|error| format_run_build_error("daemon play start failed", &error))?;
 
             for (name, value) in &launch.param_sets {
                 session

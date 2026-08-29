@@ -1023,7 +1023,19 @@ impl RunController {
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 let text = resp.get("text").and_then(Value::as_str).unwrap_or_default();
-                if !text.is_empty() || !entries.is_empty() {
+                let overflow_count = resp
+                    .get("overflowCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let transport_drop_count = resp
+                    .get("transportDropCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if record_notification_is_visible(
+                    !text.is_empty() || !entries.is_empty(),
+                    overflow_count,
+                    transport_drop_count,
+                ) {
                     self.state.log_revealed = true;
                 }
                 if !text.is_empty() {
@@ -1036,25 +1048,38 @@ impl RunController {
                     }
                     trim_log_history(&mut self.state);
                 }
-                self.state.print_overflow_count = self.state.print_overflow_count.saturating_add(
-                    resp.get("overflowCount")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                );
-                self.state.print_transport_drop_count =
-                    self.state.print_transport_drop_count.saturating_add(
-                        resp.get("transportDropCount")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                    );
+                self.state.print_overflow_count = self
+                    .state
+                    .print_overflow_count
+                    .saturating_add(overflow_count);
+                self.state.print_transport_drop_count = self
+                    .state
+                    .print_transport_drop_count
+                    .saturating_add(transport_drop_count);
                 poll.state_changed = true;
                 return poll;
             }
             if resp.get("event").and_then(Value::as_str) == Some("delegates") {
+                let overflow_count = resp
+                    .get("overflowCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let transport_drop_count = resp
+                    .get("transportDropCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let has_occurrences = resp
+                    .get("occurrences")
+                    .and_then(Value::as_array)
+                    .is_some_and(|occurrences| !occurrences.is_empty());
+                if record_notification_is_visible(
+                    has_occurrences,
+                    overflow_count,
+                    transport_drop_count,
+                ) {
+                    self.state.log_revealed = true;
+                }
                 if let Some(occurrences) = resp.get("occurrences").and_then(Value::as_array) {
-                    if !occurrences.is_empty() {
-                        self.state.log_revealed = true;
-                    }
                     for occurrence in occurrences {
                         self.state
                             .log_text
@@ -1067,18 +1092,14 @@ impl RunController {
                     }
                     trim_log_history(&mut self.state);
                 }
-                self.state.delegate_overflow_count =
-                    self.state.delegate_overflow_count.saturating_add(
-                        resp.get("overflowCount")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                    );
-                self.state.delegate_transport_drop_count =
-                    self.state.delegate_transport_drop_count.saturating_add(
-                        resp.get("transportDropCount")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                    );
+                self.state.delegate_overflow_count = self
+                    .state
+                    .delegate_overflow_count
+                    .saturating_add(overflow_count);
+                self.state.delegate_transport_drop_count = self
+                    .state
+                    .delegate_transport_drop_count
+                    .saturating_add(transport_drop_count);
                 poll.state_changed = true;
                 return poll;
             }
@@ -1164,6 +1185,14 @@ impl RunController {
             self.scope_polling_in_flight = false;
         }
     }
+}
+
+fn record_notification_is_visible(
+    has_records: bool,
+    overflow_count: u64,
+    transport_drop_count: u64,
+) -> bool {
+    has_records || overflow_count != 0 || transport_drop_count != 0
 }
 
 fn trim_log_history(state: &mut RunState) {
@@ -1274,9 +1303,6 @@ fn format_run_build_error(prefix: &str, err: &RunBuildError) -> String {
             }
         }
         RunBuildError::Runtime(diag) => format_single_diagnostic(prefix, diag),
-        RunBuildError::Initialization { diagnostic, .. } => {
-            format_single_diagnostic(prefix, diagnostic)
-        }
     }
 }
 
@@ -1553,19 +1579,6 @@ impl ChildSession {
                             current_output_device: raw.current_output_device,
                         };
                         let _ = event_tx.send(ControllerEvent::ChildReady { generation, ready });
-                        continue;
-                    }
-                }
-                if let Ok(mut startup_failure) = serde_json::from_str::<Value>(trimmed) {
-                    if startup_failure.get("event").and_then(Value::as_str) == Some("startupFailed")
-                    {
-                        if let Some(object) = startup_failure.as_object_mut() {
-                            object.insert("event".to_owned(), Value::String("print".to_owned()));
-                        }
-                        let _ = event_tx.send(ControllerEvent::TcpResponse {
-                            generation,
-                            line: startup_failure.to_string(),
-                        });
                         continue;
                     }
                 }
@@ -2681,11 +2694,12 @@ mod tests {
     use super::{
         compiled_snapshot_is_current, events_are_compatible_for_preservation,
         format_delegate_log_line, params_are_compatible_for_preservation,
-        reconcile_preserved_events, reconcile_preserved_params, relevant_source_change_paths,
-        run_param_json, source_change_paths, source_snapshot, source_snapshot_with_project,
-        source_watch_root, watcher_gap_validation_paths, ControllerEvent, FileWatcher, ParamDomain,
-        ParamScalarType, ParamScale, PendingCommand, PreservedBufferBinding, RunHostOptions,
-        RunParamInfo, RunParamWire, SourceCompilationState, SourceWatchRevision,
+        reconcile_preserved_events, reconcile_preserved_params, record_notification_is_visible,
+        relevant_source_change_paths, run_param_json, source_change_paths, source_snapshot,
+        source_snapshot_with_project, source_watch_root, watcher_gap_validation_paths,
+        ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, PendingCommand,
+        PreservedBufferBinding, RunHostOptions, RunParamInfo, RunParamWire, SourceCompilationState,
+        SourceWatchRevision,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -2715,6 +2729,13 @@ mod tests {
             format_delegate_log_line(&json!({ "name": "done", "values": {} })),
             "delegate done"
         );
+    }
+
+    #[test]
+    fn record_loss_notifications_reveal_the_log_without_records() {
+        assert!(record_notification_is_visible(false, 1, 0));
+        assert!(record_notification_is_visible(false, 0, 1));
+        assert!(!record_notification_is_visible(false, 0, 0));
     }
 
     #[test]

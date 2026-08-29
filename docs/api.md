@@ -439,7 +439,8 @@ lexical owner, declaration, primitive argument types, and fixed payload size. Al
 
 Creation validates the requested flattened input and output channel counts. The initialized forms
 accept `onda_execution_output_t`, allowing authored initialization prints and delegates to be
-collected. Release every successful instance with `onda_instance_destroy`.
+collected on success. If initialized creation fails, both output batches are cleared and the
+diagnostic is the only result. Release every successful instance with `onda_instance_destroy`.
 
 `onda_allocator_t` affects only instance-owned runtime storage. Its `alloc` callback runs
 synchronously during creation; no later operation allocates instance storage. `free` may run during

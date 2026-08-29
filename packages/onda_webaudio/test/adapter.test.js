@@ -388,7 +388,7 @@ test("formats worklet print records on the main side", () => {
   assert.equal(batches[0].entries[0].values[0].value, 42);
   assert.equal(batches[0].overflowCount, 2);
   assert.equal(batches[0].transportDropCount, 3);
-  assert.deepEqual(node.port.messages.at(-1), { type: "print-ack" });
+  assert.deepEqual(node.port.messages.at(-1), { type: "print-ack", storage });
   assert.equal(unsubscribe(), true);
   assert.deepEqual(node.port.messages.at(-1), {
     type: "print-subscription",
@@ -406,7 +406,7 @@ test("formats worklet print records on the main side", () => {
     subscriptionId: subscription.subscriptionId,
   });
   assert.equal(batches.length, 1);
-  assert.deepEqual(node.port.messages.at(-1), { type: "print-ack" });
+  assert.deepEqual(node.port.messages.at(-1), { type: "print-ack", storage });
   processor.close();
 });
 
@@ -469,7 +469,7 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
     overflowCount: 2,
     transportDropCount: 3,
   }]);
-  assert.deepEqual(node.port.messages.at(-1), { type: "delegate-ack" });
+  assert.deepEqual(node.port.messages.at(-1), { type: "delegate-ack", storage });
 
   assert.equal(unsubscribe(), true);
   assert.deepEqual(node.port.messages.at(-1), {

@@ -3035,7 +3035,8 @@ class MirCompiler {
     const tooLarge = () => this.module.local.get(oversized, binaryen.i32);
     const batch = () =>
       this.module.global.get(POINTER_GLOBALS.delegateBatch, binaryen.i32);
-    const statements = [
+    const validationStatements = [];
+    const collectionStatements = [
       this.module.local.set(
         payloadBytes,
         this.module.i32.const(layout.minimumByteLength),
@@ -3063,7 +3064,7 @@ class MirCompiler {
       const delta = () =>
         this.module.i32.mul(length(), this.module.i32.const(elementSize));
       const next = () => this.module.i32.add(payload(), delta());
-      statements.push(
+      collectionStatements.push(
         this.module.local.set(
           oversized,
           this.module.i32.or(
@@ -3080,7 +3081,22 @@ class MirCompiler {
         this.module.local.set(payloadBytes, next()),
       );
     }
-    statements.push(
+    for (const [paramId, param] of delegate.params.entries()) {
+      const type = this.type(param.ty);
+      if (type.kind !== "array") continue;
+      const argument = data.args[paramId];
+      const sliceLength = () => this.compileSliceValue(argument.data, context)[2];
+      validationStatements.push(
+        this.module.if(
+          this.module.i32.ne(
+            sliceLength(),
+            this.module.i32.const(type.data.len),
+          ),
+          this.raiseRuntimeFailure(context),
+        ),
+      );
+    }
+    collectionStatements.push(
       this.module.local.set(
         oversized,
         this.module.i32.or(
@@ -3091,22 +3107,25 @@ class MirCompiler {
           ),
         ),
       ),
-      this.module.if(
-        this.module.i32.ne(batch(), this.module.i32.const(0)),
-        this.compileDelegateBatchAppend(
-          data.delegate,
-          delegate,
-          data.args,
-          payload,
-          tooLarge,
-          record,
-          cursor,
-          counter,
-          context,
-        ),
+      this.compileDelegateBatchAppend(
+        data.delegate,
+        delegate,
+        data.args,
+        payload,
+        tooLarge,
+        record,
+        cursor,
+        counter,
+        context,
       ),
     );
-    return this.module.block(null, statements);
+    return this.module.block(null, [
+      ...validationStatements,
+      this.module.if(
+        this.module.i32.ne(batch(), this.module.i32.const(0)),
+        this.module.block(null, collectionStatements),
+      ),
+    ]);
   }
 
   compilePublishLog(data, context) {
@@ -3365,21 +3384,6 @@ class MirCompiler {
     const record = () => this.module.local.get(recordLocal, binaryen.i32);
     const cursor = () => this.module.local.get(cursorLocal, binaryen.i32);
     const statements = [];
-    for (const [paramId, param] of delegate.params.entries()) {
-      const type = this.type(param.ty);
-      if (type.kind !== "array") continue;
-      const argument = args[paramId];
-      const sliceLength = () => this.compileSliceValue(argument.data, context)[2];
-      statements.push(
-        this.module.if(
-          this.module.i32.ne(
-            sliceLength(),
-            this.module.i32.const(type.data.len),
-          ),
-          this.raiseRuntimeFailure(context),
-        ),
-      );
-    }
     statements.push(
       this.module.local.set(recordLocal, this.module.i32.add(storage(), used())),
       this.module.i32.store(0, 1, record(), this.module.i32.const(delegateId)),

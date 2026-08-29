@@ -2393,6 +2393,26 @@ test("fails safely before copying a short fixed-array delegate payload", async (
       0,
       0,
       0,
+      0,
+    ),
+    PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+    "invalid fixed-array payloads must fail even without delegate collection",
+  );
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+  assert.equal(
+    callProcess(
+      onda_process,
+      0,
+      outputTable,
+      0,
+      0,
+      3,
+      params,
+      state,
+      0,
+      0,
+      0,
+      0,
       executionOutput,
     ),
     PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,

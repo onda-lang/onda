@@ -1239,12 +1239,9 @@ pub fn create_instance_initialized(
 pub fn create_instance_initialized_with_output(
     program: JitProgram,
     config: InstanceConfig,
-    mut output: ExecutionOutput<'_, '_>,
+    output: ExecutionOutput<'_, '_>,
 ) -> Result<Instance, Diagnostic> {
-    reset_execution_output(&mut output);
-    let mut instance = create_instance(program, config)?;
-    init_with_output(&mut instance, InitMode::Full, output)?;
-    Ok(instance)
+    initialize_new_instance(create_instance(program, config), output)
 }
 
 /// Allocator-backed equivalent of [`create_instance_initialized`].
@@ -1265,11 +1262,32 @@ pub fn create_instance_initialized_with_allocator_and_output(
     program: JitProgram,
     config: InstanceConfig,
     allocator: RuntimeAllocator,
+    output: ExecutionOutput<'_, '_>,
+) -> Result<Instance, Diagnostic> {
+    initialize_new_instance(
+        create_instance_with_allocator(program, config, allocator),
+        output,
+    )
+}
+
+fn initialize_new_instance(
+    instance: Result<Instance, Diagnostic>,
     mut output: ExecutionOutput<'_, '_>,
 ) -> Result<Instance, Diagnostic> {
     reset_execution_output(&mut output);
-    let mut instance = create_instance_with_allocator(program, config, allocator)?;
-    init_with_output(&mut instance, InitMode::Full, output)?;
+    let mut instance = instance?;
+    let result = init_with_output(
+        &mut instance,
+        InitMode::Full,
+        ExecutionOutput {
+            delegate_batch: output.delegate_batch.as_deref_mut(),
+            print_batch: output.print_batch.as_deref_mut(),
+        },
+    );
+    if let Err(error) = result {
+        reset_execution_output(&mut output);
+        return Err(error);
+    }
     Ok(instance)
 }
 
@@ -2453,7 +2471,7 @@ mod tests {
 
     fn assert_send<T: Send>() {}
 
-    fn compile_test_instance(source: &str, block_size: usize, out_channels: usize) -> Instance {
+    fn compile_test_program(source: &str, block_size: usize) -> JitProgram {
         let parsed = parse_program(source).expect("test source should parse");
         let typed = analyze_with_options(
             parsed,
@@ -2464,7 +2482,11 @@ mod tests {
         )
         .expect("test source should analyze");
         let mir = lower_program_to_optimized_mir(&typed).expect("test source should lower");
-        let program = jit_program_from_optimized_mir(mir).expect("test MIR should compile");
+        jit_program_from_optimized_mir(mir).expect("test MIR should compile")
+    }
+
+    fn compile_test_instance(source: &str, block_size: usize, out_channels: usize) -> Instance {
+        let program = compile_test_program(source, block_size);
         create_instance_initialized(
             program,
             InstanceConfig {
@@ -2480,6 +2502,48 @@ mod tests {
     #[test]
     fn instance_is_send() {
         assert_send::<Instance>();
+    }
+
+    #[test]
+    fn initialized_constructor_clears_prints_when_initialization_fails() {
+        let program = compile_test_program(
+            r#"
+params:
+  divisor: i32 = 0
+init:
+  print("before failure", 42)
+  value = 1 / divisor
+sample:
+  out1 = f32(value)
+"#,
+            1,
+        );
+        let mut storage = [0_u8; 64];
+        let mut prints = PrintBatch::from_storage(&mut storage);
+        let error = create_instance_initialized_with_output(
+            program,
+            InstanceConfig {
+                sample_rate: 48_000.0,
+                frames_per_block: 1,
+                in_channels: 0,
+                out_channels: 1,
+            },
+            ExecutionOutput {
+                delegate_batch: None,
+                print_batch: Some(&mut prints),
+            },
+        )
+        .expect_err("division by zero should fail initialization");
+
+        assert!(error.message.contains("runtime safety check"));
+        assert_eq!(
+            (
+                prints.used_bytes,
+                prints.record_count,
+                prints.overflow_count
+            ),
+            (0, 0, 0)
+        );
     }
 
     #[test]

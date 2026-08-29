@@ -4030,12 +4030,17 @@ unsafe fn onda_instance_create_impl(
             runtime_init_with_output(&mut instance, InitMode::Full, output)
         });
         if let Err(error) = result {
+            reset_c_execution_output(output);
             write_diag(out_diag, diag_to_c(&error));
             return ptr::null_mut();
         }
     }
 
-    allocate_instance_handle(instance, compiled, allocator, out_diag)
+    let handle = allocate_instance_handle(instance, compiled, allocator, out_diag);
+    if initialize && handle.is_null() {
+        reset_c_execution_output(output);
+    }
+    handle
 }
 
 #[no_mangle]

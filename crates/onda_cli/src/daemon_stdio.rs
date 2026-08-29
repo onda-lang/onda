@@ -274,17 +274,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                     .map_err(|diag| diagnostic_string("run_start print decoding failed", &diag));
                 prints.map(|prints| attach_run_print_batch(result, &prints))
             }
-            Err(err) => {
-                if let RunBuildError::Initialization {
-                    print_batch: Some(batch),
-                    ..
-                } = &err
-                {
-                    error_result =
-                        Some(attach_run_print_batch(json!({ "status": "failed" }), batch));
-                }
-                Err(run_build_error_string("run_start failed", &err))
-            }
+            Err(err) => Err(run_build_error_string("run_start failed", &err)),
         },
         Request::RunStop { path } => {
             let stopped = session.stop_run(path).is_some();
@@ -579,7 +569,6 @@ fn run_build_error_string(context: &str, err: &RunBuildError) -> String {
     match err {
         RunBuildError::Diagnostics(diags) => diagnostics_string(context, diags),
         RunBuildError::Runtime(diag) => diagnostic_string(context, diag),
-        RunBuildError::Initialization { diagnostic, .. } => diagnostic_string(context, diagnostic),
     }
 }
 
@@ -714,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_run_start_returns_prints_emitted_before_the_error() {
+    fn failed_run_start_returns_only_the_error() {
         let dir = mk_temp_dir("run_start_failure_print");
         let main = dir.join("main.onda");
         write_file(
@@ -735,10 +724,7 @@ mod tests {
 
         assert!(!response.ok);
         assert!(response.error.is_some());
-        let result = response.result.expect("failure output");
-        assert_eq!(result["status"], "failed");
-        assert_eq!(result["print"]["text"], "before failure: 7\n");
-        assert_eq!(result["print"]["entries"].as_array().map(Vec::len), Some(1));
+        assert!(response.result.is_none());
 
         fs::remove_dir_all(&dir).ok();
     }

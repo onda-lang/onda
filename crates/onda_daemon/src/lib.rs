@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_initialization_returns_prints_emitted_before_the_failure() {
+    fn failed_initialization_returns_only_the_runtime_diagnostic() {
         let dir = mk_temp_dir("run_failed_init_prints");
         let main = dir.join("main.onda");
         write_file(
@@ -427,17 +427,10 @@ mod tests {
         let error = session
             .start_run(&main)
             .expect_err("division by zero should fail generated initialization");
-        let RunBuildError::Initialization {
-            diagnostic,
-            print_batch: Some(batch),
-        } = error
-        else {
-            panic!("expected initialization failure with retained prints");
+        let RunBuildError::Runtime(diagnostic) = error else {
+            panic!("expected a runtime initialization failure");
         };
         assert!(diagnostic.message.contains("runtime safety check"));
-        assert_eq!(batch.text, "before failure: 7\n");
-        assert_eq!(batch.entries.len(), 1);
-        assert_eq!(batch.entries[0].declaration.as_deref(), Some("init"));
 
         fs::remove_dir_all(&dir).ok();
     }

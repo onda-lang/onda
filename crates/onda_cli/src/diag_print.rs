@@ -8,9 +8,6 @@ pub(crate) fn format_run_build_error(context: &str, err: &RunBuildError) -> Stri
     match err {
         RunBuildError::Diagnostics(diags) => format_diagnostics(context, diags),
         RunBuildError::Runtime(diag) => format_single_diagnostic(context, diag),
-        RunBuildError::Initialization { diagnostic, .. } => {
-            format_single_diagnostic(context, diagnostic)
-        }
     }
 }
 

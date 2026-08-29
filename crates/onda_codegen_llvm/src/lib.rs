@@ -1729,6 +1729,46 @@ sample:
 
         assert!(ir.contains("delegate_fixed_array_wrong_length"));
         assert!(ir.contains("delegate_fixed_array_length_ok"));
+        let validation = ir
+            .find("delegate_fixed_array_wrong_length")
+            .expect("fixed-array validation instruction");
+        assert!(
+            ir[validation..].contains("delegate_batch_present"),
+            "fixed-array validation must precede optional delegate collection"
+        );
+    }
+
+    #[test]
+    fn native_dynamic_delegate_sizing_is_guarded_by_optional_collection() {
+        let typed = typed_program(
+            r#"
+const Values: i32[2] = [3, 5]
+delegate progress(values: i32[])
+event trigger():
+  progress(Values)
+sample:
+  out1 = 0.0
+"#,
+        );
+        let ir = lower_to_llvm_ir_with_options(
+            typed,
+            SourceCompileOptions {
+                opt_level: TargetOptLevel::O0,
+                ..SourceCompileOptions::default()
+            },
+        )
+        .expect("dynamic delegate source should lower to LLVM IR");
+
+        let collection = ir
+            .find("delegate_batch_present")
+            .expect("optional delegate collection check");
+        let sizing = ir
+            .find("delegate_slice_bytes")
+            .expect("dynamic delegate sizing instruction");
+        assert!(
+            collection < sizing,
+            "dynamic payload sizing must stay behind optional delegate collection"
+        );
     }
 
     #[test]

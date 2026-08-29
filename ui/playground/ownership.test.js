@@ -80,7 +80,14 @@ test("the shared run view keeps output compact and latched directly after the sc
     /logSection\.style\.display = state\.logRevealed === true \? "" : "none"/,
   );
   assert.match(egui, /ScrollArea::vertical\(\)[\s\S]*?\.auto_shrink\(\[false, true\]\)/);
-  assert.match(runHost, /if !text\.is_empty\(\) \|\| !entries\.is_empty\(\) \{\s*self\.state\.log_revealed = true/);
+  assert.match(
+    runHost,
+    /record_notification_is_visible\(\s*!text\.is_empty\(\) \|\| !entries\.is_empty\(\),\s*overflow_count,\s*transport_drop_count/,
+  );
+  assert.match(
+    runHost,
+    /has_records \|\| overflow_count != 0 \|\| transport_drop_count != 0/,
+  );
   const clearLog = runHost.match(/pub fn clear_log\(&mut self\) \{[\s\S]*?\n    \}/)?.[0];
   assert.ok(clearLog);
   assert.doesNotMatch(clearLog, /log_revealed/);

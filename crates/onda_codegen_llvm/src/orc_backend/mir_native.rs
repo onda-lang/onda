@@ -1730,12 +1730,69 @@ impl FunctionEmitter<'_, '_> {
         let i8_ty = LLVMInt8TypeInContext(self.module.context);
         let i32_ty = LLVMInt32TypeInContext(self.module.context);
         let i64_ty = LLVMInt64TypeInContext(self.module.context);
-        let mut payload_bytes = LLVMConstInt(i64_ty, 0, 0);
+        let mut fixed_array_length_invalid = None;
         for (param, argument) in descriptor.params.iter().zip(args) {
             let CallArgument::Value(value) = argument else {
                 return Err(MirCodegenError::invalid(
                     "delegate publication payload is not an evaluated value",
                 ));
+            };
+            let Type::Array { len, .. } = self.module.program.types[param.ty.index()] else {
+                continue;
+            };
+            let parts = self.slice_parts(*value)?;
+            let wrong_length = LLVMBuildICmp(
+                self.builder,
+                LLVMIntPredicate::LLVMIntNE,
+                parts.len,
+                LLVMConstInt(i32_ty, u64::from(len), 0),
+                c_name("delegate_fixed_array_wrong_length")?.as_ptr(),
+            );
+            fixed_array_length_invalid = Some(match fixed_array_length_invalid {
+                Some(previous) => LLVMBuildOr(
+                    self.builder,
+                    previous,
+                    wrong_length,
+                    c_name("delegate_fixed_array_length_invalid")?.as_ptr(),
+                ),
+                None => wrong_length,
+            });
+        }
+        if let Some(fixed_array_length_invalid) = fixed_array_length_invalid {
+            self.emit_failure_if(fixed_array_length_invalid, "delegate_fixed_array_length_ok")?;
+        }
+
+        let batch = load_context_field(
+            self.module,
+            self.builder,
+            self.runtime_context,
+            DELEGATE_BATCH_CONTEXT_INDEX,
+            "delegate_batch",
+        )?;
+        let batch_present = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntNE,
+            batch,
+            LLVMConstPointerNull(self.module.ptr_ty),
+            c_name("delegate_batch_present")?.as_ptr(),
+        );
+        let inspect = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_delegate_inspect_batch",
+        )?;
+        let done = append_block(
+            self.module.context,
+            self.declaration.value,
+            "publish_delegate_done",
+        )?;
+        LLVMBuildCondBr(self.builder, batch_present, inspect, done);
+        LLVMPositionBuilderAtEnd(self.builder, inspect);
+
+        let mut payload_bytes = LLVMConstInt(i64_ty, 0, 0);
+        for (param, argument) in descriptor.params.iter().zip(args) {
+            let CallArgument::Value(value) = argument else {
+                unreachable!("validated above")
             };
             let bytes = match self.module.program.types[param.ty.index()] {
                 Type::Slice { element, .. } => {
@@ -1773,33 +1830,6 @@ impl FunctionEmitter<'_, '_> {
                 c_name("delegate_payload_bytes")?.as_ptr(),
             );
         }
-
-        let batch = load_context_field(
-            self.module,
-            self.builder,
-            self.runtime_context,
-            DELEGATE_BATCH_CONTEXT_INDEX,
-            "delegate_batch",
-        )?;
-        let batch_present = LLVMBuildICmp(
-            self.builder,
-            LLVMIntPredicate::LLVMIntNE,
-            batch,
-            LLVMConstPointerNull(self.module.ptr_ty),
-            c_name("delegate_batch_present")?.as_ptr(),
-        );
-        let inspect = append_block(
-            self.module.context,
-            self.declaration.value,
-            "publish_delegate_inspect_batch",
-        )?;
-        let done = append_block(
-            self.module.context,
-            self.declaration.value,
-            "publish_delegate_done",
-        )?;
-        LLVMBuildCondBr(self.builder, batch_present, inspect, done);
-        LLVMPositionBuilderAtEnd(self.builder, inspect);
 
         let storage_ptr = LLVMBuildStructGEP2(
             self.builder,
@@ -1967,35 +1997,6 @@ impl FunctionEmitter<'_, '_> {
         LLVMBuildBr(self.builder, done);
 
         LLVMPositionBuilderAtEnd(self.builder, capacity_ok);
-        let mut fixed_array_length_invalid = None;
-        for (param, argument) in descriptor.params.iter().zip(args) {
-            let Type::Array { len, .. } = self.module.program.types[param.ty.index()] else {
-                continue;
-            };
-            let CallArgument::Value(value) = argument else {
-                unreachable!("validated above")
-            };
-            let parts = self.slice_parts(*value)?;
-            let wrong_length = LLVMBuildICmp(
-                self.builder,
-                LLVMIntPredicate::LLVMIntNE,
-                parts.len,
-                LLVMConstInt(i32_ty, u64::from(len), 0),
-                c_name("delegate_fixed_array_wrong_length")?.as_ptr(),
-            );
-            fixed_array_length_invalid = Some(match fixed_array_length_invalid {
-                Some(previous) => LLVMBuildOr(
-                    self.builder,
-                    previous,
-                    wrong_length,
-                    c_name("delegate_fixed_array_length_invalid")?.as_ptr(),
-                ),
-                None => wrong_length,
-            });
-        }
-        if let Some(fixed_array_length_invalid) = fixed_array_length_invalid {
-            self.emit_failure_if(fixed_array_length_invalid, "delegate_fixed_array_length_ok")?;
-        }
         let record = LLVMBuildGEP2(
             self.builder,
             i8_ty,

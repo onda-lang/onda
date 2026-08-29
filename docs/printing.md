@@ -62,7 +62,8 @@ and fixed payload size.
 
 Initialization can print too. Supply an output to `onda_instance_create_initialized`,
 `onda_instance_create_initialized_with_allocator`, or `onda_init`. Allocation-only constructors do
-not execute authored code and therefore take no output.
+not execute authored code and therefore take no output. If initialized construction fails, its
+output batches are cleared and the diagnostic is the only result.
 
 ### Ownership and allocation
 
