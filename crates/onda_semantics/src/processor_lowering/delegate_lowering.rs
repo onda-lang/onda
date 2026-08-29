@@ -3,7 +3,7 @@ use crate::internal_names::{
     METHOD_RECEIVER_ARG, PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
 use crate::proc_state_rewrite::PROC_FIELD_SENTINEL_PREFIX;
-use onda_frontend::{Span, TaskDef};
+use onda_frontend::{Span, TaskDef, INTERNAL_TASK_AWAIT_FN};
 use std::collections::BTreeMap;
 
 pub(super) const DELEGATE_ROUTE_FIELD: &str = "__onda_delegate_route";
@@ -448,6 +448,22 @@ impl SourceCall {
         }
         let (receiver, member) = self.name.rsplit_once('.')?;
         Some((receiver, member, None))
+    }
+
+    fn awaited_task_name(&self) -> Option<&str> {
+        if self.name != INTERNAL_TASK_AWAIT_FN || self.indexed_receiver.is_some() {
+            return None;
+        }
+        let [arg] = self.args.as_slice() else {
+            return None;
+        };
+        if arg.name.is_some() {
+            return None;
+        }
+        match &arg.expr {
+            Expr::Var { name, .. } => Some(name),
+            _ => None,
+        }
     }
 }
 
@@ -1438,11 +1454,15 @@ fn owner_dispatch_graph<'a>(
     }
     deduplicate_targets(&mut init_roots);
     let mut executable_roots = Vec::new();
+    let mut awaited_tasks = HashSet::new();
     for scope in &owner.executable_scopes {
         for body in [scope.block_pre, scope.sample, scope.block_post] {
             for (call, aliases) in
                 collect_source_calls_with_aliases(body, &HashMap::new(), children)
             {
+                if let Some(task) = call.awaited_task_name() {
+                    awaited_tasks.insert(task.to_owned());
+                }
                 executable_roots.extend(source_call_targets(
                     &call,
                     owner,
@@ -1459,7 +1479,6 @@ fn owner_dispatch_graph<'a>(
             }
         }
     }
-    deduplicate_targets(&mut executable_roots);
     let mut task_roots = HashMap::new();
     for task in &owner.tasks {
         let mut roots = Vec::new();
@@ -1483,6 +1502,15 @@ fn owner_dispatch_graph<'a>(
         deduplicate_targets(&mut roots);
         task_roots.insert(task.name.clone(), roots);
     }
+    // `await` remains an internal control marker until task lowering, so it does not create an
+    // ordinary call-graph edge above. A processor step nevertheless executes every task awaited
+    // by its executable scopes and must expose those tasks' delegate effects to its parent owner.
+    for task in awaited_tasks {
+        if let Some(roots) = task_roots.get(&task) {
+            executable_roots.extend(roots.iter().copied());
+        }
+    }
+    deduplicate_targets(&mut executable_roots);
 
     OwnerDispatchGraph {
         callables,

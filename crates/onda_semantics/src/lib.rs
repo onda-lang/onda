@@ -13711,6 +13711,74 @@ block:
     }
 
     #[test]
+    fn delegates_reject_child_task_step_resetting_the_active_parent_task() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  kouts:
+    value
+  delegate fired()
+  task publish():
+    fired()
+    yield
+  block:
+    await publish()
+    value = 0.0
+
+init:
+  child = Child()
+
+task worker():
+  value = child()
+  yield
+
+when child.fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn delegates_do_not_attribute_unawaited_child_tasks_to_proc_steps() {
+        let program = parse_program(
+            r#"
+proc Child:
+  kouts:
+    value
+  delegate fired()
+  task publish():
+    fired()
+    yield
+  block:
+    value = 0.0
+
+init:
+  child = Child()
+
+task worker():
+  value = child()
+  yield
+
+when child.fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+        )
+        .expect("unawaited child task source should parse");
+        analyze(program).expect("an unawaited child task cannot publish during a proc step");
+    }
+
+    #[test]
     fn delegates_track_child_event_dispatch_through_local_aliases() {
         assert_analyze_error_contains(
             r#"
