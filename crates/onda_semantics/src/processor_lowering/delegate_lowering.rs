@@ -595,7 +595,7 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
     calls
 }
 
-type ChildReceiverAliases = HashMap<String, ChildReceiverRef>;
+type ChildReceiverAliases = HashMap<String, Vec<ChildReceiverRef>>;
 
 fn collect_source_calls_with_aliases(
     stmts: &[Stmt],
@@ -619,11 +619,18 @@ fn collect_source_calls_with_aliases(
         }));
     }
 
-    fn intersect_aliases(
+    fn union_aliases(
         mut lhs: ChildReceiverAliases,
         rhs: &ChildReceiverAliases,
     ) -> ChildReceiverAliases {
-        lhs.retain(|name, receiver| rhs.get(name) == Some(receiver));
+        for (name, receivers) in rhs {
+            let possible = lhs.entry(name.clone()).or_default();
+            for receiver in receivers {
+                if !possible.contains(receiver) {
+                    possible.push(receiver.clone());
+                }
+            }
+        }
         lhs
     }
 
@@ -671,10 +678,11 @@ fn collect_source_calls_with_aliases(
                     collect_expr(expr, aliases, bindings, calls);
                     match target {
                         AssignTarget::Var(name) => {
-                            if let Some(receiver) = child_receiver_ref(expr, aliases, children) {
-                                aliases.insert(name.clone(), receiver);
-                            } else {
+                            let receivers = child_receiver_refs(expr, aliases, children);
+                            if receivers.is_empty() {
                                 aliases.remove(name);
+                            } else {
+                                aliases.insert(name.clone(), receivers);
                             }
                             bindings.insert(name.clone());
                         }
@@ -738,7 +746,7 @@ fn collect_source_calls_with_aliases(
                         }
                         (StatementFlow::Continues, StatementFlow::Continues)
                         | (StatementFlow::Terminates, StatementFlow::Terminates) => {
-                            *aliases = intersect_aliases(then_aliases, &else_aliases);
+                            *aliases = union_aliases(then_aliases, &else_aliases);
                             *bindings = intersect_bindings(then_bindings, &else_bindings);
                         }
                     }
@@ -1143,7 +1151,7 @@ struct ChildReceiverRef {
     index: Option<Expr>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ChildReceiverIndexKey {
     None,
     Constant(i64),
@@ -1163,18 +1171,21 @@ fn def_expansion_key(
 ) -> DefExpansionKey {
     let mut bindings = aliases
         .iter()
-        .map(|(parameter, receiver)| {
-            let index = match receiver.index.as_ref() {
-                None => ChildReceiverIndexKey::None,
-                Some(index) => quiet_const_index(index, options).map_or(
-                    ChildReceiverIndexKey::Dynamic,
-                    ChildReceiverIndexKey::Constant,
-                ),
-            };
-            (parameter.clone(), receiver.receiver.clone(), index)
+        .flat_map(|(parameter, receivers)| {
+            receivers.iter().map(|receiver| {
+                let index = match receiver.index.as_ref() {
+                    None => ChildReceiverIndexKey::None,
+                    Some(index) => quiet_const_index(index, options).map_or(
+                        ChildReceiverIndexKey::Dynamic,
+                        ChildReceiverIndexKey::Constant,
+                    ),
+                };
+                (parameter.clone(), receiver.receiver.clone(), index)
+            })
         })
         .collect::<Vec<_>>();
-    bindings.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+    bindings.sort_unstable();
+    bindings.dedup();
     DefExpansionKey {
         name: name.to_owned(),
         bindings,
@@ -1231,43 +1242,49 @@ fn when_matches_child_dispatch(
     }
 }
 
-fn child_receiver_ref(
+fn child_receiver_refs(
     expr: &Expr,
-    aliases: &HashMap<String, ChildReceiverRef>,
+    aliases: &ChildReceiverAliases,
     children: &HashMap<String, ChildProcInstance>,
-) -> Option<ChildReceiverRef> {
+) -> Vec<ChildReceiverRef> {
     match expr {
-        Expr::Var { name, .. } => aliases.get(name).cloned().or_else(|| {
-            children.get(name).map(|_| ChildReceiverRef {
-                receiver: name.clone(),
-                index: None,
+        Expr::Var { name, .. } => aliases.get(name).cloned().unwrap_or_else(|| {
+            children.get(name).map_or_else(Vec::new, |_| {
+                vec![ChildReceiverRef {
+                    receiver: name.clone(),
+                    index: None,
+                }]
             })
         }),
-        Expr::Index { base, index, .. } => {
-            let mut resolved = aliases
-                .get(base)
-                .cloned()
-                .unwrap_or_else(|| ChildReceiverRef {
+        Expr::Index { base, index, .. } => aliases
+            .get(base)
+            .cloned()
+            .unwrap_or_else(|| {
+                vec![ChildReceiverRef {
                     receiver: base.clone(),
                     index: None,
-                });
-            let child = children.get(&resolved.receiver)?;
-            if !child.is_array || resolved.index.is_some() {
-                return None;
-            }
-            resolved.index = Some(index.as_ref().clone());
-            Some(resolved)
-        }
-        _ => None,
+                }]
+            })
+            .into_iter()
+            .filter_map(|mut resolved| {
+                let child = children.get(&resolved.receiver)?;
+                if !child.is_array || resolved.index.is_some() {
+                    return None;
+                }
+                resolved.index = Some(index.as_ref().clone());
+                Some(resolved)
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
 fn bind_child_receiver_aliases(
     def: &FunctionDef,
     call: &SourceCall,
-    aliases: &HashMap<String, ChildReceiverRef>,
+    aliases: &ChildReceiverAliases,
     children: &HashMap<String, ChildProcInstance>,
-) -> HashMap<String, ChildReceiverRef> {
+) -> ChildReceiverAliases {
     let mut positional = call.args.iter().filter(|arg| arg.name.is_none());
     let mut bound = HashMap::new();
     for param in &def.params {
@@ -1279,53 +1296,68 @@ fn bind_child_receiver_aliases(
         let Some(argument) = argument else {
             continue;
         };
-        if let Some(receiver) = child_receiver_ref(&argument.expr, aliases, children) {
-            bound.insert(param.name.clone(), receiver);
+        let receivers = child_receiver_refs(&argument.expr, aliases, children);
+        if !receivers.is_empty() {
+            bound.insert(param.name.clone(), receivers);
         }
     }
     bound
 }
 
-fn child_step_receiver(
+fn child_step_receivers(
     call: &SourceCall,
     aliases: &ChildReceiverAliases,
     children: &HashMap<String, ChildProcInstance>,
-) -> Option<ChildReceiverRef> {
+) -> Vec<ChildReceiverRef> {
     let call_name = call
         .name
         .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
         .unwrap_or(&call.name);
     if call_name.split_once('.').map_or(call_name, |entry| entry.0) == PROC_INDEX_CALL_SENTINEL {
-        let base = call.args.iter().find_map(|arg| {
+        let Some(base) = call.args.iter().find_map(|arg| {
             (arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG)).then_some(&arg.expr)
-        })?;
-        let index = call.args.iter().find_map(|arg| {
-            (arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG)).then_some(&arg.expr)
-        })?;
-        let Expr::Var { name: base, .. } = base else {
-            return None;
+        }) else {
+            return Vec::new();
         };
-        let mut receiver = aliases
+        let Some(index) = call.args.iter().find_map(|arg| {
+            (arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG)).then_some(&arg.expr)
+        }) else {
+            return Vec::new();
+        };
+        let Expr::Var { name: base, .. } = base else {
+            return Vec::new();
+        };
+        return aliases
             .get(base)
             .cloned()
-            .unwrap_or_else(|| ChildReceiverRef {
-                receiver: base.clone(),
-                index: None,
-            });
-        let child = children.get(&receiver.receiver)?;
-        if !child.is_array || receiver.index.is_some() {
-            return None;
-        }
-        receiver.index = Some(index.clone());
-        return Some(receiver);
+            .unwrap_or_else(|| {
+                vec![ChildReceiverRef {
+                    receiver: base.clone(),
+                    index: None,
+                }]
+            })
+            .into_iter()
+            .filter_map(|mut receiver| {
+                let child = children.get(&receiver.receiver)?;
+                if !child.is_array || receiver.index.is_some() {
+                    return None;
+                }
+                receiver.index = Some(index.clone());
+                Some(receiver)
+            })
+            .collect();
     }
-    let name = call.local_name()?;
+    let Some(name) = call.local_name() else {
+        return Vec::new();
+    };
     if let Some(alias) = aliases.get(name) {
-        return Some(alias.clone());
+        return alias.clone();
     }
-    children.get(name).map(|_| ChildReceiverRef {
-        receiver: name.to_owned(),
-        index: None,
+    children.get(name).map_or_else(Vec::new, |_| {
+        vec![ChildReceiverRef {
+            receiver: name.to_owned(),
+            index: None,
+        }]
     })
 }
 
@@ -1401,24 +1433,29 @@ fn source_call_targets<'a>(
     if call.local_is_bound {
         return Vec::new();
     }
-    if let Some(receiver) = child_step_receiver(call, aliases, children) {
-        let Some(child) = children.get(&receiver.receiver) else {
-            return Vec::new();
-        };
-        let Some(effects) = proc_effects.get(&child.proc_name) else {
-            return Vec::new();
-        };
-        return child_delegate_targets(
-            call,
-            owner,
-            &receiver.receiver,
-            receiver.index.as_ref(),
-            child,
-            &effects.step_delegates,
-            options,
-            callables,
-            edges,
-        );
+    let step_receivers = child_step_receivers(call, aliases, children);
+    if !step_receivers.is_empty() {
+        let mut targets = Vec::new();
+        for receiver in step_receivers {
+            let Some(child) = children.get(&receiver.receiver) else {
+                continue;
+            };
+            let Some(effects) = proc_effects.get(&child.proc_name) else {
+                continue;
+            };
+            targets.extend(child_delegate_targets(
+                call,
+                owner,
+                &receiver.receiver,
+                receiver.index.as_ref(),
+                child,
+                &effects.step_delegates,
+                options,
+                callables,
+                edges,
+            ));
+        }
+        return targets;
     }
     if let Some(name) = call.local_name() {
         let mut targets = by_name.get(name).copied().into_iter().collect::<Vec<_>>();
@@ -1467,27 +1504,39 @@ fn source_call_targets<'a>(
     let Some((receiver, event, call_index)) = call.qualified_target() else {
         return Vec::new();
     };
-    let (receiver, call_index) = if let Some(alias) = aliases.get(receiver) {
-        if alias.index.is_some() && call_index.is_some() {
-            return Vec::new();
+    let possible_receivers = aliases.get(receiver).cloned().unwrap_or_else(|| {
+        vec![ChildReceiverRef {
+            receiver: receiver.to_owned(),
+            index: None,
+        }]
+    });
+    let mut targets = Vec::new();
+    for possible in possible_receivers {
+        if possible.index.is_some() && call_index.is_some() {
+            continue;
         }
-        (alias.receiver.as_str(), alias.index.as_ref().or(call_index))
-    } else {
-        (receiver, call_index)
-    };
-    let Some(child) = children.get(receiver) else {
-        return Vec::new();
-    };
-    let Some(delegates) = proc_effects
-        .get(&child.proc_name)
-        .and_then(|effects| effects.event_delegates.get(event))
-    else {
-        return Vec::new();
-    };
-
-    child_delegate_targets(
-        call, owner, receiver, call_index, child, delegates, options, callables, edges,
-    )
+        let Some(child) = children.get(&possible.receiver) else {
+            continue;
+        };
+        let Some(delegates) = proc_effects
+            .get(&child.proc_name)
+            .and_then(|effects| effects.event_delegates.get(event))
+        else {
+            continue;
+        };
+        targets.extend(child_delegate_targets(
+            call,
+            owner,
+            &possible.receiver,
+            possible.index.as_ref().or(call_index),
+            child,
+            delegates,
+            options,
+            callables,
+            edges,
+        ));
+    }
+    targets
 }
 
 fn owner_dispatch_graph<'a>(
@@ -1949,16 +1998,21 @@ fn validate_qualified_delegate_calls(
         let Some((receiver, member, _)) = call.qualified_target() else {
             continue;
         };
-        let resolved = aliases
-            .get(receiver)
-            .map_or(receiver, |alias| alias.receiver.as_str());
-        let Some(child) = children.get(resolved) else {
-            continue;
+        let is_delegate = |child: &&ChildProcInstance| {
+            proc_delegates
+                .get(&child.proc_name)
+                .is_some_and(|delegates| delegates.contains(member))
         };
-        if proc_delegates
-            .get(&child.proc_name)
-            .is_some_and(|delegates| delegates.contains(member))
-        {
+        let child = aliases.get(receiver).map_or_else(
+            || children.get(receiver).filter(is_delegate),
+            |possible| {
+                possible
+                    .iter()
+                    .filter_map(|alias| children.get(&alias.receiver))
+                    .find(is_delegate)
+            },
+        );
+        if let Some(child) = child {
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "{owner} cannot call delegate '{member}' through child receiver '{receiver}'; only processor '{}' may call its delegate",

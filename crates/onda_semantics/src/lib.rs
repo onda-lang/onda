@@ -13740,6 +13740,102 @@ sample:
     }
 
     #[test]
+    fn delegates_track_child_event_dispatch_through_conditional_aliases() {
+        for source in [
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+def relay(target):
+  target.trigger()
+
+params:
+  choose = false
+
+init:
+  children: Child[2] = Child()
+  target = children[0]
+  if choose:
+    target = children[1]
+  target.trigger()
+
+sample:
+  out1 = children[0]() + children[1]()
+"#,
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+def relay(target):
+  target.trigger()
+
+params:
+  choose = false
+
+init:
+  left = Child()
+  right = Child()
+  target = left
+  if choose:
+    target = right
+  relay(target)
+
+sample:
+  out1 = left() + right()
+"#,
+        ] {
+            assert_analyze_error_contains(
+                source,
+                "init code in the top-level owner cannot call or reach a delegate",
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_child_aliases_preserve_indexed_delegate_routes() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+params:
+  choose = false
+
+init:
+  children: Child[2] = Child()
+
+task worker():
+  target = children[0]
+  if choose:
+    target = children[1]
+  target.trigger()
+  yield
+
+when children[1].fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = children[0]() + children[1]()
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
     fn delegates_reject_forwarded_child_dispatch_resetting_the_active_task() {
         assert_analyze_error_contains(
             r#"
