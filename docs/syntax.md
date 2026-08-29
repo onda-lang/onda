@@ -552,15 +552,7 @@ with a newline. Label control characters are escaped in that text so an occurren
 one physical line. Integer formatting is exact, including `i64`; floating-point formatting is the
 shortest width-correct round-trippable representation, with `.0` retained for integral values.
 
-Print collection is optional and bounded per initialization, process segment, or event call.
-Omitting host storage suppresses delivery without suppressing argument evaluation. Records that do
-not fit are dropped whole and increment a saturated overflow count. Successful records remain
-available in source order, including records emitted before a later runtime failure in the same
-call. Print output is diagnostic execution output, not processor state, and is not included in
-snapshots.
-
-`print` is valid in authored runtime statement scopes, including initialization, block/sample code,
-events, `when` handlers, tasks, and runtime defs reached from them. It is invalid in compile-time
+`print` is valid in authored runtime statement scopes, but it is invalid in compile-time
 declarations, `const def` bodies, expressions, graphs, and declaration names. Arguments are always
 evaluated in source order even when the host elects not to collect print output.
 
@@ -609,11 +601,8 @@ leading inferred `i32` element index; use `_` to ignore it. Bindings are read-on
 follow event-handler scope rules. Handlers run immediately in declaration order. Nested delegate
 calls are depth-first, and recursive event/delegate dispatch is rejected.
 
-Top-level occurrences are copied before internal handlers run into the optional bounded delegate
-batch for the current process segment or input-event call. Missing storage discards only the host
-copy. A record that does not fit is dropped whole and increments the saturated overflow count;
-internal handlers still run. Batches are reset at entry and cleared on execution failure. Delegate
-history is not processor state and is not included in snapshots.
+Top-level occurrences are returned to the host to process, and their resolution is at the block
+level. Currently, delegates are sample-accurate only within Onda via procs.
 
 ## 4. Executable Sections
 
