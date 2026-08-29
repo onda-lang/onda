@@ -157,17 +157,26 @@ fn semantic_tokens_distinguish_events_and_delegates() {
 fn semantic_tokens_mark_proc_delegate_calls_as_delegates() {
     let source = concat!(
         "proc Voice:\n",
-        "  delegate finished()\n",
+        "  delegate finished(value: i64)\n",
         "  event trigger():\n",
-        "    finished()\n",
+        "    finished(0)\n",
         "  sample:\n",
+        "    finished(0)\n",
         "    out1 = 0.0\n",
     );
-    let tokens = semantic_tokens_for_document(source, None);
-    for line in [1, 3] {
+    for tokens in [
+        semantic_tokens_for_document(source, None),
+        semantic_tokens_for_document_source_only(source, None),
+    ] {
+        for line in [1, 3, 5] {
+            assert_eq!(
+                token_type_at_text_on_line(&tokens, source, line, "finished"),
+                Some(SEMANTIC_TOKEN_TYPE_DELEGATE),
+            );
+        }
         assert_eq!(
-            token_type_at_text_on_line(&tokens, source, line, "finished"),
-            Some(SEMANTIC_TOKEN_TYPE_DELEGATE),
+            token_type_at_text_on_line(&tokens, source, 1, "value"),
+            Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
         );
     }
 }

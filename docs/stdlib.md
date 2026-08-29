@@ -458,7 +458,7 @@ proc White<T>:
   params:
     amp: T = 1.0
   events:
-    seed(seed: i64):
+    seed(value: i64):
 ```
 
 ### Processor `Pink<T>`
@@ -469,7 +469,7 @@ proc Pink<T>:
   params:
     amp: T = 1.0
   events:
-    seed(seed: i64):
+    seed(value: i64):
 ```
 
 ### Processor `Brown<T>`
@@ -480,7 +480,7 @@ proc Brown<T>:
   params:
     amp: T = 1.0
   events:
-    seed(seed: i64):
+    seed(value: i64):
 ```
 
 
@@ -1068,4 +1068,3 @@ Imported automatically. It loads:
 - `std/math`
 - `std/lookup`
 - `std/random`
-

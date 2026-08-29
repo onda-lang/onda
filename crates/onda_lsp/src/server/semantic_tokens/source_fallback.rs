@@ -282,11 +282,18 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                         }
                     }
                     SourceProcSectionKind::Delegates => {
-                        if let Some((delegate_name, _)) = parse_event_header(trimmed) {
+                        if let Some((delegate_name, params)) = parse_event_header(trimmed) {
                             index.scopes[proc_owner_idx]
                                 .scope
                                 .delegates
                                 .insert(delegate_name.to_owned());
+                            push_source_delegate_scope(
+                                &mut index,
+                                proc_owner_idx,
+                                line_no,
+                                delegate_name,
+                                params,
+                            );
                         }
                     }
                     SourceProcSectionKind::Tasks => {
@@ -353,11 +360,12 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
             continue;
         }
 
-        if let Some((delegate_name, _)) = parse_singular_delegate_header(trimmed) {
+        if let Some((delegate_name, params)) = parse_singular_delegate_header(trimmed) {
             index.scopes[proc_owner_idx]
                 .scope
                 .delegates
                 .insert(delegate_name.to_owned());
+            push_source_delegate_scope(&mut index, proc_owner_idx, line_no, delegate_name, params);
             prev_nonempty_line = line_no;
             continue;
         }
@@ -566,11 +574,18 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                         }
                     }
                     SourceTopLevelSectionKind::Delegates => {
-                        if let Some((delegate_name, _)) = parse_event_header(trimmed) {
+                        if let Some((delegate_name, params)) = parse_event_header(trimmed) {
                             index.scopes[section.owner_idx]
                                 .scope
                                 .delegates
                                 .insert(delegate_name.to_owned());
+                            push_source_delegate_scope(
+                                &mut index,
+                                section.owner_idx,
+                                line_no,
+                                delegate_name,
+                                params,
+                            );
                         }
                     }
                     SourceTopLevelSectionKind::Tasks => {
@@ -634,7 +649,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
             continue;
         }
 
-        if let Some((delegate_name, _)) = parse_singular_delegate_header(trimmed) {
+        if let Some((delegate_name, params)) = parse_singular_delegate_header(trimmed) {
             let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
                 let idx = push_line_scope(&mut index, None, line_no, 0, true);
                 index.scopes[idx].end_line = u32::MAX;
@@ -645,6 +660,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                 .scope
                 .delegates
                 .insert(delegate_name.to_owned());
+            push_source_delegate_scope(&mut index, owner_idx, line_no, delegate_name, params);
             prev_nonempty_line = line_no;
             continue;
         }
@@ -792,6 +808,21 @@ fn push_source_when_scope(
         index.scopes[idx].scope.parameters.insert(binding);
     }
     idx
+}
+
+fn push_source_delegate_scope(
+    index: &mut SemanticScopeIndex,
+    owner_idx: usize,
+    line_no: u32,
+    name: &str,
+    params: Vec<String>,
+) {
+    let idx = push_line_scope(index, Some(owner_idx), line_no, 0, true);
+    let scope = &mut index.scopes[idx].scope;
+    scope.delegates.insert(name.to_owned());
+    for param in params {
+        scope.parameters.insert(param);
+    }
 }
 
 fn push_source_task_scope<K: Copy>(

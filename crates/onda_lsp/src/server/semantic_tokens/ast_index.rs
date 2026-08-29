@@ -203,6 +203,9 @@ fn build_top_level_runtime_scope(
     for event in sections.events {
         build_event_scope(index, owner_idx, event);
     }
+    for delegate in sections.delegates {
+        build_delegate_scope(index, owner_idx, delegate);
+    }
     for when in sections.whens {
         build_when_scope(index, owner_idx, when);
     }
@@ -369,6 +372,9 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
     for event in &proc_def.events {
         build_event_scope(index, owner_idx, event);
     }
+    for delegate in &proc_def.delegates {
+        build_delegate_scope(index, owner_idx, delegate);
+    }
     for when in &proc_def.whens {
         build_when_scope(index, owner_idx, when);
     }
@@ -447,6 +453,17 @@ fn build_event_scope(index: &mut SemanticScopeIndex, parent: usize, event: &Even
         }
         collect_stmt_symbols(&event.body, scope);
         prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
+    }
+}
+
+fn build_delegate_scope(index: &mut SemanticScopeIndex, parent: usize, delegate: &DelegateDef) {
+    let Some(scope_idx) = index.push_scope(Some(parent), delegate.loc) else {
+        return;
+    };
+    let scope = &mut index.scopes[scope_idx].scope;
+    scope.delegates.insert(delegate.name.clone());
+    for param in &delegate.params {
+        scope.parameters.insert(param.name.clone());
     }
 }
 

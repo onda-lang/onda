@@ -972,6 +972,10 @@ impl Span {
         SourceLoc::from(*self).file()
     }
 
+    pub fn shares_source_file(self, other: Self) -> bool {
+        self.file_id == other.file_id
+    }
+
     pub fn trace(&self) -> Vec<String> {
         SourceLoc::from(*self).trace()
     }

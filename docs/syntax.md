@@ -1287,6 +1287,14 @@ Top-level `def` bodies are lexical-local. Top-level runtime symbols such as
 inputs, outputs, params, buffers, and `init` state are not in scope unless
 passed explicitly.
 
+Names declared as callables by an owner cannot be reused by value bindings in
+that owner's executable scopes. This includes defs, events, tasks, delegates,
+and top-level processor and struct constructors. Function and event parameters,
+`when` bindings, local constants, assignment and tuple bindings, and loop
+variables all follow this rule. Receiver-qualified methods and callable names
+brought into scope from another source file are not owner-local and may still be
+shadowed by local values.
+
 ### Generic Defs
 
 Runtime defs can declare type parameters:

@@ -63,6 +63,7 @@ pub mod aggregate_layout;
 mod analysis_session;
 mod array_structs;
 pub mod builtins;
+mod callable_validation;
 mod decl_symbols;
 mod declaration_coercion;
 mod def_semantics;
@@ -13399,61 +13400,115 @@ sample:
     }
 
     #[test]
-    fn delegate_names_can_be_shadowed_by_value_bindings() {
-        for source in [
-            r#"
-delegate finished(finished: i32)
+    fn owner_local_callable_names_cannot_be_shadowed_by_value_bindings() {
+        for (source, expected) in [
+            (
+                r#"
+delegate finished()
 
-init:
-  result: i32 = 0
+def invoke(finished: i32):
+  return
 
-event update(finished: i32):
-  result = finished
+sample:
+  out1 = 0.0
+"#,
+                "function parameter 'finished' conflicts with owner-local delegate 'finished'",
+            ),
+            (
+                r#"
+delegate finished(value: i32)
 
 when finished(finished):
-  result = finished
-
-sample:
-  out1 = f32(result)
-"#,
-            r#"
-delegate finished()
-
-def identity(finished: i32) -> i32:
-  return finished
-
-sample:
-  finished = identity(1)
-  out1 = f32(finished)
-"#,
-            r#"
-delegate i()
-
-sample:
-  result: i32 = 0
-  for i in 0..1:
-    result = i
-  out1 = f32(result)
-"#,
-            r#"
-delegate finished()
-
-block:
-  finished: i32 = 1
-  sample:
-    out1 = f32(finished)
   print(finished)
+
+sample:
+  out1 = 0.0
 "#,
-            r#"
+                "when binding 'finished' conflicts with owner-local delegate 'finished'",
+            ),
+            (
+                r#"
+event update():
+  return
+
+sample:
+  update = 1
+  out1 = 0.0
+"#,
+                "binding 'update' conflicts with owner-local event 'update'",
+            ),
+            (
+                r#"
+task worker():
+  yield
+
+sample:
+  for worker in 0..1:
+    out1 = f32(worker)
+"#,
+                "loop variable 'worker' conflicts with owner-local task 'worker'",
+            ),
+            (
+                r#"
+def helper():
+  return
+
+def invoke(helper: i32):
+  return
+
+sample:
+  out1 = 0.0
+"#,
+                "function parameter 'helper' conflicts with owner-local function 'helper'",
+            ),
+            (
+                r#"
+def helper():
+  return
+
+sample:
+  const helper = 1
+  out1 = 0.0
+"#,
+                "local constant 'helper' conflicts with owner-local function 'helper'",
+            ),
+            (
+                r#"
+proc Voice:
+  sample:
+    out1 = 0.0
+
+def inspect(Voice: i32):
+  return
+
+sample:
+  out1 = 0.0
+"#,
+                "function parameter 'Voice' conflicts with owner-local processor 'Voice'",
+            ),
+            (
+                r#"
+struct Pair:
+  value: f32
+
+def inspect(Pair: i32):
+  return
+
+sample:
+  out1 = 0.0
+"#,
+                "function parameter 'Pair' conflicts with owner-local struct 'Pair'",
+            ),
+            (
+                r#"
 proc Voice:
   delegate finished()
 
-  def identity(finished: i32) -> i32:
-    return finished
+  def invoke(finished: i32):
+    return
 
   sample:
-    finished = identity(1)
-    out1 = f32(finished)
+    out1 = 0.0
 
 init:
   voice = Voice()
@@ -13461,72 +13516,11 @@ init:
 sample:
   out1 = voice()
 "#,
-            r#"
-proc Voice:
-  outs:
-    out1
-  sample:
-    out1 = 0.25
-
-delegate voice()
-
-def run(voice: Voice) -> f32:
-  return voice()
-
-init:
-  child = Voice()
-
-sample:
-  out1 = run(child)
-"#,
-            r#"
-delegate finished()
-
-def choose(flag: bool) -> i32:
-  if flag:
-    return 0
-  else:
-    finished = 1
-  return finished
-
-sample:
-  out1 = f32(choose(false))
-"#,
+                "function parameter 'finished' conflicts with owner-local delegate 'finished' in processor 'Voice'",
+            ),
         ] {
-            let program = parse_program(source).expect("shadowing source should parse");
-            analyze(program).expect("a value binding should shadow the delegate name");
+            assert_analyze_error_contains(source, expected);
         }
-    }
-
-    #[test]
-    fn delegate_dispatch_graph_does_not_treat_parameter_shadowing_as_delegate_reachability() {
-        let source = r#"
-proc Voice:
-  outs:
-    out1
-  sample:
-    out1 = 0.25
-
-delegate voice()
-
-def run(voice: Voice) -> f32:
-  return voice()
-
-init:
-  child = Voice()
-  value = run(child)
-
-sample:
-  out1 = value
-"#;
-        let program = parse_program(source).expect("shadowing source should parse");
-        let errors = analyze(program).expect_err("sample-rate proc calls are invalid in init");
-        assert!(errors
-            .iter()
-            .any(|error| error.message.contains("not provably sample-only")));
-        assert!(!errors.iter().any(|error| error
-            .message
-            .contains("init code in the top-level owner cannot call or reach a delegate")));
     }
 
     #[test]

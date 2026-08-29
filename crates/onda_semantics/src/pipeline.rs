@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use onda_frontend::Span;
 
+use crate::callable_validation::validate_owner_callable_bindings;
 use crate::processor_lowering::{
     coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots, desugar_processors,
     guard_pinned_initializers, internal_proc_index_call_signature, lower_graph_blocks,
@@ -8532,6 +8533,7 @@ pub fn analyze_with_options_and_inputs(
     annotate_print_origins(&mut program);
 
     let mut errors = Vec::new();
+    validate_owner_callable_bindings(&program, &mut errors);
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
     let const_array_infos = const_array_info_map(&const_artifacts.const_arrays);
     let mut const_scalar_names = const_artifacts

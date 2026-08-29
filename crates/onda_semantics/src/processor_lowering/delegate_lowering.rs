@@ -409,7 +409,6 @@ struct SourceCallable<'a> {
     kind: SourceCallableKind,
     loc: Span,
     body: &'a [Stmt],
-    value_bindings: HashSet<String>,
 }
 
 struct DelegateOwner<'a> {
@@ -436,7 +435,6 @@ struct SourceCall {
     loc: Span,
     indexed_receiver: Option<(String, Expr)>,
     args: Vec<CallArg>,
-    local_is_bound: bool,
 }
 
 impl SourceCall {
@@ -472,7 +470,6 @@ fn collect_source_calls_expr(expr: &Expr, calls: &mut Vec<SourceCall>) {
                 loc: *loc,
                 indexed_receiver,
                 args: args.clone(),
-                local_is_bound: false,
             });
             for arg in args {
                 collect_source_calls_expr(&arg.expr, calls);
@@ -600,23 +597,16 @@ type ChildReceiverAliases = HashMap<String, Vec<ChildReceiverRef>>;
 fn collect_source_calls_with_aliases(
     stmts: &[Stmt],
     initial_aliases: &ChildReceiverAliases,
-    initial_bindings: &HashSet<String>,
     children: &HashMap<String, ChildProcInstance>,
 ) -> Vec<(SourceCall, ChildReceiverAliases)> {
     fn collect_expr(
         expr: &Expr,
         aliases: &ChildReceiverAliases,
-        bindings: &HashSet<String>,
         calls: &mut Vec<(SourceCall, ChildReceiverAliases)>,
     ) {
         let mut nested = Vec::new();
         collect_source_calls_expr(expr, &mut nested);
-        calls.extend(nested.into_iter().map(|mut call| {
-            call.local_is_bound = call
-                .local_name()
-                .is_some_and(|name| bindings.contains(name));
-            (call, aliases.clone())
-        }));
+        calls.extend(nested.into_iter().map(|call| (call, aliases.clone())));
     }
 
     fn union_aliases(
@@ -634,15 +624,9 @@ fn collect_source_calls_with_aliases(
         lhs
     }
 
-    fn intersect_bindings(mut lhs: HashSet<String>, rhs: &HashSet<String>) -> HashSet<String> {
-        lhs.retain(|name| rhs.contains(name));
-        lhs
-    }
-
     fn visit(
         stmts: &[Stmt],
         aliases: &mut ChildReceiverAliases,
-        bindings: &mut HashSet<String>,
         children: &HashMap<String, ChildProcInstance>,
         calls: &mut Vec<(SourceCall, ChildReceiverAliases)>,
     ) -> crate::def_semantics::call_types::StatementFlow {
@@ -651,15 +635,14 @@ fn collect_source_calls_with_aliases(
         for stmt in stmts {
             let flow = match stmt {
                 Stmt::Const { decl, .. } => {
-                    collect_expr(&decl.expr, aliases, bindings, calls);
+                    collect_expr(&decl.expr, aliases, calls);
                     aliases.remove(&decl.name);
-                    bindings.insert(decl.name.clone());
                     StatementFlow::Continues
                 }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
                         AssignTarget::Index { index, .. } => {
-                            collect_expr(index, aliases, bindings, calls);
+                            collect_expr(index, aliases, calls);
                         }
                         AssignTarget::Slice {
                             selector,
@@ -670,12 +653,12 @@ fn collect_source_calls_with_aliases(
                         } => {
                             for coordinate in [selector, channel, start, end].into_iter().flatten()
                             {
-                                collect_expr(coordinate, aliases, bindings, calls);
+                                collect_expr(coordinate, aliases, calls);
                             }
                         }
                         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
                     }
-                    collect_expr(expr, aliases, bindings, calls);
+                    collect_expr(expr, aliases, calls);
                     match target {
                         AssignTarget::Var(name) => {
                             let receivers = child_receiver_refs(expr, aliases, children);
@@ -684,12 +667,10 @@ fn collect_source_calls_with_aliases(
                             } else {
                                 aliases.insert(name.clone(), receivers);
                             }
-                            bindings.insert(name.clone());
                         }
                         AssignTarget::Tuple(names) => {
                             for name in names {
                                 aliases.remove(name);
-                                bindings.insert(name.clone());
                             }
                         }
                         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
@@ -697,7 +678,7 @@ fn collect_source_calls_with_aliases(
                     StatementFlow::Continues
                 }
                 Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                    collect_expr(expr, aliases, bindings, calls);
+                    collect_expr(expr, aliases, calls);
                     if matches!(stmt, Stmt::Return { .. }) {
                         StatementFlow::Terminates
                     } else {
@@ -706,7 +687,7 @@ fn collect_source_calls_with_aliases(
                 }
                 Stmt::Print { values, .. } => {
                     for value in values {
-                        collect_expr(value, aliases, bindings, calls);
+                        collect_expr(value, aliases, calls);
                     }
                     StatementFlow::Continues
                 }
@@ -716,38 +697,21 @@ fn collect_source_calls_with_aliases(
                     else_branch,
                     ..
                 } => {
-                    collect_expr(cond, aliases, bindings, calls);
+                    collect_expr(cond, aliases, calls);
                     let mut then_aliases = aliases.clone();
                     let mut else_aliases = aliases.clone();
-                    let mut then_bindings = bindings.clone();
-                    let mut else_bindings = bindings.clone();
-                    let then_flow = visit(
-                        then_branch,
-                        &mut then_aliases,
-                        &mut then_bindings,
-                        children,
-                        calls,
-                    );
-                    let else_flow = visit(
-                        else_branch,
-                        &mut else_aliases,
-                        &mut else_bindings,
-                        children,
-                        calls,
-                    );
+                    let then_flow = visit(then_branch, &mut then_aliases, children, calls);
+                    let else_flow = visit(else_branch, &mut else_aliases, children, calls);
                     match (then_flow, else_flow) {
                         (StatementFlow::Continues, StatementFlow::Terminates) => {
                             *aliases = then_aliases;
-                            *bindings = then_bindings;
                         }
                         (StatementFlow::Terminates, StatementFlow::Continues) => {
                             *aliases = else_aliases;
-                            *bindings = else_bindings;
                         }
                         (StatementFlow::Continues, StatementFlow::Continues)
                         | (StatementFlow::Terminates, StatementFlow::Terminates) => {
                             *aliases = union_aliases(then_aliases, &else_aliases);
-                            *bindings = intersect_bindings(then_bindings, &else_bindings);
                         }
                     }
                     if then_flow == StatementFlow::Terminates
@@ -766,23 +730,20 @@ fn collect_source_calls_with_aliases(
                     body,
                     ..
                 } => {
-                    collect_expr(start, aliases, bindings, calls);
-                    collect_expr(end, aliases, bindings, calls);
+                    collect_expr(start, aliases, calls);
+                    collect_expr(end, aliases, calls);
                     if let Some(step) = step {
-                        collect_expr(step, aliases, bindings, calls);
+                        collect_expr(step, aliases, calls);
                     }
                     let mut body_aliases = aliases.clone();
                     body_aliases.remove(var);
-                    let mut body_bindings = bindings.clone();
-                    body_bindings.insert(var.clone());
-                    visit(body, &mut body_aliases, &mut body_bindings, children, calls);
+                    visit(body, &mut body_aliases, children, calls);
                     StatementFlow::Continues
                 }
                 Stmt::While { cond, body, .. } => {
-                    collect_expr(cond, aliases, bindings, calls);
+                    collect_expr(cond, aliases, calls);
                     let mut body_aliases = aliases.clone();
-                    let mut body_bindings = bindings.clone();
-                    visit(body, &mut body_aliases, &mut body_bindings, children, calls);
+                    visit(body, &mut body_aliases, children, calls);
                     StatementFlow::Continues
                 }
                 Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
@@ -796,29 +757,25 @@ fn collect_source_calls_with_aliases(
 
     let mut calls = Vec::new();
     let mut aliases = initial_aliases.clone();
-    let mut bindings = initial_bindings.clone();
-    visit(stmts, &mut aliases, &mut bindings, children, &mut calls);
+    visit(stmts, &mut aliases, children, &mut calls);
     calls
 }
 
 fn collect_delegate_value_uses_expr(
     expr: &Expr,
     delegate_names: &HashSet<String>,
-    value_bindings: &HashSet<String>,
     statement_root: bool,
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
-        Expr::Var { loc, name }
-            if delegate_names.contains(name) && !value_bindings.contains(name) =>
-        {
+        Expr::Var { loc, name } if delegate_names.contains(name) => {
             errors.push(Diagnostic::semantic_span(
                 format!("delegate '{name}' is callable only and cannot be used as a value"),
                 *loc,
             ));
         }
         Expr::Index { index, .. } => {
-            collect_delegate_value_uses_expr(index, delegate_names, value_bindings, false, errors)
+            collect_delegate_value_uses_expr(index, delegate_names, false, errors)
         }
         Expr::Slice {
             selector,
@@ -828,83 +785,47 @@ fn collect_delegate_value_uses_expr(
             ..
         } => {
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_delegate_value_uses_expr(
-                    coordinate,
-                    delegate_names,
-                    value_bindings,
-                    false,
-                    errors,
-                );
+                collect_delegate_value_uses_expr(coordinate, delegate_names, false, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
-            collect_delegate_value_uses_expr(
-                &spec.size,
-                delegate_names,
-                value_bindings,
-                false,
-                errors,
-            );
+            collect_delegate_value_uses_expr(&spec.size, delegate_names, false, errors);
             if let Some(values) = init {
                 for value in values {
-                    collect_delegate_value_uses_expr(
-                        value,
-                        delegate_names,
-                        value_bindings,
-                        false,
-                        errors,
-                    );
+                    collect_delegate_value_uses_expr(value, delegate_names, false, errors);
                 }
             }
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                collect_delegate_value_uses_expr(
-                    arg,
-                    delegate_names,
-                    value_bindings,
-                    false,
-                    errors,
-                );
+                collect_delegate_value_uses_expr(arg, delegate_names, false, errors);
             }
         }
         Expr::UserCall {
             loc, name, args, ..
         } => {
-            if delegate_names.contains(name) && !value_bindings.contains(name) && !statement_root {
+            if delegate_names.contains(name) && !statement_root {
                 errors.push(Diagnostic::semantic_span(
                     format!("delegate call '{name}' has no result and must be used as a statement"),
                     *loc,
                 ));
             }
             for arg in args {
-                collect_delegate_value_uses_expr(
-                    &arg.expr,
-                    delegate_names,
-                    value_bindings,
-                    false,
-                    errors,
-                );
+                collect_delegate_value_uses_expr(&arg.expr, delegate_names, false, errors);
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            collect_delegate_value_uses_expr(lhs, delegate_names, value_bindings, false, errors);
-            collect_delegate_value_uses_expr(rhs, delegate_names, value_bindings, false, errors);
+            collect_delegate_value_uses_expr(lhs, delegate_names, false, errors);
+            collect_delegate_value_uses_expr(rhs, delegate_names, false, errors);
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_delegate_value_uses_expr(expr, delegate_names, value_bindings, false, errors)
+            collect_delegate_value_uses_expr(expr, delegate_names, false, errors)
         }
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
-                collect_delegate_value_uses_expr(
-                    value,
-                    delegate_names,
-                    value_bindings,
-                    false,
-                    errors,
-                );
+                collect_delegate_value_uses_expr(value, delegate_names, false, errors);
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
@@ -914,39 +835,18 @@ fn collect_delegate_value_uses_expr(
 fn validate_delegate_uses(
     stmts: &[Stmt],
     delegate_names: &HashSet<String>,
-    initial_bindings: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
-) -> HashSet<String> {
-    use crate::def_semantics::call_types::StatementFlow;
-
-    fn visit_expr(
-        expr: &Expr,
-        names: &HashSet<String>,
-        bindings: &HashSet<String>,
-        statement_root: bool,
-        errors: &mut Vec<Diagnostic>,
-    ) {
-        collect_delegate_value_uses_expr(expr, names, bindings, statement_root, errors);
-    }
-    fn visit(
-        stmts: &[Stmt],
-        names: &HashSet<String>,
-        bindings: &mut HashSet<String>,
-        errors: &mut Vec<Diagnostic>,
-    ) -> StatementFlow {
+) {
+    fn visit(stmts: &[Stmt], names: &HashSet<String>, errors: &mut Vec<Diagnostic>) {
         for stmt in stmts {
-            let flow = match stmt {
+            match stmt {
                 Stmt::Const { decl, .. } => {
-                    visit_expr(&decl.expr, names, bindings, false, errors);
-                    if names.contains(&decl.name) {
-                        bindings.insert(decl.name.clone());
-                    }
-                    StatementFlow::Continues
+                    collect_delegate_value_uses_expr(&decl.expr, names, false, errors);
                 }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
                         AssignTarget::Index { index, .. } => {
-                            visit_expr(index, names, bindings, false, errors)
+                            collect_delegate_value_uses_expr(index, names, false, errors);
                         }
                         AssignTarget::Slice {
                             selector,
@@ -957,40 +857,23 @@ fn validate_delegate_uses(
                         } => {
                             for coordinate in [selector, channel, start, end].into_iter().flatten()
                             {
-                                visit_expr(coordinate, names, bindings, false, errors);
+                                collect_delegate_value_uses_expr(coordinate, names, false, errors);
                             }
                         }
                         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
                     }
-                    visit_expr(expr, names, bindings, false, errors);
-                    match target {
-                        AssignTarget::Var(name) if names.contains(name) => {
-                            bindings.insert(name.clone());
-                        }
-                        AssignTarget::Tuple(targets) => {
-                            bindings.extend(
-                                targets.iter().filter(|name| names.contains(*name)).cloned(),
-                            );
-                        }
-                        AssignTarget::Var(_)
-                        | AssignTarget::Index { .. }
-                        | AssignTarget::Slice { .. } => {}
-                    }
-                    StatementFlow::Continues
+                    collect_delegate_value_uses_expr(expr, names, false, errors);
                 }
                 Stmt::Expr { expr, .. } => {
-                    visit_expr(expr, names, bindings, true, errors);
-                    StatementFlow::Continues
+                    collect_delegate_value_uses_expr(expr, names, true, errors);
                 }
                 Stmt::Return { expr, .. } => {
-                    visit_expr(expr, names, bindings, false, errors);
-                    StatementFlow::Terminates
+                    collect_delegate_value_uses_expr(expr, names, false, errors);
                 }
                 Stmt::Print { values, .. } => {
                     for value in values {
-                        visit_expr(value, names, bindings, false, errors);
+                        collect_delegate_value_uses_expr(value, names, false, errors);
                     }
-                    StatementFlow::Continues
                 }
                 Stmt::If {
                     cond,
@@ -998,72 +881,33 @@ fn validate_delegate_uses(
                     else_branch,
                     ..
                 } => {
-                    visit_expr(cond, names, bindings, false, errors);
-                    let mut then_bindings = bindings.clone();
-                    let mut else_bindings = bindings.clone();
-                    let then_flow = visit(then_branch, names, &mut then_bindings, errors);
-                    let else_flow = visit(else_branch, names, &mut else_bindings, errors);
-                    match (then_flow, else_flow) {
-                        (StatementFlow::Continues, StatementFlow::Terminates) => {
-                            *bindings = then_bindings;
-                        }
-                        (StatementFlow::Terminates, StatementFlow::Continues) => {
-                            *bindings = else_bindings;
-                        }
-                        (StatementFlow::Continues, StatementFlow::Continues)
-                        | (StatementFlow::Terminates, StatementFlow::Terminates) => {
-                            then_bindings.retain(|name| else_bindings.contains(name));
-                            *bindings = then_bindings;
-                        }
-                    }
-                    if then_flow == StatementFlow::Terminates
-                        && else_flow == StatementFlow::Terminates
-                    {
-                        StatementFlow::Terminates
-                    } else {
-                        StatementFlow::Continues
-                    }
+                    collect_delegate_value_uses_expr(cond, names, false, errors);
+                    visit(then_branch, names, errors);
+                    visit(else_branch, names, errors);
                 }
                 Stmt::For {
-                    var,
                     step,
                     start,
                     end,
                     body,
                     ..
                 } => {
-                    visit_expr(start, names, bindings, false, errors);
-                    visit_expr(end, names, bindings, false, errors);
+                    collect_delegate_value_uses_expr(start, names, false, errors);
+                    collect_delegate_value_uses_expr(end, names, false, errors);
                     if let Some(step) = step {
-                        visit_expr(step, names, bindings, false, errors);
+                        collect_delegate_value_uses_expr(step, names, false, errors);
                     }
-                    let mut body_bindings = bindings.clone();
-                    if names.contains(var) {
-                        body_bindings.insert(var.clone());
-                    }
-                    visit(body, names, &mut body_bindings, errors);
-                    StatementFlow::Continues
+                    visit(body, names, errors);
                 }
                 Stmt::While { cond, body, .. } => {
-                    visit_expr(cond, names, bindings, false, errors);
-                    let mut body_bindings = bindings.clone();
-                    visit(body, names, &mut body_bindings, errors);
-                    StatementFlow::Continues
+                    collect_delegate_value_uses_expr(cond, names, false, errors);
+                    visit(body, names, errors);
                 }
-                Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
-            };
-            if flow == StatementFlow::Terminates {
-                return flow;
+                Stmt::Break { .. } | Stmt::Continue { .. } => {}
             }
         }
-        StatementFlow::Continues
     }
-    let mut bindings = initial_bindings
-        .intersection(delegate_names)
-        .cloned()
-        .collect();
-    visit(stmts, delegate_names, &mut bindings, errors);
-    bindings
+    visit(stmts, delegate_names, errors);
 }
 
 fn task_reset_names(stmts: &[Stmt], task_names: &HashSet<String>) -> HashSet<String> {
@@ -1085,21 +929,13 @@ fn source_callables<'a>(owner: &'a DelegateOwner<'a>) -> Vec<SourceCallable<'a>>
         kind: SourceCallableKind::Def,
         loc: def.loc,
         body: &def.body,
-        value_bindings: def.params.iter().map(|param| param.name.clone()).collect(),
     }));
-    callables.extend(owner.events.iter().map(|event| {
-        SourceCallable {
-            label: format!("event {}", event.name),
-            name: Some(event.name.as_str()),
-            kind: SourceCallableKind::Event,
-            loc: event.loc,
-            body: &event.body,
-            value_bindings: event
-                .params
-                .iter()
-                .map(|param| param.name.clone())
-                .collect(),
-        }
+    callables.extend(owner.events.iter().map(|event| SourceCallable {
+        label: format!("event {}", event.name),
+        name: Some(event.name.as_str()),
+        kind: SourceCallableKind::Event,
+        loc: event.loc,
+        body: &event.body,
     }));
     callables.extend(owner.delegates.iter().map(|delegate| SourceCallable {
         label: format!("delegate {}", delegate.name),
@@ -1107,23 +943,20 @@ fn source_callables<'a>(owner: &'a DelegateOwner<'a>) -> Vec<SourceCallable<'a>>
         kind: SourceCallableKind::Delegate,
         loc: delegate.loc,
         body: &[],
-        value_bindings: HashSet::new(),
     }));
-    callables.extend(owner.whens.iter().enumerate().map(|(ordinal, when)| {
-        SourceCallable {
-            label: format!("{} #{}", when_target_label(when), ordinal + 1),
-            name: None,
-            kind: SourceCallableKind::When,
-            loc: when.loc,
-            body: &when.body,
-            value_bindings: when
-                .bindings
-                .iter()
-                .filter(|binding| binding.name != "_")
-                .map(|binding| binding.name.clone())
-                .collect(),
-        }
-    }));
+    callables.extend(
+        owner
+            .whens
+            .iter()
+            .enumerate()
+            .map(|(ordinal, when)| SourceCallable {
+                label: format!("{} #{}", when_target_label(when), ordinal + 1),
+                name: None,
+                kind: SourceCallableKind::When,
+                loc: when.loc,
+                body: &when.body,
+            }),
+    );
     callables
 }
 
@@ -1396,7 +1229,6 @@ fn child_delegate_targets<'a>(
             kind: SourceCallableKind::Delegate,
             loc: call.loc,
             body: &[],
-            value_bindings: HashSet::new(),
         });
         edges.push(
             owner
@@ -1430,9 +1262,6 @@ fn source_call_targets<'a>(
     expansion_cache: &mut HashMap<DefExpansionKey, Vec<usize>>,
     expanding_defs: &mut HashSet<DefExpansionKey>,
 ) -> Vec<usize> {
-    if call.local_is_bound {
-        return Vec::new();
-    }
     let step_receivers = child_step_receivers(call, aliases, children);
     if !step_receivers.is_empty() {
         let mut targets = Vec::new();
@@ -1476,9 +1305,8 @@ fn source_call_targets<'a>(
             return targets;
         }
         let mut expanded = Vec::new();
-        let bindings = def.params.iter().map(|param| param.name.clone()).collect();
         for (nested, nested_aliases) in
-            collect_source_calls_with_aliases(&def.body, &bound, &bindings, children)
+            collect_source_calls_with_aliases(&def.body, &bound, children)
         {
             expanded.extend(source_call_targets(
                 &nested,
@@ -1553,14 +1381,7 @@ fn owner_dispatch_graph<'a>(
         .collect::<HashMap<_, _>>();
     let base_calls = callables
         .iter()
-        .map(|callable| {
-            collect_source_calls_with_aliases(
-                callable.body,
-                &HashMap::new(),
-                &callable.value_bindings,
-                children,
-            )
-        })
+        .map(|callable| collect_source_calls_with_aliases(callable.body, &HashMap::new(), children))
         .collect::<Vec<_>>();
     let base_len = callables.len();
     let mut edges = vec![Vec::new(); base_len];
@@ -1599,8 +1420,7 @@ fn owner_dispatch_graph<'a>(
     }
 
     let mut init_roots = Vec::new();
-    for (call, aliases) in
-        collect_source_calls_with_aliases(owner.init, &HashMap::new(), &HashSet::new(), children)
+    for (call, aliases) in collect_source_calls_with_aliases(owner.init, &HashMap::new(), children)
     {
         init_roots.extend(source_call_targets(
             &call,
@@ -1621,7 +1441,7 @@ fn owner_dispatch_graph<'a>(
     for scope in &owner.executable_scopes {
         for body in [scope.block_pre, scope.sample, scope.block_post] {
             for (call, aliases) in
-                collect_source_calls_with_aliases(body, &HashMap::new(), &HashSet::new(), children)
+                collect_source_calls_with_aliases(body, &HashMap::new(), children)
             {
                 executable_roots.extend(source_call_targets(
                     &call,
@@ -1643,12 +1463,9 @@ fn owner_dispatch_graph<'a>(
     let mut task_roots = HashMap::new();
     for task in &owner.tasks {
         let mut roots = Vec::new();
-        for (call, aliases) in collect_source_calls_with_aliases(
-            &task.body,
-            &HashMap::new(),
-            &HashSet::new(),
-            children,
-        ) {
+        for (call, aliases) in
+            collect_source_calls_with_aliases(&task.body, &HashMap::new(), children)
+        {
             roots.extend(source_call_targets(
                 &call,
                 owner,
@@ -1818,37 +1635,23 @@ fn validate_owner_dispatch(
         .iter()
         .map(|delegate| delegate.name.clone())
         .collect::<HashSet<_>>();
-    let no_bindings = HashSet::new();
-    validate_delegate_uses(owner.init, &delegate_names, &no_bindings, errors);
+    validate_delegate_uses(owner.init, &delegate_names, errors);
     for scope in &owner.executable_scopes {
-        let block_bindings =
-            validate_delegate_uses(scope.block_pre, &delegate_names, &no_bindings, errors);
-        validate_delegate_uses(scope.sample, &delegate_names, &block_bindings, errors);
-        validate_delegate_uses(scope.block_post, &delegate_names, &block_bindings, errors);
+        validate_delegate_uses(scope.block_pre, &delegate_names, errors);
+        validate_delegate_uses(scope.sample, &delegate_names, errors);
+        validate_delegate_uses(scope.block_post, &delegate_names, errors);
     }
     for def in &owner.defs {
-        let bindings = def.params.iter().map(|param| param.name.clone()).collect();
-        validate_delegate_uses(&def.body, &delegate_names, &bindings, errors);
+        validate_delegate_uses(&def.body, &delegate_names, errors);
     }
     for event in &owner.events {
-        let bindings = event
-            .params
-            .iter()
-            .map(|param| param.name.clone())
-            .collect();
-        validate_delegate_uses(&event.body, &delegate_names, &bindings, errors);
+        validate_delegate_uses(&event.body, &delegate_names, errors);
     }
     for when in &owner.whens {
-        let bindings = when
-            .bindings
-            .iter()
-            .filter(|binding| binding.name != "_")
-            .map(|binding| binding.name.clone())
-            .collect();
-        validate_delegate_uses(&when.body, &delegate_names, &bindings, errors);
+        validate_delegate_uses(&when.body, &delegate_names, errors);
     }
     for task in &owner.tasks {
-        validate_delegate_uses(&task.body, &delegate_names, &no_bindings, errors);
+        validate_delegate_uses(&task.body, &delegate_names, errors);
     }
 
     let graph = owner_dispatch_graph(owner, children, proc_effects, options);
@@ -1992,9 +1795,7 @@ fn validate_qualified_delegate_calls(
     proc_delegates: &HashMap<String, HashSet<String>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    for (call, aliases) in
-        collect_source_calls_with_aliases(body, &HashMap::new(), &HashSet::new(), children)
-    {
+    for (call, aliases) in collect_source_calls_with_aliases(body, &HashMap::new(), children) {
         let Some((receiver, member, _)) = call.qualified_target() else {
             continue;
         };

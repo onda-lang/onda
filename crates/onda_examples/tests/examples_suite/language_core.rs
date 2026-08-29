@@ -1575,7 +1575,7 @@ fn events_reject_duplicate_and_conflicting_names() {
     assert!(
         errs.iter().any(|d| {
             d.message
-                .contains("event name conflicts with an existing callable/endpoint name")
+                .contains("binding 'note_on' conflicts with owner-local event 'note_on'")
         }),
         "expected proc event name conflict error, got {:?}",
         errs
