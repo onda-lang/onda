@@ -1236,6 +1236,12 @@ pub fn create_instance_initialized(
     create_instance_initialized_with_output(program, config, ExecutionOutput::none())
 }
 
+/// Creates an instance, performs [`InitMode::Full`] initialization, and collects successful
+/// initialization output.
+///
+/// If initialization fails, both output batches are cleared and the diagnostic is the only result.
+/// Create an uninitialized instance and call [`init_with_output`] to retain prints emitted before a
+/// failing initializer.
 pub fn create_instance_initialized_with_output(
     program: JitProgram,
     config: InstanceConfig,
@@ -1258,6 +1264,8 @@ pub fn create_instance_initialized_with_allocator(
     )
 }
 
+/// Allocator-backed equivalent of [`create_instance_initialized_with_output`], including its
+/// failure-output behavior.
 pub fn create_instance_initialized_with_allocator_and_output(
     program: JitProgram,
     config: InstanceConfig,
