@@ -114,15 +114,17 @@ test("failed live initialization returns the worklet to the silent pending state
     },
   });
   const originalCheckExecutionStatus = processor.checkExecutionStatus;
-  let outputFlushes = 0;
-  processor.flushPrint = () => { outputFlushes += 1; };
-  processor.flushDelegates = () => { outputFlushes += 1; };
+  let printFlushes = 0;
+  let delegateFlushes = 0;
+  processor.flushPrint = () => { printFlushes += 1; };
+  processor.flushDelegates = () => { delegateFlushes += 1; };
   processor.checkExecutionStatus = () => {
     throw new Error("simulated processor init failure");
   };
 
   assert.throws(() => processor.init(1), /simulated processor init failure/);
-  assert.equal(outputFlushes, 0);
+  assert.equal(printFlushes, 1);
+  assert.equal(delegateFlushes, 0);
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
   assert.throws(() => processor.init(0), /full initialization is required/);
@@ -243,7 +245,10 @@ test("worklet captures raw delegate records only while subscribed", () => {
   const firstStorage = messages[0].storage;
   processor.handleMessage({ type: "delegate-ack", storage: firstStorage });
   assert.equal(processor.delegateTransport.inFlight, 0);
-  assert.equal(processor.delegateTransport.availableBuffers.length, 1);
+  assert.equal(
+    processor.delegateTransport.availableBuffers.length,
+    processor.delegateTransport.poolSize,
+  );
 
   processor.flushDelegates("reused process segment");
   assert.equal(messages.length, 2);
@@ -253,12 +258,13 @@ test("worklet captures raw delegate records only while subscribed", () => {
     storage: messages[1].storage,
   });
 
-  processor.delegateTransport.inFlight = 32;
+  const heldStorage = processor.delegateTransport.availableBuffers.splice(0);
+  processor.delegateTransport.inFlight = processor.delegateTransport.poolSize;
   view.setUint32(processor.delegateBatchPtr + 16, 2, true);
   processor.flushDelegates("saturated process segment");
   assert.equal(messages.length, 2);
   assert.equal(processor.delegateTransport.pendingDrops, 1);
-  processor.handleMessage({ type: "delegate-ack" });
+  processor.handleMessage({ type: "delegate-ack", storage: heldStorage[0] });
   assert.equal(messages.length, 3);
   assert.equal(messages[2].operation, "transport");
   assert.equal(messages[2].recordCount, 0);
@@ -321,7 +327,10 @@ test("worklet transports raw print records without formatting", () => {
   assert.equal(messages[0].subscriptionId, 7);
   assert.equal(messages[0].recordCount, 1);
   assert.equal(messages[0].transportDropCount, 0);
-  assert.deepEqual([...messages[0].storage], [0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 0, 0]);
+  assert.deepEqual(
+    [...messages[0].storage.subarray(0, messages[0].usedBytes)],
+    [0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 0, 0],
+  );
 
   processor.handleMessage({
     type: "print-subscription",

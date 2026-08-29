@@ -7,6 +7,8 @@ const DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_PRINT_CAPACITY_BYTES = 64 * 1024;
 const MAX_RECORD_TRANSPORT_BATCHES = 32;
+const RECORD_TRANSPORT_POOL_BUDGET_BYTES =
+  MAX_RECORD_TRANSPORT_BATCHES * DEFAULT_DELEGATE_CAPACITY_BYTES;
 const DELEGATE_BATCH_SIZE_BYTES = 20;
 const PRINT_BATCH_SIZE_BYTES = 20;
 const EXECUTION_OUTPUT_SIZE_BYTES = 8;
@@ -214,8 +216,14 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     }
     this.delegateCollectionEnabled = false;
     this.delegateSubscriptionId = 0;
-    this.delegateTransport = this.createRecordTransport("onda-delegate-records");
-    this.printTransport = this.createRecordTransport("onda-print-records");
+    this.delegateTransport = this.createRecordTransport(
+      "onda-delegate-records",
+      this.delegateStoragePtr ? this.delegateCapacity : 0,
+    );
+    this.printTransport = this.createRecordTransport(
+      "onda-print-records",
+      this.printStoragePtr ? this.printCapacity : 0,
+    );
     this.writeParamDefaults();
     this.writeInitialParams(processorOptions.params ?? {});
     this.ensureInputCapacity(this.blockSize);
@@ -488,10 +496,9 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferSampleRatesPtr,
       this.executionOutputPtr,
     );
-    // A failed initialization has no usable processor result. Surface only
-    // the failure instead of publishing output from the discarded state.
-    this.checkExecutionStatus(status, "processor init");
+    // Generated failures retain diagnostic prints but clear delegates.
     this.flushPrint("processor init");
+    this.checkExecutionStatus(status, "processor init");
     this.flushDelegates("processor init");
     afterInitialize?.();
     this.commitInitializedState(blockCursor);
@@ -836,6 +843,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.delegateTransport,
       operation,
       storage,
+      usedBytes,
       recordCount,
       overflowCount,
     );
@@ -872,47 +880,53 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.printTransport,
       operation,
       storage,
+      usedBytes,
       recordCount,
       overflowCount,
     );
   }
 
-  createRecordTransport(messageType) {
+  createRecordTransport(messageType, bufferCapacity) {
+    const poolSize = bufferCapacity === 0
+      ? 0
+      : Math.max(
+        1,
+        Math.min(
+          MAX_RECORD_TRANSPORT_BATCHES,
+          Math.floor(RECORD_TRANSPORT_POOL_BUDGET_BYTES / bufferCapacity),
+        ),
+      );
     return {
       messageType,
       inFlight: 0,
       pendingDrops: 0,
       pendingOverflow: 0,
-      availableBuffers: [],
+      poolSize,
+      bufferCapacity,
+      availableBuffers: Array.from(
+        { length: poolSize },
+        () => new Uint8Array(bufferCapacity),
+      ),
     };
   }
 
   takeRecordStorage(transport, usedBytes) {
-    let bestIndex = -1;
-    for (let index = 0; index < transport.availableBuffers.length; index += 1) {
-      const candidate = transport.availableBuffers[index];
-      if (
-        candidate.byteLength >= usedBytes
-        && (bestIndex < 0
-          || candidate.byteLength < transport.availableBuffers[bestIndex].byteLength)
-      ) {
-        bestIndex = index;
-      }
+    if (usedBytes > transport.bufferCapacity) {
+      throw new Error("record batch exceeds its transport buffer capacity");
     }
-    const buffer = bestIndex < 0
-      ? new ArrayBuffer(usedBytes)
-      : transport.availableBuffers.splice(bestIndex, 1)[0];
-    return new Uint8Array(buffer, 0, usedBytes);
+    const storage = transport.availableBuffers.pop();
+    if (!storage) throw new Error("record transport pool is exhausted");
+    return storage;
   }
 
   copyRecordStorage(transport, sourcePtr, usedBytes) {
     const storage = this.takeRecordStorage(transport, usedBytes);
-    storage.set(new Uint8Array(this.memory.buffer, sourcePtr, usedBytes));
+    storage.set(new Uint8Array(this.memory.buffer, sourcePtr, usedBytes), 0);
     return storage;
   }
 
   deferSaturatedRecordBatch(transport, recordCount, overflowCount) {
-    if (transport.inFlight >= MAX_RECORD_TRANSPORT_BATCHES) {
+    if (transport.availableBuffers.length === 0) {
       transport.pendingDrops = this.saturatedAdd(transport.pendingDrops, recordCount);
       transport.pendingOverflow = this.saturatedAdd(
         transport.pendingOverflow,
@@ -923,7 +937,14 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     return false;
   }
 
-  postRecordBatch(transport, operation, storage, recordCount, overflowCount) {
+  postRecordBatch(
+    transport,
+    operation,
+    storage,
+    usedBytes,
+    recordCount,
+    overflowCount,
+  ) {
     const transportDropCount = transport.pendingDrops;
     const combinedOverflow = this.saturatedAdd(
       transport.pendingOverflow,
@@ -936,7 +957,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       type: transport.messageType,
       operation,
       storage,
-      usedBytes: storage.byteLength,
+      usedBytes,
       recordCount,
       overflowCount: combinedOverflow,
       transportDropCount,
@@ -948,7 +969,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
 
   flushPendingRecordLoss(transport) {
     if (
-      transport.inFlight >= MAX_RECORD_TRANSPORT_BATCHES
+      transport.availableBuffers.length === 0
       || (!transport.pendingDrops && !transport.pendingOverflow)
     ) {
       return;
@@ -959,32 +980,18 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.takeRecordStorage(transport, 0),
       0,
       0,
+      0,
     );
   }
 
   ackRecordTransport(transport, storage) {
-    transport.inFlight = Math.max(0, transport.inFlight - 1);
-    if (storage instanceof Uint8Array) {
-      const returned = storage.buffer;
-      if (transport.availableBuffers.length < MAX_RECORD_TRANSPORT_BATCHES) {
-        transport.availableBuffers.push(returned);
-      } else {
-        let smallestIndex = 0;
-        for (let index = 1; index < transport.availableBuffers.length; index += 1) {
-          if (
-            transport.availableBuffers[index].byteLength
-            < transport.availableBuffers[smallestIndex].byteLength
-          ) {
-            smallestIndex = index;
-          }
-        }
-        if (
-          returned.byteLength
-          > transport.availableBuffers[smallestIndex].byteLength
-        ) {
-          transport.availableBuffers[smallestIndex] = returned;
-        }
-      }
+    if (
+      storage instanceof Uint8Array
+      && storage.byteLength === transport.bufferCapacity
+      && transport.availableBuffers.length < transport.poolSize
+    ) {
+      transport.inFlight = Math.max(0, transport.inFlight - 1);
+      transport.availableBuffers.push(storage);
     }
     this.flushPendingRecordLoss(transport);
   }
