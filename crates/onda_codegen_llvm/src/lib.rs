@@ -969,6 +969,7 @@ sample:
         assert_eq!(u32::from_ne_bytes(storage[24..28].try_into().unwrap()), 1);
         assert_eq!(f32::from_ne_bytes(storage[28..32].try_into().unwrap()), 2.5);
 
+        batch.reset();
         unsafe {
             program.trigger_event_by_index(
                 &mut state,
@@ -992,9 +993,7 @@ sample:
             (0, 0, 0)
         );
 
-        batch.used_bytes = 12;
-        batch.record_count = 1;
-        batch.overflow_count = 3;
+        batch.reset();
         let status = unsafe {
             program.trigger_event_by_index_unchecked(
                 &mut state,
@@ -1055,7 +1054,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut delegates,
                     print_batch: &mut prints,
-                    next_sequence: 99,
+                    next_sequence: 0,
                 }),
             )
         }
@@ -1138,6 +1137,7 @@ sample:
         assert_eq!(i32::from_ne_bytes(storage[40..44].try_into().unwrap()), 99);
 
         let empty_payload = [0_u8; 8];
+        batch.reset();
         unsafe {
             program.trigger_event_by_index(
                 &mut state,
@@ -1240,9 +1240,6 @@ sample:
             .expect("state should initialize");
         let mut storage = [0_u8; 8];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
-        batch.used_bytes = 7;
-        batch.record_count = 3;
-        batch.overflow_count = 2;
         let result = unsafe {
             program.trigger_event_by_index(
                 &mut state,
@@ -1287,9 +1284,6 @@ sample:
             .expect("state should initialize");
         let mut storage = [0_u8; 16];
         let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
-        batch.used_bytes = 1;
-        batch.record_count = 9;
-        batch.overflow_count = 4;
 
         let result = unsafe {
             program.trigger_event_by_index(
@@ -1445,6 +1439,7 @@ block:
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
 
         for expected in [Some(1_i32), Some(2_i32), None] {
+            batch.reset();
             unsafe {
                 program.process_checked(
                     &mut state,
@@ -1521,6 +1516,7 @@ sample:
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
 
         for expected in [Some(3_i32), Some(4_i32), None] {
+            batch.reset();
             unsafe {
                 program.process_checked(
                     &mut state,

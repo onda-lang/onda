@@ -12,9 +12,10 @@ For the raw entry-point layout, see
 [the processor ABI](processor-abi.md#call-scoped-execution-output). Prints and
 [delegates](delegates.md) share an execution-output container but never share capacity.
 
-Each print and delegate record carries a sequence from one counter reset at the start of the current
-init, event, or process segment. A host presenting both streams merges that call's records by this
-sequence. The value is intentionally not a timeline across separate calls or process segments.
+Each print and delegate record carries a sequence from one counter that the host resets before the
+current init, event, or process segment. A host presenting both streams merges that call's records
+by this sequence. The value is intentionally not a timeline across separate calls or process
+segments.
 
 Print and delegate batches are independent. Exhausting print capacity cannot drop delegates, and
 omitting print storage suppresses delivery without changing Onda execution. Records that do not fit
@@ -119,14 +120,16 @@ both host-facing streams.
 
 Raw native and complete core-Wasm artifacts accept
 `onda_processor_execution_output_t`, whose batch and storage pointers are independently nullable.
-Each print record is `u32 site_index`, `u32 payload_size`, then packed scalar bytes. Resolve the site
-through descriptor `metadata.log_sites` and its source span through `metadata.source_files`.
+Each print record is `u32 site_index`, `u32 payload_size`, `u32 sequence`, then packed scalar bytes.
+Resolve the site through descriptor `metadata.log_sites` and its source span through
+`metadata.source_files`.
 
 For JavaScript hosts, `@onda-lang/processor-abi` owns the linear-memory mechanics:
 
 ```js
 writePrintBatch(memory, printBatchAddress, storageAddress, capacityBytes);
 writeExecutionOutput(memory, outputAddress, 0, printBatchAddress);
+resetExecutionOutput(memory, outputAddress);
 
 const status = exports.onda_process(
   state, params, inputs, outputs, 0, frames, flags,

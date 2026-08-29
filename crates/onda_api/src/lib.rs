@@ -3965,6 +3965,7 @@ pub unsafe extern "C" fn onda_instance_create_initialized_with_allocator(
     let allocator = match runtime_allocator_from_c(allocator) {
         Ok(allocator) => allocator,
         Err(diag) => {
+            reset_c_execution_output(output);
             write_diag(out_diag, diag);
             return ptr::null_mut();
         }
@@ -3989,15 +3990,18 @@ unsafe fn onda_instance_create_impl(
     output: *mut onda_execution_output_t,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
-    if initialize {
-        reset_c_execution_output(output);
-    }
     if program.is_null() {
+        if initialize {
+            reset_c_execution_output(output);
+        }
         write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
 
     if in_channels < 0 || out_channels < 0 {
+        if initialize {
+            reset_c_execution_output(output);
+        }
         write_diag(out_diag, runtime_diag("invalid instance configuration"));
         return ptr::null_mut();
     }
@@ -4018,6 +4022,9 @@ unsafe fn onda_instance_create_impl(
     let mut instance = match instance {
         Ok(i) => i,
         Err(e) => {
+            if initialize {
+                reset_c_execution_output(output);
+            }
             write_diag(out_diag, diag_to_c(&e));
             return ptr::null_mut();
         }
@@ -4025,6 +4032,9 @@ unsafe fn onda_instance_create_impl(
 
     if let Some(defaults) = &compiled.project_defaults {
         if let Err(error) = bind_project_defaults(&mut instance, defaults) {
+            if initialize {
+                reset_c_execution_output(output);
+            }
             write_diag(out_diag, diag_to_c(&error));
             return ptr::null_mut();
         }
@@ -4152,11 +4162,12 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
     payload_bytes: i32,
     output: *mut onda_execution_output_t,
 ) -> i32 {
-    reset_c_execution_output(output);
     if instance.is_null() || index < 0 || payload_bytes < 0 {
+        reset_c_execution_output(output);
         return -1;
     }
     if payload_bytes > 0 && payload_ptr.is_null() {
+        reset_c_execution_output(output);
         return -1;
     }
     let payload = if payload_bytes == 0 {
@@ -4181,11 +4192,12 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
     payload_bytes: i32,
     output: *mut onda_execution_output_t,
 ) -> i32 {
-    reset_c_execution_output(output);
     if instance.is_null() || index < 0 || payload_bytes < 0 {
+        reset_c_execution_output(output);
         return -1;
     }
     if payload_bytes > 0 && payload_ptr.is_null() {
+        reset_c_execution_output(output);
         return -1;
     }
     let payload = if payload_bytes == 0 {
@@ -4299,8 +4311,8 @@ pub unsafe extern "C" fn onda_process_checked(
     frames: i32,
     output: *mut onda_execution_output_t,
 ) -> i32 {
-    reset_c_execution_output(output);
     if instance.is_null() || frames < 0 {
+        reset_c_execution_output(output);
         return -1;
     }
     with_runtime_execution_output(output, |output| {
@@ -4317,8 +4329,8 @@ pub unsafe extern "C" fn onda_process_checked_segment(
     flags: i32,
     output: *mut onda_execution_output_t,
 ) -> i32 {
-    reset_c_execution_output(output);
     if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
+        reset_c_execution_output(output);
         return -1;
     }
     with_runtime_execution_output(output, |output| {
@@ -4339,14 +4351,17 @@ pub unsafe extern "C" fn onda_init(
     mode: i32,
     output: *mut onda_execution_output_t,
 ) -> i32 {
-    reset_c_execution_output(output);
     if instance.is_null() {
+        reset_c_execution_output(output);
         return -1;
     }
     let mode = match mode {
         0 => InitMode::PreservePinned,
         1 => InitMode::Full,
-        _ => return -1,
+        _ => {
+            reset_c_execution_output(output);
+            return -1;
+        }
     };
     with_runtime_execution_output(output, |output| {
         runtime_init_with_output(&mut (*instance).inner, mode, output)
@@ -4461,8 +4476,8 @@ pub unsafe extern "C" fn onda_process_unchecked(
     instance: *mut onda_instance,
     output: *mut onda_execution_output_t,
 ) -> i32 {
-    reset_c_execution_output(output);
     if instance.is_null() {
+        reset_c_execution_output(output);
         return -1;
     }
     execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
@@ -4489,8 +4504,8 @@ pub unsafe extern "C" fn onda_process_unchecked_segment(
     flags: i32,
     output: *mut onda_execution_output_t,
 ) -> i32 {
-    reset_c_execution_output(output);
     if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
+        reset_c_execution_output(output);
         return -1;
     }
     execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {

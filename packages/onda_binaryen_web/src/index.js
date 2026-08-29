@@ -2366,24 +2366,6 @@ class MirCompiler {
     ];
   }
 
-  resetPrintBatch() {
-    const batch = () =>
-      this.module.global.get(POINTER_GLOBALS.printBatch, binaryen.i32);
-    const stores = [
-      PRINT_BATCH_USED_OFFSET,
-      PRINT_BATCH_RECORD_COUNT_OFFSET,
-      PRINT_BATCH_OVERFLOW_OFFSET,
-    ].map((offset) =>
-      this.module.i32.store(offset, 4, batch(), this.module.i32.const(0))
-    );
-    return [
-      this.module.if(
-        this.module.i32.ne(batch(), this.module.i32.const(0)),
-        this.module.block(null, stores),
-      ),
-    ];
-  }
-
   executionOutputBatch(outputLocal, fieldOffset) {
     const output = () => this.module.local.get(outputLocal, binaryen.i32);
     return this.module.if(
@@ -2402,15 +2384,6 @@ class MirCompiler {
         this.module.i32.const(EXECUTION_OUTPUT_SEQUENCE_OFFSET),
       ),
       this.module.i32.const(0),
-    );
-  }
-
-  resetOutputSequence() {
-    const sequence = () =>
-      this.module.global.get(POINTER_GLOBALS.outputSequence, binaryen.i32);
-    return this.module.if(
-      this.module.i32.ne(sequence(), this.module.i32.const(0)),
-      this.module.i32.store(0, 4, sequence(), this.module.i32.const(0)),
     );
   }
 
@@ -2525,9 +2498,6 @@ class MirCompiler {
         POINTER_GLOBALS.outputSequence,
         this.executionOutputSequence(7),
       ),
-      this.resetOutputSequence(),
-      ...this.resetDelegateBatch(),
-      ...this.resetPrintBatch(),
       this.module.global.set(
         INIT_ALL_GLOBAL,
         this.module.i32.ne(
@@ -2611,9 +2581,6 @@ class MirCompiler {
         POINTER_GLOBALS.outputSequence,
         this.executionOutputSequence(11),
       ),
-      this.resetOutputSequence(),
-      ...this.resetDelegateBatch(),
-      ...this.resetPrintBatch(),
       this.module.if(
         invalidRange,
         this.module.return(
@@ -2698,9 +2665,6 @@ class MirCompiler {
           POINTER_GLOBALS.outputSequence,
           this.executionOutputSequence(7),
         ),
-        this.resetOutputSequence(),
-        ...this.resetDelegateBatch(),
-        ...this.resetPrintBatch(),
         ...this.resetRuntimeFailure(event.handler),
         this.module.global.set(
           POINTER_GLOBALS.eventPayload,

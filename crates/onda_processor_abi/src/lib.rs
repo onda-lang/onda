@@ -21,9 +21,9 @@ pub const PRINT_RECORD_HEADER_SIZE: usize = 12;
 
 /// Caller-owned, call-scoped storage for top-level delegate occurrences.
 ///
-/// Generated init, process, and event entries reset the three result counters at
-/// entry. `storage` may be null; in that neutral configuration publication is
-/// discarded without counting overflow.
+/// The host resets the three result counters before every init, process, or
+/// event entry. `storage` may be null; in that neutral configuration
+/// publication is discarded without counting overflow.
 #[repr(C)]
 #[derive(Debug)]
 pub struct DelegateBatch {
@@ -63,6 +63,14 @@ impl DelegateBatch {
 }
 
 /// Caller-owned, call-scoped storage for authored print occurrences.
+///
+/// The host resets the three result counters before every init, process, or
+/// event entry. `storage` may be null; in that neutral configuration
+/// publication is discarded without counting overflow.
+/// Caller-owned output streams shared by every processor entry ABI.
+///
+/// The host must call [`Self::reset`] immediately before passing this
+/// descriptor to generated init, process, or event code.
 #[repr(C)]
 #[derive(Debug)]
 pub struct PrintBatch {
@@ -117,6 +125,22 @@ impl ExecutionOutput {
             print_batch: std::ptr::null_mut(),
             next_sequence: 0,
         }
+    }
+
+    /// Prepares caller-owned output storage for one processor entry call.
+    ///
+    /// # Safety
+    ///
+    /// Every non-null batch pointer must be valid and exclusively writable for
+    /// the duration of this call.
+    pub unsafe fn reset(&mut self) {
+        if let Some(batch) = unsafe { self.delegate_batch.as_mut() } {
+            batch.reset();
+        }
+        if let Some(batch) = unsafe { self.print_batch.as_mut() } {
+            batch.reset();
+        }
+        self.next_sequence = 0;
     }
 }
 
@@ -427,5 +451,32 @@ mod tests {
         let encoded = serde_json::to_string(&descriptor).expect("descriptor should serialize");
         serde_json::from_str::<ProcessorDescriptor>(&encoded)
             .expect("serialized descriptor should deserialize");
+    }
+
+    #[test]
+    fn execution_output_reset_prepares_both_batches_and_sequence() {
+        let mut delegate = DelegateBatch::absent();
+        delegate.used_bytes = 9;
+        delegate.record_count = 7;
+        delegate.overflow_count = 5;
+        let mut print = PrintBatch::absent();
+        print.used_bytes = 8;
+        print.record_count = 6;
+        print.overflow_count = 4;
+        let mut output = ExecutionOutput {
+            delegate_batch: &mut delegate,
+            print_batch: &mut print,
+            next_sequence: 11,
+        };
+
+        unsafe { output.reset() };
+
+        assert_eq!(delegate.used_bytes, 0);
+        assert_eq!(delegate.record_count, 0);
+        assert_eq!(delegate.overflow_count, 0);
+        assert_eq!(print.used_bytes, 0);
+        assert_eq!(print.record_count, 0);
+        assert_eq!(print.overflow_count, 0);
+        assert_eq!(output.next_sequence, 0);
     }
 }

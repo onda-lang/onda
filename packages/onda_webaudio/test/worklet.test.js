@@ -186,6 +186,65 @@ test("failed event execution invalidates the worklet", () => {
   assert.equal(processor.process, processor.processPending);
 });
 
+test("worklet prepares execution output before every Wasm entry", () => {
+  const descriptor = metadata();
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.events = [{ name: "noop", export: "onda_process", params: [] }];
+  descriptor.metadata.delegates = [{ name: "reported", params: [] }];
+  descriptor.metadata.log_sites = [{
+    index: 0,
+    label: null,
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 1 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: [],
+    payload_size_bytes: 0,
+  }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      delegateCapacityBytes: 16,
+      printCapacityBytes: 16,
+      printCollectionEnabled: true,
+    },
+  });
+  processor.handleMessage({
+    type: "delegate-subscription",
+    enabled: true,
+    subscriptionId: 1,
+  });
+  const view = new DataView(processor.memory.buffer);
+  const dirtyOutput = () => {
+    for (const batchPtr of [processor.delegateBatchPtr, processor.printBatchPtr]) {
+      view.setUint32(batchPtr + 8, 9, true);
+      view.setUint32(batchPtr + 12, 7, true);
+      view.setUint32(batchPtr + 16, 5, true);
+    }
+    view.setUint32(processor.executionOutputPtr + 8, 11, true);
+  };
+  const assertPrepared = () => {
+    for (const batchPtr of [processor.delegateBatchPtr, processor.printBatchPtr]) {
+      assert.equal(view.getUint32(batchPtr + 8, true), 0);
+      assert.equal(view.getUint32(batchPtr + 12, true), 0);
+      assert.equal(view.getUint32(batchPtr + 16, true), 0);
+    }
+    assert.equal(view.getUint32(processor.executionOutputPtr + 8, true), 0);
+  };
+
+  dirtyOutput();
+  processor.init(1);
+  assertPrepared();
+
+  dirtyOutput();
+  processor.dispatchEvent("noop", []);
+  assertPrepared();
+
+  dirtyOutput();
+  assert.equal(processor.process([], [[new Float32Array(1)]]), true);
+  assertPrepared();
+});
+
 test("worklet captures raw delegate records only while subscribed", () => {
   const descriptor = metadata();
   descriptor.metadata.buffers = [];

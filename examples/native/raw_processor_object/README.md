@@ -205,6 +205,7 @@ onda_processor_execution_output_t execution_output = {
   .print_batch = &prints,
 };
 
+onda_processor_execution_output_reset(&execution_output);
 uint32_t status = onda_process(
   state,
   params,

@@ -6,6 +6,7 @@ import {
   decodeDelegateRecords,
   formatPrintBatch,
   readDelegateBatch,
+  resetExecutionOutput,
   writeDelegateBatch,
   writeExecutionOutput,
   writePrintBatch,
@@ -259,9 +260,11 @@ sample:
   const output = allocate(12);
   writePrintBatch(memory, batch, storage, 128);
   writeExecutionOutput(memory, output, 0, batch);
+  resetExecutionOutput(memory, output);
   assert.equal(initialize(params, state, 1, 0, 0, 0, 0, output), 0);
   assert.equal(formatPrintBatch(memory, batch, artifact.metadata).text, "boot\n");
   new DataView(memory.buffer).setBigInt64(payload, 9_007_199_254_740_993n, true);
+  resetExecutionOutput(memory, output);
   assert.equal(report(payload, params, state, 0, 0, 0, 0, output), 0);
   assert.equal(
     formatPrintBatch(memory, batch, artifact.metadata).text,

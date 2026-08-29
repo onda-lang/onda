@@ -374,6 +374,11 @@ export function writeExecutionOutput(
   delegateBatchAddress?: number,
   printBatchAddress?: number,
 ): void;
+/** Prepare every present batch and the shared sequence for one processor entry call. */
+export function resetExecutionOutput(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  outputAddress: number,
+): void;
 export function decodePrintRecords(
   storage: Uint8Array | ArrayBuffer | ArrayBufferView,
   usedBytes: number,

@@ -14,10 +14,12 @@ For the independent diagnostic stream carried by the same execution-output conta
 
 ## Delivery model
 
-Every process segment and input-event dispatch is one independent collection boundary:
+Every process segment, initialization, and input-event dispatch is one independent collection
+boundary. Hosts prepare the complete execution-output descriptor, including its shared sequence,
+before crossing the processor ABI:
 
 1. The caller optionally supplies a delegate batch.
-2. Generated execution resets its `used_bytes`, `record_count`, and `overflow_count`.
+2. The host resets its `used_bytes`, `record_count`, and `overflow_count` before entry.
 3. Each top-level occurrence is appended as one complete packed record when it fits.
 4. The caller consumes or copies successful records before reusing the batch.
 
@@ -195,6 +197,7 @@ onda_processor_execution_output_t output = {
   .print_batch = NULL,
 };
 
+onda_processor_execution_output_reset(&output);
 uint32_t status = onda_process(
   state, params, inputs, outputs, 0, frames, ONDA_PROCESSOR_FULL_BLOCK,
   buffers, buffer_frames, buffer_channels, buffer_sample_rates, &output
@@ -222,6 +225,7 @@ import {
   DELEGATE_RECORD_HEADER_SIZE_BYTES,
   writeDelegateBatch,
   writeExecutionOutput,
+  resetExecutionOutput,
   readDelegateBatch,
   decodeDelegateRecords,
 } from "@onda-lang/processor-abi";
@@ -234,6 +238,7 @@ const fixedRecordBytes = artifact.metadata.metadata.delegates.map((delegate) =>
 
 writeDelegateBatch(memory, batchAddress, storageAddress, capacityBytes);
 writeExecutionOutput(memory, outputAddress, batchAddress, 0);
+resetExecutionOutput(memory, outputAddress);
 const status = exports.onda_process(
   state, params, inputs, outputs, 0, frames, flags,
   buffers, bufferFrames, bufferChannels, bufferSampleRates, outputAddress,

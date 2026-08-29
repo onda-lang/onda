@@ -489,6 +489,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.invalidateState();
     this.refreshMemoryCache();
     const executionOutputId = this.nextExecutionOutputId();
+    this.prepareExecutionOutput();
     const status = this.exports.onda_processor_init(
       this.paramsPtr,
       this.statePtr,
@@ -765,6 +766,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       throw new Error(`missing WebAssembly export '${event.export}'`);
     }
     const executionOutputId = this.nextExecutionOutputId();
+    this.prepareExecutionOutput();
     const status = handler(
       this.eventPayloadPtr,
       this.paramsPtr,
@@ -1032,9 +1034,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.delegateTransport.pendingOverflow = 0;
     if (this.delegateBatchPtr) {
       const view = this.memoryView();
-      view.setUint32(this.delegateBatchPtr + 8, 0, true);
-      view.setUint32(this.delegateBatchPtr + 12, 0, true);
-      view.setUint32(this.delegateBatchPtr + 16, 0, true);
+      this.resetRecordBatch(view, this.delegateBatchPtr);
       view.setUint32(
         this.executionOutputPtr,
         this.delegateCollectionEnabled ? this.delegateBatchPtr : 0,
@@ -1052,9 +1052,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.printTransport.pendingOverflow = 0;
     if (this.printBatchPtr) {
       const view = this.memoryView();
-      view.setUint32(this.printBatchPtr + 8, 0, true);
-      view.setUint32(this.printBatchPtr + 12, 0, true);
-      view.setUint32(this.printBatchPtr + 16, 0, true);
+      this.resetRecordBatch(view, this.printBatchPtr);
       view.setUint32(
         this.executionOutputPtr + 4,
         this.printCollectionEnabled ? this.printBatchPtr : 0,
@@ -1609,6 +1607,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   invokeProcessSegment(startFrame, frames, flags) {
+    this.prepareExecutionOutput();
     return this.exports.onda_process(
       this.statePtr,
       this.paramsPtr,
@@ -1623,6 +1622,27 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferSampleRatesPtr,
       this.executionOutputPtr,
     );
+  }
+
+  resetRecordBatch(view, batchPtr) {
+    if (!batchPtr) return;
+    view.setUint32(batchPtr + 8, 0, true);
+    view.setUint32(batchPtr + 12, 0, true);
+    view.setUint32(batchPtr + 16, 0, true);
+  }
+
+  prepareExecutionOutput() {
+    if (!this.executionOutputPtr) return;
+    const view = this.memoryView();
+    this.resetRecordBatch(
+      view,
+      view.getUint32(this.executionOutputPtr, true),
+    );
+    this.resetRecordBatch(
+      view,
+      view.getUint32(this.executionOutputPtr + 4, true),
+    );
+    view.setUint32(this.executionOutputPtr + 8, 0, true);
   }
 
   clearOutputs(outputs) {

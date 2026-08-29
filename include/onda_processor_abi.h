@@ -31,12 +31,12 @@ enum {
   ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE = ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
 };
 
-/* Caller-owned, call-scoped occurrence storage. Init, process, and event entries reset the three
- * result counters. A NULL output, batch, or storage pointer disables that stream. Capacity is a
- * host policy because occurrence counts and dynamic slice sizes may depend on runtime execution.
- * Delegate and print batches are independent. Records carry one shared sequence reset at each
- * entry call so hosts can merge the streams chronologically. Generated failure clears delegate
- * results but retains print records already emitted. */
+/* Caller-owned, call-scoped occurrence storage. The host resets the three result counters and the
+ * shared sequence before every init, process, or event entry. A NULL output, batch, or storage
+ * pointer disables that stream. Capacity is a host policy because occurrence counts and dynamic
+ * slice sizes may depend on runtime execution. Delegate and print batches are independent. Records
+ * carry the shared sequence so hosts can merge the streams chronologically. Generated failure
+ * clears delegate results but retains print records already emitted. */
 typedef struct onda_processor_delegate_batch {
   uint8_t* storage;
   uint32_t capacity_bytes;
@@ -185,6 +185,17 @@ ONDA_PROCESSOR_STATIC_INLINE void onda_processor_print_batch_reset(
     batch->used_bytes = 0u;
     batch->record_count = 0u;
     batch->overflow_count = 0u;
+  }
+}
+
+/* Prepares every present caller-owned batch and the shared sequence for one processor entry. */
+ONDA_PROCESSOR_STATIC_INLINE void onda_processor_execution_output_reset(
+  onda_processor_execution_output_t* output
+) {
+  if (output != NULL) {
+    onda_processor_delegate_batch_reset(output->delegate_batch);
+    onda_processor_print_batch_reset(output->print_batch);
+    output->next_sequence = 0u;
   }
 }
 

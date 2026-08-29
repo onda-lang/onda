@@ -152,12 +152,13 @@ There is no exact whole-batch size because occurrence counts, delegate selection
 may depend on runtime control flow. Capacity is a host policy, and `overflow_count` reports when it
 was insufficient.
 
-Every init, process, or input-event entry resets the counters of each supplied batch and resets
-`next_sequence` to zero. Publications into either present batch consume that shared counter. A
-complete record is appended only when it fits. Otherwise it is discarded whole and that batch's overflow
-counter saturates at `u32::MAX`; a later smaller record may still fit. Null output, batch, or storage
-is neutral and does not count overflow. Generated execution failure clears delegate results but
-retains print records and overflow already produced, because they may diagnose the failure. Storage
+Before every init, process, or input-event entry, the host resets the counters of each supplied
+batch and resets `next_sequence` to zero. Publications into either present batch consume that shared
+counter. A complete record is appended only when it fits. Otherwise it is discarded whole and that
+batch's overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null output,
+batch, or storage is neutral and does not count overflow. Generated execution failure clears
+delegate results but retains print records and overflow already produced, because they may diagnose
+the failure. Storage
 is caller-owned, never allocated or retained by the processor, and is not part of snapshots. Hosts
 that expose a combined log merge the two decoded batches by `sequence`; sequences have no meaning
 across separate entry calls.
@@ -205,8 +206,8 @@ relocatable `linking` section. It does not pretend that the object is directly i
 application links the emitted object, allocates storage from the exact paired descriptor, builds the
 input/output and external-buffer pointer tables, optionally prepares an
 `onda_processor_execution_output_t` containing independently allocated delegate and print batches,
-and calls `onda_processor_init`, `onda_process`, and any `onda_event_N` functions directly. No Onda
-runtime or compiler library is required.
+resets it immediately before entry, and calls `onda_processor_init`, `onda_process`, and any
+`onda_event_N` functions directly. No Onda runtime or compiler library is required.
 
 The application must reject descriptor/ABI versions it does not implement and must verify that the
 descriptor's target, pointer width, byte order, and calling convention match the linked process. It
@@ -447,6 +448,7 @@ onda_processor_batch_next_record
 onda_processor_delegate_batch_next
 onda_processor_delegate_batch_occurrence_at
 onda_processor_delegate_batch_reset
+onda_processor_execution_output_reset
 onda_processor_float_grid_value_matches
 onda_processor_init
 onda_processor_integer_domain_value_is_valid

@@ -140,12 +140,13 @@ independently nullable delegate and print batches. Allocate all descriptors and 
 real-time execution.
 
 `writeDelegateBatch` and `writePrintBatch` initialize reusable batch descriptors.
-`writeExecutionOutput` connects their addresses. After a successful generated call,
+`writeExecutionOutput` connects their addresses. Call `resetExecutionOutput` immediately before
+every generated init, process, or event entry. After a successful generated call,
 `readDelegateBatch` or `readPrintBatch` validates the result counters.
 `decodeDelegateRecords` converts delegate payloads using `metadata.delegates`.
 `decodePrintRecords` preserves primitive types and source sites; `formatPrintRecords` and
-`formatPrintBatch` add canonical text formatting. Both decoded record types expose a `sequence`
-reset for each generated entry call; merge that call's two arrays by this field when presenting one
+`formatPrintBatch` add canonical text formatting. Both decoded record types expose a `sequence` from
+the host-reset call-local counter; merge that call's two arrays by this field when presenting one
 chronological output stream.
 
 Batch capacity is host policy. `overflowCount` reports whole records that did not fit; it is not a
@@ -284,6 +285,7 @@ paramPlainToNormalized
 parseProcessorMetadata
 readDelegateBatch
 readPrintBatch
+resetExecutionOutput
 serializeProcessorMetadata
 validateProcessorArtifact
 validateProcessorMetadata

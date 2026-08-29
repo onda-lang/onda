@@ -597,8 +597,8 @@ if (status == ONDA_EXECUTION_OK) {
 }
 ```
 
-`onda_delegate_batch_reset` clears counters without changing storage. Generated execution also
-resets a supplied batch on entry. `onda_delegate_batch_next` performs linear constant-time cursor
+`onda_delegate_batch_reset` clears counters without changing storage. The runtime host resets every
+supplied batch before entering generated code. `onda_delegate_batch_next` performs linear constant-time cursor
 iteration; `onda_delegate_batch_occurrence_at` is convenient for one index but repeated indexed
 iteration is quadratic.
 

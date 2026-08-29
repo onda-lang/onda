@@ -1376,17 +1376,6 @@ unsafe fn emit_function_body(
             fallback_buffer_write,
         };
         emitter.allocate_storage()?;
-        if !module.program.interface.delegates.is_empty()
-            && !matches!(function.kind, FunctionKind::User)
-        {
-            // Keep local allocas in the LLVM entry block so mem2reg/SROA can
-            // promote them. Batch reset branches before authored execution,
-            // after the entry ABI has only materialized its local views.
-            reset_delegate_batch(module, builder, runtime_context)?;
-        }
-        if !module.program.log_sites.is_empty() && !matches!(function.kind, FunctionKind::User) {
-            reset_print_batch(module, builder, runtime_context)?;
-        }
         emitter.lower_block(&function.body)?;
         if !current_block_terminated(builder) {
             if !matches!(function.kind, FunctionKind::User) {
@@ -6322,53 +6311,6 @@ unsafe fn reset_delegate_batch(
     Ok(())
 }
 
-unsafe fn reset_print_batch(
-    module: &ModuleEmitter<'_>,
-    builder: LLVMBuilderRef,
-    runtime_context: LLVMValueRef,
-) -> Result<(), MirCodegenError> {
-    let batch = load_context_field(
-        module,
-        builder,
-        runtime_context,
-        PRINT_BATCH_CONTEXT_INDEX,
-        "print_batch",
-    )?;
-    let present = LLVMBuildICmp(
-        builder,
-        LLVMIntPredicate::LLVMIntNE,
-        batch,
-        LLVMConstPointerNull(module.ptr_ty),
-        c_name("print_batch_present")?.as_ptr(),
-    );
-    let reset = append_block(
-        module.context,
-        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
-        "print_batch_reset",
-    )?;
-    let done = append_block(
-        module.context,
-        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
-        "print_batch_reset_done",
-    )?;
-    LLVMBuildCondBr(builder, present, reset, done);
-    LLVMPositionBuilderAtEnd(builder, reset);
-    let zero = LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0);
-    for field in 2..=4 {
-        let pointer = LLVMBuildStructGEP2(
-            builder,
-            module.print_batch_ty,
-            batch,
-            field,
-            c_name("print_batch_counter")?.as_ptr(),
-        );
-        LLVMBuildStore(builder, zero, pointer);
-    }
-    LLVMBuildBr(builder, done);
-    LLVMPositionBuilderAtEnd(builder, done);
-    Ok(())
-}
-
 unsafe fn build_entry_runtime_context(
     module: &ModuleEmitter<'_>,
     function: LLVMValueRef,
@@ -6659,11 +6601,6 @@ unsafe fn load_execution_output_batches(
         output,
         2,
         c_name("execution_output_sequence_ptr")?.as_ptr(),
-    );
-    LLVMBuildStore(
-        builder,
-        LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0),
-        sequence,
     );
     LLVMBuildStore(builder, sequence, sequence_slot);
     LLVMBuildBr(builder, done);
@@ -7745,18 +7682,6 @@ impl MirJitProgram {
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
-            if let Some(output) = output {
-                unsafe {
-                    output
-                        .delegate_batch
-                        .as_mut()
-                        .map(onda_processor_abi::DelegateBatch::reset);
-                    output
-                        .print_batch
-                        .as_mut()
-                        .map(onda_processor_abi::PrintBatch::reset);
-                }
-            }
             return Ok(0);
         };
         self.validate_event_payload(event_index, payload)?;
@@ -7804,18 +7729,6 @@ impl MirJitProgram {
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> u32 {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
-            if let Some(output) = output {
-                unsafe {
-                    output
-                        .delegate_batch
-                        .as_mut()
-                        .map(onda_processor_abi::DelegateBatch::reset);
-                    output
-                        .print_batch
-                        .as_mut()
-                        .map(onda_processor_abi::PrintBatch::reset);
-                }
-            }
             return 0;
         };
         unsafe {

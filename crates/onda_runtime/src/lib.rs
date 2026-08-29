@@ -249,12 +249,15 @@ impl ExecutionOutput<'static, 'static> {
     }
 }
 
-fn reset_execution_output(output: &mut ExecutionOutput<'_, '_>) {
-    if let Some(batch) = output.delegate_batch.as_deref_mut() {
-        batch.reset();
-    }
-    if let Some(batch) = output.print_batch.as_deref_mut() {
-        batch.reset();
+impl ExecutionOutput<'_, '_> {
+    /// Prepares every present caller-owned batch for one processor entry call.
+    pub fn reset(&mut self) {
+        if let Some(batch) = self.delegate_batch.as_deref_mut() {
+            batch.reset();
+        }
+        if let Some(batch) = self.print_batch.as_deref_mut() {
+            batch.reset();
+        }
     }
 }
 
@@ -1291,8 +1294,13 @@ fn initialize_new_instance(
     instance: Result<Instance, Diagnostic>,
     mut output: ExecutionOutput<'_, '_>,
 ) -> Result<Instance, Diagnostic> {
-    reset_execution_output(&mut output);
-    let mut instance = instance?;
+    let mut instance = match instance {
+        Ok(instance) => instance,
+        Err(error) => {
+            output.reset();
+            return Err(error);
+        }
+    };
     let result = init_with_output(
         &mut instance,
         InitMode::Full,
@@ -1302,7 +1310,7 @@ fn initialize_new_instance(
         },
     );
     if let Err(error) = result {
-        reset_execution_output(&mut output);
+        output.reset();
         return Err(error);
     }
     Ok(instance)
@@ -1446,7 +1454,7 @@ pub fn init_with_output(
     mut output: ExecutionOutput<'_, '_>,
 ) -> Result<(), Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    reset_execution_output(&mut output);
+    output.reset();
     if !instance.buffers_validated {
         validate_buffers(instance)?;
     }
@@ -1989,7 +1997,7 @@ pub fn process_checked_segment(
     mut output: ExecutionOutput<'_, '_>,
 ) -> Result<(), Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    reset_execution_output(&mut output);
+    output.reset();
     validate_process_request(instance, start_frame, frames, flags)?;
     validate_bindings_for_process(instance)?;
     let state = match &mut instance.state {
@@ -2079,7 +2087,7 @@ pub unsafe fn process_unchecked_segment(
     mut output: ExecutionOutput<'_, '_>,
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    reset_execution_output(&mut output);
+    output.reset();
     validate_process_request(instance, start_frame, frames, flags)?;
     debug_assert!(
         instance.is_initialized(),
@@ -2185,7 +2193,7 @@ pub fn trigger_event_by_index(
     mut output: ExecutionOutput<'_, '_>,
 ) -> Result<(), Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    reset_execution_output(&mut output);
+    output.reset();
     if !instance.buffers_validated {
         validate_buffers(instance)?;
     }
@@ -2238,7 +2246,7 @@ pub unsafe fn trigger_event_by_index_unchecked(
     mut output: ExecutionOutput<'_, '_>,
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    reset_execution_output(&mut output);
+    output.reset();
     debug_assert!(
         instance.is_initialized(),
         "trigger_event_by_index_unchecked called before full initialization; this is UB in release builds"

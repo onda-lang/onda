@@ -40,6 +40,8 @@ whole-call capacity exists because occurrence counts and slice lengths may be ru
 import {
   DELEGATE_RECORD_HEADER_SIZE_BYTES,
   writeDelegateBatch,
+  writeExecutionOutput,
+  resetExecutionOutput,
   readDelegateBatch,
   decodeDelegateRecords,
 } from "@onda-lang/processor-abi";
@@ -52,7 +54,9 @@ const fixedRecordBytes = delegates.map((delegate) =>
 );
 
 writeDelegateBatch(memory, batchAddress, storageAddress, capacityBytes);
-// Pass batchAddress as the final onda_process or onda_event_N argument.
+writeExecutionOutput(memory, outputAddress, batchAddress, 0);
+resetExecutionOutput(memory, outputAddress);
+// Pass outputAddress as the final onda_process or onda_event_N argument.
 const batch = readDelegateBatch(memory, batchAddress);
 const storage = new Uint8Array(memory.buffer, storageAddress, batch.usedBytes);
 const occurrences = decodeDelegateRecords(
@@ -65,7 +69,8 @@ if (batch.overflowCount) reportOverflow(batch.overflowCount);
 ```
 
 Allocate the descriptor and storage before realtime execution and consume records before the next
-call reuses them. See the internal [delegate host integration](../../docs/delegates.md) reference
+call reuses them. Reset the execution output immediately before every generated entry call. See the
+internal [delegate host integration](../../docs/delegates.md) reference
 for the complete lifecycle, capacity guidance, and APIs for other hosts.
 
 ## Print batches

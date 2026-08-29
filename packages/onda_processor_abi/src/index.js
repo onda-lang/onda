@@ -958,6 +958,28 @@ export function writeExecutionOutput(
   view.setUint32(outputAddress + 8, 0, true);
 }
 
+export function resetExecutionOutput(memory, outputAddress) {
+  const view = writableDataView(memory);
+  requireMemoryRange(view, outputAddress, EXECUTION_OUTPUT_SIZE_BYTES, "execution output");
+  const delegateBatchAddress = view.getUint32(outputAddress, true);
+  const printBatchAddress = view.getUint32(outputAddress + 4, true);
+  for (const [batchAddress, sizeBytes, label] of [
+    [delegateBatchAddress, DELEGATE_BATCH_SIZE_BYTES, "delegate batch"],
+    [printBatchAddress, PRINT_BATCH_SIZE_BYTES, "print batch"],
+  ]) {
+    if (batchAddress !== 0) {
+      requireMemoryRange(view, batchAddress, sizeBytes, label);
+    }
+  }
+  for (const batchAddress of [delegateBatchAddress, printBatchAddress]) {
+    if (batchAddress === 0) continue;
+    view.setUint32(batchAddress + 8, 0, true);
+    view.setUint32(batchAddress + 12, 0, true);
+    view.setUint32(batchAddress + 16, 0, true);
+  }
+  view.setUint32(outputAddress + 8, 0, true);
+}
+
 export function decodePrintRecords(
   storage,
   usedBytes,

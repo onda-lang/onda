@@ -18,6 +18,8 @@ import {
   paramNormalizedToPlain,
   paramPlainToNormalized,
   readDelegateBatch,
+  readPrintBatch,
+  resetExecutionOutput,
   validateProcessorArtifact,
   validateProcessorModule,
   validateProcessorMetadata,
@@ -812,4 +814,36 @@ test("rejects execution-output addresses outside wasm32", () => {
     () => writeExecutionOutput(memory, 0, 0, 0x1_0000_0000),
     /must fit u32/,
   );
+});
+
+test("resets every present execution-output batch and the shared sequence", () => {
+  const memory = new ArrayBuffer(64);
+  writeDelegateBatch(memory, 12, 52, 12);
+  writePrintBatch(memory, 32, 52, 12);
+  writeExecutionOutput(memory, 0, 12, 32);
+  const view = new DataView(memory);
+  for (const batchAddress of [12, 32]) {
+    view.setUint32(batchAddress + 8, 9, true);
+    view.setUint32(batchAddress + 12, 7, true);
+    view.setUint32(batchAddress + 16, 5, true);
+  }
+  view.setUint32(8, 11, true);
+
+  resetExecutionOutput(memory, 0);
+
+  assert.deepEqual(readDelegateBatch(memory, 12), {
+    storageAddress: 52,
+    capacityBytes: 12,
+    usedBytes: 0,
+    recordCount: 0,
+    overflowCount: 0,
+  });
+  assert.deepEqual(readPrintBatch(memory, 32), {
+    storageAddress: 52,
+    capacityBytes: 12,
+    usedBytes: 0,
+    recordCount: 0,
+    overflowCount: 0,
+  });
+  assert.equal(view.getUint32(8, true), 0);
 });

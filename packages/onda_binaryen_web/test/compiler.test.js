@@ -6,6 +6,7 @@ import * as backend from "../src/index.js";
 import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
 import {
   formatPrintBatch,
+  resetExecutionOutput,
   writeDelegateBatch,
   writeExecutionOutput,
   writePrintBatch,
@@ -2489,6 +2490,7 @@ test("publishes init and process print records through execution output", async 
   writeDelegateBatch(memory, delegateBatch, delegateStorage, 16);
   writeExecutionOutput(memory, output, delegateBatch, batch);
 
+  resetExecutionOutput(memory, output);
   assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, output), 0);
   assert.deepEqual(formatPrintBatch(memory, batch, artifact.metadata), {
     text: "boot\\n: 7\n",
@@ -2503,6 +2505,7 @@ test("publishes init and process print records through execution output", async 
     }],
     overflowCount: 0,
   });
+  resetExecutionOutput(memory, output);
   assert.equal(
     onda_process(state, params, 0, 0, 0, 0, 0, 0, 0, 0, 0, output),
     0,
