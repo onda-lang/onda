@@ -1404,7 +1404,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
             name: None,
             // A parent re-init must preserve the same pinned-state policy
             // throughout the nested processor tree.
-            expr: Expr::var(INIT_ALL_PARAM_NAME),
+            expr: Expr::var(INIT_FULL_PARAM_NAME),
         },
     ];
     init_args.extend(

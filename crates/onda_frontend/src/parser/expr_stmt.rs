@@ -1046,8 +1046,8 @@ pub(super) fn parse_for_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnosti
             )]);
         }
     };
-    let start = parse_for_bound(start_pair)?;
-    let end = parse_for_bound(end_pair)?;
+    let start = parse_expr(start_pair)?;
+    let end = parse_expr(end_pair)?;
     let body = parse_stmt_block(body_pair)?;
 
     Ok(Stmt::For {
@@ -1072,7 +1072,7 @@ pub(super) fn parse_loop_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnost
         return Err(vec![syntax_at_loc(loc.as_ref(), "missing loop body")]);
     };
 
-    let count = parse_for_bound(count_pair)?;
+    let count = parse_expr(count_pair)?;
     let body = parse_stmt_block(body_pair)?;
     Ok(Stmt::For {
         loc,
@@ -1109,34 +1109,6 @@ pub(super) fn parse_break_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnos
 pub(super) fn parse_continue_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&pair);
     Ok(Stmt::Continue { loc })
-}
-
-pub(super) fn parse_for_bound(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
-    let loc = stmt_loc_from_pair(&pair);
-    match pair.as_rule() {
-        Rule::int_lit => Ok(Expr::int(parse_int(pair.as_str())? as i64).with_loc(loc)),
-        Rule::path_ident | Rule::namespace_ref => {
-            Ok(Expr::var(pair_symbol_text(&pair)).with_loc(loc))
-        }
-        Rule::for_bound => {
-            let mut inner = pair.into_inner();
-            let Some(inner_pair) = inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing for/loop bound expression",
-                )]);
-            };
-            match inner_pair.as_rule() {
-                Rule::expr => parse_expr(inner_pair),
-                _ => parse_for_bound(inner_pair),
-            }
-        }
-        Rule::expr => parse_expr(pair),
-        _ => Err(vec![syntax_at_loc(
-            loc.as_ref(),
-            "for/loop bound must be an integer literal, variable path, or parenthesized expression",
-        )]),
-    }
 }
 
 pub(super) fn parse_stmt_block(pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Diagnostic>> {

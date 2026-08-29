@@ -630,18 +630,18 @@ impl JitProgram {
         &self,
         params: &[u8],
         state: &mut RuntimeState,
-        all: bool,
+        full: bool,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
             self.compiled
-                .initialize_state_in_place(params, state, all, buffers, output)
+                .initialize_state_in_place(params, state, full, buffers, output)
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (params, state, all, buffers, output);
+            let _ = (params, state, full, buffers, output);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))

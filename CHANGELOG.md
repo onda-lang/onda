@@ -36,7 +36,7 @@ release; earlier releases are available on the
 - Added `pin` for persistent roots declared directly by `init`. Preserve-pinned initialization
   reruns ordinary declaration initializers while retaining pinned roots and task continuations;
   full initialization initializes the complete state image. Proc builtin `init(...)` events now
-  accept `all: bool = false`, with `all = true` selecting full initialization.
+  accept `full: bool = false`, with `full = true` selecting full initialization.
 - Added explicit `i32` and `i64` induction types with `for i: TYPE in ...`; unannotated loops
   continue to use `i32`.
 - Added bare `return` to non-value-returning runtime `def` bodies for early exit. Bare and
@@ -87,7 +87,7 @@ release; earlier releases are available on the
 ### Migration notes
 
 - Replace `pin` on proc parameters with `private`. Use `pin` only for persistent value bindings
-  declared directly by `init`. The new builtin proc-init argument also reserves `all` as a proc
+  declared directly by `init`. The new builtin proc-init argument also reserves `full` as a proc
   parameter name.
 - Rust callers that need an immediately usable instance should replace `create_instance` with
   `create_instance_initialized` (and likewise for the allocator-backed variant), or call

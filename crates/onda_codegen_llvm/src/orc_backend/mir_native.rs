@@ -7462,7 +7462,7 @@ impl MirJitProgram {
         &self,
         params: &[u8],
         state: &mut RuntimeState,
-        all: bool,
+        full: bool,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
@@ -7492,7 +7492,7 @@ impl MirJitProgram {
             (self.compiled.init)(
                 abi_const_ptr(params),
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
-                u32::from(all),
+                u32::from(full),
                 abi_const_ptr(buffers.pointers),
                 abi_const_ptr(buffers.frames),
                 abi_const_ptr(buffers.channels),

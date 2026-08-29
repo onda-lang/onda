@@ -31,7 +31,7 @@ pub(crate) fn delegate_publish_index(name: &str) -> Option<usize> {
 }
 
 const BUILTIN_PROC_INIT_EVENT_NAME: &str = "init";
-const INIT_ALL_PARAM_NAME: &str = "all";
+const INIT_FULL_PARAM_NAME: &str = "full";
 pub(crate) const TOP_LEVEL_INIT_ALL_NAME: &str = "__onda_init_all";
 
 pub(crate) fn is_builtin_proc_init_event_name(name: &str) -> bool {
@@ -74,13 +74,13 @@ fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagn
             );
         }
         for param in &proc.params {
-            if param.name == INIT_ALL_PARAM_NAME {
+            if param.name == INIT_FULL_PARAM_NAME {
                 push_semantic(
                     DiagCtx::new(param.loc),
                     errors,
                     format!(
                         "processor '{}' parameter name '{}' is reserved for the builtin initializer event",
-                        proc.name, INIT_ALL_PARAM_NAME
+                        proc.name, INIT_FULL_PARAM_NAME
                     ),
                 );
             }
@@ -652,9 +652,9 @@ fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec 
             })
             .collect::<Vec<_>>();
     params.push(ProcEventParamSpec {
-        name: INIT_ALL_PARAM_NAME.to_owned(),
+        name: INIT_FULL_PARAM_NAME.to_owned(),
         slots: vec![ProcEventParamSlotSpec {
-            name: INIT_ALL_PARAM_NAME.to_owned(),
+            name: INIT_FULL_PARAM_NAME.to_owned(),
             ty: PrimitiveType::Bool,
         }],
         ty: ProcEventParamTypeSpec::Scalar {
@@ -1877,7 +1877,7 @@ sample:
                 size,
             }) if matches!(size, Expr::Int { value: 2, .. })
         ));
-        assert_eq!(init_def.params[3].name, INIT_ALL_PARAM_NAME);
+        assert_eq!(init_def.params[3].name, INIT_FULL_PARAM_NAME);
         assert!(matches!(
             init_def.params[3].ty,
             Some(FnParamType::Primitive(PrimitiveType::Bool))
@@ -2074,11 +2074,11 @@ sample:
     }
 
     #[test]
-    fn analyze_reserves_all_for_builtin_proc_init() {
+    fn analyze_reserves_full_for_builtin_proc_init() {
         let src = r#"
 proc Voice:
   params:
-    all = false
+    full = false
   sample:
     out1 = 0.0
 init:
@@ -2087,13 +2087,36 @@ sample:
   out1 = voice()
 "#;
         let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("the builtin all option must be reserved");
+        let errors = analyze(program).expect_err("the builtin full option must be reserved");
         assert!(
             errors.iter().any(|diag| diag
                 .message
-                .contains("parameter name 'all' is reserved for the builtin initializer event")),
-            "expected builtin all reservation diagnostic, got {errors:?}"
+                .contains("parameter name 'full' is reserved for the builtin initializer event")),
+            "expected builtin full reservation diagnostic, got {errors:?}"
         );
+    }
+
+    #[test]
+    fn analyze_allows_all_as_an_ordinary_proc_param() {
+        let src = r#"
+proc Voice:
+  params:
+    all = false
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+init:
+  voice = Voice(all = true)
+  voice.init(all = false, full = true)
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("all should be available as an ordinary proc parameter");
     }
 
     #[test]

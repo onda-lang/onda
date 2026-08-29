@@ -1223,6 +1223,33 @@ sample {
 }
 
 #[test]
+fn parses_for_statement_with_unparenthesized_expression_bounds() {
+    let src = r#"
+outs { out1 }
+sample {
+  values = [1.0, 2.0, 3.0, 4.0]
+  for i in 1 + 1..values.len() { out1 = out1 + values[i] }
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    match &sample[1] {
+        Stmt::For { start, end, .. } => {
+            assert!(matches!(start, Expr::Binary { .. }));
+            assert!(matches!(end, Expr::UserCall { .. }));
+        }
+        _ => panic!("expected for statement"),
+    }
+}
+
+#[test]
 fn parses_for_statement_with_explicit_step_prefix() {
     let src = r#"
 outs { out1 }
@@ -1366,6 +1393,30 @@ sample {
             assert!(matches!(start, Expr::Int { value: 0, .. }));
             assert!(matches!(end, Expr::Int { value: 4, .. }));
         }
+        _ => panic!("expected for statement from loop sugar"),
+    }
+}
+
+#[test]
+fn parses_loop_statement_with_unparenthesized_expression_count() {
+    let src = r#"
+outs { out1 }
+sample {
+  values = [1.0, 2.0, 3.0, 4.0]
+  loop values.len() { out1 = out1 + 1.0 }
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    match &sample[1] {
+        Stmt::For { end, .. } => assert!(matches!(end, Expr::UserCall { .. })),
         _ => panic!("expected for statement from loop sugar"),
     }
 }

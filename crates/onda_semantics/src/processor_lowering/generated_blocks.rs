@@ -488,7 +488,7 @@ where
 
     event_params.push(onda_frontend::FnParamDecl {
         loc: Default::default(),
-        name: INIT_ALL_PARAM_NAME.to_owned(),
+        name: INIT_FULL_PARAM_NAME.to_owned(),
         ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
         ty_loc: Default::default(),
         default: Some(Expr::bool(false)),
@@ -513,7 +513,7 @@ where
         },
         CallArg {
             name: None,
-            expr: Expr::var(INIT_ALL_PARAM_NAME),
+            expr: Expr::var(INIT_FULL_PARAM_NAME),
         },
     ];
     init_args.extend(buffer_specs.iter().map(|buffer| CallArg {
@@ -1527,7 +1527,7 @@ fn generate_nested_wrapper_defs(
             errors,
             &constructor_setup_indices,
         );
-        guard_pinned_initializers(&mut nested_init_body, INIT_ALL_PARAM_NAME);
+        guard_pinned_initializers(&mut nested_init_body, INIT_FULL_PARAM_NAME);
         nested_init_body.extend(after_init_nested_bind_hook_stmts(
             &proc.name,
             &nested_path,
@@ -1548,7 +1548,7 @@ fn generate_nested_wrapper_defs(
             },
             onda_frontend::FnParamDecl {
                 loc: Default::default(),
-                name: INIT_ALL_PARAM_NAME.to_owned(),
+                name: INIT_FULL_PARAM_NAME.to_owned(),
                 ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
                 ty_loc: Default::default(),
                 default: None,
@@ -2914,7 +2914,7 @@ pub(super) fn generate_lowered_proc_blocks(
             errors,
             &constructor_setup_indices,
         );
-        guard_pinned_initializers(&mut init_body, INIT_ALL_PARAM_NAME);
+        guard_pinned_initializers(&mut init_body, INIT_FULL_PARAM_NAME);
         init_body.extend(after_init_bind_hook_stmts(&proc.name, &shape.param_specs));
         let init_fn_name = format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX);
         def_sample_oversample_factors.insert(init_fn_name.clone(), proc_sample_oversample_factor);
@@ -2928,7 +2928,7 @@ pub(super) fn generate_lowered_proc_blocks(
             },
             onda_frontend::FnParamDecl {
                 loc: Default::default(),
-                name: INIT_ALL_PARAM_NAME.to_owned(),
+                name: INIT_FULL_PARAM_NAME.to_owned(),
                 ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
                 ty_loc: Default::default(),
                 default: None,

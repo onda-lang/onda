@@ -217,14 +217,13 @@ call_stmt = { call_expr }
 if_cond = { expr }
 if_stmt = { "if" ~ if_cond ~ stmt_block ~ elif_clause* ~ (NEWLINE* ~ "else" ~ stmt_block)? }
 elif_clause = { NEWLINE* ~ "elif" ~ if_cond ~ stmt_block }
-for_stmt = { "for" ~ ident ~ (":" ~ type_name)? ~ for_step? ~ "in" ~ for_bound ~ for_range_op ~ for_bound ~ stmt_block }
+for_stmt = { "for" ~ ident ~ (":" ~ type_name)? ~ for_step? ~ "in" ~ expr ~ for_range_op ~ expr ~ stmt_block }
 for_step = { "@" ~ expr }
 for_range_op = { "..=" | ".." }
 while_stmt = { "while" ~ expr ~ stmt_block }
-loop_stmt = { "loop" ~ for_bound ~ stmt_block }
+loop_stmt = { "loop" ~ expr ~ stmt_block }
 break_stmt = { "break" }
 continue_stmt = { "continue" }
-for_bound = { int_lit | namespace_ref | path_ident | "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" }
 stmt_block = { "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" }
 
 comma_sep = _{ NEWLINE* ~ "," ~ NEWLINE* }

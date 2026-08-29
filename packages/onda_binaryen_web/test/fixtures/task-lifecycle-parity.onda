@@ -23,7 +23,7 @@ event soft_init():
   loader.init()
 
 event hard_init():
-  loader.init(all = true)
+  loader.init(full = true)
 
 sample:
   out1 = loader()

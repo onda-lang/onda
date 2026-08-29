@@ -4458,7 +4458,7 @@ event default_init():
   keeper.init()
   resetter.init()
 event full_init():
-  keeper.init(all = true)
+  keeper.init(full = true)
 sample:
   out1 = keeper()
   out2 = resetter()
@@ -4556,7 +4556,7 @@ proc Parent:
   event default_init():
     probe.init()
   event full_init():
-    probe.init(all = true)
+    probe.init(full = true)
   sample:
     out1 = probe()
 
@@ -4570,7 +4570,7 @@ event default_init():
   direct.init()
   parent.default_init()
 event full_init():
-  direct.init(all = true)
+  direct.init(full = true)
   parent.full_init()
 sample:
   out1 = direct()

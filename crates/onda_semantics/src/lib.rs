@@ -5017,7 +5017,7 @@ const B: f32[] = [2.0, 4.0]
 
 const def sum(xs: f32[]) -> f32:
   total = 0.0
-  for i in 0..(xs.len()):
+  for i in 0..xs.len():
     total = total + xs[i]
   return total
 
