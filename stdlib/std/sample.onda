@@ -13,14 +13,14 @@ namespace std::sample<Channels = 2>:
 
   proc Player<T>:
     outs<T> Channels
-    
+
     buffers:
       clip: T[]
 
     params<T>:
       speed = 1.0
       looping: bool = false
-    
+
     delegate finished()
     delegate looped()
 

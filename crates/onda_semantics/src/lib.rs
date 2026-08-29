@@ -13547,6 +13547,80 @@ sample:
     }
 
     #[test]
+    fn delegate_when_overloads_use_owner_visible_types() {
+        for source in [
+            r#"
+params:
+  selected: i32 = 1
+
+delegate finished()
+
+def helper(value: f32):
+  return
+
+def helper(value: i32):
+  return
+
+when finished():
+  helper(selected)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+proc Child:
+  delegate finished()
+
+  event trigger():
+    finished()
+
+  sample:
+    out1 = 0.0
+
+def helper(value: i32):
+  return
+
+def helper(value: f32):
+  return
+
+init:
+  selected: i32 = 1
+  child = Child()
+
+when child.finished():
+  helper(selected)
+
+sample:
+  out1 = child()
+"#,
+            r#"
+params:
+  selected: i64 = 1
+
+delegate finished()
+
+def identity(value):
+  return value
+
+init:
+  observed: i64 = 0
+
+when finished():
+  observed = identity(selected)
+
+sample:
+  out1 = f32(observed)
+"#,
+        ] {
+            let program = parse_program(source).expect("delegate overload source should parse");
+            let typed = analyze(program)
+                .expect("when handlers should use the same owner-visible types as other blocks");
+            lower_program_to_optimized_mir(&typed)
+                .expect("owner-typed when overload should lower to valid MIR");
+        }
+    }
+
+    #[test]
     fn delegate_reachability_rejects_the_selected_effectful_overload() {
         for source in [
             r#"

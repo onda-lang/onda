@@ -14,7 +14,7 @@ proc GlassBloom:
   params:
     decay_s = 0.7
     brightness = 0.68
-  
+
   delegate faded(note: f32)
 
   init:

@@ -8011,7 +8011,7 @@ fn rewrite_executable_call_scopes(
     events: &mut [EventDef],
     seed: &crate::def_semantics::CallTypeEnv,
     mut rewrite: impl FnMut(&mut [Stmt], &mut crate::def_semantics::CallTypeEnv),
-) {
+) -> crate::def_semantics::CallTypeEnv {
     let mut init_env = seed.clone();
     rewrite(init, &mut init_env);
 
@@ -8028,6 +8028,26 @@ fn rewrite_executable_call_scopes(
         let mut event_env = init_env.clone();
         bind_event_param_call_types(&mut event_env, event);
         rewrite(&mut event.body, &mut event_env);
+    }
+
+    // Callable executable regions may run outside the current block, so they
+    // inherit initialized owner state but never block- or sample-local bindings.
+    init_env
+}
+
+fn def_call_type_env<'a>(
+    def: &FunctionDef,
+    runtime_def_names: &HashSet<String>,
+    lexical_env: &'a crate::def_semantics::CallTypeEnv,
+    owner_env: &'a crate::def_semantics::CallTypeEnv,
+) -> &'a crate::def_semantics::CallTypeEnv {
+    // Tasks and delegate handlers are represented as functions only after
+    // source-block lowering. Preserve their executable-owner visibility;
+    // authored defs remain lexical-local.
+    if runtime_def_names.contains(&def.name) {
+        owner_env
+    } else {
+        lexical_env
     }
 }
 
@@ -9779,9 +9799,10 @@ pub fn analyze_with_options_and_inputs(
         .map(|def| (def.name.clone(), FnSignature::from_def(def)))
         .collect::<HashMap<_, _>>();
 
-    // Runtime defs are lexical-local. Keep compile-time data arrays available,
+    // Authored defs are lexical-local. Keep compile-time data arrays available,
     // but do not let unrelated top-level ports, params, buffers, or state
-    // influence call typing inside a function body.
+    // influence their bodies. Compiler-generated executable defs select their
+    // owner environment through `def_call_type_env` below.
     let mut function_env_seed = crate::def_semantics::CallTypeEnv::default();
     function_env_seed
         .array_types
@@ -9896,7 +9917,7 @@ pub fn analyze_with_options_and_inputs(
             }),
     );
 
-    rewrite_executable_call_scopes(
+    let runtime_function_env = rewrite_executable_call_scopes(
         &mut init,
         &mut block_pre,
         &mut sample,
@@ -9920,9 +9941,15 @@ pub fn analyze_with_options_and_inputs(
         },
     );
     for def in &mut defs {
+        let env = def_call_type_env(
+            def,
+            &runtime_def_names,
+            &function_env_seed,
+            &runtime_function_env,
+        );
         rewrite_function_overloads(
             def,
-            &function_env_seed,
+            env,
             crate::def_semantics::CallTypeContext {
                 return_types: &pre_overload_return_types,
                 struct_defs: &struct_defs,
@@ -10142,7 +10169,7 @@ pub fn analyze_with_options_and_inputs(
                 // scope driver propagates only bindings that are visible at each
                 // program point (init state, block-carried values, and event
                 // parameters).
-                rewrite_executable_call_scopes(
+                let runtime_function_env = rewrite_executable_call_scopes(
                     &mut init,
                     &mut block_pre,
                     &mut sample,
@@ -10173,9 +10200,15 @@ pub fn analyze_with_options_and_inputs(
                 );
                 // Also walk def bodies (def-to-def mono calls).
                 for def in &mut defs {
+                    let env = def_call_type_env(
+                        def,
+                        &runtime_def_names,
+                        &function_env_seed,
+                        &runtime_function_env,
+                    );
                     crate::def_semantics::monomorphize_calls_in_function(
                         def,
-                        &function_env_seed,
+                        env,
                         &mono_eligible,
                         &fn_signatures,
                         &original_defs_snapshot,
@@ -10252,7 +10285,7 @@ pub fn analyze_with_options_and_inputs(
                     struct_defs: &struct_defs,
                 };
                 let mut resolved_overloads = 0;
-                rewrite_executable_call_scopes(
+                let runtime_function_env = rewrite_executable_call_scopes(
                     &mut init,
                     &mut block_pre,
                     &mut sample,
@@ -10273,7 +10306,25 @@ pub fn analyze_with_options_and_inputs(
                             );
                     },
                 );
-                for def in defs.iter_mut().chain(generated_defs.iter_mut()) {
+                for def in &mut defs {
+                    let env = def_call_type_env(
+                        def,
+                        &runtime_def_names,
+                        &function_env_seed,
+                        &runtime_function_env,
+                    );
+                    resolved_overloads += rewrite_function_overloads(
+                        def,
+                        env,
+                        overload_context,
+                        crate::def_semantics::OverloadOwnerContext {
+                            defer_dependent_calls: true,
+                        },
+                        &overload_candidates,
+                        &mut errors,
+                    );
+                }
+                for def in &mut generated_defs {
                     resolved_overloads += rewrite_function_overloads(
                         def,
                         &function_env_seed,
@@ -10335,7 +10386,7 @@ pub fn analyze_with_options_and_inputs(
         &function_env_seed,
         &struct_defs,
     );
-    rewrite_executable_call_scopes(
+    let runtime_function_env = rewrite_executable_call_scopes(
         &mut init,
         &mut block_pre,
         &mut sample,
@@ -10364,9 +10415,15 @@ pub fn analyze_with_options_and_inputs(
                 &proc_type_names,
             )
         });
+        let env = def_call_type_env(
+            def,
+            &runtime_def_names,
+            &function_env_seed,
+            &runtime_function_env,
+        );
         rewrite_function_overloads(
             def,
-            &function_env_seed,
+            env,
             crate::def_semantics::CallTypeContext {
                 return_types: &final_overload_return_types,
                 struct_defs: &struct_defs,

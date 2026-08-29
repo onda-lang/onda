@@ -456,7 +456,7 @@ Namespace: `std::pitch_shift`.
 ### Constants
 
 ```onda
-const BufferSize = SR / 2
+const BufferSize = i32(SR / 2)
 ```
 
 ### Processor `DualWindow<T>`
