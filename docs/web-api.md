@@ -194,6 +194,10 @@ module, custom node options, and an `AudioWorkletNode` constructor. Pass `onPrin
 initialized constructor if initialization output must be observed; registering a listener after
 construction cannot replay output from an execution that has already completed. The artifact sample
 rate must equal the context sample rate and it must expose at least one audio input or output.
+Print and delegate delivery uses a bounded `SharedArrayBuffer` ring and requires cross-origin
+isolation in browsers; ordinary audio processing remains available when shared memory is absent.
+Low-level callers that manually pair the returned node options with `OndaAudioProcessor` must pass
+`processorOptions.executionOutputRing` as the adapter constructor's fourth argument.
 
 ### `OndaAudioProcessor`
 

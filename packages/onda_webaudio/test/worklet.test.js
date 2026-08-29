@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  EXECUTION_OPERATION_PROCESS,
+  EXECUTION_OPERATION_TRANSPORT,
+  createExecutionOutputRing,
+  drainExecutionOutputRing,
+  openExecutionOutputRing,
+} from "../src/execution-output-ring.js";
 
 let Processor;
 
@@ -88,6 +95,11 @@ function metadata() {
   };
 }
 
+function processorOutputRing(delegateCapacity, printCapacity, budget = 1024) {
+  const buffer = createExecutionOutputRing(delegateCapacity, printCapacity, budget);
+  return { buffer, ring: openExecutionOutputRing(buffer) };
+}
+
 test("worklet remains silent until explicit full initialization", () => {
   const processor = new Processor({
     processorOptions: {
@@ -114,17 +126,14 @@ test("failed live initialization returns the worklet to the silent pending state
     },
   });
   const originalCheckExecutionStatus = processor.checkExecutionStatus;
-  let printFlushes = 0;
-  let delegateFlushes = 0;
-  processor.flushPrint = () => { printFlushes += 1; };
-  processor.flushDelegates = () => { delegateFlushes += 1; };
+  let outputPublishes = 0;
+  processor.publishExecutionOutput = () => { outputPublishes += 1; };
   processor.checkExecutionStatus = () => {
     throw new Error("simulated processor init failure");
   };
 
   assert.throws(() => processor.init(1), /simulated processor init failure/);
-  assert.equal(printFlushes, 1);
-  assert.equal(delegateFlushes, 1);
+  assert.equal(outputPublishes, 1);
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
   assert.throws(() => processor.init(0), /full initialization is required/);
@@ -269,19 +278,24 @@ test("worklet captures raw delegate records only while subscribed", () => {
       },
     ],
   }];
+  const output = processorOutputRing(24, 0, 80);
   const processor = new Processor({
     processorOptions: {
       wasmBytes: wasm,
       metadata: descriptor,
       delegateCapacityBytes: 24,
+      printCapacityBytes: 0,
+      executionOutputRing: output.buffer,
     },
   });
-  const messages = [];
-  processor.port.postMessage = (message) => messages.push(message);
+  const reusableEntry = processor.executionOutputEntry;
+  const reusableDelegateView = processor.delegateRecordView;
+  let portMessages = 0;
+  processor.port.postMessage = () => { portMessages += 1; };
   const view = new DataView(processor.memory.buffer);
   assert.equal(view.getUint32(processor.executionOutputPtr, true), 0);
-  processor.flushDelegates("unsubscribed process segment");
-  assert.equal(messages.length, 0);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  assert.equal(drainExecutionOutputRing(output.ring, () => {}), 0);
 
   processor.handleMessage({
     type: "delegate-subscription",
@@ -301,48 +315,39 @@ test("worklet captures raw delegate records only while subscribed", () => {
   view.setFloat32(storage + 20, -2.5, true);
   view.setUint32(processor.delegateBatchPtr + 8, 24, true);
   view.setUint32(processor.delegateBatchPtr + 12, 1, true);
-  processor.flushDelegates("process segment");
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].type, "onda-delegate-records");
-  assert.equal(messages[0].operation, "process segment");
-  assert.equal(messages[0].recordCount, 1);
-  assert.equal(messages[0].overflowCount, 0);
-  assert.equal(messages[0].transportDropCount, 0);
-  assert.equal(messages[0].subscriptionId, 7);
-  assert.deepEqual([...messages[0].storage], [
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  assert.equal(processor.executionOutputEntry, reusableEntry);
+  assert.equal(processor.delegateRecordView, reusableDelegateView);
+  assert.equal(portMessages, 0);
+  let first;
+  assert.equal(drainExecutionOutputRing(output.ring, (entry) => { first = entry; }), 1);
+  assert.equal(first.operation, EXECUTION_OPERATION_PROCESS);
+  assert.equal(first.delegateRecordCount, 1);
+  assert.equal(first.delegateOverflowCount, 0);
+  assert.equal(first.delegateTransportDropCount, 0);
+  assert.equal(first.delegateSubscriptionId, 7);
+  assert.deepEqual([...first.delegateStorage], [
     0, 0, 0, 0, 16, 0, 0, 0,
     7, 0, 0, 0, 2, 0, 0, 0,
     0, 0, 160, 63, 0, 0, 32, 192,
   ]);
 
-  const firstStorage = messages[0].storage;
-  processor.handleMessage({ type: "delegate-ack", storage: firstStorage });
-  assert.equal(processor.delegateTransport.inFlight, 0);
-  assert.equal(
-    processor.delegateTransport.availableBuffers.length,
-    processor.delegateTransport.poolSize,
-  );
-
-  processor.flushDelegates("reused process segment");
-  assert.equal(messages.length, 2);
-  assert.equal(messages[1].storage.buffer, firstStorage.buffer);
-  processor.handleMessage({
-    type: "delegate-ack",
-    storage: messages[1].storage,
-  });
-
-  const heldStorage = processor.delegateTransport.availableBuffers.splice(0);
-  processor.delegateTransport.inFlight = processor.delegateTransport.poolSize;
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
   view.setUint32(processor.delegateBatchPtr + 16, 2, true);
-  processor.flushDelegates("saturated process segment");
-  assert.equal(messages.length, 2);
-  assert.equal(processor.delegateTransport.pendingDrops, 1);
-  processor.handleMessage({ type: "delegate-ack", storage: heldStorage[0] });
-  assert.equal(messages.length, 3);
-  assert.equal(messages[2].operation, "transport");
-  assert.equal(messages[2].recordCount, 0);
-  assert.equal(messages[2].overflowCount, 2);
-  assert.equal(messages[2].transportDropCount, 1);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  assert.equal(processor.pendingDelegateDrops, 1);
+  assert.equal(processor.pendingDelegateOverflow, 2);
+  assert.equal(drainExecutionOutputRing(output.ring, () => {}), 1);
+  view.setUint32(processor.delegateBatchPtr + 8, 0, true);
+  view.setUint32(processor.delegateBatchPtr + 12, 0, true);
+  view.setUint32(processor.delegateBatchPtr + 16, 0, true);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  let loss;
+  assert.equal(drainExecutionOutputRing(output.ring, (entry) => { loss = entry; }), 1);
+  assert.equal(loss.operation, EXECUTION_OPERATION_TRANSPORT);
+  assert.equal(loss.delegateRecordCount, 0);
+  assert.equal(loss.delegateOverflowCount, 2);
+  assert.equal(loss.delegateTransportDropCount, 1);
 
   processor.handleMessage({
     type: "delegate-subscription",
@@ -377,31 +382,32 @@ test("worklet transports raw print records without formatting", () => {
     0,
   );
 
+  const output = processorOutputRing(0, 16);
   const processor = new Processor({
     processorOptions: {
       wasmBytes: wasm,
       metadata: descriptor,
+      delegateCapacityBytes: 0,
       printCapacityBytes: 16,
       printCollectionEnabled: true,
       printSubscriptionId: 7,
+      executionOutputRing: output.buffer,
     },
   });
-  const messages = [];
-  processor.port.postMessage = (message) => messages.push(message);
   const view = new DataView(processor.memory.buffer);
   view.setUint32(processor.printStoragePtr, 0, true);
   view.setUint32(processor.printStoragePtr + 4, 4, true);
   view.setInt32(processor.printStoragePtr + 8, 42, true);
   view.setUint32(processor.printBatchPtr + 8, 12, true);
   view.setUint32(processor.printBatchPtr + 12, 1, true);
-  processor.flushPrint("process segment");
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].type, "onda-print-records");
-  assert.equal(messages[0].subscriptionId, 7);
-  assert.equal(messages[0].recordCount, 1);
-  assert.equal(messages[0].transportDropCount, 0);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  let published;
+  assert.equal(drainExecutionOutputRing(output.ring, (entry) => { published = entry; }), 1);
+  assert.equal(published.printSubscriptionId, 7);
+  assert.equal(published.printRecordCount, 1);
+  assert.equal(published.printTransportDropCount, 0);
   assert.deepEqual(
-    [...messages[0].storage.subarray(0, messages[0].usedBytes)],
+    [...published.printStorage],
     [0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 0, 0],
   );
 
@@ -411,8 +417,8 @@ test("worklet transports raw print records without formatting", () => {
     subscriptionId: 7,
   });
   assert.equal(view.getUint32(processor.executionOutputPtr + 4, true), 0);
-  processor.flushPrint("process segment");
-  assert.equal(messages.length, 1);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  assert.equal(drainExecutionOutputRing(output.ring, () => {}), 0);
 });
 
 test("worklet uses null pointers only for absent processor surfaces", () => {

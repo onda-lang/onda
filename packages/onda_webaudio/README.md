@@ -96,8 +96,9 @@ wrapped `AudioWorkletNode` and `AudioContext` remain caller-owned.
 ## Prints
 
 Authored `print(...)` occurrences leave generated execution as bounded typed records. The worklet
-copies those records without formatting or allocating strings during audio rendering; the main-side
-adapter turns them into canonical, newline-terminated text:
+copies those records into a preallocated `SharedArrayBuffer` ring without formatting or allocating
+during audio rendering; the main-side adapter drains the ring and turns them into canonical,
+newline-terminated text:
 
 ```js
 const processor = await createOndaAudioProcessorInitialized(context, artifact, {
@@ -125,8 +126,8 @@ source metadata, and the equivalent Rust, C, and raw processor APIs.
 ## Delegates
 
 Top-level delegates are delivered after generated execution through `onDelegates()`. The worklet
-uses reusable storage allocated during construction; listeners run from the main-side message
-handler, not as callbacks inside generated DSP code.
+uses reusable storage allocated during construction; listeners run while the main-side adapter
+drains the shared ring, not as callbacks inside generated DSP code.
 
 ```js
 const processor = await createOndaAudioProcessorInitialized(context, artifact, {
@@ -160,6 +161,11 @@ When print and delegate listeners are both active, the adapter invokes them in a
 each init, event, or process segment. It may split one stream's batch around an occurrence from the
 other stream; ordering intentionally does not span separate generated calls.
 
+Print and delegate delivery requires `SharedArrayBuffer`. Browser deployments must therefore be
+cross-origin isolated, normally with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`). Audio processing remains usable
+without those headers, but registering an output listener fails with a clear error.
+
 ## Real-time behavior
 
 `createOndaAudioProcessor` compiles the processor's `WebAssembly.Module` concurrently with worklet
@@ -178,8 +184,9 @@ const left = await createOndaAudioProcessorInitialized(context, artifact, { comp
 const right = await createOndaAudioProcessorInitialized(context, artifact, { compiledModule });
 ```
 
-After construction, the normal f32 render callback reuses cached Wasm-memory views and performs no
-host-side allocation or memory growth. Full-block f32 inputs and outputs use typed-array bulk copies;
+After construction, the normal f32 render callback reuses cached Wasm and shared-ring views and
+performs no host-side allocation or memory growth, including while transporting print and delegate
+records. Full-block f32 inputs and outputs use typed-array bulk copies;
 segmented callbacks and other ABI scalar widths use preallocated typed views with conversion loops
 (i64 input conversion necessarily creates JavaScript `BigInt` values). External buffers are copied
 into Wasm with typed-array bulk operations during construction. Missing or `null` bindings install

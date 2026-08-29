@@ -54,6 +54,7 @@ cp "$abi_dir/src/index.js" "$demo_dir/artifact.js"
 cp "$abi_dir/src/param-control.js" "$demo_dir/param-control.js"
 cp "$webaudio_dir/src/index.js" "$demo_dir/onda-webaudio.js"
 cp "$webaudio_dir/src/worklet.js" "$demo_dir/onda-wasm-processor.js"
+cp "$webaudio_dir/src/execution-output-ring.js" "$demo_dir/execution-output-ring.js"
 cp "$repo_root/examples/projects/embedded_room/assets/impulse.wav" "$demo_dir/impulse.wav"
 node "$demo_dir/smoke-test.mjs"
 

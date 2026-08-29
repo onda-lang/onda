@@ -17,6 +17,13 @@ import {
   createOndaAudioProcessorInitialized,
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
+import {
+  EXECUTION_OPERATION_INIT,
+  EXECUTION_OPERATION_PROCESS,
+  createExecutionOutputRing,
+  openExecutionOutputRing,
+  writeExecutionOutputRing,
+} from "../src/execution-output-ring.js";
 
 const FIXTURE_MIR_SCHEMA_VERSION = 6;
 
@@ -153,6 +160,31 @@ class FakeNode {
   }
 }
 
+function createTestOutputRing(delegateCapacity = 64, printCapacity = 64) {
+  const buffer = createExecutionOutputRing(delegateCapacity, printCapacity, 1024);
+  return { buffer, ring: openExecutionOutputRing(buffer) };
+}
+
+function writeTestOutput(ring, fields, delegateStorage = null, printStorage = null) {
+  const delegate = delegateStorage ?? new Uint8Array(0);
+  const print = printStorage ?? new Uint8Array(0);
+  assert.equal(writeExecutionOutputRing(ring, {
+    operation: EXECUTION_OPERATION_PROCESS,
+    operationIndex: 0,
+    delegateSubscriptionId: 0,
+    delegateUsed: delegate.byteLength,
+    delegateRecordCount: 0,
+    delegateOverflowCount: 0,
+    delegateTransportDropCount: 0,
+    printSubscriptionId: 0,
+    printUsed: print.byteLength,
+    printRecordCount: 0,
+    printOverflowCount: 0,
+    printTransportDropCount: 0,
+    ...fields,
+  }, delegate, print), true);
+}
+
 test("closed processors reject new work and settle pending requests", async () => {
   const node = new FakeNode({}, ONDA_AUDIO_WORKLET_PROCESSOR_NAME, {});
   const processor = new OndaAudioProcessor(node, artifact().metadata);
@@ -270,16 +302,13 @@ test("initialized creation installs its print listener before worklet output arr
   view.setUint32(4, 4, true);
   view.setUint32(8, 0, true);
   view.setInt32(12, 42, true);
-  processor.node.port.reply({
-    type: "onda-print-records",
-    operation: "processor init",
-    storage,
-    usedBytes: storage.byteLength,
-    recordCount: 1,
-    overflowCount: 0,
-    transportDropCount: 0,
-    subscriptionId: 1,
-  });
+  writeTestOutput(processor.executionOutputRing, {
+    operation: EXECUTION_OPERATION_INIT,
+    printSubscriptionId: 1,
+    printUsed: storage.byteLength,
+    printRecordCount: 1,
+  }, null, storage);
+  processor.drainExecutionOutput();
   assert.equal(batches[0].text, "init: 42\n");
   processor.close();
 });
@@ -364,7 +393,13 @@ test("formats worklet print records on the main side", () => {
     payload_size_bytes: 4,
   }];
   const node = { port: new FakePort() };
-  const processor = new OndaAudioProcessor(node, source.metadata);
+  const output = createTestOutputRing(0, 64);
+  const processor = new OndaAudioProcessor(
+    node,
+    source.metadata,
+    undefined,
+    output.buffer,
+  );
   const batches = [];
   const unsubscribe = processor.onPrint((batch) => batches.push(batch));
   const subscription = node.port.messages.at(-1);
@@ -376,39 +411,31 @@ test("formats worklet print records on the main side", () => {
   view.setUint32(4, 4, true);
   view.setUint32(8, 0, true);
   view.setInt32(12, 42, true);
-  node.port.reply({
-    type: "onda-print-records",
-    operation: "process",
-    storage,
-    usedBytes: storage.byteLength,
-    recordCount: 1,
-    overflowCount: 2,
-    transportDropCount: 3,
-    subscriptionId: subscription.subscriptionId,
-  });
+  writeTestOutput(output.ring, {
+    printSubscriptionId: subscription.subscriptionId,
+    printUsed: storage.byteLength,
+    printRecordCount: 1,
+    printOverflowCount: 2,
+    printTransportDropCount: 3,
+  }, null, storage);
+  processor.drainExecutionOutput();
   assert.equal(batches[0].text, "value: 42\n");
   assert.equal(batches[0].entries[0].values[0].value, 42);
   assert.equal(batches[0].overflowCount, 2);
   assert.equal(batches[0].transportDropCount, 3);
-  assert.deepEqual(node.port.messages.at(-1), { type: "print-ack", storage });
   assert.equal(unsubscribe(), true);
   assert.deepEqual(node.port.messages.at(-1), {
     type: "print-subscription",
     enabled: false,
     subscriptionId: subscription.subscriptionId,
   });
-  node.port.reply({
-    type: "onda-print-records",
-    operation: "stale process",
-    storage,
-    usedBytes: storage.byteLength,
-    recordCount: 1,
-    overflowCount: 0,
-    transportDropCount: 0,
-    subscriptionId: subscription.subscriptionId,
-  });
+  writeTestOutput(output.ring, {
+    printSubscriptionId: subscription.subscriptionId,
+    printUsed: storage.byteLength,
+    printRecordCount: 1,
+  }, null, storage);
+  processor.drainExecutionOutput();
   assert.equal(batches.length, 1);
-  assert.deepEqual(node.port.messages.at(-1), { type: "print-ack", storage });
   processor.close();
 });
 
@@ -436,7 +463,13 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
     ],
   }];
   const node = { port: new FakePort() };
-  const processor = new OndaAudioProcessor(node, source.metadata);
+  const output = createTestOutputRing(64, 0);
+  const processor = new OndaAudioProcessor(
+    node,
+    source.metadata,
+    undefined,
+    output.buffer,
+  );
   const batches = [];
   const unsubscribe = processor.onDelegates((batch) => batches.push(batch));
   const subscription = node.port.messages.at(-1);
@@ -452,16 +485,14 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
   view.setInt32(16, 2, true);
   view.setFloat32(20, 1.25, true);
   view.setFloat32(24, -2.5, true);
-  node.port.reply({
-    type: "onda-delegate-records",
-    operation: "process",
-    storage,
-    usedBytes: storage.byteLength,
-    recordCount: 1,
-    overflowCount: 2,
-    transportDropCount: 3,
-    subscriptionId: subscription.subscriptionId,
-  });
+  writeTestOutput(output.ring, {
+    delegateSubscriptionId: subscription.subscriptionId,
+    delegateUsed: storage.byteLength,
+    delegateRecordCount: 1,
+    delegateOverflowCount: 2,
+    delegateTransportDropCount: 3,
+  }, storage);
+  processor.drainExecutionOutput();
 
   assert.deepEqual(batches, [{
     type: "onda-delegates",
@@ -475,8 +506,6 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
     overflowCount: 2,
     transportDropCount: 3,
   }]);
-  assert.deepEqual(node.port.messages.at(-1), { type: "delegate-ack", storage });
-
   assert.equal(unsubscribe(), true);
   assert.deepEqual(node.port.messages.at(-1), {
     type: "delegate-subscription",
@@ -509,7 +538,13 @@ test("delivers print and delegate callbacks in call-local source order", () => {
     }],
   }];
   const node = { port: new FakePort() };
-  const processor = new OndaAudioProcessor(node, source.metadata);
+  const output = createTestOutputRing(64, 64);
+  const processor = new OndaAudioProcessor(
+    node,
+    source.metadata,
+    undefined,
+    output.buffer,
+  );
   const delivered = [];
   processor.onPrint((batch) => delivered.push(`print:${batch.entries[0].values[0].value}`));
   const printSubscription = node.port.messages.at(-1).subscriptionId;
@@ -524,41 +559,22 @@ test("delivers print and delegate callbacks in call-local source order", () => {
     printView.setUint32(offset + 8, sequence, true);
     printView.setInt32(offset + 12, value, true);
   }
-  node.port.reply({
-    type: "onda-print-records",
-    operation: "process",
-    executionOutputId: 7,
-    storage: printStorage,
-    usedBytes: printStorage.byteLength,
-    recordCount: 2,
-    overflowCount: 0,
-    transportDropCount: 0,
-    subscriptionId: printSubscription,
-  });
-
   const delegateStorage = new Uint8Array(16);
   const delegateView = new DataView(delegateStorage.buffer);
   delegateView.setUint32(0, 0, true);
   delegateView.setUint32(4, 4, true);
   delegateView.setUint32(8, 1, true);
   delegateView.setInt32(12, 22, true);
-  node.port.reply({
-    type: "onda-delegate-records",
-    operation: "process",
-    executionOutputId: 7,
-    storage: delegateStorage,
-    usedBytes: delegateStorage.byteLength,
-    recordCount: 1,
-    overflowCount: 0,
-    transportDropCount: 0,
-    subscriptionId: delegateSubscription,
-  });
+  writeTestOutput(output.ring, {
+    printSubscriptionId: printSubscription,
+    printUsed: printStorage.byteLength,
+    printRecordCount: 2,
+    delegateSubscriptionId: delegateSubscription,
+    delegateUsed: delegateStorage.byteLength,
+    delegateRecordCount: 1,
+  }, delegateStorage, printStorage);
   assert.deepEqual(delivered, []);
-  node.port.reply({
-    type: "onda-execution-output-end",
-    operation: "process",
-    executionOutputId: 7,
-  });
+  processor.drainExecutionOutput();
   assert.deepEqual(delivered, ["print:11", "delegate:22", "print:33"]);
   processor.close();
 });

@@ -65,6 +65,10 @@ await Promise.all([
   cp(resolve(abiRoot, "src/param-control.js"), resolve(assetsRoot, "param-control.js")),
   cp(resolve(webAudioRoot, "src/index.js"), resolve(assetsRoot, "webaudio.js")),
   cp(resolve(webAudioRoot, "src/worklet.js"), resolve(assetsRoot, "worklet.js")),
+  cp(
+    resolve(webAudioRoot, "src/execution-output-ring.js"),
+    resolve(assetsRoot, "execution-output-ring.js"),
+  ),
   bundlePlayground(resolve(assetsRoot, "playground.js")),
   buildExampleProjectCatalog(examplesRoot).then((catalog) => writeFile(
     resolve(assetsRoot, "example-projects.json"),

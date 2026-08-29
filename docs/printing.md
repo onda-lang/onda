@@ -155,8 +155,9 @@ execution. In `--control-json` mode stdout remains reserved for the startup hand
 control socket sends ordered `print` notifications with `text`, structured `entries`,
 `overflowCount`, and `transportDropCount`.
 
-The Web Audio worklet transports raw records through a bounded queue and performs no string
-formatting in the render callback. Collection is active only while a main-side listener exists.
+The Web Audio worklet transports raw records through a bounded `SharedArrayBuffer` ring and performs
+no allocation or string formatting in the render callback. Collection is active only while a
+main-side listener exists. Browser delivery requires cross-origin isolation.
 Subscribe with `processor.onPrint(...)`, or pass the factory's construction-time `onPrint` option
 when output from `createOndaAudioProcessorInitialized(...)` initialization must be observed.
 Generated batch overflow and worklet-to-main transport loss are separate, and a loss-only

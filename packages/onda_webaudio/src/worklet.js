@@ -1,3 +1,12 @@
+import {
+  EXECUTION_OPERATION_EVENT,
+  EXECUTION_OPERATION_INIT,
+  EXECUTION_OPERATION_PROCESS,
+  EXECUTION_OPERATION_TRANSPORT,
+  openExecutionOutputRing,
+  writeExecutionOutputRing,
+} from "./execution-output-ring.js";
+
 const ONDA_PROCESS_BEGIN_BLOCK = 1 << 0;
 const ONDA_PROCESS_END_BLOCK = 1 << 1;
 const ONDA_INIT_PRESERVE_PINNED = 0;
@@ -6,9 +15,6 @@ const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
 const DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_PRINT_CAPACITY_BYTES = 64 * 1024;
-const MAX_RECORD_TRANSPORT_BATCHES = 32;
-const RECORD_TRANSPORT_POOL_BUDGET_BYTES =
-  MAX_RECORD_TRANSPORT_BATCHES * DEFAULT_DELEGATE_CAPACITY_BYTES;
 const DELEGATE_BATCH_SIZE_BYTES = 20;
 const PRINT_BATCH_SIZE_BYTES = 20;
 const EXECUTION_OUTPUT_SIZE_BYTES = 12;
@@ -57,6 +63,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.stateBytes = null;
     this.inputViews = [];
     this.outputViews = [];
+    this.delegateRecordView = null;
+    this.printRecordView = null;
 
     const heapBase = Number(
       this.exports.__heap_base?.value ?? this.exports.__heap_base ?? 0,
@@ -217,15 +225,37 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     }
     this.delegateCollectionEnabled = false;
     this.delegateSubscriptionId = 0;
-    this.delegateTransport = this.createRecordTransport(
-      "onda-delegate-records",
-      this.delegateStoragePtr ? this.delegateCapacity : 0,
-    );
-    this.printTransport = this.createRecordTransport(
-      "onda-print-records",
-      this.printStoragePtr ? this.printCapacity : 0,
-    );
-    this.executionOutputId = 0;
+    this.executionOutputRing = processorOptions.executionOutputRing === undefined
+      || processorOptions.executionOutputRing === null
+      ? null
+      : openExecutionOutputRing(processorOptions.executionOutputRing);
+    if (
+      this.executionOutputRing
+      && (
+        this.executionOutputRing.delegateCapacity !== this.delegateCapacity
+        || this.executionOutputRing.printCapacity !== this.printCapacity
+      )
+    ) {
+      throw new Error("execution-output ring capacities do not match processor storage");
+    }
+    this.pendingDelegateDrops = 0;
+    this.pendingDelegateOverflow = 0;
+    this.pendingPrintDrops = 0;
+    this.pendingPrintOverflow = 0;
+    this.executionOutputEntry = {
+      operation: 0,
+      operationIndex: 0,
+      delegateSubscriptionId: 0,
+      delegateUsed: 0,
+      delegateRecordCount: 0,
+      delegateOverflowCount: 0,
+      delegateTransportDropCount: 0,
+      printSubscriptionId: 0,
+      printUsed: 0,
+      printRecordCount: 0,
+      printOverflowCount: 0,
+      printTransportDropCount: 0,
+    };
     this.writeParamDefaults();
     this.writeInitialParams(processorOptions.params ?? {});
     this.ensureInputCapacity(this.blockSize);
@@ -293,6 +323,12 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.outputCapacityFrames,
       );
     });
+    this.delegateRecordView = this.delegateStoragePtr
+      ? new Uint8Array(buffer, this.delegateStoragePtr, this.delegateCapacity)
+      : null;
+    this.printRecordView = this.printStoragePtr
+      ? new Uint8Array(buffer, this.printStoragePtr, this.printCapacity)
+      : null;
   }
 
   memoryView() {
@@ -488,7 +524,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     // leaves the processor on the silent pending path.
     this.invalidateState();
     this.refreshMemoryCache();
-    const executionOutputId = this.nextExecutionOutputId();
     this.prepareExecutionOutput();
     const status = this.exports.onda_processor_init(
       this.paramsPtr,
@@ -501,9 +536,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.executionOutputPtr,
     );
     // Generated failures retain diagnostic prints but clear delegates.
-    const printed = this.flushPrint("processor init", executionOutputId);
-    const delegated = this.flushDelegates("processor init", executionOutputId);
-    this.finishExecutionOutput("processor init", executionOutputId, printed || delegated);
+    this.publishExecutionOutput(
+      EXECUTION_OPERATION_INIT,
+      0,
+    );
     this.checkExecutionStatus(status, "processor init");
     afterInitialize?.();
     this.commitInitializedState(blockCursor);
@@ -687,10 +723,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.setDelegateSubscription(message.enabled, message.subscriptionId);
       } else if (message.type === "print-subscription") {
         this.setPrintSubscription(message.enabled, message.subscriptionId);
-      } else if (message.type === "delegate-ack") {
-        this.ackRecordTransport(this.delegateTransport, message.storage);
-      } else if (message.type === "print-ack") {
-        this.ackRecordTransport(this.printTransport, message.storage);
       } else {
         throw new Error(`unknown Onda worklet operation '${String(message.type)}'`);
       }
@@ -765,7 +797,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (typeof handler !== "function") {
       throw new Error(`missing WebAssembly export '${event.export}'`);
     }
-    const executionOutputId = this.nextExecutionOutputId();
     this.prepareExecutionOutput();
     const status = handler(
       this.eventPayloadPtr,
@@ -777,9 +808,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferSampleRatesPtr,
       this.executionOutputPtr,
     );
-    const printed = this.flushPrint(`event '${event.name}'`, executionOutputId);
-    const delegated = this.flushDelegates(`event '${event.name}'`, executionOutputId);
-    this.finishExecutionOutput(`event '${event.name}'`, executionOutputId, printed || delegated);
+    this.publishExecutionOutput(
+      EXECUTION_OPERATION_EVENT,
+      eventId,
+    );
     this.checkExecutionStatus(status, `event '${event.name}'`);
   }
 
@@ -824,205 +856,104 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     );
   }
 
-  flushDelegates(operation, executionOutputId = null) {
-    if (!this.delegateCollectionEnabled || !this.delegateBatchPtr) return false;
-    const view = this.memoryView();
-    const usedBytes = view.getUint32(this.delegateBatchPtr + 8, true);
-    const recordCount = view.getUint32(this.delegateBatchPtr + 12, true);
-    const overflowCount = view.getUint32(this.delegateBatchPtr + 16, true);
-    if (usedBytes > this.delegateCapacity) {
-      throw new Error("processor returned an invalid delegate byte count");
-    }
-    if (!usedBytes && !recordCount && !overflowCount) {
-      this.flushPendingRecordLoss(this.delegateTransport);
-      return false;
-    }
-    if (this.deferSaturatedRecordBatch(
-      this.delegateTransport,
-      recordCount,
-      overflowCount,
-    )) return false;
-    const storage = this.copyRecordStorage(
-      this.delegateTransport,
-      this.delegateStoragePtr,
-      usedBytes,
-    );
-    this.postRecordBatch(
-      this.delegateTransport,
-      operation,
-      storage,
-      usedBytes,
-      recordCount,
-      overflowCount,
-      executionOutputId,
-    );
-    return true;
-  }
-
   saturatedAdd(lhs, rhs) {
     return Math.min(0xffff_ffff, lhs + rhs);
   }
 
-  flushPrint(operation, executionOutputId = null) {
-    if (!this.printCollectionEnabled || !this.printBatchPtr) return false;
+  publishExecutionOutput(operation, operationIndex) {
+    if (!this.executionOutputRing) return;
+    if (
+      !this.delegateCollectionEnabled
+      && !this.printCollectionEnabled
+      && !this.pendingDelegateDrops
+      && !this.pendingDelegateOverflow
+      && !this.pendingPrintDrops
+      && !this.pendingPrintOverflow
+    ) return;
     const view = this.memoryView();
-    const usedBytes = view.getUint32(this.printBatchPtr + 8, true);
-    const recordCount = view.getUint32(this.printBatchPtr + 12, true);
-    const overflowCount = view.getUint32(this.printBatchPtr + 16, true);
-    if (usedBytes > this.printCapacity) {
+    const delegateUsed = this.delegateCollectionEnabled && this.delegateBatchPtr
+      ? view.getUint32(this.delegateBatchPtr + 8, true)
+      : 0;
+    const delegateRecordCount = this.delegateCollectionEnabled && this.delegateBatchPtr
+      ? view.getUint32(this.delegateBatchPtr + 12, true)
+      : 0;
+    const delegateOverflowCount = this.delegateCollectionEnabled && this.delegateBatchPtr
+      ? view.getUint32(this.delegateBatchPtr + 16, true)
+      : 0;
+    const printUsed = this.printCollectionEnabled && this.printBatchPtr
+      ? view.getUint32(this.printBatchPtr + 8, true)
+      : 0;
+    const printRecordCount = this.printCollectionEnabled && this.printBatchPtr
+      ? view.getUint32(this.printBatchPtr + 12, true)
+      : 0;
+    const printOverflowCount = this.printCollectionEnabled && this.printBatchPtr
+      ? view.getUint32(this.printBatchPtr + 16, true)
+      : 0;
+    if (delegateUsed > this.delegateCapacity) {
+      throw new Error("processor returned an invalid delegate byte count");
+    }
+    if (printUsed > this.printCapacity) {
       throw new Error("processor returned an invalid print byte count");
     }
-    if (!usedBytes && !recordCount && !overflowCount) {
-      this.flushPendingRecordLoss(this.printTransport);
-      return false;
-    }
-    if (this.deferSaturatedRecordBatch(
-      this.printTransport,
-      recordCount,
-      overflowCount,
-    )) return false;
-    const storage = this.copyRecordStorage(
-      this.printTransport,
-      this.printStoragePtr,
-      usedBytes,
+    const hasCurrent = delegateUsed
+      || delegateRecordCount
+      || delegateOverflowCount
+      || printUsed
+      || printRecordCount
+      || printOverflowCount;
+    const hasPending = this.pendingDelegateDrops
+      || this.pendingDelegateOverflow
+      || this.pendingPrintDrops
+      || this.pendingPrintOverflow;
+    if (!hasCurrent && !hasPending) return;
+
+    const entry = this.executionOutputEntry;
+    entry.operation = hasCurrent ? operation : EXECUTION_OPERATION_TRANSPORT;
+    entry.operationIndex = hasCurrent ? operationIndex : 0;
+    entry.delegateSubscriptionId = this.delegateSubscriptionId;
+    entry.delegateUsed = delegateUsed;
+    entry.delegateRecordCount = delegateRecordCount;
+    entry.delegateOverflowCount = this.saturatedAdd(
+      this.pendingDelegateOverflow,
+      delegateOverflowCount,
     );
-    this.postRecordBatch(
-      this.printTransport,
-      operation,
-      storage,
-      usedBytes,
-      recordCount,
-      overflowCount,
-      executionOutputId,
+    entry.delegateTransportDropCount = this.pendingDelegateDrops;
+    entry.printSubscriptionId = this.printSubscriptionId;
+    entry.printUsed = printUsed;
+    entry.printRecordCount = printRecordCount;
+    entry.printOverflowCount = this.saturatedAdd(
+      this.pendingPrintOverflow,
+      printOverflowCount,
     );
-    return true;
-  }
-
-  createRecordTransport(messageType, bufferCapacity) {
-    const poolSize = bufferCapacity === 0
-      ? 0
-      : Math.max(
-        1,
-        Math.min(
-          MAX_RECORD_TRANSPORT_BATCHES,
-          Math.floor(RECORD_TRANSPORT_POOL_BUDGET_BYTES / bufferCapacity),
-        ),
-      );
-    return {
-      messageType,
-      inFlight: 0,
-      pendingDrops: 0,
-      pendingOverflow: 0,
-      poolSize,
-      bufferCapacity,
-      availableBuffers: Array.from(
-        { length: poolSize },
-        () => new Uint8Array(bufferCapacity),
-      ),
-    };
-  }
-
-  takeRecordStorage(transport, usedBytes) {
-    if (usedBytes > transport.bufferCapacity) {
-      throw new Error("record batch exceeds its transport buffer capacity");
-    }
-    const storage = transport.availableBuffers.pop();
-    if (!storage) throw new Error("record transport pool is exhausted");
-    return storage;
-  }
-
-  copyRecordStorage(transport, sourcePtr, usedBytes) {
-    const storage = this.takeRecordStorage(transport, usedBytes);
-    storage.set(new Uint8Array(this.memory.buffer, sourcePtr, usedBytes), 0);
-    return storage;
-  }
-
-  deferSaturatedRecordBatch(transport, recordCount, overflowCount) {
-    if (transport.availableBuffers.length === 0) {
-      transport.pendingDrops = this.saturatedAdd(transport.pendingDrops, recordCount);
-      transport.pendingOverflow = this.saturatedAdd(
-        transport.pendingOverflow,
-        overflowCount,
-      );
-      return true;
-    }
-    return false;
-  }
-
-  postRecordBatch(
-    transport,
-    operation,
-    storage,
-    usedBytes,
-    recordCount,
-    overflowCount,
-    executionOutputId = null,
-  ) {
-    const transportDropCount = transport.pendingDrops;
-    const combinedOverflow = this.saturatedAdd(
-      transport.pendingOverflow,
-      overflowCount,
-    );
-    transport.pendingDrops = 0;
-    transport.pendingOverflow = 0;
-    transport.inFlight += 1;
-    this.port.postMessage({
-      type: transport.messageType,
-      operation,
-      storage,
-      usedBytes,
-      recordCount,
-      overflowCount: combinedOverflow,
-      transportDropCount,
-      ...(executionOutputId === null ? {} : { executionOutputId }),
-      ...(transport === this.delegateTransport
-        ? { subscriptionId: this.delegateSubscriptionId }
-        : { subscriptionId: this.printSubscriptionId }),
-    }, [storage.buffer]);
-  }
-
-  nextExecutionOutputId() {
-    const id = this.executionOutputId;
-    this.executionOutputId = id === Number.MAX_SAFE_INTEGER ? 0 : id + 1;
-    return id;
-  }
-
-  finishExecutionOutput(operation, executionOutputId, hasRecords) {
-    if (!hasRecords) return;
-    this.port.postMessage({
-      type: "onda-execution-output-end",
-      operation,
-      executionOutputId,
-    });
-  }
-
-  flushPendingRecordLoss(transport) {
-    if (
-      transport.availableBuffers.length === 0
-      || (!transport.pendingDrops && !transport.pendingOverflow)
-    ) {
+    entry.printTransportDropCount = this.pendingPrintDrops;
+    if (writeExecutionOutputRing(
+      this.executionOutputRing,
+      entry,
+      this.delegateRecordView,
+      this.printRecordView,
+    )) {
+      this.pendingDelegateDrops = 0;
+      this.pendingDelegateOverflow = 0;
+      this.pendingPrintDrops = 0;
+      this.pendingPrintOverflow = 0;
       return;
     }
-    this.postRecordBatch(
-      transport,
-      "transport",
-      this.takeRecordStorage(transport, 0),
-      0,
-      0,
-      0,
+    this.pendingDelegateDrops = this.saturatedAdd(
+      this.pendingDelegateDrops,
+      delegateRecordCount,
     );
-  }
-
-  ackRecordTransport(transport, storage) {
-    if (
-      storage instanceof Uint8Array
-      && storage.byteLength === transport.bufferCapacity
-      && transport.availableBuffers.length < transport.poolSize
-    ) {
-      transport.inFlight = Math.max(0, transport.inFlight - 1);
-      transport.availableBuffers.push(storage);
-    }
-    this.flushPendingRecordLoss(transport);
+    this.pendingDelegateOverflow = this.saturatedAdd(
+      this.pendingDelegateOverflow,
+      delegateOverflowCount,
+    );
+    this.pendingPrintDrops = this.saturatedAdd(
+      this.pendingPrintDrops,
+      printRecordCount,
+    );
+    this.pendingPrintOverflow = this.saturatedAdd(
+      this.pendingPrintOverflow,
+      printOverflowCount,
+    );
   }
 
   setDelegateSubscription(enabled, subscriptionId) {
@@ -1030,8 +961,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.delegateSubscriptionId = Number.isSafeInteger(subscriptionId)
       ? subscriptionId
       : 0;
-    this.delegateTransport.pendingDrops = 0;
-    this.delegateTransport.pendingOverflow = 0;
+    this.pendingDelegateDrops = 0;
+    this.pendingDelegateOverflow = 0;
     if (this.delegateBatchPtr) {
       const view = this.memoryView();
       this.resetRecordBatch(view, this.delegateBatchPtr);
@@ -1048,8 +979,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.printSubscriptionId = Number.isSafeInteger(subscriptionId)
       ? subscriptionId
       : 0;
-    this.printTransport.pendingDrops = 0;
-    this.printTransport.pendingOverflow = 0;
+    this.pendingPrintDrops = 0;
+    this.pendingPrintOverflow = 0;
     if (this.printBatchPtr) {
       const view = this.memoryView();
       this.resetRecordBatch(view, this.printBatchPtr);
@@ -1679,15 +1610,15 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         startFrame,
         segmentFrames,
       );
-      const executionOutputId = this.nextExecutionOutputId();
       const status = this.invokeProcessSegment(
         startFrame,
         segmentFrames,
         flags,
       );
-      const printed = this.flushPrint("process", executionOutputId);
-      const delegated = this.flushDelegates("process", executionOutputId);
-      this.finishExecutionOutput("process", executionOutputId, printed || delegated);
+      this.publishExecutionOutput(
+        EXECUTION_OPERATION_PROCESS,
+        0,
+      );
       if (status !== 0) {
         this.invalidateState();
         this.clearOutputs(outputs);

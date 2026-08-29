@@ -69,6 +69,8 @@ sed 's/from "binaryen"/from ".\/binaryen.js"/' \
 sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$compiler_package/dist/backend/artifact.js" > "$compiler_out/dist/backend/artifact.js"
 cp "$webaudio_package/src/worklet.js" "$webaudio_out/worklet.js"
+cp "$webaudio_package/src/execution-output-ring.js" \
+  "$webaudio_out/execution-output-ring.js"
 cp "$repo_root/ui/run/run.html" "$demo_dir/run.html"
 cp "$abi_package/src/param-control.js" "$demo_dir/param-control.js"
 cp "$abi_package/src/index.js" "$webaudio_out/processor-abi.js"

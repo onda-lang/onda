@@ -202,15 +202,26 @@ globalThis.registerProcessor = (name, processor) => {
 
 const workletFixture = await mkdtemp(join(tmpdir(), "onda-worklet-test-"));
 try {
-  await copyFile(
-    fileURLToPath(
-      new URL(
-        "../../onda_webaudio/src/worklet.js",
-        import.meta.url,
+  await Promise.all([
+    copyFile(
+      fileURLToPath(
+        new URL(
+          "../../onda_webaudio/src/worklet.js",
+          import.meta.url,
+        ),
       ),
+      join(workletFixture, "onda-wasm-processor.js"),
     ),
-    join(workletFixture, "onda-wasm-processor.js"),
-  );
+    copyFile(
+      fileURLToPath(
+        new URL(
+          "../../onda_webaudio/src/execution-output-ring.js",
+          import.meta.url,
+        ),
+      ),
+      join(workletFixture, "execution-output-ring.js"),
+    ),
+  ]);
   await import(pathToFileURL(join(workletFixture, "onda-wasm-processor.js")));
 } finally {
   await rm(workletFixture, { recursive: true, force: true });

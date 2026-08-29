@@ -75,6 +75,7 @@ const processor = new WorkletProcessor({
     metadata: artifact.metadata,
     params: { speed: 1 },
     buffers: { clip },
+    initialize: true,
   },
 });
 processor.port.onmessage({

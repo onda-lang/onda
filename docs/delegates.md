@@ -290,7 +290,8 @@ unsubscribe();
 
 The default capacity is 64 KiB. A capacity of zero disables record storage. The worklet passes a
 null delegate-batch pointer while there are no listeners. With listeners, it copies bounded raw
-record batches to the main side, where payload decoding and listener callbacks run. The adapter
+record batches into a preallocated `SharedArrayBuffer` ring, which the main side drains before
+payload decoding and listener callbacks run. This requires cross-origin isolation in browsers. The adapter
 reports generated-capacity loss as `overflowCount` and bounded transport-queue loss separately as
 `transportDropCount`.
 

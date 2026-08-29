@@ -46,10 +46,15 @@ export interface OndaAudioProcessorOptions {
   eventPayloadCapacityBytes?: number;
   /**
    * Reusable call-scoped storage for delegate records. Defaults to 64 KiB; zero disables host
-   * collection. Capacity is a host policy because occurrence counts and slice sizes may be dynamic.
+   * collection. Delivery uses a bounded SharedArrayBuffer ring and therefore requires cross-origin
+   * isolation in browsers. Capacity is a host policy because occurrence counts and slice sizes may
+   * be dynamic.
    */
   delegateCapacityBytes?: number;
-  /** Reusable call-scoped storage for print records. Defaults to 64 KiB; zero disables delivery. */
+  /**
+   * Reusable call-scoped storage for print records. Defaults to 64 KiB; zero disables delivery.
+   * Delivery uses the same bounded SharedArrayBuffer ring as delegates.
+   */
   printCapacityBytes?: number;
   /**
    * Factory-only initial print listener. Pass this to capture output from
@@ -68,7 +73,12 @@ export function flattenedAudioChannelCount(ports?: unknown[]): number;
 export function ondaAudioWorkletNodeOptions(
   artifact: OndaProcessorArtifact,
   options?: OndaAudioProcessorOptions,
-): AudioWorkletNodeOptions;
+): AudioWorkletNodeOptions & {
+  processorOptions: {
+    executionOutputRing: SharedArrayBuffer | null;
+    [key: string]: unknown;
+  };
+};
 export function registerOndaAudioWorklet(
   context: BaseAudioContext,
   workletUrl?: string | URL,
@@ -88,7 +98,13 @@ export function compileOndaProcessorModule(
 ): Promise<WebAssembly.Module>;
 
 export class OndaAudioProcessor {
-  constructor(node: AudioWorkletNode, metadata?: OndaProcessorMetadata | null);
+  constructor(
+    node: AudioWorkletNode,
+    metadata?: OndaProcessorMetadata | null,
+    initialPrintListener?: OndaAudioPrintListener,
+    /** Shared ring returned in processorOptions by ondaAudioWorkletNodeOptions(). */
+    executionOutputRing?: SharedArrayBuffer | null,
+  );
   readonly node: AudioWorkletNode;
   readonly metadata: OndaProcessorMetadata | null;
   request(type: string, fields?: Record<string, unknown>, transfer?: Transferable[]): Promise<any>;
