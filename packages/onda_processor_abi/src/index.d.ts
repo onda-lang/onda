@@ -152,6 +152,7 @@ export interface OndaEventParamMetadata {
   type_repr: string;
   scalar: OndaScalarType;
   array_len: number;
+  is_array: boolean;
   is_slice: boolean;
   byte_offset: number | null;
   byte_size: number | null;
@@ -174,6 +175,7 @@ export interface OndaDelegateParamMetadata {
   type_repr: string;
   scalar: OndaScalarType;
   array_len: number;
+  is_array: boolean;
   is_slice: boolean;
   byte_offset: number | null;
   byte_size: number | null;

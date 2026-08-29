@@ -251,8 +251,22 @@ test("worklet captures raw delegate records only while subscribed", () => {
   descriptor.metadata.delegates = [{
     name: "report",
     params: [
-      { name: "code", scalar: "i32", array_len: 1, is_slice: false, element_size_bytes: 4 },
-      { name: "values", scalar: "f32", array_len: 0, is_slice: true, element_size_bytes: 4 },
+      {
+        name: "code",
+        scalar: "i32",
+        array_len: 1,
+        is_array: false,
+        is_slice: false,
+        element_size_bytes: 4,
+      },
+      {
+        name: "values",
+        scalar: "f32",
+        array_len: 0,
+        is_array: false,
+        is_slice: true,
+        element_size_bytes: 4,
+      },
     ],
   }];
   const processor = new Processor({

@@ -6647,20 +6647,22 @@ class MirCompiler {
           payload_size_bytes: this.eventLayout[eventId].byteLength,
           payload_min_size_bytes: this.eventLayout[eventId].minimumByteLength,
           has_dynamic_payload: this.eventLayout[eventId].dynamic,
-          params: event.params.map((param, paramId) => ({
-            name: param.name,
-            type_repr: typeName(this.type(param.ty), this),
-            scalar: this.storageShape(param.ty).scalar,
-            array_len: this.storageShape(param.ty).length ?? 0,
-            is_slice: this.storageShape(param.ty).isSlice === true,
-            byte_offset: this.eventLayout[eventId][paramId].offset,
-            byte_size: this.eventLayout[eventId][paramId].size,
-            element_size_bytes: this.scalarSize(
-              this.storageShape(param.ty).scalar,
-            ),
-            has_default: param.default !== null && param.default !== undefined,
-            default_reprs: this.constantReprs(param.default),
-          })),
+          params: event.params.map((param, paramId) => {
+            const shape = this.storageShape(param.ty);
+            return {
+              name: param.name,
+              type_repr: typeName(this.type(param.ty), this),
+              scalar: shape.scalar,
+              array_len: shape.length ?? 0,
+              is_array: shape.isArray === true && shape.isSlice !== true,
+              is_slice: shape.isSlice === true,
+              byte_offset: this.eventLayout[eventId][paramId].offset,
+              byte_size: this.eventLayout[eventId][paramId].size,
+              element_size_bytes: this.scalarSize(shape.scalar),
+              has_default: param.default !== null && param.default !== undefined,
+              default_reprs: this.constantReprs(param.default),
+            };
+          }),
         })),
         delegates: this.mir.interface.delegates.map((delegate, delegateId) => ({
           index: delegateId,
@@ -6668,18 +6670,20 @@ class MirCompiler {
           payload_size_bytes: this.delegateLayout[delegateId].byteLength,
           payload_min_size_bytes: this.delegateLayout[delegateId].minimumByteLength,
           has_dynamic_payload: this.delegateLayout[delegateId].dynamic,
-          params: delegate.params.map((param, paramId) => ({
-            name: param.name,
-            type_repr: typeName(this.type(param.ty), this),
-            scalar: this.storageShape(param.ty).scalar,
-            array_len: this.storageShape(param.ty).length ?? 0,
-            is_slice: this.storageShape(param.ty).isSlice === true,
-            byte_offset: this.delegateLayout[delegateId][paramId].offset,
-            byte_size: this.delegateLayout[delegateId][paramId].size,
-            element_size_bytes: this.scalarSize(
-              this.storageShape(param.ty).scalar,
-            ),
-          })),
+          params: delegate.params.map((param, paramId) => {
+            const shape = this.storageShape(param.ty);
+            return {
+              name: param.name,
+              type_repr: typeName(this.type(param.ty), this),
+              scalar: shape.scalar,
+              array_len: shape.length ?? 0,
+              is_array: shape.isArray === true && shape.isSlice !== true,
+              is_slice: shape.isSlice === true,
+              byte_offset: this.delegateLayout[delegateId][paramId].offset,
+              byte_size: this.delegateLayout[delegateId][paramId].size,
+              element_size_bytes: this.scalarSize(shape.scalar),
+            };
+          }),
         })),
       },
     };

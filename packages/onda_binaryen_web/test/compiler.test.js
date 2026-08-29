@@ -2230,6 +2230,10 @@ test("exports packed scalar and fixed-array event handlers", async () => {
     artifact.metadata.metadata.events[0].params.map((param) => param.is_slice),
     [false, false],
   );
+  assert.deepEqual(
+    artifact.metadata.metadata.events[0].params.map((param) => param.is_array),
+    [false, true],
+  );
   assert.equal(artifact.metadata.metadata.events[0].payload_size_bytes, 12);
 
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
@@ -2274,6 +2278,7 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
   );
   const artifact = compileMir(mir, { optimize: false });
   assert.equal(artifact.metadata.metadata.delegates[0].name, "tick");
+  assert.equal(artifact.metadata.metadata.delegates[0].params[0].is_array, false);
   assert.equal(artifact.metadata.runtime.delegate_record_header_size_bytes, 12);
 
   const { instance } = await WebAssembly.instantiate(artifact.wasm);

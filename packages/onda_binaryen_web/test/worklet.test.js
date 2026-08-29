@@ -294,6 +294,7 @@ test("AudioWorklet bounds dynamic event storage before rendering starts", () => 
     params: [{
       name: "values",
       scalar: "f32",
+      is_array: false,
       is_slice: true,
     }],
   }];

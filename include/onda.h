@@ -1049,6 +1049,8 @@ int onda_delegate_record_min_bytes(const onda_program_t* program, int index);
 int onda_event_param_elem_type(const onda_program_t* program, int event_index, int param_index);
 /* Returns event parameter array length (1 for scalar, 0 for slice), or -1 if invalid. */
 int onda_event_param_array_len(const onda_program_t* program, int event_index, int param_index);
+/* Returns 1 if the event parameter is a fixed array, 0 if not, -1 if invalid. */
+int onda_event_param_is_array(const onda_program_t* program, int event_index, int param_index);
 /* Returns 1 if the event parameter is a slice, 0 if not, -1 if invalid. */
 int onda_event_param_is_slice(const onda_program_t* program, int event_index, int param_index);
 /* Returns the event parameter byte offset within the packed payload. Returns -1 if invalid or if a
@@ -1074,6 +1076,12 @@ int onda_delegate_param_elem_type(
   int param_index
 );
 int onda_delegate_param_array_len(
+  const onda_program_t* program,
+  int delegate_index,
+  int param_index
+);
+/* Returns 1 if the delegate parameter is a fixed array, 0 if not, -1 if invalid. */
+int onda_delegate_param_is_array(
   const onda_program_t* program,
   int delegate_index,
   int param_index

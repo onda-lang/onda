@@ -5317,6 +5317,17 @@ pub unsafe extern "C" fn onda_event_param_array_len(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_event_param_is_array(
+    program: *const onda_program,
+    event_index: i32,
+    param_index: i32,
+) -> i32 {
+    event_param_descriptor(program, event_index, param_index)
+        .map(|param| i32::from(param.is_array()))
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_event_param_is_slice(
     program: *const onda_program,
     event_index: i32,
@@ -5358,6 +5369,17 @@ pub unsafe extern "C" fn onda_delegate_param_array_len(
 ) -> i32 {
     delegate_param_descriptor(program, delegate_index, param_index)
         .and_then(|param| i32::try_from(param.array_len()).ok())
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_param_is_array(
+    program: *const onda_program,
+    delegate_index: i32,
+    param_index: i32,
+) -> i32 {
+    delegate_param_descriptor(program, delegate_index, param_index)
+        .map(|param| i32::from(param.is_array()))
         .unwrap_or(-1)
 }
 

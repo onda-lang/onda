@@ -1213,7 +1213,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   isFixedArray(info) {
-    return info?.is_slice !== true && /\[[0-9]+\]$/.test(info?.type_repr ?? "");
+    return info?.is_array
+      ?? (info?.is_slice !== true && /\[[0-9]+\]$/.test(info?.type_repr ?? ""));
   }
 
   decodeConstantScalar(scalar) {

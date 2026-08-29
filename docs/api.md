@@ -409,12 +409,14 @@ Events and delegates expose parallel parameter metadata:
 | Name | `onda_event_param_name` | `onda_delegate_param_name` |
 | Primitive type | `onda_event_param_elem_type` | `onda_delegate_param_elem_type` |
 | Fixed length / slice marker | `onda_event_param_array_len` | `onda_delegate_param_array_len` |
+| Is fixed array | `onda_event_param_is_array` | `onda_delegate_param_is_array` |
 | Is slice | `onda_event_param_is_slice` | `onda_delegate_param_is_slice` |
 | Fixed byte offset | `onda_event_param_offset_bytes` | `onda_delegate_param_offset_bytes` |
 
-A scalar has array length `1`; a slice has length `0`. The first slice itself has a fixed offset to
-its length prefix. Every parameter following a slice has a runtime-dependent offset, so the offset
-query returns `-1`; decode sequentially from the preceding slice length instead.
+A scalar has array length `1`; a slice has length `0`. Use the `is_array` query to distinguish a
+scalar from a fixed array of length one. The first slice itself has a fixed offset to its length
+prefix. Every parameter following a slice has a runtime-dependent offset, so the offset query
+returns `-1`; decode sequentially from the preceding slice length instead.
 
 `onda_event_payload_bytes` returns the exact payload size for a fixed event and `-1` for a dynamic
 event. Delegate sizing is described in [Delegates](#delegates).
@@ -853,12 +855,14 @@ onda_delegate_record_bytes
 onda_delegate_record_min_bytes
 onda_event_param_elem_type
 onda_event_param_array_len
+onda_event_param_is_array
 onda_event_param_is_slice
 onda_event_param_offset_bytes
 onda_event_param_has_default
 onda_event_param_default_bytes
 onda_delegate_param_elem_type
 onda_delegate_param_array_len
+onda_delegate_param_is_array
 onda_delegate_param_is_slice
 onda_delegate_param_offset_bytes
 onda_buffer_elem_type

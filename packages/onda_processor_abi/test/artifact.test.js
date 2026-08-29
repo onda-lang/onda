@@ -40,6 +40,7 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
     PROCESSOR_ARTIFACT_FORMAT_VERSION,
   );
   assert.equal(fixture.metadata.states[0].integer_range.mode, "wrap");
+  assert.equal(fixture.metadata.delegates[0].params[0].is_array, false);
 
   const missingCanonicalField = structuredClone(fixture);
   delete missingCanonicalField.metadata.inputs[0].default_reprs;
@@ -53,6 +54,20 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
   assert.throws(
     () => validateProcessorMetadata(inconsistentLayout),
     /byte_size does not match/,
+  );
+
+  const missingArrayShape = structuredClone(fixture);
+  delete missingArrayShape.metadata.delegates[0].params[0].is_array;
+  assert.throws(
+    () => validateProcessorMetadata(missingArrayShape),
+    /is_array must be a boolean/,
+  );
+
+  const inconsistentArrayShape = structuredClone(fixture);
+  inconsistentArrayShape.metadata.delegates[0].params[0].is_array = true;
+  assert.throws(
+    () => validateProcessorMetadata(inconsistentArrayShape),
+    /invalid fixed-size descriptor/,
   );
 
   const inconsistentLogPayload = structuredClone(fixture);
@@ -765,10 +780,10 @@ test("round-trips integrity-associated artifact files", async () => {
 
 test("prepares and decodes call-scoped delegate batches", () => {
   const memory = new ArrayBuffer(80);
-  writeDelegateBatch(memory, 0, 20, 28);
+  writeDelegateBatch(memory, 0, 20, 32);
   assert.deepEqual(readDelegateBatch(memory, 0), {
     storageAddress: 20,
-    capacityBytes: 28,
+    capacityBytes: 32,
     usedBytes: 0,
     recordCount: 0,
     overflowCount: 0,
@@ -776,19 +791,42 @@ test("prepares and decodes call-scoped delegate batches", () => {
 
   const view = new DataView(memory);
   view.setUint32(20, 0, true);
-  view.setUint32(24, 16, true);
+  view.setUint32(24, 20, true);
   view.setUint32(28, 9, true);
   view.setInt32(32, 7, true);
   view.setInt32(36, 2, true);
   view.setFloat32(40, 1.25, true);
   view.setFloat32(44, -2.5, true);
-  view.setUint32(8, 28, true);
+  view.setInt32(48, 99, true);
+  view.setUint32(8, 32, true);
   view.setUint32(12, 1, true);
   const delegates = [{
     name: "report",
     params: [
-      { name: "code", scalar: "i32", array_len: 1, is_slice: false, element_size_bytes: 4 },
-      { name: "values", scalar: "f32", array_len: 0, is_slice: true, element_size_bytes: 4 },
+      {
+        name: "code",
+        scalar: "i32",
+        array_len: 1,
+        is_array: false,
+        is_slice: false,
+        element_size_bytes: 4,
+      },
+      {
+        name: "values",
+        scalar: "f32",
+        array_len: 0,
+        is_array: false,
+        is_slice: true,
+        element_size_bytes: 4,
+      },
+      {
+        name: "singleton",
+        scalar: "i32",
+        array_len: 1,
+        is_array: true,
+        is_slice: false,
+        element_size_bytes: 4,
+      },
     ],
   }];
   const batch = readDelegateBatch(memory, 0);
@@ -800,7 +838,7 @@ test("prepares and decodes call-scoped delegate batches", () => {
   assert.equal(records[0].sequence, 9);
   assert.deepEqual(records.map(({ name, values }) => ({ name, values })), [{
     name: "report",
-    values: { code: 7, values: [1.25, -2.5] },
+    values: { code: 7, values: [1.25, -2.5], singleton: [99] },
   }]);
 });
 

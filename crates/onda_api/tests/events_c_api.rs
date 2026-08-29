@@ -1728,6 +1728,7 @@ sample { out1 = amp }
 
         assert_eq!(onda_event_param_elem_type(program.0, 0, 0), 2);
         assert_eq!(onda_event_param_array_len(program.0, 0, 0), 1);
+        assert_eq!(onda_event_param_is_array(program.0, 0, 0), 0);
         assert_eq!(onda_event_param_is_slice(program.0, 0, 0), 0);
         assert_eq!(onda_event_param_offset_bytes(program.0, 0, 0), 0);
         assert_eq!(onda_event_param_has_default(program.0, 0, 0), 1);
@@ -1771,6 +1772,7 @@ sample { out1 = amp }
 
         assert_eq!(onda_event_param_elem_type(program.0, 1, 0), 0);
         assert_eq!(onda_event_param_array_len(program.0, 1, 0), 2);
+        assert_eq!(onda_event_param_is_array(program.0, 1, 0), 1);
         assert_eq!(onda_event_param_is_slice(program.0, 1, 0), 0);
         assert_eq!(onda_event_param_offset_bytes(program.0, 1, 0), 0);
         assert_eq!(onda_event_param_has_default(program.0, 1, 0), 1);
@@ -2210,29 +2212,40 @@ fn c_api_delegate_metadata_marks_offsets_after_slices_as_dynamic() {
     unsafe {
         let program = compile_program(
             r#"
-delegate report(code: i32, values: f32[], tag: i64)
+delegate report(code: i32, one: i32[1], values: f32[], tag: i64)
 sample:
   out1 = 0.0
 "#,
         );
 
         assert_eq!(onda_delegate_count(program.0), 1);
-        assert_eq!(onda_delegate_param_count(program.0, 0), 3);
+        assert_eq!(onda_delegate_param_count(program.0, 0), 4);
 
         assert_eq!(onda_delegate_param_elem_type(program.0, 0, 0), 2);
         assert_eq!(onda_delegate_param_array_len(program.0, 0, 0), 1);
+        assert_eq!(onda_delegate_param_is_array(program.0, 0, 0), 0);
         assert_eq!(onda_delegate_param_is_slice(program.0, 0, 0), 0);
         assert_eq!(onda_delegate_param_offset_bytes(program.0, 0, 0), 0);
 
-        assert_eq!(onda_delegate_param_elem_type(program.0, 0, 1), 0);
-        assert_eq!(onda_delegate_param_array_len(program.0, 0, 1), 0);
-        assert_eq!(onda_delegate_param_is_slice(program.0, 0, 1), 1);
+        assert_eq!(onda_delegate_param_elem_type(program.0, 0, 1), 2);
+        assert_eq!(onda_delegate_param_array_len(program.0, 0, 1), 1);
+        assert_eq!(onda_delegate_param_is_array(program.0, 0, 1), 1);
+        assert_eq!(onda_delegate_param_is_slice(program.0, 0, 1), 0);
         assert_eq!(onda_delegate_param_offset_bytes(program.0, 0, 1), 4);
 
-        assert_eq!(onda_delegate_param_elem_type(program.0, 0, 2), 3);
-        assert_eq!(onda_delegate_param_array_len(program.0, 0, 2), 1);
-        assert_eq!(onda_delegate_param_is_slice(program.0, 0, 2), 0);
-        assert_eq!(onda_delegate_param_offset_bytes(program.0, 0, 2), -1);
+        assert_eq!(onda_delegate_param_elem_type(program.0, 0, 2), 0);
+        assert_eq!(onda_delegate_param_array_len(program.0, 0, 2), 0);
+        assert_eq!(onda_delegate_param_is_array(program.0, 0, 2), 0);
+        assert_eq!(onda_delegate_param_is_slice(program.0, 0, 2), 1);
+        assert_eq!(onda_delegate_param_offset_bytes(program.0, 0, 2), 8);
+
+        assert_eq!(onda_delegate_param_elem_type(program.0, 0, 3), 3);
+        assert_eq!(onda_delegate_param_array_len(program.0, 0, 3), 1);
+        assert_eq!(onda_delegate_param_is_array(program.0, 0, 3), 0);
+        assert_eq!(onda_delegate_param_is_slice(program.0, 0, 3), 0);
+        assert_eq!(onda_delegate_param_offset_bytes(program.0, 0, 3), -1);
+
+        assert_eq!(onda_delegate_param_is_array(program.0, 0, 4), -1);
     }
 }
 

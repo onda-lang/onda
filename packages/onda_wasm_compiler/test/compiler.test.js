@@ -164,10 +164,10 @@ sample:
 
 test("compiles and publishes dynamic delegate payloads end to end", async () => {
   const compiler = await createCompiler();
-  const { artifact } = await compiler.compileSource(`delegate report(code: i32, values: f32[], tags: i32[])
+  const { artifact } = await compiler.compileSource(`delegate report(singleton: i32[1], code: i32, values: f32[], tags: i32[])
 
-event trigger(values: f32[], tags: i32[]):
-  report(7, values, tags)
+event trigger(singleton: i32[1], values: f32[], tags: i32[]):
+  report(singleton, 7, values, tags)
 
 sample:
   out1 = 0.0
@@ -187,12 +187,14 @@ sample:
   };
   const params = allocate(artifact.metadata.runtime.param_size_bytes);
   const state = allocate(artifact.metadata.runtime.state_size_bytes);
-  const payload = allocate(28);
+  const payload = allocate(32);
   const batchAddress = allocate(20);
-  const storageAddress = allocate(44);
+  const storageAddress = allocate(48);
   const executionOutputAddress = allocate(12);
   const view = new DataView(memory.buffer);
   let cursor = payload;
+  view.setInt32(cursor, 23, true);
+  cursor += 4;
   view.setInt32(cursor, 2, true);
   cursor += 4;
   view.setFloat32(cursor, 1.25, true);
@@ -205,26 +207,28 @@ sample:
     view.setInt32(cursor, tag, true);
     cursor += 4;
   }
-  writeDelegateBatch(memory, batchAddress, storageAddress, 44);
+  writeDelegateBatch(memory, batchAddress, storageAddress, 48);
   writeExecutionOutput(memory, executionOutputAddress, batchAddress, 0);
   assert.equal(initialize(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(trigger(payload, params, state, 0, 0, 0, 0, executionOutputAddress), 0);
   const batch = readDelegateBatch(memory, batchAddress);
   assert.deepEqual(batch, {
     storageAddress,
-    capacityBytes: 44,
-    usedBytes: 44,
+    capacityBytes: 48,
+    usedBytes: 48,
     recordCount: 1,
     overflowCount: 0,
   });
   const records = decodeDelegateRecords(
-    new Uint8Array(memory.buffer, storageAddress, 44),
+    new Uint8Array(memory.buffer, storageAddress, 48),
     batch.usedBytes,
     artifact.metadata.metadata.delegates,
   );
   assert.equal(records[0].name, "report");
   assert.equal(records[0].sequence, 0);
+  assert.equal(artifact.metadata.metadata.delegates[0].params[0].is_array, true);
   assert.deepEqual(records[0].values, {
+    singleton: [23],
     code: 7,
     values: [1.25, -2.5],
     tags: [11, -4, 99],

@@ -497,6 +497,7 @@ function validatePayloadMetadata(value, path, supportsDefaults) {
     requireString(param?.type_repr, `${paramPath}.type_repr`);
     requireScalar(param?.scalar, `${paramPath}.scalar`);
     requireInteger(param?.array_len, `${paramPath}.array_len`, 0);
+    requireBoolean(param?.is_array, `${paramPath}.is_array`);
     requireBoolean(param?.is_slice, `${paramPath}.is_slice`);
     requireNullableInteger(param?.byte_offset, `${paramPath}.byte_offset`, 0);
     requireNullableInteger(param?.byte_size, `${paramPath}.byte_size`, 0);
@@ -511,7 +512,9 @@ function validatePayloadMetadata(value, path, supportsDefaults) {
     }
     if (param.is_slice) {
       if (
-        param.array_len !== 0
+        param.is_array
+        || param.type_repr !== `${param.scalar}[]`
+        || param.array_len !== 0
         || param.byte_size !== null
         || (supportsDefaults && param.has_default)
       ) {
@@ -520,7 +523,15 @@ function validatePayloadMetadata(value, path, supportsDefaults) {
       minimumSize += 4;
       hasDynamicParam = true;
     } else {
-      if (param.array_len < 1 || param.byte_size !== param.element_size_bytes * param.array_len) {
+      const expectedType = param.is_array
+        ? `${param.scalar}[${param.array_len}]`
+        : param.scalar;
+      if (
+        param.array_len < 1
+        || (!param.is_array && param.array_len !== 1)
+        || param.type_repr !== expectedType
+        || param.byte_size !== param.element_size_bytes * param.array_len
+      ) {
         throw new OndaArtifactError(`${paramPath} has an invalid fixed-size descriptor`);
       }
       minimumSize += param.byte_size;
@@ -1267,7 +1278,7 @@ function decodeDelegatePayload(view, start, size, delegate, littleEndian) {
       entries.push(readPayloadScalar(view, cursor, param.scalar, littleEndian));
       cursor += param.element_size_bytes;
     }
-    values[param.name] = !param.is_slice && count === 1 ? entries[0] : entries;
+    values[param.name] = param.is_array || param.is_slice ? entries : entries[0];
   }
   if (cursor !== end) {
     throw new OndaArtifactError(`delegate '${delegate.name}' payload has trailing bytes`);
