@@ -84,7 +84,7 @@ sample:
   for i in 0..VoiceCount:
     voice = voices[i]()
     pan = -0.8 + 1.6 * i / (VoiceCount - 1)
-    (gain_l, gain_r) = std::levels::pan_3db(pan)
+    gain_l, gain_r = std::levels::pan_3db(pan)
     dry_l = dry_l + voice * gain_l
     dry_r = dry_r + voice * gain_r
 

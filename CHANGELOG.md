@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
-## [0.7.6]
+## [0.8.0]
 
 ### Added
 
@@ -48,8 +48,15 @@ release; earlier releases are available on the
   `begin_impulse` and `set_impulse_window`, together with `stage_window_count`,
   `impulse_window_count`, and `impulse_window_end` helpers. The Embedded Room project now uses a
   task to distribute impulse transformation over a configurable loading interval.
+- Added `std/dynamics` with linked stereo compressor, limiter, gate, peak-follower, and RMS-follower
+  processors, plus `std/sample` with a typed multichannel buffer player and synchronous completion
+  and loop delegates. Expanded `std/delay` with integer, linear, cubic, smoothly transitioning, and
+  feedback delay-line processors, and added start, release, reset, and completion surfaces to the
+  standard envelopes.
 - Added formatter, completion, navigation, document-symbol, validation, and semantic-highlighting
   support for tasks, pinned state, private proc parameters, and explicitly typed loop induction.
+- Added bare tuple destructuring targets such as `left, right = pair()`, with `_` entries for
+  discarding unneeded tuple or processor outputs without creating bindings.
 
 ### Changed
 
@@ -83,6 +90,22 @@ release; earlier releases are available on the
   rtkit burst-limit handling, device naming and routing fixes, and corrected stream start and
   24-bit format behavior. The `onda_cpal` test and doctest harnesses are enabled again because the
   previous `libspa-sys` binding failure no longer reproduces with this dependency set.
+
+### Fixed
+
+- Fixed source-level processor validation selecting overloaded functions or struct methods by
+  declaration order instead of resolving the typed call shape, including calls distinguished by
+  buffer dimensionality or arity.
+- Fixed tuple destructuring of multi-output processor calls, including nested processors, indexed
+  processor arrays, and processor-array parameters. The selected processor and any dynamic index
+  are now evaluated exactly once before its outputs are bound in declaration order.
+- Fixed generated processor event functions losing their instance's buffer bindings. Direct,
+  nested, and dynamically indexed event calls now forward the current buffers so handlers can read,
+  write, and query them after host rebinding.
+- Fixed standard-library oscillators failing to propagate parent parameter updates to nested
+  oscillators, negative phasor increments wrapping incorrectly, zero-delay and wrapped delay-line
+  behavior, repeated envelope completion, and first-use FFT state depending on runtime-prepared
+  twiddle tables.
 
 ### Migration notes
 
@@ -577,7 +600,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
-[0.7.5]: https://github.com/onda-lang/onda/compare/0.7.5...0.7.6
+[0.8.0]: https://github.com/onda-lang/onda/compare/0.7.5...0.8.0
 [0.7.5]: https://github.com/onda-lang/onda/compare/0.7.4...0.7.5
 [0.7.4]: https://github.com/onda-lang/onda/compare/0.7.3...0.7.4
 [0.7.3]: https://github.com/onda-lang/onda/compare/0.7.2...0.7.3

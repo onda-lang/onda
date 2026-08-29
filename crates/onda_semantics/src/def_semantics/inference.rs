@@ -1495,7 +1495,7 @@ fn collect_stmt_field_usage(
                     }
                 }
                 AssignTarget::Tuple(names) => {
-                    for name in names {
+                    for name in names.iter().filter_map(|target| target.binding()) {
                         if let Some((base, field)) = split_simple_field_path(name) {
                             if let Some(param_idx) = param_index.get(base).copied() {
                                 mark_param_field_usage(

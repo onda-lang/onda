@@ -695,6 +695,287 @@ fn stdlib_env_asr_supports_f64_and_holds_sustain() {
 }
 
 #[test]
+fn stdlib_decay_env_publishes_finished_once_per_start() {
+    let source = r#"
+import std/env
+
+init:
+  env = std::env::DecayEnv(decay_s = 1.0 / SR, end_level = 0.5)
+  completions: i32 = 0
+
+event start():
+  env.start()
+
+when env.finished():
+  completions += 1
+
+sample:
+  out1 = env() + f32(completions)
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let start = instance.event_index("start").expect("start event");
+    trigger_event_by_index(
+        &mut instance,
+        start,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("start should succeed");
+
+    let mut output = [0.0_f32; 1];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process completion");
+    assert_near(output[0], 1.0, 1e-6);
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process idle envelope");
+    assert_near(output[0], 1.0, 1e-6);
+}
+
+#[test]
+fn stdlib_delay_lines_use_wrapped_cursors_and_zero_delay_is_direct() {
+    let source = r#"
+import std/delay
+
+init:
+  frame = 0 {8, wrap}
+  direct = std::delay<8>::Linear(delay_samples = 0.0)
+  delayed = std::delay<8>::Integer(delay_samples = 2)
+
+sample:
+  if frame == 0:
+    impulse = 1.0
+  else:
+    impulse = 0.0
+  out1 = direct(impulse)
+  out2 = delayed(impulse)
+  frame += 1
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = [0.0_f32; 8];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process delay lines");
+    assert_eq!(output, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn stdlib_dynamics_compressor_and_limiter_link_channels() {
+    let source = r#"
+import std/dynamics
+
+init:
+  compressor = std::dynamics::Compressor(
+    threshold_db = -12.0,
+    ratio = 4.0,
+    attack_s = 0.0,
+    release_s = 0.0,
+    knee_db = 0.0,
+  )
+  limiter = std::dynamics::Limiter(ceiling_db = -6.0, release_s = 0.0)
+
+sample:
+  compressor(1.0, 1.0)
+  out1 = compressor.out1
+  limiter(2.0, -1.0)
+  out2 = limiter.out1
+  out3 = limiter.out2
+"#;
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 3);
+
+    let mut output = [0.0_f32; 6];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process dynamics");
+    for frame in output.as_chunks::<3>().0 {
+        assert!(
+            frame[0] > 0.3 && frame[0] < 0.4,
+            "compressor output: {frame:?}"
+        );
+        assert!(frame[1] <= 0.502, "limiter left output: {frame:?}");
+        assert_near(frame[2], frame[1] * -0.5, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_sample_player_duplicates_mono_and_reports_completion() {
+    let source = r#"
+import std/sample
+
+buffers:
+  clip: f32
+
+init:
+  player = std::sample::Player(clip = clip)
+  did_finish = false
+
+event play():
+  player.play()
+
+when player.finished():
+  did_finish = true
+
+sample:
+  player()
+  out1 = player.out1
+  out2 = player.out2
+  if did_finish:
+    out3 = 1.0
+  else:
+    out3 = 0.0
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 3);
+
+    let mut clip = [0.25_f32, 0.75_f32];
+    bind_buffer(
+        &mut instance,
+        0,
+        clip.as_mut_ptr().cast(),
+        clip.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind sample clip");
+    let play = instance.event_index("play").expect("play event");
+    trigger_event_by_index(
+        &mut instance,
+        play,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("play should succeed");
+
+    let mut output = [0.0_f32; 12];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process player");
+    assert_eq!(
+        output,
+        [0.25, 0.25, 0.0, 0.75, 0.75, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0,]
+    );
+}
+
+#[test]
+fn stdlib_sample_player_events_normalize_against_the_bound_clip() {
+    let source = r#"
+import std/sample
+
+buffers:
+  clip: f32
+
+init:
+  player = std::sample<1>::Player(clip = clip, looping = true)
+
+events:
+  play(frame: f32):
+    player.play(frame)
+
+  seek(frame: f32):
+    player.seek(frame)
+
+sample:
+  out1 = player()
+"#;
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut clip = [0.0_f32, 1.0, 2.0, 3.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        clip.as_mut_ptr().cast(),
+        clip.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind sample clip");
+
+    let play = instance.event_index("play").expect("play event");
+    trigger_event_by_index(
+        &mut instance,
+        play,
+        &(-1.0_f32).to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("play should normalize from the bound clip length");
+
+    let mut output = [0.0_f32; 2];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process wrapped play");
+    assert_eq!(output, [3.0, 0.0]);
+
+    let seek = instance.event_index("seek").expect("seek event");
+    trigger_event_by_index(
+        &mut instance,
+        seek,
+        &5.0_f32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("seek should normalize from the bound clip length");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process wrapped seek");
+    assert_eq!(output, [1.0, 2.0]);
+}
+
+#[test]
+fn stdlib_sample_player_specializes_for_f64_buffers() {
+    let source = r#"
+import std/sample
+
+buffers:
+  clip: f64
+
+init:
+  player = std::sample::Player<f64>(clip = clip)
+
+event play():
+  player.play()
+
+sample:
+  player()
+  out1 = f32(player.out1)
+  out2 = f32(player.out2)
+"#;
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut clip = [0.125_f64, 0.875_f64];
+    bind_buffer(
+        &mut instance,
+        0,
+        clip.as_mut_ptr().cast(),
+        clip.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F64,
+    )
+    .expect("bind f64 sample clip");
+    let play = instance.event_index("play").expect("play event");
+    trigger_event_by_index(
+        &mut instance,
+        play,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("play should succeed");
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process f64 player");
+    assert_eq!(output, [0.125, 0.125, 0.875, 0.875]);
+}
+
+#[test]
 
 fn stdlib_square_supports_f64_and_stays_bounded() {
     let frames = 128;
@@ -767,6 +1048,32 @@ fn stdlib_osc_phasor_param_call_updates_within_block() {
     assert_near(output[1], 0.25, 1e-6);
     assert_near(output[2], 0.5, 1e-6);
     assert_near(output[3], 0.75, 1e-6);
+}
+
+#[test]
+fn stdlib_osc_parent_param_hooks_update_child_oscillators() {
+    let source = r#"
+import std/osc
+
+init:
+  oscillator = std::osc::Sine(freq = 0.0)
+  frame = 0
+
+sample:
+  if frame == 0:
+    oscillator.freq = SR * 0.25
+  out1 = oscillator()
+  frame += 1
+"#;
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 2];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process sine hook");
+    assert_near(output[0], 1.0, 1e-6);
+    assert_near(output[1], 0.0, 1e-6);
 }
 
 #[test]

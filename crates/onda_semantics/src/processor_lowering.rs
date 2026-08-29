@@ -1039,31 +1039,56 @@ fn build_proc_lowering_env(
             });
         }
     }
+    let (pre_desugar_overloads, _) =
+        crate::def_semantics::prepare_function_overloads(&mut pre_desugar_defs);
+    let provisional_signatures = pre_desugar_defs
+        .iter()
+        .map(|def| (def.name.clone(), FnSignature::from_def(def)))
+        .collect::<HashMap<_, _>>();
+    let provisional_return_types = infer_def_return_types(
+        &pre_desugar_defs,
+        &provisional_signatures,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &HashMap::new(),
+    );
+    for def in &mut pre_desugar_defs {
+        rewrite_source_overload_function(
+            def,
+            &crate::def_semantics::CallTypeEnv::default(),
+            &pre_desugar_overloads,
+            &provisional_return_types,
+            &typed_struct_defs,
+        );
+    }
+    let top_return_types = source_overload_return_types(
+        &pre_desugar_defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &typed_struct_defs,
+    );
+    for proc in &mut proc_defs {
+        resolve_processor_source_overloads(
+            proc,
+            options,
+            const_arrays,
+            &pre_desugar_overloads,
+            &top_return_types,
+            &typed_struct_defs,
+        );
+    }
     for proc in &proc_defs {
         for local_def in unique_proc_local_defs(proc) {
             pre_desugar_defs.push(pre_desugar_proc_local_hidden_def(&proc.name, &local_def));
         }
     }
-    let mut pre_desugar_fn_signatures = HashMap::<String, FnSignature>::new();
-    for def in &pre_desugar_defs {
-        pre_desugar_fn_signatures
-            .entry(def.name.clone())
-            .or_insert_with(|| FnSignature {
-                display_name: None,
-                requires_call_specialization: false,
-                params: def.params.iter().map(|p| p.name.clone()).collect(),
-                defaults: def.params.iter().map(|p| p.default.clone()).collect(),
-                param_types: def.params.iter().map(|p| p.ty.clone()).collect(),
-                type_params: def.type_params.clone(),
-                return_type: None,
-                readonly_array_params: HashSet::new(),
-            });
-    }
+    let pre_desugar_fn_signatures = pre_desugar_defs
+        .iter()
+        .map(|def| (def.name.clone(), FnSignature::from_def(def)))
+        .collect::<HashMap<_, _>>();
     let pre_desugar_def_return_types = infer_def_return_types(
         &pre_desugar_defs,
         &pre_desugar_fn_signatures,
         &crate::def_semantics::CallTypeEnv::default(),
-        &HashMap::new(),
+        &typed_struct_defs,
     );
     for proc in &mut proc_defs {
         let sample_inferred = infer_numbered_io_from_sample(&proc.sample);

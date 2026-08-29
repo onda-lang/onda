@@ -84,7 +84,7 @@ sample:
   mix_r = 0.0
   for i in 0..NumVoices:
     voice = voices[i]()
-    (gain_l, gain_r) = std::levels::pan_3db(voice_pan[i])
+    gain_l, gain_r = std::levels::pan_3db(voice_pan[i])
     mix_l = mix_l + voice * gain_l
     mix_r = mix_r + voice * gain_r
   out1 = tanh(mix_l * level)

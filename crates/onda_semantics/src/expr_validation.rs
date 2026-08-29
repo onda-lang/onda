@@ -9,6 +9,38 @@ fn push_loc_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, message: impl In
     errors.push(Diagnostic::semantic_span(message, loc));
 }
 
+fn block_audio_input_name<'a>(name: &'a str, env: ExprEnv<'_>) -> Option<&'a str> {
+    if env.scope != ScopeKind::Block
+        || env.locals.contains(name)
+        || env.local_aliases.contains_key(name)
+        || env.local_array_aliases.contains_key(name)
+    {
+        return None;
+    }
+    if env.input_names.contains(name)
+        || (name == "ins" && !env.input_names.is_empty())
+        || env.input_names.iter().any(|input| {
+            input
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with('['))
+        })
+    {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+fn push_block_audio_input_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, name: &str) {
+    push_loc_error(
+        errors,
+        loc,
+        format!(
+            "audio input '{name}' can only be read in sample; move this read into the block's nested sample section"
+        ),
+    );
+}
+
 fn infer_call_argument_scalar_type(expr: &Expr, env: ExprEnv<'_>) -> Option<PrimitiveType> {
     let mut discarded = Vec::new();
     infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
@@ -315,7 +347,7 @@ pub(crate) fn validate_block_bound_surface_assign_target(
             }
         }
         AssignTarget::Tuple(names) => {
-            for name in names {
+            for name in names.iter().filter_map(|target| target.binding()) {
                 ok &= validate_block_bound_surface_var_name(name, loc, env, errors);
             }
         }
@@ -349,6 +381,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             // outer aggregate/resource namespace so a loop index fully
             // shadows a same-named array, buffer, or struct.
             if env.locals.contains(name) {
+                return;
+            }
+            if let Some(name) = block_audio_input_name(name, env) {
+                push_block_audio_input_error(errors, expr.loc(), name);
                 return;
             }
             if let Some((root, field)) = name.split_once('.') {
@@ -544,6 +580,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     expr,
                     format!("loop variable '{lexical_root}' is scalar and cannot be indexed"),
                 );
+                validate_expr(index, env, errors);
+                return;
+            }
+            if let Some(name) = block_audio_input_name(base, env) {
+                push_block_audio_input_error(errors, expr.loc(), name);
                 validate_expr(index, env, errors);
                 return;
             }
@@ -771,6 +812,13 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     expr,
                     format!("loop variable '{lexical_root}' is scalar and cannot be sliced"),
                 );
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    validate_expr(coordinate, env, errors);
+                }
+                return;
+            }
+            if let Some(name) = block_audio_input_name(base, env) {
+                push_block_audio_input_error(errors, expr.loc(), name);
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     validate_expr(coordinate, env, errors);
                 }

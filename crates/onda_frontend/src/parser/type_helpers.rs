@@ -1273,10 +1273,13 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
             })
         }
         Rule::tuple_target => {
-            let targets: Vec<String> = pair
+            let targets = pair
                 .into_inner()
                 .filter(|p| p.as_rule() == Rule::ident)
-                .map(|p| p.as_str().to_owned())
+                .map(|p| match p.as_str() {
+                    "_" => TupleAssignTarget::Discard,
+                    name => TupleAssignTarget::Binding(name.to_owned()),
+                })
                 .collect();
             Ok(AssignTarget::Tuple(targets))
         }

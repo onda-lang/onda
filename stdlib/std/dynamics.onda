@@ -1,0 +1,193 @@
+import std/levels
+import std/smoothing
+
+namespace std::dynamics:
+  def soft_knee_reduction_db<T>(level_db: T, threshold_db: T, ratio: T, knee_db: T):
+    over_db = level_db - threshold_db
+    slope = T(1.0) - T(1.0) / max(ratio, T(1.0))
+    half_knee = max(knee_db, T(0.0)) * T(0.5)
+    if over_db >= half_knee:
+      return over_db * slope
+    if over_db > -half_knee && half_knee > 0.0:
+      knee_pos = over_db + half_knee
+      return slope * knee_pos * knee_pos / (T(4.0) * half_knee)
+    return T(0.0)
+
+  proc PeakFollower<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      attack_s = 0.01 => update_attack
+      release_s = 0.1 => update_release
+
+    init<T>:
+      envelope = 0.0
+      attack_coef = 0.0
+      release_coef = 0.0
+
+    def update_attack():
+      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+
+    def update_release():
+      release_coef = std::smoothing::time_coefficient<T>(release_s)
+
+    event reset():
+      envelope = 0.0
+
+    sample:
+      level = abs(in1)
+      if level > envelope:
+        envelope = level + (envelope - level) * attack_coef
+      else:
+        envelope = level + (envelope - level) * release_coef
+      out1 = envelope
+
+  proc RmsFollower<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      attack_s = 0.01 => update_attack
+      release_s = 0.1 => update_release
+
+    init<T>:
+      mean_square = 0.0
+      attack_coef = 0.0
+      release_coef = 0.0
+
+    def update_attack():
+      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+
+    def update_release():
+      release_coef = std::smoothing::time_coefficient<T>(release_s)
+
+    event reset():
+      mean_square = 0.0
+
+    sample:
+      square = in1 * in1
+      if square > mean_square:
+        mean_square = square + (mean_square - square) * attack_coef
+      else:
+        mean_square = square + (mean_square - square) * release_coef
+      out1 = sqrt(max(mean_square, T(0.0)))
+
+  proc Compressor<T>:
+    ins<T> 2
+    outs<T> 2
+
+    params<T>:
+      threshold_db = -18.0
+      ratio = 4.0
+      attack_s = 0.01 => update_attack
+      release_s = 0.1 => update_release
+      knee_db = 6.0
+      makeup_db = 0.0
+
+    init<T>:
+      detector = 0.0
+      attack_coef = 0.0
+      release_coef = 0.0
+
+    def update_attack():
+      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+
+    def update_release():
+      release_coef = std::smoothing::time_coefficient<T>(release_s)
+
+    event reset():
+      detector = 0.0
+
+    sample:
+      peak = max(abs(in1), abs(in2))
+      if peak > detector:
+        detector = peak + (detector - peak) * attack_coef
+      else:
+        detector = peak + (detector - peak) * release_coef
+
+      level_db = std::levels::gain_to_db<T>(detector)
+      reduction_db = std::dynamics::soft_knee_reduction_db<T>(
+        level_db,
+        threshold_db,
+        ratio,
+        knee_db,
+      )
+      gain = std::levels::db_to_gain<T>(makeup_db - reduction_db)
+      out1 = in1 * gain
+      out2 = in2 * gain
+
+  proc Limiter<T>:
+    ins<T> 2
+    outs<T> 2
+
+    params<T>:
+      ceiling_db = -0.3 => update_ceiling
+      release_s = 0.05 => update_release
+
+    init<T>:
+      gain = 1.0
+      ceiling = 1.0
+      release_coef = 0.0
+
+    def update_ceiling():
+      ceiling = std::levels::db_to_gain<T>(ceiling_db)
+
+    def update_release():
+      release_coef = std::smoothing::time_coefficient<T>(release_s)
+
+    event reset():
+      gain = 1.0
+
+    sample:
+      peak = max(abs(in1), abs(in2))
+      if peak > ceiling:
+        target_gain = ceiling / peak
+      else:
+        target_gain = T(1.0)
+
+      if target_gain < gain:
+        gain = target_gain
+      else:
+        gain = target_gain + (gain - target_gain) * release_coef
+
+      out1 = in1 * gain
+      out2 = in2 * gain
+
+  proc Gate<T>:
+    ins<T> 2
+    outs<T> 2
+
+    params<T>:
+      threshold_db = -48.0 => update_threshold
+      attack_s = 0.002 => update_attack
+      release_s = 0.08 => update_release
+
+    init<T>:
+      threshold = 0.0
+      gain = 0.0
+      attack_coef = 0.0
+      release_coef = 0.0
+
+    def update_threshold():
+      threshold = std::levels::db_to_gain<T>(threshold_db)
+
+    def update_attack():
+      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+
+    def update_release():
+      release_coef = std::smoothing::time_coefficient<T>(release_s)
+
+    event reset():
+      gain = 0.0
+
+    sample:
+      if max(abs(in1), abs(in2)) >= threshold:
+        target_gain = T(1.0)
+        coef = attack_coef
+      else:
+        target_gain = T(0.0)
+        coef = release_coef
+      gain = target_gain + (gain - target_gain) * coef
+      out1 = in1 * gain
+      out2 = in2 * gain

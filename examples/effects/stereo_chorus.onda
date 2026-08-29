@@ -34,6 +34,6 @@ sample:
   chorus.depth_ms = depth_ms
   chorus.width = width
   chorus.mix = mix
-  chorus(source_l, source_r)
-  out1 = chorus.out1 * level
-  out2 = chorus.out2 * level
+  chorus_l, chorus_r = chorus(source_l, source_r)
+  out1 = chorus_l * level
+  out2 = chorus_r * level

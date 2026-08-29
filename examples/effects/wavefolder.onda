@@ -27,6 +27,6 @@ sample:
   wavefolder.bias = bias
   wavefolder.movement = movement
   wavefolder.mix = mix
-  wavefolder(source_l, source_r)
-  out1 = wavefolder.out1 * level
-  out2 = wavefolder.out2 * level
+  folded_l, folded_r = wavefolder(source_l, source_r)
+  out1 = folded_l * level
+  out2 = folded_r * level

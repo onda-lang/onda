@@ -133,6 +133,10 @@
   - Tuple equality/comparison.
   - Tuple in proc port types.
 
+- Assignment follow-ups
+  - Support indexed compound-assignment targets such as `values[i] += amount` while evaluating each
+    selector exactly once.
+
 - Array and slice follow-ups
   - Preserve the statically provable length of constant-bound slices so an exact-length slice can
     satisfy a fixed-array parameter, such as `stereo_sum(gains[0:2])` for a parameter of type

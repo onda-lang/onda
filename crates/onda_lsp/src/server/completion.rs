@@ -3138,7 +3138,9 @@ fn push_completion_item_once(out: &mut Vec<CompletionItem>, item: CompletionItem
 fn assign_target_names(target: &onda_frontend::AssignTarget) -> Vec<&str> {
     match target {
         onda_frontend::AssignTarget::Var(name) => vec![name.as_str()],
-        onda_frontend::AssignTarget::Tuple(names) => names.iter().map(String::as_str).collect(),
+        onda_frontend::AssignTarget::Tuple(names) => {
+            names.iter().filter_map(|target| target.binding()).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -4759,7 +4761,14 @@ fn source_with_current_line_placeholder(source: &str, offset: usize) -> String {
         .collect::<String>();
     let mut sanitized = String::with_capacity(source.len());
     sanitized.push_str(&source[..line_start]);
-    if indent.is_empty() {
+    if current_line.trim_start().starts_with("when ") {
+        sanitized.push_str(&indent);
+        sanitized.push_str("when ");
+        sanitized.push_str(COMPLETION_PLACEHOLDER);
+        sanitized.push_str("() { ");
+        sanitized.push_str(COMPLETION_PLACEHOLDER);
+        sanitized.push_str(" = 0.0 }\n");
+    } else if indent.is_empty() {
         sanitized.push_str("const ");
         sanitized.push_str(COMPLETION_PLACEHOLDER);
         sanitized.push_str(" = 0\n");
@@ -4796,8 +4805,8 @@ fn scan_receiver_left(source_before_dot: &str) -> Option<String> {
     }
     if text.ends_with(']') {
         let base_end = matching_index_base_start(text)?;
-        let base = &text[..base_end];
-        return scan_namespace_left(base);
+        let base = scan_namespace_left(&text[..base_end])?;
+        return Some(format!("{base}{}", &text[base_end..]));
     }
     scan_namespace_left(text)
 }
@@ -5352,6 +5361,80 @@ mod tests {
             binding.detail.as_deref(),
             Some("delegate payload binding: i32")
         );
+    }
+
+    #[test]
+    fn incomplete_when_member_completion_lists_all_receiver_delegates() {
+        let source = "proc Envelope:\n  delegate finished()\n  delegate looped(count: i32)\n  event reset():\n    return\n  sample:\n    out1 = 0.0\n\ninit:\n  env = Envelope()\n\nwhen env.\n\nsample:\n  out1 = env()\n";
+        let result = completion_items_for_document_with_index(
+            source,
+            None,
+            &HashMap::new(),
+            None,
+            None,
+            position_at(source, "when env.", "when env.".len()),
+            true,
+        );
+        let labels = result
+            .items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(labels, BTreeSet::from(["finished", "looped"]));
+        assert!(result.items.iter().all(|item| item["label"] != "reset"));
+    }
+
+    #[test]
+    fn incomplete_when_array_completion_distinguishes_array_and_element_receivers() {
+        for (receiver, expected_labels, finished_detail) in [
+            (
+                "envs.",
+                &["finished", "looped"][..],
+                "delegate finished(index: i32)",
+            ),
+            (
+                "envs.fin",
+                &["finished"][..],
+                "delegate finished(index: i32)",
+            ),
+            (
+                "envs[1].",
+                &["finished", "looped"][..],
+                "delegate finished()",
+            ),
+            ("envs[1].fin", &["finished"][..], "delegate finished()"),
+        ] {
+            let target = format!("when {receiver}");
+            let source = format!(
+                "proc Envelope:\n  delegate finished()\n  delegate looped(count: i32)\n  event reset():\n    return\n  sample:\n    out1 = 0.0\n\ninit:\n  envs: Envelope[2] = Envelope()\n\n{target}\n\nsample:\n  out1 = envs[0]()\n"
+            );
+            let result = completion_items_for_document_with_index(
+                &source,
+                None,
+                &HashMap::new(),
+                None,
+                None,
+                position_at(&source, &target, target.len()),
+                true,
+            );
+            let labels = result
+                .items
+                .iter()
+                .filter_map(|item| item["label"].as_str())
+                .collect::<BTreeSet<_>>();
+
+            assert_eq!(
+                labels,
+                expected_labels.iter().copied().collect(),
+                "unexpected delegate completions for '{target}'"
+            );
+            assert_eq!(
+                encoded_item(&result.items, "finished")["detail"],
+                finished_detail,
+                "unexpected delegate signature for '{target}'"
+            );
+        }
     }
 
     #[test]

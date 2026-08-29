@@ -1,5 +1,7 @@
 use super::*;
-use crate::proc_call_rewrite::lower_named_proc_param_calls_in_stmts;
+use crate::proc_call_rewrite::{
+    expand_proc_output_tuple_assignments, lower_named_proc_param_calls_in_stmts,
+};
 
 pub(super) fn rewrite_nested_proc_calls_in_expr(
     expr: &mut Expr,
@@ -821,7 +823,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     };
 
                     if let Some((array_base, index_expr, slots, access)) = dynamic_index {
-                        let Some((proc_name, api, _slot_instances)) =
+                        let Some((proc_name, api, slot_instances)) =
                             resolve_proc_array_dispatch_context(
                                 &slots,
                                 nested_instances,
@@ -854,12 +856,20 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                             diag,
                             errors,
                         );
-                        let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
+                        let mut rewritten =
+                            Vec::<CallArg>::with_capacity(1 + expanded.len() + api.buffers.len());
                         rewritten.push(CallArg {
                             name: None,
                             expr: proc_index_selector_expr(&array_base, &index_expr, access),
                         });
                         rewritten.extend(expanded);
+                        rewritten.extend(dynamic_proc_array_buffer_call_args(
+                            &slot_instances,
+                            &api,
+                            &array_base,
+                            &index_expr,
+                            errors,
+                        ));
                         *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                         *args = rewritten;
                         return;
@@ -890,7 +900,8 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                             );
                             return;
                         };
-                        let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
+                        let mut rewritten =
+                            Vec::<CallArg>::with_capacity(1 + args.len() + api.buffers.len());
                         let is_array_slot = find_proc_array_slot(&base, proc_array_slots).is_some();
                         if is_array_slot {
                             rewritten.push(CallArg {
@@ -911,6 +922,12 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                             errors,
                         );
                         rewritten.extend(expanded);
+                        rewritten.extend(expand_proc_buffer_call_args(
+                            instance,
+                            api,
+                            &format!("{base}.{event_name}"),
+                            errors,
+                        ));
                         if is_array_slot {
                             *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                         } else {
@@ -1105,6 +1122,13 @@ pub(super) fn rewrite_owner_proc_stmts(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
+    expand_proc_output_tuple_assignments(
+        &mut stmts,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        errors,
+    );
     lower_named_proc_param_calls_in_stmts(
         &mut stmts,
         nested_instances,

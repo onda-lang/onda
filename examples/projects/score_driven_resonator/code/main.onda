@@ -90,7 +90,7 @@ block:
     dry_r = 0.0
     for i in 0..VoiceCount:
       voice = voices[i]()
-      (gain_l, gain_r) = std::levels::pan_3db(voice_pans[i])
+      gain_l, gain_r = std::levels::pan_3db(voice_pans[i])
       dry_l = dry_l + voice * gain_l
       dry_r = dry_r + voice * gain_r
 

@@ -1109,7 +1109,7 @@ fn is_proc_output_alias_name(name: &str, timing: OutputTiming, out_count: usize)
         .unwrap_or(false)
 }
 
-fn array_infos_from_slot_map(
+pub(super) fn array_infos_from_slot_map(
     slots_by_name: &HashMap<String, Vec<String>>,
     slot_types: &HashMap<String, PrimitiveType>,
 ) -> HashMap<String, TypedArrayInfo> {
@@ -1132,7 +1132,9 @@ fn array_infos_from_slot_map(
         .collect()
 }
 
-fn array_infos_from_param_specs(param_specs: &[ProcParamSpec]) -> HashMap<String, TypedArrayInfo> {
+pub(super) fn array_infos_from_param_specs(
+    param_specs: &[ProcParamSpec],
+) -> HashMap<String, TypedArrayInfo> {
     param_specs
         .iter()
         .filter(|spec| spec.slots.len() > 1)
@@ -1810,7 +1812,7 @@ fn reject_hook_target_write(
         AssignTarget::Var(name) => check_symbol(name),
         AssignTarget::Index { base, .. } | AssignTarget::Slice { base, .. } => check_symbol(base),
         AssignTarget::Tuple(names) => {
-            for name in names {
+            for name in names.iter().filter_map(|target| target.binding()) {
                 check_symbol(name);
             }
         }
@@ -2086,8 +2088,8 @@ fn validate_hook_safe_stmts(
                     match target {
                         AssignTarget::Var(name) => frame.add_local(name.clone()),
                         AssignTarget::Tuple(names) => {
-                            for name in names {
-                                frame.add_local(name.clone());
+                            for name in names.iter().filter_map(|target| target.binding()) {
+                                frame.add_local(name);
                             }
                         }
                         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
@@ -2384,10 +2386,10 @@ fn proc_local_surface_expr_env<'a>(
     env
 }
 
-fn proc_local_target_local_names(target: &AssignTarget) -> Vec<&String> {
+fn proc_local_target_local_names(target: &AssignTarget) -> Vec<&str> {
     match target {
         AssignTarget::Var(name) => vec![name],
-        AssignTarget::Tuple(names) => names.iter().collect(),
+        AssignTarget::Tuple(names) => names.iter().filter_map(|target| target.binding()).collect(),
         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => Vec::new(),
     }
 }
@@ -2431,7 +2433,7 @@ fn validate_proc_local_def_surface_stmt(
                         io_surface_name(name, env).is_none()
                             && dynamic_param_surface_name(name, env).is_none()
                     })
-                    .cloned()
+                    .map(str::to_owned)
                     .collect::<Vec<_>>()
             };
             for name in introduced_locals {
@@ -2668,21 +2670,21 @@ pub(super) fn compute_proc_shape(
     // Add synthetic "ins"/"outs"/"kouts"/"params" array-slot entries for uniform scalar ports
     // so that dynamic indexing (e.g. outs[i], kouts[i], ins[i], params[i]) can be rewritten to
     // helper function calls during proc lowering.
-    if ins.len() > 1
+    if !ins.is_empty()
         && !in_array_slots.contains_key("ins")
         && uniform_port_index_info_from_names(true, &ins, &in_types).is_some()
     {
         in_array_slots.insert("ins".to_owned(), ins.clone());
     }
     if proc.outs_timing == OutputTiming::Sample
-        && outs.len() > 1
+        && !outs.is_empty()
         && !field_array_slots.contains_key("outs")
         && uniform_port_index_info_from_names(true, &outs, &out_types).is_some()
     {
         field_array_slots.insert("outs".to_owned(), outs.clone());
     }
     if proc.outs_timing == OutputTiming::Block
-        && outs.len() > 1
+        && !outs.is_empty()
         && !field_array_slots.contains_key("kouts")
         && uniform_port_index_info_from_names(true, &outs, &out_types).is_some()
     {

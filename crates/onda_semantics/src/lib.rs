@@ -6120,6 +6120,28 @@ sample:
     }
 
     #[test]
+    fn single_slot_processor_io_surfaces_support_dynamic_indexing() {
+        let src = r#"
+proc Mono:
+  ins 1
+  outs 1
+
+  sample:
+    outs[0] = ins[0]
+
+init:
+  mono = Mono()
+
+sample:
+  out1 = mono(0.25)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("single-slot dynamic surfaces should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("single-slot dynamic surfaces should lower to MIR");
+    }
+
+    #[test]
     fn declaration_only_library_file_does_not_require_sample_block() {
         let src = "proc Mix:\n  ins:\n    dry\n    fb\n  sample:\n    out1 = (dry + fb) * 0.5\n\ndef clip(x) {\n  return x\n}\nconst SCALE = 0.5\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -6190,6 +6212,125 @@ block:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         analyze(program).expect("nested proc buffer methods should analyze");
+    }
+
+    #[test]
+    fn proc_events_receive_bound_buffers() {
+        let src = r#"
+proc Player:
+  buffers:
+    clip: f32[]
+
+  init:
+    captured = 0.0
+
+  event capture(frame: i32):
+    captured = clip[0, frame] + f32(clip.len() + clip.chans()) + clip.samplerate()
+    clip[0, frame] = captured
+
+  sample:
+    out1 = captured
+
+buffers:
+  source: f32[]
+
+events:
+  capture(frame: i32):
+    player.capture(frame)
+
+init:
+  player = Player(clip = source)
+
+sample:
+  out1 = player()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc events should receive their bound buffers");
+        lower_program_to_optimized_mir(&typed)
+            .expect("proc event buffer access should lower to MIR");
+    }
+
+    #[test]
+    fn nested_proc_events_forward_bound_buffers() {
+        let src = r#"
+proc Player:
+  buffers:
+    clip: f32
+
+  init:
+    captured = 0.0
+
+  event capture(frame: i32):
+    captured = clip[frame]
+
+  sample:
+    out1 = captured
+
+proc Parent:
+  buffers:
+    source: f32
+
+  init:
+    player = Player(clip = source)
+
+  event capture(frame: i32):
+    player.capture(frame)
+
+  sample:
+    out1 = player()
+
+buffers:
+  source: f32
+
+events:
+  capture(frame: i32):
+    parent.capture(frame)
+
+init:
+  parent = Parent(source = source)
+
+sample:
+  out1 = parent()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("nested proc events should forward bound buffers");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested proc event buffer access should lower to MIR");
+    }
+
+    #[test]
+    fn indexed_proc_events_forward_bound_buffers() {
+        let src = r#"
+proc Player:
+  buffers:
+    clip: f32
+
+  init:
+    captured = 0.0
+
+  event capture(frame: i32):
+    captured = clip[frame]
+
+  sample:
+    out1 = captured
+
+buffers:
+  source: f32
+
+events:
+  capture(index: i32, frame: i32):
+    players[index].capture(frame)
+
+init:
+  players: Player[2] = Player(clip = source)
+
+sample:
+  out1 = players[0]() + players[1]()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("indexed proc events should forward bound buffers");
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed proc event buffer access should lower to MIR");
     }
 
     #[test]
@@ -6979,6 +7120,59 @@ sample:
     }
 
     #[test]
+    fn processor_validation_uses_resolved_overloads() {
+        let source = r#"
+def classify(value: bool) -> f32:
+  return 1.0
+
+def classify(value: i32) -> f32:
+  return 2.0
+
+def fetch(buf, frame: i32):
+  return buf[frame]
+
+def fetch(buf, channel: i32, frame: i32):
+  return buf[channel, frame]
+
+struct Classifier:
+  def value(self, input: bool) -> f32:
+    return 3.0
+
+  def value(self, input: i32) -> f32:
+    return 4.0
+
+proc Player:
+  buffers:
+    clip: f32[]
+
+  params:
+    mode: i32 = 0
+
+  init:
+    classifier = Classifier()
+
+  outs 1
+
+  sample:
+    out1 = classify(mode) + classifier.value(mode) + fetch(clip, 0, 0)
+
+buffers:
+  source: f32[]
+
+init:
+  player = Player(clip = source)
+
+sample:
+  out1 = player()
+"#;
+        let program = parse_program(source).expect("processor overload source should parse");
+        let typed = analyze(program)
+            .expect("processor validation should use the overload selected by type and arity");
+        lower_program_to_optimized_mir(&typed)
+            .expect("resolved processor overload calls should lower to MIR");
+    }
+
+    #[test]
     fn overload_resolution_applies_contextual_aggregate_conversions() {
         let source = r#"
 def array_choice(values: f64[]) -> f64:
@@ -7751,6 +7945,26 @@ sample:
             .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
         lower_program_to_optimized_mir(&typed)
             .expect("destructured inferred returns should lower to MIR");
+    }
+
+    #[test]
+    fn bare_tuple_destructuring_discards_unneeded_values() {
+        let source = r#"
+def triple() -> (i32, f32, bool):
+  return (7, 2.5, true)
+
+def select() -> f32:
+  first, _, _ = triple()
+  _, second, _ = triple()
+  return f32(first) + second
+
+sample:
+  out1 = select()
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("discarded tuple entries must not introduce bindings");
+        lower_program_to_optimized_mir(&typed)
+            .expect("tuple discards should lower without storage");
     }
 
     #[test]
@@ -10018,10 +10232,10 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre input read should fail");
         assert!(
-            errors
-                .iter()
-                .any(|diag| diag.message.contains("unknown symbol 'in1'")),
-            "missing unknown-symbol diagnostic for block pre input read: {errors:#?}"
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'in1' can only be read in sample; move this read into the block's nested sample section"
+            )),
+            "missing sample-section diagnostic for block pre input read: {errors:#?}"
         );
     }
 
@@ -10031,7 +10245,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre dynamic input read should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'ins' can only be read in sample; move this read into the block's nested sample section"
+            )),
             "missing dynamic-input diagnostic for block pre: {errors:#?}"
         );
     }
@@ -10042,8 +10258,23 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block post dynamic input read should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'ins' can only be read in sample; move this read into the block's nested sample section"
+            )),
             "missing dynamic-input diagnostic for block post: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn block_pre_cannot_write_named_audio_outputs() {
+        let src = "outs:\n  out1\nblock:\n  out1 = 0.0\n  sample:\n    out1 = 1.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block pre output write should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains(
+                "audio output 'out1' can only be written in sample; move this assignment into the block's nested sample section"
+            )),
+            "missing sample-section diagnostic for block pre output write: {errors:#?}"
         );
     }
 
@@ -10053,7 +10284,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre dynamic output write should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("outs[i]")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio output array 'outs' can only be written in sample; move this assignment into the block's nested sample section"
+            )),
             "missing dynamic-output diagnostic for block pre: {errors:#?}"
         );
     }
@@ -10064,7 +10297,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre input array read should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("freqs")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'freqs' can only be read in sample; move this read into the block's nested sample section"
+            )),
             "missing input-array diagnostic for block pre: {errors:#?}"
         );
     }
@@ -10075,7 +10310,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre output array write should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("stereo")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio output array 'stereo' can only be written in sample; move this assignment into the block's nested sample section"
+            )),
             "missing output-array diagnostic for block pre: {errors:#?}"
         );
     }
@@ -11229,7 +11466,9 @@ graph {
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("proc block pre dynamic input read should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'ins' can only be read in sample; move this read into the block's nested sample section"
+            )),
             "missing proc dynamic-input diagnostic for block pre: {errors:#?}"
         );
     }
@@ -14084,5 +14323,225 @@ sample:
 "#,
             "may publish a delegate owned by another owner",
         );
+    }
+
+    #[test]
+    fn processor_outputs_can_be_tuple_destructured() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+outs:
+  out1
+  out2
+init:
+  stereo = Stereo()
+sample:
+  (out1, out2) = stereo()
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("processor outputs should destructure");
+    }
+
+    #[test]
+    fn processor_output_destructuring_supports_bare_targets_and_discards() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+init:
+  stereo = Stereo()
+sample:
+  out1, _ = stereo()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("processor outputs should support discarded targets");
+        lower_program_to_optimized_mir(&typed)
+            .expect("discarded processor outputs should lower without a binding");
+    }
+
+    #[test]
+    fn nested_processor_outputs_can_be_tuple_destructured() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+proc Parent:
+  init:
+    stereo = Stereo()
+  outs:
+    out1
+    out2
+  sample:
+    (out1, out2) = stereo()
+
+init:
+  parent = Parent()
+outs:
+  out1
+  out2
+sample:
+  (out1, out2) = parent()
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("nested processor outputs should destructure");
+    }
+
+    #[test]
+    fn nested_processor_state_preserves_struct_array_field_paths() {
+        let source = r#"
+struct Data:
+  storage: f32[8]
+
+proc Line:
+  init:
+    data = Data()
+    index = 0 {8, wrap}
+  sample:
+    data.storage[index] = in1
+    out1 = data.storage[index]
+    index += 1
+
+proc Effect:
+  init:
+    line = Line()
+  sample:
+    out1 = line(in1)
+
+init:
+  effect = Effect()
+sample:
+  out1 = effect(1.0)
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested struct array state should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested struct array state should lower to MIR");
+    }
+
+    #[test]
+    fn dynamically_indexed_processor_outputs_can_be_tuple_destructured() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+outs:
+  out1
+  out2
+init:
+  voices: Stereo[2] = Stereo()
+sample:
+  i = 1
+  (out1, out2) = voices[i]()
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("dynamically indexed processor outputs should destructure");
+    }
+
+    #[test]
+    fn block_rate_processor_outputs_can_be_tuple_destructured_in_tasks() {
+        let source = r#"
+proc ControlPair:
+  kouts:
+    left
+    right
+  block:
+    left = 1.0
+    right = 2.0
+
+init:
+  pair = ControlPair()
+
+task worker():
+  (left, right) = pair()
+  yield
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("block-rate processor outputs should destructure in a task");
+    }
+
+    #[test]
+    fn processor_array_param_outputs_can_be_tuple_destructured_in_defs() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+def sum_voice(voices, i):
+  (left, right) = voices[i]()
+  return left + right
+
+outs:
+  out1
+init:
+  voices: Stereo[2] = Stereo()
+sample:
+  out1 = sum_voice(voices, 1)
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("processor-array def outputs should destructure");
+    }
+
+    #[test]
+    fn processor_output_destructuring_reports_arity_mismatch() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+outs:
+  out1
+init:
+  stereo = Stereo()
+sample:
+  (left, right, extra) = stereo()
+  out1 = left
+"#;
+        let program = parse_program(source).expect("source should parse");
+        let errors = analyze(program).expect_err("arity mismatch should fail");
+        assert_eq!(errors.len(), 1, "unexpected diagnostics: {errors:#?}");
+        assert!(errors.iter().any(|error| error.message.contains(
+            "processor output destructuring has 3 targets, but the processor has 2 outputs"
+        )));
     }
 }

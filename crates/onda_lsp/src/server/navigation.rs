@@ -4452,7 +4452,7 @@ fn assign_target_name(target: &AssignTarget) -> Option<&str> {
 fn assign_target_names(target: &AssignTarget) -> Vec<&str> {
     match target {
         AssignTarget::Var(name) => vec![name.as_str()],
-        AssignTarget::Tuple(names) => names.iter().map(String::as_str).collect(),
+        AssignTarget::Tuple(names) => names.iter().filter_map(|target| target.binding()).collect(),
         _ => Vec::new(),
     }
 }

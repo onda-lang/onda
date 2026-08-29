@@ -207,9 +207,9 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
                             env.scalar_types.insert(name.clone(), ty);
                         }
                         AssignTarget::Tuple(names) => {
-                            for name in names {
+                            for name in names.iter().filter_map(|target| target.binding()) {
                                 if !env.has_binding(name) {
-                                    env.scalar_types.insert(name.clone(), PrimitiveType::F32);
+                                    env.scalar_types.insert(name.to_owned(), PrimitiveType::F32);
                                 }
                             }
                         }

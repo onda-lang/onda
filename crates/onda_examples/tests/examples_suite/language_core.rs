@@ -72,6 +72,73 @@ fn events_metadata_and_scalar_dispatch_work() {
 
 #[test]
 
+fn proc_events_use_their_bound_buffers_at_runtime() {
+    let src = r#"
+proc Player:
+  buffers:
+    clip: f32
+
+  init:
+    captured = 0.0
+
+  event capture(frame: i32):
+    clip[frame] = clip[frame] + 1.0
+    captured = clip[frame]
+
+  sample:
+    out1 = captured
+
+buffers:
+  source: f32
+
+events:
+  capture(frame: i32):
+    player.capture(frame)
+
+init:
+  player = Player(clip = source)
+
+sample:
+  out1 = player()
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut buffer = vec![0.25_f32, 0.75];
+    bind_buffer(
+        &mut instance,
+        0,
+        buffer.as_mut_ptr().cast(),
+        buffer.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind source buffer");
+
+    let capture = instance.event_index("capture").expect("capture event");
+    trigger_event_by_index(
+        &mut instance,
+        capture,
+        &1_i32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("capture event should access the bound buffer");
+
+    assert_near(buffer[1], 1.75, 1e-6);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 1.75, 1e-6);
+    }
+}
+
+#[test]
+
 fn init_restores_resettable_runtime_state() {
     let frames = 4;
 

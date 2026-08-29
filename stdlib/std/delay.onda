@@ -1,33 +1,148 @@
-namespace std::delay:
+import std/data
+
+namespace std::delay<Capacity = SR * 2>:
+  assert(Capacity > 3)
+
+  proc Integer<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params:
+      delay_samples = 1 {0, Capacity - 1}
+
+    init:
+      data = std::data<Capacity>::Data<T>()
+      write_index = 0 {Capacity, wrap}
+
+    event reset():
+      data.storage[:] = 0.0
+      write_index = 0
+
+    sample:
+      data.storage[write_index] = in1
+      out1 = data.read(write_index - delay_samples)
+      write_index += 1
+
+  proc Linear<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      delay_samples = 1.0 {0.0, Capacity - 2}
+
+    init:
+      data = std::data<Capacity>::Data<T>()
+      write_index = 0 {Capacity, wrap}
+
+    event reset():
+      data.storage[:] = 0.0
+      write_index = 0
+
+    sample:
+      data.storage[write_index] = in1
+      out1 = data.readL(T(write_index) - delay_samples)
+      write_index += 1
+
+  proc Cubic<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      delay_samples = 1.0 {1.0, Capacity - 3}
+
+    init:
+      data = std::data<Capacity>::Data<T>()
+      write_index = 0 {Capacity, wrap}
+
+    event reset():
+      data.storage[:] = 0.0
+      write_index = 0
+
+    sample:
+      data.storage[write_index] = in1
+      out1 = data.readC(T(write_index) - delay_samples)
+      write_index += 1
+
+  proc Smooth<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      delay_samples = 1.0 {0.0, Capacity - 2}
+      transition_s = 0.02 => update_transition
+
+    init:
+      data = std::data<Capacity>::Data<T>()
+      write_index = 0 {Capacity, wrap}
+      old_delay = delay_samples
+      target_delay = old_delay
+      fade = 1.0
+      transition_step = 1.0
+
+    def update_transition():
+      transition_step = 1.0 / max(transition_s * SR, T(1.0))
+
+    event reset():
+      data.storage[:] = 0.0
+      write_index = 0
+      old_delay = delay_samples
+      target_delay = old_delay
+      fade = 1.0
+
+    sample:
+      requested = delay_samples
+      if requested != target_delay:
+        old_delay = lerp(old_delay, target_delay, fade)
+        target_delay = requested
+        fade = 0.0
+
+      data.storage[write_index] = in1
+      a = data.readL(T(write_index) - old_delay)
+      b = data.readL(T(write_index) - target_delay)
+      out1 = lerp(a, b, fade)
+
+      if fade < 1.0:
+        fade = min(fade + transition_step, T(1.0))
+        if fade >= 1.0:
+          old_delay = target_delay
+
+      write_index += 1
+
+  proc Feedback<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      delay_s = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+      feedback = 0.0
+      mix = 1.0 {0.0, 1.0}
+
+    init:
+      line = Linear<T>()
+      delayed = T(0.0)
+
+    event reset():
+      line.reset()
+      delayed = T(0.0)
+
+    sample:
+      delayed = line(in1 + delayed * feedback, delay_samples = delay_s * SR)
+      out1 = lerp(in1, delayed, mix)
+
   proc Delay<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      delay_s = 0.1 => update_delay
+      delay_s = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
       feedback = 0.0
-      mix = 1.0
+      mix = 1.0 {0.0, 1.0}
 
     init:
-      buf: T[SR * 2]
-      write_idx: i32 = 0
-      len_i: i32 = buf.len()
-      max_d: i32 = len_i - 2
-      di0: i32 = 0
-      frac: T = 0.0
+      effect = Feedback<T>()
 
-    def update_delay():
-      delay_samples: T = delay_s * SR
-      d: T = clamp(delay_samples, T(0.0), T(max_d))
-      di0 = i32(d)
-      frac = d - T(di0)
+    event reset():
+      effect.reset()
 
     sample:
-      idx_a: i32 = (write_idx - di0 + len_i) % len_i
-      idx_b: i32 = (idx_a - 1 + len_i) % len_i
-      a: T = buf[idx_a]
-      b: T = buf[idx_b]
-      delayed: T = lerp(a, b, frac)
-      buf[write_idx] = in1 + delayed * feedback
-      write_idx = (write_idx + 1) % len_i
-      out1 = in1 * (1.0 - mix) + delayed * mix
+      out1 = effect(in1, delay_s = delay_s, feedback = feedback, mix = mix)

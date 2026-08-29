@@ -490,9 +490,10 @@ On the first sample these statements store `0.01`, `7`, `0.5`, `2.0`, and `1`
 respectively.
 
 Arithmetic compound operators are `+=`, `-=`, `*=`, `/=`, and `%=`. Integer
-bindings additionally support `&=`, `|=`, `^=`, `<<=`, and `>>=`. The target
-must be a name or field path; indexed and slice targets use an ordinary
-assignment such as `values[i] = values[i] + amount`.
+bindings additionally support `&=`, `|=`, `^=`, `<<=`, and `>>=`. Compound
+assignment currently works only with a variable or field path. Indexed and
+slice targets require an ordinary assignment such as
+`values[i] = values[i] + amount`.
 
 Integer locals and state may carry a finite storage domain:
 
@@ -984,22 +985,30 @@ deep copy; mutate array storage through indexed and slice assignments.
 
 ### Tuples
 
-Tuples are anonymous fixed-length heterogeneous values.
+Tuples are anonymous fixed-length heterogeneous values. Tuple values and tuple types use
+parentheses; destructuring targets conventionally do not.
 
 ```onda
+def make_pair() -> (f32, i32):  # tuple type
+  return (1.0, 42)              # tuple value
+
 sample:
-  pair = (1.0, 2.0)
-  mixed = (1.0, 42, true)
-  out1 = pair[0]
+  value, count = make_pair()    # destructuring targets
+  out1 = value + f32(count)
 ```
 
 Rules:
 
-- Type syntax is `(T1, T2, ...)`.
+- Tuple value syntax is `(value1, value2, ...)`; the parentheses are required.
+- Tuple type syntax is `(T1, T2, ...)`; the parentheses are required.
 - Maximum arity is 16.
 - Nested tuples are not currently supported.
 - Tuple element access uses compile-time integer indices.
-- Tuple destructuring is supported: `(a, b) = (10.0, 20.0)`.
+- Tuple destructuring uses a bare comma-separated target list: `a, b = (10.0, 20.0)`.
+  Parentheses around the targets are accepted, but the canonical style omits them. Use `_` to
+  discard an element without creating a binding, for example `first, _, third = make_triple()`.
+- Multi-output processor calls can be destructured directly; see
+  [Constructing and Calling Procs](#constructing-and-calling-procs).
 - Tuples can be locals, `init` state, `def` params and returns, and struct fields.
 
 Unchecked indexing is deliberately kept out of the normal collection workflow.
@@ -1476,6 +1485,19 @@ sample:
   out1 = g(in1)
 ```
 
+Destructure a multi-output proc call to step it once and bind every output in
+declaration order:
+
+```onda
+sample:
+  out1, out2 = stereo(in1, in2)
+```
+
+The number of targets must exactly match the processor's output count. This
+form also works for nested processors and indexed processor arrays. A dynamic
+array index is evaluated once; the selected processor is stepped once, then
+its needed outputs are read. Use `_` for an output that does not need a binding.
+
 The following are alternative access forms, not a sequence to copy into one
 sample body:
 
@@ -1691,7 +1713,9 @@ Rules:
 - Fixed-array and slice params are read-only in handlers.
 - Top-level events run immediately on the audio thread.
 - Handlers cannot write inputs, outputs, or top-level params.
-- Top-level handlers may write only existing top-level state rooted in `init`.
+- Handlers can read, write, and query declared buffers using the instance's current bindings.
+- Aside from declared buffers, top-level handlers may write only existing top-level state rooted in
+  `init`.
 - Unknown top-level event indices are ignored at runtime.
 - A known top-level event with the wrong payload size is a runtime error.
 - Top-level host events with slice params use payload layout `i32 len` followed by contiguous element bytes.
@@ -1720,6 +1744,7 @@ Proc-event rules:
 - Unqualified calls never resolve to proc events.
 - A proc cannot call its own event handler as an internal subroutine; put shared logic in a proc-local `def`.
 - Proc handlers may write proc state rooted in `init` and proc params.
+- Proc handlers can read, write, and query their declared buffers using the instance's current bindings.
 - Proc handlers cannot write inputs or outputs.
 - Generic proc events can use generic primitive placeholders such as `T`, `T[N]`, and `T[]`.
 
@@ -2285,8 +2310,8 @@ Current std modules include:
 
 ```text
 std/prelude std/math std/random std/complex
-std/osc std/filter std/env std/delay std/reverb std/pitch_shift std/data std/lookup
-std/fft std/convolution std/gain std/levels std/mix
+std/osc std/filter std/env std/dynamics std/delay std/sample std/reverb std/pitch_shift
+std/data std/lookup std/fft std/convolution std/gain std/levels std/mix
 std/noise std/pitch std/smoothing
 ```
 
@@ -2613,6 +2638,11 @@ a processor array—dispatch through an arbitrary state. There is no defined fal
 Section counts can use compile-time integer expressions, ordinary const values,
 and namespace integer template params. A bare integer or name needs no grouping; wrap a compound or
 call expression, for example `outs (channel_count())`.
+
+A section default is contextual typing for every otherwise-untyped declaration in that section; it
+is not merely a fallback for ambiguous initializers. The initializer spelling does not override it:
+for example, `mode = 0` in `params<f32>:` is `f32`. Add an item type when a declaration needs to
+override the section default, such as `mode: i32 = 0`.
 
 ### Dynamic Surfaces
 

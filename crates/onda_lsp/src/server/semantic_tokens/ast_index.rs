@@ -876,8 +876,8 @@ fn collect_target_symbols(target: &AssignTarget, scope: &mut SemanticScope) {
             scope.insert_variable(name.clone());
         }
         AssignTarget::Tuple(names) => {
-            for name in names {
-                scope.insert_variable(name.clone());
+            for name in names.iter().filter_map(|target| target.binding()) {
+                scope.insert_variable(name.to_owned());
             }
         }
         _ => {}
@@ -890,8 +890,8 @@ fn collect_state_target_symbols(target: &AssignTarget, scope: &mut SemanticScope
             scope.insert_state_variable(name.clone());
         }
         AssignTarget::Tuple(names) => {
-            for name in names {
-                scope.insert_state_variable(name.clone());
+            for name in names.iter().filter_map(|target| target.binding()) {
+                scope.insert_state_variable(name.to_owned());
             }
         }
         _ => {}

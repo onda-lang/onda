@@ -1,8 +1,7 @@
 import std/smoothing
+import std/levels
 
 namespace std::gain:
-  const DB_TO_GAIN_SCALE: f64 = 0.11512925464970229
-
   proc Constant<T>:
     ins<T> 1
     outs<T> 1
@@ -24,7 +23,7 @@ namespace std::gain:
       linear_gain = 1.0
 
     def update_gain():
-      linear_gain = exp(db * T(DB_TO_GAIN_SCALE))
+      linear_gain = std::levels::db_to_gain<T>(db)
 
     sample:
       out1 = in1 * linear_gain
@@ -59,7 +58,7 @@ namespace std::gain:
       target_gain = 1.0
 
     def update_gain():
-      target_gain = exp(db * T(DB_TO_GAIN_SCALE))
+      target_gain = std::levels::db_to_gain<T>(db)
 
     def update_time():
       smooth.time_s = time_s

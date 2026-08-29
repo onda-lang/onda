@@ -2133,6 +2133,123 @@ sample:
     }
 
     #[test]
+    fn processor_output_tuple_destructuring_steps_once() {
+        let output = run_one_sample(
+            r#"
+proc Pair:
+  init:
+    count = 0.0
+  outs:
+    left
+    right
+  sample:
+    count += 1.0
+    left = count
+    right = count
+
+init:
+  pair = Pair()
+sample:
+  (left, right) = pair()
+  out1 = left * 10.0 + right
+"#,
+        );
+
+        assert!((output - 11.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn indexed_processor_output_tuple_destructuring_steps_once() {
+        let output = run_one_sample(
+            r#"
+proc Pair:
+  init:
+    count = 0.0
+  outs:
+    left
+    right
+  sample:
+    count += 1.0
+    left = count
+    right = count
+
+init:
+  pairs: Pair[2] = Pair()
+sample:
+  i = 1
+  (left, right) = pairs[i]()
+  out1 = left * 10.0 + right
+"#,
+        );
+
+        assert!((output - 11.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn proc_array_def_output_tuple_destructuring_steps_once() {
+        let output = run_one_sample(
+            r#"
+proc Pair:
+  init:
+    count = 0.0
+  outs:
+    left
+    right
+  sample:
+    count += 1.0
+    left = count
+    right = count
+
+def render(pairs, i):
+  (left, right) = pairs[i]()
+  return left * 10.0 + right
+
+init:
+  pairs: Pair[2] = Pair()
+sample:
+  out1 = render(pairs, 1)
+"#,
+        );
+
+        assert!((output - 11.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn nested_processor_output_tuple_destructuring_steps_once() {
+        let output = run_one_sample(
+            r#"
+proc Pair:
+  init:
+    count = 0.0
+  outs:
+    left
+    right
+  sample:
+    count += 1.0
+    left = count
+    right = count
+
+proc Parent:
+  init:
+    pairs: Pair[2] = Pair()
+  outs:
+    out1
+  sample:
+    i = 1
+    (left, right) = pairs[i]()
+    out1 = left * 10.0 + right
+
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#,
+        );
+
+        assert!((output - 11.0).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn dynamic_kouts_indexing_runs() {
         let outputs = run_one_block_control_outputs(
             r#"

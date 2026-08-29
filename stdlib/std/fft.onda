@@ -48,51 +48,48 @@ namespace std::fft<N = 256>:
   const Hamming: f64[N] = _hamming_window()
   const Blackman: f64[N] = _blackman_window()
 
-  const _WindowHann: i32 = 1
-  const _WindowRectangular: i32 = 2
-  const _WindowHamming: i32 = 3
-  const _WindowBlackman: i32 = 4
+  const _WindowHann = 1
+  const _WindowRectangular = 2
+  const _WindowHamming = 3
+  const _WindowBlackman = 4
   
   def _min_i(a: i32, b: i32):
     if (a < b):
       return a
     return b
 
-  def _ilog2(n: i32):
-    bits = 0
-    value = n
-    while (value > 1):
-      value = value >> 1
-      bits = bits + 1
-    return bits
+  const def _bit_reverse_table() -> i32[N]:
+    values: i32[N]
+    values[0] = 0
+    for i in 1..N:
+      values[i] = (values[i >> 1] >> 1) | ((i & 1) * (N >> 1))
+    return values
 
-  def _bit_reverse(value: i32, bits: i32):
-    x = value
-    rev = 0
-    i = 0
-    while (i < bits):
-      rev = (rev << 1) | (x & 1)
-      x = x >> 1
-      i = i + 1
-    return rev
+  const def _twiddle_real() -> f64[N / 2]:
+    values: f64[N / 2]
+    for i in 0..(N / 2):
+      values[i] = cos(TWO_PI * f64(i) / f64(N))
+    return values
 
-  def _build_bitrev(bitrev: i32[], n: i32):
-    bits = _ilog2(n)
-    for i in 0..n:
-      bitrev[i] = _bit_reverse(i, bits)
+  const def _twiddle_imag() -> f64[N / 2]:
+    values: f64[N / 2]
+    for i in 0..(N / 2):
+      values[i] = sin(TWO_PI * f64(i) / f64(N))
+    return values
+
+  const _BitReverse: i32[N] = _bit_reverse_table()
+  const _TwiddleReal: f64[N / 2] = _twiddle_real()
+  const _TwiddleImag: f64[N / 2] = _twiddle_imag()
 
   def _wrap_add(base: i32, offset: i32, n: i32):
     idx = base + offset
-    if (idx >= n):
-      idx = idx - n
+    if idx >= n:
+      idx -= n
     return idx
 
 
   struct FFT<T>:
     bins: std::complex::Complex<T>[N]
-    twiddles: std::complex::Complex<T>[N]
-    bitrev: i32[N]
-    prepared: bool
 
     def size(self):
       return N
@@ -164,14 +161,14 @@ namespace std::fft<N = 256>:
       half = N >> 1
       count = _min_i(input.len(), N)
 
-      if (count > 0):
+      if count > 0:
         self.set_bin(0, input[0], 0.0)
 
-      if (count > half):
+      if count > half:
         self.set_bin(half, input[half], 0.0)
 
       imag_count = _min_i(count - (half + 1), half - 1)
-      if (imag_count < 0):
+      if imag_count < 0:
         imag_count = 0
 
       real_count = _min_i(count, half)
@@ -252,51 +249,31 @@ namespace std::fft<N = 256>:
       self.inverse()
       self.store_real(output)
 
-    def _ensure_tables(self):
-      if (!self.prepared):
-        _build_bitrev(self.bitrev, N)
-        angle_step: T = TWO_PI / T(N)
-        step_r = cos(angle_step)
-        step_i = sin(angle_step)
-        half = N >> 1
-        if (half > 0):
-          self.twiddles[0].set(1.0, 0.0)
-          wr: T = 1.0
-          wi: T = 0.0
-          for i in 1..half:
-            next_wr = wr * step_r - wi * step_i
-            next_wi = wr * step_i + wi * step_r
-            wr = next_wr
-            wi = next_wi
-            self.twiddles[i].set(wr, wi)
-        self.prepared = true
-
     def _transform(self, inverse: bool):
       self._transform_prefix(N, 0, inverse)
 
     def _transform_prefix(self, n: i32, bit_shift: i32, inverse: bool):
-      self._ensure_tables()
       for i in 0..n:
-        j = self.bitrev[i] >> bit_shift
-        if (j > i):
+        j = _BitReverse[i] >> bit_shift
+        if j > i:
           temp_r = self.bins[i].real()
           temp_i = self.bins[i].imag()
           self.bins[i].set(self.bins[j].real(), self.bins[j].imag())
           self.bins[j].set(temp_r, temp_i)
 
       stage = 2
-      while (stage <= n):
+      while stage <= n:
         half = stage >> 1
         tw_stride = N / stage
 
         start = 0
-        while (start < n):
+        while start < n:
           k = 0
-          while (k < half):
+          while k < half:
             tw_idx = k * tw_stride
-            wr = self.twiddles[tw_idx].real()
-            wi = self.twiddles[tw_idx].imag()
-            if (!inverse):
+            wr = T(_TwiddleReal[tw_idx])
+            wi = T(_TwiddleImag[tw_idx])
+            if !inverse:
               wi = -wi
 
             even_i = start + k
@@ -314,18 +291,18 @@ namespace std::fft<N = 256>:
             self.bins[even_i].set(even_r + tw_r, even_i_v + tw_i)
             self.bins[odd_i].set(even_r - tw_r, even_i_v - tw_i)
 
-            k = k + 1
-          start = start + stage
-        stage = stage << 1
+            k += 1
+          start += stage
+        stage <<= 1
 
-      if (inverse):
-        inverse_scale: T = 1.0 / T(n)
+      if inverse:
+        inverse_scale = T(1.0) / T(n)
         for i in 0..n:
           self.bins[i].set(self.bins[i].real() * inverse_scale, self.bins[i].imag() * inverse_scale)
 
   struct STFT<T>:
     fft: FFT<T>
-    window_kind: i32 = _WindowHann
+    window_kind = _WindowHann
 
     def size(self):
       return N
@@ -452,11 +429,11 @@ namespace std::fft<N = 256>:
   struct RealFFT<T>:
     fft: FFT<T>
     input: T[N]
-    window_kind: i32 = _WindowHann
-    write: i32
-    filled: i32
-    since_hop: i32
-    ready: bool
+    window_kind = _WindowHann
+    write = 0
+    filled = 0
+    since_hop = 0
+    ready = false
 
     def size(self):
       return N
@@ -491,19 +468,19 @@ namespace std::fft<N = 256>:
       self.input[self.write] = x
       self.ready = false
 
-      self.write = self.write + 1
-      if (self.write >= N):
+      self.write += 1
+      if self.write >= N:
         self.write = 0
 
-      if (self.filled < N):
-        self.filled = self.filled + 1
+      if self.filled < N:
+        self.filled += 1
 
-      self.since_hop = self.since_hop + 1
-      if (self.filled >= N && self.since_hop >= (N >> 1)):
+      self.since_hop += 1
+      if self.filled >= N && self.since_hop >= (N >> 1):
         self.since_hop = 0
         kind = self.window_kind
         half = N >> 1
-        if (kind == _WindowHann):
+        if kind == _WindowHann:
           for i in 0..half:
             even = i << 1
             odd = even + 1
@@ -546,8 +523,8 @@ namespace std::fft<N = 256>:
           even_im = (a_im - mirror_im) * 0.5
           odd_re = (a_im + mirror_im) * 0.5
           odd_im = (mirror_re - a_re) * 0.5
-          tw_re = self.fft.twiddles[k].real()
-          tw_im = self.fft.twiddles[k].imag()
+          tw_re = T(_TwiddleReal[k])
+          tw_im = T(_TwiddleImag[k])
           rotated_re = tw_re * odd_re + tw_im * odd_im
           rotated_im = tw_re * odd_im - tw_im * odd_re
 
@@ -558,12 +535,12 @@ namespace std::fft<N = 256>:
           self.fft.set_bin(k, bin_re, bin_im)
           self.fft.set_bin(mirror, mirror_bin_re, mirror_bin_im)
 
-        if (quarter > 0):
+        if quarter > 0:
           quarter_re = self.fft.real(quarter)
           quarter_im = self.fft.imag(quarter)
           self.fft.set_bin(quarter, quarter_re, -quarter_im)
         self.ready = true
-      if (self.ready):
+      if self.ready:
         return true
       return false
 
@@ -589,7 +566,7 @@ namespace std::fft<N = 256>:
 
     def packed_value(self, i: i32):
       half = N >> 1
-      if (i <= half):
+      if i <= half:
         return self.real(i)
       return self.imag(i - half)
 
@@ -602,10 +579,10 @@ namespace std::fft<N = 256>:
     fft: FFT<T>
     output: T[N]
     norm: T[N]
-    window_kind: i32 = _WindowHann
-    frame: i32
-    pending: i32
-    overlap_frames: i32
+    window_kind = _WindowHann
+    frame = 0
+    pending = 0
+    overlap_frames = 0
 
     def size(self):
       return N
@@ -639,9 +616,9 @@ namespace std::fft<N = 256>:
       for k in 0..(half + 1):
         re: T = 0.0
         im: T = 0.0
-        if (k < count):
+        if k < count:
           re = input[k]
-        if (k > 0 && k < half && half + k < count):
+        if k > 0 && k < half && half + k < count:
           im = input[half + k]
         self.fft.set_bin(k, re, im)
       self._inverse_loaded_real_spectrum()
@@ -653,14 +630,13 @@ namespace std::fft<N = 256>:
       for k in 0..(half + 1):
         re: T = 0.0
         im: T = 0.0
-        if (k < count):
+        if k < count:
           re = real[k]
           im = imag[k]
         self.fft.set_bin(k, re, im)
       self._inverse_loaded_real_spectrum()
 
     def _inverse_loaded_real_spectrum(self):
-      self.fft._ensure_tables()
       half = N >> 1
       dc = self.fft.real(0)
       nyquist = self.fft.real(half)
@@ -677,15 +653,15 @@ namespace std::fft<N = 256>:
         even_im = (x_im - mirror_im) * 0.5
         rotated_re = (x_re - mirror_re) * 0.5
         rotated_im = (x_im + mirror_im) * 0.5
-        tw_re = self.fft.twiddles[k].real()
-        tw_im = self.fft.twiddles[k].imag()
+        tw_re = T(_TwiddleReal[k])
+        tw_im = T(_TwiddleImag[k])
         odd_re = tw_re * rotated_re - tw_im * rotated_im
         odd_im = tw_im * rotated_re + tw_re * rotated_im
 
         self.fft.set_bin(k, even_re - odd_im, even_im + odd_re)
         self.fft.set_bin(mirror, even_re + odd_im, odd_re - even_im)
 
-      if (quarter > 0):
+      if quarter > 0:
         quarter_re = self.fft.real(quarter)
         quarter_im = self.fft.imag(quarter)
         self.fft.set_bin(quarter, quarter_re, -quarter_im)
@@ -696,7 +672,7 @@ namespace std::fft<N = 256>:
     def _accumulate_real_ifft_frame(self):
       half = N >> 1
       kind = self.window_kind
-      if (kind == _WindowHann):
+      if kind == _WindowHann:
         for i in 0..half:
           even = i << 1
           odd = even + 1
@@ -720,30 +696,30 @@ namespace std::fft<N = 256>:
           self.output[odd_idx] = self.output[odd_idx] + self.fft.imag(i) * odd_w
           self.norm[even_idx] = self.norm[even_idx] + even_w * even_w
           self.norm[odd_idx] = self.norm[odd_idx] + odd_w * odd_w
-      if (kind == _WindowHann && self.overlap_frames < 2):
-        self.overlap_frames = self.overlap_frames + 1
+      if kind == _WindowHann && self.overlap_frames < 2:
+        self.overlap_frames += 1
       else:
         self.overlap_frames = 2
       self.pending = N
 
     def tick(self):
-      if (self.pending <= 0):
+      if self.pending <= 0:
         return T(0.0)
 
       y = self.output[self.frame]
       denom = self.norm[self.frame]
-      if (self.overlap_frames < 2):
+      if self.overlap_frames < 2:
         y = 0.0
-      elif (denom > 0.0):
+      elif denom > 0.0:
         y = y / denom
 
       self.output[self.frame] = 0.0
       self.norm[self.frame] = 0.0
-      self.frame = self.frame + 1
-      if (self.frame >= N):
+      self.frame += 1
+      if self.frame >= N:
         self.frame = 0
-      self.pending = self.pending - 1
-      if (self.pending <= 0):
+      self.pending -= 1
+      if self.pending <= 0:
         self.overlap_frames = 0
       return y
 

@@ -204,7 +204,9 @@ compound_assign_stmt = { path_ident ~ NEWLINE* ~ compound_assign_op ~ NEWLINE* ~
 inferred_ranged_assign_stmt = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ NEWLINE* ~ binding_range }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }
 assign_target = _{ slice_target | indexed_member_target | index_target | tuple_target | path_ident }
-tuple_target = { "(" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
+tuple_target = { parenthesized_tuple_target | tuple_target_items }
+parenthesized_tuple_target = _{ "(" ~ NEWLINE* ~ tuple_target_items ~ comma_sep? ~ NEWLINE* ~ ")" }
+tuple_target_items = _{ ident ~ (comma_sep ~ ident)+ }
 indexed_member_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" }
 index_target = { (namespace_ref | path_ident) ~ index_group ~ index_group? }
 slice_target = { (namespace_ref | path_ident) ~ (index_group ~ slice_group | slice_group) }

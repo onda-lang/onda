@@ -14,11 +14,11 @@ namespace std::data<S = SR, C = 1>:
       return i32(C)
 
     def _wrap_i(self, i: i32, n: i32):
-      if (n <= 0):
+      if n <= 0:
         return 0
       wrapped = i % n
-      if (wrapped < 0):
-        wrapped = wrapped + n
+      if wrapped < 0:
+        wrapped += n
       return wrapped
 
     def _index(self, frame_i: i32, ch_i: i32 = 0):
@@ -33,15 +33,17 @@ namespace std::data<S = SR, C = 1>:
       self.storage[self._index(frame_i, ch_i)] = value
 
     def readL(self, pos, ch_i: i32 = 0):
-      i0: i32 = i32(floor(pos))
-      t = pos - floor(pos)
+      pos_floor = floor(pos)
+      i0 = i32(pos_floor)
+      t = pos - pos_floor
       a = self.read(i0, ch_i)
       b = self.read(i0 + 1, ch_i)
       return a + (b - a) * t
 
     def readC(self, pos, ch_i: i32 = 0):
-      i1: i32 = i32(floor(pos))
-      t = pos - floor(pos)
+      pos_floor = floor(pos)
+      i1 = i32(pos_floor)
+      t = pos - pos_floor
       y0 = self.read(i1 - 1, ch_i)
       y1 = self.read(i1, ch_i)
       y2 = self.read(i1 + 1, ch_i)

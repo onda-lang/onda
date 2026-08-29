@@ -289,6 +289,25 @@ sample:
 }
 
 #[test]
+fn underscore_for_variables_and_loop_sugar_lower_normally() {
+    let source = r#"
+outs:
+  out1
+sample:
+  total = 0
+  for _ in 0..2:
+    total += 1
+  loop 2:
+    total += 1
+  out1 = f32(total)
+"#;
+    let typed = analyze(parse_program(source).expect("source should parse"))
+        .expect("underscore loop variables should analyze");
+    let mir = lower_test_program(&typed).expect("underscore loop variables should lower");
+    validate(&mir).expect("underscore loop variables should produce valid MIR");
+}
+
+#[test]
 fn def_local_ranges_do_not_become_same_named_state_invariants() {
     let source = r#"
 ins 3

@@ -2,8 +2,7 @@ use super::*;
 use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 use crate::processor_lowering::{
-    is_builtin_proc_init_event_name, proc_local_bind_hidden_def_name,
-    proc_local_nested_bind_hidden_def_name,
+    proc_local_bind_hidden_def_name, proc_local_nested_bind_hidden_def_name,
 };
 use onda_frontend::Span;
 
@@ -1099,6 +1098,308 @@ fn assign_temp_stmt(name: String, expr: Expr) -> Stmt {
         typed_decl_ty_loc: Default::default(),
         expr,
     }
+}
+
+fn proc_output_tuple_index_temp_name(counter: &mut usize) -> String {
+    let name = format!("__onda_proc_output_tuple_index_{}", *counter);
+    *counter += 1;
+    name
+}
+
+fn replace_proc_index_expr(args: &mut [CallArg], replacement: Expr) -> bool {
+    if let Some(arg) = args
+        .iter_mut()
+        .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG))
+    {
+        arg.expr = replacement;
+        return true;
+    }
+
+    let mut positional = args.iter_mut().filter(|arg| arg.name.is_none());
+    let _base = positional.next();
+    let Some(index) = positional.next() else {
+        return false;
+    };
+    index.expr = replacement;
+    true
+}
+
+enum ProcOutputTupleSource {
+    Direct(String),
+    Dynamic {
+        array_base: String,
+        index_expr: Expr,
+        access: IndexAccess,
+    },
+}
+
+struct ProcOutputTupleCall {
+    outputs: Vec<String>,
+    source: ProcOutputTupleSource,
+}
+
+fn resolve_proc_output_tuple_call(
+    expr: &mut Expr,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    aliases: &ProcArrayAliases,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<ProcOutputTupleCall> {
+    rewrite_proc_alias_call_sites_in_expr(expr, aliases);
+    let Expr::UserCall { name, args, .. } = expr else {
+        return None;
+    };
+    canonicalize_indexed_proc_receiver_call(name, args, proc_array_slots);
+
+    if name == PROC_INDEX_CALL_SENTINEL {
+        let mut resolution_args = args.clone();
+        let resolution = resolve_proc_index_target_mut(
+            &mut resolution_args,
+            proc_array_slots,
+            "processor output destructuring call",
+            errors,
+        )?;
+        return match resolution {
+            ProcIndexResolution::Slot(slot) => {
+                let instance = proc_vars.get(&slot)?;
+                let api = proc_api.get(&instance.proc_name)?;
+                Some(ProcOutputTupleCall {
+                    outputs: api.outputs.names.clone(),
+                    source: ProcOutputTupleSource::Direct(slot),
+                })
+            }
+            ProcIndexResolution::Dynamic {
+                array_base,
+                index_expr,
+                slots,
+                access,
+            } => {
+                let (_, api, _) = resolve_proc_array_dispatch_context(
+                    &slots,
+                    proc_vars,
+                    proc_api,
+                    "processor output destructuring call",
+                    errors,
+                )?;
+                Some(ProcOutputTupleCall {
+                    outputs: api.outputs.names,
+                    source: ProcOutputTupleSource::Dynamic {
+                        array_base,
+                        index_expr,
+                        access,
+                    },
+                })
+            }
+        };
+    }
+
+    let instance = proc_vars.get(name)?;
+    let api = proc_api.get(&instance.proc_name)?;
+    Some(ProcOutputTupleCall {
+        outputs: api.outputs.names.clone(),
+        source: ProcOutputTupleSource::Direct(name.clone()),
+    })
+}
+
+fn proc_output_assignment(loc: Span, target_loc: Span, target: String, expr: Expr) -> Stmt {
+    Stmt::Assign {
+        loc,
+        target_loc,
+        target: AssignTarget::Var(target),
+        decl_ty: None,
+        generic_decl_ty: None,
+        is_typed_decl: false,
+        typed_decl_ty_loc: Default::default(),
+        expr,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_proc_output_tuple_assignments_with_aliases(
+    stmts: &mut Vec<Stmt>,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    aliases: &mut ProcArrayAliases,
+    temp_counter: &mut usize,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut expanded = Vec::with_capacity(stmts.len());
+    for mut stmt in std::mem::take(stmts) {
+        match &mut stmt {
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let mut then_aliases = aliases.clone();
+                expand_proc_output_tuple_assignments_with_aliases(
+                    then_branch,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    &mut then_aliases,
+                    temp_counter,
+                    errors,
+                );
+                let mut else_aliases = aliases.clone();
+                expand_proc_output_tuple_assignments_with_aliases(
+                    else_branch,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    &mut else_aliases,
+                    temp_counter,
+                    errors,
+                );
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                let mut body_aliases = aliases.clone();
+                expand_proc_output_tuple_assignments_with_aliases(
+                    body,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    &mut body_aliases,
+                    temp_counter,
+                    errors,
+                );
+            }
+            _ => {}
+        }
+
+        let Stmt::Assign {
+            loc,
+            target_loc,
+            target: AssignTarget::Tuple(targets),
+            expr,
+            ..
+        } = &mut stmt
+        else {
+            if let Stmt::Assign { target, expr, .. } = &stmt {
+                update_proc_array_aliases_from_assignment(target, expr, proc_array_slots, aliases);
+            }
+            expanded.push(stmt);
+            continue;
+        };
+
+        let Some(call) = resolve_proc_output_tuple_call(
+            expr,
+            proc_vars,
+            proc_array_slots,
+            proc_api,
+            aliases,
+            errors,
+        ) else {
+            expanded.push(stmt);
+            continue;
+        };
+        if targets.len() != call.outputs.len() {
+            push_semantic(
+                DiagCtx::new(*target_loc),
+                errors,
+                format!(
+                    "processor output destructuring has {} targets, but the processor has {} outputs",
+                    targets.len(),
+                    call.outputs.len()
+                ),
+            );
+        }
+
+        let loc = *loc;
+        let target_loc = *target_loc;
+        let targets = targets.clone();
+        let outputs = call.outputs;
+        let call_expr = expr.clone();
+        match call.source {
+            ProcOutputTupleSource::Direct(receiver) => {
+                expanded.push(Stmt::Expr {
+                    loc,
+                    expr: call_expr,
+                });
+                expanded.extend(
+                    targets
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, target)| {
+                            let target = target.binding()?.to_owned();
+                            let expr = outputs.get(index).map_or_else(
+                                || Expr::number(0.0),
+                                |output| Expr::var(format!("{receiver}.{output}")),
+                            );
+                            Some(proc_output_assignment(loc, target_loc, target, expr))
+                        }),
+                );
+            }
+            ProcOutputTupleSource::Dynamic {
+                array_base,
+                index_expr,
+                access,
+            } => {
+                let temp = proc_output_tuple_index_temp_name(temp_counter);
+                expanded.push(assign_temp_stmt(temp.clone(), index_expr));
+                let mut call_expr = call_expr;
+                let Expr::UserCall { args, .. } = &mut call_expr else {
+                    unreachable!();
+                };
+                if !replace_proc_index_expr(args, Expr::var(temp.clone())) {
+                    push_semantic(
+                        DiagCtx::new(target_loc),
+                        errors,
+                        "processor output destructuring call is missing its array index",
+                    );
+                    expanded.push(stmt);
+                    continue;
+                }
+                expanded.push(Stmt::Expr {
+                    loc,
+                    expr: call_expr,
+                });
+                expanded.extend(
+                    targets
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, target)| {
+                            let target = target.binding()?.to_owned();
+                            let expr = outputs.get(index).map_or_else(
+                                || Expr::number(0.0),
+                                |output| {
+                                    indexed_read_expr(
+                                        format!("{array_base}.{output}"),
+                                        Expr::var(temp.clone()),
+                                        access,
+                                        loc,
+                                    )
+                                },
+                            );
+                            Some(proc_output_assignment(loc, target_loc, target, expr))
+                        }),
+                );
+            }
+        }
+    }
+    *stmts = expanded;
+}
+
+pub(crate) fn expand_proc_output_tuple_assignments(
+    stmts: &mut Vec<Stmt>,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut aliases = ProcArrayAliases::new();
+    let mut temp_counter = 0;
+    expand_proc_output_tuple_assignments_with_aliases(
+        stmts,
+        proc_vars,
+        proc_array_slots,
+        proc_api,
+        &mut aliases,
+        &mut temp_counter,
+        errors,
+    );
 }
 
 fn proc_named_arg_is_internal(name: Option<&str>) -> bool {
@@ -3454,7 +3755,7 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
             }
         }
         AssignTarget::Tuple(names) => {
-            for name in names {
+            for name in names.iter_mut().filter_map(|target| target.binding_mut()) {
                 normalize_proc_output_alias_path(name, proc_vars, proc_api);
             }
         }
@@ -4678,21 +4979,21 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 diag,
                                 errors,
                             );
-                            let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
+                            let mut rewritten = Vec::<CallArg>::with_capacity(
+                                1 + expanded.len() + api.buffers.len(),
+                            );
                             rewritten.push(CallArg {
                                 name: None,
                                 expr: proc_index_selector_expr(&array_base, &index_expr, access),
                             });
                             rewritten.extend(expanded);
-                            if is_builtin_proc_init_event_name(event_name) {
-                                rewritten.extend(dynamic_proc_array_buffer_call_args(
-                                    &slot_instances,
-                                    &api,
-                                    &array_base,
-                                    &index_expr,
-                                    errors,
-                                ));
-                            }
+                            rewritten.extend(dynamic_proc_array_buffer_call_args(
+                                &slot_instances,
+                                &api,
+                                &array_base,
+                                &index_expr,
+                                errors,
+                            ));
                             *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                             *args = rewritten;
                             handled_proc_stmt_call = true;
@@ -4722,7 +5023,8 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 );
                                 return;
                             };
-                            let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
+                            let mut rewritten =
+                                Vec::<CallArg>::with_capacity(1 + args.len() + api.buffers.len());
                             rewritten.push(CallArg {
                                 name: None,
                                 expr: proc_instance_self_expr(&base, proc_array_slots),
@@ -4735,14 +5037,12 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 errors,
                             );
                             rewritten.extend(expanded);
-                            if is_builtin_proc_init_event_name(event_name) {
-                                rewritten.extend(expand_proc_buffer_call_args(
-                                    instance,
-                                    api,
-                                    &format!("{base}.{event_name}"),
-                                    errors,
-                                ));
-                            }
+                            rewritten.extend(expand_proc_buffer_call_args(
+                                instance,
+                                api,
+                                &format!("{base}.{event_name}"),
+                                errors,
+                            ));
                             *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                             *args = rewritten;
                             handled_proc_stmt_call = true;
@@ -5063,6 +5363,7 @@ pub(super) fn rewrite_proc_calls_in_stmts_without_hooks(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    expand_proc_output_tuple_assignments(stmts, proc_vars, proc_array_slots, proc_api, errors);
     lower_named_proc_param_calls_in_stmts(stmts, proc_vars, proc_array_slots, proc_api, errors);
     let mut aliases = ProcArrayAliases::new();
     for stmt in &mut *stmts {

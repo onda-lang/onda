@@ -26,20 +26,20 @@ namespace std::complex:
       self.im = magnitude * sin(phase)
 
     def add_assign(self, other: Complex):
-      self.re = self.re + other.re
-      self.im = self.im + other.im
+      self.re += other.re
+      self.im += other.im
 
     def add_parts(self, re, im):
-      self.re = self.re + re
-      self.im = self.im + im
+      self.re += re
+      self.im += im
 
     def sub_assign(self, other: Complex):
-      self.re = self.re - other.re
-      self.im = self.im - other.im
+      self.re -= other.re
+      self.im -= other.im
 
     def sub_parts(self, re, im):
-      self.re = self.re - re
-      self.im = self.im - im
+      self.re -= re
+      self.im -= im
 
     def mul_assign(self, other: Complex):
       old_re = self.re
@@ -54,8 +54,8 @@ namespace std::complex:
       self.im = old_re * im + old_im * re
 
     def scale_assign(self, gain):
-      self.re = self.re * gain
-      self.im = self.im * gain
+      self.re *= gain
+      self.im *= gain
 
     def conjugate(self):
       self.im = -self.im

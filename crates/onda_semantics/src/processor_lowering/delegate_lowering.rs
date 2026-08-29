@@ -314,7 +314,7 @@ fn replace_when_bindings_stmt(
                     }
                 }
                 AssignTarget::Tuple(names) => {
-                    for name in names {
+                    for name in names.iter_mut().filter_map(|target| target.binding_mut()) {
                         if replacements.contains_key(name) {
                             push_semantic(
                                 DiagCtx::new(*target_loc),
@@ -685,7 +685,7 @@ fn collect_source_calls_with_aliases(
                             }
                         }
                         AssignTarget::Tuple(names) => {
-                            for name in names {
+                            for name in names.iter().filter_map(|target| target.binding()) {
                                 aliases.remove(name);
                             }
                         }
@@ -2098,7 +2098,7 @@ fn build_proc_delegate_effects(
     effects
 }
 
-fn rewrite_delegate_validation_stmts(
+fn rewrite_source_overload_stmts(
     stmts: &mut [Stmt],
     env: &mut crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
@@ -2121,7 +2121,7 @@ fn rewrite_delegate_validation_stmts(
     );
 }
 
-fn rewrite_delegate_validation_function(
+pub(super) fn rewrite_source_overload_function(
     def: &mut FunctionDef,
     env: &crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
@@ -2144,7 +2144,7 @@ fn rewrite_delegate_validation_function(
     );
 }
 
-fn delegate_validation_return_types(
+pub(super) fn source_overload_return_types(
     defs: &[FunctionDef],
     env: &crate::def_semantics::CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
@@ -2162,7 +2162,7 @@ fn delegate_validation_return_types(
     )
 }
 
-fn rewrite_delegate_validation_event(
+fn rewrite_source_overload_event(
     event: &mut EventDef,
     state_env: &crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
@@ -2173,7 +2173,7 @@ fn rewrite_delegate_validation_event(
     for param in &event.params {
         env.bind_function_param(&crate::event_param_as_fn_param(param), &[]);
     }
-    rewrite_delegate_validation_stmts(
+    rewrite_source_overload_stmts(
         &mut event.body,
         &mut env,
         overloads,
@@ -2182,7 +2182,7 @@ fn rewrite_delegate_validation_event(
     );
 }
 
-fn rewrite_delegate_validation_task(
+fn rewrite_source_overload_task(
     task: &mut TaskDef,
     state_env: &crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
@@ -2190,7 +2190,7 @@ fn rewrite_delegate_validation_task(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
     let mut env = state_env.clone();
-    rewrite_delegate_validation_stmts(
+    rewrite_source_overload_stmts(
         &mut task.body,
         &mut env,
         overloads,
@@ -2199,7 +2199,7 @@ fn rewrite_delegate_validation_task(
     );
 }
 
-fn rewrite_delegate_validation_when(
+fn rewrite_source_overload_when(
     when: &mut WhenDef,
     delegate: Option<&DelegateDef>,
     takes_index: bool,
@@ -2225,7 +2225,7 @@ fn rewrite_delegate_validation_when(
             env.bind_function_param_type(&binding.name, param.ty.as_ref(), &[]);
         }
     }
-    rewrite_delegate_validation_stmts(
+    rewrite_source_overload_stmts(
         &mut when.body,
         &mut env,
         overloads,
@@ -2234,7 +2234,7 @@ fn rewrite_delegate_validation_when(
     );
 }
 
-fn bind_delegate_validation_buffers(
+fn bind_source_buffer_types(
     env: &mut crate::def_semantics::CallTypeEnv,
     buffers: &[BufferDecl],
     options: AnalysisOptions,
@@ -2252,11 +2252,143 @@ fn bind_delegate_validation_buffers(
     }
 }
 
-/// Delegate validation runs before the main overload pass because delegates
-/// are desugared into ordinary functions. Resolve the calls on a validation
-/// clone so the dispatch graph observes concrete overload identities without
-/// changing the source program or duplicating overload-selection rules.
-fn resolve_delegate_validation_overloads(program: &mut Program, options: AnalysisOptions) {
+fn bind_validation_arrays(
+    env: &mut crate::def_semantics::CallTypeEnv,
+    arrays: &HashMap<String, TypedArrayInfo>,
+) {
+    env.array_types.extend(arrays.iter().map(|(name, info)| {
+        (
+            name.clone(),
+            crate::def_semantics::CallArrayType::primitive(info.elem_ty, Some(info.len)),
+        )
+    }));
+}
+
+fn bind_proc_validation_surfaces(
+    env: &mut crate::def_semantics::CallTypeEnv,
+    proc: &ProcessorDef,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+) {
+    let mut ignored_errors = Vec::new();
+    let proc_options = proc_runtime_analysis_options(
+        options,
+        validated_sample_oversample_factor(
+            proc.sample_oversample_factor.as_ref(),
+            options,
+            &format!("processor '{}' sample block", proc.name),
+            &mut ignored_errors,
+        ),
+    );
+    let inferred_io = infer_numbered_io_from_sample(&proc.sample);
+    let inferred_names = infer_numbered_names_from_proc(proc);
+    let ins = normalize_numbered_port_decls(&proc.ins, "in", inferred_io.max_in);
+    let outs = normalize_numbered_port_decls(
+        &proc.outs,
+        proc_output_numbered_prefix(proc),
+        match proc.outs_timing {
+            OutputTiming::Sample => inferred_io.max_out,
+            OutputTiming::Block => inferred_names.max_kout,
+        },
+    );
+    let params = normalize_numbered_param_decls(&proc.params, "param", inferred_names.max_param);
+    let (_, in_types, _, in_arrays) =
+        expand_proc_port_specs(&proc.name, &ins, "input", proc_options, &mut ignored_errors);
+    let (_, out_types, _, out_arrays) = expand_proc_port_specs(
+        &proc.name,
+        &outs,
+        "output",
+        proc_options,
+        &mut ignored_errors,
+    );
+    let (param_specs, _) =
+        expand_proc_param_specs(&proc.name, &params, proc_options, &mut ignored_errors);
+
+    env.scalar_types
+        .extend(in_types.iter().map(|(name, ty)| (name.clone(), *ty)));
+    env.scalar_types
+        .extend(out_types.iter().map(|(name, ty)| (name.clone(), *ty)));
+    env.scalar_types.extend(
+        param_specs
+            .iter()
+            .flat_map(|spec| spec.slots.iter().map(|slot| (slot.name.clone(), slot.ty))),
+    );
+    bind_validation_arrays(env, &array_infos_from_slot_map(&in_arrays, &in_types));
+    bind_validation_arrays(env, &array_infos_from_slot_map(&out_arrays, &out_types));
+    bind_validation_arrays(env, &array_infos_from_param_specs(&param_specs));
+    bind_source_buffer_types(env, &proc.buffers, proc_options);
+    bind_validation_arrays(env, const_arrays);
+}
+
+pub(super) fn resolve_processor_source_overloads(
+    proc: &mut ProcessorDef,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    top_return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    let mut state_env = crate::def_semantics::CallTypeEnv::default();
+    bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
+
+    let provisional_local_returns =
+        source_overload_return_types(&proc.local_defs, &state_env, struct_defs);
+    let mut provisional_returns = top_return_types.clone();
+    provisional_returns.extend(provisional_local_returns);
+    rewrite_source_overload_stmts(
+        &mut proc.init.body,
+        &mut state_env,
+        overloads,
+        &provisional_returns,
+        struct_defs,
+    );
+    for def in &mut proc.local_defs {
+        rewrite_source_overload_function(
+            def,
+            &state_env,
+            overloads,
+            &provisional_returns,
+            struct_defs,
+        );
+    }
+
+    let mut return_types = top_return_types.clone();
+    return_types.extend(source_overload_return_types(
+        &proc.local_defs,
+        &state_env,
+        struct_defs,
+    ));
+    rewrite_source_overload_stmts(
+        &mut proc.init.body,
+        &mut state_env,
+        overloads,
+        &return_types,
+        struct_defs,
+    );
+    for event in &mut proc.events {
+        rewrite_source_overload_event(event, &state_env, overloads, &return_types, struct_defs);
+    }
+    for task in &mut proc.tasks {
+        rewrite_source_overload_task(task, &state_env, overloads, &return_types, struct_defs);
+    }
+    for body in [
+        proc.block_pre.as_mut_slice(),
+        proc.sample.as_mut_slice(),
+        proc.block_post.as_mut_slice(),
+    ] {
+        let mut env = state_env.clone();
+        rewrite_source_overload_stmts(body, &mut env, overloads, &return_types, struct_defs);
+    }
+}
+
+/// Some source-level processor analyses run before the main overload pass.
+/// Resolve calls on their private program clone with the shared overload
+/// engine so those analyses never guess a signature from declaration order.
+pub(super) fn resolve_source_overloads(
+    program: &mut Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+) {
     let raw_struct_defs = program
         .blocks
         .iter()
@@ -2318,15 +2450,15 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
     let (top_overloads, _) = crate::def_semantics::prepare_function_overloads(&mut top_defs);
 
     let mut top_state_env = crate::def_semantics::CallTypeEnv::default();
-    bind_delegate_validation_buffers(&mut top_state_env, &top_buffers, options);
+    bind_source_buffer_types(&mut top_state_env, &top_buffers, options);
     let provisional_return_types =
-        delegate_validation_return_types(&top_defs, &top_state_env, &struct_defs);
+        source_overload_return_types(&top_defs, &top_state_env, &struct_defs);
     if let Some(Block::Init(init)) = program
         .blocks
         .iter_mut()
         .find(|block| matches!(block, Block::Init(_)))
     {
-        rewrite_delegate_validation_stmts(
+        rewrite_source_overload_stmts(
             &mut init.body,
             &mut top_state_env,
             &top_overloads,
@@ -2334,10 +2466,9 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
             &struct_defs,
         );
     }
-    let top_return_types =
-        delegate_validation_return_types(&top_defs, &top_state_env, &struct_defs);
+    let top_return_types = source_overload_return_types(&top_defs, &top_state_env, &struct_defs);
     for def in &mut top_defs {
-        rewrite_delegate_validation_function(
+        rewrite_source_overload_function(
             def,
             &top_state_env,
             &top_overloads,
@@ -2361,7 +2492,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
         match block {
             Block::Events(events) => {
                 for event in &mut events.events {
-                    rewrite_delegate_validation_event(
+                    rewrite_source_overload_event(
                         event,
                         &top_state_env,
                         &top_overloads,
@@ -2372,7 +2503,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
             }
             Block::Tasks(tasks) => {
                 for task in &mut tasks.tasks {
-                    rewrite_delegate_validation_task(
+                    rewrite_source_overload_task(
                         task,
                         &top_state_env,
                         &top_overloads,
@@ -2393,7 +2524,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
                             .get(&(child.proc_name.clone(), when.target.delegate.clone()))
                     })
                     .or_else(|| top_delegate_defs.get(&when.target.delegate));
-                rewrite_delegate_validation_when(
+                rewrite_source_overload_when(
                     when,
                     delegate,
                     child.is_some_and(|child| child.is_array && when.target.index.is_none()),
@@ -2405,7 +2536,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
             }
             Block::Sample(sample) => {
                 let mut env = top_state_env.clone();
-                rewrite_delegate_validation_stmts(
+                rewrite_source_overload_stmts(
                     &mut sample.body,
                     &mut env,
                     &top_overloads,
@@ -2423,7 +2554,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
                     exec.post.as_mut_slice(),
                 ] {
                     let mut env = top_state_env.clone();
-                    rewrite_delegate_validation_stmts(
+                    rewrite_source_overload_stmts(
                         body,
                         &mut env,
                         &top_overloads,
@@ -2455,10 +2586,10 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
         overloads.extend(local_overloads);
 
         let mut state_env = crate::def_semantics::CallTypeEnv::default();
-        bind_delegate_validation_buffers(&mut state_env, &proc.buffers, options);
+        bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
         let provisional_return_types =
-            delegate_validation_return_types(&proc.local_defs, &state_env, &struct_defs);
-        rewrite_delegate_validation_stmts(
+            source_overload_return_types(&proc.local_defs, &state_env, &struct_defs);
+        rewrite_source_overload_stmts(
             &mut proc.init.body,
             &mut state_env,
             &overloads,
@@ -2466,13 +2597,13 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
             &struct_defs,
         );
         let mut return_types = top_return_types.clone();
-        return_types.extend(delegate_validation_return_types(
+        return_types.extend(source_overload_return_types(
             &proc.local_defs,
             &state_env,
             &struct_defs,
         ));
         for def in &mut proc.local_defs {
-            rewrite_delegate_validation_function(
+            rewrite_source_overload_function(
                 def,
                 &state_env,
                 &overloads,
@@ -2481,7 +2612,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
             );
         }
         for event in &mut proc.events {
-            rewrite_delegate_validation_event(
+            rewrite_source_overload_event(
                 event,
                 &state_env,
                 &overloads,
@@ -2490,13 +2621,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
             );
         }
         for task in &mut proc.tasks {
-            rewrite_delegate_validation_task(
-                task,
-                &state_env,
-                &overloads,
-                &return_types,
-                &struct_defs,
-            );
+            rewrite_source_overload_task(task, &state_env, &overloads, &return_types, &struct_defs);
         }
         let children = child_proc_instances(&proc.init.body, &proc_names);
         for when in &mut proc.whens {
@@ -2512,7 +2637,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
                 .or_else(|| {
                     proc_delegate_defs.get(&(proc.name.clone(), when.target.delegate.clone()))
                 });
-            rewrite_delegate_validation_when(
+            rewrite_source_overload_when(
                 when,
                 delegate,
                 child.is_some_and(|child| child.is_array && when.target.index.is_none()),
@@ -2528,13 +2653,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program, options: Analysi
             proc.block_post.as_mut_slice(),
         ] {
             let mut env = state_env.clone();
-            rewrite_delegate_validation_stmts(
-                body,
-                &mut env,
-                &overloads,
-                &return_types,
-                &struct_defs,
-            );
+            rewrite_source_overload_stmts(body, &mut env, &overloads, &return_types, &struct_defs);
         }
     }
 }
@@ -2574,7 +2693,7 @@ pub(super) fn validate_delegate_source_model(
     validate_delegate_member_names(program, errors);
     let resolved_program = delegate_validation_has_overloads(program).then(|| {
         let mut resolved = program.clone();
-        resolve_delegate_validation_overloads(&mut resolved, options);
+        resolve_source_overloads(&mut resolved, options, &HashMap::new());
         resolved
     });
     let program = resolved_program.as_ref().unwrap_or(program);

@@ -64,7 +64,7 @@ block:
 
     room.damping = damping
     room.impulse_gain = impulse_gain
-    room(dry_l, dry_r)
-    
-    out1 = tanh(parallel_mix(dry_l, room.out1, mix) * level)
-    out2 = tanh(parallel_mix(dry_r, room.out2, mix) * level)
+    room_l, room_r = room(dry_l, dry_r)
+
+    out1 = tanh(parallel_mix(dry_l, room_l, mix) * level)
+    out2 = tanh(parallel_mix(dry_r, room_r, mix) * level)

@@ -82,7 +82,7 @@ fn validate_stmts(
                     reject_binding("binding", name, *target_loc, owner, callables, errors);
                 }
                 AssignTarget::Tuple(names) => {
-                    for name in names {
+                    for name in names.iter().filter_map(|target| target.binding()) {
                         reject_binding(
                             "tuple binding",
                             name,

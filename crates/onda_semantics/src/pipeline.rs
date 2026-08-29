@@ -4741,7 +4741,7 @@ fn reject_const_shadowing_stmt(
             target, target_loc, ..
         } => {
             if let AssignTarget::Tuple(names) = target {
-                for name in names {
+                for name in names.iter().filter_map(|target| target.binding()) {
                     reject_const_shadowing_name(
                         "tuple assignment target",
                         name,
@@ -6328,7 +6328,7 @@ fn preprocess_local_const_stmt(
                     }
                 }
                 AssignTarget::Tuple(names) => {
-                    for name in names {
+                    for name in names.iter().filter_map(|target| target.binding()) {
                         if local_consts.contains_key(name) {
                             errors.push(Diagnostic::semantic_span(
                                 format!("cannot assign to constant '{name}'"),
@@ -11069,6 +11069,26 @@ pub fn analyze_with_options_and_inputs(
                             writable: true,
                         },
                     );
+                }
+                if let Some(fields) = def_struct_defs.get(&proc_info.proc_name) {
+                    for output in &api.outputs.names {
+                        let Some(field) = fields.iter().find(|field| field.name == *output) else {
+                            continue;
+                        };
+                        let TypedFieldType::Scalar(elem_ty) = field.ty else {
+                            continue;
+                        };
+                        fn_local_data_aliases.insert(
+                            format!("{param_name}.{output}"),
+                            LocalArrayAliasInfo {
+                                len,
+                                static_len: Some(len),
+                                elem_ty,
+                                elem_struct: None,
+                                writable: false,
+                            },
+                        );
+                    }
                 }
             }
             let has_block = proc_api

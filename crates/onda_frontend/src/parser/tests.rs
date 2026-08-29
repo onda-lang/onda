@@ -6,8 +6,8 @@ use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallArg, CallTypeArg,
     ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, LogicalOp, NamespaceItem,
-    OutputTiming, ParamScale, PrimitiveType, Stmt, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN,
-    INTERNAL_TASK_YIELD_FN,
+    OutputTiming, ParamScale, PrimitiveType, Stmt, TupleAssignTarget, INTERNAL_BARE_RETURN_FN,
+    INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
 };
 
 use super::{
@@ -1395,6 +1395,22 @@ sample {
         }
         _ => panic!("expected for statement from loop sugar"),
     }
+}
+
+#[test]
+fn parses_underscore_as_an_explicit_for_loop_variable() {
+    let program = parse_program("sample:\n  for _ in 0..4:\n    out1 = 1.0\n")
+        .expect("underscore loop variable should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(&sample.body),
+            _ => None,
+        })
+        .expect("sample block");
+
+    assert!(matches!(&sample[0], Stmt::For { var, .. } if var == "_"));
 }
 
 #[test]
@@ -4836,6 +4852,40 @@ fn pin_freshness_accounts_for_tuple_bindings() {
     assert!(diagnostics.iter().any(|diagnostic| diagnostic
         .message
         .contains("'pin' requires a fresh state binding; 'value' was already assigned")));
+}
+
+#[test]
+fn parses_bare_and_parenthesized_tuple_targets_with_discards() {
+    let program = parse_program(
+        "sample:\n  left, _, right = (1.0, 2.0, 3.0)\n  (a, _, b) = (4.0, 5.0, 6.0)\n  out1 = left + right + a + b\n",
+    )
+    .expect("tuple targets should allow optional parentheses and discard entries");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(&sample.body),
+            _ => None,
+        })
+        .expect("sample block");
+
+    for stmt in &sample[..2] {
+        let Stmt::Assign {
+            target: AssignTarget::Tuple(targets),
+            ..
+        } = stmt
+        else {
+            panic!("expected tuple assignment");
+        };
+        assert!(matches!(
+            targets.as_slice(),
+            [
+                TupleAssignTarget::Binding(_),
+                TupleAssignTarget::Discard,
+                TupleAssignTarget::Binding(_)
+            ]
+        ));
+    }
 }
 
 #[test]

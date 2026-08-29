@@ -894,6 +894,28 @@ pub struct ArrayTypeSpec {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum TupleAssignTarget {
+    Binding(String),
+    Discard,
+}
+
+impl TupleAssignTarget {
+    pub fn binding(&self) -> Option<&str> {
+        match self {
+            Self::Binding(name) => Some(name),
+            Self::Discard => None,
+        }
+    }
+
+    pub fn binding_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::Binding(name) => Some(name),
+            Self::Discard => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum AssignTarget {
     Var(String),
     Index {
@@ -907,7 +929,7 @@ pub enum AssignTarget {
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
     },
-    Tuple(Vec<String>),
+    Tuple(Vec<TupleAssignTarget>),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]

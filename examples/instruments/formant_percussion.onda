@@ -82,10 +82,10 @@ sample:
   for i in 0..VoiceCount:
     voice = voices[i]()
     pan = -0.82 + i * 1.64 / (VoiceCount - 1)
-    (gain_l, gain_r) = std::levels::pan_3db(pan)
+    gain_l, gain_r = std::levels::pan_3db(pan)
     dry_l = dry_l + voice * gain_l
     dry_r = dry_r + voice * gain_r
 
-  reverb(dry_l, dry_r)
-  out1 = tanh((dry_l + reverb.out1 * space) * level)
-  out2 = tanh((dry_r + reverb.out2 * space) * level)
+  wet_l, wet_r = reverb(dry_l, dry_r)
+  out1 = tanh((dry_l + wet_l * space) * level)
+  out2 = tanh((dry_r + wet_r * space) * level)

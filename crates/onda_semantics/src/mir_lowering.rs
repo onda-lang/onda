@@ -15,9 +15,10 @@ use std::fmt;
 
 use onda_frontend::{
     ArrayElemType, AssignTarget, BinaryOp as AstBinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr,
-    LogicalOp, ParamScale, PrimitiveType, SourceLoc, Stmt, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
-    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    LogicalOp, ParamScale, PrimitiveType, SourceLoc, Stmt, TupleAssignTarget,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 use onda_mir::{
     BinaryOp as MirBinaryOp, Block as MirBlock, BoundsMode, CallArgument, CompareOp,

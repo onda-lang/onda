@@ -429,8 +429,8 @@ fn semantic_tokens_runtime_symbols_shadow_namespace_names_in_std_filter() {
     let mode_namespace = line_containing(&source, "  namespace mode:");
     let one_pole_param = line_containing(&source, "mode: i32 = mode::ONE_POLE_LOWPASS");
     let one_pole_read = line_containing(&source, "mode == mode::ONE_POLE_HIGHPASS");
-    let svf_param = line_containing(&source, "mode: i32 = 0");
-    let svf_read = line_containing(&source, "mode <= mode::SVF_LOWPASS");
+    let svf_param = line_containing(&source, "mode: i32 = mode::SVF_LOWPASS");
+    let svf_read = line_containing(&source, "mode == mode::SVF_LOWPASS");
 
     assert_eq!(
         token_type_at_text_on_line(&tokens, &source, mode_namespace, "mode"),
@@ -1485,7 +1485,7 @@ fn semantic_tokens_mark_proc_state_and_hook_state_for_std_osc() {
     let incr_lines = [
         line_containing(&source, "incr = 0.0"),
         line_containing(&source, "incr = freq / SR"),
-        line_containing(&source, "phase = phase + incr"),
+        line_containing(&source, "phase += incr"),
     ];
     for line_no in incr_lines {
         assert_eq!(

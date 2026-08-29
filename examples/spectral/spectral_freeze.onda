@@ -38,9 +38,9 @@ block:
       dry_r = source
 
     mono = (dry_l + dry_r) * 0.5
-    freezer(mono)
-    frozen_mid = (freezer.out1 + freezer.out2) * 0.5
-    frozen_side = (freezer.out1 - freezer.out2) * 0.5 * width
+    frozen_out_l, frozen_out_r = freezer(mono)
+    frozen_mid = (frozen_out_l + frozen_out_r) * 0.5
+    frozen_side = (frozen_out_l - frozen_out_r) * 0.5 * width
     frozen_l = frozen_mid + frozen_side
     frozen_r = frozen_mid - frozen_side
 

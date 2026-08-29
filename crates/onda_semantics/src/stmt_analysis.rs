@@ -774,7 +774,7 @@ pub(crate) fn track_tuple_var_assignment(
 
 pub(crate) fn clear_tuple_var_bindings<'a>(
     tuple_vars: &mut HashMap<String, usize>,
-    names: impl IntoIterator<Item = &'a String>,
+    names: impl IntoIterator<Item = &'a str>,
 ) {
     for name in names {
         tuple_vars.remove(name);

@@ -815,7 +815,10 @@ pub(crate) fn update_call_type_env_after_assign(
 ) {
     if let AssignTarget::Tuple(names) = target {
         let elem_types = infer_tuple_arg_types(expr, env, context);
-        for (index, name) in names.iter().enumerate() {
+        for (index, target) in names.iter().enumerate() {
+            let Some(name) = target.binding() else {
+                continue;
+            };
             if env.has_binding(name) {
                 continue;
             }
@@ -825,9 +828,9 @@ pub(crate) fn update_call_type_env_after_assign(
                 .and_then(|elem_types| elem_types.get(index))
                 .copied()
             {
-                env.scalar_types.insert(name.clone(), elem_ty);
+                env.scalar_types.insert(name.to_owned(), elem_ty);
             } else {
-                env.unresolved_bindings.insert(name.clone());
+                env.unresolved_bindings.insert(name.to_owned());
             }
         }
         return;

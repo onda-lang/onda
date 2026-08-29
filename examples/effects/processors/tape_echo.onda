@@ -1,3 +1,4 @@
+import std/delay
 import std/filter
 import std/osc
 
@@ -13,26 +14,21 @@ proc TapeLine:
     drive = 1.4
 
   init:
-    line: f32[TapeLineSamples]
-    write = 0
+    line = std::delay<TapeLineSamples>::Linear()
+    feedback_sample = 0.0
     wow_lfo = std::osc::Sine(freq = wow_rate)
     flutter_lfo = std::osc::Sine(freq = wow_rate * 7.31)
     feedback_filter = std::filter::OnePole(cutoff = tone)
 
   sample:
     drift = wow_lfo(freq = wow_rate) + flutter_lfo(freq = wow_rate * 7.31) * 0.18
-    moving_delay = clamp(delay_s * (1.0 + wow * drift), 0.002, 2.95)
-    read_pos = wrap(write - moving_delay * SR, 0.0, TapeLineSamples)
-    i0 = i32(read_pos)
-    i1 = i0 + 1
-    if (i1 >= TapeLineSamples):
-      i1 = 0
-    delayed = lerp(line[i0], line[i1], read_pos - i0)
+    moving_delay = delay_s * (1.0 + wow * drift)
+    write_sample = tanh((in1 + feedback_sample * feedback) * drive)
+    delayed = line(write_sample, delay_samples = moving_delay * SR)
 
     feedback_filter.cutoff = tone
     dark_repeat = feedback_filter(delayed)
-    line[write] = tanh((in1 + dark_repeat * feedback) * drive)
-    write = (write + 1) % TapeLineSamples
+    feedback_sample = dark_repeat
     out1 = delayed
 
 proc StereoTapeEcho:

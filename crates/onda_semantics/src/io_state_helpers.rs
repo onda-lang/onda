@@ -135,7 +135,7 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                     }
                 }
                 AssignTarget::Tuple(names) => {
-                    for name in names {
+                    for name in names.iter().filter_map(|target| target.binding()) {
                         infer_numbered_base_name(name, acc);
                     }
                 }

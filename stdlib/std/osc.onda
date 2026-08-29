@@ -16,27 +16,30 @@ namespace std::osc:
       phase = wrap(phase_cycles, T(0.0), T(1.0))
 
     sample:
-      phase = phase + incr
-      if (phase >= 1.0):
-        phase = phase - 1.0
+      phase += incr
+      if phase >= 1.0 || phase < 0.0:
+        phase = wrap(phase, T(0.0), T(1.0))
       out1 = phase
-        
+
   proc Sine<T>:
     outs<T> 1
 
     params<T>:
-      freq = 440.0
+      freq = 440.0 => update_freq
       amp = 1.0
       phase_offset = 0.0
 
     init:
       phasor = Phasor(freq = freq)
 
+    def update_freq():
+      phasor.freq = freq
+
     event reset(phase_cycles: T = 0.0):
       phasor.reset(phase_cycles)
 
     sample:
-      out1 = sin(phasor(freq = freq) * TWO_PI + phase_offset) * amp
+      out1 = sin(phasor() * TWO_PI + phase_offset) * amp
 
   proc KSine<T>:
     kouts<T> 1
@@ -86,12 +89,13 @@ namespace std::osc:
 
     def update_freq():
       dt = freq / SR
+      phasor.freq = freq
 
     event reset(phase_cycles: T = 0.0):
       phasor.reset(phase_cycles)
 
     sample:
-      phase = phasor(freq = freq)
+      phase = phasor()
       base = phase + phase - 1.0
       out1 = (base - std::osc::poly_blep<T>(phase, dt)) * amp
 
@@ -108,12 +112,13 @@ namespace std::osc:
 
     def update_freq():
       dt = freq / SR
+      phasor.freq = freq
 
     event reset(phase_cycles: T = 0.0):
       phasor.reset(phase_cycles)
 
     sample:
-      phase = phasor(freq = freq)
+      phase = phasor()
       base = 1.0 - phase - phase
       out1 = (base + std::osc::poly_blep<T>(phase, dt)) * amp
 
@@ -121,8 +126,8 @@ namespace std::osc:
     outs<T> 1
 
     params<T>:
-      freq = 440.0 => update_shape
-      width = 0.5 => update_shape
+      freq = 440.0 => update_freq
+      width = 0.5 {0.001, 0.999} => update_width
       amp = 1.0
 
     init<T>:
@@ -130,43 +135,52 @@ namespace std::osc:
       width_v = 0.5
       dt = 0.0
 
-    def update_shape():
-      width_v = clamp(width, T(0.001), T(0.999))
+    def update_freq():
       dt = freq / SR
+      phasor.freq = freq
+
+    def update_width():
+      width_v = width
 
     event reset(phase_cycles: T = 0.0):
       phasor.reset(phase_cycles)
 
     sample:
-      phase = phasor(freq = freq)
-      if (phase < width_v):
+      phase = phasor()
+      if phase < width_v:
         wave = T(1.0)
       else:
         wave = T(-1.0)
 
-      phase2: T = phase - width_v
-      if (phase2 < 0.0):
-        phase2 = phase2 + 1.0
+      phase2 = phase - width_v
+      if phase2 < 0.0:
+        phase2 += 1.0
 
-      wave = wave + std::osc::poly_blep<T>(phase, dt)
-      wave = wave - std::osc::poly_blep<T>(phase2, dt)
+      wave += std::osc::poly_blep<T>(phase, dt)
+      wave -= std::osc::poly_blep<T>(phase2, dt)
       out1 = wave * amp
 
   proc Square<T>:
     outs<T> 1
 
     params<T>:
-      freq = 440.0
-      amp = 1.0
+      freq = 440.0 => update_freq
+      amp = 1.0 => update_amp
 
     init:
       pulse = Pulse(freq = freq, width = 0.5, amp = amp)
+
+    def update_freq():
+      pulse.freq = freq
+
+    def update_amp():
+      pulse.amp = amp
 
     event reset(phase_cycles: T = 0.0):
       pulse.reset(phase_cycles)
 
     sample:
-      out1 = pulse(freq = freq, amp = amp)
+      out1 = pulse()
 
   proc Triangle<T>:
     outs<T> 1
@@ -182,6 +196,7 @@ namespace std::osc:
 
     def update_freq():
       dt = freq / SR
+      pulse.freq = freq
 
     event reset(phase_cycles: T = 0.0):
       pulse.reset(phase_cycles)
@@ -190,5 +205,5 @@ namespace std::osc:
         tri = T(2.0) - tri
 
     sample:
-      tri = clamp(tri + pulse(freq = freq) * dt * T(4.0), T(-1.0), T(1.0))
+      tri = clamp(tri + pulse() * dt * T(4.0), T(-1.0), T(1.0))
       out1 = tri * amp

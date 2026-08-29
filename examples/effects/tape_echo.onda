@@ -62,6 +62,6 @@ sample:
   echo.wow = wow
   echo.drive = drive
   echo.mix = mix
-  echo(source_l, source_r)
-  out1 = echo.out1 * level
-  out2 = echo.out2 * level
+  echo_l, echo_r = echo(source_l, source_r)
+  out1 = echo_l * level
+  out2 = echo_r * level

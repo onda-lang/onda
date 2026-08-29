@@ -97,6 +97,7 @@ pub struct RunState {
     pub output_channels: usize,
     pub buffers: Vec<Value>,
     pub events: Vec<Value>,
+    pub delegates: Vec<Value>,
     pub log_text: String,
     pub log_entries: Vec<Value>,
     pub log_revealed: bool,
@@ -124,6 +125,7 @@ impl RunState {
             output_channels: 0,
             buffers: Vec::new(),
             events: Vec::new(),
+            delegates: Vec::new(),
             log_text: String::new(),
             log_entries: Vec::new(),
             log_revealed: false,
@@ -217,6 +219,7 @@ struct ReadyEvent {
     params: Vec<Value>,
     buffers: Vec<Value>,
     events: Vec<Value>,
+    delegates: Vec<Value>,
     output_channels: usize,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
@@ -232,6 +235,7 @@ struct RawReadyEvent {
     params: Option<Vec<RunParamWire>>,
     buffers: Option<Vec<Value>>,
     events: Option<Vec<Value>>,
+    delegates: Option<Vec<Value>>,
     #[serde(rename = "outputChannels")]
     output_channels: Option<usize>,
     #[serde(rename = "inputDevices")]
@@ -831,6 +835,7 @@ impl RunController {
             &ready.events,
         );
         self.state.events = ready.events;
+        self.state.delegates = ready.delegates;
         apply_preserved_event_state(&mut self.state.events, &self.preserved_events);
         self.state.log_text.clear();
         self.state.log_entries.clear();
@@ -1083,7 +1088,7 @@ impl RunController {
                     for occurrence in occurrences {
                         self.state
                             .log_text
-                            .push_str(&format_delegate_log_line(occurrence));
+                            .push_str(&format_delegate_log_line(occurrence, &self.state.delegates));
                         self.state.log_text.push('\n');
                         self.state.log_entries.push(json!({
                             "kind": "delegate",
@@ -1212,22 +1217,36 @@ fn trim_log_history(state: &mut RunState) {
         .collect();
 }
 
-fn format_delegate_log_line(occurrence: &Value) -> String {
+fn format_delegate_log_line(occurrence: &Value, delegates: &[Value]) -> String {
     let name = occurrence
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("delegate");
-    let values = occurrence
-        .get("values")
-        .and_then(Value::as_object)
-        .map(|values| {
-            values
-                .iter()
-                .map(|(name, value)| format!("{name}={}", format_log_value(value)))
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .unwrap_or_default();
+    let values = occurrence.get("values").and_then(Value::as_object);
+    let params = occurrence
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|index| delegates.get(index as usize))
+        .and_then(|delegate| delegate.get("params"))
+        .and_then(Value::as_array);
+    let values = match (values, params) {
+        (Some(values), Some(params)) => params
+            .iter()
+            .filter_map(|param| {
+                let name = param.get("name")?.as_str()?;
+                let value = values.get(name)?;
+                let type_repr = param.get("type").and_then(Value::as_str);
+                Some(format!("{name}={}", format_log_value(value, type_repr)))
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        (Some(values), None) => values
+            .iter()
+            .map(|(name, value)| format!("{name}={}", format_log_value(value, None)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        (None, _) => String::new(),
+    };
     if values.is_empty() {
         format!("delegate {name}")
     } else {
@@ -1235,7 +1254,7 @@ fn format_delegate_log_line(occurrence: &Value) -> String {
     }
 }
 
-fn format_log_value(value: &Value) -> String {
+fn format_log_value(value: &Value, type_repr: Option<&str>) -> String {
     match value {
         // Delegate i64 values cross JSON as decimal strings to retain their
         // full width. Present them as integers rather than quoted text.
@@ -1244,10 +1263,24 @@ fn format_log_value(value: &Value) -> String {
             "[{}]",
             values
                 .iter()
-                .map(format_log_value)
+                .map(|value| format_log_value(value, type_repr))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        Value::Number(value)
+            if type_repr.is_some_and(|ty| matches!(ty.split('[').next(), Some("i32" | "i64"))) =>
+        {
+            value
+                .as_i64()
+                .map(|value| value.to_string())
+                .or_else(|| {
+                    value
+                        .as_f64()
+                        .filter(|value| value.is_finite() && value.fract() == 0.0)
+                        .map(|value| format!("{value:.0}"))
+                })
+                .unwrap_or_else(|| value.to_string())
+        }
         _ => value.to_string(),
     }
 }
@@ -1572,6 +1605,7 @@ impl ChildSession {
                             params,
                             buffers: raw.buffers.unwrap_or_default(),
                             events: raw.events.unwrap_or_default(),
+                            delegates: raw.delegates.unwrap_or_default(),
                             output_channels: raw.output_channels.unwrap_or(0),
                             input_devices: raw.input_devices.unwrap_or_default(),
                             output_devices: raw.output_devices.unwrap_or_default(),
@@ -2714,19 +2748,32 @@ mod tests {
     }
 
     #[test]
-    fn delegate_log_lines_are_compact_and_preserve_wide_integers() {
+    fn delegate_log_lines_follow_declared_order_and_types() {
+        let delegates = [json!({
+            "name": "meter",
+            "params": [
+                { "name": "voice", "type": "i32" },
+                { "name": "bins", "type": "f32[]" },
+                { "name": "frame", "type": "i64" },
+            ],
+        })];
         assert_eq!(
-            format_delegate_log_line(&json!({
-                "name": "meter",
-                "values": {
-                    "bins": [0.25, 0.5],
-                    "frame": "9007199254740993",
-                },
-            })),
-            "delegate meter: bins=[0.25, 0.5] frame=9007199254740993"
+            format_delegate_log_line(
+                &json!({
+                    "index": 0,
+                    "name": "meter",
+                    "values": {
+                        "voice": 3.0,
+                        "bins": [0.25, 0.5],
+                        "frame": "9007199254740993",
+                    },
+                }),
+                &delegates
+            ),
+            "delegate meter: voice=3 bins=[0.25, 0.5] frame=9007199254740993"
         );
         assert_eq!(
-            format_delegate_log_line(&json!({ "name": "done", "values": {} })),
+            format_delegate_log_line(&json!({ "name": "done", "values": {} }), &[],),
             "delegate done"
         );
     }

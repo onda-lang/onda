@@ -602,10 +602,14 @@ fn format_delegates(delegates: &onda_frontend::DelegateBlock, indent: usize, out
 }
 
 fn format_delegate(delegate: &DelegateDef, indent: usize, out: &mut String) {
+    push_line(out, indent, &format_delegate_signature(delegate));
+}
+
+pub(crate) fn format_delegate_signature(delegate: &DelegateDef) -> String {
     let mut signature = format!("{}(", delegate.name);
     signature.push_str(&format_event_params(&delegate.params));
     signature.push(')');
-    push_line(out, indent, &signature);
+    signature
 }
 
 fn format_when(when: &onda_frontend::WhenDef, indent: usize, out: &mut String) {
@@ -879,7 +883,11 @@ fn format_assign_target(target: &AssignTarget) -> String {
             start.as_deref(),
             end.as_deref(),
         ),
-        AssignTarget::Tuple(names) => format!("({})", names.join(", ")),
+        AssignTarget::Tuple(targets) => targets
+            .iter()
+            .map(|target| target.binding().unwrap_or("_"))
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
@@ -1462,6 +1470,14 @@ mod tests {
     use onda_frontend::parse_program;
 
     use super::format_program;
+
+    #[test]
+    fn formatting_canonicalizes_tuple_targets_without_parentheses() {
+        let source = "sample:\n  (left, _, right) = (1.0, 2.0, 3.0)\n  out1 = left + right\n";
+        let program = parse_program(source).expect("source should parse");
+        let formatted = format_program(&program);
+        assert!(formatted.contains("  left, _, right = (1.0, 2.0, 3.0)\n"));
+    }
 
     #[test]
     fn formatting_preserves_parameter_control_domains() {

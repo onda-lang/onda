@@ -222,7 +222,11 @@ impl RewriteNameScope {
 fn assignment_target_plain_names(target: &AssignTarget) -> Vec<String> {
     match target {
         AssignTarget::Var(name) => vec![name.clone()],
-        AssignTarget::Tuple(names) => names.clone(),
+        AssignTarget::Tuple(names) => names
+            .iter()
+            .filter_map(|target| target.binding())
+            .map(str::to_owned)
+            .collect(),
         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => Vec::new(),
     }
 }

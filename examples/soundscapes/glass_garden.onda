@@ -11,11 +11,11 @@ const Starts: i32[VoiceCount] = [0, 2, 4, 7, 9]
 const Leaps: i32[VoiceCount] = [5, 7, 4, 9, 2]
 
 proc GlassBloom:
-  delegate faded(note: f32)
-
   params:
     decay_s = 0.7
     brightness = 0.68
+  
+  delegate faded(note: f32)
 
   init:
     current_note = 60.0
@@ -25,7 +25,7 @@ proc GlassBloom:
     modulator = std::osc::Sine()
     high_partial = std::osc::Sine()
     air_partial = std::osc::Sine()
-    amplitude = std::env::DecayEnv(decay_s = decay_s)
+    amplitude = std::env::DecayEnv(decay_s = decay_s, end_level = 0.008)
 
   event strike(note: f32, velocity: f32):
     current_note = note
@@ -37,6 +37,10 @@ proc GlassBloom:
     amplitude.start(velocity)
     active = true
 
+  when amplitude.finished():
+    active = false
+    faded(current_note)
+
   sample:
     envelope = amplitude(decay_s = decay_s)
     tone = 0.0
@@ -47,10 +51,6 @@ proc GlassBloom:
       high = high_partial(freq = freq * 2.756, phase_offset = modulation * 0.24)
       air = air_partial(freq = freq * 5.404, phase_offset = modulation * 0.08)
       tone = (fundamental * 0.68 + high * 0.24 + air * 0.08 * brightness) * envelope
-
-      if envelope < 0.008:
-        active = false
-        faded(current_note)
 
     out1 = tone
 
@@ -112,7 +112,7 @@ sample:
   dry_r = 0.0
   for i in 0..VoiceCount:
     bloom = blooms[i]()
-    (gain_l, gain_r) = std::levels::pan_3db(pans[i])
+    gain_l, gain_r = std::levels::pan_3db(pans[i])
     dry_l = dry_l + bloom * gain_l
     dry_r = dry_r + bloom * gain_r
 

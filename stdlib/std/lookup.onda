@@ -13,50 +13,50 @@ namespace std::lookup:
   def write(buf, ch: i32, i: i32, value):
     buf[ch, i] = value
     
-  def calcIdx(pos):
+  def _split_position(pos):
     pos_floor = floor(pos)
     idx = i32(pos_floor)
     t = pos - pos_floor
     return (idx, t)
 
-  def wrapIdx(i: i32, n: i32):
+  def _wrap_index(i: i32, n: i32):
     wrapped = i % n
     if wrapped < 0:
-      wrapped = wrapped + n
+      wrapped += n
     return wrapped
 
   def readL(buf, pos):
-    (i0, t) = calcIdx(pos)
+    i0, t = _split_position(pos)
     a = read(buf, i0)
     c = read(buf, i0 + 1)
     return a + (c - a) * t
 
   def readL(buf, ch: i32, pos):
-    (i0, t) = calcIdx(pos)
+    i0, t = _split_position(pos)
     a = read(buf, ch, i0)
     c = read(buf, ch, i0 + 1)
     return a + (c - a) * t
 
   def readLW(buf, pos):
-    (i0, t) = calcIdx(pos)
+    i0, t = _split_position(pos)
     n = buf.len()
-    i0 = wrapIdx(i0, n)
-    i1 = wrapIdx(i0 + 1, n)
+    i0 = _wrap_index(i0, n)
+    i1 = _wrap_index(i0 + 1, n)
     a = read(buf, i0)
     c = read(buf, i1)
     return a + (c - a) * t
 
   def readLW(buf, ch: i32, pos):
-    (i0, t) = calcIdx(pos)
+    i0, t = _split_position(pos)
     n = buf.len()
-    i0 = wrapIdx(i0, n)
-    i1 = wrapIdx(i0 + 1, n)
+    i0 = _wrap_index(i0, n)
+    i1 = _wrap_index(i0 + 1, n)
     a = read(buf, ch, i0)
     c = read(buf, ch, i1)
     return a + (c - a) * t
 
   def readC(buf, pos):
-    (i1, t) = calcIdx(pos)
+    i1, t = _split_position(pos)
     y0 = read(buf, i1 - 1)
     y1 = read(buf, i1)
     y2 = read(buf, i1 + 1)
@@ -64,7 +64,7 @@ namespace std::lookup:
     return std::math::cubic_interp(y0, y1, y2, y3, t)
 
   def readC(buf, ch: i32, pos):
-    (i1, t) = calcIdx(pos)
+    i1, t = _split_position(pos)
     y0 = read(buf, ch, i1 - 1)
     y1 = read(buf, ch, i1)
     y2 = read(buf, ch, i1 + 1)
@@ -72,21 +72,21 @@ namespace std::lookup:
     return std::math::cubic_interp(y0, y1, y2, y3, t)
 
   def readCW(buf, pos):
-    (i1, t) = calcIdx(pos)
+    i1, t = _split_position(pos)
     n = buf.len()
-    y0 = read(buf, wrapIdx(i1 - 1, n))
-    y1 = read(buf, wrapIdx(i1, n))
-    y2 = read(buf, wrapIdx(i1 + 1, n))
-    y3 = read(buf, wrapIdx(i1 + 2, n))
+    y0 = read(buf, _wrap_index(i1 - 1, n))
+    y1 = read(buf, _wrap_index(i1, n))
+    y2 = read(buf, _wrap_index(i1 + 1, n))
+    y3 = read(buf, _wrap_index(i1 + 2, n))
     return std::math::cubic_interp(y0, y1, y2, y3, t)
 
   def readCW(buf, ch: i32, pos):
-    (i1, t) = calcIdx(pos)
+    i1, t = _split_position(pos)
     n = buf.len()
-    y0 = read(buf, ch, wrapIdx(i1 - 1, n))
-    y1 = read(buf, ch, wrapIdx(i1, n))
-    y2 = read(buf, ch, wrapIdx(i1 + 1, n))
-    y3 = read(buf, ch, wrapIdx(i1 + 2, n))
+    y0 = read(buf, ch, _wrap_index(i1 - 1, n))
+    y1 = read(buf, ch, _wrap_index(i1, n))
+    y2 = read(buf, ch, _wrap_index(i1 + 1, n))
+    y3 = read(buf, ch, _wrap_index(i1 + 2, n))
     return std::math::cubic_interp(y0, y1, y2, y3, t)
 
 def read(buf, i: i32):

@@ -1871,7 +1871,7 @@ fn stdlib_realifft_hann_reprimes_after_becoming_inactive() {
 }
 
 #[test]
-fn stdlib_realifft_first_frame_uses_prepared_twiddles() {
+fn stdlib_realifft_first_frame_uses_compile_time_twiddles() {
     let frames = 64;
     let (mut instance, in_channels, out_channels) =
         compile_instance(STDLIB_REALIFFT_FIRST_FRAME_EXAMPLE, frames);

@@ -42,7 +42,12 @@ fn parse_init_stmt_list_pair(
                 }
                 AssignTarget::Tuple(roots) => {
                     debug_assert!(!pinned, "pinned tuple targets are rejected by the grammar");
-                    assigned_roots.extend(roots.iter().cloned());
+                    assigned_roots.extend(
+                        roots
+                            .iter()
+                            .filter_map(TupleAssignTarget::binding)
+                            .map(str::to_owned),
+                    );
                 }
                 AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
             }

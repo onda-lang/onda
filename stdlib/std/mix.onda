@@ -19,7 +19,7 @@ namespace std::mix:
       sample:
         y: T = 0.0
         for i in 0..N:
-          y = y + ins[i]
+          y += ins[i]
         out1 = y
 
     proc Average<T>:
@@ -29,7 +29,7 @@ namespace std::mix:
       sample:
         y: T = 0.0
         for i in 0..N:
-          y = y + ins[i]
+          y += ins[i]
         out1 = y / T(N)
 
     proc Crossfade<T>:
@@ -41,12 +41,11 @@ namespace std::mix:
         out: T[N]
 
       params<T>:
-        mix = 0.5
+        mix = 0.5 {0.0, 1.0}
 
       sample:
-        t: T = clamp(mix, T(0.0), T(1.0))
         for i in 0..N:
-          out[i] = lerp(a[i], b[i], t)
+          out[i] = lerp(a[i], b[i], mix)
 
   proc MonoToStereo<T>:
     ins<T> 1
@@ -82,8 +81,7 @@ namespace std::mix:
     outs<T> 1
 
     params<T>:
-      mix = 0.5
+      mix = 0.5 {0.0, 1.0}
 
     sample:
-      t: T = clamp(mix, T(0.0), T(1.0))
-      out1 = lerp(in1, in2, t)
+      out1 = lerp(in1, in2, mix)

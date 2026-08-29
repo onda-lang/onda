@@ -1799,7 +1799,9 @@ fn uniquify_task_bindings(
                                 );
                             }
                             AssignTarget::Tuple(names) => {
-                                for name in names {
+                                for name in
+                                    names.iter_mut().filter_map(|target| target.binding_mut())
+                                {
                                     let source_name = name.clone();
                                     *name = self.assignment_name(&source_name, false);
                                 }
@@ -2185,7 +2187,7 @@ fn rewrite_task_target(target: &mut AssignTarget, names: &HashMap<String, String
             }
         }
         AssignTarget::Tuple(values) => {
-            for name in values {
+            for name in values.iter_mut().filter_map(|target| target.binding_mut()) {
                 if let Some(replacement) = names.get(name) {
                     *name = replacement.clone();
                 }
@@ -2482,7 +2484,12 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                             collect_expr_uses(coordinate, &mut uses);
                         }
                     }
-                    AssignTarget::Tuple(names) => defs.extend(names.iter().cloned()),
+                    AssignTarget::Tuple(names) => defs.extend(
+                        names
+                            .iter()
+                            .filter_map(|target| target.binding())
+                            .map(str::to_owned),
+                    ),
                 }
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {

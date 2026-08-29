@@ -13,6 +13,32 @@ fn flow_scope_label(scope: ScopeKind) -> &'static str {
     }
 }
 
+fn wrong_rate_output_assignment_message(name: &str, scope: ScopeKind) -> String {
+    if scope == ScopeKind::Block {
+        format!(
+            "audio output '{name}' can only be written in sample; move this assignment into the block's nested sample section"
+        )
+    } else {
+        format!(
+            "cannot assign to output symbol '{name}' in {}",
+            flow_scope_label(scope)
+        )
+    }
+}
+
+fn wrong_rate_output_array_assignment_message(name: &str, scope: ScopeKind) -> String {
+    if scope == ScopeKind::Block {
+        format!(
+            "audio output array '{name}' can only be written in sample; move this assignment into the block's nested sample section"
+        )
+    } else {
+        format!(
+            "cannot assign to output array symbol '{name}' in {}",
+            flow_scope_label(scope)
+        )
+    }
+}
+
 fn indexed_aggregate_target_type(
     base: &str,
     index: &Expr,
@@ -181,6 +207,7 @@ fn has_local_binding_root(
 fn validate_event_assign_target_restrictions(
     target_loc: SourceLoc,
     target: &AssignTarget,
+    declared_symbols: &DeclaredSymbolMap,
     locals: &HashSet<String>,
     local_aliases: &LocalAliasTypes,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
@@ -225,6 +252,9 @@ fn validate_event_assign_target_restrictions(
             format!("cannot assign to output symbol '{}' in event handler", root),
             target_loc,
         ));
+        return;
+    }
+    if indexed && has_declared_buffer_symbol_info(declared_symbols, base) {
         return;
     }
     if event_policy.immutable_roots.contains(root) {
@@ -731,6 +761,7 @@ fn analyze_flow_stmt(
                     validate_event_assign_target_restrictions(
                         target_loc.as_ref().into(),
                         target,
+                        declared_symbols,
                         locals,
                         &state.local_aliases,
                         &state.local_array_aliases,
@@ -1195,10 +1226,7 @@ fn analyze_flow_assignment(
                 }
             }
             if forbidden_assign_array_names.contains(base) {
-                target_error!(format!(
-                    "cannot assign to output array symbol '{base}' in {}",
-                    flow_scope_label(scope)
-                ));
+                target_error!(wrong_rate_output_array_assignment_message(base, scope));
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                 return;
@@ -1255,11 +1283,15 @@ fn analyze_flow_assignment(
                     ("outs", ScopeKind::Sample) | ("kouts", ScopeKind::Block)
                 );
                 if !output_index_allowed || scope_expr_env!().port_index_outs.is_none() {
-                    target_error!(
-                        format!(
-                            "{base}[i] assignment requires explicit {base} declarations with uniform type in the current scope"
-                        ),
-                    );
+                    if base == "outs" && scope == ScopeKind::Block {
+                        target_error!(wrong_rate_output_array_assignment_message("outs", scope));
+                    } else {
+                        target_error!(
+                            format!(
+                                "{base}[i] assignment requires explicit {base} declarations with uniform type in the current scope"
+                            ),
+                        );
+                    }
                 }
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(
@@ -1406,10 +1438,7 @@ fn analyze_flow_assignment(
                 }
             }
             if forbidden_assign_array_names.contains(base) {
-                target_error!(format!(
-                    "cannot assign to output array symbol '{base}' in {}",
-                    flow_scope_label(scope)
-                ));
+                target_error!(wrong_rate_output_array_assignment_message(base, scope));
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     validate_expr(coordinate, scope_expr_env!(), errors);
                 }
@@ -1560,10 +1589,7 @@ fn analyze_flow_assignment(
                 return;
             }
             if forbidden_assign_names.contains(name) {
-                target_error!(format!(
-                    "cannot assign to output symbol '{name}' in {}",
-                    flow_scope_label(scope)
-                ));
+                target_error!(wrong_rate_output_assignment_message(name, scope));
             }
             if forbidden_assign_array_names.contains(name) {
                 target_error!(format!(
@@ -2303,13 +2329,17 @@ fn analyze_flow_assignment(
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             validate_expr(&expr_for_validation, scope_expr_env!(), errors);
             let mut targets_ok = true;
-            for target_name in targets {
+            for target_name in targets.iter().filter_map(|target| target.binding()) {
                 targets_ok &= validate_block_bound_surface_var_name(
                     target_name,
                     target_loc,
                     scope_expr_env!(),
                     errors,
                 );
+                if forbidden_assign_names.contains(target_name) {
+                    target_error!(wrong_rate_output_assignment_message(target_name, scope));
+                    targets_ok = false;
+                }
             }
             let destructured_types = infer_tracked_tuple_types(
                 &expr_for_validation,
@@ -2359,17 +2389,23 @@ fn analyze_flow_assignment(
             if !targets_ok {
                 return;
             }
-            clear_tuple_var_bindings(tuple_vars, targets.iter());
-            for (index, target_name) in targets.iter().enumerate() {
+            clear_tuple_var_bindings(
+                tuple_vars,
+                targets.iter().filter_map(|target| target.binding()),
+            );
+            for (index, target) in targets.iter().enumerate() {
+                let Some(target_name) = target.binding() else {
+                    continue;
+                };
                 let target_ty = destructured_types
                     .as_ref()
                     .and_then(|types| types.get(index))
                     .copied()
                     .unwrap_or(PrimitiveType::F32);
                 replace_tracked_tuple_types(local_aliases, target_name, None);
-                known_scalars.insert(target_name.clone());
+                known_scalars.insert(target_name.to_owned());
                 local_aliases
-                    .entry(target_name.clone())
+                    .entry(target_name.to_owned())
                     .or_insert(target_ty);
             }
         }

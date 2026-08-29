@@ -401,6 +401,23 @@ fn declaration_only_primitive_array_fill(stmt: &Stmt) -> Option<Stmt> {
     })
 }
 
+fn extend_proc_buffer_fn_params(
+    params: &mut Vec<onda_frontend::FnParamDecl>,
+    buffer_specs: &[ProcBufferSpec],
+) {
+    params.extend(
+        buffer_specs
+            .iter()
+            .map(|buffer| onda_frontend::FnParamDecl {
+                loc: Default::default(),
+                name: buffer.name.clone(),
+                ty: Some(proc_buffer_fn_param_type(buffer)),
+                ty_loc: Default::default(),
+                default: None,
+            }),
+    );
+}
+
 fn build_builtin_proc_init_event_parts<F>(
     receiver_ty: &str,
     param_specs: &[ProcParamSpec],
@@ -494,17 +511,7 @@ where
         default: Some(Expr::bool(false)),
     });
 
-    event_params.extend(
-        buffer_specs
-            .iter()
-            .map(|buffer| onda_frontend::FnParamDecl {
-                loc: Default::default(),
-                name: buffer.name.clone(),
-                ty: Some(proc_buffer_fn_param_type(buffer)),
-                ty_loc: Default::default(),
-                default: None,
-            }),
-    );
+    extend_proc_buffer_fn_params(&mut event_params, buffer_specs);
 
     let mut init_args = vec![
         CallArg {
@@ -1916,6 +1923,10 @@ fn generate_nested_wrapper_defs(
                                 callee_event_in_array_slots.insert(param.name.clone(), slot_names);
                             }
                         }
+                        extend_proc_buffer_fn_params(
+                            &mut nested_event_params,
+                            &callee_shape.buffer_specs,
+                        );
                         let mut nested_event_body = lower_callee_stmts_for_nested_wrapper(
                             event.body.clone(),
                             &proc.name,
@@ -3033,6 +3044,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             event_in_array_slots.insert(param.name.clone(), slot_names);
                         }
                     }
+                    extend_proc_buffer_fn_params(&mut event_params, &shape.buffer_specs);
                     let mut event_body = rewrite_owner_proc_stmts(
                         event.body.clone(),
                         &proc.name,

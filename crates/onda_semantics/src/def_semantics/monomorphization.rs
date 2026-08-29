@@ -310,7 +310,7 @@ pub(crate) fn refresh_monomorphized_return_types(
 /// Generated definitions are implementation details, so diagnostics originating
 /// in them should point at the user expression that requested the specialization.
 /// Rebasing the complete cloned body also carries that origin through nested
-/// monomorphization (for example `readL(i32)` -> `calcIdx(i32)`).
+/// monomorphization (for example `readL(i32)` -> `_split_position(i32)`).
 fn rebase_generated_expr(expr: &mut Expr, origin: Span) {
     match expr {
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
