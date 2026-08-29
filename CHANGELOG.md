@@ -72,8 +72,8 @@ release; earlier releases are available on the
 - Portable snapshots now include compiler-owned task continuations. Processor state metadata adds
   an `authored` flag so hosts can serialize those entries while omitting them from authored-state
   reflection; the snapshot format remains version 1.
-- Advanced the MIR schema to version 8, the processor artifact descriptor to format version 5, and
-  the processor ABI to version 8. Raw init, process, and event exports now accept a singular,
+- Advanced the MIR schema to version 6, the processor artifact descriptor to format version 5, and
+  the processor ABI to version 5. Raw init, process, and event exports now accept a singular,
   nullable `ExecutionOutput` containing independently nullable delegate and print batches; init
   also takes the named preserve-pinned or full mode.
 - Advanced the project-image format to version 2 to preserve project constant bindings.
@@ -101,9 +101,9 @@ release; earlier releases are available on the
   behavior, or call `processor.init(ONDA_INIT_FULL)` after `createOndaAudioProcessor`. Replace
   `processor.reset()` with `processor.init(ONDA_INIT_PRESERVE_PINNED)` or
   `processor.init(ONDA_INIT_FULL)` according to the desired state-retention policy.
-- Raw processor hosts must accept ABI version 8 and artifact format version 5, pass an explicit init
+- Raw processor hosts must accept ABI version 5 and artifact format version 5, pass an explicit init
   mode and optional `ExecutionOutput`, and honor the fail-closed instance lifecycle. Serialized-MIR
-  consumers must accept schema version 8; descriptor consumers should use the state `authored`
+  consumers must accept schema version 6; descriptor consumers should use the state `authored`
   field when exposing reflection and the source/log-site tables when decoding prints.
 
 ## [0.7.5]

@@ -89,13 +89,11 @@ continuations. Preserve-pinned initialization skips those guarded declarations a
 existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
 not transactional: a host that needs rollback must provide that policy itself.
 
-Processor ABI version 10 adds one call-local sequence shared by print and delegate records so hosts
-can preserve source order across the two streams. Version 9 supplies current external-buffer
-descriptors to initialization. Version 8
-added print output to initialization and replaced the separate delegate-batch argument on process
-and event entries with one optional `ExecutionOutput`. Version 7 introduced delegate batches, and
-version 6 replaced the boolean-like `all` contract with this named mode enum. The instance-level C
-and WebAssembly host APIs use the same values. A failed initialization leaves the physical state
+Processor ABI version 5 introduces the named initialization mode, supplies current external-buffer
+descriptors to initialization, and adds one optional `ExecutionOutput` to init, process, and event
+entries. Its independently optional print and delegate batches share one call-local sequence so
+hosts can preserve source order across both streams. The instance-level C and WebAssembly host APIs
+use the same initialization-mode values. A failed initialization leaves the physical state
 indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is

@@ -18,7 +18,7 @@ import {
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
 
-const FIXTURE_MIR_SCHEMA_VERSION = 8;
+const FIXTURE_MIR_SCHEMA_VERSION = 6;
 
 function artifact() {
   const port = (name, arrayLen) => ({

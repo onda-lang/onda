@@ -3296,7 +3296,7 @@ pub(super) fn lower_top_level_child_whens(
         }
     }
 
-    let mut route_by_signature = BTreeMap::<Vec<(String, String, bool)>, i32>::new();
+    let mut route_by_signature = BTreeMap::<Vec<(String, String, bool)>, (i32, String)>::new();
     let mut next_route = 1_i32;
     let mut slot_routes = BTreeMap::<String, i32>::new();
     for (slot, handlers) in &slot_handlers {
@@ -3310,22 +3310,16 @@ pub(super) fn lower_top_level_child_whens(
                 )
             })
             .collect::<Vec<_>>();
-        let route = *route_by_signature.entry(signature).or_insert_with(|| {
+        let (route, _) = route_by_signature.entry(signature).or_insert_with(|| {
             let route = next_route;
             next_route += 1;
-            route
+            (route, slot.clone())
         });
-        slot_routes.insert(slot.clone(), route);
+        slot_routes.insert(slot.clone(), *route);
     }
 
-    for (signature, route) in &route_by_signature {
-        let Some(slot) = slot_routes
-            .iter()
-            .find_map(|(slot, candidate)| (*candidate == *route).then_some(slot))
-        else {
-            continue;
-        };
-        let Some(instance) = meta.global_proc_instances.get(slot) else {
+    for (signature, (route, representative_slot)) in &route_by_signature {
+        let Some(instance) = meta.global_proc_instances.get(representative_slot) else {
             continue;
         };
         let Some(proc) = proc_defs.get_mut(&instance.proc_name) else {

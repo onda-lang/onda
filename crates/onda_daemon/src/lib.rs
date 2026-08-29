@@ -434,12 +434,28 @@ mod tests {
             )
             .expect("run should start");
         let run = session.run_mut(&main).expect("active run");
-        run.set_delegate_collection_enabled(true);
-        run.render_block_segments(&[
+        let segments = [
             (0, 2, onda_runtime::PROCESS_BEGIN_BLOCK),
             (2, 2, onda_runtime::PROCESS_END_BLOCK),
-        ])
-        .expect("segmented render should succeed");
+        ];
+
+        run.render_block_segments(&segments)
+            .expect("segmented render should succeed without delegate collection");
+        let delegates = run.take_delegate_batch().expect("delegates should decode");
+        let prints = run.take_print_batch().expect("prints should decode");
+        assert!(delegates.occurrences.is_empty());
+        assert_eq!(
+            prints
+                .entries
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+
+        run.set_delegate_collection_enabled(true);
+        run.render_block_segments(&segments)
+            .expect("segmented render should succeed");
 
         let delegates = run.take_delegate_batch().expect("delegates should decode");
         let prints = run.take_print_batch().expect("prints should decode");

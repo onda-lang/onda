@@ -363,14 +363,12 @@ impl RunSession {
             &param_runtime_values,
             ExecutionOutput {
                 delegate_batch: None,
-                print_batch: Some(&mut prints),
+                print_batch: prints.as_mut(),
             },
         );
-        let print_result = (
-            prints.used_bytes,
-            prints.record_count,
-            prints.overflow_count,
-        );
+        let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
+            (batch.used_bytes, batch.record_count, batch.overflow_count)
+        });
         let instance = instance_result.map_err(RunBuildError::Runtime)?;
 
         Ok(Self {
@@ -616,16 +614,16 @@ impl RunSession {
             index,
             &payload,
             ExecutionOutput {
-                delegate_batch: Some(&mut batch),
-                print_batch: Some(&mut prints),
+                delegate_batch: batch.as_mut(),
+                print_batch: prints.as_mut(),
             },
         );
-        let batch_result = (batch.used_bytes, batch.record_count, batch.overflow_count);
-        let print_result = (
-            prints.used_bytes,
-            prints.record_count,
-            prints.overflow_count,
-        );
+        let batch_result = batch.as_ref().map_or((0, 0, 0), |batch| {
+            (batch.used_bytes, batch.record_count, batch.overflow_count)
+        });
+        let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
+            (batch.used_bytes, batch.record_count, batch.overflow_count)
+        });
         self.finish_delegate_batch(batch_result);
         self.finish_print_batch(print_result);
         if result.is_err() {
@@ -722,17 +720,17 @@ impl RunSession {
                     frames,
                     flags,
                     ExecutionOutput {
-                        delegate_batch: Some(&mut batch),
-                        print_batch: Some(&mut prints),
+                        delegate_batch: batch.as_mut(),
+                        print_batch: prints.as_mut(),
                     },
                 )
             };
-            let batch_result = (batch.used_bytes, batch.record_count, batch.overflow_count);
-            let print_result = (
-                prints.used_bytes,
-                prints.record_count,
-                prints.overflow_count,
-            );
+            let batch_result = batch.as_ref().map_or((0, 0, 0), |batch| {
+                (batch.used_bytes, batch.record_count, batch.overflow_count)
+            });
+            let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
+                (batch.used_bytes, batch.record_count, batch.overflow_count)
+            });
             let delegate_end = delegate_start + batch_result.0 as usize;
             let print_end = print_start + print_result.0 as usize;
             rebase_packed_output_sequences(
@@ -805,11 +803,11 @@ impl RunSession {
         self.delegate_overflow_count = 0;
     }
 
-    fn next_delegate_batch(storage: &mut [u8], used: usize) -> DelegateBatch<'_> {
+    fn next_delegate_batch(storage: &mut [u8], used: usize) -> Option<DelegateBatch<'_>> {
         if storage.is_empty() {
-            DelegateBatch::absent()
+            None
         } else {
-            DelegateBatch::from_storage(&mut storage[used..])
+            Some(DelegateBatch::from_storage(&mut storage[used..]))
         }
     }
 
@@ -829,11 +827,11 @@ impl RunSession {
         self.print_overflow_count = 0;
     }
 
-    fn next_print_batch(storage: &mut [u8], used: usize) -> PrintBatch<'_> {
+    fn next_print_batch(storage: &mut [u8], used: usize) -> Option<PrintBatch<'_>> {
         if storage.is_empty() {
-            PrintBatch::absent()
+            None
         } else {
-            PrintBatch::from_storage(&mut storage[used..])
+            Some(PrintBatch::from_storage(&mut storage[used..]))
         }
     }
 
@@ -1031,14 +1029,12 @@ impl RunSession {
             &self.param_runtime_values,
             ExecutionOutput {
                 delegate_batch: None,
-                print_batch: Some(&mut prints),
+                print_batch: prints.as_mut(),
             },
         );
-        let print_result = (
-            prints.used_bytes,
-            prints.record_count,
-            prints.overflow_count,
-        );
+        let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
+            (batch.used_bytes, batch.record_count, batch.overflow_count)
+        });
         self.finish_print_batch(print_result);
         result
     }
