@@ -566,6 +566,7 @@ One record contains:
 ```text
 u32 delegate_index
 u32 payload_size_bytes
+u32 call_local_sequence
 payload bytes
 ```
 
@@ -610,8 +611,9 @@ failure clears delegate results.
 
 Authored `print(...)` statements emit typed scalar occurrences into an independent caller-owned
 `onda_print_batch_t`. Generated code does not allocate or format text. One record contains a
-`uint32_t` log-site index, a `uint32_t` payload size, and packed scalar arguments; the header size is
-`ONDA_PRINT_RECORD_HEADER_SIZE`.
+`uint32_t` log-site index, a `uint32_t` payload size, a `uint32_t` call-local sequence, and packed
+scalar arguments; the header size is `ONDA_PRINT_RECORD_HEADER_SIZE`. When both streams are exposed
+through one log, merge their decoded occurrences by `sequence` within that generated call.
 
 ```c
 uint8_t print_storage[64 * 1024];

@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 9u
+#define ONDA_PROCESSOR_ABI_VERSION 10u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
@@ -26,7 +26,7 @@ typedef enum onda_processor_init_mode {
 
 /* Bytes preceding the payload of every packed raw-ABI delegate occurrence. */
 enum {
-  ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE = 8u,
+  ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE = 12u,
   ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE = ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE,
   ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE = ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
 };
@@ -34,8 +34,9 @@ enum {
 /* Caller-owned, call-scoped occurrence storage. Init, process, and event entries reset the three
  * result counters. A NULL output, batch, or storage pointer disables that stream. Capacity is a
  * host policy because occurrence counts and dynamic slice sizes may depend on runtime execution.
- * Delegate and print batches are independent. Generated failure clears delegate results but
- * retains print records already emitted. */
+ * Delegate and print batches are independent. Records carry one shared sequence reset at each
+ * entry call so hosts can merge the streams chronologically. Generated failure clears delegate
+ * results but retains print records already emitted. */
 typedef struct onda_processor_delegate_batch {
   uint8_t* storage;
   uint32_t capacity_bytes;
@@ -55,17 +56,20 @@ typedef struct onda_processor_print_batch {
 typedef struct onda_processor_execution_output {
   onda_processor_delegate_batch_t* delegate_batch;
   onda_processor_print_batch_t* print_batch;
+  uint32_t next_sequence;
 } onda_processor_execution_output_t;
 
 typedef struct onda_processor_delegate_occurrence {
   uint32_t delegate_index;
   uint32_t payload_size_bytes;
+  uint32_t sequence;
   const uint8_t* payload;
 } onda_processor_delegate_occurrence_t;
 
 typedef struct onda_processor_print_occurrence {
   uint32_t site_index;
   uint32_t payload_size_bytes;
+  uint32_t sequence;
   const uint8_t* payload;
 } onda_processor_print_occurrence_t;
 
@@ -192,23 +196,30 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_next_record(
   onda_processor_batch_cursor_t* cursor,
   uint32_t* record_index,
   uint32_t* payload_size,
+  uint32_t* sequence,
   const uint8_t** payload
 ) {
   if (
     storage == NULL || cursor == NULL || record_index == NULL || payload_size == NULL ||
-    payload == NULL || used_bytes > capacity_bytes || cursor->record_index >= record_count ||
-    cursor->byte_offset > used_bytes ||
+    sequence == NULL || payload == NULL || used_bytes > capacity_bytes ||
+    cursor->record_index >= record_count || cursor->byte_offset > used_bytes ||
     used_bytes - cursor->byte_offset < ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
   ) {
     return 0;
   }
   uint32_t next_record_index;
   uint32_t next_payload_size;
+  uint32_t next_sequence;
   memcpy(&next_record_index, storage + cursor->byte_offset, sizeof(next_record_index));
   memcpy(
     &next_payload_size,
     storage + cursor->byte_offset + sizeof(next_record_index),
     sizeof(next_payload_size)
+  );
+  memcpy(
+    &next_sequence,
+    storage + cursor->byte_offset + sizeof(next_record_index) + sizeof(next_payload_size),
+    sizeof(next_sequence)
   );
   if (
     next_payload_size >
@@ -218,6 +229,7 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_next_record(
   }
   *record_index = next_record_index;
   *payload_size = next_payload_size;
+  *sequence = next_sequence;
   *payload = storage + cursor->byte_offset + ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE;
   cursor->byte_offset += ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE + next_payload_size;
   cursor->record_index += 1u;
@@ -239,6 +251,7 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_next(
     cursor,
     &occurrence->delegate_index,
     &occurrence->payload_size_bytes,
+    &occurrence->sequence,
     &occurrence->payload
   );
 }
@@ -256,6 +269,7 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_next(
     cursor,
     &occurrence->site_index,
     &occurrence->payload_size_bytes,
+    &occurrence->sequence,
     &occurrence->payload
   );
 }

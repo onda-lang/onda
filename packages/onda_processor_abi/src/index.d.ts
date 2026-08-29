@@ -1,7 +1,7 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
 export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 5;
-export const PROCESSOR_ABI_VERSION: 9;
+export const PROCESSOR_ABI_VERSION: 10;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED: 0;
@@ -9,15 +9,15 @@ export const PROCESSOR_INIT_FULL: 1;
 export type OndaProcessorInitMode = 0 | 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
 /** Bytes preceding the payload of every packed delegate occurrence. */
-export const DELEGATE_RECORD_HEADER_SIZE_BYTES: 8;
+export const DELEGATE_RECORD_HEADER_SIZE_BYTES: 12;
 /** wasm32 byte size of the call-scoped delegate batch descriptor. */
 export const DELEGATE_BATCH_SIZE_BYTES: 20;
 /** Bytes preceding the payload of every packed print occurrence. */
-export const PRINT_RECORD_HEADER_SIZE_BYTES: 8;
+export const PRINT_RECORD_HEADER_SIZE_BYTES: 12;
 /** wasm32 byte size of the call-scoped print batch descriptor. */
 export const PRINT_BATCH_SIZE_BYTES: 20;
 /** wasm32 byte size of the call-scoped execution-output descriptor. */
-export const EXECUTION_OUTPUT_SIZE_BYTES: 8;
+export const EXECUTION_OUTPUT_SIZE_BYTES: 12;
 
 export type OndaScalarType = "f32" | "f64" | "i32" | "i64" | "bool";
 export type OndaArtifactKind = "webassembly_module" | "relocatable_object";
@@ -211,7 +211,7 @@ export interface OndaProcessorMetadata {
   format: "onda-processor";
   format_version: 5;
   artifact_kind: OndaArtifactKind;
-  abi_version: 9;
+  abi_version: 10;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;
@@ -239,8 +239,8 @@ export interface OndaProcessorMetadata {
     snapshot_byte_order: "little_endian";
     snapshot_restore_base: "post_init_physical_state_image";
     requires_full_blocks: boolean;
-    delegate_record_header_size_bytes: 8;
-    print_record_header_size_bytes: 8;
+    delegate_record_header_size_bytes: 12;
+    print_record_header_size_bytes: 12;
   };
   metadata: {
     source_files: Array<{ path: string }>;
@@ -329,6 +329,7 @@ export interface OndaDelegateBatch {
 export type OndaPrintBatch = OndaDelegateBatch;
 export interface OndaPrintEntry {
   siteIndex: number;
+  sequence: number;
   label: string | null;
   source: OndaLogSiteMetadata["source"];
   lexicalOwner: string;
@@ -338,6 +339,7 @@ export interface OndaPrintEntry {
 
 export interface OndaDelegateOccurrence {
   delegateIndex: number;
+  sequence: number;
   name: string;
   payloadByteLength: number;
   payload: Uint8Array;

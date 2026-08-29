@@ -311,12 +311,13 @@ Non-crate directories of note:
   delegate publication and authored printing remain explicit observable MIR effects as
   `PublishDelegate` and `PublishLog`. Init, process, and input-event entries accept one optional
   `ExecutionOutput` containing independent caller-owned delegate and print batches, reset supplied
-  counters per call, and append complete packed records without allocation. Generated failure
+  counters and one shared output sequence per call, and append complete packed records without
+  allocation. Hosts merge the two batches by sequence before delivery. Generated failure
   clears incomplete delegates while retaining diagnostic print records. Native and Binaryen
   backends share the same logical layouts. Web Audio transports raw print records out of the audio
   callback and formats on the main side; daemon, CLI, and run hosts likewise decode bounded batches
-  outside generated execution. Run UIs show prints chronologically in their Log panels and collect
-  delegates only after an explicit control-protocol subscription.
+  outside generated execution. Run UIs deliver prints and subscribed delegates in call-local source
+  order.
 - Ordinary source indexing clamps each coordinate independently for every nonempty indexable
   surface. Integer storage ranges preserve `i32`/`i64` interval facts through MIR, and the shared
   bounds-proof pass removes clamping or checks when the complete coordinate interval is known to

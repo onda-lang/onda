@@ -13339,6 +13339,43 @@ init:
 sample:
   out1 = 0.0
 "#,
+            r#"
+delegate finished()
+
+struct Value:
+  x: f32
+
+def helper(value: f32):
+  return
+
+def helper(value: Value):
+  finished()
+
+init:
+  value = Value(1.0)
+  helper(value)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+buffers:
+  source: f32
+
+def helper(value: f32):
+  return
+
+def helper(value: buffer<f32>):
+  finished()
+
+init:
+  helper(source)
+
+sample:
+  out1 = 0.0
+"#,
         ] {
             assert_analyze_error_contains(
                 source,
@@ -13459,6 +13496,37 @@ sample:
             let program = parse_program(source).expect("shadowing source should parse");
             analyze(program).expect("a value binding should shadow the delegate name");
         }
+    }
+
+    #[test]
+    fn delegate_dispatch_graph_does_not_treat_parameter_shadowing_as_delegate_reachability() {
+        let source = r#"
+proc Voice:
+  outs:
+    out1
+  sample:
+    out1 = 0.25
+
+delegate voice()
+
+def run(voice: Voice) -> f32:
+  return voice()
+
+init:
+  child = Voice()
+  value = run(child)
+
+sample:
+  out1 = value
+"#;
+        let program = parse_program(source).expect("shadowing source should parse");
+        let errors = analyze(program).expect_err("sample-rate proc calls are invalid in init");
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("not provably sample-only")));
+        assert!(!errors.iter().any(|error| error
+            .message
+            .contains("init code in the top-level owner cannot call or reach a delegate")));
     }
 
     #[test]

@@ -5,17 +5,17 @@ const PARAM_CONTROL = globalThis.__ONDA_PARAM_CONTROL_V2__;
 export const PROCESSOR_ARTIFACT_FORMAT = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
 export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 5;
-export const PROCESSOR_ABI_VERSION = 9;
+export const PROCESSOR_ABI_VERSION = 10;
 export const PROCESSOR_EXECUTION_OK = 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED = 0;
 export const PROCESSOR_INIT_FULL = 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
-export const DELEGATE_RECORD_HEADER_SIZE_BYTES = 8;
+export const DELEGATE_RECORD_HEADER_SIZE_BYTES = 12;
 export const DELEGATE_BATCH_SIZE_BYTES = 20;
-export const PRINT_RECORD_HEADER_SIZE_BYTES = 8;
+export const PRINT_RECORD_HEADER_SIZE_BYTES = 12;
 export const PRINT_BATCH_SIZE_BYTES = 20;
-export const EXECUTION_OUTPUT_SIZE_BYTES = 8;
+export const EXECUTION_OUTPUT_SIZE_BYTES = 12;
 
 export const {
   createParamDomain,
@@ -955,6 +955,7 @@ export function writeExecutionOutput(
   }
   view.setUint32(outputAddress, delegateBatchAddress, true);
   view.setUint32(outputAddress + 4, printBatchAddress, true);
+  view.setUint32(outputAddress + 8, 0, true);
 }
 
 export function decodePrintRecords(
@@ -984,6 +985,7 @@ export function decodePrintRecords(
     }
     const siteIndex = view.getUint32(cursor, littleEndian);
     const payloadByteLength = view.getUint32(cursor + 4, littleEndian);
+    const sequence = view.getUint32(cursor + 8, littleEndian);
     const payloadOffset = cursor + PRINT_RECORD_HEADER_SIZE_BYTES;
     const end = payloadOffset + payloadByteLength;
     if (!Number.isSafeInteger(end) || end > usedBytes) {
@@ -1034,6 +1036,7 @@ export function decodePrintRecords(
     }
     records.push({
       siteIndex,
+      sequence,
       label: site.label,
       source: site.source,
       lexicalOwner: site.lexical_owner,
@@ -1188,6 +1191,7 @@ export function decodeDelegateRecords(
     }
     const delegateIndex = view.getUint32(cursor, littleEndian);
     const payloadByteLength = view.getUint32(cursor + 4, littleEndian);
+    const sequence = view.getUint32(cursor + 8, littleEndian);
     const payloadOffset = cursor + DELEGATE_RECORD_HEADER_SIZE_BYTES;
     const end = payloadOffset + payloadByteLength;
     if (!Number.isSafeInteger(end) || end > usedBytes) {
@@ -1199,6 +1203,7 @@ export function decodeDelegateRecords(
     }
     records.push({
       delegateIndex,
+      sequence,
       name: delegate.name,
       payloadByteLength,
       payload: bytes.slice(payloadOffset, end),

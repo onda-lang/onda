@@ -8,16 +8,16 @@ use serde::{Deserialize, Serialize};
 pub const PROCESSOR_ARTIFACT_FORMAT: &str = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
 pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 5;
-pub const PROCESSOR_ABI_VERSION: u32 = 9;
+pub const PROCESSOR_ABI_VERSION: u32 = 10;
 pub const PROCESSOR_EXECUTION_OK: u32 = 0;
 pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
 pub const PROCESSOR_INIT_PRESERVE_PINNED: u32 = 0;
 pub const PROCESSOR_INIT_FULL: u32 = 1;
 pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
-/// Packed occurrence headers: stream-local index followed by payload byte count.
-pub const DELEGATE_RECORD_HEADER_SIZE: usize = 8;
-pub const PRINT_RECORD_HEADER_SIZE: usize = 8;
+/// Packed occurrence headers: stream-local index, payload byte count, and call-local sequence.
+pub const DELEGATE_RECORD_HEADER_SIZE: usize = 12;
+pub const PRINT_RECORD_HEADER_SIZE: usize = 12;
 
 /// Caller-owned, call-scoped storage for top-level delegate occurrences.
 ///
@@ -106,6 +106,8 @@ impl PrintBatch {
 pub struct ExecutionOutput {
     pub delegate_batch: *mut DelegateBatch,
     pub print_batch: *mut PrintBatch,
+    /// Call-local sequence assigned to the next print or delegate publication.
+    pub next_sequence: u32,
 }
 
 impl ExecutionOutput {
@@ -113,6 +115,7 @@ impl ExecutionOutput {
         Self {
             delegate_batch: std::ptr::null_mut(),
             print_batch: std::ptr::null_mut(),
+            next_sequence: 0,
         }
     }
 }
@@ -404,7 +407,7 @@ mod tests {
     #[test]
     fn shared_web_descriptor_fixture_round_trips_through_rust_schema() {
         let json = include_str!(
-            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v9.json"
+            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v10.json"
         );
         let descriptor: ProcessorDescriptor =
             serde_json::from_str(json).expect("shared descriptor should deserialize");

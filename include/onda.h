@@ -25,8 +25,8 @@ typedef struct onda_diag onda_diag_t;
 
 /* Bytes preceding the payload of every packed hosted delegate occurrence. */
 enum {
-  ONDA_DELEGATE_RECORD_HEADER_SIZE = 8u,
-  ONDA_PRINT_RECORD_HEADER_SIZE = 8u
+  ONDA_DELEGATE_RECORD_HEADER_SIZE = 12u,
+  ONDA_PRINT_RECORD_HEADER_SIZE = 12u
 };
 
 /* Caller-owned, call-scoped storage for top-level delegate occurrences. This
@@ -45,6 +45,7 @@ typedef struct onda_delegate_batch {
 typedef struct onda_delegate_occurrence {
   uint32_t delegate_index;
   uint32_t payload_size_bytes;
+  uint32_t sequence;
   const uint8_t* payload;
 } onda_delegate_occurrence_t;
 
@@ -61,6 +62,7 @@ typedef struct onda_print_batch {
 typedef struct onda_print_occurrence {
   uint32_t site_index;
   uint32_t payload_size_bytes;
+  uint32_t sequence;
   const uint8_t* payload;
 } onda_print_occurrence_t;
 
@@ -160,7 +162,8 @@ void onda_owned_string_dispose(onda_owned_string_t* text);
    delegate delivery does not affect synchronous Onda `when` handlers. Each
    supplied batch is reset when generated execution begins. A nonzero
    overflow_count means one or more complete records were dropped for
-   insufficient capacity. Print records emitted before generated failure remain
+   insufficient capacity. Records carry one shared call-local sequence so a host
+   can merge the two streams chronologically. Print records emitted before generated failure remain
    available while an instance survives; initialized constructors clear both
    batches when they return NULL. Delegate records are cleared on failure. */
 

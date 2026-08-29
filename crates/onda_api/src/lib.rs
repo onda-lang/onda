@@ -98,6 +98,7 @@ pub struct onda_delegate_batch_t {
 pub struct onda_delegate_occurrence_t {
     pub delegate_index: u32,
     pub payload_size_bytes: u32,
+    pub sequence: u32,
     pub payload: *const u8,
 }
 
@@ -114,6 +115,7 @@ pub struct onda_print_batch_t {
 pub struct onda_print_occurrence_t {
     pub site_index: u32,
     pub payload_size_bytes: u32,
+    pub sequence: u32,
     pub payload: *const u8,
 }
 
@@ -216,7 +218,7 @@ unsafe fn next_batch_record(
     used_bytes: u32,
     record_count: u32,
     cursor: &mut onda_batch_cursor_t,
-) -> Option<(u32, u32, *const u8)> {
+) -> Option<(u32, u32, u32, *const u8)> {
     if storage.is_null()
         || used_bytes > capacity_bytes
         || cursor.record_index >= record_count
@@ -231,6 +233,7 @@ unsafe fn next_batch_record(
     }
     let record_index = ptr::read_unaligned(storage.add(record_offset).cast::<u32>());
     let payload_size_bytes = ptr::read_unaligned(storage.add(record_offset + 4).cast::<u32>());
+    let sequence = ptr::read_unaligned(storage.add(record_offset + 8).cast::<u32>());
     let record_end = header_end.checked_add(payload_size_bytes as usize)?;
     if record_end > used_bytes as usize {
         return None;
@@ -238,7 +241,7 @@ unsafe fn next_batch_record(
     let payload = storage.add(header_end);
     cursor.byte_offset = record_end as u32;
     cursor.record_index += 1;
-    Some((record_index, payload_size_bytes, payload))
+    Some((record_index, payload_size_bytes, sequence, payload))
 }
 
 #[no_mangle]
@@ -252,7 +255,7 @@ pub unsafe extern "C" fn onda_delegate_batch_next(
     else {
         return 0;
     };
-    let Some((delegate_index, payload_size_bytes, payload)) = next_batch_record(
+    let Some((delegate_index, payload_size_bytes, sequence, payload)) = next_batch_record(
         batch.storage,
         batch.capacity_bytes,
         batch.used_bytes,
@@ -263,6 +266,7 @@ pub unsafe extern "C" fn onda_delegate_batch_next(
     };
     occurrence.delegate_index = delegate_index;
     occurrence.payload_size_bytes = payload_size_bytes;
+    occurrence.sequence = sequence;
     occurrence.payload = payload;
     1
 }
@@ -336,7 +340,7 @@ pub unsafe extern "C" fn onda_print_batch_next(
     else {
         return 0;
     };
-    let Some((site_index, payload_size_bytes, payload)) = next_batch_record(
+    let Some((site_index, payload_size_bytes, sequence, payload)) = next_batch_record(
         batch.storage,
         batch.capacity_bytes,
         batch.used_bytes,
@@ -347,6 +351,7 @@ pub unsafe extern "C" fn onda_print_batch_next(
     };
     occurrence.site_index = site_index;
     occurrence.payload_size_bytes = payload_size_bytes;
+    occurrence.sequence = sequence;
     occurrence.payload = payload;
     1
 }
@@ -6239,13 +6244,15 @@ mod tests {
 
     #[test]
     fn hosted_delegate_batch_is_independent_and_decodes_occurrences() {
-        let mut storage = [0_u8; 24];
+        let mut storage = [0_u8; 32];
         storage[..4].copy_from_slice(&3_u32.to_ne_bytes());
         storage[4..8].copy_from_slice(&4_u32.to_ne_bytes());
-        storage[8..12].copy_from_slice(&17_i32.to_ne_bytes());
-        storage[12..16].copy_from_slice(&4_u32.to_ne_bytes());
+        storage[8..12].copy_from_slice(&5_u32.to_ne_bytes());
+        storage[12..16].copy_from_slice(&17_i32.to_ne_bytes());
         storage[16..20].copy_from_slice(&4_u32.to_ne_bytes());
-        storage[20..].copy_from_slice(&23_i32.to_ne_bytes());
+        storage[20..24].copy_from_slice(&4_u32.to_ne_bytes());
+        storage[24..28].copy_from_slice(&8_u32.to_ne_bytes());
+        storage[28..].copy_from_slice(&23_i32.to_ne_bytes());
         let mut batch = onda_delegate_batch_t {
             storage: storage.as_mut_ptr(),
             capacity_bytes: storage.len() as u32,
@@ -6256,6 +6263,7 @@ mod tests {
         let mut occurrence = onda_delegate_occurrence_t {
             delegate_index: 0,
             payload_size_bytes: 0,
+            sequence: 0,
             payload: ptr::null(),
         };
 
@@ -6266,6 +6274,7 @@ mod tests {
         );
         assert_eq!(occurrence.delegate_index, 3);
         assert_eq!(occurrence.payload_size_bytes, 4);
+        assert_eq!(occurrence.sequence, 5);
         assert_eq!(
             unsafe { ptr::read_unaligned(occurrence.payload.cast::<i32>()) },
             17
@@ -6275,6 +6284,7 @@ mod tests {
             1
         );
         assert_eq!(occurrence.delegate_index, 4);
+        assert_eq!(occurrence.sequence, 8);
         assert_eq!(
             unsafe { ptr::read_unaligned(occurrence.payload.cast::<i32>()) },
             23

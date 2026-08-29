@@ -144,7 +144,9 @@ real-time execution.
 `readDelegateBatch` or `readPrintBatch` validates the result counters.
 `decodeDelegateRecords` converts delegate payloads using `metadata.delegates`.
 `decodePrintRecords` preserves primitive types and source sites; `formatPrintRecords` and
-`formatPrintBatch` add canonical text formatting.
+`formatPrintBatch` add canonical text formatting. Both decoded record types expose a `sequence`
+reset for each generated entry call; merge that call's two arrays by this field when presenting one
+chronological output stream.
 
 Batch capacity is host policy. `overflowCount` reports whole records that did not fit; it is not a
 byte count. Consume the returned storage before reusing it for another init, process, or event call.
@@ -209,6 +211,10 @@ Delegate and print batches report `overflowCount` for generated-storage loss and
 without occurrences. Collection is enabled only while the corresponding listener set is nonempty;
 setting the capacity to zero disables host delivery even with listeners while preserving language
 evaluation semantics.
+
+With both listener types active, the adapter invokes them in call-local sequence order and may split
+a same-stream batch around an intervening occurrence from the other stream. Ordering resets for
+each init, event, or process segment.
 
 `ONDA_INIT_FULL` clears and initializes all physical state. `ONDA_INIT_PRESERVE_PINNED` retains
 pinned state according to the processor ABI. The package also re-exports the prepared and one-shot

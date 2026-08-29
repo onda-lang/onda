@@ -936,7 +936,7 @@ sample:
         let mut state = program
             .initialize_state(&params)
             .expect("state should initialize");
-        let mut storage = [0_u8; 24];
+        let mut storage = [0_u8; 32];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         unsafe {
             program.trigger_event_by_index(
@@ -951,20 +951,23 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
         .expect("event should publish delegates");
 
-        assert_eq!(batch.used_bytes, 24);
+        assert_eq!(batch.used_bytes, 32);
         assert_eq!(batch.record_count, 2);
         assert_eq!(batch.overflow_count, 0);
         assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 0);
         assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 4);
-        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 7);
-        assert_eq!(u32::from_ne_bytes(storage[12..16].try_into().unwrap()), 1);
-        assert_eq!(u32::from_ne_bytes(storage[16..20].try_into().unwrap()), 4);
-        assert_eq!(f32::from_ne_bytes(storage[20..24].try_into().unwrap()), 2.5);
+        assert_eq!(u32::from_ne_bytes(storage[8..12].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 7);
+        assert_eq!(u32::from_ne_bytes(storage[16..20].try_into().unwrap()), 1);
+        assert_eq!(u32::from_ne_bytes(storage[20..24].try_into().unwrap()), 4);
+        assert_eq!(u32::from_ne_bytes(storage[24..28].try_into().unwrap()), 1);
+        assert_eq!(f32::from_ne_bytes(storage[28..32].try_into().unwrap()), 2.5);
 
         unsafe {
             program.trigger_event_by_index(
@@ -979,6 +982,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
@@ -1004,6 +1008,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
@@ -1012,6 +1017,58 @@ sample:
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
             (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn native_prints_and_delegates_share_call_local_source_order() {
+        let program = lower_and_jit(typed_program(
+            r#"
+delegate middle(value: i32)
+event trigger():
+  print("first", 1)
+  middle(2)
+  print("last", 3)
+sample:
+  out1 = 0.0
+"#,
+        ))
+        .expect("mixed output source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let mut delegate_storage = [0_u8; 16];
+        let mut print_storage = [0_u8; 32];
+        let mut delegates = onda_processor_abi::DelegateBatch::from_storage(&mut delegate_storage);
+        let mut prints = onda_processor_abi::PrintBatch::from_storage(&mut print_storage);
+        unsafe {
+            program.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                Some(&mut onda_processor_abi::ExecutionOutput {
+                    delegate_batch: &mut delegates,
+                    print_batch: &mut prints,
+                    next_sequence: 99,
+                }),
+            )
+        }
+        .expect("mixed output event should execute");
+        assert_eq!((prints.used_bytes, prints.record_count), (32, 2));
+        assert_eq!((delegates.used_bytes, delegates.record_count), (16, 1));
+        assert_eq!(
+            [
+                u32::from_ne_bytes(print_storage[8..12].try_into().unwrap()),
+                u32::from_ne_bytes(delegate_storage[8..12].try_into().unwrap()),
+                u32::from_ne_bytes(print_storage[24..28].try_into().unwrap()),
+            ],
+            [0, 1, 2]
         );
     }
 
@@ -1039,7 +1096,7 @@ sample:
         for value in [11_i32, -4, 99] {
             payload.extend_from_slice(&value.to_ne_bytes());
         }
-        let mut storage = [0_u8; 40];
+        let mut storage = [0_u8; 44];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         unsafe {
             program.trigger_event_by_index(
@@ -1054,29 +1111,31 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
         .expect("dynamic delegate should publish");
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (40, 1, 0)
+            (44, 1, 0)
         );
         assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 32);
-        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 7);
-        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 2);
+        assert_eq!(u32::from_ne_bytes(storage[8..12].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 7);
+        assert_eq!(i32::from_ne_bytes(storage[16..20].try_into().unwrap()), 2);
         assert_eq!(
-            f32::from_ne_bytes(storage[16..20].try_into().unwrap()),
+            f32::from_ne_bytes(storage[20..24].try_into().unwrap()),
             1.25
         );
         assert_eq!(
-            f32::from_ne_bytes(storage[20..24].try_into().unwrap()),
+            f32::from_ne_bytes(storage[24..28].try_into().unwrap()),
             -2.5
         );
-        assert_eq!(i32::from_ne_bytes(storage[24..28].try_into().unwrap()), 3);
-        assert_eq!(i32::from_ne_bytes(storage[28..32].try_into().unwrap()), 11);
-        assert_eq!(i32::from_ne_bytes(storage[32..36].try_into().unwrap()), -4);
-        assert_eq!(i32::from_ne_bytes(storage[36..40].try_into().unwrap()), 99);
+        assert_eq!(i32::from_ne_bytes(storage[28..32].try_into().unwrap()), 3);
+        assert_eq!(i32::from_ne_bytes(storage[32..36].try_into().unwrap()), 11);
+        assert_eq!(i32::from_ne_bytes(storage[36..40].try_into().unwrap()), -4);
+        assert_eq!(i32::from_ne_bytes(storage[40..44].try_into().unwrap()), 99);
 
         let empty_payload = [0_u8; 8];
         unsafe {
@@ -1092,18 +1151,19 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
         .expect("empty delegate slices should publish");
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (20, 1, 0)
+            (24, 1, 0)
         );
         assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 12);
-        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 7);
-        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 7);
         assert_eq!(i32::from_ne_bytes(storage[16..20].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[20..24].try_into().unwrap()), 0);
     }
 
     #[test]
@@ -1129,7 +1189,7 @@ sample:
         payload.extend_from_slice(&2_i32.to_ne_bytes());
         payload.extend_from_slice(&1.0_f32.to_ne_bytes());
         payload.extend_from_slice(&2.0_f32.to_ne_bytes());
-        let mut storage = [0_u8; 12];
+        let mut storage = [0_u8; 16];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         unsafe {
             program.trigger_event_by_index(
@@ -1144,17 +1204,19 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
         .expect("overflow does not fail delegate dispatch");
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (12, 1, 1)
+            (16, 1, 1)
         );
         assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 4);
-        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 9);
+        assert_eq!(u32::from_ne_bytes(storage[8..12].try_into().unwrap()), 1);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 9);
     }
 
     #[test]
@@ -1194,6 +1256,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         };
@@ -1222,7 +1285,7 @@ sample:
         let mut state = program
             .initialize_state(&params)
             .expect("state should initialize");
-        let mut storage = [0_u8; 12];
+        let mut storage = [0_u8; 16];
         let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
         batch.used_bytes = 1;
         batch.record_count = 9;
@@ -1241,6 +1304,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: std::ptr::null_mut(),
                     print_batch: &mut batch,
+                    next_sequence: 0,
                 }),
             )
         };
@@ -1248,11 +1312,12 @@ sample:
         assert!(result.is_err(), "out-of-bounds event should fail");
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (12, 1, 0)
+            (16, 1, 0)
         );
         assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 0);
         assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 4);
-        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 7);
+        assert_eq!(u32::from_ne_bytes(storage[8..12].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 7);
     }
 
     #[test]
@@ -1271,7 +1336,7 @@ sample:
         let mut state = program
             .initialize_state(&params)
             .expect("state should initialize");
-        let mut storage = [0_u8; 9];
+        let mut storage = [0_u8; 13];
         let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
 
         unsafe {
@@ -1287,6 +1352,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: std::ptr::null_mut(),
                     print_batch: &mut batch,
+                    next_sequence: 0,
                 }),
             )
         }
@@ -1294,11 +1360,12 @@ sample:
 
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (9, 1, 1)
+            (13, 1, 1)
         );
         assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 1);
         assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 1);
-        assert_eq!(storage[8], 1);
+        assert_eq!(u32::from_ne_bytes(storage[8..12].try_into().unwrap()), 1);
+        assert_eq!(storage[12], 1);
     }
 
     #[test]
@@ -1316,7 +1383,7 @@ sample:
         let mut state = program
             .initialize_state(&params)
             .expect("state should initialize");
-        let mut storage = [0_u8; 8];
+        let mut storage = [0_u8; 12];
         let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
 
         unsafe {
@@ -1332,6 +1399,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: std::ptr::null_mut(),
                     print_batch: &mut batch,
+                    next_sequence: 0,
                 }),
             )
         }
@@ -1339,7 +1407,7 @@ sample:
 
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (8, 1, 0)
+            (12, 1, 0)
         );
         assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 0);
         assert_eq!(u32::from_ne_bytes(storage[4..8].try_into().unwrap()), 0);
@@ -1373,7 +1441,7 @@ block:
         let buffer_frames: Vec<i32> = Vec::new();
         let buffer_channels: Vec<i32> = Vec::new();
         let buffer_sample_rates: Vec<f32> = Vec::new();
-        let mut storage = [0_u8; 12];
+        let mut storage = [0_u8; 16];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
 
         for expected in [Some(1_i32), Some(2_i32), None] {
@@ -1393,15 +1461,16 @@ block:
                     Some(&mut onda_processor_abi::ExecutionOutput {
                         delegate_batch: &mut batch,
                         print_batch: std::ptr::null_mut(),
+                        next_sequence: 0,
                     }),
                 )
             }
             .expect("task resumption should process successfully");
             match expected {
                 Some(value) => {
-                    assert_eq!((batch.used_bytes, batch.record_count), (12, 1));
+                    assert_eq!((batch.used_bytes, batch.record_count), (16, 1));
                     assert_eq!(
-                        i32::from_ne_bytes(storage[8..12].try_into().unwrap()),
+                        i32::from_ne_bytes(storage[12..16].try_into().unwrap()),
                         value
                     );
                 }
@@ -1448,7 +1517,7 @@ sample:
         let buffer_frames: Vec<i32> = Vec::new();
         let buffer_channels: Vec<i32> = Vec::new();
         let buffer_sample_rates: Vec<f32> = Vec::new();
-        let mut storage = [0_u8; 12];
+        let mut storage = [0_u8; 16];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
 
         for expected in [Some(3_i32), Some(4_i32), None] {
@@ -1468,15 +1537,16 @@ sample:
                     Some(&mut onda_processor_abi::ExecutionOutput {
                         delegate_batch: &mut batch,
                         print_batch: std::ptr::null_mut(),
+                        next_sequence: 0,
                     }),
                 )
             }
             .expect("proc task resumption should process successfully");
             match expected {
                 Some(value) => {
-                    assert_eq!((batch.used_bytes, batch.record_count), (12, 1));
+                    assert_eq!((batch.used_bytes, batch.record_count), (16, 1));
                     assert_eq!(
-                        i32::from_ne_bytes(storage[8..12].try_into().unwrap()),
+                        i32::from_ne_bytes(storage[12..16].try_into().unwrap()),
                         value
                     );
                 }
@@ -1524,7 +1594,7 @@ sample:
         let mut state = program
             .initialize_state(&params)
             .expect("state should initialize");
-        let mut storage = [0_u8; 12];
+        let mut storage = [0_u8; 16];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         let payload = 19_i32.to_ne_bytes();
         unsafe {
@@ -1540,6 +1610,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
@@ -1547,7 +1618,7 @@ sample:
         assert_eq!(batch.record_count, 1);
         assert_eq!(batch.overflow_count, 0);
         assert_eq!(u32::from_ne_bytes(storage[0..4].try_into().unwrap()), 0);
-        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 19);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 19);
     }
 
     #[test]
@@ -1591,7 +1662,7 @@ sample:
         let mut state = program
             .initialize_state(&params)
             .expect("state should initialize");
-        let mut storage = [0_u8; 84];
+        let mut storage = [0_u8; 108];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         unsafe {
             program.trigger_event_by_index(
@@ -1606,6 +1677,7 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
@@ -1613,7 +1685,7 @@ sample:
 
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (84, 6, 0)
+            (108, 6, 0)
         );
         let expected = [
             (0_u32, vec![0_i32, 10]),
@@ -1624,7 +1696,7 @@ sample:
             (1, vec![99]),
         ];
         let mut cursor = 0usize;
-        for (delegate, values) in expected {
+        for (sequence, (delegate, values)) in expected.into_iter().enumerate() {
             assert_eq!(
                 u32::from_ne_bytes(storage[cursor..cursor + 4].try_into().unwrap()),
                 delegate
@@ -1633,7 +1705,11 @@ sample:
                 u32::from_ne_bytes(storage[cursor + 4..cursor + 8].try_into().unwrap()),
                 (values.len() * 4) as u32
             );
-            cursor += 8;
+            assert_eq!(
+                u32::from_ne_bytes(storage[cursor + 8..cursor + 12].try_into().unwrap()),
+                sequence as u32
+            );
+            cursor += 12;
             for value in values {
                 assert_eq!(
                     i32::from_ne_bytes(storage[cursor..cursor + 4].try_into().unwrap()),
@@ -1673,7 +1749,7 @@ sample:
         let mut state = program
             .initialize_state(&params)
             .expect("state should initialize");
-        let mut storage = [0_u8; 44];
+        let mut storage = [0_u8; 56];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         let mut output = [0.0_f32; 1];
         let output_ptrs = [output.as_mut_ptr().cast::<u8>()];
@@ -1693,17 +1769,18 @@ sample:
                 Some(&mut onda_processor_abi::ExecutionOutput {
                     delegate_batch: &mut batch,
                     print_batch: std::ptr::null_mut(),
+                    next_sequence: 0,
                 }),
             )
         }
         .expect("whole-array delegate route should publish");
         assert_eq!(batch.record_count, 3);
-        assert_eq!(i32::from_ne_bytes(storage[8..12].try_into().unwrap()), 0);
-        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 23);
-        assert_eq!(i32::from_ne_bytes(storage[24..28].try_into().unwrap()), 1);
-        assert_eq!(i32::from_ne_bytes(storage[28..32].try_into().unwrap()), 23);
-        assert_eq!(u32::from_ne_bytes(storage[32..36].try_into().unwrap()), 1);
-        assert_eq!(i32::from_ne_bytes(storage[40..44].try_into().unwrap()), 23);
+        assert_eq!(i32::from_ne_bytes(storage[12..16].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(storage[16..20].try_into().unwrap()), 23);
+        assert_eq!(i32::from_ne_bytes(storage[32..36].try_into().unwrap()), 1);
+        assert_eq!(i32::from_ne_bytes(storage[36..40].try_into().unwrap()), 23);
+        assert_eq!(u32::from_ne_bytes(storage[40..44].try_into().unwrap()), 1);
+        assert_eq!(i32::from_ne_bytes(storage[52..56].try_into().unwrap()), 23);
     }
 
     #[test]

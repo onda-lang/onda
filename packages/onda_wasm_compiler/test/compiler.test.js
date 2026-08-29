@@ -188,8 +188,8 @@ sample:
   const state = allocate(artifact.metadata.runtime.state_size_bytes);
   const payload = allocate(28);
   const batchAddress = allocate(20);
-  const storageAddress = allocate(40);
-  const executionOutputAddress = allocate(8);
+  const storageAddress = allocate(44);
+  const executionOutputAddress = allocate(12);
   const view = new DataView(memory.buffer);
   let cursor = payload;
   view.setInt32(cursor, 2, true);
@@ -204,24 +204,25 @@ sample:
     view.setInt32(cursor, tag, true);
     cursor += 4;
   }
-  writeDelegateBatch(memory, batchAddress, storageAddress, 40);
+  writeDelegateBatch(memory, batchAddress, storageAddress, 44);
   writeExecutionOutput(memory, executionOutputAddress, batchAddress, 0);
   assert.equal(initialize(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(trigger(payload, params, state, 0, 0, 0, 0, executionOutputAddress), 0);
   const batch = readDelegateBatch(memory, batchAddress);
   assert.deepEqual(batch, {
     storageAddress,
-    capacityBytes: 40,
-    usedBytes: 40,
+    capacityBytes: 44,
+    usedBytes: 44,
     recordCount: 1,
     overflowCount: 0,
   });
   const records = decodeDelegateRecords(
-    new Uint8Array(memory.buffer, storageAddress, 40),
+    new Uint8Array(memory.buffer, storageAddress, 44),
     batch.usedBytes,
     artifact.metadata.metadata.delegates,
   );
   assert.equal(records[0].name, "report");
+  assert.equal(records[0].sequence, 0);
   assert.deepEqual(records[0].values, {
     code: 7,
     values: [1.25, -2.5],
@@ -255,7 +256,7 @@ sample:
   const payload = allocate(8);
   const batch = allocate(20);
   const storage = allocate(128);
-  const output = allocate(8);
+  const output = allocate(12);
   writePrintBatch(memory, batch, storage, 128);
   writeExecutionOutput(memory, output, 0, batch);
   assert.equal(initialize(params, state, 1, 0, 0, 0, 0, output), 0);

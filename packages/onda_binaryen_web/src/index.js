@@ -42,13 +42,13 @@ const MAX_MEMORY_PAGES = 65_536;
 const WASM32_ADDRESS_SPACE_BYTES = MAX_MEMORY_PAGES * PAGE_BYTES;
 const DEFAULT_OPTIMIZE_LEVEL = 4;
 const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
-const DELEGATE_RECORD_HEADER_SIZE = 8;
+const DELEGATE_RECORD_HEADER_SIZE = 12;
 const DELEGATE_BATCH_STORAGE_OFFSET = 0;
 const DELEGATE_BATCH_CAPACITY_OFFSET = 4;
 const DELEGATE_BATCH_USED_OFFSET = 8;
 const DELEGATE_BATCH_RECORD_COUNT_OFFSET = 12;
 const DELEGATE_BATCH_OVERFLOW_OFFSET = 16;
-const PRINT_RECORD_HEADER_SIZE = 8;
+const PRINT_RECORD_HEADER_SIZE = 12;
 const PRINT_BATCH_STORAGE_OFFSET = 0;
 const PRINT_BATCH_CAPACITY_OFFSET = 4;
 const PRINT_BATCH_USED_OFFSET = 8;
@@ -56,6 +56,7 @@ const PRINT_BATCH_RECORD_COUNT_OFFSET = 12;
 const PRINT_BATCH_OVERFLOW_OFFSET = 16;
 const EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET = 0;
 const EXECUTION_OUTPUT_PRINT_BATCH_OFFSET = 4;
+const EXECUTION_OUTPUT_SEQUENCE_OFFSET = 8;
 const RUNTIME_FAILURE_GLOBAL = "$onda.runtime_failure";
 const INIT_ALL_GLOBAL = "$onda.init_all";
 const MATH_KERNEL_INTRINSICS = new Set([
@@ -80,6 +81,7 @@ const POINTER_GLOBALS = Object.freeze({
   eventPayload: "$onda.event_payload",
   delegateBatch: "$onda.delegate_batch",
   printBatch: "$onda.print_batch",
+  outputSequence: "$onda.output_sequence",
   buffers: "$onda.buffers",
   bufferWrites: "$onda.buffer_writes",
   bufferFrames: "$onda.buffer_frames",
@@ -2391,6 +2393,49 @@ class MirCompiler {
     );
   }
 
+  executionOutputSequence(outputLocal) {
+    const output = () => this.module.local.get(outputLocal, binaryen.i32);
+    return this.module.if(
+      this.module.i32.ne(output(), this.module.i32.const(0)),
+      this.module.i32.add(
+        output(),
+        this.module.i32.const(EXECUTION_OUTPUT_SEQUENCE_OFFSET),
+      ),
+      this.module.i32.const(0),
+    );
+  }
+
+  resetOutputSequence() {
+    const sequence = () =>
+      this.module.global.get(POINTER_GLOBALS.outputSequence, binaryen.i32);
+    return this.module.if(
+      this.module.i32.ne(sequence(), this.module.i32.const(0)),
+      this.module.i32.store(0, 4, sequence(), this.module.i32.const(0)),
+    );
+  }
+
+  advanceOutputSequence(sequenceLocal) {
+    const pointer = () =>
+      this.module.global.get(POINTER_GLOBALS.outputSequence, binaryen.i32);
+    const sequence = () => this.module.local.get(sequenceLocal, binaryen.i32);
+    return this.module.block(null, [
+      this.module.local.set(
+        sequenceLocal,
+        this.module.i32.load(0, 4, pointer()),
+      ),
+      this.module.i32.store(
+        0,
+        4,
+        pointer(),
+        this.module.select(
+          this.module.i32.eq(sequence(), this.module.i32.const(-1)),
+          sequence(),
+          this.module.i32.add(sequence(), this.module.i32.const(1)),
+        ),
+      ),
+    ]);
+  }
+
   fullInitClearRanges() {
     const ranges = [];
     let cursor = 0;
@@ -2476,6 +2521,11 @@ class MirCompiler {
         POINTER_GLOBALS.printBatch,
         this.executionOutputBatch(7, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
       ),
+      this.module.global.set(
+        POINTER_GLOBALS.outputSequence,
+        this.executionOutputSequence(7),
+      ),
+      this.resetOutputSequence(),
       ...this.resetDelegateBatch(),
       ...this.resetPrintBatch(),
       this.module.global.set(
@@ -2557,6 +2607,11 @@ class MirCompiler {
         POINTER_GLOBALS.printBatch,
         this.executionOutputBatch(11, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
       ),
+      this.module.global.set(
+        POINTER_GLOBALS.outputSequence,
+        this.executionOutputSequence(11),
+      ),
+      this.resetOutputSequence(),
       ...this.resetDelegateBatch(),
       ...this.resetPrintBatch(),
       this.module.if(
@@ -2639,6 +2694,11 @@ class MirCompiler {
           POINTER_GLOBALS.printBatch,
           this.executionOutputBatch(7, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
         ),
+        this.module.global.set(
+          POINTER_GLOBALS.outputSequence,
+          this.executionOutputSequence(7),
+        ),
+        this.resetOutputSequence(),
         ...this.resetDelegateBatch(),
         ...this.resetPrintBatch(),
         ...this.resetRuntimeFailure(event.handler),
@@ -3172,6 +3232,11 @@ class MirCompiler {
       "i32",
       `log.${data.site}.cursor`,
     );
+    const sequenceLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.sequence`,
+    );
     const batch = () =>
       this.module.global.get(POINTER_GLOBALS.printBatch, binaryen.i32);
     const field = (offset) =>
@@ -3206,6 +3271,7 @@ class MirCompiler {
       ),
       this.module.i32.store(0, 1, record(), this.module.i32.const(data.site)),
       this.module.i32.store(4, 1, record(), this.module.i32.const(payloadSize)),
+      this.module.i32.store(8, 1, record(), local(sequenceLocal)),
       this.module.local.set(
         cursorLocal,
         this.module.i32.add(record(), this.module.i32.const(PRINT_RECORD_HEADER_SIZE)),
@@ -3246,6 +3312,7 @@ class MirCompiler {
     return this.module.if(
       this.module.i32.ne(batch(), this.module.i32.const(0)),
       this.module.block(null, [
+        this.advanceOutputSequence(sequenceLocal),
         this.module.local.set(
           storageLocal,
           this.module.i32.load(0, 4, field(PRINT_BATCH_STORAGE_OFFSET)),
@@ -3303,6 +3370,11 @@ class MirCompiler {
       "i32",
       `delegate.${delegateId}.required`,
     );
+    const sequence = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${delegateId}.sequence`,
+    );
     const local = (id) => this.module.local.get(id, binaryen.i32);
     const write = this.compileDelegateRecord(
       delegateId,
@@ -3314,6 +3386,7 @@ class MirCompiler {
       recordLocal,
       cursorLocal,
       counterLocal,
+      sequence,
       context,
     );
     const overflowAddress = () => field(DELEGATE_BATCH_OVERFLOW_OFFSET);
@@ -3339,6 +3412,7 @@ class MirCompiler {
       ),
     );
     return this.module.block(null, [
+      this.advanceOutputSequence(sequence),
       this.module.local.set(
         storage,
         this.module.i32.load(0, 4, field(DELEGATE_BATCH_STORAGE_OFFSET)),
@@ -3377,6 +3451,7 @@ class MirCompiler {
     recordLocal,
     cursorLocal,
     counterLocal,
+    sequenceLocal,
     context,
   ) {
     const batch = () =>
@@ -3388,6 +3463,12 @@ class MirCompiler {
       this.module.local.set(recordLocal, this.module.i32.add(storage(), used())),
       this.module.i32.store(0, 1, record(), this.module.i32.const(delegateId)),
       this.module.i32.store(4, 1, record(), payload()),
+      this.module.i32.store(
+        8,
+        1,
+        record(),
+        this.module.local.get(sequenceLocal, binaryen.i32),
+      ),
       this.module.local.set(
         cursorLocal,
         this.module.i32.add(

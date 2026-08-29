@@ -11,7 +11,7 @@ const RECORD_TRANSPORT_POOL_BUDGET_BYTES =
   MAX_RECORD_TRANSPORT_BATCHES * DEFAULT_DELEGATE_CAPACITY_BYTES;
 const DELEGATE_BATCH_SIZE_BYTES = 20;
 const PRINT_BATCH_SIZE_BYTES = 20;
-const EXECUTION_OUTPUT_SIZE_BYTES = 8;
+const EXECUTION_OUTPUT_SIZE_BYTES = 12;
 const HOST_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
 class OndaWasmProcessor extends AudioWorkletProcessor {
@@ -213,6 +213,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.printCollectionEnabled ? this.printBatchPtr : 0,
         true,
       );
+      view.setUint32(this.executionOutputPtr + 8, 0, true);
     }
     this.delegateCollectionEnabled = false;
     this.delegateSubscriptionId = 0;
@@ -224,6 +225,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       "onda-print-records",
       this.printStoragePtr ? this.printCapacity : 0,
     );
+    this.executionOutputId = 0;
     this.writeParamDefaults();
     this.writeInitialParams(processorOptions.params ?? {});
     this.ensureInputCapacity(this.blockSize);
@@ -486,6 +488,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     // leaves the processor on the silent pending path.
     this.invalidateState();
     this.refreshMemoryCache();
+    const executionOutputId = this.nextExecutionOutputId();
     const status = this.exports.onda_processor_init(
       this.paramsPtr,
       this.statePtr,
@@ -497,9 +500,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.executionOutputPtr,
     );
     // Generated failures retain diagnostic prints but clear delegates.
-    this.flushPrint("processor init");
+    const printed = this.flushPrint("processor init", executionOutputId);
+    const delegated = this.flushDelegates("processor init", executionOutputId);
+    this.finishExecutionOutput("processor init", executionOutputId, printed || delegated);
     this.checkExecutionStatus(status, "processor init");
-    this.flushDelegates("processor init");
     afterInitialize?.();
     this.commitInitializedState(blockCursor);
   }
@@ -760,6 +764,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (typeof handler !== "function") {
       throw new Error(`missing WebAssembly export '${event.export}'`);
     }
+    const executionOutputId = this.nextExecutionOutputId();
     const status = handler(
       this.eventPayloadPtr,
       this.paramsPtr,
@@ -770,8 +775,9 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferSampleRatesPtr,
       this.executionOutputPtr,
     );
-    this.flushPrint(`event '${event.name}'`);
-    this.flushDelegates(`event '${event.name}'`);
+    const printed = this.flushPrint(`event '${event.name}'`, executionOutputId);
+    const delegated = this.flushDelegates(`event '${event.name}'`, executionOutputId);
+    this.finishExecutionOutput(`event '${event.name}'`, executionOutputId, printed || delegated);
     this.checkExecutionStatus(status, `event '${event.name}'`);
   }
 
@@ -816,8 +822,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     );
   }
 
-  flushDelegates(operation) {
-    if (!this.delegateCollectionEnabled || !this.delegateBatchPtr) return;
+  flushDelegates(operation, executionOutputId = null) {
+    if (!this.delegateCollectionEnabled || !this.delegateBatchPtr) return false;
     const view = this.memoryView();
     const usedBytes = view.getUint32(this.delegateBatchPtr + 8, true);
     const recordCount = view.getUint32(this.delegateBatchPtr + 12, true);
@@ -827,13 +833,13 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     }
     if (!usedBytes && !recordCount && !overflowCount) {
       this.flushPendingRecordLoss(this.delegateTransport);
-      return;
+      return false;
     }
     if (this.deferSaturatedRecordBatch(
       this.delegateTransport,
       recordCount,
       overflowCount,
-    )) return;
+    )) return false;
     const storage = this.copyRecordStorage(
       this.delegateTransport,
       this.delegateStoragePtr,
@@ -846,15 +852,17 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       usedBytes,
       recordCount,
       overflowCount,
+      executionOutputId,
     );
+    return true;
   }
 
   saturatedAdd(lhs, rhs) {
     return Math.min(0xffff_ffff, lhs + rhs);
   }
 
-  flushPrint(operation) {
-    if (!this.printCollectionEnabled || !this.printBatchPtr) return;
+  flushPrint(operation, executionOutputId = null) {
+    if (!this.printCollectionEnabled || !this.printBatchPtr) return false;
     const view = this.memoryView();
     const usedBytes = view.getUint32(this.printBatchPtr + 8, true);
     const recordCount = view.getUint32(this.printBatchPtr + 12, true);
@@ -864,13 +872,13 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     }
     if (!usedBytes && !recordCount && !overflowCount) {
       this.flushPendingRecordLoss(this.printTransport);
-      return;
+      return false;
     }
     if (this.deferSaturatedRecordBatch(
       this.printTransport,
       recordCount,
       overflowCount,
-    )) return;
+    )) return false;
     const storage = this.copyRecordStorage(
       this.printTransport,
       this.printStoragePtr,
@@ -883,7 +891,9 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       usedBytes,
       recordCount,
       overflowCount,
+      executionOutputId,
     );
+    return true;
   }
 
   createRecordTransport(messageType, bufferCapacity) {
@@ -944,6 +954,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     usedBytes,
     recordCount,
     overflowCount,
+    executionOutputId = null,
   ) {
     const transportDropCount = transport.pendingDrops;
     const combinedOverflow = this.saturatedAdd(
@@ -961,10 +972,26 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       recordCount,
       overflowCount: combinedOverflow,
       transportDropCount,
+      ...(executionOutputId === null ? {} : { executionOutputId }),
       ...(transport === this.delegateTransport
         ? { subscriptionId: this.delegateSubscriptionId }
         : { subscriptionId: this.printSubscriptionId }),
     }, [storage.buffer]);
+  }
+
+  nextExecutionOutputId() {
+    const id = this.executionOutputId;
+    this.executionOutputId = id === Number.MAX_SAFE_INTEGER ? 0 : id + 1;
+    return id;
+  }
+
+  finishExecutionOutput(operation, executionOutputId, hasRecords) {
+    if (!hasRecords) return;
+    this.port.postMessage({
+      type: "onda-execution-output-end",
+      operation,
+      executionOutputId,
+    });
   }
 
   flushPendingRecordLoss(transport) {
@@ -1631,12 +1658,15 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         startFrame,
         segmentFrames,
       );
+      const executionOutputId = this.nextExecutionOutputId();
       const status = this.invokeProcessSegment(
         startFrame,
         segmentFrames,
         flags,
       );
-      this.flushPrint("process");
+      const printed = this.flushPrint("process", executionOutputId);
+      const delegated = this.flushDelegates("process", executionOutputId);
+      this.finishExecutionOutput("process", executionOutputId, printed || delegated);
       if (status !== 0) {
         this.invalidateState();
         this.clearOutputs(outputs);
@@ -1647,7 +1677,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         });
         return true;
       }
-      this.flushDelegates("process");
       this.marshalOutputSegment(
         outputs,
         frames,

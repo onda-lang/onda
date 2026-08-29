@@ -48,6 +48,7 @@ const RUNTIME_FAILURE_CONTEXT_INDEX: u32 = 13;
 const INIT_ALL_CONTEXT_INDEX: u32 = 16;
 const DELEGATE_BATCH_CONTEXT_INDEX: u32 = 17;
 const PRINT_BATCH_CONTEXT_INDEX: u32 = 18;
+const OUTPUT_SEQUENCE_CONTEXT_INDEX: u32 = 19;
 
 struct OwnedBufferDescriptorTables {
     pointers: Vec<*mut u8>,
@@ -680,7 +681,7 @@ impl<'a> ModuleEmitter<'a> {
             0,
         );
         let print_batch_ty = delegate_batch_ty;
-        let mut execution_output_fields = [ptr_ty, ptr_ty];
+        let mut execution_output_fields = [ptr_ty, ptr_ty, i32_ty];
         let execution_output_ty = LLVMStructTypeInContext(
             context,
             execution_output_fields.as_mut_ptr(),
@@ -689,7 +690,7 @@ impl<'a> ModuleEmitter<'a> {
         );
         let mut runtime_fields = [
             ptr_ty, ptr_ty, i32_ty, i32_ty, i32_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
-            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty, i1_ty, ptr_ty, ptr_ty,
+            ptr_ty, ptr_ty, i32_ty, ptr_ty, ptr_ty, i1_ty, ptr_ty, ptr_ty, ptr_ty,
         ];
         let runtime_context_ty = LLVMStructTypeInContext(
             context,
@@ -1721,6 +1722,48 @@ impl FunctionEmitter<'_, '_> {
         Ok(())
     }
 
+    unsafe fn next_output_sequence(&mut self) -> Result<LLVMValueRef, MirCodegenError> {
+        let i32_ty = LLVMInt32TypeInContext(self.module.context);
+        let sequence_ptr = load_context_field(
+            self.module,
+            self.builder,
+            self.runtime_context,
+            OUTPUT_SEQUENCE_CONTEXT_INDEX,
+            "output_sequence_ptr",
+        )?;
+        let sequence = LLVMBuildLoad2(
+            self.builder,
+            i32_ty,
+            sequence_ptr,
+            c_name("output_sequence")?.as_ptr(),
+        );
+        let saturated = LLVMBuildICmp(
+            self.builder,
+            LLVMIntPredicate::LLVMIntEQ,
+            sequence,
+            LLVMConstInt(i32_ty, u64::from(u32::MAX), 0),
+            c_name("output_sequence_saturated")?.as_ptr(),
+        );
+        let incremented = LLVMBuildAdd(
+            self.builder,
+            sequence,
+            LLVMConstInt(i32_ty, 1, 0),
+            c_name("output_sequence_incremented")?.as_ptr(),
+        );
+        LLVMBuildStore(
+            self.builder,
+            LLVMBuildSelect(
+                self.builder,
+                saturated,
+                sequence,
+                incremented,
+                c_name("output_sequence_next")?.as_ptr(),
+            ),
+            sequence_ptr,
+        );
+        Ok(sequence)
+    }
+
     unsafe fn lower_publish_delegate(
         &mut self,
         delegate: onda_mir::DelegateId,
@@ -1788,6 +1831,7 @@ impl FunctionEmitter<'_, '_> {
         )?;
         LLVMBuildCondBr(self.builder, batch_present, inspect, done);
         LLVMPositionBuilderAtEnd(self.builder, inspect);
+        let sequence = self.next_output_sequence()?;
 
         let mut payload_bytes = LLVMConstInt(i64_ty, 0, 0);
         for (param, argument) in descriptor.params.iter().zip(args) {
@@ -2030,6 +2074,16 @@ impl FunctionEmitter<'_, '_> {
             payload_size_ptr,
         );
         LLVMSetAlignment(payload_size_store, 1);
+        let sequence_ptr = LLVMBuildGEP2(
+            self.builder,
+            i8_ty,
+            record,
+            [LLVMConstInt(i64_ty, 8, 0)].as_mut_ptr(),
+            1,
+            c_name("delegate_sequence_ptr")?.as_ptr(),
+        );
+        let sequence_store = LLVMBuildStore(self.builder, sequence, sequence_ptr);
+        LLVMSetAlignment(sequence_store, 1);
         let mut cursor = LLVMConstInt(
             i64_ty,
             onda_processor_abi::DELEGATE_RECORD_HEADER_SIZE as u64,
@@ -2196,6 +2250,7 @@ impl FunctionEmitter<'_, '_> {
         )?;
         LLVMBuildCondBr(self.builder, batch_present, inspect, done);
         LLVMPositionBuilderAtEnd(self.builder, inspect);
+        let sequence = self.next_output_sequence()?;
 
         let storage_ptr = LLVMBuildStructGEP2(
             self.builder,
@@ -2375,6 +2430,16 @@ impl FunctionEmitter<'_, '_> {
             size_ptr,
         );
         LLVMSetAlignment(size_store, 1);
+        let sequence_ptr = LLVMBuildGEP2(
+            self.builder,
+            i8_ty,
+            record,
+            [LLVMConstInt(i64_ty, 8, 0)].as_mut_ptr(),
+            1,
+            c_name("print_sequence_ptr")?.as_ptr(),
+        );
+        let sequence_store = LLVMBuildStore(self.builder, sequence, sequence_ptr);
+        LLVMSetAlignment(sequence_store, 1);
         let mut cursor = onda_processor_abi::PRINT_RECORD_HEADER_SIZE as u64;
         for (argument, scalar) in arguments.iter().zip(&descriptor.argument_types) {
             let destination = LLVMBuildGEP2(
@@ -6319,25 +6384,26 @@ unsafe fn build_entry_runtime_context(
     let zero = LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0);
     let false_value = LLVMConstInt(LLVMInt1TypeInContext(module.context), 0, 0);
     let mut fields = [
-        null,
-        null,
-        zero,
-        zero,
-        zero,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        zero,
-        null,
-        null,
-        false_value,
-        null,
-        null,
+        null,        // 0: audio inputs
+        null,        // 1: audio outputs
+        zero,        // 2: frames
+        zero,        // 3: input channels
+        zero,        // 4: output channels
+        null,        // 5: params
+        null,        // 6: state
+        null,        // 7: buffer reads
+        null,        // 8: buffer writes
+        null,        // 9: buffer frames
+        null,        // 10: buffer channels
+        null,        // 11: buffer sample rates
+        null,        // 12: event args
+        zero,        // 13: runtime failure
+        null,        // 14: unbound-buffer read fallback
+        null,        // 15: unbound-buffer write fallback
+        false_value, // 16: init all
+        null,        // 17: delegate batch
+        null,        // 18: print batch
+        null,        // 19: output sequence
     ];
     let (fallback_read, fallback_write) = allocate_entry_fallback_buffers(module, builder)?;
     fields[14] = fallback_read;
@@ -6422,26 +6488,28 @@ unsafe fn build_entry_runtime_context(
 
     let needs_delegate_batch = !module.program.interface.delegates.is_empty();
     let needs_print_batch = !module.program.log_sites.is_empty();
-    let (delegate_batch, print_batch) = if needs_delegate_batch || needs_print_batch {
-        let output = match kind {
-            FunctionKind::Init => LLVMGetParam(function, 7),
-            FunctionKind::Process => LLVMGetParam(function, 11),
-            FunctionKind::Event(_) => LLVMGetParam(function, 7),
-            FunctionKind::User => unreachable!(),
+    let (delegate_batch, print_batch, output_sequence) =
+        if needs_delegate_batch || needs_print_batch {
+            let output = match kind {
+                FunctionKind::Init => LLVMGetParam(function, 7),
+                FunctionKind::Process => LLVMGetParam(function, 11),
+                FunctionKind::Event(_) => LLVMGetParam(function, 7),
+                FunctionKind::User => unreachable!(),
+            };
+            load_execution_output_batches(
+                module,
+                builder,
+                output,
+                needs_delegate_batch,
+                needs_print_batch,
+            )?
+        } else {
+            (null, null, null)
         };
-        load_execution_output_batches(
-            module,
-            builder,
-            output,
-            needs_delegate_batch,
-            needs_print_batch,
-        )?
-    } else {
-        (null, null)
-    };
     for (index, value) in [
         (DELEGATE_BATCH_CONTEXT_INDEX, delegate_batch),
         (PRINT_BATCH_CONTEXT_INDEX, print_batch),
+        (OUTPUT_SEQUENCE_CONTEXT_INDEX, output_sequence),
     ] {
         let ptr = LLVMBuildStructGEP2(
             builder,
@@ -6524,7 +6592,7 @@ unsafe fn load_execution_output_batches(
     output: LLVMValueRef,
     load_delegate: bool,
     load_print: bool,
-) -> Result<(LLVMValueRef, LLVMValueRef), MirCodegenError> {
+) -> Result<(LLVMValueRef, LLVMValueRef, LLVMValueRef), MirCodegenError> {
     let null = LLVMConstPointerNull(module.ptr_ty);
     let delegate_slot = LLVMBuildAlloca(
         builder,
@@ -6536,8 +6604,14 @@ unsafe fn load_execution_output_batches(
         module.ptr_ty,
         c_name("execution_print_batch_slot")?.as_ptr(),
     );
+    let sequence_slot = LLVMBuildAlloca(
+        builder,
+        module.ptr_ty,
+        c_name("execution_sequence_slot")?.as_ptr(),
+    );
     LLVMBuildStore(builder, null, delegate_slot);
     LLVMBuildStore(builder, null, print_slot);
+    LLVMBuildStore(builder, null, sequence_slot);
     let present = LLVMBuildICmp(
         builder,
         LLVMIntPredicate::LLVMIntNE,
@@ -6579,6 +6653,19 @@ unsafe fn load_execution_output_batches(
         );
         LLVMBuildStore(builder, batch, slot);
     }
+    let sequence = LLVMBuildStructGEP2(
+        builder,
+        module.execution_output_ty,
+        output,
+        2,
+        c_name("execution_output_sequence_ptr")?.as_ptr(),
+    );
+    LLVMBuildStore(
+        builder,
+        LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0),
+        sequence,
+    );
+    LLVMBuildStore(builder, sequence, sequence_slot);
     LLVMBuildBr(builder, done);
     LLVMPositionBuilderAtEnd(builder, done);
     Ok((
@@ -6593,6 +6680,12 @@ unsafe fn load_execution_output_batches(
             module.ptr_ty,
             print_slot,
             c_name("execution_print_batch")?.as_ptr(),
+        ),
+        LLVMBuildLoad2(
+            builder,
+            module.ptr_ty,
+            sequence_slot,
+            c_name("execution_sequence")?.as_ptr(),
         ),
     ))
 }

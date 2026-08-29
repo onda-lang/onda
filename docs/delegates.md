@@ -30,10 +30,11 @@ One packed record contains:
 ```text
 u32 delegate index
 u32 payload size in bytes
+u32 call-local sequence
 payload bytes
 ```
 
-The fixed record header is therefore eight bytes. Scalars and fixed arrays are packed in parameter
+The fixed record header is therefore twelve bytes. Scalars and fixed arrays are packed in parameter
 order. A slice contributes a four-byte element count followed by its contiguous element bytes.
 Native hosted APIs use native byte order; complete WebAssembly artifacts use the byte order declared
 by their processor descriptor.
@@ -43,7 +44,7 @@ by their processor descriptor.
 The compiler can report the exact size of one fixed-shape delegate record:
 
 ```text
-record size = 8-byte record header + fixed payload size
+record size = 12-byte record header + fixed payload size
 ```
 
 For a delegate containing slices, it reports only a minimum. Each slice's runtime element count

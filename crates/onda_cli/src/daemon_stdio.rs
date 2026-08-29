@@ -491,6 +491,7 @@ fn attach_run_delegate_batch(mut result: Value, batch: &RunDelegateBatch) -> Val
                 .map(|entry| (entry.name.clone(), run_event_value_json(&entry.value)))
                 .collect::<serde_json::Map<_, _>>();
             json!({
+                "sequence": occurrence.sequence,
                 "index": occurrence.index,
                 "name": occurrence.name,
                 "values": values,
@@ -506,6 +507,7 @@ fn attach_run_print_batch(mut result: Value, batch: &RunPrintBatch) -> Value {
     result["print"] = json!({
         "text": batch.text,
         "entries": batch.entries.iter().map(|entry| json!({
+            "sequence": entry.sequence,
             "site_index": entry.site_index,
             "label": entry.label,
             "source": {

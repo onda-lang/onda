@@ -13,6 +13,7 @@ use onda_runtime::{
     format_print_batch_for_program, init_with_output, prepare_unchecked_process,
     process_unchecked_segment, set_param_by_index, trigger_event_by_index, DelegateBatch,
     ExecutionOutput, InitMode, Instance, InstanceConfig, PrintBatch, PrintValue,
+    DELEGATE_RECORD_HEADER_SIZE,
 };
 use onda_semantics::{AnalysisOptions, CompileInputs, TypedProgram};
 
@@ -124,6 +125,7 @@ pub struct RunDelegateParamInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunDelegateOccurrence {
+    pub sequence: u32,
     pub index: usize,
     pub name: String,
     pub values: Vec<RunDelegateValue>,
@@ -151,6 +153,7 @@ pub struct RunPrintBatch {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunPrintEntry {
+    pub sequence: u32,
     pub site_index: u32,
     pub label: Option<String>,
     pub source_file: Option<String>,
@@ -702,10 +705,13 @@ impl RunSession {
         for buffer in &mut self.output_buffers {
             buffer.fill(0.0);
         }
+        let mut sequence_base = 0_u32;
         // SAFETY: all input, output, and declared-buffer bindings are installed
         // and prepared during build/rebuild. Their backing allocations remain
         // stable for the lifetime of this instance.
         for &(start_frame, frames, flags) in segments {
+            let delegate_start = self.delegate_used;
+            let print_start = self.print_used;
             let mut batch =
                 Self::next_delegate_batch(&mut self.delegate_storage, self.delegate_used);
             let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
@@ -727,8 +733,23 @@ impl RunSession {
                 prints.record_count,
                 prints.overflow_count,
             );
+            let delegate_end = delegate_start + batch_result.0 as usize;
+            let print_end = print_start + print_result.0 as usize;
+            rebase_packed_output_sequences(
+                &mut self.delegate_storage[delegate_start..delegate_end],
+                sequence_base,
+            );
+            rebase_packed_output_sequences(
+                &mut self.print_storage[print_start..print_end],
+                sequence_base,
+            );
             self.finish_delegate_batch(batch_result);
             self.finish_print_batch(print_result);
+            sequence_base = sequence_base
+                .saturating_add(batch_result.1)
+                .saturating_add(batch_result.2)
+                .saturating_add(print_result.1)
+                .saturating_add(print_result.2);
             match result.and_then(check_execution_status) {
                 Ok(()) => {}
                 Err(error) => {
@@ -1383,6 +1404,35 @@ fn scalar_run_event_value(ty: PrimitiveType, bytes: &[u8]) -> RunEventValue {
     }
 }
 
+/// RunSession aggregates several process calls into one host-visible batch.
+/// The processor ABI numbers records within each call, so translate the new
+/// records into that aggregate batch's sequence domain as they are appended.
+/// Both print and delegate records use the same packed header shape.
+fn rebase_packed_output_sequences(storage: &mut [u8], base: u32) {
+    if base == 0 {
+        return;
+    }
+    let mut cursor = 0usize;
+    while let Some(header_end) = cursor
+        .checked_add(DELEGATE_RECORD_HEADER_SIZE)
+        .filter(|&end| end <= storage.len())
+    {
+        let payload_bytes = native_u32(&storage[cursor + 4..cursor + 8]) as usize;
+        let sequence = native_u32(&storage[cursor + 8..header_end]);
+        storage[cursor + 8..header_end]
+            .copy_from_slice(&sequence.saturating_add(base).to_ne_bytes());
+        let Some(record_end) = header_end
+            .checked_add(payload_bytes)
+            .filter(|&end| end <= storage.len())
+        else {
+            debug_assert!(false, "generated output record has a partial payload");
+            return;
+        };
+        cursor = record_end;
+    }
+    debug_assert_eq!(cursor, storage.len());
+}
+
 fn decode_run_print_batch(
     jit: &JitProgram,
     batch: &PrintBatch<'_>,
@@ -1399,6 +1449,7 @@ fn decode_run_print_batch(
                     .map(|source| source.path.clone())
             });
             RunPrintEntry {
+                sequence: occurrence.sequence,
                 site_index: occurrence.site_index,
                 label: site.label.clone(),
                 source_file,
@@ -1429,9 +1480,15 @@ fn decode_run_delegate_batch(
     let mut cursor = 0usize;
     let mut occurrences = Vec::with_capacity(record_count as usize);
     while cursor < storage.len() {
-        let header = take_delegate_bytes(storage, &mut cursor, 8, "record header")?;
+        let header = take_delegate_bytes(
+            storage,
+            &mut cursor,
+            DELEGATE_RECORD_HEADER_SIZE,
+            "record header",
+        )?;
         let delegate_index = native_u32(&header[..4]) as usize;
-        let payload_bytes = native_u32(&header[4..]) as usize;
+        let payload_bytes = native_u32(&header[4..8]) as usize;
+        let sequence = native_u32(&header[8..12]);
         let payload = take_delegate_bytes(storage, &mut cursor, payload_bytes, "payload")?;
         let Some(delegate) = jit.delegate_descriptor(delegate_index) else {
             return Err(invalid_delegate_record(format!(
@@ -1440,6 +1497,7 @@ fn decode_run_delegate_batch(
         };
         occurrences.push(decode_run_delegate_occurrence(
             delegate_index,
+            sequence,
             delegate,
             payload,
         )?);
@@ -1458,6 +1516,7 @@ fn decode_run_delegate_batch(
 
 fn decode_run_delegate_occurrence(
     index: usize,
+    sequence: u32,
     delegate: &DeclaredDelegate,
     payload: &[u8],
 ) -> Result<RunDelegateOccurrence, Diagnostic> {
@@ -1498,6 +1557,7 @@ fn decode_run_delegate_occurrence(
         )));
     }
     Ok(RunDelegateOccurrence {
+        sequence,
         index,
         name: delegate.name().to_owned(),
         values,

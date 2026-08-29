@@ -89,7 +89,9 @@ continuations. Preserve-pinned initialization skips those guarded declarations a
 existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
 not transactional: a host that needs rollback must provide that policy itself.
 
-Processor ABI version 9 supplies current external-buffer descriptors to initialization. Version 8
+Processor ABI version 10 adds one call-local sequence shared by print and delegate records so hosts
+can preserve source order across the two streams. Version 9 supplies current external-buffer
+descriptors to initialization. Version 8
 added print output to initialization and replaced the separate delegate-batch argument on process
 and event entries with one optional `ExecutionOutput`. Version 7 introduced delegate batches, and
 version 6 replaced the boolean-like `all` contract with this named mode enum. The instance-level C
@@ -112,11 +114,12 @@ For the language semantics, see [delegates](syntax.md#delegates) and
 [print](printing.md) integration notes contain cross-host implementation details.
 
 `output` is null when the host consumes neither occurrence stream. Otherwise it points to two
-independently nullable pointers:
+independently nullable pointers followed by the generated call-local counter:
 
 ```text
 delegate_batch: Ptr
 print_batch: Ptr
+next_sequence: u32
 ```
 
 Each present pointer addresses an independent caller-owned batch with this physical shape; native
@@ -131,30 +134,35 @@ record_count: u32
 overflow_count: u32
 ```
 
-The fixed header of every contiguous record is two `u32` values followed immediately by payload
-bytes. A delegate record stores declaration-order delegate index and payload byte count. Scalar and
+The fixed header of every contiguous record is three `u32` values followed immediately by payload
+bytes. A delegate record stores declaration-order delegate index, payload byte count, and call-local
+sequence. Scalar and
 fixed arrays are packed in parameter order; each slice is an `i32` count followed by contiguous
 elements. The descriptor's `metadata.delegates` supplies its layout.
 
-A print record stores log-site index and payload byte count. Its payload contains only the site's
+A print record stores log-site index, payload byte count, and the same call-local sequence. Its
+payload contains only the site's
 primitive scalar arguments without padding: four bytes for `f32`/`i32`, eight for `f64`/`i64`, and
 one zero-or-one byte for `bool`. `metadata.source_files` and `metadata.log_sites` supply labels,
 source spans, lexical ownership, argument types, and fixed payload sizes. Scalar and header byte
 order is the artifact target's byte order.
 
-For one fixed-shape occurrence, exact storage is the eight-byte record header plus the descriptor's
+For one fixed-shape occurrence, exact storage is the twelve-byte record header plus the descriptor's
 `payload_size_bytes`. A dynamic delegate has no exact pre-execution size; its descriptor reports
 `payload_min_size_bytes`, including each slice's four-byte length prefix but no slice elements.
 There is no exact whole-batch size because occurrence counts, delegate selection, and slice lengths
 may depend on runtime control flow. Capacity is a host policy, and `overflow_count` reports when it
 was insufficient.
 
-Every init, process, or input-event entry resets the counters of each supplied batch. A complete
-record is appended only when it fits. Otherwise it is discarded whole and that batch's overflow
+Every init, process, or input-event entry resets the counters of each supplied batch and resets
+`next_sequence` to zero. Publications into either present batch consume that shared counter. A
+complete record is appended only when it fits. Otherwise it is discarded whole and that batch's overflow
 counter saturates at `u32::MAX`; a later smaller record may still fit. Null output, batch, or storage
 is neutral and does not count overflow. Generated execution failure clears delegate results but
 retains print records and overflow already produced, because they may diagnose the failure. Storage
-is caller-owned, never allocated or retained by the processor, and is not part of snapshots.
+is caller-owned, never allocated or retained by the processor, and is not part of snapshots. Hosts
+that expose a combined log merge the two decoded batches by `sequence`; sequences have no meaning
+across separate entry calls.
 
 ## Pointer and target profiles
 

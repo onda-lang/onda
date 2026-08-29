@@ -124,7 +124,7 @@ test("failed live initialization returns the worklet to the silent pending state
 
   assert.throws(() => processor.init(1), /simulated processor init failure/);
   assert.equal(printFlushes, 1);
-  assert.equal(delegateFlushes, 0);
+  assert.equal(delegateFlushes, 1);
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
   assert.throws(() => processor.init(0), /full initialization is required/);

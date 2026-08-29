@@ -93,8 +93,8 @@ function artifact() {
         snapshot_byte_order: "little_endian",
         snapshot_restore_base: "post_init_physical_state_image",
         requires_full_blocks: false,
-        delegate_record_header_size_bytes: 8,
-        print_record_header_size_bytes: 8,
+        delegate_record_header_size_bytes: 12,
+        print_record_header_size_bytes: 12,
       },
       exports: {
         memory: "memory",
@@ -264,11 +264,12 @@ test("initialized creation installs its print listener before worklet output arr
   assert.equal(processor.node.options.processorOptions.printCollectionEnabled, true);
   assert.equal(processor.node.options.processorOptions.printSubscriptionId, 1);
 
-  const storage = new Uint8Array(12);
+  const storage = new Uint8Array(16);
   const view = new DataView(storage.buffer);
   view.setUint32(0, 0, true);
   view.setUint32(4, 4, true);
-  view.setInt32(8, 42, true);
+  view.setUint32(8, 0, true);
+  view.setInt32(12, 42, true);
   processor.node.port.reply({
     type: "onda-print-records",
     operation: "processor init",
@@ -369,11 +370,12 @@ test("formats worklet print records on the main side", () => {
   const subscription = node.port.messages.at(-1);
   assert.equal(subscription.type, "print-subscription");
   assert.equal(subscription.enabled, true);
-  const storage = new Uint8Array(12);
+  const storage = new Uint8Array(16);
   const view = new DataView(storage.buffer);
   view.setUint32(0, 0, true);
   view.setUint32(4, 4, true);
-  view.setInt32(8, 42, true);
+  view.setUint32(8, 0, true);
+  view.setInt32(12, 42, true);
   node.port.reply({
     type: "onda-print-records",
     operation: "process",
@@ -439,14 +441,15 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
   assert.equal(subscription.type, "delegate-subscription");
   assert.equal(subscription.enabled, true);
 
-  const storage = new Uint8Array(24);
+  const storage = new Uint8Array(28);
   const view = new DataView(storage.buffer);
   view.setUint32(0, 0, true);
   view.setUint32(4, 16, true);
-  view.setInt32(8, 7, true);
-  view.setInt32(12, 2, true);
-  view.setFloat32(16, 1.25, true);
-  view.setFloat32(20, -2.5, true);
+  view.setUint32(8, 0, true);
+  view.setInt32(12, 7, true);
+  view.setInt32(16, 2, true);
+  view.setFloat32(20, 1.25, true);
+  view.setFloat32(24, -2.5, true);
   node.port.reply({
     type: "onda-delegate-records",
     operation: "process",
@@ -462,6 +465,7 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
     type: "onda-delegates",
     operation: "process",
     occurrences: [{
+      sequence: 0,
       index: 0,
       name: "report",
       values: { code: 7, values: [1.25, -2.5] },
@@ -477,6 +481,82 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
     enabled: false,
     subscriptionId: subscription.subscriptionId,
   });
+  processor.close();
+});
+
+test("delivers print and delegate callbacks in call-local source order", () => {
+  const source = artifact();
+  source.metadata.metadata.log_sites = [{
+    index: 0,
+    label: null,
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 1 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  source.metadata.metadata.delegates = [{
+    name: "tick",
+    params: [{
+      name: "value",
+      scalar: "i32",
+      array_len: 1,
+      is_slice: false,
+      element_size_bytes: 4,
+    }],
+  }];
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+  const delivered = [];
+  processor.onPrint((batch) => delivered.push(`print:${batch.entries[0].values[0].value}`));
+  const printSubscription = node.port.messages.at(-1).subscriptionId;
+  processor.onDelegates((batch) => delivered.push(`delegate:${batch.occurrences[0].values.value}`));
+  const delegateSubscription = node.port.messages.at(-1).subscriptionId;
+
+  const printStorage = new Uint8Array(32);
+  const printView = new DataView(printStorage.buffer);
+  for (const [offset, sequence, value] of [[0, 0, 11], [16, 2, 33]]) {
+    printView.setUint32(offset, 0, true);
+    printView.setUint32(offset + 4, 4, true);
+    printView.setUint32(offset + 8, sequence, true);
+    printView.setInt32(offset + 12, value, true);
+  }
+  node.port.reply({
+    type: "onda-print-records",
+    operation: "process",
+    executionOutputId: 7,
+    storage: printStorage,
+    usedBytes: printStorage.byteLength,
+    recordCount: 2,
+    overflowCount: 0,
+    transportDropCount: 0,
+    subscriptionId: printSubscription,
+  });
+
+  const delegateStorage = new Uint8Array(16);
+  const delegateView = new DataView(delegateStorage.buffer);
+  delegateView.setUint32(0, 0, true);
+  delegateView.setUint32(4, 4, true);
+  delegateView.setUint32(8, 1, true);
+  delegateView.setInt32(12, 22, true);
+  node.port.reply({
+    type: "onda-delegate-records",
+    operation: "process",
+    executionOutputId: 7,
+    storage: delegateStorage,
+    usedBytes: delegateStorage.byteLength,
+    recordCount: 1,
+    overflowCount: 0,
+    transportDropCount: 0,
+    subscriptionId: delegateSubscription,
+  });
+  assert.deepEqual(delivered, []);
+  node.port.reply({
+    type: "onda-execution-output-end",
+    operation: "process",
+    executionOutputId: 7,
+  });
+  assert.deepEqual(delivered, ["print:11", "delegate:22", "print:33"]);
   processor.close();
 });
 

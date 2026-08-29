@@ -8,6 +8,7 @@ use crate::{
 
 fn reset_execution_output(output: Option<&mut onda_processor_abi::ExecutionOutput>) {
     let Some(output) = output else { return };
+    output.next_sequence = 0;
     // SAFETY: the raw ABI requires each non-null batch pointer in a supplied
     // execution-output descriptor to reference its corresponding live batch.
     unsafe {

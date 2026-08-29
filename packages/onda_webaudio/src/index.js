@@ -238,6 +238,7 @@ export class OndaAudioProcessor {
       initialPrintListener === undefined ? [] : [initialPrintListener],
     );
     this.printSubscriptionId = initialPrintListener === undefined ? 0 : 1;
+    this.pendingExecutionOutputs = new Map();
     this.closed = false;
     this.closeReason = null;
     this.handleMessage = (event) => {
@@ -261,6 +262,7 @@ export class OndaAudioProcessor {
             type: "onda-delegates",
             operation: message.operation,
             occurrences: records.map((record) => ({
+              sequence: record.sequence,
               index: record.delegateIndex,
               name: record.name,
               values: record.values,
@@ -268,6 +270,10 @@ export class OndaAudioProcessor {
             overflowCount: message.overflowCount,
             transportDropCount: message.transportDropCount,
           };
+          if (message.executionOutputId !== undefined) {
+            this.queueExecutionOutput(message.executionOutputId, "delegate", batch);
+            return;
+          }
           for (const listener of this.delegateListeners) listener(batch);
         } finally {
           this.returnRecordStorage("delegate-ack", message.storage);
@@ -295,10 +301,18 @@ export class OndaAudioProcessor {
             ...formatted,
             transportDropCount: message.transportDropCount,
           };
+          if (message.executionOutputId !== undefined) {
+            this.queueExecutionOutput(message.executionOutputId, "print", batch);
+            return;
+          }
           for (const listener of this.printListeners) listener(batch);
         } finally {
           this.returnRecordStorage("print-ack", message.storage);
         }
+        return;
+      }
+      if (message.type === "onda-execution-output-end") {
+        this.flushExecutionOutput(message.executionOutputId, message.operation);
         return;
       }
       if (message.requestId === undefined) return;
@@ -320,6 +334,99 @@ export class OndaAudioProcessor {
       this.node.port.postMessage({ type, storage }, [storage.buffer]);
     } else {
       this.node.port.postMessage({ type });
+    }
+  }
+
+  queueExecutionOutput(executionOutputId, kind, batch) {
+    let pending = this.pendingExecutionOutputs.get(executionOutputId);
+    if (!pending) {
+      pending = { records: [], print: null, delegate: null };
+      this.pendingExecutionOutputs.set(executionOutputId, pending);
+    }
+    if (kind === "print") {
+      const lines = batch.text.match(/.*\n/g) ?? [];
+      if (lines.length !== batch.entries.length) {
+        throw new Error("formatted print output does not match its decoded entries");
+      }
+      pending.print = {
+        overflowCount: batch.overflowCount,
+        transportDropCount: batch.transportDropCount,
+      };
+      batch.entries.forEach((entry, index) => pending.records.push({
+        kind,
+        sequence: entry.sequence,
+        entry,
+        line: lines[index],
+      }));
+      return;
+    }
+    pending.delegate = {
+      overflowCount: batch.overflowCount,
+      transportDropCount: batch.transportDropCount,
+    };
+    batch.occurrences.forEach((occurrence) => pending.records.push({
+      kind,
+      sequence: occurrence.sequence,
+      occurrence,
+    }));
+  }
+
+  flushExecutionOutput(executionOutputId, operation) {
+    const pending = this.pendingExecutionOutputs.get(executionOutputId);
+    this.pendingExecutionOutputs.delete(executionOutputId);
+    if (!pending) return;
+    pending.records.sort((lhs, rhs) => lhs.sequence - rhs.sequence);
+    let cursor = 0;
+    while (cursor < pending.records.length) {
+      const kind = pending.records[cursor].kind;
+      let end = cursor + 1;
+      while (end < pending.records.length && pending.records[end].kind === kind) end += 1;
+      const records = pending.records.slice(cursor, end);
+      if (kind === "print") {
+        const meta = pending.print ?? { overflowCount: 0, transportDropCount: 0 };
+        pending.print = null;
+        const batch = {
+          type: "onda-print",
+          operation,
+          text: records.map((record) => record.line).join(""),
+          entries: records.map((record) => record.entry),
+          ...meta,
+        };
+        for (const listener of this.printListeners) listener(batch);
+      } else {
+        const meta = pending.delegate ?? { overflowCount: 0, transportDropCount: 0 };
+        pending.delegate = null;
+        const batch = {
+          type: "onda-delegates",
+          operation,
+          occurrences: records.map((record) => record.occurrence),
+          ...meta,
+        };
+        for (const listener of this.delegateListeners) listener(batch);
+      }
+      cursor = end;
+    }
+    if (pending.print && (pending.print.overflowCount || pending.print.transportDropCount)) {
+      const batch = {
+        type: "onda-print",
+        operation,
+        text: "",
+        entries: [],
+        ...pending.print,
+      };
+      for (const listener of this.printListeners) listener(batch);
+    }
+    if (
+      pending.delegate
+      && (pending.delegate.overflowCount || pending.delegate.transportDropCount)
+    ) {
+      const batch = {
+        type: "onda-delegates",
+        operation,
+        occurrences: [],
+        ...pending.delegate,
+      };
+      for (const listener of this.delegateListeners) listener(batch);
     }
   }
 
@@ -504,6 +611,7 @@ export class OndaAudioProcessor {
     this.node.port.removeEventListener("message", this.handleMessage);
     for (const pending of this.pending.values()) pending.reject(this.closeReason);
     this.pending.clear();
+    this.pendingExecutionOutputs.clear();
     this.delegateListeners.clear();
     this.printListeners.clear();
   }

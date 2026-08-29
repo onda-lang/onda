@@ -106,7 +106,12 @@ export class OndaAudioProcessor {
     listener: (batch: {
       type: "onda-delegates";
       operation: string;
-      occurrences: Array<{ index: number; name: string; values: Record<string, unknown> }>;
+      occurrences: Array<{
+        sequence: number;
+        index: number;
+        name: string;
+        values: Record<string, unknown>;
+      }>;
       overflowCount: number;
       transportDropCount: number;
     }) => void,

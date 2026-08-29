@@ -415,6 +415,55 @@ mod tests {
     }
 
     #[test]
+    fn segmented_render_uses_one_chronological_output_sequence() {
+        let dir = mk_temp_dir("run_segmented_output_sequence");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate report(value: i32)\n\nsample:\n  print(1)\n  report(2)\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    block_size: 4,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        run.set_delegate_collection_enabled(true);
+        run.render_block_segments(&[
+            (0, 2, onda_runtime::PROCESS_BEGIN_BLOCK),
+            (2, 2, onda_runtime::PROCESS_END_BLOCK),
+        ])
+        .expect("segmented render should succeed");
+
+        let delegates = run.take_delegate_batch().expect("delegates should decode");
+        let prints = run.take_print_batch().expect("prints should decode");
+        assert_eq!(
+            prints
+                .entries
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 4, 6]
+        );
+        assert_eq!(
+            delegates
+                .occurrences
+                .iter()
+                .map(|occurrence| occurrence.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 5, 7]
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn failed_initialization_returns_only_the_runtime_diagnostic() {
         let dir = mk_temp_dir("run_failed_init_prints");
         let main = dir.join("main.onda");

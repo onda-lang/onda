@@ -409,6 +409,7 @@ struct SourceCallable<'a> {
     kind: SourceCallableKind,
     loc: Span,
     body: &'a [Stmt],
+    value_bindings: HashSet<String>,
 }
 
 struct DelegateOwner<'a> {
@@ -435,6 +436,7 @@ struct SourceCall {
     loc: Span,
     indexed_receiver: Option<(String, Expr)>,
     args: Vec<CallArg>,
+    local_is_bound: bool,
 }
 
 impl SourceCall {
@@ -470,6 +472,7 @@ fn collect_source_calls_expr(expr: &Expr, calls: &mut Vec<SourceCall>) {
                 loc: *loc,
                 indexed_receiver,
                 args: args.clone(),
+                local_is_bound: false,
             });
             for arg in args {
                 collect_source_calls_expr(&arg.expr, calls);
@@ -597,43 +600,59 @@ type ChildReceiverAliases = HashMap<String, ChildReceiverRef>;
 fn collect_source_calls_with_aliases(
     stmts: &[Stmt],
     initial_aliases: &ChildReceiverAliases,
+    initial_bindings: &HashSet<String>,
     children: &HashMap<String, ChildProcInstance>,
 ) -> Vec<(SourceCall, ChildReceiverAliases)> {
     fn collect_expr(
         expr: &Expr,
         aliases: &ChildReceiverAliases,
+        bindings: &HashSet<String>,
         calls: &mut Vec<(SourceCall, ChildReceiverAliases)>,
     ) {
         let mut nested = Vec::new();
         collect_source_calls_expr(expr, &mut nested);
-        calls.extend(nested.into_iter().map(|call| (call, aliases.clone())));
+        calls.extend(nested.into_iter().map(|mut call| {
+            call.local_is_bound = call
+                .local_name()
+                .is_some_and(|name| bindings.contains(name));
+            (call, aliases.clone())
+        }));
     }
 
-    fn merge_aliases(
-        base: ChildReceiverAliases,
+    fn intersect_aliases(
         mut lhs: ChildReceiverAliases,
         rhs: &ChildReceiverAliases,
     ) -> ChildReceiverAliases {
         lhs.retain(|name, receiver| rhs.get(name) == Some(receiver));
-        lhs.extend(base);
+        lhs
+    }
+
+    fn intersect_bindings(mut lhs: HashSet<String>, rhs: &HashSet<String>) -> HashSet<String> {
+        lhs.retain(|name| rhs.contains(name));
         lhs
     }
 
     fn visit(
         stmts: &[Stmt],
         aliases: &mut ChildReceiverAliases,
+        bindings: &mut HashSet<String>,
         children: &HashMap<String, ChildProcInstance>,
         calls: &mut Vec<(SourceCall, ChildReceiverAliases)>,
-    ) {
+    ) -> crate::def_semantics::call_types::StatementFlow {
+        use crate::def_semantics::call_types::StatementFlow;
+
         for stmt in stmts {
-            match stmt {
+            let flow = match stmt {
                 Stmt::Const { decl, .. } => {
-                    collect_expr(&decl.expr, aliases, calls);
+                    collect_expr(&decl.expr, aliases, bindings, calls);
+                    aliases.remove(&decl.name);
+                    bindings.insert(decl.name.clone());
+                    StatementFlow::Continues
                 }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
                         AssignTarget::Index { index, .. } => {
-                            collect_expr(index, aliases, calls);
+                            collect_expr(index, aliases, bindings, calls);
                         }
                         AssignTarget::Slice {
                             selector,
@@ -644,12 +663,12 @@ fn collect_source_calls_with_aliases(
                         } => {
                             for coordinate in [selector, channel, start, end].into_iter().flatten()
                             {
-                                collect_expr(coordinate, aliases, calls);
+                                collect_expr(coordinate, aliases, bindings, calls);
                             }
                         }
                         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
                     }
-                    collect_expr(expr, aliases, calls);
+                    collect_expr(expr, aliases, bindings, calls);
                     match target {
                         AssignTarget::Var(name) => {
                             if let Some(receiver) = child_receiver_ref(expr, aliases, children) {
@@ -657,22 +676,31 @@ fn collect_source_calls_with_aliases(
                             } else {
                                 aliases.remove(name);
                             }
+                            bindings.insert(name.clone());
                         }
                         AssignTarget::Tuple(names) => {
                             for name in names {
                                 aliases.remove(name);
+                                bindings.insert(name.clone());
                             }
                         }
                         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
                     }
+                    StatementFlow::Continues
                 }
                 Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                    collect_expr(expr, aliases, calls)
+                    collect_expr(expr, aliases, bindings, calls);
+                    if matches!(stmt, Stmt::Return { .. }) {
+                        StatementFlow::Terminates
+                    } else {
+                        StatementFlow::Continues
+                    }
                 }
                 Stmt::Print { values, .. } => {
                     for value in values {
-                        collect_expr(value, aliases, calls);
+                        collect_expr(value, aliases, bindings, calls);
                     }
+                    StatementFlow::Continues
                 }
                 Stmt::If {
                     cond,
@@ -680,42 +708,88 @@ fn collect_source_calls_with_aliases(
                     else_branch,
                     ..
                 } => {
-                    collect_expr(cond, aliases, calls);
-                    let base_aliases = aliases.clone();
+                    collect_expr(cond, aliases, bindings, calls);
                     let mut then_aliases = aliases.clone();
                     let mut else_aliases = aliases.clone();
-                    visit(then_branch, &mut then_aliases, children, calls);
-                    visit(else_branch, &mut else_aliases, children, calls);
-                    *aliases = merge_aliases(base_aliases, then_aliases, &else_aliases);
+                    let mut then_bindings = bindings.clone();
+                    let mut else_bindings = bindings.clone();
+                    let then_flow = visit(
+                        then_branch,
+                        &mut then_aliases,
+                        &mut then_bindings,
+                        children,
+                        calls,
+                    );
+                    let else_flow = visit(
+                        else_branch,
+                        &mut else_aliases,
+                        &mut else_bindings,
+                        children,
+                        calls,
+                    );
+                    match (then_flow, else_flow) {
+                        (StatementFlow::Continues, StatementFlow::Terminates) => {
+                            *aliases = then_aliases;
+                            *bindings = then_bindings;
+                        }
+                        (StatementFlow::Terminates, StatementFlow::Continues) => {
+                            *aliases = else_aliases;
+                            *bindings = else_bindings;
+                        }
+                        (StatementFlow::Continues, StatementFlow::Continues)
+                        | (StatementFlow::Terminates, StatementFlow::Terminates) => {
+                            *aliases = intersect_aliases(then_aliases, &else_aliases);
+                            *bindings = intersect_bindings(then_bindings, &else_bindings);
+                        }
+                    }
+                    if then_flow == StatementFlow::Terminates
+                        && else_flow == StatementFlow::Terminates
+                    {
+                        StatementFlow::Terminates
+                    } else {
+                        StatementFlow::Continues
+                    }
                 }
                 Stmt::For {
+                    var,
                     step,
                     start,
                     end,
                     body,
                     ..
                 } => {
-                    collect_expr(start, aliases, calls);
-                    collect_expr(end, aliases, calls);
+                    collect_expr(start, aliases, bindings, calls);
+                    collect_expr(end, aliases, bindings, calls);
                     if let Some(step) = step {
-                        collect_expr(step, aliases, calls);
+                        collect_expr(step, aliases, bindings, calls);
                     }
                     let mut body_aliases = aliases.clone();
-                    visit(body, &mut body_aliases, children, calls);
+                    body_aliases.remove(var);
+                    let mut body_bindings = bindings.clone();
+                    body_bindings.insert(var.clone());
+                    visit(body, &mut body_aliases, &mut body_bindings, children, calls);
+                    StatementFlow::Continues
                 }
                 Stmt::While { cond, body, .. } => {
-                    collect_expr(cond, aliases, calls);
+                    collect_expr(cond, aliases, bindings, calls);
                     let mut body_aliases = aliases.clone();
-                    visit(body, &mut body_aliases, children, calls);
+                    let mut body_bindings = bindings.clone();
+                    visit(body, &mut body_aliases, &mut body_bindings, children, calls);
+                    StatementFlow::Continues
                 }
-                Stmt::Break { .. } | Stmt::Continue { .. } => {}
+                Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
+            };
+            if flow == StatementFlow::Terminates {
+                return flow;
             }
         }
+        StatementFlow::Continues
     }
 
     let mut calls = Vec::new();
     let mut aliases = initial_aliases.clone();
-    visit(stmts, &mut aliases, children, &mut calls);
+    let mut bindings = initial_bindings.clone();
+    visit(stmts, &mut aliases, &mut bindings, children, &mut calls);
     calls
 }
 
@@ -1003,13 +1077,21 @@ fn source_callables<'a>(owner: &'a DelegateOwner<'a>) -> Vec<SourceCallable<'a>>
         kind: SourceCallableKind::Def,
         loc: def.loc,
         body: &def.body,
+        value_bindings: def.params.iter().map(|param| param.name.clone()).collect(),
     }));
-    callables.extend(owner.events.iter().map(|event| SourceCallable {
-        label: format!("event {}", event.name),
-        name: Some(event.name.as_str()),
-        kind: SourceCallableKind::Event,
-        loc: event.loc,
-        body: &event.body,
+    callables.extend(owner.events.iter().map(|event| {
+        SourceCallable {
+            label: format!("event {}", event.name),
+            name: Some(event.name.as_str()),
+            kind: SourceCallableKind::Event,
+            loc: event.loc,
+            body: &event.body,
+            value_bindings: event
+                .params
+                .iter()
+                .map(|param| param.name.clone())
+                .collect(),
+        }
     }));
     callables.extend(owner.delegates.iter().map(|delegate| SourceCallable {
         label: format!("delegate {}", delegate.name),
@@ -1017,20 +1099,23 @@ fn source_callables<'a>(owner: &'a DelegateOwner<'a>) -> Vec<SourceCallable<'a>>
         kind: SourceCallableKind::Delegate,
         loc: delegate.loc,
         body: &[],
+        value_bindings: HashSet::new(),
     }));
-    callables.extend(
-        owner
-            .whens
-            .iter()
-            .enumerate()
-            .map(|(ordinal, when)| SourceCallable {
-                label: format!("{} #{}", when_target_label(when), ordinal + 1),
-                name: None,
-                kind: SourceCallableKind::When,
-                loc: when.loc,
-                body: &when.body,
-            }),
-    );
+    callables.extend(owner.whens.iter().enumerate().map(|(ordinal, when)| {
+        SourceCallable {
+            label: format!("{} #{}", when_target_label(when), ordinal + 1),
+            name: None,
+            kind: SourceCallableKind::When,
+            loc: when.loc,
+            body: &when.body,
+            value_bindings: when
+                .bindings
+                .iter()
+                .filter(|binding| binding.name != "_")
+                .map(|binding| binding.name.clone())
+                .collect(),
+        }
+    }));
     callables
 }
 
@@ -1279,6 +1364,7 @@ fn child_delegate_targets<'a>(
             kind: SourceCallableKind::Delegate,
             loc: call.loc,
             body: &[],
+            value_bindings: HashSet::new(),
         });
         edges.push(
             owner
@@ -1312,6 +1398,9 @@ fn source_call_targets<'a>(
     expansion_cache: &mut HashMap<DefExpansionKey, Vec<usize>>,
     expanding_defs: &mut HashSet<DefExpansionKey>,
 ) -> Vec<usize> {
+    if call.local_is_bound {
+        return Vec::new();
+    }
     if let Some(receiver) = child_step_receiver(call, aliases, children) {
         let Some(child) = children.get(&receiver.receiver) else {
             return Vec::new();
@@ -1350,8 +1439,9 @@ fn source_call_targets<'a>(
             return targets;
         }
         let mut expanded = Vec::new();
+        let bindings = def.params.iter().map(|param| param.name.clone()).collect();
         for (nested, nested_aliases) in
-            collect_source_calls_with_aliases(&def.body, &bound, children)
+            collect_source_calls_with_aliases(&def.body, &bound, &bindings, children)
         {
             expanded.extend(source_call_targets(
                 &nested,
@@ -1414,7 +1504,14 @@ fn owner_dispatch_graph<'a>(
         .collect::<HashMap<_, _>>();
     let base_calls = callables
         .iter()
-        .map(|callable| collect_source_calls_with_aliases(callable.body, &HashMap::new(), children))
+        .map(|callable| {
+            collect_source_calls_with_aliases(
+                callable.body,
+                &HashMap::new(),
+                &callable.value_bindings,
+                children,
+            )
+        })
         .collect::<Vec<_>>();
     let base_len = callables.len();
     let mut edges = vec![Vec::new(); base_len];
@@ -1453,7 +1550,8 @@ fn owner_dispatch_graph<'a>(
     }
 
     let mut init_roots = Vec::new();
-    for (call, aliases) in collect_source_calls_with_aliases(owner.init, &HashMap::new(), children)
+    for (call, aliases) in
+        collect_source_calls_with_aliases(owner.init, &HashMap::new(), &HashSet::new(), children)
     {
         init_roots.extend(source_call_targets(
             &call,
@@ -1474,7 +1572,7 @@ fn owner_dispatch_graph<'a>(
     for scope in &owner.executable_scopes {
         for body in [scope.block_pre, scope.sample, scope.block_post] {
             for (call, aliases) in
-                collect_source_calls_with_aliases(body, &HashMap::new(), children)
+                collect_source_calls_with_aliases(body, &HashMap::new(), &HashSet::new(), children)
             {
                 executable_roots.extend(source_call_targets(
                     &call,
@@ -1496,9 +1594,12 @@ fn owner_dispatch_graph<'a>(
     let mut task_roots = HashMap::new();
     for task in &owner.tasks {
         let mut roots = Vec::new();
-        for (call, aliases) in
-            collect_source_calls_with_aliases(&task.body, &HashMap::new(), children)
-        {
+        for (call, aliases) in collect_source_calls_with_aliases(
+            &task.body,
+            &HashMap::new(),
+            &HashSet::new(),
+            children,
+        ) {
             roots.extend(source_call_targets(
                 &call,
                 owner,
@@ -1842,7 +1943,9 @@ fn validate_qualified_delegate_calls(
     proc_delegates: &HashMap<String, HashSet<String>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    for (call, aliases) in collect_source_calls_with_aliases(body, &HashMap::new(), children) {
+    for (call, aliases) in
+        collect_source_calls_with_aliases(body, &HashMap::new(), &HashSet::new(), children)
+    {
         let Some((receiver, member, _)) = call.qualified_target() else {
             continue;
         };
@@ -2117,6 +2220,7 @@ fn rewrite_delegate_validation_stmts(
     env: &mut crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
     let mut ignored_errors = Vec::new();
     crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
@@ -2124,7 +2228,7 @@ fn rewrite_delegate_validation_stmts(
         env,
         crate::def_semantics::CallTypeContext {
             return_types,
-            struct_defs: &HashMap::new(),
+            struct_defs,
         },
         crate::def_semantics::OverloadOwnerContext {
             defer_dependent_calls: true,
@@ -2139,6 +2243,7 @@ fn rewrite_delegate_validation_function(
     env: &crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
     let mut ignored_errors = Vec::new();
     crate::def_semantics::rewrite_overloaded_calls_in_function(
@@ -2146,7 +2251,7 @@ fn rewrite_delegate_validation_function(
         env,
         crate::def_semantics::CallTypeContext {
             return_types,
-            struct_defs: &HashMap::new(),
+            struct_defs,
         },
         crate::def_semantics::OverloadOwnerContext {
             defer_dependent_calls: true,
@@ -2159,6 +2264,7 @@ fn rewrite_delegate_validation_function(
 fn delegate_validation_return_types(
     defs: &[FunctionDef],
     env: &crate::def_semantics::CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> HashMap<String, ReturnType> {
     let signatures = defs
         .iter()
@@ -2168,7 +2274,7 @@ fn delegate_validation_return_types(
         defs,
         &signatures,
         env,
-        &HashMap::new(),
+        struct_defs,
         &HashMap::new(),
     )
 }
@@ -2178,12 +2284,19 @@ fn rewrite_delegate_validation_event(
     state_env: &crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
     let mut env = state_env.clone();
     for param in &event.params {
         env.bind_function_param(&crate::event_param_as_fn_param(param), &[]);
     }
-    rewrite_delegate_validation_stmts(&mut event.body, &mut env, overloads, return_types);
+    rewrite_delegate_validation_stmts(
+        &mut event.body,
+        &mut env,
+        overloads,
+        return_types,
+        struct_defs,
+    );
 }
 
 fn rewrite_delegate_validation_task(
@@ -2191,9 +2304,16 @@ fn rewrite_delegate_validation_task(
     state_env: &crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
     let mut env = state_env.clone();
-    rewrite_delegate_validation_stmts(&mut task.body, &mut env, overloads, return_types);
+    rewrite_delegate_validation_stmts(
+        &mut task.body,
+        &mut env,
+        overloads,
+        return_types,
+        struct_defs,
+    );
 }
 
 fn rewrite_delegate_validation_when(
@@ -2203,6 +2323,7 @@ fn rewrite_delegate_validation_when(
     state_env: &crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
     let mut env = state_env.clone();
     let mut bindings = when.bindings.iter();
@@ -2221,14 +2342,56 @@ fn rewrite_delegate_validation_when(
             env.bind_function_param_type(&binding.name, param.ty.as_ref(), &[]);
         }
     }
-    rewrite_delegate_validation_stmts(&mut when.body, &mut env, overloads, return_types);
+    rewrite_delegate_validation_stmts(
+        &mut when.body,
+        &mut env,
+        overloads,
+        return_types,
+        struct_defs,
+    );
+}
+
+fn bind_delegate_validation_buffers(
+    env: &mut crate::def_semantics::CallTypeEnv,
+    buffers: &[BufferDecl],
+    options: AnalysisOptions,
+) {
+    let mut ignored_errors = Vec::new();
+    for buffer in crate::declaration_coercion::coerce_buffers(buffers, options, &mut ignored_errors)
+    {
+        env.buffer_types.insert(
+            buffer.name.clone(),
+            (buffer.elem_ty, buffer.channels.clone()),
+        );
+        if buffer.is_array {
+            env.buffer_array_lens.insert(buffer.name, buffer.array_len);
+        }
+    }
 }
 
 /// Delegate validation runs before the main overload pass because delegates
 /// are desugared into ordinary functions. Resolve the calls on a validation
 /// clone so the dispatch graph observes concrete overload identities without
 /// changing the source program or duplicating overload-selection rules.
-fn resolve_delegate_validation_overloads(program: &mut Program) {
+fn resolve_delegate_validation_overloads(program: &mut Program, options: AnalysisOptions) {
+    let raw_struct_defs = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Struct(def) => Some((def.name.clone(), def.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let struct_defs =
+        crate::declaration_coercion::coerce_struct_defs_for_inference(&raw_struct_defs, options);
+    let top_buffers = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Buffers(buffers) => Some(buffers.decls.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
     let proc_delegate_defs = program
         .blocks
         .iter()
@@ -2272,7 +2435,9 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
     let (top_overloads, _) = crate::def_semantics::prepare_function_overloads(&mut top_defs);
 
     let mut top_state_env = crate::def_semantics::CallTypeEnv::default();
-    let provisional_return_types = delegate_validation_return_types(&top_defs, &top_state_env);
+    bind_delegate_validation_buffers(&mut top_state_env, &top_buffers, options);
+    let provisional_return_types =
+        delegate_validation_return_types(&top_defs, &top_state_env, &struct_defs);
     if let Some(Block::Init(init)) = program
         .blocks
         .iter_mut()
@@ -2283,15 +2448,18 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
             &mut top_state_env,
             &top_overloads,
             &provisional_return_types,
+            &struct_defs,
         );
     }
-    let top_return_types = delegate_validation_return_types(&top_defs, &top_state_env);
+    let top_return_types =
+        delegate_validation_return_types(&top_defs, &top_state_env, &struct_defs);
     for def in &mut top_defs {
         rewrite_delegate_validation_function(
             def,
             &top_state_env,
             &top_overloads,
             &top_return_types,
+            &struct_defs,
         );
     }
     for (index, def) in top_def_indices.into_iter().zip(top_defs) {
@@ -2315,6 +2483,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
                         &top_state_env,
                         &top_overloads,
                         &top_return_types,
+                        &struct_defs,
                     );
                 }
             }
@@ -2325,6 +2494,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
                         &top_state_env,
                         &top_overloads,
                         &top_return_types,
+                        &struct_defs,
                     );
                 }
             }
@@ -2347,6 +2517,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
                     &top_state_env,
                     &top_overloads,
                     &top_return_types,
+                    &struct_defs,
                 );
             }
             Block::Sample(sample) => {
@@ -2356,6 +2527,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
                     &mut env,
                     &top_overloads,
                     &top_return_types,
+                    &struct_defs,
                 );
             }
             Block::Block(exec) => {
@@ -2373,6 +2545,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
                         &mut env,
                         &top_overloads,
                         &top_return_types,
+                        &struct_defs,
                     );
                 }
             }
@@ -2399,27 +2572,48 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
         overloads.extend(local_overloads);
 
         let mut state_env = crate::def_semantics::CallTypeEnv::default();
+        bind_delegate_validation_buffers(&mut state_env, &proc.buffers, options);
         let provisional_return_types =
-            delegate_validation_return_types(&proc.local_defs, &state_env);
+            delegate_validation_return_types(&proc.local_defs, &state_env, &struct_defs);
         rewrite_delegate_validation_stmts(
             &mut proc.init.body,
             &mut state_env,
             &overloads,
             &provisional_return_types,
+            &struct_defs,
         );
         let mut return_types = top_return_types.clone();
         return_types.extend(delegate_validation_return_types(
             &proc.local_defs,
             &state_env,
+            &struct_defs,
         ));
         for def in &mut proc.local_defs {
-            rewrite_delegate_validation_function(def, &state_env, &overloads, &return_types);
+            rewrite_delegate_validation_function(
+                def,
+                &state_env,
+                &overloads,
+                &return_types,
+                &struct_defs,
+            );
         }
         for event in &mut proc.events {
-            rewrite_delegate_validation_event(event, &state_env, &overloads, &return_types);
+            rewrite_delegate_validation_event(
+                event,
+                &state_env,
+                &overloads,
+                &return_types,
+                &struct_defs,
+            );
         }
         for task in &mut proc.tasks {
-            rewrite_delegate_validation_task(task, &state_env, &overloads, &return_types);
+            rewrite_delegate_validation_task(
+                task,
+                &state_env,
+                &overloads,
+                &return_types,
+                &struct_defs,
+            );
         }
         let children = child_proc_instances(&proc.init.body, &proc_names);
         for when in &mut proc.whens {
@@ -2442,6 +2636,7 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
                 &state_env,
                 &overloads,
                 &return_types,
+                &struct_defs,
             );
         }
         for body in [
@@ -2450,7 +2645,13 @@ fn resolve_delegate_validation_overloads(program: &mut Program) {
             proc.block_post.as_mut_slice(),
         ] {
             let mut env = state_env.clone();
-            rewrite_delegate_validation_stmts(body, &mut env, &overloads, &return_types);
+            rewrite_delegate_validation_stmts(
+                body,
+                &mut env,
+                &overloads,
+                &return_types,
+                &struct_defs,
+            );
         }
     }
 }
@@ -2490,7 +2691,7 @@ pub(super) fn validate_delegate_source_model(
     validate_delegate_member_names(program, errors);
     let resolved_program = delegate_validation_has_overloads(program).then(|| {
         let mut resolved = program.clone();
-        resolve_delegate_validation_overloads(&mut resolved);
+        resolve_delegate_validation_overloads(&mut resolved, options);
         resolved
     });
     let program = resolved_program.as_ref().unwrap_or(program);

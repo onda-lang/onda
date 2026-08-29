@@ -2,7 +2,7 @@
   "format": "onda-processor",
   "format_version": 5,
   "artifact_kind": "webassembly_module",
-  "abi_version": 9,
+  "abi_version": 10,
   "backend": "conformance-fixture",
   "mir_schema_version": 8,
   "target": {
@@ -48,8 +48,8 @@
     "snapshot_byte_order": "little_endian",
     "snapshot_restore_base": "post_init_physical_state_image",
     "requires_full_blocks": false,
-    "delegate_record_header_size_bytes": 8,
-    "print_record_header_size_bytes": 8
+    "delegate_record_header_size_bytes": 12,
+    "print_record_header_size_bytes": 12
   },
   "metadata": {
     "source_files": [],

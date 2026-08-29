@@ -32,7 +32,8 @@ validate the same checked-in conformance fixture.
 The package exports `DELEGATE_RECORD_HEADER_SIZE_BYTES`, `DELEGATE_BATCH_SIZE_BYTES`,
 `writeDelegateBatch()`, `readDelegateBatch()`, and `decodeDelegateRecords()` for allocation-free
 call-scoped delegate collection. Descriptor entries expose exact fixed payload sizes or dynamic
-minimum sizes. A complete fixed record occupies the eight-byte header plus its payload; no exact
+minimum sizes. A complete fixed record occupies the twelve-byte header (index, payload size, and
+call-local output sequence) plus its payload; no exact
 whole-call capacity exists because occurrence counts and slice lengths may be runtime-dependent.
 
 ```js

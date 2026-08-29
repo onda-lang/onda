@@ -156,6 +156,10 @@ configured capacity; `transportDropCount` separately reports records discarded b
 worklet-to-main queue. Internal Onda `when` handlers still run in either case. See the internal
 [delegate host integration](../../docs/delegates.md) reference for sizing and lifecycle details.
 
+When print and delegate listeners are both active, the adapter invokes them in authored order for
+each init, event, or process segment. It may split one stream's batch around an occurrence from the
+other stream; ordering intentionally does not span separate generated calls.
+
 ## Real-time behavior
 
 `createOndaAudioProcessor` compiles the processor's `WebAssembly.Module` concurrently with worklet

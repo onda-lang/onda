@@ -2108,15 +2108,15 @@ sample:
         );
         let instance = InstanceHandle(instance);
 
-        assert_eq!(ONDA_DELEGATE_RECORD_HEADER_SIZE, 8);
+        assert_eq!(ONDA_DELEGATE_RECORD_HEADER_SIZE, 12);
         assert_eq!(onda_delegate_payload_bytes(program.0, 0), 4);
         assert_eq!(onda_delegate_payload_min_bytes(program.0, 0), 4);
-        assert_eq!(onda_delegate_record_bytes(program.0, 0), 12);
-        assert_eq!(onda_delegate_record_min_bytes(program.0, 0), 12);
+        assert_eq!(onda_delegate_record_bytes(program.0, 0), 16);
+        assert_eq!(onda_delegate_record_min_bytes(program.0, 0), 16);
         assert_eq!(onda_delegate_payload_bytes(program.0, 1), -1);
         assert_eq!(onda_delegate_payload_min_bytes(program.0, 1), 4);
         assert_eq!(onda_delegate_record_bytes(program.0, 1), -1);
-        assert_eq!(onda_delegate_record_min_bytes(program.0, 1), 12);
+        assert_eq!(onda_delegate_record_min_bytes(program.0, 1), 16);
         assert_eq!(onda_delegate_record_bytes(program.0, 2), -1);
 
         let mut output = vec![0.0_f32; frames as usize];
@@ -2155,12 +2155,13 @@ sample:
         );
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (12, 1, 0)
+            (16, 1, 0)
         );
 
         let mut occurrence = onda_delegate_occurrence_t {
             delegate_index: 0,
             payload_size_bytes: 0,
+            sequence: 0,
             payload: std::ptr::null(),
         };
         assert_eq!(
@@ -2169,6 +2170,7 @@ sample:
         );
         assert_eq!(occurrence.delegate_index, 0);
         assert_eq!(occurrence.payload_size_bytes, 4);
+        assert_eq!(occurrence.sequence, 0);
         assert_eq!(
             std::ptr::read_unaligned(occurrence.payload.cast::<i32>()),
             17

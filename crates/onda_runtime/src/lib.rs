@@ -9,13 +9,14 @@ use std::marker::PhantomData;
 
 pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 
-/// Bytes occupied by the delegate index and payload-length header of each packed occurrence.
-pub const DELEGATE_RECORD_HEADER_SIZE: usize = 8;
+/// Bytes occupied by the delegate index, payload length, and sequence header of each occurrence.
+pub const DELEGATE_RECORD_HEADER_SIZE: usize = 12;
 
 /// A non-owning decoded view into one occurrence in a [`DelegateBatch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DelegateOccurrence<'batch> {
     pub delegate_index: u32,
+    pub sequence: u32,
     pub payload: &'batch [u8],
 }
 
@@ -37,13 +38,15 @@ impl<'batch> Iterator for DelegateOccurrences<'batch> {
         let header_end = self.cursor.checked_add(DELEGATE_RECORD_HEADER_SIZE)?;
         let header = self.storage.get(self.cursor..header_end)?;
         let delegate_index = u32::from_ne_bytes(header[..4].try_into().ok()?);
-        let payload_bytes = u32::from_ne_bytes(header[4..].try_into().ok()?) as usize;
+        let payload_bytes = u32::from_ne_bytes(header[4..8].try_into().ok()?) as usize;
+        let sequence = u32::from_ne_bytes(header[8..12].try_into().ok()?);
         let record_end = header_end.checked_add(payload_bytes)?;
         let payload = self.storage.get(header_end..record_end)?;
         self.cursor = record_end;
         self.remaining -= 1;
         Some(DelegateOccurrence {
             delegate_index,
+            sequence,
             payload,
         })
     }
@@ -74,11 +77,12 @@ pub struct DelegateBatch<'storage> {
     _storage: PhantomData<&'storage mut [u8]>,
 }
 
-pub const PRINT_RECORD_HEADER_SIZE: usize = 8;
+pub const PRINT_RECORD_HEADER_SIZE: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrintOccurrence<'batch> {
     pub site_index: u32,
+    pub sequence: u32,
     pub payload: &'batch [u8],
 }
 
@@ -99,13 +103,15 @@ impl<'batch> Iterator for PrintOccurrences<'batch> {
         let header_end = self.cursor.checked_add(PRINT_RECORD_HEADER_SIZE)?;
         let header = self.storage.get(self.cursor..header_end)?;
         let site_index = u32::from_ne_bytes(header[..4].try_into().ok()?);
-        let payload_bytes = u32::from_ne_bytes(header[4..].try_into().ok()?) as usize;
+        let payload_bytes = u32::from_ne_bytes(header[4..8].try_into().ok()?) as usize;
+        let sequence = u32::from_ne_bytes(header[8..12].try_into().ok()?);
         let record_end = header_end.checked_add(payload_bytes)?;
         let payload = self.storage.get(header_end..record_end)?;
         self.cursor = record_end;
         self.remaining -= 1;
         Some(PrintOccurrence {
             site_index,
+            sequence,
             payload,
         })
     }
@@ -213,7 +219,7 @@ impl<'storage> PrintBatch<'storage> {
                 return false;
             };
             let payload_bytes = u32::from_ne_bytes(
-                header[4..]
+                header[4..8]
                     .try_into()
                     .expect("print record header has a four-byte payload size"),
             ) as usize;
@@ -355,6 +361,7 @@ fn with_processor_execution_output<T>(
         print_batch: output.print_batch.map_or(std::ptr::null_mut(), |batch| {
             (batch as *mut PrintBatch<'_>).cast::<onda_processor_abi::PrintBatch>()
         }),
+        next_sequence: 0,
     };
     if processor_output.delegate_batch.is_null() && processor_output.print_batch.is_null() {
         f(None)
@@ -375,6 +382,7 @@ pub enum PrintValue {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodedPrintOccurrence<'program> {
     pub site_index: u32,
+    pub sequence: u32,
     pub site: &'program onda_mir::LogSite,
     pub values: Vec<PrintValue>,
 }
@@ -813,6 +821,7 @@ pub fn decode_print_batch_for_program<'program>(
         }
         decoded.push(DecodedPrintOccurrence {
             site_index: occurrence.site_index,
+            sequence: occurrence.sequence,
             site,
             values,
         });
@@ -2650,28 +2659,32 @@ sample:
 
     #[test]
     fn delegate_batch_iterates_complete_native_records_without_allocation() {
-        let mut storage = [0_u8; 21];
+        let mut storage = [0_u8; 29];
         storage[0..4].copy_from_slice(&2_u32.to_ne_bytes());
         storage[4..8].copy_from_slice(&4_u32.to_ne_bytes());
-        storage[8..12].copy_from_slice(&17_i32.to_ne_bytes());
-        storage[12..16].copy_from_slice(&5_u32.to_ne_bytes());
-        storage[16..20].copy_from_slice(&1_u32.to_ne_bytes());
-        storage[20] = 1;
+        storage[8..12].copy_from_slice(&7_u32.to_ne_bytes());
+        storage[12..16].copy_from_slice(&17_i32.to_ne_bytes());
+        storage[16..20].copy_from_slice(&5_u32.to_ne_bytes());
+        storage[20..24].copy_from_slice(&1_u32.to_ne_bytes());
+        storage[24..28].copy_from_slice(&9_u32.to_ne_bytes());
+        storage[28] = 1;
 
         let mut batch = DelegateBatch::from_storage(&mut storage);
-        batch.used_bytes = 21;
+        batch.used_bytes = 29;
         batch.record_count = 2;
         batch.overflow_count = 3;
 
         let occurrences = batch.occurrences().collect::<Vec<_>>();
         assert_eq!(occurrences.len(), 2);
         assert_eq!(occurrences[0].delegate_index, 2);
+        assert_eq!(occurrences[0].sequence, 7);
         assert_eq!(occurrences[0].payload, 17_i32.to_ne_bytes());
         assert_eq!(occurrences[1].delegate_index, 5);
+        assert_eq!(occurrences[1].sequence, 9);
         assert_eq!(occurrences[1].payload, [1]);
         assert_eq!(batch.occurrence(1), Some(occurrences[1]));
         assert_eq!(batch.occurrence(2), None);
-        assert_eq!(batch.capacity_bytes(), 21);
+        assert_eq!(batch.capacity_bytes(), 29);
         assert_eq!(batch.overflow_count, 3);
     }
 
@@ -2693,12 +2706,12 @@ sample:
         assert_eq!(instance.delegate_index("dynamic"), Some(1));
         assert_eq!(instance.delegate_payload_bytes(0), Some(4));
         assert_eq!(instance.delegate_payload_min_bytes(0), Some(4));
-        assert_eq!(instance.delegate_record_bytes(0), Some(12));
-        assert_eq!(instance.delegate_record_min_bytes(0), Some(12));
+        assert_eq!(instance.delegate_record_bytes(0), Some(16));
+        assert_eq!(instance.delegate_record_min_bytes(0), Some(16));
         assert_eq!(instance.delegate_payload_bytes(1), None);
         assert_eq!(instance.delegate_payload_min_bytes(1), Some(4));
         assert_eq!(instance.delegate_record_bytes(1), None);
-        assert_eq!(instance.delegate_record_min_bytes(1), Some(12));
+        assert_eq!(instance.delegate_record_min_bytes(1), Some(16));
         assert!(instance.delegate_descriptor(2).is_none());
     }
 

@@ -6,6 +6,7 @@ import * as backend from "../src/index.js";
 import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
 import {
   formatPrintBatch,
+  writeDelegateBatch,
   writeExecutionOutput,
   writePrintBatch,
 } from "@onda-lang/processor-abi";
@@ -2272,7 +2273,7 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
   );
   const artifact = compileMir(mir, { optimize: false });
   assert.equal(artifact.metadata.metadata.delegates[0].name, "tick");
-  assert.equal(artifact.metadata.runtime.delegate_record_header_size_bytes, 8);
+  assert.equal(artifact.metadata.runtime.delegate_record_header_size_bytes, 12);
 
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
@@ -2288,14 +2289,15 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
   const batch = heap;
   heap += 20;
   const executionOutput = heap;
-  heap += 8;
+  heap += 12;
   const storage = heap;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
   view.setUint32(batch, storage, true);
-  view.setUint32(batch + 4, 12, true);
+  view.setUint32(batch + 4, 16, true);
   view.setUint32(executionOutput, batch, true);
   view.setUint32(executionOutput + 4, 0, true);
+  view.setUint32(executionOutput + 8, 0, true);
   assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(
     callProcess(
@@ -2315,12 +2317,13 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
     ),
     0,
   );
-  assert.equal(view.getUint32(batch + 8, true), 12);
+  assert.equal(view.getUint32(batch + 8, true), 16);
   assert.equal(view.getUint32(batch + 12, true), 1);
   assert.equal(view.getUint32(batch + 16, true), 0);
   assert.equal(view.getUint32(storage, true), 0);
   assert.equal(view.getUint32(storage + 4, true), 4);
-  assert.equal(view.getInt32(storage + 8, true), 42);
+  assert.equal(view.getUint32(storage + 8, true), 0);
+  assert.equal(view.getInt32(storage + 12, true), 42);
 });
 
 test("fails safely before copying a short fixed-array delegate payload", async () => {
@@ -2369,7 +2372,7 @@ test("fails safely before copying a short fixed-array delegate payload", async (
   const batch = heap;
   heap += 20;
   const executionOutput = heap;
-  heap += 8;
+  heap += 12;
   const storage = heap;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, storage + 32, true);
@@ -2377,6 +2380,7 @@ test("fails safely before copying a short fixed-array delegate payload", async (
   view.setUint32(batch + 4, 16, true);
   view.setUint32(executionOutput, batch, true);
   view.setUint32(executionOutput + 4, 0, true);
+  view.setUint32(executionOutput + 8, 0, true);
 
   assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(
@@ -2424,6 +2428,10 @@ test("fails safely before copying a short fixed-array delegate payload", async (
 
 test("publishes init and process print records through execution output", async () => {
   const mir = executableMir();
+  mir.interface.delegates.push({
+    name: "middle",
+    params: [{ name: "value", ty: 2 }],
+  });
   mir.source_files.push({ path: "main.onda" });
   mir.log_sites.push(
     {
@@ -2447,13 +2455,19 @@ test("publishes init and process print records through execution output", async 
     site: 0,
     arguments: [constant("i32", 7)],
   }));
-  mir.functions[1].body.statements.unshift(statement("publish_log", {
-    site: 1,
-    arguments: [constant("f32", 1.25), constant("bool", true)],
-  }));
+  mir.functions[1].body.statements.unshift(
+    statement("publish_log", {
+      site: 1,
+      arguments: [constant("f32", 1.25), constant("bool", true)],
+    }),
+    statement("publish_delegate", {
+      delegate: 0,
+      args: [{ kind: "value", data: constant("i32", 9) }],
+    }),
+  );
 
   const artifact = compileMir(mir, { optimize: false });
-  assert.equal(artifact.metadata.runtime.print_record_header_size_bytes, 8);
+  assert.equal(artifact.metadata.runtime.print_record_header_size_bytes, 12);
   assert.equal(artifact.metadata.metadata.log_sites[1].lexical_owner, "program");
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
@@ -2468,15 +2482,19 @@ test("publishes init and process print records through execution output", async 
   const state = allocate(Math.max(artifact.metadata.runtime.state_size_bytes, 1), 16);
   const batch = allocate(20);
   const storage = allocate(64, 8);
-  const output = allocate(8);
+  const delegateBatch = allocate(20);
+  const delegateStorage = allocate(16, 8);
+  const output = allocate(12);
   writePrintBatch(memory, batch, storage, 64);
-  writeExecutionOutput(memory, output, 0, batch);
+  writeDelegateBatch(memory, delegateBatch, delegateStorage, 16);
+  writeExecutionOutput(memory, output, delegateBatch, batch);
 
   assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, output), 0);
   assert.deepEqual(formatPrintBatch(memory, batch, artifact.metadata), {
     text: "boot\\n: 7\n",
     entries: [{
       siteIndex: 0,
+      sequence: 0,
       label: "boot\n",
       source: artifact.metadata.metadata.log_sites[0].source,
       lexicalOwner: "program",
@@ -2490,6 +2508,11 @@ test("publishes init and process print records through execution output", async 
     0,
   );
   assert.equal(formatPrintBatch(memory, batch, artifact.metadata).text, "frame: 1.25 true\n");
+  const view = new DataView(memory.buffer);
+  assert.equal(view.getUint32(storage + 8, true), 0);
+  assert.equal(view.getUint32(delegateBatch + 12, true), 1);
+  assert.equal(view.getUint32(delegateStorage + 8, true), 1);
+  assert.equal(view.getInt32(delegateStorage + 12, true), 9);
 });
 
 test("stores control outputs in their state-backed ABI slots", async () => {
