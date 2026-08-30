@@ -168,6 +168,11 @@ struct BufferBuiltinMethod {
 
 const BUFFER_BUILTIN_METHODS: &[BufferBuiltinMethod] = &[
     BufferBuiltinMethod {
+        name: "bound",
+        signature: "()",
+        snippet: "bound()",
+    },
+    BufferBuiltinMethod {
         name: "len",
         signature: "()",
         snippet: "len()",
@@ -5624,6 +5629,7 @@ sample:
         let member_labels = labels(items.clone());
 
         for expected in [
+            "bound",
             "len",
             "chans",
             "samplerate",
@@ -5668,6 +5674,7 @@ sample:
             .filter_map(|item| item["label"].as_str())
             .collect::<BTreeSet<_>>();
         assert!(encoded_labels.contains("samplerate"));
+        assert!(encoded_labels.contains("bound"));
         assert!(encoded_labels.contains("readL"));
     }
 
@@ -5687,11 +5694,13 @@ proc Player:
         let param_index = index_at(source, "buf[0]", "buf".len());
         let param_labels = labels(param_index.member_items("buf", ""));
         assert!(param_labels.iter().any(|label| label == "samplerate"));
+        assert!(param_labels.iter().any(|label| label == "bound"));
         assert!(param_labels.iter().any(|label| label == "readL"));
 
         let proc_index = index_at(source, "clip.read", "clip".len());
         let proc_labels = labels(proc_index.member_items("clip", ""));
         assert!(proc_labels.iter().any(|label| label == "samplerate"));
+        assert!(proc_labels.iter().any(|label| label == "bound"));
         assert!(proc_labels.iter().any(|label| label == "read"));
     }
 
@@ -5800,6 +5809,7 @@ sample:
         }
 
         let selected_labels = labels(index.member_items("selected", ""));
+        assert!(selected_labels.iter().any(|label| label == "bound"));
         assert!(selected_labels
             .iter()
             .any(|label| label == ARRAY_LEN_METHOD));

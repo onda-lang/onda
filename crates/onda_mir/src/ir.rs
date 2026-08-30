@@ -733,9 +733,11 @@ pub enum Rvalue {
     BufferLen(BufferRef),
     BufferChannels(BufferRef),
     BufferSampleRate(BufferRef),
+    BufferIsBound(BufferRef),
     BufferParamLen(BufferParamRef),
     BufferParamChannels(BufferParamRef),
     BufferParamSampleRate(BufferParamRef),
+    BufferParamIsBound(BufferParamRef),
     ConstDataLoad {
         data: ConstDataId,
         index: Value,

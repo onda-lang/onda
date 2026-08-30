@@ -356,13 +356,14 @@ unsafe fn lower_type_recursive(
                 LLVMInt32TypeInContext(context),
                 LLVMInt32TypeInContext(context),
                 LLVMFloatTypeInContext(context),
+                LLVMInt1TypeInContext(context),
             ];
             LLVMStructTypeInContext(context, fields.as_mut_ptr(), fields.len() as u32, 0)
         }
         Type::BufferSpan { .. } => {
             let i8_ty = LLVMInt8TypeInContext(context);
             let pointer = LLVMPointerType(i8_ty, 0);
-            let mut fields = [pointer; 5];
+            let mut fields = [pointer; 6];
             LLVMStructTypeInContext(context, fields.as_mut_ptr(), fields.len() as u32, 0)
         }
         unsupported => {
@@ -1371,7 +1372,7 @@ unsafe fn emit_function_body(
             event_parameters: Vec::new(),
             loop_stack: Vec::new(),
             fused_clamped_indices: fused_clamped_index_sources(module.program, function),
-            direct_buffer_fields: vec![[None; 5]; module.program.interface.buffers.len()],
+            direct_buffer_fields: vec![[None; 6]; module.program.interface.buffers.len()],
             fallback_buffer_read,
             fallback_buffer_write,
         };
@@ -1445,7 +1446,7 @@ struct FunctionEmitter<'a, 'm> {
     event_parameters: Vec<PlaceRef>,
     loop_stack: Vec<(LLVMBasicBlockRef, LLVMBasicBlockRef)>,
     fused_clamped_indices: Vec<Option<FusedClampedIndex>>,
-    direct_buffer_fields: Vec<[Option<LLVMValueRef>; 5]>,
+    direct_buffer_fields: Vec<[Option<LLVMValueRef>; 6]>,
     fallback_buffer_read: LLVMValueRef,
     fallback_buffer_write: LLVMValueRef,
 }
@@ -3073,10 +3074,11 @@ impl FunctionEmitter<'_, '_> {
         buffer: onda_mir::BufferRef,
         ty: onda_mir::TypeId,
     ) -> Result<LLVMValueRef, MirCodegenError> {
-        let (parts, sample_rate) = match buffer {
+        let (parts, sample_rate, bound) = match buffer {
             onda_mir::BufferRef::Direct(_) => (
                 self.external_buffer_parts(buffer)?,
                 self.lower_external_buffer_metadata(buffer, 4)?,
+                self.lower_external_buffer_is_bound(buffer)?,
             ),
             onda_mir::BufferRef::ArrayElement { .. } => {
                 // The selector is an arbitrary MIR value and must be evaluated
@@ -3085,6 +3087,7 @@ impl FunctionEmitter<'_, '_> {
                 (
                     self.external_buffer_parts_at(buffer, runtime_index)?,
                     self.lower_external_buffer_metadata_at(runtime_index, 4)?,
+                    self.lower_external_buffer_is_bound_at(runtime_index)?,
                 )
             }
         };
@@ -3095,6 +3098,7 @@ impl FunctionEmitter<'_, '_> {
             parts.frames,
             parts.channels,
             sample_rate,
+            bound,
         ]
         .into_iter()
         .enumerate()
@@ -3165,12 +3169,16 @@ impl FunctionEmitter<'_, '_> {
             Rvalue::BufferLen(buffer) => self.lower_external_buffer_metadata(*buffer, 2),
             Rvalue::BufferChannels(buffer) => self.lower_external_buffer_channels(*buffer),
             Rvalue::BufferSampleRate(buffer) => self.lower_external_buffer_metadata(*buffer, 4),
+            Rvalue::BufferIsBound(buffer) => self.lower_external_buffer_is_bound(*buffer),
             Rvalue::BufferParamLen(parameter) => self.lower_buffer_param_metadata(*parameter, 2),
             Rvalue::BufferParamChannels(parameter) => {
                 self.lower_buffer_param_metadata(*parameter, 3)
             }
             Rvalue::BufferParamSampleRate(parameter) => {
                 self.lower_buffer_param_metadata(*parameter, 4)
+            }
+            Rvalue::BufferParamIsBound(parameter) => {
+                self.lower_buffer_param_metadata(*parameter, 5)
             }
             Rvalue::ConstDataLoad {
                 data,
@@ -4181,6 +4189,42 @@ impl FunctionEmitter<'_, '_> {
         self.load_external_buffer_metadata_at(self.builder, index, descriptor_field)
     }
 
+    unsafe fn lower_external_buffer_is_bound(
+        &mut self,
+        buffer: onda_mir::BufferRef,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let raw = match buffer {
+            onda_mir::BufferRef::Direct(buffer) => self.snapshot_direct_buffer_field(buffer, 5)?,
+            onda_mir::BufferRef::ArrayElement { .. } => {
+                let index = self.lower_buffer_ref_index(buffer)?;
+                self.load_external_buffer_metadata_at(self.builder, index, 5)?
+            }
+        };
+        self.buffer_pointer_is_bound(self.builder, raw)
+    }
+
+    unsafe fn lower_external_buffer_is_bound_at(
+        &self,
+        index: LLVMValueRef,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let raw = self.load_external_buffer_metadata_at(self.builder, index, 5)?;
+        self.buffer_pointer_is_bound(self.builder, raw)
+    }
+
+    unsafe fn buffer_pointer_is_bound(
+        &self,
+        builder: LLVMBuilderRef,
+        pointer: LLVMValueRef,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        Ok(LLVMBuildICmp(
+            builder,
+            LLVMIntPredicate::LLVMIntNE,
+            pointer,
+            LLVMConstPointerNull(self.module.ptr_ty),
+            c_name("buffer_is_bound")?.as_ptr(),
+        ))
+    }
+
     unsafe fn load_external_buffer_metadata_at(
         &self,
         builder: LLVMBuilderRef,
@@ -4228,13 +4272,7 @@ impl FunctionEmitter<'_, '_> {
                 "buffer pointer used without fallback storage",
             ));
         }
-        let bound = LLVMBuildICmp(
-            builder,
-            LLVMIntPredicate::LLVMIntNE,
-            pointer,
-            LLVMConstPointerNull(self.module.ptr_ty),
-            c_name("buffer_is_bound")?.as_ptr(),
-        );
+        let bound = self.buffer_pointer_is_bound(builder, pointer)?;
         Ok(LLVMBuildSelect(
             builder,
             bound,
@@ -4305,6 +4343,9 @@ impl FunctionEmitter<'_, '_> {
                 11,
                 "buffer_sample_rate",
             )),
+            // Boundness is derived from the raw read-pointer table. Keeping the
+            // table in spans preserves it after selecting and forwarding entries.
+            5 => Ok((self.module.ptr_ty, 7, "buffer_bound_ptr")),
             _ => Err(MirCodegenError::invalid("invalid buffer descriptor field")),
         }
     }
@@ -4377,7 +4418,7 @@ impl FunctionEmitter<'_, '_> {
             None
         };
         let mut value = LLVMGetUndef(self.module.types.get(expected));
-        for field in 0..5 {
+        for field in 0..6 {
             let base = if let Some(source) = source_span {
                 LLVMBuildExtractValue(
                     self.builder,
@@ -4442,6 +4483,7 @@ impl FunctionEmitter<'_, '_> {
                     LLVMInt32TypeInContext(self.module.context),
                     LLVMInt32TypeInContext(self.module.context),
                     LLVMFloatTypeInContext(self.module.context),
+                    LLVMInt1TypeInContext(self.module.context),
                 ];
                 let descriptor_ty = LLVMStructTypeInContext(
                     self.module.context,
@@ -4450,7 +4492,7 @@ impl FunctionEmitter<'_, '_> {
                     0,
                 );
                 let mut descriptor = LLVMGetUndef(descriptor_ty);
-                for field in 0..5 {
+                for field in 0..6 {
                     let table = LLVMBuildExtractValue(
                         self.builder,
                         span,
@@ -4464,6 +4506,8 @@ impl FunctionEmitter<'_, '_> {
                     self.mark_external_buffer_descriptor_access(component);
                     let component = if field <= 1 {
                         self.resolve_buffer_pointer(self.builder, component, field == 1)?
+                    } else if field == 5 {
+                        self.buffer_pointer_is_bound(self.builder, component)?
                     } else {
                         component
                     };
@@ -7128,9 +7172,11 @@ fn inspect_rvalue(function_index: usize, value: &Rvalue, errors: &mut Vec<MirCod
         | Rvalue::BufferLen(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
+        | Rvalue::BufferIsBound(_)
         | Rvalue::BufferParamLen(_)
         | Rvalue::BufferParamChannels(_)
         | Rvalue::BufferParamSampleRate(_)
+        | Rvalue::BufferParamIsBound(_)
         | Rvalue::SliceLoad { .. }
         | Rvalue::SliceLen(_) => {}
         Rvalue::MakeSlice { source, .. } => {

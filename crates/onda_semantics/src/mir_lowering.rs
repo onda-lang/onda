@@ -37,12 +37,13 @@ use crate::{
     builtin_constant_value_f64, can_assign_expr_to_type, can_eval_const_expr_exact_int,
     effective_untyped_assignment_type, eval_const_expr_i64_exact, intrinsic_result_type,
     merge_inferred_return_types, merge_numeric_types, parse_array_len_instance_base,
-    parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base, resolve_call_args_at,
-    zero_expr, AggregateLayoutTable, AggregatePathComponent, AnalysisOptions, IndexAccess,
-    ProcSincStageStateFields, ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView,
-    ReturnType, TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent,
-    TypedEventParamDefault, TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction,
-    TypedNestedProcArray, TypedParamControl, TypedProgram, TypedStructField, TypedValueRange,
+    parse_buffer_bound_instance_base, parse_buffer_chans_instance_base,
+    parse_buffer_samplerate_instance_base, resolve_call_args_at, zero_expr, AggregateLayoutTable,
+    AggregatePathComponent, AnalysisOptions, IndexAccess, ProcSincStageStateFields,
+    ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType,
+    TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent, TypedEventParamDefault,
+    TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction, TypedNestedProcArray,
+    TypedParamControl, TypedProgram, TypedStructField, TypedValueRange,
 };
 
 const SINC_A1_COEFF: f64 = 0.039_151_597_734_460_045;

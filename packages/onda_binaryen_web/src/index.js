@@ -2119,7 +2119,7 @@ class MirCompiler {
         index,
         typeId,
         kind: "buffer",
-        components: ["i32", "i32", "i32", "i32", "f32"],
+        components: ["i32", "i32", "i32", "i32", "f32", "i32"],
       };
     }
     if (type.kind === "buffer_span") {
@@ -2131,7 +2131,7 @@ class MirCompiler {
         index,
         typeId,
         kind: "buffer_span",
-        components: ["i32", "i32", "i32", "i32", "i32"],
+        components: ["i32", "i32", "i32", "i32", "i32", "i32"],
       };
     }
     if (type.kind === "array") {
@@ -2160,9 +2160,9 @@ class MirCompiler {
     }
     if (layout.kind === "array") return;
     const suffixes = layout.kind === "buffer"
-      ? ["read_address", "write_address", "frames", "channels", "sample_rate"]
+      ? ["read_address", "write_address", "frames", "channels", "sample_rate", "bound"]
       : layout.kind === "buffer_span"
-        ? ["read_table", "write_table", "frames_table", "channels_table", "sample_rates_table"]
+        ? ["read_table", "write_table", "frames_table", "channels_table", "sample_rates_table", "bound_table"]
         : ["read_address", "write_address", "length", "stride"];
     for (const [offset, suffix] of suffixes.entries()) {
       binaryen.Function.setLocalName(
@@ -3742,6 +3742,10 @@ class MirCompiler {
         );
       case "buffer_param_sample_rate":
         return this.loadBufferParamComponent(data, 4, "f32", context);
+      case "buffer_is_bound":
+        return this.compileBufferIsBound(data, context);
+      case "buffer_param_is_bound":
+        return this.loadBufferParamComponent(data, 5, "i32", context);
       case "slice_len":
         return this.compileSliceValue(data, context)[2];
       case "slice_load":
@@ -4144,6 +4148,20 @@ class MirCompiler {
     );
   }
 
+  compileBufferIsBound(bufferRef, context) {
+    this.requireBufferRef(bufferRef);
+    return this.withBufferRefIndex(
+      bufferRef,
+      context,
+      binaryen.i32,
+      (index, staticIndex) => this.bufferBoundFactory(
+        index,
+        staticIndex,
+        context,
+      )(),
+    );
+  }
+
   compileBufferChannels(bufferRef, context) {
     const channels = this.bufferRefChannelMetadata(bufferRef);
     if (channels.kind === "mono") return this.module.i32.const(1);
@@ -4331,6 +4349,9 @@ class MirCompiler {
       return this.loadScalar(scalar, address);
     };
     const load = (index) => {
+      if (offset === 5) {
+        return this.module.i32.ne(rawLoad(index), this.module.i32.const(0));
+      }
       if (scalar !== "i32" || (offset !== 0 && offset !== 1)) {
         return rawLoad(index);
       }
@@ -4403,7 +4424,7 @@ class MirCompiler {
   }
 
   loadBufferParamValue(parameterId, context) {
-    const components = ["i32", "i32", "i32", "i32", "f32"];
+    const components = ["i32", "i32", "i32", "i32", "f32", "i32"];
     if (parameterId?.kind !== "array_element") {
       return components.map((scalar, offset) =>
         this.loadBufferParamComponent(parameterId, offset, scalar, context),
@@ -4494,6 +4515,7 @@ class MirCompiler {
           ? this.module.i32.const(channels.count)
           : component(POINTER_GLOBALS.bufferChannels, "i32"),
       component(POINTER_GLOBALS.bufferSampleRates, "f32"),
+      this.bufferBoundFactory(descriptorIndex, staticIndex, context)(),
     ];
     if (initializeIndex !== null) {
       values[0] = this.module.block(
@@ -4516,8 +4538,9 @@ class MirCompiler {
       POINTER_GLOBALS.bufferFrames,
       POINTER_GLOBALS.bufferChannels,
       POINTER_GLOBALS.bufferSampleRates,
+      POINTER_GLOBALS.buffers,
     ];
-    const tableScalars = ["i32", "i32", "i32", "i32", "f32"];
+    const tableScalars = ["i32", "i32", "i32", "i32", "f32", "i32"];
     let tables;
     let start;
     if (spanRef.kind === "interface") {
@@ -4619,6 +4642,31 @@ class MirCompiler {
       );
     }
     return () => this.module.local.get(local, this.wasmType(scalar));
+  }
+
+  bufferBoundFactory(descriptorIndex, staticIndex, context) {
+    const load = () => this.module.i32.ne(
+      this.loadBufferTableValueAt(
+        POINTER_GLOBALS.buffers,
+        descriptorIndex(),
+        "i32",
+      ),
+      this.module.i32.const(0),
+    );
+    if (staticIndex === null) return load;
+
+    const key = `buffer_bound:${staticIndex}`;
+    let local = context.bufferDescriptorCache.get(key);
+    if (local === undefined) {
+      local = this.allocateGeneratedLocal(
+        context,
+        "i32",
+        `buffer.bound.${staticIndex}`,
+      );
+      context.bufferDescriptorCache.set(key, local);
+      context.entryInitializers.push(this.module.local.set(local, load()));
+    }
+    return () => this.module.local.get(local, binaryen.i32);
   }
 
   bufferChannelsFactory(

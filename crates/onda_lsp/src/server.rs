@@ -6718,10 +6718,14 @@ init:
   buf: f32[4]
   n = buf.len()
 
+buffers:
+  clip: f32
+
 sample:
   x = buf[0]
   y = fabs(0.0 - 1.0)
   sr = HOST_SR
+  clip_bound = clip.bound()
   out1 = x + y + sr
 "#;
         write_file(&main, source);
@@ -6729,12 +6733,18 @@ sample:
         let mut server = LspServer::default();
         let len = hover_markdown_for(&mut server, &main, source, "len")
             .expect("hover should resolve len builtin");
+        let bound = hover_markdown_for(&mut server, &main, source, "bound")
+            .expect("hover should resolve bound builtin");
         let fabs = hover_markdown_for(&mut server, &main, source, "fabs")
             .expect("hover should resolve fabs builtin alias");
         let host_sr = hover_markdown_for(&mut server, &main, source, "HOST_SR")
             .expect("hover should resolve HOST_SR builtin const");
 
         assert!(len.contains("built-in call .len(...)"), "hover: {len}");
+        assert!(
+            bound.contains("built-in call .bound(...)"),
+            "hover: {bound}"
+        );
         assert!(fabs.contains("built-in call fabs(...)"), "hover: {fabs}");
         assert!(
             host_sr.contains("builtin const HOST_SR: f32"),

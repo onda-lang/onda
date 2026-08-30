@@ -556,6 +556,11 @@ pub(crate) fn infer_scalar_expr_type(
                     return Some(PrimitiveType::I32);
                 }
             }
+            if let Some(base) = parse_buffer_bound_instance_base(name) {
+                if env.buffer_types.contains_key(base) {
+                    return Some(PrimitiveType::Bool);
+                }
+            }
             if let Some(base) = parse_buffer_samplerate_instance_base(name) {
                 if env.buffer_types.contains_key(base) {
                     return Some(PrimitiveType::F32);

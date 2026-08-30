@@ -2868,6 +2868,8 @@ def touch(buf: buffer<f32>, index: i32):
   view = buf[:]
   value = buf[index] + view[index] - view[index]
   buf[index] = value + 1.0
+  if buf.bound():
+    value = value + 1.0
   return value + f32(buf.len()) + f32(buf.chans()) + buf.samplerate()
 
 def forward(buf: buffer<f32>, index: i32):
@@ -2905,6 +2907,7 @@ sample:
     assert!(dump.contains("buffer_len @param0"));
     assert!(dump.contains("buffer_channels @param0"));
     assert!(dump.contains("buffer_sample_rate @param0"));
+    assert!(dump.contains("buffer_is_bound @param0"));
     assert!(dump.contains("make_slice @param0"));
     assert!(dump.contains("(place @p0,"));
     assert!(dump.contains("(@buffer0,"));
@@ -3514,6 +3517,8 @@ sample:
   bus[0, 3] = two_d
   from_state = values[0]
   values[1] = from_state
+  if delay.bound():
+    value = value + 1.0
   out1 = value + two_d + from_state + f32(delay.len()) + f32(delay.chans()) + delay.samplerate()
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -3534,6 +3539,7 @@ sample:
     assert!(dump.contains("buffer_len @buffer0"));
     assert!(dump.contains("buffer_channels @buffer0"));
     assert!(dump.contains("buffer_sample_rate @buffer0"));
+    assert!(dump.contains("buffer_is_bound @buffer0"));
     assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(2)] clamp"));
     assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(3)] clamp"));
     assert!(dump.contains("] clamp"));
@@ -3696,10 +3702,11 @@ params:
 block:
   selected = bank[slot]
   frames = selected.len()
+  bound = selected.bound()
 sample:
   value = selected[0]
   selected[frames - 1] = value
-  out1 = value
+  out1 = value + f32(bound)
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("buffer-reference alias should analyze");
@@ -3712,6 +3719,7 @@ sample:
         .any(|state| state.name == "__onda_buffer_alias_selector_selected"));
     let dump = format_program(&mir);
     assert!(dump.contains("buffer_len @buffer_array(first=0, len=2)"));
+    assert!(dump.contains("buffer_is_bound @buffer_array(first=0, len=2)"));
     assert!(dump.contains("load_buffer @buffer_array(first=0, len=2)"));
     assert!(dump.contains("store_buffer @buffer_array(first=0, len=2)"));
 }
@@ -3768,8 +3776,9 @@ proc Reader:
   block:
     selected = clips[slot]
     frames = selected.len()
+    bound = selected.bound()
     sample:
-      out1 = selected[0, frames - 1]
+      out1 = selected[0, frames - 1] + f32(bound)
 
 init:
   reader = Reader(clips = bank)
@@ -3789,6 +3798,7 @@ sample:
     assert!(step.contains("load_buffer_param @buffer_param_span"));
     let block_pre = formatted_function(&dump, "Reader.__onda_proc_block_pre");
     assert!(block_pre.contains("buffer_len @buffer_param_span"));
+    assert!(block_pre.contains("buffer_is_bound @buffer_param_span"));
 }
 
 #[test]

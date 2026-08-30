@@ -6341,6 +6341,27 @@ sample:
     }
 
     #[test]
+    fn buffer_bound_is_available_in_init_and_on_selected_collection_entries() {
+        let src = r#"
+buffers:
+  src: f32
+  bank: f32 {2}
+outs:
+  out1
+init:
+  source_bound = src.bound()
+  entry_bound = bank[1].bound()
+sample:
+  if source_bound || entry_bound:
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("buffer bound queries should analyze");
+    }
+
+    #[test]
     fn init_buffer_index_is_allowed_semantically() {
         let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  first = src[0]\nsample:\n  out1 = 0.0\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -6356,13 +6377,14 @@ buffers:
 block:
   channels = bank.chans()
   rate = bank.samplerate()
+  bound = bank.bound()
   sample:
     out1 = 0.0
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("collection metadata should require a slot");
 
-        for method in [".chans()", ".samplerate()"] {
+        for method in [".chans()", ".samplerate()", ".bound()"] {
             let diagnostic = errors
                 .iter()
                 .find(|diagnostic| diagnostic.message.contains(method))

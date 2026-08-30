@@ -1573,13 +1573,15 @@ fn scan_rvalue(
         }
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => {
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
             scan_buffer_ref(*buffer, effects);
         }
         Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => {
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
             mark_buffer_param_ref(*parameter, Access::Read, effects);
         }
         Rvalue::ConstDataLoad { index, bounds, .. } => {

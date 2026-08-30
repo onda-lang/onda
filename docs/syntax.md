@@ -1310,10 +1310,12 @@ sample:
   mono0 = src[0]
   left0 = bus[0, 0]
   source_frames = src.len()
+  source_bound = src.bound()
   bus_channels = bus.chans()
   source_rate = src.samplerate()
   key_count = piano.len()
   middle_c_frames = piano[39].len()
+  middle_c_bound = piano[39].bound()
   middle_c0 = piano[39][0]
   right0 = stereo_layers[0][1, 0]
 ```
@@ -1391,15 +1393,17 @@ Rules:
 - Explicit declarations and count shorthand cannot currently be mixed in one `buffers` block.
 - `.len()` on a buffer collection returns its declared count. Select an element first to query its
   frame count: `bank[i].len()`.
-- `.chans()` and `.samplerate()` apply to a selected buffer, not to the collection. Exact channel
-  counts are compile-time constants in generated code; dynamic counts come from the bound instance.
+- `.bound()`, `.chans()`, and `.samplerate()` apply to a selected buffer, not to the collection.
+  `.bound()` reports whether that slot currently has a host binding. Exact channel counts are
+  compile-time constants in generated code; dynamic counts come from the bound instance.
 - Runtime binding validates element type and channel constraints. Each fixed-array slot binds
   independently and may be omitted.
 - Host metadata names physical collection slots `bank[0]`, `bank[1]`, and so on, while separate
   collection metadata preserves the logical `bank` name and its contiguous slot range.
 - An unbound slot is a neutral one-frame buffer: reads return the element type's zero, writes are
   discarded, `.len()` is `1`, `.samplerate()` is the host sample rate, and `.chans()` is the exact
-  declared channel count or `1` for a dynamic-channel declaration.
+  declared channel count or `1` for a dynamic-channel declaration. `.bound()` is `false`; all
+  other valid bindings report `true`.
 - Binding with a zero sample rate unbinds the buffer; the pointer and dimensions are ignored.
 - Primitive buffer slices are supported with the same slice syntax as arrays.
 
@@ -2498,7 +2502,8 @@ allocating storage, writing parameter defaults, and running `init(FULL)`.
 
 Initialization observes the buffer bindings current for that call. Unbound buffers retain their
 neutral behavior: reads return zero, writes are discarded, and metadata reports the neutral
-one-frame descriptor. A later rebind is visible immediately to subsequent block, sample, event,
+one-frame descriptor; `.bound()` distinguishes that fallback from a real binding. A later rebind
+is visible immediately to subsequent block, sample, event,
 and init entry points, but does not implicitly rerun initialization or change state that an earlier
 initializer derived from the old binding. A host that wants to refresh such derived state requests
 initialization explicitly. This allows hosts with buffers available at startup to perform one-time

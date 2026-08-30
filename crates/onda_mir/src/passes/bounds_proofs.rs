@@ -175,11 +175,13 @@ fn prove_rvalue(context: &Context<'_>, value: &mut Rvalue) -> u64 {
         Rvalue::BufferLoad { buffer, .. }
         | Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => prove_buffer_ref(context, buffer),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => prove_buffer_ref(context, buffer),
         Rvalue::BufferParamLoad { parameter, .. }
         | Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => prove_buffer_param_ref(context, parameter),
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => prove_buffer_param_ref(context, parameter),
         Rvalue::MakeSlice { source, .. } => prove_slice_source(context, source),
         _ => 0,
     }

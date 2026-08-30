@@ -339,10 +339,12 @@ fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
         | Rvalue::SliceLen(_) => false,
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
         Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => {
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
             buffer_param_ref_uses_unchecked_bounds(*parameter)
         }
     }
@@ -2483,12 +2485,14 @@ impl Validator<'_> {
             }
             Rvalue::BufferLen(buffer)
             | Rvalue::BufferChannels(buffer)
-            | Rvalue::BufferSampleRate(buffer) => {
+            | Rvalue::BufferSampleRate(buffer)
+            | Rvalue::BufferIsBound(buffer) => {
                 self.assignment_read_buffer_ref(function_id, function, *buffer, source, state);
             }
             Rvalue::BufferParamLen(_)
             | Rvalue::BufferParamChannels(_)
-            | Rvalue::BufferParamSampleRate(_) => {}
+            | Rvalue::BufferParamSampleRate(_)
+            | Rvalue::BufferParamIsBound(_) => {}
             Rvalue::ConstDataLoad { index, .. } => {
                 self.assignment_read_value(function_id, function, *index, source, state)
             }
@@ -3089,7 +3093,8 @@ impl Validator<'_> {
             }
             Rvalue::BufferLen(buffer)
             | Rvalue::BufferChannels(buffer)
-            | Rvalue::BufferSampleRate(buffer) => {
+            | Rvalue::BufferSampleRate(buffer)
+            | Rvalue::BufferIsBound(buffer) => {
                 self.require_direct_buffer_capability(
                     function_id,
                     function,
@@ -3100,7 +3105,8 @@ impl Validator<'_> {
             }
             Rvalue::BufferParamLen(parameter)
             | Rvalue::BufferParamChannels(parameter)
-            | Rvalue::BufferParamSampleRate(parameter) => {
+            | Rvalue::BufferParamSampleRate(parameter)
+            | Rvalue::BufferParamIsBound(parameter) => {
                 self.validate_buffer_param_ref(function_id, function, *parameter, source);
                 if self
                     .function_buffer_param_ref(function, *parameter)
@@ -3550,6 +3556,9 @@ impl Validator<'_> {
             }
             Rvalue::BufferSampleRate(_) | Rvalue::BufferParamSampleRate(_) => {
                 self.type_is_scalar(expected, crate::ScalarType::F32)
+            }
+            Rvalue::BufferIsBound(_) | Rvalue::BufferParamIsBound(_) => {
+                self.type_is_scalar(expected, crate::ScalarType::Bool)
             }
             Rvalue::ConstDataLoad { data, .. } => self
                 .program

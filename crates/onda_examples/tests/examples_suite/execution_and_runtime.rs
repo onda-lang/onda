@@ -863,6 +863,53 @@ sample:
 }
 
 #[test]
+fn stdlib_sample_player_stops_once_when_its_clip_is_unbound() {
+    let source = r#"
+import std/sample
+
+buffers:
+  clip: f32
+
+init:
+  player = std::sample<1>::Player(clip = clip, looping = true)
+  finish_count = 0
+  loop_count = 0
+
+event play():
+  player.play()
+
+when player.finished():
+  finish_count = finish_count + 1
+
+when player.looped():
+  loop_count = loop_count + 1
+
+sample:
+  player()
+  out1 = f32(finish_count)
+  out2 = f32(loop_count)
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let play = instance.event_index("play").expect("play event");
+    trigger_event_by_index(
+        &mut instance,
+        play,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("play should succeed");
+
+    let mut output = [0.0_f32; 8];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("unbound player should process");
+    assert_eq!(output, [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0]);
+}
+
+#[test]
 fn stdlib_sample_player_events_normalize_against_the_bound_clip() {
     let source = r#"
 import std/sample

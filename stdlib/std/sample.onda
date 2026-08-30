@@ -44,6 +44,7 @@ namespace std::sample<Channels = 2>:
         playing = false
 
     block:
+      clip_bound = clip.bound()
       clip_frames = clip.len()
       clip_channels = clip.chans()
       step = speed * T(clip.samplerate() / SR)
@@ -53,7 +54,7 @@ namespace std::sample<Channels = 2>:
             outs[channel] = T(0.0)
 
         if playing:
-          if clip_frames <= 0 || clip_channels <= 0:
+          if !clip_bound:
             playing = false
             finished()
           else:

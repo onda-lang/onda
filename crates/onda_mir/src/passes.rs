@@ -1276,10 +1276,12 @@ fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: 
         }
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => propagate_buffer_ref(buffer, facts, stats),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => propagate_buffer_ref(buffer, facts, stats),
         Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => {
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
             propagate_buffer_param_ref(parameter, facts, stats);
         }
     }
@@ -1991,10 +1993,12 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
         }
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => collect_buffer_ref_read(*buffer, reads),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => collect_buffer_ref_read(*buffer, reads),
         Rvalue::BufferParamLen(_)
         | Rvalue::BufferParamChannels(_)
-        | Rvalue::BufferParamSampleRate(_) => {}
+        | Rvalue::BufferParamSampleRate(_)
+        | Rvalue::BufferParamIsBound(_) => {}
     }
 }
 
@@ -2230,10 +2234,12 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
             }
             Rvalue::BufferLen(buffer)
             | Rvalue::BufferChannels(buffer)
-            | Rvalue::BufferSampleRate(buffer) => buffer_ref(*buffer, referenced),
+            | Rvalue::BufferSampleRate(buffer)
+            | Rvalue::BufferIsBound(buffer) => buffer_ref(*buffer, referenced),
             Rvalue::BufferParamLen(parameter)
             | Rvalue::BufferParamChannels(parameter)
-            | Rvalue::BufferParamSampleRate(parameter) => {
+            | Rvalue::BufferParamSampleRate(parameter)
+            | Rvalue::BufferParamIsBound(parameter) => {
                 buffer_param_ref(*parameter, referenced);
             }
         }
@@ -2505,10 +2511,12 @@ fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
         }
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => rewrite_buffer_ref(buffer, mapping),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => rewrite_buffer_ref(buffer, mapping),
         Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => {
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
             rewrite_buffer_param_ref(parameter, mapping);
         }
     }

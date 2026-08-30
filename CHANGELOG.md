@@ -57,6 +57,9 @@ release; earlier releases are available on the
   support for tasks, pinned state, private proc parameters, and explicitly typed loop induction.
 - Added bare tuple destructuring targets such as `left, right = pair()`, with `_` entries for
   discarding unneeded tuple or processor outputs without creating bindings.
+- Added `.bound()` on individual buffers and selected fixed-collection entries. It is available in
+  init, block, sample, event, task, and runtime `def` code and remains accurate when buffers are
+  forwarded through functions and processors.
 
 ### Changed
 
@@ -106,6 +109,9 @@ release; earlier releases are available on the
   oscillators, negative phasor increments wrapping incorrectly, zero-delay and wrapped delay-line
   behavior, repeated envelope completion, and first-use FFT state depending on runtime-prepared
   twiddle tables.
+- Fixed `std::sample::Player` treating the neutral unbound-buffer fallback as a one-frame looping
+  clip and emitting `looped` on every sample. Starting an unbound player now stops once and emits
+  `finished`.
 
 ### Migration notes
 

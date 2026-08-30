@@ -3005,22 +3005,30 @@ proc Reader:
   init:
     first = source[0]
     frames = source.len()
+    source_bound = source.bound()
 
   sample:
-    out1 = first + f32(frames)
+    value = first + f32(frames)
+    if source_bound:
+      value = value + 10.0
+    out1 = value
 
 buffers:
   source: f32
 
 init:
   selected = source[1]
+  source_bound = source.bound()
   reader = Reader(source = source)
 
 event refresh():
   reader.init()
 
 sample:
-  out1 = selected + reader() + source[0]
+  value = selected + reader() + source[0]
+  if source_bound:
+    value = value + 100.0
+  out1 = value
 "#,
         )
         .expect("source should parse");
@@ -3082,7 +3090,7 @@ sample:
         init(&mut bound, InitMode::Full).expect("bound instance should initialize");
         process_checked(&mut bound, 1, ExecutionOutput::none())
             .expect("bound instance should process");
-        assert_eq!(bound_output, [11.0]);
+        assert_eq!(bound_output, [121.0]);
 
         let mut replacement = [7.0_f32, 11.0];
         unsafe {
@@ -3099,20 +3107,128 @@ sample:
         }
         process_checked(&mut bound, 1, ExecutionOutput::none())
             .expect("replacement binding should be visible without reinitialization");
-        assert_eq!(bound_output, [16.0]);
+        assert_eq!(bound_output, [126.0]);
 
         let refresh = bound.event_index("refresh").expect("refresh event");
         trigger_event_by_index(&mut bound, refresh, &[], ExecutionOutput::none())
             .expect("proc init event should run against the current binding");
         process_checked(&mut bound, 1, ExecutionOutput::none())
             .expect("reinitialized proc should process");
-        assert_eq!(bound_output, [21.0]);
+        assert_eq!(bound_output, [131.0]);
 
         init(&mut bound, InitMode::Full)
             .expect("top-level init should run against the replacement binding");
         process_checked(&mut bound, 1, ExecutionOutput::none())
             .expect("fully reinitialized instance should process");
-        assert_eq!(bound_output, [27.0]);
+        assert_eq!(bound_output, [137.0]);
+    }
+
+    #[test]
+    fn buffer_bound_tracks_direct_forwarded_and_collection_bindings() {
+        let source = r#"
+proc Probe:
+  buffers:
+    clips: f32 {2}
+  outs:
+    out1
+  sample:
+    value = 0.0
+    if clips[0].bound():
+      value = value + 1.0
+    if clips[1].bound():
+      value = value + 2.0
+    out1 = value
+
+buffers:
+  direct: f32
+  bank: f32 {2}
+
+def is_bound(buf: buffer<f32>):
+  return buf.bound()
+
+init:
+  probe = Probe(clips = bank)
+
+sample:
+  value = 0.0
+  if direct.bound():
+    value = value + 1.0
+  if is_bound(bank[0]):
+    value = value + 2.0
+  if bank[1].bound():
+    value = value + 4.0
+  out1 = value + 10.0 * probe()
+"#;
+        let mut instance = compile_test_instance(source, 1, 1);
+        let mut output = [0.0_f32; 1];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+
+        process_checked(&mut instance, 1, ExecutionOutput::none())
+            .expect("unbound buffers should process");
+        assert_eq!(output, [0.0]);
+
+        let mut direct = [1.0_f32];
+        let mut second = [2.0_f32];
+        unsafe {
+            bind_buffer(
+                &mut instance,
+                0,
+                direct.as_mut_ptr().cast(),
+                1,
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .expect("direct buffer should bind");
+            bind_buffer(
+                &mut instance,
+                2,
+                second.as_mut_ptr().cast(),
+                1,
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .expect("second collection entry should bind");
+        }
+        process_checked(&mut instance, 1, ExecutionOutput::none())
+            .expect("partially bound buffers should process");
+        assert_eq!(output, [25.0]);
+
+        let mut first = [3.0_f32];
+        unsafe {
+            bind_buffer(
+                &mut instance,
+                0,
+                direct.as_mut_ptr().cast(),
+                1,
+                1,
+                0.0,
+                PrimitiveType::F32,
+            )
+            .expect("direct buffer should unbind");
+            bind_buffer(
+                &mut instance,
+                1,
+                first.as_mut_ptr().cast(),
+                1,
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .expect("first collection entry should bind");
+        }
+        process_checked(&mut instance, 1, ExecutionOutput::none())
+            .expect("rebound buffers should process");
+        assert_eq!(output, [36.0]);
     }
 
     #[test]

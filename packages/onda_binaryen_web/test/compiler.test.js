@@ -3249,6 +3249,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
     { name: "$buffer_len", ty: 2 },
     { name: "$buffer_channels", ty: 2 },
     { name: "$metadata_f32", ty: 0 },
+    { name: "$buffer_bound", ty: 1 },
   );
   const thenBlock =
     mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
@@ -3271,6 +3272,23 @@ test("loads, stores, and queries externally bound buffers", async () => {
     assign(place("local", 2), {
       kind: "binary",
       data: { op: "add", lhs: local(2), rhs: local(3) },
+    }),
+    assign(place("local", 9), { kind: "buffer_is_bound", data: 0 }),
+    statement("if", {
+      condition: local(9),
+      then_block: {
+        statements: [
+          assign(place("local", 2), {
+            kind: "binary",
+            data: {
+              op: "add",
+              lhs: local(2),
+              rhs: constant("f32", 100),
+            },
+          }),
+        ],
+      },
+      else_block: { statements: [] },
     }),
     assign(place("local", 7), { kind: "buffer_channels", data: 0 }),
     assign(place("local", 8), {
@@ -3369,11 +3387,11 @@ test("loads, stores, and queries externally bound buffers", async () => {
   );
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
-    [16, 17, 18, 19],
+    [116, 117, 118, 119],
   );
   assert.deepEqual(
     [...new Float32Array(memory.buffer, bufferData, 4)],
-    [16, 17, 18, 19],
+    [116, 117, 118, 119],
   );
 
   view.setUint32(bufferPointers, 0, true);
@@ -3503,6 +3521,7 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
       locals: [
         { name: "$sample", ty: 0 },
         { name: "$incremented", ty: 0 },
+        { name: "$bound", ty: 1 },
       ],
       body: {
         statements: [
@@ -3523,12 +3542,24 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
               rhs: constant("f32", 1),
             },
           }),
-          statement("buffer_param_store", {
-            parameter: { kind: "direct", data: 0 },
-            channel: null,
-            index: constant("i32", 0),
-            value: local(1),
-            bounds: "clamp",
+          assign(place("local", 2), {
+            kind: "buffer_param_is_bound",
+            data: { kind: "direct", data: 0 },
+          }),
+          statement("if", {
+            condition: local(2),
+            then_block: {
+              statements: [
+                statement("buffer_param_store", {
+                  parameter: { kind: "direct", data: 0 },
+                  channel: null,
+                  index: constant("i32", 0),
+                  value: local(1),
+                  bounds: "clamp",
+                }),
+              ],
+            },
+            else_block: { statements: [] },
           }),
           statement("return", { values: [local(0)] }),
         ],
@@ -3565,7 +3596,7 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
   heap += 4;
   const output = heap;
   const view = new DataView(memory.buffer);
-  view.setUint32(bufferPointers, firstBuffer, true);
+  view.setUint32(bufferPointers, 0, true);
   view.setUint32(bufferPointers + 4, secondBuffer, true);
   view.setInt32(bufferFrames, 1, true);
   view.setInt32(bufferFrames + 4, 1, true);
@@ -3594,9 +3625,9 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
   );
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
-    [10, 20, 21, 22],
+    [0, 20, 21, 22],
   );
-  assert.equal(view.getFloat32(firstBuffer, true), 11);
+  assert.equal(view.getFloat32(firstBuffer, true), 10);
   assert.equal(view.getFloat32(secondBuffer, true), 23);
 });
 

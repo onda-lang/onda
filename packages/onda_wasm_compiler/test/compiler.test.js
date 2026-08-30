@@ -99,6 +99,7 @@ test("initialization observes bound buffers in top-level and proc init", async (
     source: f32
   init:
     first = source[0]
+    source_bound = source.bound()
   sample:
     out1 = first
 
@@ -106,6 +107,7 @@ buffers:
   source: f32
 init:
   selected = source[1]
+  source_bound = source.bound()
   reader = Reader(source = source)
 sample:
   out1 = selected + reader()
@@ -125,6 +127,7 @@ sample:
   };
   const params = allocate(artifact.metadata.runtime.param_size_bytes);
   const state = allocate(artifact.metadata.runtime.state_size_bytes, 16);
+  const neutralState = allocate(artifact.metadata.runtime.state_size_bytes, 16);
   const samples = allocate(8);
   const bufferPointers = allocate(4);
   const bufferFrames = allocate(4);
@@ -158,8 +161,29 @@ sample:
       true,
     );
   };
+  const stateBool = (base, name) => {
+    const entry = stateInfo.find((candidate) => candidate.name === name);
+    assert.ok(entry, `missing state metadata for ${name}`);
+    return view.getUint8(base + Number(entry.physical_state_byte_offset)) !== 0;
+  };
   assert.equal(stateValue("reader.first"), 2.0);
   assert.equal(stateValue("selected"), 5.0);
+  assert.equal(stateBool(state, "reader.source_bound"), true);
+  assert.equal(stateBool(state, "source_bound"), true);
+
+  view.setUint32(bufferPointers, 0, true);
+  assert.equal(initialize(
+    params,
+    neutralState,
+    1,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+    0,
+  ), 0);
+  assert.equal(stateBool(neutralState, "reader.source_bound"), false);
+  assert.equal(stateBool(neutralState, "source_bound"), false);
 });
 
 test("compiles and publishes dynamic delegate payloads end to end", async () => {

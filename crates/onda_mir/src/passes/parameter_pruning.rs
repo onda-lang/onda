@@ -146,7 +146,8 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
         Rvalue::BufferParamLoad { parameter, .. }
         | Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => collect_buffer_parameter(*parameter, used),
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => collect_buffer_parameter(*parameter, used),
         Rvalue::MakeSlice { source, .. } => collect_slice_source_parameters(source, used),
         Rvalue::InitAll
         | Rvalue::Use(_)
@@ -162,6 +163,7 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
         | Rvalue::BufferLen(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
+        | Rvalue::BufferIsBound(_)
         | Rvalue::ConstDataLoad { .. }
         | Rvalue::SliceLoad { .. }
         | Rvalue::SliceLen(_) => {}
@@ -265,7 +267,8 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
         Rvalue::BufferParamLoad { parameter, .. }
         | Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => rewrite_buffer_parameter(parameter, mapping),
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => rewrite_buffer_parameter(parameter, mapping),
         Rvalue::MakeSlice { source, .. } => rewrite_slice_source_parameters(source, mapping),
         Rvalue::InitAll
         | Rvalue::Use(_)
@@ -281,6 +284,7 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
         | Rvalue::BufferLen(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
+        | Rvalue::BufferIsBound(_)
         | Rvalue::ConstDataLoad { .. }
         | Rvalue::SliceLoad { .. }
         | Rvalue::SliceLen(_) => {}
