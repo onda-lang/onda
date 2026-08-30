@@ -100,6 +100,28 @@ fn repo_source(rel: &str) -> (PathBuf, String) {
 }
 
 #[test]
+fn semantic_token_legend_matches_the_client_contract() {
+    assert_eq!(
+        semantic_token_legend(),
+        [
+            "enumMember",
+            "variable",
+            "port",
+            "parameter",
+            "function",
+            "type",
+            "namespace",
+            "state",
+            "keyword",
+            "number",
+            "event",
+            "delegate",
+        ]
+    );
+    assert_eq!(semantic_token_modifier_legend(), ["declaration"]);
+}
+
+#[test]
 fn reserved_words_include_singular_event_keyword() {
     assert!(is_reserved_word("event"));
     assert!(is_reserved_word("events"));
@@ -136,21 +158,25 @@ fn semantic_tokens_distinguish_events_and_delegates() {
         "sample:\n",
         "  out1 = 0.0\n",
     );
-    let tokens = semantic_tokens_for_document(source, None);
-    for line in [0, 2, 3] {
+    for tokens in [
+        semantic_tokens_for_document(source, None),
+        semantic_tokens_for_document_source_only(source, None),
+    ] {
+        for line in [0, 2, 3] {
+            assert_eq!(
+                token_type_at_text_on_line(&tokens, source, line, "finished"),
+                Some(SEMANTIC_TOKEN_TYPE_DELEGATE),
+            );
+        }
         assert_eq!(
-            token_type_at_text_on_line(&tokens, source, line, "finished"),
-            Some(SEMANTIC_TOKEN_TYPE_DELEGATE),
+            token_type_at_text_on_line(&tokens, source, 1, "trigger"),
+            Some(SEMANTIC_TOKEN_TYPE_EVENT),
+        );
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 4, "reason"),
+            Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
         );
     }
-    assert_eq!(
-        token_type_at_text_on_line(&tokens, source, 1, "trigger"),
-        Some(SEMANTIC_TOKEN_TYPE_EVENT),
-    );
-    assert_eq!(
-        token_type_at_text_on_line(&tokens, source, 4, "reason"),
-        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
-    );
 }
 
 #[test]
@@ -179,6 +205,284 @@ fn semantic_tokens_mark_proc_delegate_calls_as_delegates() {
             Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
         );
     }
+}
+
+#[test]
+fn semantic_tokens_preserve_callable_kinds_in_nested_namespace_proc() {
+    let source = concat!(
+        "namespace outer:\n",
+        "  namespace inner:\n",
+        "    proc Env:\n",
+        "      def begin(value: f32):\n",
+        "        return value\n",
+        "      events:\n",
+        "        start(value: f32):\n",
+        "          begin(value)\n",
+        "        reset():\n",
+        "          value = 0.0\n",
+        "      sample:\n",
+        "        begin(1.0)\n",
+        "        out1 = 0.0\n",
+    );
+
+    let parsed = onda_frontend::parse_program(source).expect("source should parse");
+    let ast_index = super::ast_index::build_semantic_scope_index(&parsed, Some("<memory>"));
+    assert_eq!(
+        ast_index.token_type_for("start", 6, 8).0,
+        Some(SEMANTIC_TOKEN_TYPE_EVENT),
+        "AST scope index should classify the grouped event declaration",
+    );
+    let fallback_index = build_source_scope_index(source);
+    assert_eq!(
+        fallback_index.token_type_for("start", 6, 8),
+        Some(SEMANTIC_TOKEN_TYPE_EVENT),
+        "source scope index should classify the grouped event declaration",
+    );
+
+    for tokens in [
+        semantic_tokens_for_document(source, None),
+        semantic_tokens_for_document_source_only(source, None),
+    ] {
+        for (line, name) in [(6, "start"), (8, "reset")] {
+            assert_eq!(
+                token_type_at_text_on_line(&tokens, source, line, name),
+                Some(SEMANTIC_TOKEN_TYPE_EVENT),
+                "grouped event declaration `{name}` should be an event: {tokens:?}",
+            );
+        }
+        let begin_tokens = find_tokens_named(&tokens, source, "begin");
+        assert_eq!(begin_tokens.len(), 3, "tokens: {tokens:?}");
+        assert!(
+            begin_tokens
+                .iter()
+                .all(|token| token.token_type == SEMANTIC_TOKEN_TYPE_FUNCTION),
+            "namespace proc def declarations and calls should remain functions: {begin_tokens:?}"
+        );
+    }
+}
+
+#[test]
+fn semantic_tokens_resolve_proc_and_struct_members_by_identity() {
+    let source = concat!(
+        "proc Child:\n",
+        "  params:\n",
+        "    gain = 1.0\n",
+        "  delegate stopped(reason: i32)\n",
+        "  event reset():\n",
+        "    gain = 0.0\n",
+        "  sample:\n",
+        "    out1 = gain\n",
+        "\n",
+        "struct Box:\n",
+        "  value: f32 = 0.0\n",
+        "  def get(self):\n",
+        "    return self.value\n",
+        "\n",
+        "init:\n",
+        "  child = Child()\n",
+        "  box = Box()\n",
+        "event drive():\n",
+        "  child.reset()\n",
+        "when child.stopped(reason):\n",
+        "  out1 = box.get() + box.value + child.gain\n",
+        "sample:\n",
+        "  out1 = child()\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 18, "reset"),
+        Some(SEMANTIC_TOKEN_TYPE_EVENT),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 19, "stopped"),
+        Some(SEMANTIC_TOKEN_TYPE_DELEGATE),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 20, "get"),
+        Some(SEMANTIC_TOKEN_TYPE_FUNCTION),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 20, "value"),
+        Some(SEMANTIC_TOKEN_TYPE_STATE),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 20, "gain"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+    );
+}
+
+#[test]
+fn semantic_tokens_do_not_leak_symbols_between_namespaces() {
+    let source = concat!(
+        "namespace A:\n",
+        "  def hidden():\n",
+        "    return 1.0\n",
+        "namespace B:\n",
+        "  def visible():\n",
+        "    return hidden\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 1, "hidden"),
+        Some(SEMANTIC_TOKEN_TYPE_FUNCTION),
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 5, "hidden"),
+        None,
+        "a symbol from sibling namespace A must not appear visible in namespace B",
+    );
+}
+
+#[test]
+fn semantic_tokens_do_not_borrow_kinds_for_unresolved_qualified_paths() {
+    let source = concat!(
+        "namespace A:\n",
+        "  def hidden():\n",
+        "    return 1.0\n",
+        "namespace B:\n",
+        "  def visible():\n",
+        "    return Missing::hidden\n",
+    );
+    for tokens in [
+        semantic_tokens_for_document(source, None),
+        semantic_tokens_for_document_source_only(source, None),
+    ] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 5, "Missing"),
+            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        );
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 5, "hidden"),
+            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
+            "an unresolved qualified leaf must not borrow A::hidden's function kind",
+        );
+    }
+}
+
+#[test]
+fn semantic_tokens_preserve_symbol_kinds_in_use_declarations() {
+    let source = concat!(
+        "namespace N:\n",
+        "  struct S:\n",
+        "    value: f32\n",
+        "  proc P:\n",
+        "    sample:\n",
+        "      out1 = 0.0\n",
+        "  def f():\n",
+        "    return 1.0\n",
+        "use N::S\n",
+        "use N::P as Q\n",
+        "use N::f as g\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    for (line, name) in [(8, "S"), (9, "P"), (9, "Q")] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, line, name),
+            Some(SEMANTIC_TOKEN_TYPE_TYPE),
+            "use target or alias {name} should preserve its declared type kind",
+        );
+    }
+    for (line, name) in [(10, "f"), (10, "g")] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, line, name),
+            Some(SEMANTIC_TOKEN_TYPE_FUNCTION),
+            "use target or alias {name} should preserve its declared function kind",
+        );
+    }
+}
+
+#[test]
+fn semantic_tokens_keep_import_paths_namespaces_despite_name_collisions() {
+    let source = concat!("import std/osc\n", "def osc():\n", "  return 1.0\n",);
+    for tokens in [
+        semantic_tokens_for_document(source, None),
+        semantic_tokens_for_document_source_only(source, None),
+    ] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 0, "std"),
+            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        );
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 0, "osc"),
+            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
+            "an import module segment must not borrow the unrelated def's function kind",
+        );
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 1, "osc"),
+            Some(SEMANTIC_TOKEN_TYPE_FUNCTION),
+        );
+    }
+}
+
+#[test]
+fn semantic_tokens_do_not_borrow_proc_kinds_for_unresolved_named_arguments() {
+    let source = concat!(
+        "proc P:\n",
+        "  params:\n",
+        "    gain = 1.0\n",
+        "  sample:\n",
+        "    out1 = gain\n",
+        "sample:\n",
+        "  out1 = Missing::P(gain = 0.5)\n",
+    );
+    for tokens in [
+        semantic_tokens_for_document(source, None),
+        semantic_tokens_for_document_source_only(source, None),
+    ] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 6, "gain"),
+            Some(SEMANTIC_TOKEN_TYPE_STATE),
+            "an unresolved callee must not make its named argument look like a proc port",
+        );
+    }
+}
+
+#[test]
+fn semantic_tokens_mark_declarations_without_marking_references() {
+    let source = concat!(
+        "namespace DSP:\n",
+        "  struct Box:\n",
+        "    value: f32 = 0.0\n",
+        "    def get(self):\n",
+        "      return self.value\n",
+        "  proc Voice:\n",
+        "    delegate stopped()\n",
+        "    event reset():\n",
+        "      out1 = 0.0\n",
+        "    sample:\n",
+        "      reset()\n",
+        "      out1 = 0.0\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    for (line, name) in [
+        (0, "DSP"),
+        (1, "Box"),
+        (2, "value"),
+        (3, "get"),
+        (5, "Voice"),
+        (6, "stopped"),
+        (7, "reset"),
+    ] {
+        let token = find_tokens_named(&tokens, source, name)
+            .into_iter()
+            .find(|token| token.line as usize == line)
+            .unwrap_or_else(|| panic!("missing declaration token {name} on line {line}"));
+        assert_eq!(
+            token.token_modifiers, SEMANTIC_TOKEN_MODIFIER_DECLARATION,
+            "declaration token {name} on line {line}: {token:?}",
+        );
+    }
+
+    let reset_reference = find_tokens_named(&tokens, source, "reset")
+        .into_iter()
+        .find(|token| token.line == 10)
+        .expect("reset call token");
+    assert_eq!(reset_reference.token_type, SEMANTIC_TOKEN_TYPE_EVENT);
+    assert_eq!(reset_reference.token_modifiers, 0);
 }
 
 #[test]
@@ -294,7 +598,7 @@ fn source_declaration_scope_excludes_scoped_symbols() {
     collect_source_declaration_symbols(source, &mut scope);
 
     assert_eq!(
-        scope.imported_token_type_for("Env"),
+        scope.token_type_for_source_fallback("Env"),
         Some(SEMANTIC_TOKEN_TYPE_TYPE)
     );
     assert_eq!(scope.token_type_for_source_fallback("note_on"), None);
@@ -1147,7 +1451,7 @@ fn semantic_tokens_do_not_mark_nested_init_locals_as_state() {
 }
 
 #[test]
-fn semantic_tokens_mark_named_argument_labels_as_state_in_calls() {
+fn semantic_tokens_mark_named_argument_labels_as_parameters_in_calls() {
     let source = concat!(
         "def foo(a = 0.0, b = 0.0):\n",
         "  return a + b\n",
@@ -1161,12 +1465,12 @@ fn semantic_tokens_mark_named_argument_labels_as_state_in_calls() {
     let tokens = semantic_tokens_for_document(source, None);
 
     assert!(
-        has_token(&tokens, 7, 13, 1, SEMANTIC_TOKEN_TYPE_STATE),
-        "named arg label 'a =' should use the state token: {tokens:?}"
+        has_token(&tokens, 7, 13, 1, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "named arg label 'a =' should use the parameter token: {tokens:?}"
     );
     assert!(
-        has_token(&tokens, 7, 22, 1, SEMANTIC_TOKEN_TYPE_STATE),
-        "named arg label 'b =' should use the state token: {tokens:?}"
+        has_token(&tokens, 7, 22, 1, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "named arg label 'b =' should use the parameter token: {tokens:?}"
     );
 }
 

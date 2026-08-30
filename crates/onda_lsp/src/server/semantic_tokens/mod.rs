@@ -5,6 +5,8 @@ use onda_frontend::{
     parse_program, parse_program_with_path, Block, Expr, NamespaceItem, ProcessorDef, Program, Span,
 };
 
+use super::navigation::{SemanticSymbolKind, SemanticTokenResolver};
+
 mod ast_index;
 mod source_fallback;
 
@@ -13,10 +15,7 @@ use super::param_domain::{
     is_identifier_candidate as is_param_domain_identifier_candidate, BindingRangeIdentifierRole,
     ParamDomainIdentifierRole,
 };
-use ast_index::{
-    build_semantic_scope_index, collect_all_symbols, normalize_file_key,
-    normalize_file_key_for_path,
-};
+use ast_index::{build_semantic_scope_index, normalize_file_key, normalize_file_key_for_path};
 use source_fallback::{
     build_source_scope_index, identifier_is_in_import_path, identifier_is_in_use_namespace_name,
     identifier_is_when_delegate_target, scan_identifiers,
@@ -49,6 +48,9 @@ const SEMANTIC_TOKEN_LEGEND: &[&str] = &[
     "event",
     "delegate",
 ];
+
+const SEMANTIC_TOKEN_MODIFIER_LEGEND: &[&str] = &["declaration"];
+const SEMANTIC_TOKEN_MODIFIER_DECLARATION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SemanticToken {
@@ -127,20 +129,6 @@ impl SemanticScope {
             && !self.types.contains(&name)
         {
             self.state_variables.insert(name);
-        }
-    }
-
-    pub(super) fn imported_token_type_for(&self, name: &str) -> Option<u32> {
-        if self.namespaces.contains(name) {
-            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE)
-        } else if self.consts.contains(name) {
-            Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
-        } else if self.types.contains(name) {
-            Some(SEMANTIC_TOKEN_TYPE_TYPE)
-        } else if self.functions.contains(name) {
-            Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
-        } else {
-            None
         }
     }
 }
@@ -296,6 +284,25 @@ pub(super) fn semantic_token_legend() -> &'static [&'static str] {
     SEMANTIC_TOKEN_LEGEND
 }
 
+pub(super) fn semantic_token_modifier_legend() -> &'static [&'static str] {
+    SEMANTIC_TOKEN_MODIFIER_LEGEND
+}
+
+fn token_type_for_resolved_symbol(kind: SemanticSymbolKind) -> u32 {
+    match kind {
+        SemanticSymbolKind::EnumMember => SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
+        SemanticSymbolKind::Variable => SEMANTIC_TOKEN_TYPE_VARIABLE,
+        SemanticSymbolKind::Port => SEMANTIC_TOKEN_TYPE_PORT,
+        SemanticSymbolKind::Parameter => SEMANTIC_TOKEN_TYPE_PARAMETER,
+        SemanticSymbolKind::Function => SEMANTIC_TOKEN_TYPE_FUNCTION,
+        SemanticSymbolKind::Type => SEMANTIC_TOKEN_TYPE_TYPE,
+        SemanticSymbolKind::Namespace => SEMANTIC_TOKEN_TYPE_NAMESPACE,
+        SemanticSymbolKind::State => SEMANTIC_TOKEN_TYPE_STATE,
+        SemanticSymbolKind::Event => SEMANTIC_TOKEN_TYPE_EVENT,
+        SemanticSymbolKind::Delegate => SEMANTIC_TOKEN_TYPE_DELEGATE,
+    }
+}
+
 #[cfg(test)]
 pub(super) fn semantic_tokens_for_document(
     source: &str,
@@ -337,13 +344,14 @@ fn semantic_tokens_for_document_with_optional_parse(
         };
         parsed_owned.as_ref()
     };
-    let imported_scope = parsed_program.map(collect_all_symbols).unwrap_or_default();
     let current_file_key = match path {
         Some(path) => normalize_file_key_for_path(path),
         None => Some(ast_index::normalize_file_key("<memory>")),
     };
     let scope_index = parsed_program
         .map(|program| build_semantic_scope_index(program, current_file_key.as_deref()));
+    let semantic_resolver =
+        parsed_program.map(|program| SemanticTokenResolver::new(program, source, path));
     let source_scope_index = build_source_scope_index(source);
     let mut source_decl_scope = SemanticScope::default();
     let source_lines = source.lines().collect::<Vec<_>>();
@@ -358,20 +366,6 @@ fn semantic_tokens_for_document_with_optional_parse(
         source,
         |name, line, start, length, after_dot, is_call, in_ns_path, is_named_arg_label| {
             if identifier_is_in_import_path(&source_lines, line, start) {
-                let token_type = source_decl_scope
-                    .imported_token_type_for(name)
-                    .or_else(|| imported_scope.imported_token_type_for(name))
-                    .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
-                tokens.push(SemanticToken {
-                    line,
-                    start,
-                    length,
-                    token_type,
-                    token_modifiers: 0,
-                });
-                return;
-            }
-            if name != "as" && identifier_is_in_use_namespace_name(&source_lines, line, start) {
                 tokens.push(SemanticToken {
                     line,
                     start,
@@ -451,6 +445,52 @@ fn semantic_tokens_for_document_with_optional_parse(
                     return;
                 }
             }
+            if name == "self" {
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_PORT,
+                    token_modifiers: 0,
+                });
+                return;
+            }
+            if let Some(resolved) = semantic_resolver
+                .as_ref()
+                .and_then(|resolver| resolver.resolve(line, start))
+            {
+                let resolved_token_type = token_type_for_resolved_symbol(resolved.kind);
+                let lexical_token_type = scope_index
+                    .as_ref()
+                    .and_then(|index| index.token_type_for(name, line, start).0);
+                let token_type = if resolved_token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
+                    lexical_token_type.unwrap_or(resolved_token_type)
+                } else {
+                    resolved_token_type
+                };
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type,
+                    token_modifiers: if resolved.declaration && token_type == resolved_token_type {
+                        SEMANTIC_TOKEN_MODIFIER_DECLARATION
+                    } else {
+                        0
+                    },
+                });
+                return;
+            }
+            if name != "as" && identifier_is_in_use_namespace_name(&source_lines, line, start) {
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_NAMESPACE,
+                    token_modifiers: 0,
+                });
+                return;
+            }
             if is_named_arg_label {
                 let token_type = named_arg_label_token_type(
                     source,
@@ -458,7 +498,7 @@ fn semantic_tokens_for_document_with_optional_parse(
                     line,
                     start,
                     &source_decl_scope,
-                    &imported_scope,
+                    semantic_resolver.is_none(),
                 );
                 tokens.push(SemanticToken {
                     line,
@@ -475,16 +515,6 @@ fn semantic_tokens_for_document_with_optional_parse(
                     start,
                     length,
                     token_type: SEMANTIC_TOKEN_TYPE_STATE,
-                    token_modifiers: 0,
-                });
-                return;
-            }
-            if name == "self" {
-                tokens.push(SemanticToken {
-                    line,
-                    start,
-                    length,
-                    token_type: SEMANTIC_TOKEN_TYPE_PORT,
                     token_modifiers: 0,
                 });
                 return;
@@ -525,41 +555,21 @@ fn semantic_tokens_for_document_with_optional_parse(
                 return;
             }
             if in_ns_path {
-                let token_type = source_decl_scope
-                    .imported_token_type_for(name)
-                    .or_else(|| imported_scope.imported_token_type_for(name))
-                    .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
                 tokens.push(SemanticToken {
                     line,
                     start,
                     length,
-                    token_type,
+                    token_type: SEMANTIC_TOKEN_TYPE_NAMESPACE,
                     token_modifiers: 0,
                 });
                 return;
             }
-            let scope_resolution = scope_index
-                .as_ref()
-                .map(|index| index.token_type_for(name, line, start));
-            let source_scope_resolution = source_scope_index.token_type_for(name, line, start);
-            let resolved_token_type = match scope_resolution {
-                Some((token_type, true)) => token_type
-                    .or(source_scope_resolution)
-                    .or_else(|| imported_scope.imported_token_type_for(name))
-                    .or_else(|| source_decl_scope.imported_token_type_for(name)),
-                Some((Some(SEMANTIC_TOKEN_TYPE_NAMESPACE), false)) => source_scope_resolution
-                    .or(Some(SEMANTIC_TOKEN_TYPE_NAMESPACE))
-                    .or_else(|| imported_scope.imported_token_type_for(name))
-                    .or_else(|| source_decl_scope.imported_token_type_for(name))
-                    .or_else(|| source_decl_scope.token_type_for_source_fallback(name)),
-                Some((token_type, false)) => token_type
-                    .or(source_scope_resolution)
-                    .or_else(|| imported_scope.imported_token_type_for(name))
-                    .or_else(|| source_decl_scope.imported_token_type_for(name))
-                    .or_else(|| source_decl_scope.token_type_for_source_fallback(name)),
-                None => source_scope_resolution
+            let resolved_token_type = if let Some(index) = scope_index.as_ref() {
+                index.token_type_for(name, line, start).0
+            } else {
+                source_scope_index
+                    .token_type_for(name, line, start)
                     .or_else(|| source_decl_scope.token_type_for_source_fallback(name))
-                    .or_else(|| imported_scope.imported_token_type_for(name)),
             };
             if let Some(mut token_type) = resolved_token_type {
                 if is_call && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
@@ -896,12 +906,15 @@ fn named_arg_label_token_type(
     line: u32,
     start: u32,
     source_decl_scope: &SemanticScope,
-    imported_scope: &SemanticScope,
+    allow_source_declaration_fallback: bool,
 ) -> u32 {
     let Some(callee) = named_arg_enclosing_callee(source, source_lines, line, start) else {
         return SEMANTIC_TOKEN_TYPE_STATE;
     };
-    if callee_is_proc_endpoint_target(&callee, source_decl_scope, imported_scope) {
+    if allow_source_declaration_fallback
+        && !callee.contains("::")
+        && callee_is_proc_endpoint_target(&callee, source_decl_scope)
+    {
         SEMANTIC_TOKEN_TYPE_PORT
     } else {
         SEMANTIC_TOKEN_TYPE_STATE
@@ -964,11 +977,7 @@ fn is_callee_path_char(ch: char) -> bool {
         || ch.is_ascii_alphanumeric()
 }
 
-fn callee_is_proc_endpoint_target(
-    callee: &str,
-    source_decl_scope: &SemanticScope,
-    imported_scope: &SemanticScope,
-) -> bool {
+fn callee_is_proc_endpoint_target(callee: &str, source_decl_scope: &SemanticScope) -> bool {
     let callee = strip_type_args_from_callee(callee);
     if callee.ends_with(".init") || callee.ends_with("::init") {
         return true;
@@ -978,9 +987,7 @@ fn callee_is_proc_endpoint_target(
         .find(|segment| !segment.is_empty())
         .unwrap_or(callee)
         .trim();
-    source_decl_scope.types.contains(leaf)
-        || imported_scope.types.contains(leaf)
-        || leaf.chars().next().is_some_and(char::is_uppercase)
+    source_decl_scope.types.contains(leaf) || leaf.chars().next().is_some_and(char::is_uppercase)
 }
 
 fn strip_type_args_from_callee(callee: &str) -> &str {

@@ -15,9 +15,6 @@ events:
   play(start_frame: f32 = 0.0):
     player.play(start_frame)
 
-  seek(frame: f32):
-    player.seek(frame)
-
   stop():
     player.stop()
 

@@ -39,8 +39,8 @@ use navigation::{
 };
 use path_utils::{lsp_document_path, normalize_path, path_to_file_uri};
 use semantic_tokens::{
-    encode_semantic_tokens, semantic_token_legend, semantic_tokens_for_document_source_only,
-    semantic_tokens_for_document_with_parsed,
+    encode_semantic_tokens, semantic_token_legend, semantic_token_modifier_legend,
+    semantic_tokens_for_document_source_only, semantic_tokens_for_document_with_parsed,
 };
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -1830,7 +1830,7 @@ fn initialize_result(process_id: Option<u32>) -> Value {
                 "full": true,
                 "legend": {
                     "tokenTypes": semantic_token_legend(),
-                    "tokenModifiers": [],
+                    "tokenModifiers": semantic_token_modifier_legend(),
                 }
             },
             "completionProvider": {

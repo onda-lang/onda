@@ -57,6 +57,48 @@ pub(super) struct NavigationPosition {
     pub(super) character: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SemanticSymbolKind {
+    EnumMember,
+    Variable,
+    Port,
+    Parameter,
+    Function,
+    Type,
+    Namespace,
+    State,
+    Event,
+    Delegate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ResolvedSemanticSymbol {
+    pub(super) kind: SemanticSymbolKind,
+    pub(super) declaration: bool,
+}
+
+pub(super) struct SemanticTokenResolver {
+    index: NavigationIndex,
+}
+
+impl SemanticTokenResolver {
+    pub(super) fn new(program: &Program, source: &str, path: Option<&Path>) -> Self {
+        Self {
+            index: NavigationIndex::build(Some(program), source, path, None),
+        }
+    }
+
+    pub(super) fn resolve(&self, line: u32, character: u32) -> Option<ResolvedSemanticSymbol> {
+        let token =
+            source_token_at_position(&self.index.source, NavigationPosition { line, character })?;
+        let definition = self.index.resolve_token(&self.index.source, &token)?;
+        Some(ResolvedSemanticSymbol {
+            kind: semantic_symbol_kind(definition.kind),
+            declaration: self.index.token_is_definition(&token, definition),
+        })
+    }
+}
+
 pub(super) fn hover_for_document_with_parsed(
     source: &str,
     path: Option<&Path>,
@@ -413,7 +455,8 @@ enum DefinitionKind {
     Namespace,
     NamespaceAlias,
     Port,
-    Param,
+    RuntimeParam,
+    Parameter,
     Buffer,
     Event,
     Delegate,
@@ -421,8 +464,30 @@ enum DefinitionKind {
     Field,
     Method,
     Variable,
+    State,
     TypeParam,
     NamespaceParam,
+}
+
+fn semantic_symbol_kind(kind: DefinitionKind) -> SemanticSymbolKind {
+    match kind {
+        DefinitionKind::Const | DefinitionKind::NamespaceParam => SemanticSymbolKind::EnumMember,
+        DefinitionKind::Variable => SemanticSymbolKind::Variable,
+        DefinitionKind::Port | DefinitionKind::RuntimeParam | DefinitionKind::Buffer => {
+            SemanticSymbolKind::Port
+        }
+        DefinitionKind::Parameter => SemanticSymbolKind::Parameter,
+        DefinitionKind::Def | DefinitionKind::Method | DefinitionKind::Task => {
+            SemanticSymbolKind::Function
+        }
+        DefinitionKind::Proc | DefinitionKind::Struct | DefinitionKind::TypeParam => {
+            SemanticSymbolKind::Type
+        }
+        DefinitionKind::Namespace | DefinitionKind::NamespaceAlias => SemanticSymbolKind::Namespace,
+        DefinitionKind::Field | DefinitionKind::State => SemanticSymbolKind::State,
+        DefinitionKind::Event => SemanticSymbolKind::Event,
+        DefinitionKind::Delegate => SemanticSymbolKind::Delegate,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -880,7 +945,7 @@ impl NavigationIndex {
         self.add_definition(DefinitionInfo {
             name: decl.name.clone(),
             full_name: namespace_join(owner, &decl.name),
-            kind: DefinitionKind::Param,
+            kind: DefinitionKind::RuntimeParam,
             detail: format!("{detail} {}", format_param_decl(decl)),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
@@ -892,7 +957,7 @@ impl NavigationIndex {
         self.add_definition_once(DefinitionInfo {
             name: decl.name.clone(),
             full_name: namespace_join(owner, &decl.name),
-            kind: DefinitionKind::Param,
+            kind: DefinitionKind::Parameter,
             detail: format!("argument {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
@@ -904,7 +969,7 @@ impl NavigationIndex {
         self.add_definition_once(DefinitionInfo {
             name: decl.name.clone(),
             full_name: namespace_join(owner, &decl.name),
-            kind: DefinitionKind::Param,
+            kind: DefinitionKind::Parameter,
             detail: format!(
                 "event parameter {}: {}",
                 decl.name,
@@ -982,7 +1047,7 @@ impl NavigationIndex {
             let idx = self.add_definition_once(DefinitionInfo {
                 name: param.name.clone(),
                 full_name: namespace_join(&delegate_owner, &param.name),
-                kind: DefinitionKind::Param,
+                kind: DefinitionKind::Parameter,
                 detail: format!(
                     "delegate parameter {}: {}",
                     param.name,
@@ -1029,11 +1094,21 @@ impl NavigationIndex {
         })
     }
 
-    fn add_local_variable_definition(&mut self, owner: &str, name: &str, span: Span) -> usize {
+    fn add_local_variable_definition(
+        &mut self,
+        owner: &str,
+        name: &str,
+        span: Span,
+        state: bool,
+    ) -> usize {
         self.add_definition(DefinitionInfo {
             name: name.to_owned(),
             full_name: namespace_join(owner, name),
-            kind: DefinitionKind::Variable,
+            kind: if state {
+                DefinitionKind::State
+            } else {
+                DefinitionKind::Variable
+            },
             detail: format!("local {name}"),
             span,
             file_key: file_key_for_span(span),
@@ -1674,7 +1749,7 @@ impl NavigationIndex {
             let idx = self.add_definition_once(DefinitionInfo {
                 name: binding.name.clone(),
                 full_name: namespace_join(&handler_owner, &binding.name),
-                kind: DefinitionKind::Param,
+                kind: DefinitionKind::Parameter,
                 detail: binding_types.get(index).map_or_else(
                     || format!("delegate payload binding {}", binding.name),
                     |ty| format!("delegate payload binding {}: {ty}", binding.name),
@@ -1811,7 +1886,7 @@ impl NavigationIndex {
                 Stmt::For { var, loc, body, .. } => {
                     if let Some(span) = span_for_stmt_body(body) {
                         let mut definitions = HashMap::new();
-                        let idx = self.add_local_variable_definition(owner, var, *loc);
+                        let idx = self.add_local_variable_definition(owner, var, *loc, false);
                         definitions.insert(var.clone(), idx);
                         self.collect_stmt_scope_with_seed(
                             Some(parent),
@@ -2026,7 +2101,12 @@ impl NavigationIndex {
                             if inherited_names.is_some_and(|names| names.contains(name)) {
                                 continue;
                             }
-                            let idx = self.add_local_variable_definition(owner, name, *target_loc);
+                            let idx = self.add_local_variable_definition(
+                                owner,
+                                name,
+                                *target_loc,
+                                top_level_assigns_only,
+                            );
                             out.entry(name.to_owned()).or_insert(idx);
                         }
                     }
@@ -2200,6 +2280,30 @@ impl NavigationIndex {
             }
         }
         self.resolve_unqualified(&token.name, token.line, token.start_character)
+    }
+
+    fn token_is_definition(&self, token: &SourceToken, definition: &DefinitionInfo) -> bool {
+        if definition.span.is_zero() || token.name != definition.name {
+            return false;
+        }
+        if let (Some(current), Some(definition_file)) =
+            (&self.current_file_key, &definition.file_key)
+        {
+            if current != definition_file {
+                return false;
+            }
+        }
+
+        let start = byte_offset_for_lsp_position(
+            &self.source,
+            span_start_position(&self.source, definition.span),
+        );
+        let end = byte_offset_for_lsp_position(
+            &self.source,
+            span_end_position(&self.source, definition.span),
+        );
+        let declaration_start = first_identifier_offset(&self.source, start, end, &definition.name);
+        declaration_start == Some(token.byte_start)
     }
 
     fn resolve_callee(&self, callee: &str, line: u32, column: u32) -> Option<&DefinitionInfo> {
@@ -4495,6 +4599,26 @@ fn is_namespace_path(text: &str) -> bool {
 
 fn is_ident_byte(byte: Option<u8>) -> bool {
     byte.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn first_identifier_offset(source: &str, start: usize, end: usize, name: &str) -> Option<usize> {
+    let start = start.min(source.len());
+    let end = end.min(source.len()).max(start);
+    let mut search_start = start;
+    while let Some(relative) = source.get(search_start..end)?.find(name) {
+        let offset = search_start + relative;
+        let name_end = offset + name.len();
+        if !is_ident_byte(
+            offset
+                .checked_sub(1)
+                .and_then(|idx| source.as_bytes().get(idx).copied()),
+        ) && !is_ident_byte(source.as_bytes().get(name_end).copied())
+        {
+            return Some(offset);
+        }
+        search_start = name_end;
+    }
+    None
 }
 
 fn is_ident_continue(ch: char) -> bool {
