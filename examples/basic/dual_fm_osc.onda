@@ -37,10 +37,10 @@ init:
   oscillator = DualOscillator()
 
 sample:
-  oscillator(
+  left, right = oscillator(
     frequency = frequency,
     mod_depth = mod_depth,
     detune = detune
   )
-  out1 = tanh(oscillator.out1 * level)
-  out2 = tanh(oscillator.out2 * level)
+  out1 = tanh(left * level)
+  out2 = tanh(right * level)

@@ -6,12 +6,10 @@ const AuditionPatternLength = 6
 const AuditionNotes: f32[AuditionPatternLength] = [45.0, 52.0, 57.0, 64.0, 55.0, 60.0]
 
 proc EffectAudition:
-  outs 2
-
   params:
     auto_play = true
-    interval_s = 0.74
-    decay_s = 0.22
+    interval_s = 0.8
+    decay_s = 0.3
 
   init:
     fundamental = std::osc::Sine(amp = 0.64)

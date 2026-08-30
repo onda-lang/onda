@@ -3,13 +3,14 @@ import std/fft
 import std/osc
 import std/pitch
 
-namespace SpectralDelay<N = 1024, HistoryFrames = 64>:
+namespace SpectralDelay<N = 1024, HistoryFrames = 128>:
   proc Engine:
     params:
       delay_s = 0.34
       slope = 0.78
       feedback = 0.42
       stereo = 0.68
+      transition_s = 0.05 => update_transition
 
     init:
       analysis = std::fft<N>::RealFFT()
@@ -21,17 +22,26 @@ namespace SpectralDelay<N = 1024, HistoryFrames = 64>:
       spectrum_im_l: f32[N]
       spectrum_re_r: f32[N]
       spectrum_im_r: f32[N]
+      hop_size = N >> 1
+      maximum_delay = HistoryFrames - 2
+      smoothed_delay_hops = clamp(delay_s * SR / hop_size, 1.0, maximum_delay)
+      transition_coefficient = 0.0
       write_frame = 0
 
+    def update_transition():
+      if transition_s <= 0.0:
+        transition_coefficient = 0.0
+      else:
+        transition_coefficient = exp(-1.0 / (transition_s * SR))
+
     block:
-      hop_size = f32(N >> 1)
-      maximum_delay = f32(HistoryFrames - 2)
       delay_hops = clamp(delay_s * SR / hop_size, 1.0, maximum_delay)
       spectral_slope = clamp(slope, 0.0, 1.0)
       regeneration = clamp(feedback, 0.0, 0.92)
       stereo_spread = clamp(stereo, 0.0, 1.0)
 
       sample:
+        smoothed_delay_hops = delay_hops + (smoothed_delay_hops - delay_hops) * transition_coefficient
         if analysis.push(in1):
           half = N >> 1
           write_base = write_frame * N
@@ -45,7 +55,7 @@ namespace SpectralDelay<N = 1024, HistoryFrames = 64>:
           for k in 1..half:
             position = f32(k) / half
             delay_shape = 1.0 - spectral_slope + position * spectral_slope
-            left_delay = max(i32(delay_hops * delay_shape + 0.5), 1)
+            left_delay = max(i32(smoothed_delay_hops * delay_shape + 0.5), 1)
             stereo_offset = i32(position * stereo_spread * 7.0 + 0.5)
             right_delay = min(left_delay + stereo_offset, HistoryFrames - 1)
 
@@ -81,7 +91,7 @@ const Notes: f32[PatternLength] = [45.0, 52.0, 57.0, 48.0, 55.0, 62.0]
 params:
   auto_play = true
   live_input = false
-  delay_s = 0.34 {0.03, 0.64, log, unit = "s"}
+  delay_s = 0.34 {0.03, 1.0, log, unit = "s"}
   slope = 0.78 {0.0, 1.0}
   feedback = 0.42 {0.0, 0.9}
   stereo = 0.68 {0.0, 1.0}
@@ -89,7 +99,7 @@ params:
   level = 0.8 {0.0, 1.0}
 
 init:
-  spectral_delay = SpectralDelay<1024, 64>::Engine()
+  spectral_delay = SpectralDelay::Engine()
   saw_a = std::osc::Saw(amp = 0.54)
   saw_b = std::osc::Saw(amp = 0.28)
   saw_c = std::osc::Saw(amp = 0.18)
@@ -125,12 +135,13 @@ sample:
     audition = audition + saw_c(freq = frequency * 2.006)
     source = audition * envelope() * 0.28
 
-  spectral_delay(
+  delayed_l, delayed_r = spectral_delay(
     source,
     delay_s = delay_s,
     slope = slope,
     feedback = feedback,
     stereo = stereo
   )
-  out1 = tanh((source * (1.0 - mix) + spectral_delay.out1 * mix) * level)
-  out2 = tanh((source * (1.0 - mix) + spectral_delay.out2 * mix) * level)
+  
+  out1 = tanh((source * (1.0 - mix) + delayed_l * mix) * level)
+  out2 = tanh((source * (1.0 - mix) + delayed_r * mix) * level)

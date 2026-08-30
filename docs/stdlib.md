@@ -30,7 +30,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/pitch`](#stdpitch) | `A4_HZ`, `INV_LN_2_OVER_12`, `LN_2_OVER_12`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between` |
 | [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Slew`, `time_coefficient` |
 | [`std/dynamics`](#stddynamics) | `Compressor`, `Gate`, `Limiter`, `PeakFollower`, `RmsFollower`, `soft_knee_reduction_db` |
-| [`std/delay`](#stddelay) | `Cubic`, `Delay`, `Feedback`, `Integer`, `Linear`, `Smooth` |
+| [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `CrossfadeFeedback`, `Cubic`, `Delay`, `Feedback`, `Integer`, `Linear`, `Smooth` |
 | [`std/sample`](#stdsample) | `Player` |
 | [`std/data`](#stddata) | `Data` |
 | [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `Rectangular`, `STFT` |
@@ -891,7 +891,20 @@ proc Smooth<T>:
   outs<T> 1
   params:
     delay_samples: T = 1.0 {0.0, Capacity - 2}
-    transition_s: T = 0.02 => update_transition
+    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+  events:
+    reset():
+```
+
+### Processor `Crossfade<T>`
+
+```onda
+proc Crossfade<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_samples: T = 1.0 {0.0, Capacity - 2}
+    transition_s: T = 0.02 {0.0, 1.0} => update_transition
   events:
     reset():
 ```
@@ -906,6 +919,7 @@ proc Feedback<T>:
     delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
     feedback: T = 0.0
     mix: T = 1.0 {0.0, 1.0}
+    transition_s: T = 0.02 {0.0, 1.0}
   events:
     reset():
 ```
@@ -920,6 +934,37 @@ proc Delay<T>:
     delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
     feedback: T = 0.0
     mix: T = 1.0 {0.0, 1.0}
+    transition_s: T = 0.02 {0.0, 1.0}
+  events:
+    reset():
+```
+
+### Processor `CrossfadeFeedback<T>`
+
+```onda
+proc CrossfadeFeedback<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+    feedback: T = 0.0
+    mix: T = 1.0 {0.0, 1.0}
+    transition_s: T = 0.02 {0.0, 1.0}
+  events:
+    reset():
+```
+
+### Processor `CrossfadeDelay<T>`
+
+```onda
+proc CrossfadeDelay<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+    feedback: T = 0.0
+    mix: T = 1.0 {0.0, 1.0}
+    transition_s: T = 0.02 {0.0, 1.0}
   events:
     reset():
 ```

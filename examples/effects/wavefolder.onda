@@ -18,10 +18,10 @@ sample:
   source_l = in1
   source_r = in2
   if !live_input:
-    source_a()
-    source_b()
-    source_l = source_a.out1 * 0.72 + source_b.out1 * 0.28
-    source_r = source_a.out1 * 0.68 - source_b.out1 * 0.32
+    audition_a = source_a()
+    audition_b = source_b()
+    source_l = audition_a * 0.72 + audition_b * 0.28
+    source_r = audition_a * 0.68 - audition_b * 0.32
 
   wavefolder.folds = folds
   wavefolder.bias = bias

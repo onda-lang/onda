@@ -88,7 +88,7 @@ proc Benjolin:
     filter = std::filter::Svf()
 
   sample:
-    core(
+    triangle_a, pulse_a, triangle_b, pulse_b, mixed_a, mixed_b, filter_control = core(
       frequency_a = frequency_a,
       frequency_b = frequency_b,
       scale = scale,
@@ -98,16 +98,16 @@ proc Benjolin:
       feedback_loop = feedback_loop,
       filter_frequency = filter_frequency
     )
-    filter.update_coeffs(core.out7, resonance)
+    filter.update_coeffs(filter_control, resonance)
     filter.mode = filter_mode
-    filtered = filter(tanh((core.out5 * 0.72 + core.out6 * 0.28) * 1.8))
+    filtered = filter(tanh((mixed_a * 0.72 + mixed_b * 0.28) * 1.8))
     signals: f32[7] = [
-      core.out1,
-      core.out2,
-      core.out3,
-      core.out4,
-      core.out5,
-      core.out6,
+      triangle_a,
+      pulse_a,
+      triangle_b,
+      pulse_b,
+      mixed_a,
+      mixed_b,
       filtered
     ]
     out1 = signals[output_signal_l]
@@ -120,7 +120,7 @@ params:
   rungler_a = 0.16 {0.0, 1.0}
   rungler_b = 0.03 {0.0, 1.0}
   rungler_filter = 0.58 {0.0, 1.0}
-  feedback_loop = 0.82 {0.0, 1.0}
+  feedback_loop = 0.82 {0.0, 0.95}
   filter_frequency = 90.0 {20.0, 20000.0, log, "Hz"}
   resonance = 3.7 {0.5, 8.0}
   filter_mode = 0 {0, 5}
@@ -137,7 +137,7 @@ init:
   echo_r = std::delay::Delay(delay_s = 0.227, feedback = 0.35, mix = 1.0)
 
 sample:
-  benjolin(
+  benjolin_l, benjolin_r = benjolin(
     frequency_a = frequency_a,
     frequency_b = frequency_b,
     scale = scale,
@@ -151,8 +151,8 @@ sample:
     output_signal_l = output_signal_l,
     output_signal_r = output_signal_r
   )
-  dry_l = dc_l(benjolin.out1)
-  dry_r = dc_r(benjolin.out2)
+  dry_l = dc_l(benjolin_l)
+  dry_r = dc_r(benjolin_r)
   wet_l = echo_l(dry_l + dry_r * 0.2)
   wet_r = echo_r(dry_r + dry_l * 0.2)
   out1 = tanh((dry_l + wet_l * space) * level)

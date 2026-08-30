@@ -764,6 +764,145 @@ sample:
 }
 
 #[test]
+fn stdlib_feedback_delay_crossfades_abrupt_time_changes() {
+    let source = r#"
+import std/delay
+
+init:
+  frame = 0
+  delay = std::delay<32>::CrossfadeDelay(
+    delay_s = 2.0 / SR,
+    feedback = 0.0,
+    mix = 1.0,
+    transition_s = 4.0 / SR
+  )
+
+sample:
+  if frame < 6:
+    requested_delay = 2.0 / SR
+  else:
+    requested_delay = 4.0 / SR
+  out1 = delay(f32(frame + 1), delay_s = requested_delay)
+  frame += 1
+"#;
+    let frames = 11;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 11];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process crossfade feedback delay");
+    let expected = [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 6.0, 6.5, 7.0];
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn stdlib_feedback_delay_slews_one_read_head_for_time_changes() {
+    let source = r#"
+import std/delay
+
+init:
+  frame = 0
+  delay = std::delay<32>::Delay(
+    delay_s = 2.0 / SR,
+    feedback = 0.0,
+    mix = 1.0,
+    transition_s = 4.0 / SR
+  )
+
+sample:
+  if frame < 6:
+    requested_delay = 2.0 / SR
+  else:
+    requested_delay = 4.0 / SR
+  out1 = delay(f32(frame + 1), delay_s = requested_delay)
+  frame += 1
+"#;
+    let frames = 11;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 11];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process Doppler feedback delay");
+    assert!(output[6] > output[5] && output[6] < 5.0, "{output:?}");
+    for pair in output[5..].windows(2) {
+        assert!(pair[1] > pair[0], "{output:?}");
+    }
+}
+
+#[test]
+fn stdlib_feedback_delay_zero_transition_changes_time_immediately() {
+    let source = r#"
+import std/delay
+
+init:
+  frame = 0
+  delay = std::delay<32>::Delay(
+    delay_s = 2.0 / SR,
+    feedback = 0.0,
+    mix = 1.0,
+    transition_s = 0.0
+  )
+
+sample:
+  if frame < 6:
+    requested_delay = 2.0 / SR
+  else:
+    requested_delay = 4.0 / SR
+  out1 = delay(f32(frame + 1), delay_s = requested_delay)
+  frame += 1
+"#;
+    let frames = 11;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 11];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process immediate feedback delay");
+    assert_eq!(output, [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+}
+
+#[test]
+fn stdlib_feedback_delay_does_not_restart_an_active_time_crossfade() {
+    let source = r#"
+import std/delay
+
+init:
+  frame = 0
+  delay = std::delay<32>::CrossfadeDelay(
+    delay_s = 2.0 / SR,
+    feedback = 0.0,
+    mix = 1.0,
+    transition_s = 4.0 / SR
+  )
+
+sample:
+  if frame < 6:
+    requested_delay = 2.0 / SR
+  else:
+    requested_delay = f32(frame - 2) / SR
+  out1 = delay(f32(frame + 1), delay_s = requested_delay)
+  frame += 1
+"#;
+    let frames = 12;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 12];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process continuously retargeted feedback delay");
+    assert_eq!(
+        output,
+        [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 6.0, 6.5, 7.0, 7.0]
+    );
+}
+
+#[test]
 fn stdlib_dynamics_compressor_and_limiter_link_channels() {
     let source = r#"
 import std/dynamics
