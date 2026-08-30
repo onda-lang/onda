@@ -307,7 +307,12 @@ segmented-process contract, interface declarations, constants, ranged `i32`/`i64
 locals and state, and operations that cannot overflow. A ranged storage declaration is represented
 as an optional inclusive `integer_range` invariant while retaining its ordinary scalar physical
 type. Source `[begin, end)` domains lower this invariant to `begin..=end - 1`. State promotion and
-call lowering preserve those facts. The shared bounds-proof pass changes
+call lowering preserve those facts. A whole-program fixed point joins every statically resolved
+call site, propagating proven facts through value and read-only-reference parameters and back
+through scalar results, including forwarding chains. Any unknown call site makes the corresponding
+inferred parameter unknown. Read-write references retain only declared storage invariants after a
+call, and unresolved recursive arguments likewise prevent unsafe specialization. The shared
+bounds-proof pass changes
 `Clamp` or `Checked` to trusted `Unchecked` only when the complete analyzed index interval fits a
 fixed array, fixed interface array, constant-data array, projection, fixed array window, or fixed
 buffer-collection selector. Compiler-generated dispatch over fixed interface, struct, and processor

@@ -156,8 +156,8 @@ buffer_count = { "{" ~ NEWLINE* ~ (buffer_count_named | expr) ~ NEWLINE* ~ "}" }
 buffer_count_named = { "count" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
 field_list = { field_decl ~ (field_sep+ ~ field_decl)* ~ list_end_sep* }
 field_decl = {
-  (ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ field_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)?)
-  | (ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr)
+  (ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ field_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ (NEWLINE* ~ binding_range)?)
+  | (ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ (NEWLINE* ~ binding_range)?)
   | (ident ~ &field_sep)
 }
 field_type = { array_type | tuple_type | type_name | named_type }

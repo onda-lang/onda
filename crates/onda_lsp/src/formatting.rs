@@ -541,7 +541,13 @@ pub fn format_struct_field(field: &onda_frontend::StructField) -> String {
     let mut text = format!("{}: {}", field.name, format_field_type(&field.ty));
     if let Some(default) = &field.default {
         text.push_str(" = ");
-        text.push_str(&format_expr(default));
+        if let Some((value, range)) = format_binding_range_initializer(default) {
+            text.push_str(&value);
+            text.push(' ');
+            text.push_str(&range);
+        } else {
+            text.push_str(&format_expr(default));
+        }
     }
     text
 }
@@ -1596,6 +1602,20 @@ proc Worker:
             "{formatted}"
         );
         let reparsed = parse_program(&formatted).expect("formatted modifiers should parse");
+        assert_eq!(format_program(&reparsed), formatted);
+    }
+
+    #[test]
+    fn formatting_preserves_ranged_struct_fields() {
+        let source = "struct Cursor:\n  index: i32 = 0 {8, wrap}\n";
+        let program = parse_program(source).expect("ranged struct field should parse");
+        let formatted = format_program(&program);
+
+        assert!(
+            formatted.contains("  index: i32 = 0 {8, wrap}\n"),
+            "{formatted}"
+        );
+        let reparsed = parse_program(&formatted).expect("formatted struct field should parse");
         assert_eq!(format_program(&reparsed), formatted);
     }
 

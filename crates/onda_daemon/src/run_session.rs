@@ -243,6 +243,7 @@ pub struct RunSession {
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
     delegate_storage: Vec<u8>,
+    delegate_collection_enabled: bool,
     delegate_used: usize,
     delegate_record_count: u32,
     delegate_overflow_count: u32,
@@ -346,6 +347,11 @@ impl RunSession {
         }
         let param_values = HashMap::new();
         let param_runtime_values = HashMap::new();
+        let delegate_storage = if jit.delegate_count() == 0 {
+            Vec::new()
+        } else {
+            vec![0; RUN_DELEGATE_CAPACITY_BYTES]
+        };
         let mut print_storage = if jit.mir().log_sites.is_empty() {
             Vec::new()
         } else {
@@ -384,7 +390,8 @@ impl RunSession {
             buffer_bindings,
             input_buffers,
             output_buffers,
-            delegate_storage: Vec::new(),
+            delegate_storage,
+            delegate_collection_enabled: false,
             delegate_used: 0,
             delegate_record_count: 0,
             delegate_overflow_count: 0,
@@ -531,16 +538,11 @@ impl RunSession {
 
     pub fn set_delegate_collection_enabled(&mut self, enabled: bool) {
         self.begin_delegate_batch();
-        if enabled && self.delegate_storage.is_empty() && self.jit.delegate_count() != 0 {
-            self.delegate_storage = vec![0; RUN_DELEGATE_CAPACITY_BYTES];
-        } else if !enabled {
-            self.delegate_storage.clear();
-            self.delegate_storage.shrink_to_fit();
-        }
+        self.delegate_collection_enabled = enabled && !self.delegate_storage.is_empty();
     }
 
     pub fn delegate_collection_enabled(&self) -> bool {
-        !self.delegate_storage.is_empty()
+        self.delegate_collection_enabled
     }
 
     pub fn set_param_f64(&mut self, name: &str, value: f64) -> Result<(), Diagnostic> {
@@ -607,7 +609,11 @@ impl RunSession {
         let payload = event_payload_bytes(desc, values)?;
         self.begin_delegate_batch();
         self.begin_print_batch();
-        let mut batch = Self::next_delegate_batch(&mut self.delegate_storage, self.delegate_used);
+        let mut batch = Self::next_delegate_batch(
+            &mut self.delegate_storage,
+            self.delegate_used,
+            self.delegate_collection_enabled,
+        );
         let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
         let result = trigger_event_by_index(
             &mut self.instance,
@@ -710,8 +716,11 @@ impl RunSession {
         for &(start_frame, frames, flags) in segments {
             let delegate_start = self.delegate_used;
             let print_start = self.print_used;
-            let mut batch =
-                Self::next_delegate_batch(&mut self.delegate_storage, self.delegate_used);
+            let mut batch = Self::next_delegate_batch(
+                &mut self.delegate_storage,
+                self.delegate_used,
+                self.delegate_collection_enabled,
+            );
             let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
             let result = unsafe {
                 process_unchecked_segment(
@@ -803,8 +812,12 @@ impl RunSession {
         self.delegate_overflow_count = 0;
     }
 
-    fn next_delegate_batch(storage: &mut [u8], used: usize) -> Option<DelegateBatch<'_>> {
-        if storage.is_empty() {
+    fn next_delegate_batch(
+        storage: &mut [u8],
+        used: usize,
+        collection_enabled: bool,
+    ) -> Option<DelegateBatch<'_>> {
+        if !collection_enabled || storage.is_empty() {
             None
         } else {
             Some(DelegateBatch::from_storage(&mut storage[used..]))

@@ -30,7 +30,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/pitch`](#stdpitch) | `A4_HZ`, `INV_LN_2_OVER_12`, `LN_2_OVER_12`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between` |
 | [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Slew`, `time_coefficient` |
 | [`std/dynamics`](#stddynamics) | `Compressor`, `Gate`, `Limiter`, `PeakFollower`, `RmsFollower`, `soft_knee_reduction_db` |
-| [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Linear`, `Smooth` |
+| [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
 | [`std/sample`](#stdsample) | `Player` |
 | [`std/data`](#stddata) | `Data` |
 | [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `Rectangular`, `STFT` |
@@ -847,6 +847,20 @@ import std/delay
 
 Namespace: `std::delay<Capacity = SR * 2>`.
 
+### Struct `Line<T>`
+
+```onda
+struct Line<T>:
+  data: std::data<Capacity>::Data<T>
+  write_index: i32 = 0 {Capacity, wrap}
+  def read(self, delay_samples: i32):
+  def readL(self, delay_samples: T):
+  def readC(self, delay_samples: T):
+  def write(self, value: T):
+  def advance(self):
+  def clear(self):
+```
+
 ### Processor `Integer<T>`
 
 ```onda
@@ -1084,7 +1098,7 @@ struct RealFFT<T>:
   fft: FFT<T>
   input: T[N]
   window_kind: f32 = _WindowHann
-  write: i32 = 0
+  write: i32 = 0 {N, wrap}
   filled: i32 = 0
   since_hop: i32 = 0
   ready: bool = false
@@ -1113,7 +1127,7 @@ struct RealIFFT<T>:
   output: T[N]
   norm: T[N]
   window_kind: f32 = _WindowHann
-  frame: i32 = 0
+  frame: i32 = 0 {N, wrap}
   pending: i32 = 0
   overlap_frames: i32 = 0
   def size(self):

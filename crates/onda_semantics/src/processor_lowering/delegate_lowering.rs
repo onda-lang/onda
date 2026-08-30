@@ -2271,6 +2271,43 @@ fn bind_source_buffer_types(
     }
 }
 
+fn bind_top_validation_surfaces(
+    env: &mut crate::def_semantics::CallTypeEnv,
+    program: &Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+) {
+    let mut ignored_errors = Vec::new();
+    for (ports, kind) in program.blocks.iter().filter_map(|block| match block {
+        Block::Ins(ports) => Some((ports.decls.as_slice(), "input")),
+        Block::Outs(ports) => Some((ports.decls.as_slice(), "output")),
+        Block::KOuts(ports) => Some((ports.decls.as_slice(), "control output")),
+        _ => None,
+    }) {
+        let (_, scalar_types, array_types, _, _) =
+            expand_port_decls(ports, kind, options, &mut ignored_errors);
+        env.scalar_types.extend(scalar_types);
+        bind_validation_arrays(env, &array_types);
+    }
+    if let Some(params) = program.blocks.iter().find_map(|block| match block {
+        Block::Params(params) => Some(params.decls.as_slice()),
+        _ => None,
+    }) {
+        let (params, arrays) =
+            crate::declaration_coercion::coerce_params(params, options, &mut ignored_errors);
+        env.scalar_types
+            .extend(params.into_iter().map(|param| (param.name, param.ty)));
+        bind_validation_arrays(env, &arrays);
+    }
+    if let Some(buffers) = program.blocks.iter().find_map(|block| match block {
+        Block::Buffers(buffers) => Some(buffers.decls.as_slice()),
+        _ => None,
+    }) {
+        bind_source_buffer_types(env, buffers, options);
+    }
+    bind_validation_arrays(env, const_arrays);
+}
+
 fn bind_validation_arrays(
     env: &mut crate::def_semantics::CallTypeEnv,
     arrays: &HashMap<String, TypedArrayInfo>,
@@ -2418,14 +2455,6 @@ pub(super) fn resolve_source_overloads(
         .collect::<HashMap<_, _>>();
     let struct_defs =
         crate::declaration_coercion::coerce_struct_defs_for_inference(&raw_struct_defs, options);
-    let top_buffers = program
-        .blocks
-        .iter()
-        .find_map(|block| match block {
-            Block::Buffers(buffers) => Some(buffers.decls.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
     let proc_delegate_defs = program
         .blocks
         .iter()
@@ -2469,7 +2498,7 @@ pub(super) fn resolve_source_overloads(
     let (top_overloads, _) = crate::def_semantics::prepare_function_overloads(&mut top_defs);
 
     let mut top_state_env = crate::def_semantics::CallTypeEnv::default();
-    bind_source_buffer_types(&mut top_state_env, &top_buffers, options);
+    bind_top_validation_surfaces(&mut top_state_env, program, options, const_arrays);
     let provisional_return_types =
         source_overload_return_types(&top_defs, &top_state_env, &struct_defs);
     if let Some(Block::Init(init)) = program
@@ -2694,9 +2723,43 @@ fn delegate_validation_has_overloads(program: &Program) -> bool {
     })
 }
 
+fn delegate_validation_program(program: &Program) -> Program {
+    Program {
+        blocks: program
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                // Delegate reachability only needs executable bodies, callable
+                // declarations, owner metadata, and the types used to resolve
+                // their calls. In particular, cloning constant declarations can
+                // duplicate large array literals solely for this validation pass.
+                Block::Const(_)
+                | Block::Assert(_)
+                | Block::Namespace(_)
+                | Block::NamespaceAlias(_)
+                | Block::Use(_)
+                | Block::Graph(_) => None,
+                Block::Proc(proc) => {
+                    let mut proc = proc.clone();
+                    proc.consts.clear();
+                    proc.graph = None;
+                    Some(Block::Proc(proc))
+                }
+                Block::Struct(def) => {
+                    let mut def = def.clone();
+                    def.methods.clear();
+                    Some(Block::Struct(def))
+                }
+                _ => Some(block.clone()),
+            })
+            .collect(),
+    }
+}
+
 pub(super) fn validate_delegate_source_model(
     program: &Program,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let uses_delegates = program.blocks.iter().any(|block| match block {
@@ -2711,8 +2774,8 @@ pub(super) fn validate_delegate_source_model(
 
     validate_delegate_member_names(program, errors);
     let resolved_program = delegate_validation_has_overloads(program).then(|| {
-        let mut resolved = program.clone();
-        resolve_source_overloads(&mut resolved, options, &HashMap::new());
+        let mut resolved = delegate_validation_program(program);
+        resolve_source_overloads(&mut resolved, options, const_arrays);
         resolved
     });
     let program = resolved_program.as_ref().unwrap_or(program);

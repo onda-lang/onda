@@ -900,6 +900,7 @@ impl IntegerRange {
 pub struct FunctionRangeAnalysis {
     parameters: Vec<Option<IntegerRange>>,
     locals: Vec<Option<IntegerRange>>,
+    results: Vec<Option<IntegerRange>>,
 }
 
 impl FunctionRangeAnalysis {
@@ -914,6 +915,27 @@ impl FunctionRangeAnalysis {
     pub fn locals(&self) -> &[Option<IntegerRange>] {
         &self.locals
     }
+
+    pub fn result(&self, index: usize) -> Option<IntegerRange> {
+        self.results.get(index).copied().flatten()
+    }
+
+    pub fn results(&self) -> &[Option<IntegerRange>] {
+        &self.results
+    }
+}
+
+/// Conservative integer ranges for every function after propagating value
+/// facts through statically resolved call parameters and results.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ProgramRangeAnalysis {
+    functions: Vec<FunctionRangeAnalysis>,
+}
+
+impl ProgramRangeAnalysis {
+    pub fn function(&self, function: FunctionId) -> Option<&FunctionRangeAnalysis> {
+        self.functions.get(function.index())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -927,8 +949,99 @@ struct RangeSummary {
 /// operations. Wrapping operations widen to the complete scalar range unless
 /// the mathematical result is proven not to overflow.
 pub fn analyze_integer_ranges(program: &Program, function: FunctionId) -> FunctionRangeAnalysis {
-    let function = &program.functions[function.index()];
-    let parameters = function_parameter_ranges(program, function);
+    analyze_program_integer_ranges(program)
+        .function(function)
+        .cloned()
+        .unwrap_or_else(|| FunctionRangeAnalysis {
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            results: Vec::new(),
+        })
+}
+
+/// Infers integer ranges across the complete statically resolved call graph.
+/// Declared parameter ranges remain storage contracts; ranges inferred from
+/// callers are value facts and are propagated only through value and readonly
+/// parameters. Recursive calls participate in the same constraints; an
+/// unresolved recursive argument therefore prevents an inferred contract
+/// instead of allowing an external call alone to over-specialize it.
+pub fn analyze_program_integer_ranges(program: &Program) -> ProgramRangeAnalysis {
+    let base_parameters = program
+        .functions
+        .iter()
+        .map(|function| function_parameter_ranges(program, function))
+        .collect::<Vec<_>>();
+    let mut parameters = base_parameters.clone();
+    let mut results = program
+        .functions
+        .iter()
+        .map(|function| vec![None; function.results.len()])
+        .collect::<Vec<_>>();
+    loop {
+        let mut observations = program
+            .functions
+            .iter()
+            .map(|function| vec![RangeSummary::default(); function.params.len()])
+            .collect::<Vec<_>>();
+        let analyses = program
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(index, function)| {
+                analyze_function_integer_ranges(
+                    program,
+                    function,
+                    &parameters[index],
+                    &results,
+                    &mut observations,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let next_parameters = program
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(function_index, function)| {
+                function
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(parameter_index, parameter)| {
+                        base_parameters[function_index][parameter_index].or_else(|| {
+                            matches!(
+                                parameter.mode,
+                                crate::PassingMode::Value | crate::PassingMode::ReadOnlyReference
+                            )
+                            .then_some(observations[function_index][parameter_index].range)
+                            .flatten()
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let next_results = analyses
+            .iter()
+            .map(|analysis| analysis.results.clone())
+            .collect::<Vec<_>>();
+
+        if next_parameters == parameters && next_results == results {
+            return ProgramRangeAnalysis {
+                functions: analyses,
+            };
+        }
+        parameters = next_parameters;
+        results = next_results;
+    }
+}
+
+fn analyze_function_integer_ranges(
+    program: &Program,
+    function: &crate::Function,
+    parameters: &[Option<IntegerRange>],
+    callee_results: &[Vec<Option<IntegerRange>>],
+    observations: &mut [Vec<RangeSummary>],
+) -> FunctionRangeAnalysis {
     let mut environment = function
         .locals
         .iter()
@@ -941,17 +1054,81 @@ pub fn analyze_integer_ranges(program: &Program, function: FunctionId) -> Functi
             range: *range,
         })
         .collect::<Vec<_>>();
-    analyze_range_block(
+    let mut result_summary = vec![RangeSummary::default(); function.results.len()];
+    let context = RangeAnalysisContext {
         program,
         function,
-        &function.body,
-        &parameters,
-        &mut environment,
-        &mut summary,
-    );
-    FunctionRangeAnalysis {
         parameters,
+        callee_results,
+    };
+    {
+        let mut summaries = RangeAnalysisSummaries {
+            locals: &mut summary,
+            results: &mut result_summary,
+            observations,
+        };
+        analyze_range_block(&context, &function.body, &mut environment, &mut summaries);
+    }
+    FunctionRangeAnalysis {
+        parameters: parameters.to_vec(),
         locals: summary.into_iter().map(|summary| summary.range).collect(),
+        results: result_summary
+            .into_iter()
+            .map(|summary| summary.range)
+            .collect(),
+    }
+}
+
+struct RangeAnalysisContext<'a> {
+    program: &'a Program,
+    function: &'a crate::Function,
+    parameters: &'a [Option<IntegerRange>],
+    callee_results: &'a [Vec<Option<IntegerRange>>],
+}
+
+struct RangeAnalysisSummaries<'a> {
+    locals: &'a mut [RangeSummary],
+    results: &'a mut [RangeSummary],
+    observations: &'a mut [Vec<RangeSummary>],
+}
+
+fn call_argument_range(
+    program: &Program,
+    argument: &CallArgument,
+    parameters: &[Option<IntegerRange>],
+    environment: &[Option<IntegerRange>],
+) -> Option<IntegerRange> {
+    match argument {
+        CallArgument::Value(value) => range_of_value(*value, environment),
+        CallArgument::Place(place) if place.projections.is_empty() => {
+            range_of_plain_place(program, place.base, parameters, environment)
+        }
+        CallArgument::Place(_)
+        | CallArgument::SliceElement { .. }
+        | CallArgument::ArrayWindow { .. }
+        | CallArgument::SliceWindow { .. }
+        | CallArgument::Buffer(_)
+        | CallArgument::BufferParam(_)
+        | CallArgument::BufferSpan(_) => None,
+    }
+}
+
+fn range_of_plain_place(
+    program: &Program,
+    base: PlaceBase,
+    parameters: &[Option<IntegerRange>],
+    environment: &[Option<IntegerRange>],
+) -> Option<IntegerRange> {
+    match base {
+        PlaceBase::Local(local) => environment.get(local.index()).copied().flatten(),
+        PlaceBase::Parameter(parameter) => parameters.get(parameter.index()).copied().flatten(),
+        PlaceBase::State(state) => program
+            .state
+            .get(state.index())
+            .and_then(|slot| slot.integer_range)
+            .and_then(integer_range_from_invariant),
+        // Interface parameters and event payloads contain raw host values.
+        PlaceBase::Param(_) | PlaceBase::EventParam(_) => None,
     }
 }
 
@@ -977,12 +1154,10 @@ fn function_parameter_ranges(
 }
 
 fn analyze_range_block(
-    program: &Program,
-    function: &crate::Function,
+    context: &RangeAnalysisContext<'_>,
     block: &Block,
-    parameters: &[Option<IntegerRange>],
     environment: &mut [Option<IntegerRange>],
-    summary: &mut [RangeSummary],
+    summaries: &mut RangeAnalysisSummaries<'_>,
 ) {
     for statement in &block.statements {
         match &statement.kind {
@@ -993,35 +1168,72 @@ fn analyze_range_block(
                 let PlaceBase::Local(local) = destination.base else {
                     unreachable!()
                 };
-                let range = function.locals[local.index()]
+                let range = context.function.locals[local.index()]
                     .integer_range
                     .and_then(integer_range_from_invariant)
-                    .or_else(|| range_of_rvalue(program, function, value, parameters, environment));
+                    .or_else(|| {
+                        range_of_rvalue(context.program, value, context.parameters, environment)
+                    });
                 environment[local.index()] = range;
-                record_range(&mut summary[local.index()], range);
+                record_range(&mut summaries.locals[local.index()], range);
             }
             StatementKind::Call {
                 results,
                 function: callee,
                 args,
             } => {
-                for result in results {
-                    let range = function.locals[result.index()]
+                // Arguments are evaluated before call results are assigned. In
+                // particular, `%x = call f(%x)` must observe `%x`'s incoming
+                // range at the callee boundary.
+                for (index, argument) in args.iter().enumerate() {
+                    let Some(parameter) = context
+                        .program
+                        .functions
+                        .get(callee.index())
+                        .and_then(|callee| callee.params.get(index))
+                    else {
+                        continue;
+                    };
+                    if !matches!(
+                        parameter.mode,
+                        crate::PassingMode::Value | crate::PassingMode::ReadOnlyReference
+                    ) || parameter.integer_range.is_some()
+                    {
+                        continue;
+                    }
+                    let range = call_argument_range(
+                        context.program,
+                        argument,
+                        context.parameters,
+                        environment,
+                    );
+                    record_range(&mut summaries.observations[callee.index()][index], range);
+                }
+                for (result_index, result) in results.iter().enumerate() {
+                    let range = context.function.locals[result.index()]
                         .integer_range
-                        .and_then(integer_range_from_invariant);
+                        .and_then(integer_range_from_invariant)
+                        .or_else(|| {
+                            context
+                                .callee_results
+                                .get(callee.index())
+                                .and_then(|ranges| ranges.get(result_index))
+                                .copied()
+                                .flatten()
+                        });
                     environment[result.index()] = range;
-                    record_range(&mut summary[result.index()], range);
+                    record_range(&mut summaries.locals[result.index()], range);
                 }
                 for (index, argument) in args.iter().enumerate() {
-                    if program.functions[callee.index()].params[index].mode
+                    if context.program.functions[callee.index()].params[index].mode
                         == crate::PassingMode::ReadWriteReference
                     {
                         if let Some(local) = argument_local(argument) {
-                            let range = function.locals[local.index()]
+                            let range = context.function.locals[local.index()]
                                 .integer_range
                                 .and_then(integer_range_from_invariant);
                             environment[local.index()] = range;
-                            record_range(&mut summary[local.index()], range);
+                            record_range(&mut summaries.locals[local.index()], range);
                         }
                     }
                 }
@@ -1033,45 +1245,31 @@ fn analyze_range_block(
             } => {
                 let mut then_environment = environment.to_vec();
                 let mut else_environment = environment.to_vec();
-                analyze_range_block(
-                    program,
-                    function,
-                    then_block,
-                    parameters,
-                    &mut then_environment,
-                    summary,
-                );
-                analyze_range_block(
-                    program,
-                    function,
-                    else_block,
-                    parameters,
-                    &mut else_environment,
-                    summary,
-                );
+                analyze_range_block(context, then_block, &mut then_environment, summaries);
+                analyze_range_block(context, else_block, &mut else_environment, summaries);
                 join_range_environments(environment, &then_environment, &else_environment);
             }
             StatementKind::Loop { body } => {
                 let mut mutated = Vec::new();
-                collect_range_mutations(body, program, &mut mutated);
+                collect_range_mutations(body, context.program, &mut mutated);
                 let mut body_environment = environment.to_vec();
                 for local in &mutated {
-                    body_environment[local.index()] = function.locals[local.index()]
+                    body_environment[local.index()] = context.function.locals[local.index()]
                         .integer_range
                         .and_then(integer_range_from_invariant);
                 }
-                analyze_range_block(
-                    program,
-                    function,
-                    body,
-                    parameters,
-                    &mut body_environment,
-                    summary,
-                );
+                analyze_range_block(context, body, &mut body_environment, summaries);
                 for local in mutated {
-                    environment[local.index()] = function.locals[local.index()]
+                    environment[local.index()] = context.function.locals[local.index()]
                         .integer_range
                         .and_then(integer_range_from_invariant);
+                }
+            }
+            StatementKind::Return { values } => {
+                for (index, value) in values.iter().enumerate() {
+                    if let Some(result) = summaries.results.get_mut(index) {
+                        record_range(result, range_of_value(*value, environment));
+                    }
                 }
             }
             _ => {}
@@ -1081,26 +1279,15 @@ fn analyze_range_block(
 
 fn range_of_rvalue(
     program: &Program,
-    _function: &crate::Function,
     value: &Rvalue,
     parameters: &[Option<IntegerRange>],
     environment: &[Option<IntegerRange>],
 ) -> Option<IntegerRange> {
     match value {
         Rvalue::Use(value) => range_of_value(*value, environment),
-        Rvalue::Load(place) if place.projections.is_empty() => match place.base {
-            PlaceBase::Local(local) => environment.get(local.index()).copied().flatten(),
-            PlaceBase::Parameter(parameter) => parameters.get(parameter.index()).copied().flatten(),
-            // Interface parameter storage contains raw host values. Ranged parameters only
-            // acquire their invariant after the generated entry-point normalization.
-            PlaceBase::Param(_) => None,
-            PlaceBase::State(state) => program
-                .state
-                .get(state.index())
-                .and_then(|slot| slot.integer_range)
-                .and_then(integer_range_from_invariant),
-            _ => None,
-        },
+        Rvalue::Load(place) if place.projections.is_empty() => {
+            range_of_plain_place(program, place.base, parameters, environment)
+        }
         Rvalue::Unary { op, operand } => {
             let operand = range_of_value(*operand, environment)?;
             match op {
@@ -2686,6 +2873,205 @@ mod tests {
         assert_eq!(
             ranges.local(LocalId::new(1)),
             IntegerRange::new(ScalarType::I32, 1, 65)
+        );
+    }
+
+    #[test]
+    fn integer_ranges_flow_through_calls_and_remain_conservative() {
+        let i32_ty = TypeId::new(0);
+        let value_parameter = || crate::FunctionParam {
+            integer_range: None,
+            name: "value".to_owned(),
+            ty: i32_ty,
+            mode: crate::PassingMode::Value,
+        };
+        let readonly_parameter = || crate::FunctionParam {
+            mode: crate::PassingMode::ReadOnlyReference,
+            ..value_parameter()
+        };
+        let ranged_local = || Local {
+            integer_range: Some(crate::IntegerRangeInvariant {
+                min: ScalarValue::I32(0),
+                max: ScalarValue::I32(7),
+                mode: crate::IntegerRangeMode::Wrap,
+            }),
+            name: None,
+            ty: i32_ty,
+        };
+        let plain_local = || Local {
+            integer_range: None,
+            name: None,
+            ty: i32_ty,
+        };
+
+        let mut normalize = function("normalize", vec![value_parameter()], Block::default());
+        normalize.results.push(i32_ty);
+        normalize.locals.push(ranged_local());
+        normalize.body.statements.extend([
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::Parameter(ParameterId::new(0)),
+                    projections: Vec::new(),
+                }),
+            }),
+            statement(StatementKind::Return {
+                values: vec![Value::Local(LocalId::new(0))],
+            }),
+        ]);
+
+        let mut forward = function("forward", vec![value_parameter()], Block::default());
+        forward.results.push(i32_ty);
+        forward.locals.push(plain_local());
+        forward.body.statements.extend([
+            statement(StatementKind::Call {
+                results: vec![LocalId::new(0)],
+                function: FunctionId::new(2),
+                args: vec![CallArgument::Place(Place {
+                    base: PlaceBase::Parameter(ParameterId::new(0)),
+                    projections: Vec::new(),
+                })],
+            }),
+            statement(StatementKind::Return {
+                values: vec![Value::Local(LocalId::new(0))],
+            }),
+        ]);
+
+        let consume = function("consume", vec![readonly_parameter()], Block::default());
+        let mixed = function("mixed", vec![value_parameter()], Block::default());
+
+        let mut known_caller = function("known_caller", Vec::new(), Block::default());
+        known_caller.locals.extend([ranged_local(), plain_local()]);
+        known_caller.body.statements.extend([
+            statement(StatementKind::Call {
+                results: vec![LocalId::new(1)],
+                function: FunctionId::new(3),
+                args: vec![CallArgument::Value(Value::Local(LocalId::new(0)))],
+            }),
+            statement(StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(4),
+                args: vec![CallArgument::Place(Place::local(LocalId::new(1)))],
+            }),
+            statement(StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(5),
+                args: vec![CallArgument::Value(Value::Local(LocalId::new(1)))],
+            }),
+        ]);
+
+        let mut unknown_caller = function("unknown_caller", Vec::new(), Block::default());
+        unknown_caller.locals.push(plain_local());
+        unknown_caller
+            .body
+            .statements
+            .push(statement(StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(5),
+                args: vec![CallArgument::Value(Value::Local(LocalId::new(0)))],
+            }));
+
+        let mut recursive = function("recursive", vec![value_parameter()], Block::default());
+        recursive.locals.push(plain_local());
+        recursive.body.statements.extend([
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::Parameter(ParameterId::new(0)),
+                    projections: Vec::new(),
+                }),
+            }),
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Binary {
+                    op: BinaryOp::Add,
+                    lhs: Value::Local(LocalId::new(0)),
+                    rhs: Value::Constant(ScalarValue::I32(1)),
+                },
+            }),
+            statement(StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(8),
+                args: vec![CallArgument::Value(Value::Local(LocalId::new(0)))],
+            }),
+        ]);
+
+        let mut recursive_caller = function("recursive_caller", Vec::new(), Block::default());
+        recursive_caller.locals.push(ranged_local());
+        recursive_caller
+            .body
+            .statements
+            .push(statement(StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(8),
+                args: vec![CallArgument::Value(Value::Local(LocalId::new(0)))],
+            }));
+
+        let mut init = function("init", Vec::new(), Block::default());
+        init.kind = FunctionKind::Init;
+        let mut process = function("process", process_function_params(i32_ty), Block::default());
+        process.kind = FunctionKind::Process;
+        let mut program = Program::new(
+            CompileConfig {
+                sample_rate: 48_000.0,
+                block_size: 64,
+            },
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types.push(Type::Scalar(ScalarType::I32));
+        program.functions = vec![
+            init,
+            process,
+            normalize,
+            forward,
+            consume,
+            mixed,
+            known_caller,
+            unknown_caller,
+            recursive,
+            recursive_caller,
+        ];
+
+        let ranges = analyze_program_integer_ranges(&program);
+        let expected = IntegerRange::new(ScalarType::I32, 0, 7);
+        assert_eq!(
+            ranges
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
+            expected
+        );
+        assert_eq!(
+            ranges
+                .function(FunctionId::new(3))
+                .and_then(|ranges| ranges.result(0)),
+            expected
+        );
+        assert_eq!(
+            ranges
+                .function(FunctionId::new(4))
+                .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
+            expected
+        );
+        assert_eq!(
+            ranges
+                .function(FunctionId::new(6))
+                .and_then(|ranges| ranges.local(LocalId::new(1))),
+            expected
+        );
+        assert_eq!(
+            ranges
+                .function(FunctionId::new(5))
+                .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
+            None,
+            "one unknown call site must invalidate an inferred parameter range"
+        );
+        assert_eq!(
+            ranges
+                .function(FunctionId::new(8))
+                .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
+            None,
+            "an unresolved recursive call must prevent external specialization"
         );
     }
 }

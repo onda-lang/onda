@@ -409,6 +409,7 @@ pub struct TypedStructField {
     pub name: String,
     pub ty: TypedFieldType,
     pub default: Option<Expr>,
+    pub(crate) integer_range: Option<TypedIntegerRange>,
     pub struct_name: Option<String>,
     pub array_elem_ty: Option<PrimitiveType>,
     pub array_elem_struct: Option<String>,
@@ -12653,6 +12654,55 @@ sample:
     }
 
     #[test]
+    fn ranged_struct_fields_reach_flattened_state_and_method_parameters() {
+        let source = r#"
+struct Ring:
+  values: f32[8]
+  index: i32 = 0 {8, wrap}
+
+  def write(self, value: f32):
+    self.values[self.index] = value
+    self.index += 1
+
+init:
+  ring = Ring(index = 15)
+
+sample:
+  ring.write(1.0)
+  out1 = ring.values[ring.index]
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("ranged struct fields should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("ranged struct fields should lower to optimized MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+        let range = mir
+            .state
+            .iter()
+            .find(|state| state.name == "ring.index")
+            .and_then(|state| state.integer_range)
+            .expect("flattened struct state should retain its integer range");
+        assert_eq!(range.min, onda_mir::ScalarValue::I32(0), "{dump}");
+        assert_eq!(range.max, onda_mir::ScalarValue::I32(7), "{dump}");
+        assert_eq!(range.mode, onda_mir::IntegerRangeMode::Wrap, "{dump}");
+        assert!(
+            mir.functions
+                .iter()
+                .find(|function| function.name.contains("Ring.write"))
+                .and_then(|function| {
+                    function
+                        .params
+                        .iter()
+                        .find(|parameter| parameter.name == "self.index")
+                })
+                .and_then(|parameter| parameter.integer_range)
+                .is_some(),
+            "{dump}"
+        );
+        assert!(dump.contains("] unchecked"), "{dump}");
+    }
+
+    #[test]
     fn inferred_integer_binding_range_defaults_to_i32() {
         let source = r#"
 params:
@@ -12995,6 +13045,60 @@ sample:
                 .is_some(),
             "{dump}"
         );
+        assert!(dump.contains("] unchecked"), "{dump}");
+        assert!(!dump.contains("] clamp"), "{dump}");
+    }
+
+    #[test]
+    fn integer_ranges_cross_value_parameters_and_scalar_returns() {
+        let source = r#"
+const N = 8
+
+def bounded(index: i32):
+  result = index {N, wrap}
+  return result
+
+def forward(index: i32):
+  return bounded(index)
+
+struct Table:
+  values: f32[N]
+
+  def read(self, index: i32):
+    return self.values[index]
+
+init:
+  table: Table
+  cursor = 0 {N, wrap}
+
+sample:
+  out1 = table.read(forward(cursor))
+  cursor += 1
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("range-carrying calls should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("range-carrying calls should lower to optimized MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+
+        let (read_function, read) = mir
+            .functions
+            .iter()
+            .enumerate()
+            .find(|(_, function)| function.name.ends_with(".read"))
+            .expect("read helper should be present");
+        let read_ranges = onda_mir::analyze_program_integer_ranges(mir.as_program());
+        let read_index = read
+            .params
+            .iter()
+            .position(|parameter| parameter.name == "index")
+            .expect("read helper should retain its index parameter");
+        let range = read_ranges
+            .function(onda_mir::FunctionId::new(read_function as u32))
+            .and_then(|ranges| ranges.parameter(onda_mir::ParameterId::new(read_index as u32)))
+            .expect("the call site should constrain read's index parameter");
+        assert_eq!(range.min(), 0, "{dump}");
+        assert_eq!(range.max(), 7, "{dump}");
         assert!(dump.contains("] unchecked"), "{dump}");
         assert!(!dump.contains("] clamp"), "{dump}");
     }
@@ -13943,6 +14047,41 @@ def helper(value: buffer<f32>):
 
 init:
   helper(source)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+const values: f32[1] = [0.0]
+
+def helper(value: i32[]):
+  return
+
+def helper(value: f32[]):
+  finished()
+
+init:
+  helper(values)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+params:
+  selected: i32 = 1
+
+def helper(value: f32):
+  return
+
+def helper(value: i32):
+  finished()
+
+init:
+  helper(selected)
 
 sample:
   out1 = 0.0

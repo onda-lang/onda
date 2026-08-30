@@ -1290,6 +1290,7 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                     let mut parsed_ty = None::<FieldType>;
                     let mut ty_loc = Span::ZERO;
                     let mut default = None;
+                    let mut range = None;
                     for part in decl_inner {
                         match part.as_rule() {
                             Rule::field_type => {
@@ -1298,6 +1299,9 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                             }
                             Rule::expr => {
                                 default = Some(parse_expr_inner(part));
+                            }
+                            Rule::binding_range => {
+                                range = parse_binding_range_pair(part)?.range;
                             }
                             _ => {}
                         }
@@ -1309,6 +1313,30 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                     } else {
                         FieldType::Scalar(PrimitiveType::F32)
                     };
+                    if range.is_some()
+                        && !matches!(
+                            ty,
+                            FieldType::Scalar(PrimitiveType::I32 | PrimitiveType::I64)
+                        )
+                    {
+                        return Err(vec![syntax_at_loc(
+                            field_loc.as_ref(),
+                            "binding ranges require an i32 or i64 struct field",
+                        )]);
+                    }
+                    if let Some((func, lower, upper)) = range {
+                        let Some(value) = default.take() else {
+                            return Err(vec![syntax_at_loc(
+                                field_loc.as_ref(),
+                                "ranged struct fields require a default expression",
+                            )]);
+                        };
+                        default = Some(Expr::Call {
+                            loc: field_loc,
+                            func,
+                            args: vec![value, lower, upper],
+                        });
+                    }
                     fields.push(StructField {
                         loc: field_loc,
                         name: field_name.as_str().to_owned(),

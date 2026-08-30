@@ -4,6 +4,29 @@ import std/smoothing
 namespace std::delay<Capacity = SR * 2>:
   assert(Capacity > 3)
 
+  struct Line<T>:
+    data: std::data<Capacity>::Data<T>
+    write_index: i32 = 0 {Capacity, wrap}
+
+    def read(self, delay_samples: i32):
+      return self.data.read(self.write_index - delay_samples)
+
+    def readL(self, delay_samples: T):
+      return self.data.readL(T(self.write_index) - delay_samples)
+
+    def readC(self, delay_samples: T):
+      return self.data.readC(T(self.write_index) - delay_samples)
+
+    def write(self, value: T):
+      self.data.storage[self.write_index] = value
+
+    def advance(self):
+      self.write_index += 1
+
+    def clear(self):
+      self.data.storage[:] = 0.0
+      self.write_index = 0
+
   proc Integer<T>:
     ins<T> 1
     outs<T> 1
@@ -12,17 +35,15 @@ namespace std::delay<Capacity = SR * 2>:
       delay_samples = 1 {0, Capacity - 1}
 
     init:
-      data = std::data<Capacity>::Data<T>()
-      write_index = 0 {Capacity, wrap}
+      line = Line<T>()
 
     event reset():
-      data.storage[:] = 0.0
-      write_index = 0
+      line.clear()
 
     sample:
-      data.storage[write_index] = in1
-      out1 = data.read(write_index - delay_samples)
-      write_index += 1
+      line.write(in1)
+      out1 = line.read(delay_samples)
+      line.advance()
 
   proc Linear<T>:
     ins<T> 1
@@ -32,17 +53,15 @@ namespace std::delay<Capacity = SR * 2>:
       delay_samples = 1.0 {0.0, Capacity - 2}
 
     init:
-      data = std::data<Capacity>::Data<T>()
-      write_index = 0 {Capacity, wrap}
+      line = Line<T>()
 
     event reset():
-      data.storage[:] = 0.0
-      write_index = 0
+      line.clear()
 
     sample:
-      data.storage[write_index] = in1
-      out1 = data.readL(T(write_index) - delay_samples)
-      write_index += 1
+      line.write(in1)
+      out1 = line.readL(delay_samples)
+      line.advance()
 
   proc Cubic<T>:
     ins<T> 1
@@ -52,17 +71,15 @@ namespace std::delay<Capacity = SR * 2>:
       delay_samples = 1.0 {1.0, Capacity - 3}
 
     init:
-      data = std::data<Capacity>::Data<T>()
-      write_index = 0 {Capacity, wrap}
+      line = Line<T>()
 
     event reset():
-      data.storage[:] = 0.0
-      write_index = 0
+      line.clear()
 
     sample:
-      data.storage[write_index] = in1
-      out1 = data.readC(T(write_index) - delay_samples)
-      write_index += 1
+      line.write(in1)
+      out1 = line.readC(delay_samples)
+      line.advance()
 
   proc Smooth<T>:
     ins<T> 1
@@ -73,8 +90,7 @@ namespace std::delay<Capacity = SR * 2>:
       transition_s = 0.02 {0.0, 1.0} => update_transition
 
     init<T>:
-      data = std::data<Capacity>::Data<T>()
-      write_index = 0 {Capacity, wrap}
+      line = Line<T>()
       current_delay = delay_samples
       transition_coefficient = 0.0
 
@@ -82,16 +98,14 @@ namespace std::delay<Capacity = SR * 2>:
       transition_coefficient = std::smoothing::time_coefficient<T>(transition_s)
 
     event reset():
-      data.storage[:] = 0.0
-      write_index = 0
+      line.clear()
       current_delay = delay_samples
 
     sample:
       current_delay = delay_samples + (current_delay - delay_samples) * transition_coefficient
-      data.storage[write_index] = in1
-      out1 = data.readL(T(write_index) - current_delay)
-
-      write_index += 1
+      line.write(in1)
+      out1 = line.readL(current_delay)
+      line.advance()
 
   proc Crossfade<T>:
     ins<T> 1
@@ -102,8 +116,7 @@ namespace std::delay<Capacity = SR * 2>:
       transition_s = 0.02 {0.0, 1.0} => update_transition
 
     init<T>:
-      data = std::data<Capacity>::Data<T>()
-      write_index = 0 {Capacity, wrap}
+      line = Line<T>()
       old_delay = delay_samples
       target_delay = old_delay
       fade = 1.0
@@ -113,8 +126,7 @@ namespace std::delay<Capacity = SR * 2>:
       transition_step = 1.0 / max(transition_s * SR, T(1.0))
 
     event reset():
-      data.storage[:] = 0.0
-      write_index = 0
+      line.clear()
       old_delay = delay_samples
       target_delay = old_delay
       fade = 1.0
@@ -130,18 +142,18 @@ namespace std::delay<Capacity = SR * 2>:
           target_delay = requested
           fade = 0.0
 
-      data.storage[write_index] = in1
+      line.write(in1)
       if fade < 1.0:
-        a = data.readL(T(write_index) - old_delay)
-        b = data.readL(T(write_index) - target_delay)
+        a = line.readL(old_delay)
+        b = line.readL(target_delay)
         out1 = lerp(a, b, fade)
         fade = min(fade + transition_step, T(1.0))
         if fade >= 1.0:
           old_delay = target_delay
       else:
-        out1 = data.readL(T(write_index) - target_delay)
+        out1 = line.readL(target_delay)
 
-      write_index += 1
+      line.advance()
 
   proc Delay<T>:
     ins<T> 1
@@ -154,8 +166,7 @@ namespace std::delay<Capacity = SR * 2>:
       transition_s = 0.02 {0.0, 1.0} => update_transition
 
     init<T>:
-      data = std::data<Capacity>::Data<T>()
-      write_index = 0 {Capacity, wrap}
+      line = Line<T>()
       current_delay = delay_s * SR
       transition_coefficient = 0.0
 
@@ -163,16 +174,15 @@ namespace std::delay<Capacity = SR * 2>:
       transition_coefficient = std::smoothing::time_coefficient<T>(transition_s)
 
     event reset():
-      data.storage[:] = 0.0
-      write_index = 0
+      line.clear()
       current_delay = delay_s * SR
 
     sample:
       requested_delay = delay_s * SR
       current_delay = requested_delay + (current_delay - requested_delay) * transition_coefficient
-      delayed = data.readL(T(write_index) - current_delay)
-      data.storage[write_index] = in1 + delayed * feedback
-      write_index += 1
+      delayed = line.readL(current_delay)
+      line.write(in1 + delayed * feedback)
+      line.advance()
       out1 = lerp(in1, delayed, mix)
 
   proc CrossfadeDelay<T>:
@@ -186,8 +196,7 @@ namespace std::delay<Capacity = SR * 2>:
       transition_s = 0.02 {0.0, 1.0} => update_transition
 
     init<T>:
-      data = std::data<Capacity>::Data<T>()
-      write_index = 0 {Capacity, wrap}
+      line = Line<T>()
       old_delay = delay_s * SR
       target_delay = old_delay
       fade = 1.0
@@ -197,8 +206,7 @@ namespace std::delay<Capacity = SR * 2>:
       transition_step = 1.0 / max(transition_s * SR, T(1.0))
 
     event reset():
-      data.storage[:] = 0.0
-      write_index = 0
+      line.clear()
       old_delay = delay_s * SR
       target_delay = old_delay
       fade = 1.0
@@ -215,15 +223,15 @@ namespace std::delay<Capacity = SR * 2>:
           fade = 0.0
 
       if fade < 1.0:
-        a = data.readL(T(write_index) - old_delay)
-        b = data.readL(T(write_index) - target_delay)
+        a = line.readL(old_delay)
+        b = line.readL(target_delay)
         delayed = lerp(a, b, fade)
         fade = min(fade + transition_step, T(1.0))
         if fade >= 1.0:
           old_delay = target_delay
       else:
-        delayed = data.readL(T(write_index) - target_delay)
+        delayed = line.readL(target_delay)
 
-      data.storage[write_index] = in1 + delayed * feedback
-      write_index += 1
+      line.write(in1 + delayed * feedback)
+      line.advance()
       out1 = lerp(in1, delayed, mix)

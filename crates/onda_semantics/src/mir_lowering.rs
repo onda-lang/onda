@@ -3257,16 +3257,16 @@ fn collect_for_body_range_annotations(
 }
 
 fn annotate_structured_for_body_ranges(program: &mut onda_mir::Program) {
+    let program_ranges = onda_mir::analyze_program_integer_ranges(program);
     for function_index in 0..program.functions.len() {
-        let ranges = onda_mir::analyze_integer_ranges(
-            program,
-            onda_mir::FunctionId::new(function_index as u32),
-        );
+        let ranges = program_ranges
+            .function(onda_mir::FunctionId::new(function_index as u32))
+            .expect("program range analysis covers every MIR function");
         let mut annotations = Vec::new();
         collect_for_body_range_annotations(
             &program.functions[function_index],
             &program.functions[function_index].body,
-            &ranges,
+            ranges,
             &mut HashMap::new(),
             &mut annotations,
         );

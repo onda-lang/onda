@@ -4792,6 +4792,52 @@ sample:
 }
 
 #[test]
+fn parses_integer_binding_ranges_on_struct_fields() {
+    let program = parse_program(
+        r#"
+struct Cursor:
+  index: i32 = 0 {8, wrap}
+  limit = 7 {0..=7}
+"#,
+    )
+    .expect("integer struct field ranges should parse");
+    let struct_def = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Struct(struct_def) => Some(struct_def),
+            _ => None,
+        })
+        .expect("struct block");
+    let expected = [
+        BuiltinFn::BindingCountWrap,
+        BuiltinFn::BindingRangeInclusiveClamp,
+    ];
+    for (field, expected_func) in struct_def.fields.iter().zip(expected) {
+        let Some(Expr::Call { func, args, .. }) = &field.default else {
+            panic!("expected a ranged struct field default");
+        };
+        assert_eq!(*func, expected_func);
+        assert_eq!(args.len(), 3);
+        assert_eq!(field.ty, FieldType::Scalar(PrimitiveType::I32));
+    }
+}
+
+#[test]
+fn rejects_binding_ranges_on_non_integer_struct_fields() {
+    let errors = parse_program(
+        r#"
+struct Invalid:
+  value: f32 = 0.0 {8, wrap}
+"#,
+    )
+    .expect_err("non-integer struct field ranges should be rejected");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("binding ranges require an i32 or i64 struct field")));
+}
+
+#[test]
 fn parses_pinned_init_state_independently_from_integer_ranges() {
     let program = parse_program(
         r#"

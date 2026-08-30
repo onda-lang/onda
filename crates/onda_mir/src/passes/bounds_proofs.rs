@@ -1,7 +1,6 @@
 use crate::{
-    analyze_integer_ranges, Block, BoundsMode, CallArgument, Function, FunctionId,
-    FunctionRangeAnalysis, Place, PlaceBase, Projection, Rvalue, ScalarValue, StatementKind, Type,
-    TypeId, Value,
+    Block, BoundsMode, CallArgument, Function, FunctionId, FunctionRangeAnalysis, Place, PlaceBase,
+    Projection, Rvalue, ScalarValue, StatementKind, Type, TypeId, Value,
 };
 
 use super::PassStats;
@@ -11,15 +10,18 @@ pub(super) fn eliminate_proven_bounds_checks(
     stats: &mut PassStats,
 ) -> bool {
     let mut changed = false;
+    let program_ranges = crate::analyze_program_integer_ranges(program);
     for function_index in 0..program.functions.len() {
         let function_id = FunctionId::new(function_index as u32);
-        let ranges = analyze_integer_ranges(program, function_id);
+        let ranges = program_ranges
+            .function(function_id)
+            .expect("program range analysis covers every MIR function");
         let function = program.functions[function_index].clone();
         let mut body = std::mem::take(&mut program.functions[function_index].body);
         let context = Context {
             program,
             function: &function,
-            ranges: &ranges,
+            ranges,
         };
         let eliminated = prove_block(&context, &mut body);
         program.functions[function_index].body = body;

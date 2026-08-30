@@ -635,6 +635,7 @@ struct FunctionDecl {
 struct ModuleEmitter<'a> {
     program: &'a Program,
     effects: onda_mir::EffectAnalysis,
+    ranges: onda_mir::ProgramRangeAnalysis,
     context: LLVMContextRef,
     module: LLVMModuleRef,
     types: &'a LoweredTypes,
@@ -700,13 +701,16 @@ impl<'a> ModuleEmitter<'a> {
             0,
         );
         let effects = onda_mir::analyze_effects(program);
+        let ranges = onda_mir::analyze_program_integer_ranges(program);
         let const_globals = build_const_globals(program, context, module)?;
-        let functions = declare_functions(program, &effects, context, module, types, layouts)?;
+        let functions =
+            declare_functions(program, &effects, &ranges, context, module, types, layouts)?;
         let host_alias_scopes = build_host_alias_scopes(context);
         let range_metadata_kind = LLVMGetMDKindIDInContext(context, c"range".as_ptr(), 5);
         Ok(Self {
             program,
             effects,
+            ranges,
             context,
             module,
             types,
@@ -735,6 +739,7 @@ impl<'a> ModuleEmitter<'a> {
 unsafe fn declare_functions(
     program: &Program,
     effects: &onda_mir::EffectAnalysis,
+    program_ranges: &onda_mir::ProgramRangeAnalysis,
     context: LLVMContextRef,
     module: LLVMModuleRef,
     types: &LoweredTypes,
@@ -745,6 +750,10 @@ unsafe fn declare_functions(
     let ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
     let mut declarations = Vec::with_capacity(program.functions.len());
     for (index, function) in program.functions.iter().enumerate() {
+        let function_id = onda_mir::FunctionId::new(index as u32);
+        let ranges = program_ranges
+            .function(function_id)
+            .expect("program range analysis covers every MIR function");
         let (name, fn_ty, internal) = match function.kind {
             FunctionKind::Init => {
                 let mut args = [
@@ -821,7 +830,7 @@ unsafe fn declare_functions(
         if internal {
             LLVMSetLinkage(value, LLVMLinkage::LLVMInternalLinkage);
         }
-        let function_effects = effects.function(onda_mir::FunctionId::new(index as u32));
+        let function_effects = effects.function(function_id);
         // MIR has no exceptions, allocation, atomics, or synchronization.
         // Carrying those source-level facts into LLVM is substantially more
         // robust than asking target passes to infer them through the opaque
@@ -901,10 +910,6 @@ unsafe fn declare_functions(
                 for parameter in [5_u32, 6, 7] {
                     add_enum_param_attribute(context, value, parameter, "noundef")?;
                 }
-                let ranges = onda_mir::analyze_integer_ranges(
-                    program,
-                    onda_mir::FunctionId::new(index as u32),
-                );
                 for (parameter, llvm_index) in [5_u32, 6, 7].into_iter().enumerate() {
                     let Some(range) =
                         ranges.parameter(onda_mir::ParameterId::new(parameter as u32))
@@ -926,18 +931,30 @@ unsafe fn declare_functions(
                 add_enum_param_attribute(context, value, 3, "noalias")?;
             }
             FunctionKind::User => {
+                if function.results.len() == 1 {
+                    if let Some(range) = ranges.result(0) {
+                        add_integer_range_attribute(
+                            context,
+                            value,
+                            llvm_sys::LLVMAttributeReturnIndex,
+                            analyzed_integer_value_range(range),
+                        )?;
+                    }
+                }
                 for (index, parameter) in function.params.iter().enumerate() {
                     // LLVM parameter attributes are one-based, and every MIR
                     // user function has the opaque runtime context in slot 1.
                     let llvm_index = index as u32 + 2;
                     add_enum_param_attribute(context, value, llvm_index, "noundef")?;
                     if parameter.mode == onda_mir::PassingMode::Value {
-                        if let Some(range) = parameter.integer_range {
+                        if let Some(range) =
+                            ranges.parameter(onda_mir::ParameterId::new(index as u32))
+                        {
                             add_integer_range_attribute(
                                 context,
                                 value,
                                 llvm_index,
-                                invariant_value_range(range),
+                                analyzed_integer_value_range(range),
                             )?;
                         }
                         continue;
@@ -1363,6 +1380,10 @@ unsafe fn emit_function_body(
         let mut emitter = FunctionEmitter {
             module,
             function,
+            ranges: module
+                .ranges
+                .function(onda_mir::FunctionId::new(function_index as u32))
+                .expect("program range analysis covers every MIR function"),
             declaration,
             builder,
             prologue_builder,
@@ -1433,6 +1454,7 @@ struct FusedClampedIndex {
 struct FunctionEmitter<'a, 'm> {
     module: &'m ModuleEmitter<'a>,
     function: &'a onda_mir::Function,
+    ranges: &'m onda_mir::FunctionRangeAnalysis,
     declaration: FunctionDecl,
     builder: LLVMBuilderRef,
     /// A separate insertion cursor used to materialize stable host-buffer
@@ -6233,12 +6255,13 @@ impl FunctionEmitter<'_, '_> {
             return None;
         }
         match place.base {
-            onda_mir::PlaceBase::Local(local) => self.function.locals[local.index()]
-                .integer_range
-                .map(invariant_value_range),
-            onda_mir::PlaceBase::Parameter(parameter) => self.function.params[parameter.index()]
-                .integer_range
-                .map(invariant_value_range),
+            onda_mir::PlaceBase::Local(local) => {
+                self.ranges.local(local).map(analyzed_integer_value_range)
+            }
+            onda_mir::PlaceBase::Parameter(parameter) => self
+                .ranges
+                .parameter(parameter)
+                .map(analyzed_integer_value_range),
             onda_mir::PlaceBase::State(state) => self.module.program.state[state.index()]
                 .integer_range
                 .map(invariant_value_range),
@@ -9013,8 +9036,8 @@ sample:
     }
 
     #[test]
-    fn llvm_receives_only_proven_integer_storage_ranges() {
-        let (_, mut mir) = source_program(
+    fn llvm_receives_proven_storage_and_call_boundary_ranges() {
+        let (_, mir) = source_program(
             r#"
 params:
   selector: i32 = 0 {min = 0, max = 3}
@@ -9026,25 +9049,10 @@ def preserve(index: i32) -> i32:
   return index
 
 sample:
-  out1 = f32(preserve(selector) + cursor)
+  out1 = f32(selector + preserve(cursor))
 "#,
             1,
         );
-        let preserve = mir
-            .functions
-            .iter_mut()
-            .find(|function| {
-                function
-                    .params
-                    .iter()
-                    .any(|parameter| parameter.name == "index")
-            })
-            .expect("preserve function");
-        preserve.params[0].integer_range = Some(onda_mir::IntegerRangeInvariant {
-            min: onda_mir::ScalarValue::I32(0),
-            max: onda_mir::ScalarValue::I32(3),
-            mode: onda_mir::IntegerRangeMode::Clamp,
-        });
         let ir = lower_mir_to_llvm_ir_with_options(
             &mir,
             MirCompileOptions {
@@ -9070,9 +9078,15 @@ sample:
         );
         assert!(
             ir.lines().any(|line| {
-                line.contains("define internal") && line.contains("range(i32 0, 4)")
+                line.contains("define internal") && line.matches("range(i32 -4, 4)").count() == 2
             }),
-            "ranged value parameters should carry a range attribute: {ir}"
+            "inferred value parameters and returns should both carry range attributes: {ir}"
+        );
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("load i32") && line.contains("%param_0") && line.contains("!range")
+            }),
+            "loads should retain inferred call-boundary ranges: {ir}"
         );
     }
 

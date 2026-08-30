@@ -495,7 +495,7 @@ assignment currently works only with a variable or field path. Indexed and
 slice targets require an ordinary assignment such as
 `values[i] = values[i] + amount`.
 
-Integer locals and state may carry a finite storage domain:
+Integer locals, state, and scalar struct fields may carry a finite storage domain:
 
 ```onda
 const RingSize = 1024
@@ -536,9 +536,12 @@ taps = 200        # clamps to 127
 ```
 
 Reading a ranged binding produces an ordinary `i32` or `i64`; arithmetic does not inherit its
-storage mode. The compiler retains the numeric invariant separately and uses it to remove index
-normalization and bounds checks when the complete derived range is known to fit a statically sized
-collection. This applies to fixed arrays and other fixed-size indexed storage:
+storage mode. The compiler retains the numeric fact separately for the resulting value and carries
+proven ranges through arithmetic, statically resolved value and read-only-reference arguments, and
+scalar returns. All call sites must support an inferred parameter range; an unknown call site or
+an uncontracted read-write reference makes it unknown. These facts remove index normalization and
+bounds checks when the complete derived range fits a statically sized collection. This applies to
+fixed arrays and other fixed-size indexed storage:
 
 ```onda
 const TapCount = 8
@@ -1153,12 +1156,16 @@ struct Voice:
   phase                 # f32, default 0.0
   active = false        # bool inferred from the default
   gain: f64 = 1.0       # explicit type and default
+  cursor: i32 = 0 {8, wrap} # ranged integer field
   taps: f32[4]          # fixed array, default-filled
 ```
 
 A bare field defaults to `f32`. A field with `= expr` infers its type from that compile-time
 default. A typed field accepts an optional compatible default; otherwise its scalar, tuple, array,
-or nested-struct value is initialized from that type's defaults.
+or nested-struct value is initialized from that type's defaults. An `i32` or `i64` field may use
+the same [finite storage domain](#assignments) as an integer local or state binding. Constructor
+arguments and every later field assignment are normalized on storage, and the compiler retains the
+domain on flattened state and reference parameters for index-range proofs.
 
 Construction:
 

@@ -39,6 +39,12 @@ release; earlier releases are available on the
   accept `full: bool = false`, with `full = true` selecting full initialization.
 - Added explicit `i32` and `i64` induction types with `for i: TYPE in ...`; unannotated loops
   continue to use `i32`.
+- Added finite `i32` and `i64` storage domains to struct fields. Constructor arguments and field
+  assignments now apply the declared clamp or wrap policy, while flattened state and struct
+  reference parameters retain the invariant for index-range proofs and bounds-check elimination.
+  Integer range facts now also propagate to a fixed point through statically resolved value and
+  read-only-reference parameters and scalar returns; writable references remain conservative.
+  Standard-library data indexing, delay lines, and real-FFT cursors use these contracts directly.
 - Added bare `return` to non-value-returning runtime `def` bodies for early exit. Bare and
   value-bearing returns cannot be mixed, and `const def` remains value-returning.
 - Added allocation-only and initialized instance-construction variants to the Rust runtime, C API,

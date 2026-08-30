@@ -8060,7 +8060,7 @@ fn def_call_type_env<'a>(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct IntegerBindingRange {
+pub(crate) struct IntegerBindingRange {
     ty: PrimitiveType,
     normalize: BuiltinFn,
     bounds: IntegerBindingRangeBounds,
@@ -8076,7 +8076,7 @@ enum IntegerBindingRangeBounds {
     Inclusive,
 }
 
-fn typed_integer_range(range: &IntegerBindingRange) -> Option<TypedIntegerRange> {
+pub(crate) fn typed_integer_range(range: &IntegerBindingRange) -> Option<TypedIntegerRange> {
     let (Expr::Int { value: min, .. }, Expr::Int { value: max, .. }) = (&range.lower, &range.upper)
     else {
         return None;
@@ -8089,14 +8089,14 @@ fn typed_integer_range(range: &IntegerBindingRange) -> Option<TypedIntegerRange>
     })
 }
 
-fn integer_binding_range_assignment(stmt: &Stmt) -> Option<(&str, IntegerBindingRange)> {
-    let Stmt::Assign {
-        target: AssignTarget::Var(name),
-        decl_ty: Some(DeclType::Scalar(ty @ (PrimitiveType::I32 | PrimitiveType::I64))),
-        expr: Expr::Call { func, args, .. },
-        ..
-    } = stmt
-    else {
+pub(crate) fn integer_binding_range_expr(
+    ty: PrimitiveType,
+    expr: &Expr,
+) -> Option<IntegerBindingRange> {
+    if !matches!(ty, PrimitiveType::I32 | PrimitiveType::I64) {
+        return None;
+    }
+    let Expr::Call { func, args, .. } = expr else {
         return None;
     };
     let (normalize, bounds, parser_marker) = match func {
@@ -8140,19 +8140,27 @@ fn integer_binding_range_assignment(stmt: &Stmt) -> Option<(&str, IntegerBinding
         ),
         _ => return None,
     };
-    (args.len() == 3).then(|| {
-        (
-            name.as_str(),
-            IntegerBindingRange {
-                ty: *ty,
-                normalize,
-                bounds,
-                parser_marker,
-                lower: args[1].clone(),
-                upper: args[2].clone(),
-            },
-        )
+    (args.len() == 3).then(|| IntegerBindingRange {
+        ty,
+        normalize,
+        bounds,
+        parser_marker,
+        lower: args[1].clone(),
+        upper: args[2].clone(),
     })
+}
+
+fn integer_binding_range_assignment(stmt: &Stmt) -> Option<(&str, IntegerBindingRange)> {
+    let Stmt::Assign {
+        target: AssignTarget::Var(name),
+        decl_ty: Some(DeclType::Scalar(ty)),
+        expr,
+        ..
+    } = stmt
+    else {
+        return None;
+    };
+    integer_binding_range_expr(*ty, expr).map(|range| (name.as_str(), range))
 }
 
 fn declared_integer_binding_range(stmt: &Stmt) -> Option<(&str, IntegerBindingRange)> {
@@ -8314,7 +8322,7 @@ fn validate_integer_binding_range(
     Some((begin, inclusive_end))
 }
 
-fn canonicalize_integer_binding_range(
+pub(crate) fn canonicalize_integer_binding_range(
     range: &mut IntegerBindingRange,
     location: SourceLoc,
     options: AnalysisOptions,
@@ -8332,7 +8340,7 @@ fn canonicalize_integer_binding_range(
     true
 }
 
-fn wrap_ranged_assignment(expr: &mut Expr, range: &IntegerBindingRange) {
+pub(crate) fn wrap_ranged_assignment(expr: &mut Expr, range: &IntegerBindingRange) {
     if let Expr::Call { func, args, .. } = expr {
         let marker_normalize = match func {
             BuiltinFn::BindingCountClamp
@@ -8455,6 +8463,238 @@ fn proc_integer_binding_range_aliases(
         aliases.insert(format!("self.{field}"), range.clone());
     }
     aliases
+}
+
+fn integer_binding_range_from_typed(range: &TypedIntegerRange) -> IntegerBindingRange {
+    IntegerBindingRange {
+        ty: range.ty,
+        normalize: if range.wrap {
+            BuiltinFn::RangeWrap
+        } else {
+            BuiltinFn::RangeClamp
+        },
+        bounds: IntegerBindingRangeBounds::Inclusive,
+        parser_marker: false,
+        lower: Expr::int(range.min),
+        upper: Expr::int(range.max),
+    }
+}
+
+fn extend_struct_field_integer_ranges(
+    ranges: &mut HashMap<String, IntegerBindingRange>,
+    root: &str,
+    struct_name: &str,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    let Some(fields) = struct_defs.get(struct_name) else {
+        return;
+    };
+    for field in fields {
+        let Some(range) = &field.integer_range else {
+            continue;
+        };
+        ranges.insert(
+            format!("{root}.{}", field.name),
+            integer_binding_range_from_typed(range),
+        );
+    }
+}
+
+fn struct_param_integer_ranges(
+    def: &FunctionDef,
+    param_kinds: &[TypedFnParam],
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> HashMap<String, IntegerBindingRange> {
+    let mut ranges = HashMap::new();
+    for (param, kind) in def.params.iter().zip(param_kinds) {
+        let TypedFnParam::Struct { struct_name } = kind else {
+            continue;
+        };
+        extend_struct_field_integer_ranges(&mut ranges, &param.name, struct_name, struct_defs);
+    }
+    ranges
+}
+
+fn struct_array_param_integer_ranges(
+    def: &FunctionDef,
+    param_kinds: &[TypedFnParam],
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> HashMap<String, IntegerBindingRange> {
+    let mut ranges = HashMap::new();
+    for (param, kind) in def.params.iter().zip(param_kinds) {
+        let TypedFnParam::StructArray { struct_name } = kind else {
+            continue;
+        };
+        extend_struct_field_integer_ranges(&mut ranges, &param.name, struct_name, struct_defs);
+    }
+    ranges
+}
+
+fn normalize_struct_constructor_ranges_in_expr(
+    expr: &mut Expr,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    match expr {
+        Expr::Index { index, .. } => {
+            normalize_struct_constructor_ranges_in_expr(index, struct_defs);
+        }
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => {
+            for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                normalize_struct_constructor_ranges_in_expr(coordinate, struct_defs);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            normalize_struct_constructor_ranges_in_expr(&mut spec.size, struct_defs);
+            if let Some(values) = init {
+                for value in values {
+                    normalize_struct_constructor_ranges_in_expr(value, struct_defs);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            normalize_struct_constructor_ranges_in_expr(lhs, struct_defs);
+            normalize_struct_constructor_ranges_in_expr(rhs, struct_defs);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                normalize_struct_constructor_ranges_in_expr(arg, struct_defs);
+            }
+        }
+        Expr::UserCall { args, .. } => {
+            for arg in args.iter_mut() {
+                normalize_struct_constructor_ranges_in_expr(&mut arg.expr, struct_defs);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            normalize_struct_constructor_ranges_in_expr(expr, struct_defs);
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                normalize_struct_constructor_ranges_in_expr(value, struct_defs);
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+
+    let Expr::UserCall { name, args, .. } = expr else {
+        return;
+    };
+    let Some(fields) = struct_defs.get(name) else {
+        return;
+    };
+    let scalar_fields = fields
+        .iter()
+        .filter(|field| matches!(field.ty, TypedFieldType::Scalar(_)))
+        .collect::<Vec<_>>();
+    let mut positional_index = 0usize;
+    for arg in args {
+        let field = if let Some(arg_name) = &arg.name {
+            scalar_fields
+                .iter()
+                .copied()
+                .find(|field| field.name == *arg_name)
+        } else {
+            let field = scalar_fields.get(positional_index).copied();
+            positional_index += 1;
+            field
+        };
+        let Some(range) = field.and_then(|field| field.integer_range.as_ref()) else {
+            continue;
+        };
+        wrap_ranged_assignment(&mut arg.expr, &integer_binding_range_from_typed(range));
+    }
+}
+
+fn normalize_struct_constructor_ranges_in_list(
+    statements: &mut [Stmt],
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    for statement in statements {
+        match statement {
+            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                normalize_struct_constructor_ranges_in_expr(expr, struct_defs);
+            }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    normalize_struct_constructor_ranges_in_expr(value, struct_defs);
+                }
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                normalize_struct_constructor_ranges_in_expr(cond, struct_defs);
+                normalize_struct_constructor_ranges_in_list(then_branch, struct_defs);
+                normalize_struct_constructor_ranges_in_list(else_branch, struct_defs);
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                normalize_struct_constructor_ranges_in_expr(start, struct_defs);
+                normalize_struct_constructor_ranges_in_expr(end, struct_defs);
+                if let Some(step) = step {
+                    normalize_struct_constructor_ranges_in_expr(step, struct_defs);
+                }
+                normalize_struct_constructor_ranges_in_list(body, struct_defs);
+            }
+            Stmt::While { cond, body, .. } => {
+                normalize_struct_constructor_ranges_in_expr(cond, struct_defs);
+                normalize_struct_constructor_ranges_in_list(body, struct_defs);
+            }
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+}
+
+fn rewrite_indexed_integer_ranges_in_list(
+    statements: &mut [Stmt],
+    ranges: &HashMap<String, IntegerBindingRange>,
+) {
+    for statement in statements {
+        match statement {
+            Stmt::Assign {
+                target: AssignTarget::Index { base, .. },
+                expr,
+                ..
+            } => {
+                if let Some(range) = ranges.get(base) {
+                    wrap_ranged_assignment(expr, range);
+                }
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                rewrite_indexed_integer_ranges_in_list(then_branch, ranges);
+                rewrite_indexed_integer_ranges_in_list(else_branch, ranges);
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                rewrite_indexed_integer_ranges_in_list(body, ranges);
+            }
+            Stmt::Const { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Expr { .. }
+            | Stmt::Print { .. }
+            | Stmt::Return { .. }
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. } => {}
+        }
+    }
 }
 
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
@@ -9148,7 +9388,7 @@ pub fn analyze_with_options_and_inputs(
 
     let init_ranges =
         rewrite_integer_binding_ranges_in_list(&mut init, &HashMap::new(), options, &mut errors);
-    let runtime_ranges =
+    let mut runtime_ranges =
         rewrite_integer_binding_ranges_in_list(&mut block_pre, &init_ranges, options, &mut errors);
     rewrite_integer_binding_ranges_in_list(&mut sample, &runtime_ranges, options, &mut errors);
     rewrite_integer_binding_ranges_in_list(&mut block_post, &runtime_ranges, options, &mut errors);
@@ -9693,6 +9933,17 @@ pub fn analyze_with_options_and_inputs(
                     validate_data_struct_layout(elem_struct, &struct_defs, &context, &mut errors);
             }
         }
+    }
+
+    normalize_struct_constructor_ranges_in_list(&mut init, &struct_defs);
+    normalize_struct_constructor_ranges_in_list(&mut block_pre, &struct_defs);
+    normalize_struct_constructor_ranges_in_list(&mut sample, &struct_defs);
+    normalize_struct_constructor_ranges_in_list(&mut block_post, &struct_defs);
+    for event in &mut events {
+        normalize_struct_constructor_ranges_in_list(&mut event.body, &struct_defs);
+    }
+    for def in &mut defs {
+        normalize_struct_constructor_ranges_in_list(&mut def.body, &struct_defs);
     }
 
     let mut desugar_struct_instances = HashMap::<String, String>::new();
@@ -10633,6 +10884,36 @@ pub fn analyze_with_options_and_inputs(
         mut state_tuples,
         ..
     } = init_st;
+    for (root, struct_name) in &struct_instances {
+        extend_struct_field_integer_ranges(&mut runtime_ranges, root, struct_name, &struct_defs);
+    }
+    rewrite_integer_binding_ranges_in_list(&mut init, &runtime_ranges, options, &mut errors);
+    rewrite_integer_binding_ranges_in_list(&mut block_pre, &runtime_ranges, options, &mut errors);
+    rewrite_integer_binding_ranges_in_list(&mut sample, &runtime_ranges, options, &mut errors);
+    rewrite_integer_binding_ranges_in_list(&mut block_post, &runtime_ranges, options, &mut errors);
+    for event in &mut events {
+        let inherited = integer_binding_ranges_outside_params(
+            &runtime_ranges,
+            event.params.iter().map(|param| &param.name),
+        );
+        rewrite_integer_binding_ranges_in_list(&mut event.body, &inherited, options, &mut errors);
+    }
+    let mut struct_array_field_ranges = HashMap::new();
+    for (root, info) in &state_array_struct_roots {
+        extend_struct_field_integer_ranges(
+            &mut struct_array_field_ranges,
+            root,
+            &info.struct_name,
+            &struct_defs,
+        );
+    }
+    rewrite_indexed_integer_ranges_in_list(&mut init, &struct_array_field_ranges);
+    rewrite_indexed_integer_ranges_in_list(&mut block_pre, &struct_array_field_ranges);
+    rewrite_indexed_integer_ranges_in_list(&mut sample, &struct_array_field_ranges);
+    rewrite_indexed_integer_ranges_in_list(&mut block_post, &struct_array_field_ranges);
+    for event in &mut events {
+        rewrite_indexed_integer_ranges_in_list(&mut event.body, &struct_array_field_ranges);
+    }
     for (param_name, alias) in &param_aliases {
         if process_clamp_usage.dynamic_param_aliases.contains(alias) {
             let ty = param_types
@@ -11555,6 +11836,17 @@ pub fn analyze_with_options_and_inputs(
                 &inherited,
                 def.params.iter().map(|param| &param.name),
             );
+            let mut inherited = inherited;
+            if let Some(param_kinds) = inferred_def_params.get(&def.name) {
+                inherited.extend(struct_param_integer_ranges(
+                    def,
+                    param_kinds,
+                    &def_struct_defs,
+                ));
+                let indexed_ranges =
+                    struct_array_param_integer_ranges(def, param_kinds, &def_struct_defs);
+                rewrite_indexed_integer_ranges_in_list(&mut def.body, &indexed_ranges);
+            }
             rewrite_integer_binding_ranges_in_list(&mut def.body, &inherited, options, &mut errors);
         }
 
@@ -11576,14 +11868,23 @@ pub fn analyze_with_options_and_inputs(
         let def_integer_range_params = defs
             .iter()
             .filter_map(|def| {
-                let (owner, _) = def.name.split_once(".__onda_proc_")?;
-                let ranges = proc_state_ranges.get(owner)?;
-                let ranges = ranges
-                    .iter()
-                    .filter_map(|(name, range)| {
-                        typed_integer_range(range).map(|range| (name.clone(), range))
-                    })
-                    .collect::<HashMap<_, _>>();
+                let mut ranges = HashMap::new();
+                if let Some((owner, _)) = def.name.split_once(".__onda_proc_") {
+                    if let Some(proc_ranges) = proc_state_ranges.get(owner) {
+                        ranges.extend(proc_ranges.iter().filter_map(|(name, range)| {
+                            typed_integer_range(range).map(|range| (name.clone(), range))
+                        }));
+                    }
+                }
+                if let Some(param_kinds) = inferred_def_params.get(&def.name) {
+                    ranges.extend(
+                        struct_param_integer_ranges(def, param_kinds, &def_struct_defs)
+                            .into_iter()
+                            .filter_map(|(name, range)| {
+                                typed_integer_range(&range).map(|range| (name, range))
+                            }),
+                    );
+                }
                 (!ranges.is_empty()).then(|| (def.name.clone(), ranges))
             })
             .collect::<HashMap<_, _>>();
@@ -11715,6 +12016,20 @@ pub fn analyze_with_options_and_inputs(
                     .map(|range| (name.clone(), range))
             })
             .collect::<HashMap<_, _>>();
+        for (root, struct_name) in &struct_instances {
+            let Some(fields) = struct_defs.get(struct_name) else {
+                continue;
+            };
+            for field in fields {
+                let flat_name = format!("{root}.{}", field.name);
+                if !state_scalars.contains_key(&flat_name) {
+                    continue;
+                }
+                if let Some(range) = &field.integer_range {
+                    state_integer_ranges.insert(flat_name, *range);
+                }
+            }
+        }
         for (source, alias) in &param_range_state_aliases {
             let Some(ty @ (PrimitiveType::I32 | PrimitiveType::I64)) =
                 param_types.get(source).copied()

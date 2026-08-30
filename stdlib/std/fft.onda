@@ -430,7 +430,7 @@ namespace std::fft<N = 256>:
     fft: FFT<T>
     input: T[N]
     window_kind = _WindowHann
-    write = 0
+    write = 0 {N, wrap}
     filled = 0
     since_hop = 0
     ready = false
@@ -469,8 +469,6 @@ namespace std::fft<N = 256>:
       self.ready = false
 
       self.write += 1
-      if self.write >= N:
-        self.write = 0
 
       if self.filled < N:
         self.filled += 1
@@ -580,7 +578,7 @@ namespace std::fft<N = 256>:
     output: T[N]
     norm: T[N]
     window_kind = _WindowHann
-    frame = 0
+    frame = 0 {N, wrap}
     pending = 0
     overlap_frames = 0
 
@@ -716,8 +714,6 @@ namespace std::fft<N = 256>:
       self.output[self.frame] = 0.0
       self.norm[self.frame] = 0.0
       self.frame += 1
-      if self.frame >= N:
-        self.frame = 0
       self.pending -= 1
       if self.pending <= 0:
         self.overlap_frames = 0

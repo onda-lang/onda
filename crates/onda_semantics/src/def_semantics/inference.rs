@@ -2007,6 +2007,7 @@ fn build_structural_param_fields(
             name: field_name,
             ty,
             default: None,
+            integer_range: None,
             struct_name: None,
             array_elem_ty,
             array_elem_struct,

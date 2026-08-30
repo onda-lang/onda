@@ -320,9 +320,11 @@ Non-crate directories of note:
   order.
 - Ordinary source indexing clamps each coordinate independently for every nonempty indexable
   surface. Integer storage ranges preserve `i32`/`i64` interval facts through MIR, and the shared
-  bounds-proof pass removes clamping or checks when the complete coordinate interval is known to
-  fit. Explicit `read_unsafe` / `write_unsafe` calls instead establish a programmer-owned unchecked
-  boundary and are memory-unsafe when any coordinate is invalid.
+  whole-program analysis carries them through statically resolved read-only call boundaries and
+  scalar returns. The shared bounds-proof pass removes clamping or checks when the complete
+  coordinate interval is known to fit. Explicit `read_unsafe` / `write_unsafe` calls instead
+  establish a programmer-owned unchecked boundary and are memory-unsafe when any coordinate is
+  invalid.
 - MIR optimization removes unused internal parameters and forwarding arguments to a fixed point.
   It retains a parameter when any call site uses fallible argument preparation, preserving checked
   fixed-range and dynamic-slice addressing even when the callee does not read the reference.

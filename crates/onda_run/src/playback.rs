@@ -99,6 +99,7 @@ struct OutputTransport {
 }
 
 struct RunOutputBatch {
+    delegate_subscription_id: u64,
     delegates: RunDelegateBatch,
     prints: RunPrintBatch,
 }
@@ -134,6 +135,7 @@ enum PlaybackControlCommand {
     },
     SetDelegateCollection {
         enabled: bool,
+        subscription_id: u64,
         reply: Option<PlaybackReply<()>>,
     },
     SetParam {
@@ -233,6 +235,7 @@ struct PlaybackControlRequest {
 
 struct DelegateSubscriptionGuard {
     control_tx: mpsc::Sender<PlaybackControlCommand>,
+    subscription_id: u64,
     enabled: bool,
 }
 
@@ -243,6 +246,7 @@ impl Drop for DelegateSubscriptionGuard {
                 .control_tx
                 .send(PlaybackControlCommand::SetDelegateCollection {
                     enabled: false,
+                    subscription_id: self.subscription_id,
                     reply: None,
                 });
         }
@@ -736,6 +740,7 @@ fn spawn_run_render_thread(
                     .expect("run should be active after successful start"),
                 output_transport.as_ref(),
                 &print_transport,
+                0,
             )?;
 
             let run = session
@@ -797,6 +802,7 @@ fn spawn_run_render_thread(
         };
 
         let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
+        let mut delegate_subscription_id = 0_u64;
         let mut play_requested = true;
         let mut playing = session.run(&launch.input).is_some();
         let mut captured = vec![0.0_f32; launch.block_frames.saturating_mul(render_input_channels)];
@@ -841,6 +847,7 @@ fn spawn_run_render_thread(
                                         run,
                                         output_transport.as_ref(),
                                         &print_transport,
+                                        delegate_subscription_id,
                                     )?;
                                     execution
                                 });
@@ -913,11 +920,31 @@ fn spawn_run_render_thread(
                         PlaybackControlCommand::GetDevices { reply } => {
                             let _ = reply.send(Ok(available_audio_devices()));
                         }
-                        PlaybackControlCommand::SetDelegateCollection { enabled, reply } => {
-                            let result = session
-                                .run_mut(&launch.input)
-                                .ok_or_else(|| "run is not active".to_owned())
-                                .map(|run| run.set_delegate_collection_enabled(enabled));
+                        PlaybackControlCommand::SetDelegateCollection {
+                            enabled,
+                            subscription_id,
+                            reply,
+                        } => {
+                            let stale_disable =
+                                !enabled && delegate_subscription_id != subscription_id;
+                            let result = if stale_disable {
+                                Ok(())
+                            } else {
+                                session
+                                    .run_mut(&launch.input)
+                                    .ok_or_else(|| "run is not active".to_owned())
+                                    .map(|run| {
+                                        run.set_delegate_collection_enabled(enabled);
+                                        delegate_subscription_id =
+                                            if enabled { subscription_id } else { 0 };
+                                        if let Some(transport) = &output_transport {
+                                            transport.dropped_delegates.store(0, Ordering::Relaxed);
+                                            transport
+                                                .pending_delegate_overflow
+                                                .store(0, Ordering::Relaxed);
+                                        }
+                                    })
+                            };
                             if let Some(reply) = reply {
                                 let _ = reply.send(result);
                             }
@@ -959,6 +986,7 @@ fn spawn_run_render_thread(
                                         run,
                                         output_transport.as_ref(),
                                         &print_transport,
+                                        delegate_subscription_id,
                                     )?;
                                     execution
                                 });
@@ -987,6 +1015,7 @@ fn spawn_run_render_thread(
                                         run,
                                         output_transport.as_ref(),
                                         &print_transport,
+                                        delegate_subscription_id,
                                     )?;
                                     result
                                 });
@@ -1015,6 +1044,7 @@ fn spawn_run_render_thread(
                                         run,
                                         output_transport.as_ref(),
                                         &print_transport,
+                                        delegate_subscription_id,
                                     )?;
                                     result
                                 });
@@ -1050,7 +1080,12 @@ fn spawn_run_render_thread(
                 .run_mut(&launch.input)
                 .ok_or_else(|| "run is not active".to_owned())
                 .and_then(|run| {
-                    publish_run_output_batch(run, output_transport.as_ref(), &print_transport)
+                    publish_run_output_batch(
+                        run,
+                        output_transport.as_ref(),
+                        &print_transport,
+                        delegate_subscription_id,
+                    )
                 });
             if let Err(error) = output_result {
                 store_thread_error(&render_error, error);
@@ -1087,6 +1122,7 @@ fn publish_run_output_batch(
     run: &mut RunSession,
     output_transport: Option<&OutputTransport>,
     print_transport: &PrintTransport,
+    delegate_subscription_id: u64,
 ) -> Result<(), String> {
     let delegates = run.take_delegate_batch().map_err(|diagnostic| {
         format_single_diagnostic("daemon play delegate decoding failed", &diagnostic)
@@ -1102,7 +1138,11 @@ fn publish_run_output_batch(
         return Ok(());
     }
     if let Some(transport) = output_transport {
-        let output = RunOutputBatch { delegates, prints };
+        let output = RunOutputBatch {
+            delegate_subscription_id,
+            delegates,
+            prints,
+        };
         if let Err(mpsc::TrySendError::Full(output)) = transport.sender.try_send(output) {
             record_transport_loss(
                 &transport.dropped_delegates,
@@ -1355,10 +1395,13 @@ fn spawn_run_control_server(
             return;
         }
 
+        let mut next_subscription_id = 1_u64;
         while !context.stop_flag.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if let Err(err) = handle_run_control_client(stream, &context) {
+                    let subscription_id = next_subscription_id;
+                    next_subscription_id = next_subscription_id.wrapping_add(1).max(1);
+                    if let Err(err) = handle_run_control_client(stream, &context, subscription_id) {
                         eprintln!("run control client error: {err}");
                     }
                 }
@@ -1377,9 +1420,11 @@ fn spawn_run_control_server(
 fn handle_run_control_client(
     stream: TcpStream,
     context: &RunControlServerContext,
+    subscription_id: u64,
 ) -> Result<(), String> {
     let mut delegate_subscription = DelegateSubscriptionGuard {
         control_tx: context.control_tx.clone(),
+        subscription_id,
         enabled: false,
     };
     stream
@@ -1399,6 +1444,7 @@ fn handle_run_control_client(
             &context.pending_delegate_overflow,
             &context.dropped_print_occurrences,
             &context.pending_print_overflow,
+            delegate_subscription.enabled.then_some(subscription_id),
         )?;
         let mut line = String::new();
         match reader.read_line(&mut line) {
@@ -1425,7 +1471,12 @@ fn handle_run_control_client(
             "unsubscribeDelegates" => Some(false),
             _ => None,
         };
-        let response = run_control_response(request, &context.control_tx, &context.scope_ring);
+        let response = run_control_response(
+            request,
+            &context.control_tx,
+            &context.scope_ring,
+            subscription_id,
+        );
         let request_succeeded = response
             .as_ref()
             .and_then(|value| value.get("ok"))
@@ -1453,6 +1504,7 @@ fn handle_run_control_client(
         &context.pending_delegate_overflow,
         &context.dropped_print_occurrences,
         &context.pending_print_overflow,
+        delegate_subscription.enabled.then_some(subscription_id),
     )?;
 
     Ok(())
@@ -1465,8 +1517,10 @@ fn write_pending_output_batches(
     pending_delegate_overflow: &AtomicU32,
     dropped_prints: &AtomicU32,
     pending_print_overflow: &AtomicU32,
+    delegate_subscription_id: Option<u64>,
 ) -> Result<(), String> {
     let mut wrote_batch = false;
+    let mut wrote_matching_delegate_batch = false;
     while let Ok(batch) = receiver.try_recv() {
         wrote_batch = true;
         if batch.prints.text.split_inclusive('\n').count() != batch.prints.entries.len() {
@@ -1478,7 +1532,14 @@ fn write_pending_output_batches(
             .iter()
             .zip(batch.prints.text.split_inclusive('\n'))
             .peekable();
-        let mut delegates = batch.delegates.occurrences.iter().peekable();
+        let delegates_match = delegate_subscription_id == Some(batch.delegate_subscription_id);
+        wrote_matching_delegate_batch |= delegates_match;
+        let mut delegates = batch
+            .delegates
+            .occurrences
+            .iter()
+            .filter(|_| delegates_match)
+            .peekable();
 
         let mut print_overflow = Some(
             batch
@@ -1492,13 +1553,19 @@ fn write_pending_output_batches(
                 .transport_drop_count
                 .saturating_add(dropped_prints.swap(0, Ordering::Relaxed)),
         );
-        let mut delegate_overflow = Some(
+        let mut delegate_overflow = Some(if delegates_match {
             batch
                 .delegates
                 .overflow_count
-                .saturating_add(pending_delegate_overflow.swap(0, Ordering::Relaxed)),
-        );
-        let mut delegate_drops = Some(dropped_delegates.swap(0, Ordering::Relaxed));
+                .saturating_add(pending_delegate_overflow.swap(0, Ordering::Relaxed))
+        } else {
+            0
+        });
+        let mut delegate_drops = Some(if delegates_match {
+            dropped_delegates.swap(0, Ordering::Relaxed)
+        } else {
+            0
+        });
 
         while prints.peek().is_some() || delegates.peek().is_some() {
             let next_is_print = match (
@@ -1586,7 +1653,7 @@ fn write_pending_output_batches(
             .map_err(|error| format!("failed to write delegate loss notification: {error}"))?;
         }
     }
-    if !wrote_batch {
+    if !wrote_matching_delegate_batch && delegate_subscription_id.is_some() {
         let delegate_overflow = pending_delegate_overflow.swap(0, Ordering::Relaxed);
         let delegate_drops = dropped_delegates.swap(0, Ordering::Relaxed);
         if delegate_overflow != 0 || delegate_drops != 0 {
@@ -1601,6 +1668,8 @@ fn write_pending_output_batches(
             )
             .map_err(|error| format!("failed to write delegate loss notification: {error}"))?;
         }
+    }
+    if !wrote_batch {
         let print_overflow = pending_print_overflow.swap(0, Ordering::Relaxed);
         let print_drops = dropped_prints.swap(0, Ordering::Relaxed);
         if print_overflow != 0 || print_drops != 0 {
@@ -1709,6 +1778,7 @@ fn run_control_response(
     request: PlaybackControlRequest,
     control_tx: &mpsc::Sender<PlaybackControlCommand>,
     scope_ring: &Arc<Mutex<ScopeRing>>,
+    delegate_subscription_id: u64,
 ) -> Option<Value> {
     let request_id = request.id;
     let result = match request.command.as_str() {
@@ -1850,6 +1920,7 @@ fn run_control_response(
             control_tx
                 .send(PlaybackControlCommand::SetDelegateCollection {
                     enabled,
+                    subscription_id: delegate_subscription_id,
                     reply: Some(reply_tx),
                 })
                 .map_err(|_| "run control channel closed".to_owned())
@@ -2080,6 +2151,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         drop(DelegateSubscriptionGuard {
             control_tx: sender.clone(),
+            subscription_id: 7,
             enabled: false,
         });
         assert!(matches!(
@@ -2089,12 +2161,14 @@ mod tests {
 
         drop(DelegateSubscriptionGuard {
             control_tx: sender,
+            subscription_id: 7,
             enabled: true,
         });
         assert!(matches!(
             receiver.recv().expect("unsubscribe command"),
             PlaybackControlCommand::SetDelegateCollection {
                 enabled: false,
+                subscription_id: 7,
                 reply: None,
             }
         ));
@@ -2283,6 +2357,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         sender
             .send(RunOutputBatch {
+                delegate_subscription_id: 7,
                 prints: RunPrintBatch {
                     text: "first\nlast\n".to_owned(),
                     entries: vec![print_entry(0, 0), print_entry(2, 1)],
@@ -2308,6 +2383,7 @@ mod tests {
             &AtomicU32::new(0),
             &AtomicU32::new(0),
             &AtomicU32::new(0),
+            Some(7),
         )
         .expect("ordered output should serialize");
         let notifications = String::from_utf8(bytes)
@@ -2322,6 +2398,81 @@ mod tests {
         assert_eq!(notifications[1]["occurrences"][0]["sequence"], 1);
         assert_eq!(notifications[2]["event"], "print");
         assert_eq!(notifications[2]["text"], "last\n");
+    }
+
+    #[test]
+    fn run_output_notifications_do_not_cross_delegate_subscriptions() {
+        let delegate_batch = |name: &str, overflow_count| RunDelegateBatch {
+            occurrences: vec![RunDelegateOccurrence {
+                sequence: 0,
+                index: 0,
+                name: name.to_owned(),
+                values: Vec::new(),
+            }],
+            overflow_count,
+        };
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunOutputBatch {
+                delegate_subscription_id: 1,
+                delegates: delegate_batch("stale", 9),
+                prints: RunPrintBatch {
+                    text: "still visible\n".to_owned(),
+                    entries: vec![RunPrintEntry {
+                        sequence: 1,
+                        site_index: 0,
+                        label: None,
+                        source_file: None,
+                        line: 1,
+                        column: 1,
+                        end_line: 1,
+                        end_column: 1,
+                        lexical_owner: "program".to_owned(),
+                        declaration: Some("sample".to_owned()),
+                        values: Vec::new(),
+                    }],
+                    overflow_count: 0,
+                    transport_drop_count: 0,
+                },
+            })
+            .expect("stale output should be queued");
+        sender
+            .send(RunOutputBatch {
+                delegate_subscription_id: 2,
+                delegates: delegate_batch("current", 0),
+                prints: RunPrintBatch {
+                    text: String::new(),
+                    entries: Vec::new(),
+                    overflow_count: 0,
+                    transport_drop_count: 0,
+                },
+            })
+            .expect("current output should be queued");
+
+        let mut bytes = Vec::new();
+        write_pending_output_batches(
+            &mut bytes,
+            &receiver,
+            &AtomicU32::new(4),
+            &AtomicU32::new(5),
+            &AtomicU32::new(0),
+            &AtomicU32::new(0),
+            Some(2),
+        )
+        .expect("filtered output should serialize");
+
+        let notifications = String::from_utf8(bytes)
+            .expect("notifications should be UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("valid JSON notification"))
+            .collect::<Vec<_>>();
+        assert_eq!(notifications.len(), 2);
+        assert_eq!(notifications[0]["event"], "print");
+        assert_eq!(notifications[0]["text"], "still visible\n");
+        assert_eq!(notifications[1]["event"], "delegates");
+        assert_eq!(notifications[1]["occurrences"][0]["name"], "current");
+        assert_eq!(notifications[1]["overflowCount"], 5);
+        assert_eq!(notifications[1]["transportDropCount"], 4);
     }
 
     #[test]
@@ -2368,6 +2519,7 @@ mod tests {
             },
             &control_tx,
             &scope_ring,
+            7,
         );
 
         assert!(response.is_none());
@@ -2402,6 +2554,7 @@ mod tests {
             },
             &control_tx,
             &scope_ring,
+            7,
         );
 
         assert!(response.is_none());
@@ -2459,6 +2612,7 @@ mod tests {
             },
             &control_tx,
             &scope_ring,
+            7,
         )
         .expect("play request should return a response");
 
@@ -2494,6 +2648,7 @@ mod tests {
             },
             &control_tx,
             &scope_ring,
+            7,
         )
         .expect("resetParams request should return a response");
 

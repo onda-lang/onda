@@ -1439,7 +1439,7 @@ pub(crate) fn desugar_processors(
     rewrite_and_materialize_generic_processors(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
-    validate_delegate_source_model(&program, options, errors);
+    validate_delegate_source_model(&program, options, const_arrays, errors);
     let mut runtime_def_names =
         crate::task_lowering::lower_tasks(&mut program, options, const_arrays, errors);
     let prepared_delegates = prepare_delegate_source(&mut program, errors);

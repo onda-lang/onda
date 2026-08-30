@@ -16,8 +16,7 @@ proc TapeLine:
     transition_s = 0.04 {0.0, 1.0} => update_transition
 
   init:
-    line = std::delay<TapeLineSamples>::Linear()
-    feedback_sample = 0.0
+    line = std::delay<TapeLineSamples>::Line()
     smoothed_delay = delay_s
     transition_coefficient = 0.0
     wow_lfo = std::osc::Sine(freq = wow_rate)
@@ -31,12 +30,13 @@ proc TapeLine:
     drift = wow_lfo(freq = wow_rate) + flutter_lfo(freq = wow_rate * 7.31) * 0.18
     smoothed_delay = delay_s + (smoothed_delay - delay_s) * transition_coefficient
     moving_delay = smoothed_delay * (1.0 + wow * drift)
-    write_sample = tanh((in1 + feedback_sample * feedback) * drive)
-    delayed = line(write_sample, delay_samples = moving_delay * SR)
+    delayed = line.readL(moving_delay * SR)
 
     feedback_filter.cutoff = tone
     dark_repeat = feedback_filter(delayed)
-    feedback_sample = dark_repeat
+    write_sample = tanh((in1 + dark_repeat * feedback) * drive)
+    line.write(write_sample)
+    line.advance()
     out1 = delayed
 
 proc StereoTapeEcho:

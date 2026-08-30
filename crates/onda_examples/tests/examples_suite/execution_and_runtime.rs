@@ -53,6 +53,57 @@ sample:
 }
 
 #[test]
+fn ranged_struct_fields_normalize_construction_and_method_assignments() {
+    let source = r#"
+struct Cursor:
+  index: i32 = 0 {4, wrap}
+
+  def advance(self):
+    self.index += 5
+
+init:
+  cursor = Cursor(index = 6)
+
+sample:
+  out1 = f32(cursor.index)
+  cursor.advance()
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process ranged struct field");
+    assert_eq!(output, [2.0, 3.0, 0.0, 1.0]);
+}
+
+#[test]
+fn ranged_fields_of_struct_arrays_normalize_construction_and_assignment() {
+    let source = r#"
+struct Cursor:
+  index: i32 = 0 {4, wrap}
+
+init:
+  cursors: Cursor[1] = [Cursor(index = 6)]
+
+sample:
+  out1 = f32(cursors[0].index)
+  cursors[0].index = cursors[0].index + 5
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process ranged struct-array field");
+    assert_eq!(output, [2.0, 3.0, 0.0, 1.0]);
+}
+
+#[test]
 fn mixed_width_stdlib_clamp_and_lerp_preserve_f64_distinctions() {
     let frames = 4;
     let src = r#"
@@ -761,6 +812,37 @@ sample:
     let mut output = [0.0_f32; 8];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process delay lines");
     assert_eq!(output, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn stdlib_delay_line_supports_custom_read_before_write_feedback() {
+    let source = r#"
+import std/delay
+
+init:
+  frame = 0
+  line = std::delay<16>::Line()
+
+sample:
+  if frame == 0:
+    impulse = 1.0
+  else:
+    impulse = 0.0
+  delayed = line.readL(2.0)
+  line.write(impulse + delayed * 0.5)
+  line.advance()
+  out1 = delayed
+  frame += 1
+"#;
+    let frames = 9;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 9];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process custom delay feedback");
+    assert_eq!(output, [0.0, 0.0, 1.0, 0.0, 0.5, 0.0, 0.25, 0.0, 0.125]);
 }
 
 #[test]
