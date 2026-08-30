@@ -9,13 +9,13 @@ eyebrow: Language reference
 # Onda Language Guide
 
 This guide is both a learning path and the complete language reference. It
-starts with Onda's execution and data-flow model, then introduces ordinary
-runtime code before moving into external resources, reusable processors,
-messages, graphs, compile-time programming, and modules.
+starts by introducing Onda and the shape of a program, then covers execution,
+runtime code, external resources, reusable processors, messages, graphs,
+compile-time programming, and modules.
 
 ## Contents
 
-1. [How Onda Runs](#1-how-onda-runs)
+1. [What Is Onda?](#1-what-is-onda)
 2. [Source Files](#2-source-files)
 3. [Execution and State](#3-execution-and-state)
 4. [Values and Runtime Code](#4-values-and-runtime-code)
@@ -32,103 +32,62 @@ messages, graphs, compile-time programming, and modules.
 15. [Modules, Namespaces, and `use`](#15-modules-namespaces-and-use)
 16. [Reference Notes](#16-reference-notes)
 
-## 1. How Onda Runs
+## 1. What Is Onda?
 
-An Onda file describes an audio processor. At its simplest, samples flow from
-host inputs, through a `sample` body, to host outputs:
+Onda is an expressive and performant JIT-compiled audio programming language.
+Its central abstraction is not a `main` function that runs to completion, but a
+processor that stays alive while an audio host drives it. That processor has an
+interface of signals and controls, memory that persists as audio passes through
+it, and code that advances the sound at explicitly named rates.
 
-```onda
-ins:
-  input
+Time is therefore visible in the structure of an Onda program. An `init`
+section constructs long-lived state, `block` performs work once for a group of
+samples, and `sample` describes what happens to one sample. Where a value is
+first introduced determines how long it lives. A phase accumulator introduced
+in `init`, for example, is plainly persistent state rather than a specially
+annotated field hidden elsewhere in the program.
 
-params:
-  gain = 0.5 {0.0, 1.0}
-
-outs:
-  output
-
-sample:
-  output = input * gain
-```
-
-For every host sample, Onda reads `input`, multiplies it by the current
-host-visible `gain`, and writes one sample to `output`.
-
-The host creates and configures an instance before audio processing begins.
-Onda then follows this execution model:
-
-```text
-create and configure the instance
-              |
-             init
-              |
-     each logical audio block
-      +-------------------+
-      | block-pre         |
-      | sample x BS       |
-      | block-post        |
-      +-------------------+
-              |
-       state is retained
-```
-
-A program can use a top-level `sample` directly, as the gain processor does,
-or place `sample` inside `block` when it has work that should happen only
-once per logical block.
-
-Persistent state is normally introduced in `init` and survives across samples
-and blocks. This
-oscillator initializes one phase value, updates it for each sample, and sends
-the result to an explicitly declared output:
+Here is a complete sine oscillator:
 
 ```onda
 params:
   freq = 440.0 {20.0, 20000.0}
-
-outs 1
-
-init:
-  phase = 0.0
-
-sample:
-  out1 = sin(phase)
-  phase = phase + freq * TWO_PI / SR
-  if phase >= TWO_PI:
-    phase = phase - TWO_PI
-```
-
-`SR` is the effective sample rate and `TWO_PI` is the circle constant. The
-phase created by `init` is retained after each `sample` invocation. The sample
-is calculated from the current phase before that state advances, so the first
-sample is `sin(0.0)` and the updated phase belongs to the next sample. Advancing
-first would produce the same oscillator shifted forward by one sample.
-
-The increment depends only on a control value and the sample rate, so it can be
-computed once per block:
-
-```onda
-params:
-  freq = 440.0 {20.0, 20000.0}
-
-outs 1
+  level = 0.5 {0.0, 1.0}
 
 init:
   phase = 0.0
 
 block:
-  increment = freq * TWO_PI / SR
+  phase_incr = freq * TWO_PI / SR
 
   sample:
-    out1 = sin(phase)
-    phase = phase + increment
-    if phase >= TWO_PI:
+    phase = phase + phase_incr
+    if phase > TWO_PI:
       phase = phase - TWO_PI
+    out1 = sin(phase) * level
 ```
 
-Here `increment` is refreshed in block-pre and is then available to every
-sample in that block. The rest of the language grows from this model: declare
-the processor's interface, create persistent state, and place work at the rate
-where it belongs.
+Read the file as a sketch of the running processor. `freq` and `level` are
+controls exposed to the host. `phase` is its state. The phase increment is prepared
+once per block from the current frequency and sample rate; the nested `sample`
+section then advances the oscillator and writes each result to `out1`. There is
+no entry function or hand-written stream loop: the file itself is the processor
+that the host instantiates and repeatedly advances.
+
+Reusable processors follow the same model. A filter, oscillator, or effect can
+own state and still be called with ordinary expression syntax, so a signal path
+can read as directly as `filter(osc(freq = freq))`. For programs where topology
+is the better description, `graph` connects those processors declaratively.
+Onda can therefore move between equations, imperative control flow, and signal
+graphs without splitting the audio system across different languages.
+
+Most Onda files grow from the same recognizable shape: imports and reusable
+definitions first, the host-facing interface next, then initialization and
+audio execution. It is not a required template. An instrument may have outputs
+but no inputs, an effect may need no persistent state, and a library module may
+contain only declarations. The next chapter covers the source notation;
+[Execution and State](#3-execution-and-state) defines precisely when `init`,
+`block`, and `sample` run and how values move between them.
 
 ## 2. Source Files
 

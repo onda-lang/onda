@@ -42,8 +42,9 @@ Non-crate directories of note:
 - `stdlib/` — built-in `std/...` modules imported by Onda source.
 - `include/` — public C header `onda.h`.
 - `targets/` — checked-in AOT codegen presets for `onda compile --target-spec`.
-- `packages/onda_binaryen_web/` — Binaryen.js MIR-to-Wasm backend, reproducible embedded no-std
-  math kernel, and browser runtime helpers.
+- `packages/onda_binaryen_web/` — Binaryen.js MIR-to-Wasm backend, with its compiler split into
+  validation/layout, general lowering, and slice/metadata layers under `src/compiler/`; also owns
+  the reproducible embedded no-std math kernel and browser runtime helpers.
 - `packages/onda_processor_abi/` — small compiler-free JavaScript contract for processor descriptor
   validation, Wasm export validation, integrity-associated artifact files, and shared TypeScript types.
 - `packages/onda_wasm_compiler/` — product-facing browser/Node source-to-Wasm package, worker API,
@@ -82,7 +83,9 @@ Non-crate directories of note:
 
 ### `onda_semantics` (`crates/onda_semantics/src`)
 - `lib.rs` — public types and orchestration wiring; re-exports `pipeline::analyze`.
-- `pipeline.rs`, `pipeline/` — top-level analysis pipeline and `namespace_flattening`.
+- `pipeline.rs`, `pipeline/` — top-level analysis orchestration, with focused modules for
+  compile-time evaluation, const rewriting, integer-range normalization, namespace flattening,
+  and post-analysis validation.
 - Analysis cores:
   - `expr_validation.rs`, `expr_typing.rs`, `expr_analysis/` — expression validation, typing, and environment construction.
   - `stmt_analysis/` — shared executable-flow statement analysis for defs, methods, events,
@@ -112,7 +115,9 @@ Non-crate directories of note:
     next start.
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
   - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
-  - `proc_call_rewrite.rs`, `proc_call_support.rs`, `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, aliasing, and state symbol rewriting.
+- `proc_call_rewrite.rs`, `proc_call_rewrite/call_arguments.rs`, `proc_call_support.rs`,
+  `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, named-argument and call-surface
+  expansion, aliasing, and state symbol rewriting.
 - `internal_names.rs` — internal symbol naming.
 - `mir_lowering.rs` — transactional semantic-to-MIR lowering; owns executable storage/resources,
   events, functions, aggregate/reference shapes, recursive processor arrays, oversampling, and the
@@ -151,8 +156,9 @@ Non-crate directories of note:
 - `aot_artifact.rs` — AOT object metadata/sidecar model, populated from MIR-native layout and
   interface descriptors.
 - `orc_backend.rs`, `orc_backend/` — ORC backend assembly and lowering:
-  - `mir_native.rs` — production validated-MIR-to-LLVM lowering, ORC JIT, targeted LLVM IR/object
-    emission, ABI layout, and native process/event handles.
+  - `mir_native.rs`, `mir_native/function_emitter.rs` — production validated-MIR-to-LLVM lowering,
+    function-body emission, ORC JIT, targeted LLVM IR/object emission, ABI layout, and native
+    process/event handles.
   - `jit_utils.rs`, `llvm_helpers.rs` — target-machine, pass-pipeline, ORC, and LLVM initialization
     support shared by MIR JIT and AOT emission.
 
@@ -177,7 +183,12 @@ Non-crate directories of note:
   `Instance::param_domain`.
 
 ### `onda_api` (`crates/onda_api/src`)
-- `lib.rs` — C ABI surface (single-source, direct filesystem source/project input, exact in-memory source-graph, and project-image compilation; complete filesystem watch projections; program-owned filesystem project defaults without an intermediate portable image; host-neutral project capture/load/serialization/materialization and typed buffer assets; source snapshot metadata and syntax-aware reference rewriting; create/process/destroy; bind/set; metadata queries; event trigger; state snapshot/restore).
+- `lib.rs`, `metadata.rs` — C ABI surface (single-source, direct filesystem source/project input,
+  exact in-memory source-graph, and project-image compilation; complete filesystem watch
+  projections; program-owned filesystem project defaults without an intermediate portable image;
+  host-neutral project capture/load/serialization/materialization and typed buffer assets; source
+  snapshot metadata and syntax-aware reference rewriting; create/process/destroy; bind/set;
+  metadata queries; event trigger; state snapshot/restore).
 
 ### `onda_cpal` (`crates/onda_cpal/src`)
 - `lib.rs` — CPAL 0.18/PipeWire device discovery and stream setup, allocation-free input/output callbacks, FP-mode setup, and lock-free SPSC sample transport.
