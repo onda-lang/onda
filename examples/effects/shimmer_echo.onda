@@ -9,7 +9,7 @@ params:
   time_s = 0.5 {0.01, 2.0, unit = "s"}
   feedback = 0.5 {0.0, 0.95}
   shimmer = 0.3 {0.0, 0.8}
-  shift = 12.0 {0.0, 19.0, unit = "st"}
+  shift = 12.0 {0.0, 24.0, unit = "st"}
   window_s = 0.1 {0.01, 0.5, log, unit = "s"}
   mix = 0.5 {0.0, 1.0}
   level = 1.0 {0.0, 1.0}
