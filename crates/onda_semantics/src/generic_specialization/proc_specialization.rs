@@ -355,7 +355,7 @@ pub(crate) fn specialize_generic_typed_decls(
                 push_semantic(
                     diag,
                     errors,
-                    "typed declaration is only supported for plain scalar variables",
+                    "typed declaration is only supported for plain variables",
                 );
                 *generic_decl_ty = None;
                 return;
@@ -374,7 +374,7 @@ pub(crate) fn specialize_generic_typed_decls(
             }
             match type_bindings.get(&param).copied() {
                 Some(bound) => {
-                    *decl_ty = Some(bound);
+                    *decl_ty = Some(DeclType::Scalar(bound));
                     *generic_decl_ty = None;
                     *is_typed_decl = true;
                 }
@@ -1287,7 +1287,12 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt(
                 );
             }
             rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
-            update_generic_inference_locals_from_assign(target, *decl_ty, expr, locals);
+            update_generic_inference_locals_from_assign(
+                target,
+                decl_ty.as_ref().and_then(DeclType::scalar),
+                expr,
+                locals,
+            );
             locals.default_ctor_missing_type_params_to_f32 = prior_default_mode;
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {

@@ -883,7 +883,7 @@ fn rewrite_overloaded_calls_in_stmt_list_impl(
                 );
                 update_call_type_env_after_assign(
                     target,
-                    *decl_ty,
+                    decl_ty.as_ref(),
                     generic_decl_ty.as_deref(),
                     expr,
                     env,

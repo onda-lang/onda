@@ -659,7 +659,7 @@ impl TaskLocalStorage {
 
     fn storage_stmt(&self, name: String, initialize: bool) -> Stmt {
         let (decl_ty, is_typed_decl, expr) = match self {
-            Self::Scalar(ty) => (Some(*ty), true, zero_expr(*ty)),
+            Self::Scalar(ty) => (Some(DeclType::Scalar(*ty)), true, zero_expr(*ty)),
             Self::Array { spec, .. } => (
                 None,
                 true,
@@ -670,7 +670,11 @@ impl TaskLocalStorage {
                     initialize,
                 },
             ),
-            Self::Tuple(types) => (None, false, Self::tuple_zero_expr(types)),
+            Self::Tuple(types) => (
+                Some(DeclType::Tuple(types.clone())),
+                true,
+                Self::tuple_zero_expr(types),
+            ),
         };
         Stmt::Assign {
             loc: Default::default(),
@@ -908,7 +912,7 @@ fn typed_assign(name: impl Into<String>, ty: PrimitiveType, expr: Expr) -> Stmt 
         loc: Default::default(),
         target_loc: Default::default(),
         target: AssignTarget::Var(name.into()),
-        decl_ty: Some(ty),
+        decl_ty: Some(DeclType::Scalar(ty)),
         generic_decl_ty: None,
         is_typed_decl: true,
         typed_decl_ty_loc: Default::default(),

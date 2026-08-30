@@ -715,6 +715,26 @@ pub enum DeclType {
     Tuple(Vec<PrimitiveType>),
 }
 
+impl DeclType {
+    pub fn scalar(&self) -> Option<PrimitiveType> {
+        match self {
+            Self::Scalar(ty) => Some(*ty),
+            Self::Generic(_) | Self::ArrayGeneric { .. } | Self::Array { .. } | Self::Tuple(_) => {
+                None
+            }
+        }
+    }
+
+    pub fn tuple(&self) -> Option<&[PrimitiveType]> {
+        match self {
+            Self::Tuple(elements) => Some(elements),
+            Self::Scalar(_) | Self::Generic(_) | Self::ArrayGeneric { .. } | Self::Array { .. } => {
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FnParamType {
     Primitive(PrimitiveType),
@@ -1374,7 +1394,7 @@ pub enum Stmt {
         loc: Span,
         target_loc: Span,
         target: AssignTarget,
-        decl_ty: Option<PrimitiveType>,
+        decl_ty: Option<DeclType>,
         generic_decl_ty: Option<String>,
         is_typed_decl: bool,
         typed_decl_ty_loc: Span,

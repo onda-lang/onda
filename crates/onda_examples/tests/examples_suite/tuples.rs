@@ -756,6 +756,29 @@ fn tuple_local_sample_from_call() {
     assert_near(output[1], 10.0, 1e-6);
 }
 
+#[test]
+fn typed_tuple_state_and_locals_use_declared_element_types() {
+    let src = r#"
+outs:
+  out1
+
+def pair() -> (f32, i32):
+  return (1.0, 2)
+
+init:
+  state: (f64, i64) = pair()
+
+sample:
+  local: (f64, i64) = pair()
+  out1 = f32(state[0]) + f32(state[1]) + f32(local[0]) + f32(local[1])
+"#;
+    let (mut instance, _, out_channels) = compile_instance(src, 1);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; 1];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 6.0, 1e-6);
+}
+
 const TUPLE_LOCAL_SAMPLE_DESTRUCTURE: &str = r#"
 outs { out1, out2, out3 }
 sample {

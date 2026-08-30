@@ -112,6 +112,7 @@ pub(crate) struct ProcCallInstance {
 #[derive(Default, Debug, Clone)]
 pub(crate) struct ProcStateFields {
     pub(crate) scalars: HashMap<String, PrimitiveType>,
+    pub(crate) tuples: HashMap<String, Vec<PrimitiveType>>,
     pub(crate) data: HashMap<String, onda_frontend::ArrayTypeSpec>,
     pub(crate) nested_procs: HashMap<String, ProcNestedState>,
     pub(crate) nested_proc_arrays: HashMap<String, ProcNestedArrayState>,
@@ -120,7 +121,8 @@ pub(crate) struct ProcStateFields {
 
 impl ProcStateFields {
     pub(crate) fn has_non_scalar(&self, name: &str) -> bool {
-        self.data.contains_key(name)
+        self.tuples.contains_key(name)
+            || self.data.contains_key(name)
             || self.struct_instances.contains_key(name)
             || self.nested_procs.contains_key(name)
             || self.nested_proc_arrays.contains_key(name)
@@ -159,6 +161,7 @@ pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcS
     for (name, ty) in &st.state_scalars {
         psf.scalars.insert(name.clone(), *ty);
     }
+    psf.tuples = st.state_tuples.clone();
 
     // Merge array specs: prefer state_array_specs (full spec), fall back to state_arrays + elem type keys
     for (name, spec) in &st.state_array_specs {
@@ -810,7 +813,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 loc: source_loc.into(),
                                 target_loc: Default::default(),
                                 target: AssignTarget::Var(name.clone()),
-                                decl_ty: *decl_ty,
+                                decl_ty: decl_ty.clone(),
                                 generic_decl_ty: generic_decl_ty.clone(),
                                 is_typed_decl: *is_typed_decl,
                                 typed_decl_ty_loc: Default::default(),
@@ -851,7 +854,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             loc: source_loc.into(),
                             target_loc: Default::default(),
                             target: AssignTarget::Var(name.clone()),
-                            decl_ty: *decl_ty,
+                            decl_ty: decl_ty.clone(),
                             generic_decl_ty: generic_decl_ty.clone(),
                             is_typed_decl: *is_typed_decl,
                             typed_decl_ty_loc: Default::default(),
@@ -886,7 +889,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                             loc: Default::default(),
                                             target_loc: Default::default(),
                                             target: AssignTarget::Var(slot_name.clone()),
-                                            decl_ty: *decl_ty,
+                                            decl_ty: decl_ty.clone(),
                                             generic_decl_ty: generic_decl_ty.clone(),
                                             is_typed_decl: *is_typed_decl,
                                             typed_decl_ty_loc: Default::default(),
@@ -911,7 +914,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                             base: base.clone(),
                                             index: idx_rewritten,
                                         },
-                                        decl_ty: *decl_ty,
+                                        decl_ty: decl_ty.clone(),
                                         generic_decl_ty: generic_decl_ty.clone(),
                                         is_typed_decl: *is_typed_decl,
                                         typed_decl_ty_loc: Default::default(),
@@ -1048,7 +1051,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         loc: source_loc.into(),
                         target_loc: Default::default(),
                         target: target.clone(),
-                        decl_ty: *decl_ty,
+                        decl_ty: decl_ty.clone(),
                         generic_decl_ty: generic_decl_ty.clone(),
                         is_typed_decl: *is_typed_decl,
                         typed_decl_ty_loc: Default::default(),

@@ -187,7 +187,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
                 .and_then(|type_name| bindings.get(type_name))
                 .copied()
             {
-                *decl_ty = Some(bound);
+                *decl_ty = Some(DeclType::Scalar(bound));
                 *generic_decl_ty = None;
             }
             match target {
@@ -911,7 +911,12 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt(
                 rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
             }
             rewrite_generic_struct_ctor_expr(expr, templates, generated, errors, locals);
-            update_generic_inference_locals_from_assign(target, *decl_ty, expr, locals);
+            update_generic_inference_locals_from_assign(
+                target,
+                decl_ty.as_ref().and_then(DeclType::scalar),
+                expr,
+                locals,
+            );
             locals.default_ctor_missing_type_params_to_f32 = prior_default_mode;
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {

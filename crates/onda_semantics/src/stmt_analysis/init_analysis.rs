@@ -540,7 +540,7 @@ pub(crate) fn analyze_init_stmt(
 fn analyze_assign_init(
     target_loc: SourceLoc,
     target: &AssignTarget,
-    decl_ty: &Option<PrimitiveType>,
+    decl_ty: &Option<DeclType>,
     generic_decl_ty: &Option<String>,
     is_typed_decl: bool,
     expr: &Expr,
@@ -670,7 +670,7 @@ fn analyze_assign_init(
                 }
             }
             if decl_ty.is_some() || generic_decl_ty.is_some() {
-                target_error!("typed declaration is only supported for plain scalar variables",);
+                target_error!("typed declaration is only supported for plain variables",);
             }
             // Proc mode: declaration-order validation on index target
             if let Some(pctx) = stmt_ctx.proc_init_resolution() {
@@ -781,7 +781,7 @@ fn analyze_assign_init(
                 return;
             }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
-                target_error!("typed declaration is only supported for plain scalar variables",);
+                target_error!("typed declaration is only supported for plain variables",);
             }
             if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Init)) {
                 push_io_surface_scope_error(errors, target_loc, name);
@@ -951,11 +951,13 @@ fn analyze_assign_init(
             }
         }
         AssignTarget::Var(name) => {
+            let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
+            let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
             let typed_named_ctor_decl_without_type_args = is_typed_decl
                 && decl_ty.is_none()
                 && generic_decl_ty.is_none()
                 && matches!(expr, Expr::UserCall { type_args, .. } if type_args.is_empty());
-            let declared_ty = if let Some(declared) = *decl_ty {
+            let declared_ty = if let Some(declared) = declared_scalar_ty {
                 Some(declared)
             } else if let Some(param) = generic_decl_ty {
                 if !typed_named_ctor_decl_without_type_args {
@@ -1007,7 +1009,7 @@ fn analyze_assign_init(
                         match expr {
                             Expr::ArrayCtor { .. } | Expr::UserCall { .. } => {}
                             _ => {
-                                let placeholder_ty = decl_ty
+                                let placeholder_ty = declared_scalar_ty
                                     .or(ctx.init_default_ty)
                                     .unwrap_or(PrimitiveType::F32);
                                 if allow_owner_state_intro {
@@ -1192,22 +1194,16 @@ fn analyze_assign_init(
                 st.known_scalars.insert(name.clone());
                 return;
             }
-            // Tuple literal assignment: flatten to individual scalar state entries
-            if let Expr::Tuple { values, .. } = expr {
-                if st.state_scalars.contains_key(name)
-                    || st.state_arrays.contains_key(name)
-                    || st.state_array_struct_roots.contains_key(name)
-                    || st.struct_instances.contains_key(name)
-                {
-                    target_error!(format!(
-                        "symbol '{name}' already used with a different state type"
-                    ),);
-                    return;
-                }
-                let mut elem_tys = Vec::new();
-                for (idx, value) in values.iter().enumerate() {
-                    validate_expr(value, scope_expr_env!(scope), errors);
-                    let inferred = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+            let inferred_tuple_types = infer_tracked_tuple_types(
+                expr,
+                &HashMap::new(),
+                &st.local_aliases,
+                Some(&st.state_tuples),
+                &st.struct_instances,
+                struct_defs,
+                common.fn_return_types,
+                |value| {
+                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         value,
                         &st.state_scalars,
                         &st.declared_symbols,
@@ -1222,15 +1218,54 @@ fn analyze_assign_init(
                         struct_defs,
                         &st.nested_proc_arrays,
                         errors,
+                    )
+                },
+            );
+            // Tuple assignment: flatten to individual scalar state entries.
+            if let Some(inferred_types) = inferred_tuple_types {
+                if declared_tuple_types.is_none()
+                    && (decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl)
+                {
+                    target_error!(format!(
+                        "typed scalar declaration for '{name}' cannot use a tuple value"
+                    ));
+                    return;
+                }
+                if st.state_scalars.contains_key(name)
+                    || st.state_arrays.contains_key(name)
+                    || st.state_array_struct_roots.contains_key(name)
+                    || st.struct_instances.contains_key(name)
+                    || st.state_tuples.contains_key(name)
+                {
+                    target_error!(format!(
+                        "symbol '{name}' already used with a different state type"
+                    ),);
+                    return;
+                }
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                let elem_tys = declared_tuple_types.unwrap_or(&inferred_types).to_vec();
+                if let Some(declared_types) = declared_tuple_types {
+                    require_tuple_expr_assignable_types(
+                        name,
+                        expr,
+                        &inferred_types,
+                        declared_types,
+                        errors,
                     );
-                    let elem_ty = effective_untyped_assignment_type(value, inferred)
-                        .unwrap_or(PrimitiveType::F32);
-                    elem_tys.push(elem_ty);
+                }
+                for (idx, elem_ty) in elem_tys.iter().copied().enumerate() {
                     let flat_name = format!("{name}.__{idx}");
                     st.state_scalars.insert(flat_name, elem_ty);
                 }
                 st.state_tuples.insert(name.clone(), elem_tys);
                 st.known_scalars.insert(name.clone());
+                return;
+            }
+            if declared_tuple_types.is_some() {
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                target_error!(format!(
+                    "typed tuple declaration for '{name}' requires a tuple value"
+                ));
                 return;
             }
 

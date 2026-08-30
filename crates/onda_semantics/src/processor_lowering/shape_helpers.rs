@@ -3388,6 +3388,13 @@ pub(super) fn compute_proc_shape(
 
     let mut state_scalar_names = state.scalars.keys().cloned().collect::<Vec<_>>();
     state_scalar_names.sort();
+    let mut state_tuple_names = state.tuples.keys().cloned().collect::<Vec<_>>();
+    state_tuple_names.sort();
+    let state_tuple_elements = state
+        .tuples
+        .iter()
+        .flat_map(|(name, elem_tys)| (0..elem_tys.len()).map(move |idx| format!("{name}.__{idx}")))
+        .collect::<HashSet<_>>();
     let mut state_data_names = state.data.keys().cloned().collect::<Vec<_>>();
     state_data_names.sort();
     let mut struct_instance_names = state.struct_instances.keys().cloned().collect::<Vec<_>>();
@@ -3451,13 +3458,25 @@ pub(super) fn compute_proc_shape(
         }
     }
     for name in &state_scalar_names {
-        if reserved.contains(name) {
+        if reserved.contains(name) || state_tuple_elements.contains(name) {
             continue;
         }
         fields.push(StructField {
             loc: Default::default(),
             name: name.clone(),
             ty: FieldType::Scalar(*state.scalars.get(name).unwrap_or(&PrimitiveType::F32)),
+            ty_loc: Default::default(),
+            default: None,
+        });
+    }
+    for name in &state_tuple_names {
+        if reserved.contains(name) {
+            continue;
+        }
+        fields.push(StructField {
+            loc: Default::default(),
+            name: name.clone(),
+            ty: FieldType::Tuple(state.tuples[name].clone()),
             ty_loc: Default::default(),
             default: None,
         });

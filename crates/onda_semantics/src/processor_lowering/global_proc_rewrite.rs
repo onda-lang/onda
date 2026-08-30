@@ -25,7 +25,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
             loc: Default::default(),
             target_loc: Default::default(),
             target: AssignTarget::Var(name),
-            decl_ty: ty,
+            decl_ty: ty.map(DeclType::Scalar),
             generic_decl_ty: None,
             is_typed_decl: ty.is_some(),
             typed_decl_ty_loc: Default::default(),

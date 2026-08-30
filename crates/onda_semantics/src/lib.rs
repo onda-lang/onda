@@ -7840,6 +7840,7 @@ init:
   holder = Holder()
 
 sample:
+  holder.values = (2, 3.0)
   alias = holder.values
   (first, second) = holder.values
   selected: i32 = classify(alias[0])
@@ -7987,6 +7988,103 @@ sample:
             .expect("discarded tuple entries must not introduce bindings");
         lower_program_to_optimized_mir(&typed)
             .expect("tuple discards should lower without storage");
+    }
+
+    #[test]
+    fn typed_tuple_assignments_work_in_init_defs_tasks_and_executable_blocks() {
+        let source = r#"
+def pair() -> (f32, i32):
+  return (1.0, 2)
+
+def consume() -> f32:
+  local: (f64, i64) = pair()
+  return f32(local[0]) + f32(local[1])
+
+init:
+  state: (f64, i64) = pair()
+
+event reset():
+  state = pair()
+
+task worker():
+  local: (f64, i64) = pair()
+  yield
+
+block:
+  before: (f64, i64) = pair()
+  sample:
+    local: (f64, i64) = pair()
+    out1 = f32(local[0]) + f32(local[1]) + f32(state[0]) + consume()
+  after: (f64, i64) = pair()
+"#;
+        let typed = analyze(parse_program(source).expect("typed tuple source should parse"))
+            .expect("typed tuple declarations should analyze in every supported assignment owner");
+        assert_eq!(
+            typed.state_tuples.get("state"),
+            Some(&vec![PrimitiveType::F64, PrimitiveType::I64])
+        );
+        lower_program_to_optimized_mir(&typed)
+            .expect("typed tuple declarations should lower with their declared types");
+    }
+
+    #[test]
+    fn typed_tuple_assignments_work_in_processor_owners() {
+        let source = r#"
+def pair() -> (f32, i32):
+  return (1.0, 2)
+
+proc Voice:
+  init:
+    state: (f64, i64) = pair()
+
+  event reset():
+    state = pair()
+
+  task worker():
+    local: (f64, i64) = pair()
+    yield
+
+  block:
+    before: (f64, i64) = pair()
+    sample:
+      local: (f64, i64) = pair()
+      out1 = f32(local[0]) + f32(local[1]) + f32(state[0])
+    after: (f64, i64) = pair()
+
+proc Wrapper:
+  init:
+    voice = Voice()
+  sample:
+    out1 = voice()
+
+init:
+  wrapper = Wrapper()
+
+sample:
+  out1 = wrapper()
+"#;
+        let typed = analyze(parse_program(source).expect("processor tuple source should parse"))
+            .expect("typed tuple declarations should analyze in processor owners");
+        lower_program_to_optimized_mir(&typed)
+            .expect("processor typed tuple declarations should lower to MIR");
+    }
+
+    #[test]
+    fn typed_tuple_assignments_validate_shape_and_element_types() {
+        for (assignment, expected) in [
+            ("value: (f32, i32) = (true, 2)", "element 0 type mismatch"),
+            ("value: (f32, i32) = (1.0, 2, 3)", "has arity 3, expected 2"),
+            ("value: (f32, i32) = 1.0", "requires a tuple value"),
+        ] {
+            let source = format!("sample:\n  {assignment}\n  out1 = 0.0\n");
+            let errors =
+                analyze(parse_program(&source).expect("invalid tuple source should parse"))
+                    .expect_err("invalid typed tuple assignment should fail semantic analysis");
+            assert!(
+                errors.iter().any(|error| error.message.contains(expected)),
+                "expected '{expected}' for '{assignment}', got {errors:?}"
+            );
+        }
     }
 
     #[test]
@@ -12533,7 +12631,7 @@ sample:
             else {
                 panic!("each init statement should remain a declaration");
             };
-            assert_eq!(*decl_ty, Some(PrimitiveType::I32));
+            assert_eq!(*decl_ty, Some(DeclType::Scalar(PrimitiveType::I32)));
             assert!(*is_typed_decl);
         }
         let mir = lower_program_to_optimized_mir(&typed)

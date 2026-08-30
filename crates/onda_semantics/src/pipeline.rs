@@ -3234,8 +3234,16 @@ fn eval_const_def_stmt_list(
                     ));
                     return None;
                 }
-                let ty = if let Some(ty) = decl_ty {
-                    *ty
+                let ty = if let Some(ty) = decl_ty.as_ref().and_then(DeclType::scalar) {
+                    ty
+                } else if decl_ty.is_some() {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "const def '{def_name}' local '{name}' cannot use a tuple declaration"
+                        ),
+                        stmt.assign_decl_type_loc(),
+                    ));
+                    return None;
                 } else if let Some(existing) = locals.get(name).copied() {
                     existing.primitive_type()
                 } else {
@@ -8084,7 +8092,7 @@ fn typed_integer_range(range: &IntegerBindingRange) -> Option<TypedIntegerRange>
 fn integer_binding_range_assignment(stmt: &Stmt) -> Option<(&str, IntegerBindingRange)> {
     let Stmt::Assign {
         target: AssignTarget::Var(name),
-        decl_ty: Some(ty @ (PrimitiveType::I32 | PrimitiveType::I64)),
+        decl_ty: Some(DeclType::Scalar(ty @ (PrimitiveType::I32 | PrimitiveType::I64))),
         expr: Expr::Call { func, args, .. },
         ..
     } = stmt

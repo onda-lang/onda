@@ -545,7 +545,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
-                        decl_ty: Some(decl_ty),
+                        decl_ty: Some(DeclType::Scalar(decl_ty)),
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
@@ -636,7 +636,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         .filter(|p| p.as_rule() == Rule::type_name)
                         .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
                         .collect();
-                    let _tuple_ty = DeclType::Tuple(elems?);
+                    let tuple_ty = DeclType::Tuple(elems?);
                     let Some(expr_pair) = expr_pair else {
                         return Err(vec![syntax_at_loc(
                             loc.as_ref(),
@@ -647,7 +647,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
-                        decl_ty: None,
+                        decl_ty: Some(tuple_ty),
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
@@ -748,7 +748,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 loc,
                 target_loc: stmt_loc_from_pair(&name_pair),
                 target: AssignTarget::Var(name_pair.as_str().to_owned()),
-                decl_ty: has_range.then_some(PrimitiveType::I32),
+                decl_ty: has_range.then_some(DeclType::Scalar(PrimitiveType::I32)),
                 generic_decl_ty: None,
                 is_typed_decl: has_range,
                 typed_decl_ty_loc: Span::ZERO,

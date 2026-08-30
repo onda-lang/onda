@@ -1090,7 +1090,7 @@ fn analyze_flow_stmt(
 fn analyze_flow_assignment(
     target_loc: SourceLoc,
     target: &AssignTarget,
-    decl_ty: &Option<PrimitiveType>,
+    decl_ty: &Option<DeclType>,
     generic_decl_ty: &Option<String>,
     is_typed_decl: bool,
     scope: ScopeKind,
@@ -1215,7 +1215,7 @@ fn analyze_flow_assignment(
                 return;
             }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
-                target_error!("typed declaration is only supported for plain scalar variables",);
+                target_error!("typed declaration is only supported for plain variables",);
             }
             if let Some(name) = io_surface_name(base, scope_expr_env!()) {
                 if !scope_expr_env!().io_surface_access_allowed {
@@ -1416,7 +1416,7 @@ fn analyze_flow_assignment(
                 return;
             }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
-                target_error!("typed declaration is only supported for plain scalar variables",);
+                target_error!("typed declaration is only supported for plain variables",);
             }
             if !validate_block_bound_surface_assign_target(
                 target,
@@ -2033,10 +2033,50 @@ fn analyze_flow_assignment(
                                 )
                             );
                         }
-                        TypedFieldType::Tuple(_) => {
-                            target_error!(format!(
-                                "tuple field '{flat}' must be accessed with index syntax"
-                            ));
+                        TypedFieldType::Tuple(ref field_types) => {
+                            let expr_for_validation =
+                                rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+                            validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                            let assigned_types = infer_tracked_tuple_types(
+                                &expr_for_validation,
+                                tuple_vars,
+                                local_aliases,
+                                Some(state_tuples),
+                                struct_instances,
+                                struct_defs,
+                                fn_return_types,
+                                |value| {
+                                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                        value,
+                                        state_scalars,
+                                        declared_symbols,
+                                        None,
+                                        local_aliases,
+                                        local_array_aliases,
+                                        locals,
+                                        input_names,
+                                        output_names,
+                                        param_names,
+                                        struct_instances,
+                                        struct_defs,
+                                        proc_array_roots,
+                                        errors,
+                                    )
+                                },
+                            );
+                            if let Some(assigned_types) = assigned_types {
+                                require_tuple_expr_assignable_types(
+                                    &flat,
+                                    &expr_for_validation,
+                                    &assigned_types,
+                                    field_types,
+                                    errors,
+                                );
+                            } else {
+                                target_error!(format!(
+                                    "assignment to tuple field '{flat}' requires a tuple value"
+                                ));
+                            }
                         }
                     }
                     return;
@@ -2165,7 +2205,9 @@ fn analyze_flow_assignment(
                     "array alias '{name}' must be written using '{name}[index] = value'"
                 ),);
             }
-            if let Some(declared_ty) = *decl_ty {
+            let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
+            let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
+            if let Some(declared_ty) = declared_scalar_ty {
                 if output_names.contains(name) || local_aliases.contains_key(name) {
                     target_error!(format!(
                         "typed declaration for '{name}' is only allowed on first assignment"
@@ -2227,10 +2269,34 @@ fn analyze_flow_assignment(
                 .cloned()
                 .or_else(|| tracked_local_tuple_types(name, tuple_vars, local_aliases));
             if let Some(tuple_types) = tuple_types.as_ref() {
-                if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
+                if declared_tuple_types.is_none()
+                    && (decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl)
+                {
                     target_error!(format!(
                         "typed scalar declaration for '{name}' cannot use a tuple value"
                     ));
+                    return;
+                }
+                if let Some(declared_types) = declared_tuple_types {
+                    if output_names.contains(name) || existing_tuple_types.is_some() {
+                        target_error!(format!(
+                            "typed tuple declaration for '{name}' is only allowed on first assignment"
+                        ));
+                        return;
+                    }
+                    require_tuple_expr_assignable_types(
+                        name,
+                        &expr_for_validation,
+                        tuple_types,
+                        declared_types,
+                        errors,
+                    );
+                    if can_track_local {
+                        local_aliases.remove(name);
+                        replace_tracked_tuple_types(local_aliases, name, Some(declared_types));
+                        track_tuple_var_assignment(tuple_vars, name, Some(declared_types.len()));
+                        known_scalars.insert(name.clone());
+                    }
                     return;
                 }
                 if let Some(existing_types) = existing_tuple_types.as_ref() {
@@ -2271,6 +2337,12 @@ fn analyze_flow_assignment(
                 ));
                 return;
             }
+            if declared_tuple_types.is_some() {
+                target_error!(format!(
+                    "typed tuple declaration for '{name}' requires a tuple value"
+                ));
+                return;
+            }
             let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 &expr_for_validation,
                 state_scalars,
@@ -2296,7 +2368,7 @@ fn analyze_flow_assignment(
                 Some(existing)
             } else if let Some(existing) = local_aliases.get(name).copied() {
                 Some(existing)
-            } else if let Some(declared) = *decl_ty {
+            } else if let Some(declared) = declared_scalar_ty {
                 Some(declared)
             } else {
                 let untyped_ty = effective_untyped_assignment_type(expr, expr_ty);

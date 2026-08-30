@@ -727,7 +727,7 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
             if *is_typed_decl {
                 if let Some(ty) = decl_ty {
                     text.push_str(": ");
-                    text.push_str(primitive_type_name(*ty));
+                    text.push_str(&format_decl_type(ty));
                 } else if let Some(ty) = generic_decl_ty {
                     text.push_str(": ");
                     text.push_str(ty);

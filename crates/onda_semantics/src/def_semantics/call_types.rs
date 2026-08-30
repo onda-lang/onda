@@ -812,7 +812,7 @@ pub(crate) fn infer_tuple_arg_types(
 
 pub(crate) fn update_call_type_env_after_assign(
     target: &AssignTarget,
-    decl_ty: Option<PrimitiveType>,
+    decl_ty: Option<&DeclType>,
     generic_decl_ty: Option<&str>,
     expr: &Expr,
     env: &mut CallTypeEnv,
@@ -846,9 +846,19 @@ pub(crate) fn update_call_type_env_after_assign(
     };
 
     if let Some(declared) = decl_ty {
-        env.shadow_binding(name);
-        env.scalar_types.insert(name.clone(), declared);
-        return;
+        match declared {
+            DeclType::Scalar(ty) => {
+                env.shadow_binding(name);
+                env.scalar_types.insert(name.clone(), *ty);
+                return;
+            }
+            DeclType::Tuple(types) => {
+                env.shadow_binding(name);
+                env.tuple_elem_types.insert(name.clone(), types.clone());
+                return;
+            }
+            DeclType::Generic(_) | DeclType::ArrayGeneric { .. } | DeclType::Array { .. } => {}
+        }
     }
     if generic_decl_ty.is_some_and(|type_name| env.owner_type_params.contains(type_name)) {
         env.shadow_binding(name);

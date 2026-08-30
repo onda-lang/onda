@@ -1,6 +1,7 @@
 use super::*;
 use crate::def_semantics::call_types::StatementFlow;
 use crate::is_bare_return_expr;
+use onda_frontend::DeclType;
 
 #[derive(Clone, Copy)]
 enum StaticForPlan {
@@ -85,7 +86,8 @@ impl<'a> FunctionLowerer<'a> {
                     loc,
                     ..
                 } => {
-                    let declared_integer_range = integer_range_invariant(expr, *decl_ty);
+                    let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
+                    let declared_integer_range = integer_range_invariant(expr, declared_scalar_ty);
                     if let AssignTarget::Var(name) = target {
                         if self.is_slice_expression(expr) {
                             let slice = self.lower_slice_expression(expr, None, block)?;
@@ -158,7 +160,7 @@ impl<'a> FunctionLowerer<'a> {
                                 self.assign_variable_values(
                                     name,
                                     values,
-                                    *decl_ty,
+                                    decl_ty.as_ref(),
                                     expr,
                                     block,
                                     (*loc).into(),

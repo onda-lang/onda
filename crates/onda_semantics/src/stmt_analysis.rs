@@ -465,7 +465,7 @@ pub(crate) fn track_integer_range_declaration(
     else {
         return;
     };
-    let range = typed_integer_range_from_expr(expr, *decl_ty);
+    let range = typed_integer_range_from_expr(expr, decl_ty.as_ref().and_then(DeclType::scalar));
     if let Some(range) = range {
         ranges.insert(name.clone(), range);
     } else {

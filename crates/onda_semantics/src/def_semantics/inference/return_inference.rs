@@ -191,7 +191,7 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
             } => {
                 update_call_type_env_after_assign(
                     target,
-                    *decl_ty,
+                    decl_ty.as_ref(),
                     generic_decl_ty.as_deref(),
                     expr,
                     env,

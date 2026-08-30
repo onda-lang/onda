@@ -4782,7 +4782,7 @@ sample:
         else {
             panic!("expected an inferred ranged declaration");
         };
-        assert_eq!(*decl_ty, Some(PrimitiveType::I32));
+        assert_eq!(*decl_ty, Some(DeclType::Scalar(PrimitiveType::I32)));
         assert!(*is_typed_decl);
         assert_eq!(*func, expected_func);
         assert_eq!(args.len(), 3);
@@ -4886,6 +4886,39 @@ fn parses_bare_and_parenthesized_tuple_targets_with_discards() {
             ]
         ));
     }
+}
+
+#[test]
+fn typed_tuple_assignments_retain_the_declared_element_types() {
+    let program = parse_program(
+        "sample:\n  pair: (f64, i32, bool) = (1.0, 2, true)\n  out1 = f32(pair[0])\n",
+    )
+    .expect("typed tuple assignment should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(&sample.body),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign {
+        decl_ty,
+        is_typed_decl,
+        ..
+    } = &sample[0]
+    else {
+        panic!("expected typed tuple assignment");
+    };
+    assert_eq!(
+        decl_ty,
+        &Some(DeclType::Tuple(vec![
+            PrimitiveType::F64,
+            PrimitiveType::I32,
+            PrimitiveType::Bool,
+        ]))
+    );
+    assert!(*is_typed_decl);
 }
 
 #[test]

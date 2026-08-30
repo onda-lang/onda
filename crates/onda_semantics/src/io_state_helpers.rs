@@ -384,6 +384,7 @@ fn register_scope_stmt_state(
                     && !struct_instances.contains_key(name)
                     && !matches!(expr, Expr::ArrayCtor { .. })
                     && generic_decl_ty.is_none()
+                    && decl_ty.as_ref().and_then(DeclType::tuple).is_none()
                 {
                     let resolved_ty = match registration_mode {
                         RuntimeRegistrationMode::None => return,
@@ -414,7 +415,10 @@ fn register_scope_stmt_state(
                                     full_ty.unwrap_or(PrimitiveType::F32)
                                 }
                             };
-                            decl_ty.unwrap_or(inferred_ty)
+                            decl_ty
+                                .as_ref()
+                                .and_then(DeclType::scalar)
+                                .unwrap_or(inferred_ty)
                         }
                     };
                     state_scalars.insert(name.clone(), resolved_ty);
