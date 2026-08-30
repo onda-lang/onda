@@ -489,7 +489,7 @@ namespace std::fft<N = 256>:
             self.fft.set_bin(
               i,
               self.input[even_idx] * T(Hann[even]),
-              self.input[odd_idx] * T(Hann[odd]),
+              self.input[odd_idx] * T(Hann[odd])
             )
         else:
           for i in 0..half:
@@ -500,7 +500,7 @@ namespace std::fft<N = 256>:
             self.fft.set_bin(
               i,
               self.input[even_idx] * T(Rectangular[even]),
-              self.input[odd_idx] * T(Rectangular[odd]),
+              self.input[odd_idx] * T(Rectangular[odd])
             )
 
         # A real N-point transform is reconstructed from one complex N/2-point

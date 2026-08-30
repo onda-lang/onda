@@ -973,11 +973,11 @@ init {
 sample {
   p.set(
     1.0,
-    2.0,
+    2.0
   )
   out1 = max(
     p.a,
-    p.b,
+    p.b
   )
 }
 "#;
@@ -1015,7 +1015,7 @@ outs:
 init:
   env = std::env::DecayEnv(
     decay_s = 0.05,
-    trigger = 1.0,
+    trigger = 1.0
   )
 sample:
   out1 = env()
@@ -5917,7 +5917,7 @@ fn parses_multiline_event_param_list_in_indentation_syntax() {
 events:
   test(
     a: f32,
-    b: f32,
+    b: f32
   ):
     value = a + b
 sample:
@@ -6740,39 +6740,39 @@ fn parses_multiline_delimiters_across_core_constructs() {
 namespace Math<
   N = (
     1 + 1
-  ),
+  )
 >:
   const Size = N
 
 def mix<
-  T,
+  T
 >(
   a: T,
-  b: T,
+  b: T
 ) -> (
   T,
-  T,
+  T
 ):
   pair = (
     a,
-    b,
+    b
   )
   return pair
 
 params:
   freq = 440.0 {
     20.0,
-    20000.0,
+    20000.0
   }
 
 init:
   arr: f32[
     Math<
-      N = 2,
+      N = 2
     >::Size
   ] = [
     0.0,
-    1.0,
+    1.0
   ]
   x = arr[
     (
@@ -6782,12 +6782,12 @@ init:
 
 sample:
   out1 = mix<
-    f32,
+    f32
   >(
     arr[
       0
     ],
-    x,
+    x
   )
 "#;
 
@@ -6834,11 +6834,11 @@ graph:
   ] out1
   0.25 >> {
     out1,
-    out2,
+    out2
   }
   {
     out1,
-    out2,
+    out2
   } << 0.125
 "#;
 
@@ -6853,7 +6853,7 @@ struct Store:
 
   def set(
     self,
-    value: f32,
+    value: f32
   ):
     self.value = value
 
@@ -6864,7 +6864,7 @@ init:
     0.0,
     1.0,
     2.0,
-    3.0,
+    3.0
   ]
   dst: f32[
     2
@@ -6882,7 +6882,7 @@ sample:
   s.set(
     dst[
       0
-    ],
+    ]
   )
   out1 = data[
     0
@@ -6890,6 +6890,53 @@ sample:
 "#;
 
     parse_program(src).expect("multiline method, slice, and index delimiters should parse");
+}
+
+#[test]
+fn rejects_trailing_commas_in_comma_separated_language_forms() {
+    let cases = [
+        ("print arguments", "sample:\n  print(1,)\n"),
+        ("call arguments", "sample:\n  value = f(1,)\n"),
+        ("array literals", "init:\n  values = [1,]\n"),
+        ("tuple expressions", "init:\n  value = (1, 2,)\n"),
+        ("tuple targets", "sample:\n  (a, b,) = pair()\n"),
+        (
+            "function parameters",
+            "def f(value: f32,):\n  return value\n",
+        ),
+        (
+            "generic parameters",
+            "def f<T,>(value: T):\n  return value\n",
+        ),
+        ("generic arguments", "sample:\n  value = f<f32,>(1.0)\n"),
+        ("tuple types", "init:\n  value: (f32, i32,) = (1.0, 1)\n"),
+        (
+            "event parameters",
+            "event ping(value: f32,):\n  print(value)\n",
+        ),
+        ("delegate parameters", "delegate ready(value: f32,)\n"),
+        ("when bindings", "when ready(value,):\n  print(value)\n"),
+        (
+            "namespace parameters",
+            "namespace N<Value = 1,>:\n  const Result = Value\n",
+        ),
+        ("namespace arguments", "use N<Value = 1,>\n"),
+        ("binding ranges", "init:\n  value = 0 {8,}\n"),
+        ("parameter domains", "params:\n  value = 0.0 {0.0, 1.0,}\n"),
+        (
+            "graph endpoint sets",
+            "outs:\n  out1\ngraph:\n  0.0 >> {out1,}\n",
+        ),
+        ("section declaration lists", "outs { out1, }\n"),
+        ("struct field lists", "struct Value { field: f32, }\n"),
+    ];
+
+    for (context, source) in cases {
+        assert!(
+            parse_program(source).is_err(),
+            "{context} must reject a trailing comma"
+        );
+    }
 }
 
 #[test]

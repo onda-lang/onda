@@ -102,7 +102,7 @@ init:
 sample:
   out1 = consume(
     b = values[mark(values, 2):],
-    a = values[mark(values, 1):],
+    a = values[mark(values, 1):]
   ) + values[0]
 "#;
 
@@ -150,7 +150,7 @@ init {
     attack_s = f64(0.00025),
     sustain = f64(0.5),
     release_s = f64(0.00025),
-    gate = f64(1.0),
+    gate = f64(1.0)
   )
 }
 
@@ -181,7 +181,7 @@ outs { out1 }
 init {
   lfo = std::osc::KSine<f64>(
     freq = f64(SR) / f64(BS * 4),
-    amp = f64(0.25),
+    amp = f64(0.25)
   )
 }
 
@@ -774,7 +774,7 @@ init:
     ratio = 4.0,
     attack_s = 0.0,
     release_s = 0.0,
-    knee_db = 0.0,
+    knee_db = 0.0
   )
   limiter = std::dynamics::Limiter(ceiling_db = -6.0, release_s = 0.0)
 

@@ -10630,7 +10630,7 @@ pub fn analyze_with_options_and_inputs(
         state_array_struct_roots,
         struct_instances,
         nested_proc_arrays,
-        state_tuples,
+        mut state_tuples,
         ..
     } = init_st;
     for (param_name, alias) in &param_aliases {
@@ -10717,7 +10717,7 @@ pub fn analyze_with_options_and_inputs(
             nested_proc_instances: &empty_nested_proc_instances,
             proc_array_roots: &nested_proc_arrays,
             struct_instances: &struct_instances,
-            state_tuples: &state_tuples,
+            state_tuples: &mut state_tuples,
         };
         let mut runtime_plans = analysis_plan_seeds
             .runtime_scope_plans(
@@ -11396,13 +11396,17 @@ pub fn analyze_with_options_and_inputs(
             &def_struct_defs,
             &mut errors,
         );
-        // Register tuple params as tuple_vars for indexing validation
+        // Tuple parameters are mutable local copies. Seed both their arity and
+        // component types so reassignment preserves the declared target types.
         if let Some(kinds) = inferred_def_params.get(&def.name) {
             for (param, kind) in def.params.iter().zip(kinds.iter()) {
                 if let TypedFnParam::Tuple { elem_tys } = kind {
-                    def_state
-                        .tuple_vars
-                        .insert(param.name.clone(), elem_tys.len());
+                    set_tracked_tuple_types(
+                        &mut def_state.tuple_vars,
+                        &mut def_state.local_aliases,
+                        &param.name,
+                        elem_tys,
+                    );
                 }
             }
         }

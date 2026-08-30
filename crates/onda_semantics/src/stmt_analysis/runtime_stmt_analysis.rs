@@ -133,14 +133,12 @@ pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub state_array_struct_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub nested_proc_instances: &'a HashMap<String, ProcNestedState>,
     pub struct_instances: &'a HashMap<String, String>,
-    pub registration_input_names: &'a HashSet<String>,
-    pub registration_output_names: &'a HashSet<String>,
-    pub registration_param_names: &'a HashSet<String>,
     pub forbidden_assign_names: &'a HashSet<String>,
     pub forbidden_assign_array_names: &'a HashSet<String>,
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub event_policy: Option<EventStmtPolicy<'a>>,
     pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    pub registered_state_tuples: &'a HashMap<String, SourceLoc>,
     pub resolved_scalar_locals: Option<&'a std::cell::RefCell<LocalAliasTypes>>,
     pub resolved_array_locals: Option<&'a std::cell::RefCell<HashMap<String, LocalArrayAliasInfo>>>,
     pub resolved_tuple_locals: Option<&'a std::cell::RefCell<HashMap<String, Vec<PrimitiveType>>>>,
@@ -298,13 +296,11 @@ fn build_runtime_stmt_analysis_ctx<'a>(
     nested_proc_instances: &'a HashMap<String, ProcNestedState>,
     proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     struct_instances: &'a HashMap<String, String>,
-    registration_input_names: &'a HashSet<String>,
-    registration_output_names: &'a HashSet<String>,
-    registration_param_names: &'a HashSet<String>,
     forbidden_assign_names: &'a HashSet<String>,
     forbidden_assign_array_names: &'a HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
     state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    registered_state_tuples: &'a HashMap<String, SourceLoc>,
 ) -> FlowStmtAnalysisCtx<'a> {
     FlowStmtAnalysisCtx {
         common,
@@ -315,13 +311,11 @@ fn build_runtime_stmt_analysis_ctx<'a>(
         nested_proc_instances,
         proc_array_roots,
         struct_instances,
-        registration_input_names,
-        registration_output_names,
-        registration_param_names,
         forbidden_assign_names,
         forbidden_assign_array_names,
         event_policy,
         state_tuples,
+        registered_state_tuples,
         resolved_scalar_locals: None,
         resolved_array_locals: None,
         resolved_tuple_locals: None,
@@ -400,6 +394,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut state_scalars = state_scalars.clone();
+    let registered_state_tuples = HashMap::new();
     let ctx = build_runtime_stmt_analysis_ctx(
         common,
         registration_mode,
@@ -409,13 +404,11 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
         nested_proc_instances,
         proc_array_roots,
         struct_instances,
-        common.input_names,
-        common.output_names,
-        common.param_names,
         forbidden_assign_names,
         forbidden_assign_array_names,
         event_policy,
         state_tuples,
+        &registered_state_tuples,
     );
     let mut state =
         build_runtime_stmt_analysis_state(known_scalars, local_aliases, local_array_aliases);
@@ -460,9 +453,26 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
     runtime_local_buffer_aliases: LocalBufferAliases,
     runtime_forbidden_assign_names: &HashSet<String>,
     runtime_forbidden_assign_array_names: &HashSet<String>,
-    state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) -> LocalBufferAliases {
+    let stmts = stmts.into_iter().collect::<Vec<_>>();
+    let registered_state_tuples = register_scope_state(
+        stmts.iter().copied(),
+        state_scalars,
+        state_tuples,
+        declared_symbols,
+        state_arrays,
+        state_array_struct_roots,
+        struct_instances,
+        registration_input_names,
+        registration_output_names,
+        registration_param_names,
+        common.struct_defs,
+        common.fn_return_types,
+        registration_mode,
+        &runtime_local_buffer_aliases,
+    );
     let ctx = build_runtime_stmt_analysis_ctx(
         common,
         registration_mode,
@@ -472,13 +482,11 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         nested_proc_instances,
         proc_array_roots,
         struct_instances,
-        registration_input_names,
-        registration_output_names,
-        registration_param_names,
         runtime_forbidden_assign_names,
         runtime_forbidden_assign_array_names,
         None,
         state_tuples,
+        &registered_state_tuples,
     );
     let mut state = build_runtime_stmt_analysis_state(
         runtime_known_scalars,
@@ -655,22 +663,6 @@ pub(crate) fn analyze_flow_scope_stmts<'a>(
     use crate::def_semantics::call_types::{statement_flow, StatementFlow};
 
     let stmts = stmts.into_iter().collect::<Vec<_>>();
-    if scope_depth == 0 {
-        register_scope_state(
-            stmts.iter().copied(),
-            state_scalars,
-            ctx.declared_symbols,
-            ctx.state_arrays,
-            ctx.state_array_struct_roots,
-            ctx.struct_instances,
-            ctx.registration_input_names,
-            ctx.registration_output_names,
-            ctx.registration_param_names,
-            ctx.common.struct_defs,
-            ctx.registration_mode,
-            &state.local_buffer_aliases,
-        );
-    }
     state.known_scalars.extend(state_scalars.keys().cloned());
     // Seed tuple_vars so expression validation allows pair[0] indexing
     state
@@ -814,6 +806,7 @@ fn analyze_flow_stmt(
                     common.port_index_params,
                     common.port_index_kins,
                     ctx.state_tuples,
+                    ctx.registered_state_tuples,
                     errors,
                 );
                 record_resolved_local_bindings(ctx, state);
@@ -1131,6 +1124,7 @@ fn analyze_flow_assignment(
     port_index_params: Option<PortIndexInfo>,
     port_index_kins: Option<PortIndexInfo>,
     state_tuples: &HashMap<String, Vec<PrimitiveType>>,
+    registered_state_tuples: &HashMap<String, SourceLoc>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let array_vars = merged_data_vars(state_arrays, local_array_aliases);
@@ -2065,11 +2059,13 @@ fn analyze_flow_assignment(
                                 },
                             );
                             if let Some(assigned_types) = assigned_types {
-                                require_tuple_expr_assignable_types(
+                                resolve_tuple_assignment_types(
                                     &flat,
                                     &expr_for_validation,
                                     &assigned_types,
-                                    field_types,
+                                    None,
+                                    Some(field_types),
+                                    false,
                                     errors,
                                 );
                             } else {
@@ -2277,58 +2273,34 @@ fn analyze_flow_assignment(
                     ));
                     return;
                 }
-                if let Some(declared_types) = declared_tuple_types {
-                    if output_names.contains(name) || existing_tuple_types.is_some() {
-                        target_error!(format!(
-                            "typed tuple declaration for '{name}' is only allowed on first assignment"
-                        ));
-                        return;
-                    }
-                    require_tuple_expr_assignable_types(
-                        name,
-                        &expr_for_validation,
-                        tuple_types,
-                        declared_types,
-                        errors,
-                    );
-                    if can_track_local {
-                        local_aliases.remove(name);
-                        replace_tracked_tuple_types(local_aliases, name, Some(declared_types));
-                        track_tuple_var_assignment(tuple_vars, name, Some(declared_types.len()));
-                        known_scalars.insert(name.clone());
-                    }
-                    return;
-                }
-                if let Some(existing_types) = existing_tuple_types.as_ref() {
-                    require_tuple_expr_assignable_types(
-                        name,
-                        &expr_for_validation,
-                        tuple_types,
-                        existing_types,
-                        errors,
-                    );
-                    if !state_tuples.contains_key(name) {
-                        replace_tracked_tuple_types(local_aliases, name, Some(existing_types));
-                        track_tuple_var_assignment(tuple_vars, name, Some(existing_types.len()));
-                        known_scalars.insert(name.clone());
-                    }
-                    return;
-                }
-                if state_scalars.contains_key(name)
-                    || known_scalars.contains(name)
-                    || local_aliases.contains_key(name)
+                if existing_tuple_types.is_none()
+                    && (state_scalars.contains_key(name)
+                        || known_scalars.contains(name)
+                        || local_aliases.contains_key(name))
                 {
                     target_error!(format!(
                         "cannot assign a tuple value to scalar local '{name}'"
                     ));
                     return;
                 }
-            }
-            if let Some(tuple_types) = tuple_types.filter(|_| can_track_local) {
-                local_aliases.remove(name);
-                replace_tracked_tuple_types(local_aliases, name, Some(&tuple_types));
-                track_tuple_var_assignment(tuple_vars, name, Some(tuple_types.len()));
-                known_scalars.insert(name.clone());
+                let Some(target_types) = resolve_tuple_assignment_types(
+                    name,
+                    &expr_for_validation,
+                    tuple_types,
+                    declared_tuple_types,
+                    existing_tuple_types.as_deref(),
+                    registered_state_tuples
+                        .get(name)
+                        .is_some_and(|registered_loc| *registered_loc == target_loc),
+                    errors,
+                ) else {
+                    return;
+                };
+                if !state_tuples.contains_key(name) && can_track_local {
+                    local_aliases.remove(name);
+                    set_tracked_tuple_types(tuple_vars, local_aliases, name, &target_types);
+                    known_scalars.insert(name.clone());
+                }
                 return;
             }
             if existing_tuple_types.is_some() {

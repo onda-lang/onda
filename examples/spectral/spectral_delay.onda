@@ -130,7 +130,7 @@ sample:
     delay_s = delay_s,
     slope = slope,
     feedback = feedback,
-    stereo = stereo,
+    stereo = stereo
   )
   out1 = tanh((source * (1.0 - mix) + spectral_delay.out1 * mix) * level)
   out2 = tanh((source * (1.0 - mix) + spectral_delay.out2 * mix) * level)

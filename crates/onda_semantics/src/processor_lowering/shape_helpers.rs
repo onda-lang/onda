@@ -3006,11 +3006,12 @@ pub(super) fn compute_proc_shape(
                         }
                     }
                     FieldType::Tuple(elem_tys) => {
-                        for (idx, prim) in elem_tys.iter().enumerate() {
-                            let elem_flat = format!("{flat}.__{idx}");
-                            proc_state_scalars.entry(elem_flat).or_insert(*prim);
-                        }
-                        proc_state_tuples.insert(flat, elem_tys.clone());
+                        register_tuple_state(
+                            &mut proc_state_scalars,
+                            &mut proc_state_tuples,
+                            &flat,
+                            elem_tys,
+                        );
                     }
                     FieldType::Generic(_) => {}
                 }
@@ -3206,7 +3207,7 @@ pub(super) fn compute_proc_shape(
             nested_proc_instances: &state.nested_procs,
             proc_array_roots: &state.nested_proc_arrays,
             struct_instances: &proc_struct_instances_typed,
-            state_tuples: &proc_state_tuples,
+            state_tuples: &mut proc_state_tuples,
         };
         analyze_owner_runtime_scopes(
             &mut runtime_state,

@@ -915,7 +915,7 @@ init:
 sample:
   out1 = consume(
     b = values[mark(values, 2):],
-    a = values[mark(values, 1):],
+    a = values[mark(values, 1):]
   ) + values[0]
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -962,7 +962,7 @@ init:
 sample:
   out1 = consume(
     b = mark_pair(values, 2),
-    a = mark_pair(values, 1),
+    a = mark_pair(values, 1)
   ) + values[0]
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -1013,7 +1013,7 @@ init:
 sample:
   out1 = consume(
     b = cells[mark(values, 2)],
-    a = cells[mark(values, 1)],
+    a = cells[mark(values, 1)]
   ) + values[0]
 "#;
     let parsed = parse_program(source).expect("source should parse");

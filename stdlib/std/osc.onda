@@ -60,7 +60,7 @@ namespace std::osc:
       phase = wrap(
         phase + freq * T(BS) / T(SR),
         T(0.0),
-        T(1.0),
+        T(1.0)
       )
   
   def poly_blep<T>(t: T, dt: T) -> T:

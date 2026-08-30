@@ -74,7 +74,7 @@ sample:
     voices[next_voice].amp = amp
     voices[next_voice].bang(
       freq_hz = rng.range(lo_freq, hi_freq),
-      cutoff_hz = rng.range(lo_cutoff, hi_cutoff),
+      cutoff_hz = rng.range(lo_cutoff, hi_cutoff)
     )
     voice_pan[next_voice] = rng.range(-0.9, 0.9)
     next_voice = (next_voice + 1) % NumVoices

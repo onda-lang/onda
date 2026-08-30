@@ -828,6 +828,115 @@ fn tuple_local_block() {
     assert_near(output[1], 200.0, 1e-6);
 }
 
+#[test]
+fn tuple_parameter_reassignment_preserves_declared_element_types() {
+    let src = r#"
+outs:
+  out1
+
+def classify(value: f32) -> f32:
+  return 1.0
+
+def classify(value: f64) -> f32:
+  return 2.0
+
+def update(values: (f64, i64)) -> f32:
+  values = (3.0, 4)
+  return classify(values[0]) + f32(values[1])
+
+sample:
+  out1 = update((0.0, 0))
+"#;
+    let (mut instance, _, out_channels) = compile_instance(src, 1);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; 1];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 6.0, 1e-6);
+}
+
+#[test]
+fn tuple_struct_field_can_be_assigned_during_init() {
+    let src = r#"
+outs:
+  out1
+  out2
+
+struct Holder:
+  values: (f64, i64) = (0.0, 0)
+
+def pair() -> (f32, i32):
+  return (3.0, 4)
+
+init:
+  holder = Holder()
+  holder.values = pair()
+  total = f32(holder.values[0]) + f32(holder.values[1])
+
+sample:
+  out1 = total
+  out2 = f32(holder.values[0])
+"#;
+    let (mut instance, _, out_channels) = compile_instance(src, 1);
+    assert_eq!(out_channels, 2);
+    let mut output = vec![0.0_f32; out_channels];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 7.0, 1e-6);
+    assert_near(output[1], 3.0, 1e-6);
+}
+
+#[test]
+fn nested_init_tuple_is_a_reassignable_lexical_local() {
+    let src = r#"
+outs:
+  out1
+
+def pair() -> (f32, i32):
+  return (3.0, 4)
+
+init:
+  state: (f64, i64) = pair()
+  state = pair()
+  total = f32(state[0]) + f32(state[1])
+  if true:
+    local: (f64, i64) = pair()
+    local = pair()
+    total = total + f32(local[0]) + f32(local[1])
+
+sample:
+  out1 = total
+"#;
+    let (mut instance, _, out_channels) = compile_instance(src, 1);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; 1];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 14.0, 1e-6);
+}
+
+#[test]
+fn block_owned_tuple_is_visible_to_sample_scope() {
+    let src = r#"
+outs:
+  out1
+  out2
+
+def pair() -> (f32, i32):
+  return (3.0, 4)
+
+block:
+  values: (f64, i64) = pair()
+  values = pair()
+  sample:
+    out1 = f32(values[0])
+    out2 = f32(values[1])
+"#;
+    let (mut instance, _, out_channels) = compile_instance(src, 1);
+    assert_eq!(out_channels, 2);
+    let mut output = vec![0.0_f32; out_channels];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 3.0, 1e-6);
+    assert_near(output[1], 4.0, 1e-6);
+}
+
 // ---------------------------------------------------------------------------
 // Phase 4: Inferred (untyped) tuple parameters via monomorphization
 // ---------------------------------------------------------------------------

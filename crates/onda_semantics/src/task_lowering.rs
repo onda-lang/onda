@@ -1418,13 +1418,7 @@ fn register_task_owner_aggregate_storage(
                     types.scalars.entry(flat).or_insert(*ty);
                 }
                 TypedFieldType::Tuple(elements) => {
-                    types.tuples.entry(flat.clone()).or_insert(elements.clone());
-                    for (index, ty) in elements.iter().enumerate() {
-                        types
-                            .scalars
-                            .entry(format!("{flat}.__{index}"))
-                            .or_insert(*ty);
-                    }
+                    register_tuple_state(&mut types.scalars, &mut types.tuples, &flat, elements);
                 }
                 TypedFieldType::Array(len) => {
                     if let Some(element) = field.array_elem_ty {
@@ -2000,7 +1994,7 @@ fn analyze_task_binding_storage(
         port_index_kins: None,
         proc_event_names: &owner_types.proc_event_names,
     };
-    let registration_names = HashSet::new();
+    let registration_names = HashMap::new();
     let resolved_scalars = std::cell::RefCell::new(HashMap::new());
     let resolved_arrays = std::cell::RefCell::new(HashMap::new());
     let resolved_tuples = std::cell::RefCell::new(HashMap::new());
@@ -2012,14 +2006,12 @@ fn analyze_task_binding_storage(
         state_array_struct_roots: &owner_types.state_array_struct_roots,
         nested_proc_instances: &owner_types.nested_proc_instances,
         struct_instances: &owner_types.struct_instances,
-        registration_input_names: &registration_names,
-        registration_output_names: &registration_names,
-        registration_param_names: &registration_names,
         forbidden_assign_names: &owner_types.output_names,
         forbidden_assign_array_names: &output_array_names,
         proc_array_roots: &owner_types.proc_array_roots,
         event_policy: None,
         state_tuples: &owner_types.tuples,
+        registered_state_tuples: &registration_names,
         resolved_scalar_locals: Some(&resolved_scalars),
         resolved_array_locals: Some(&resolved_arrays),
         resolved_tuple_locals: Some(&resolved_tuples),

@@ -25,7 +25,7 @@ proc RunglerCore:
   sample:
     dac = (shift_register & 255) / 255.0
     bipolar = dac * 2.0 - 1.0
-    rungler_note = scale + 20.0 * dac * 100.0
+    rungler_note = 20.0 + (scale * dac * 100.0)
     rungler_hz = std::pitch::note_to_hz(rungler_note)
 
     freq_a = clamp(frequency_a + rungler_hz * rungler_a, 0.1, SR * 0.25)
@@ -57,7 +57,7 @@ proc RunglerCore:
     cutoff = clamp(
       filter_frequency + rungler_hz * rungler_filter * 12.0,
       25.0,
-      SR * 0.5,
+      SR * 0.5
     )
 
     out1 = tri_a
@@ -96,7 +96,7 @@ proc Benjolin:
       rungler_b = rungler_b,
       rungler_filter = rungler_filter,
       feedback_loop = feedback_loop,
-      filter_frequency = filter_frequency,
+      filter_frequency = filter_frequency
     )
     filter.update_coeffs(core.out7, resonance)
     filter.mode = filter_mode
@@ -108,7 +108,7 @@ proc Benjolin:
       core.out4,
       core.out5,
       core.out6,
-      filtered,
+      filtered
     ]
     out1 = signals[output_signal_l]
     out2 = signals[output_signal_r]
@@ -149,7 +149,7 @@ sample:
     resonance = resonance,
     filter_mode = filter_mode,
     output_signal_l = output_signal_l,
-    output_signal_r = output_signal_r,
+    output_signal_r = output_signal_r
   )
   dry_l = dc_l(benjolin.out1)
   dry_r = dc_r(benjolin.out2)

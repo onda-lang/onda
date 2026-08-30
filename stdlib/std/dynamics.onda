@@ -111,7 +111,7 @@ namespace std::dynamics:
         level_db,
         threshold_db,
         ratio,
-        knee_db,
+        knee_db
       )
       gain = std::levels::db_to_gain<T>(makeup_db - reduction_db)
       out1 = in1 * gain

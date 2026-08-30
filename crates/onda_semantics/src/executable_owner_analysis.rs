@@ -18,7 +18,7 @@ pub(crate) struct ExecutableOwnerRuntimeState<'a> {
     pub(crate) nested_proc_instances: &'a HashMap<String, ProcNestedState>,
     pub(crate) proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub(crate) struct_instances: &'a HashMap<String, String>,
-    pub(crate) state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    pub(crate) state_tuples: &'a mut HashMap<String, Vec<PrimitiveType>>,
 }
 
 #[derive(Clone)]

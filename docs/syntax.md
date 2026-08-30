@@ -157,8 +157,8 @@ Basic source rules:
 
 - Statements can be separated by newlines or `;`.
 - Line comments start with `#`.
-- Newlines are allowed inside parenthesized, bracketed, and angle-bracketed lists; a final item may
-  have a trailing comma.
+- Newlines are allowed inside parenthesized, bracketed, and angle-bracketed lists. Trailing commas
+  are not accepted.
 - Names are introduced before they are used.
 - Top-level declarations are processed in lexical order.
 - A declaration-only source file is valid and does not need an executable `sample`, `block`, or
@@ -1001,6 +1001,7 @@ Rules:
 
 - Tuple value syntax is `(value1, value2, ...)`; the parentheses are required.
 - Tuple type syntax is `(T1, T2, ...)`; the parentheses are required.
+- Tuple syntax requires at least two elements and does not accept a trailing comma.
 - Maximum arity is 16.
 - Nested tuples are not currently supported.
 - Tuple element access uses compile-time integer indices.
@@ -1010,6 +1011,11 @@ Rules:
 - Multi-output processor calls can be destructured directly; see
   [Constructing and Calling Procs](#constructing-and-calling-procs).
 - Tuples can be locals, `init` state, `def` params and returns, and struct fields.
+- A tuple binding keeps the arity and element types established by its declaration or first
+  assignment. Reassignment accepts compatible values but never changes the binding's type.
+- Tuple parameters are mutable local values and follow the same reassignment rules.
+- A fresh tuple assigned at the root of `init` or before a block's `sample` section is persistent
+  state. Fresh tuples introduced in nested control flow are lexical locals.
 
 Unchecked indexing is deliberately kept out of the normal collection workflow.
 Use ordinary indexing unless a proven hot path requires the escape hatch
@@ -1033,7 +1039,7 @@ Supported features:
 - Default values.
 - Early return.
 - Optional explicit return type annotations with `->`.
-- Multi-line argument lists with an optional trailing comma.
+- Multi-line argument lists; every comma must be followed by another argument.
 - Method-style sugar for ordinary defs: `x.clamp01()` rewrites to `clamp01(x)`.
 - Left-to-right argument evaluation, including named arguments.
 

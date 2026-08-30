@@ -4705,7 +4705,7 @@ const I32Values: i32[3] = [I32Value, max(i32(-7), -3), abs(i32(-11))]
 const I64Values: i64[3] = [
   I64Value,
   max(i64(9007199254740993), 9007199254740995),
-  abs(i64(-9007199254740993)),
+  abs(i64(-9007199254740993))
 ]
 const F32Values: f32[1] = [F32Value]
 const F64Values: f64[1] = [F64Value]
@@ -8002,6 +8002,7 @@ def consume() -> f32:
 
 init:
   state: (f64, i64) = pair()
+  state = pair()
 
 event reset():
   state = pair()
@@ -8023,8 +8024,37 @@ block:
             typed.state_tuples.get("state"),
             Some(&vec![PrimitiveType::F64, PrimitiveType::I64])
         );
+        assert_eq!(
+            typed.state_tuples.get("before"),
+            Some(&vec![PrimitiveType::F64, PrimitiveType::I64])
+        );
         lower_program_to_optimized_mir(&typed)
             .expect("typed tuple declarations should lower with their declared types");
+    }
+
+    #[test]
+    fn nested_init_tuples_remain_local_while_owner_tuples_become_state() {
+        let source = r#"
+init:
+  state = (1.0, 2)
+  if true:
+    local = (3.0, 4)
+    local = (5.0, 6)
+    state = local
+
+sample:
+  out1 = state[0] + f32(state[1])
+"#;
+        let typed = analyze(parse_program(source).expect("tuple scope source should parse"))
+            .expect("init tuple scopes should analyze");
+        assert!(typed.state_tuples.contains_key("state"));
+        assert!(!typed.state_tuples.contains_key("local"));
+        assert!(!typed
+            .state_vars
+            .iter()
+            .any(|name| name.starts_with("local.__")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested init tuple locals should lower without persistent state");
     }
 
     #[test]
@@ -8036,6 +8066,7 @@ def pair() -> (f32, i32):
 proc Voice:
   init:
     state: (f64, i64) = pair()
+    state = pair()
 
   event reset():
     state = pair()
@@ -9101,6 +9132,22 @@ sample:
             (
                 "outs:\n  out1\ninit:\n  vals = (1, 2)\nsample:\n  vals = (0.5, 2)\n  out1 = 0.0\n",
                 "tuple assignment to 'vals' element 0 type mismatch",
+            ),
+            (
+                "def broken(vals: (i32, i32)):\n  vals = (0.5, 2)\n  return 0.0\nsample:\n  out1 = broken((1, 2))\n",
+                "tuple assignment to 'vals' element 0 type mismatch",
+            ),
+            (
+                "init:\n  if true:\n    vals = (1, 2)\n    vals = (0.5, 2)\nsample:\n  out1 = 0.0\n",
+                "tuple assignment to 'vals' element 0 type mismatch",
+            ),
+            (
+                "struct Holder:\n  vals: (i32, i32) = (0, 0)\ninit:\n  holder = Holder()\n  holder.vals = (0.5, 2)\nsample:\n  out1 = 0.0\n",
+                "tuple assignment to 'holder.vals' element 0 type mismatch",
+            ),
+            (
+                "block:\n  vals: (i32, i32) = (1, 2)\n  vals: (i32, i32) = (3, 4)\n  sample:\n    out1 = 0.0\n",
+                "typed tuple declaration for 'vals' is only allowed on first assignment",
             ),
         ];
 
@@ -12744,7 +12791,7 @@ sample:
             r#"
 init:
   value: i64 = 0 {
-    range = (-9223372036854775807 - 1)..(-9223372036854775807 - 1),
+    range = (-9223372036854775807 - 1)..(-9223372036854775807 - 1)
   }
 
 sample:
@@ -12776,7 +12823,7 @@ sample:
         let source = r#"
 init:
   value: i64 = -9223372036854775807 - 1 {
-    range = (-9223372036854775807 - 1)..(-9223372036854775807),
+    range = (-9223372036854775807 - 1)..(-9223372036854775807)
   }
 
 sample:
