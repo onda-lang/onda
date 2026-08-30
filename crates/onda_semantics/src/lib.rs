@@ -13640,6 +13640,96 @@ sample:
     }
 
     #[test]
+    fn delegate_when_handlers_receive_owner_buffers() {
+        let source = r#"
+delegate top_fired()
+
+proc Child:
+  delegate fired()
+  buffers:
+    own: f32
+  when fired():
+    own[0] = own[0] + 2.0
+  block:
+    held = 0.0
+    sample:
+      fired()
+      out1 = held
+
+proc Parent:
+  delegate own_fired()
+  buffers:
+    own: f32
+    routed: f32
+    child_own: f32
+  init:
+    child = Child(own = child_own)
+  when own_fired():
+    own[0] = own[0] + 1.0
+  when child.fired():
+    routed[0] = routed[0] + 10.0
+  sample:
+    own_fired()
+    out1 = child()
+
+buffers:
+  top: f32
+  own: f32
+  routed: f32
+  child_own: f32
+
+when top_fired():
+  top[0] = top[0] + 100.0
+
+when parent.own_fired():
+  top[0] = top[0] + 1000.0
+
+init:
+  parent = Parent(own = own, routed = routed, child_own = child_own)
+
+sample:
+  top_fired()
+  out1 = parent()
+"#;
+        let program = parse_program(source).expect("delegate buffer source should parse");
+        let typed = analyze(program).expect("delegate handlers should receive owner buffers");
+        lower_program_to_optimized_mir(&typed)
+            .expect("delegate handler buffer access should lower to MIR");
+    }
+
+    #[test]
+    fn indexed_child_delegate_handlers_receive_owner_buffers() {
+        let source = r#"
+proc Child:
+  delegate fired()
+  sample:
+    fired()
+    out1 = 0.0
+
+proc Parent:
+  buffers:
+    source: f32
+  init:
+    children: Child[2] = Child()
+  when children[1].fired():
+    source[0] = source[0] + 1.0
+  sample:
+    out1 = children[0]() + children[1]()
+
+buffers:
+  source: f32
+init:
+  parent = Parent(source = source)
+sample:
+  out1 = parent()
+"#;
+        let program = parse_program(source).expect("indexed delegate source should parse");
+        let typed = analyze(program).expect("indexed handler should receive its owner buffer");
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed delegate handler buffer access should lower to MIR");
+    }
+
+    #[test]
     fn delegates_reject_init_reachability_through_runtime_defs() {
         assert_analyze_error_contains(
             r#"

@@ -424,6 +424,7 @@ fn build_builtin_proc_init_event_parts<F>(
     buffer_specs: &[ProcBufferSpec],
     mut target_for_slot: F,
     init_fn_name: String,
+    init_extra_args: &[String],
 ) -> (Vec<onda_frontend::FnParamDecl>, Vec<Stmt>)
 where
     F: FnMut(&str) -> String,
@@ -526,6 +527,10 @@ where
     init_args.extend(buffer_specs.iter().map(|buffer| CallArg {
         name: None,
         expr: Expr::var(buffer.name.clone()),
+    }));
+    init_args.extend(init_extra_args.iter().map(|name| CallArg {
+        name: None,
+        expr: Expr::var(name.clone()),
     }));
 
     event_body.push(Stmt::Expr {
@@ -1039,6 +1044,26 @@ fn generate_nested_wrapper_defs(
         let Some(callee_shape) = lowering_shapes.get(&callee_proc_name).cloned() else {
             continue;
         };
+        let delegate_context_specs = nested_instances
+            .get(&nested_path)
+            .filter(|instance| !instance.delegate_context_args.is_empty())
+            .map(|_| {
+                shape
+                    .buffer_specs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, buffer)| {
+                        let mut buffer = buffer.clone();
+                        buffer.name = delegate_owner_buffer_param_name(index);
+                        buffer
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let delegate_context_args = delegate_context_specs
+            .iter()
+            .map(|buffer| buffer.name.clone())
+            .collect::<Vec<_>>();
         let callee_api = proc_api.get(&callee_proc_name);
         let callee_sample_oversample_factor = callee_api
             .map(|api| api.sample_oversample_factor)
@@ -1063,6 +1088,8 @@ fn generate_nested_wrapper_defs(
                     ProcCallInstance {
                         proc_name: state.proc_name.clone(),
                         buffer_args: Vec::new(),
+                        delegate_context_args: Vec::new(),
+                        routes_owner_delegates: false,
                     },
                 )
             })
@@ -1073,6 +1100,8 @@ fn generate_nested_wrapper_defs(
             ProcCallInstance {
                 proc_name: callee_proc_name.clone(),
                 buffer_args: Vec::new(),
+                delegate_context_args: Vec::new(),
+                routes_owner_delegates: false,
             },
         );
         for (name, state) in &callee_shape.state.nested_procs {
@@ -1081,6 +1110,8 @@ fn generate_nested_wrapper_defs(
                 ProcCallInstance {
                     proc_name: state.proc_name.clone(),
                     buffer_args: Vec::new(),
+                    delegate_context_args: Vec::new(),
+                    routes_owner_delegates: false,
                 },
             );
         }
@@ -1273,6 +1304,7 @@ fn generate_nested_wrapper_defs(
                             &lowered_slot_ctor_args,
                             &nested_callee_shape.param_specs,
                             &nested_callee_shape.buffer_specs,
+                            &[],
                             proc_array_slot,
                             &constructor_array_symbols,
                             errors,
@@ -1315,6 +1347,7 @@ fn generate_nested_wrapper_defs(
                     &callee_shape.field_array_slots,
                     &callee_shape.in_array_slots,
                     &callee_shape.nested_proc_array_slots,
+                    &delegate_context_args,
                     proc_api,
                     errors,
                 ) {
@@ -1393,6 +1426,7 @@ fn generate_nested_wrapper_defs(
                         &lowered_ctor_args,
                         &nested_callee_shape.param_specs,
                         &nested_callee_shape.buffer_specs,
+                        &[],
                         None,
                         &constructor_array_symbols,
                         errors,
@@ -1519,6 +1553,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
                 &callee_shape.nested_proc_array_slots,
+                &delegate_context_args,
                 proc_api,
                 errors,
             ) {
@@ -1570,6 +1605,7 @@ fn generate_nested_wrapper_defs(
                 default: None,
             }
         }));
+        extend_proc_buffer_fn_params(&mut nested_init_params, &delegate_context_specs);
         nested_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
             is_const: false,
@@ -1628,6 +1664,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
                 &callee_shape.nested_proc_array_slots,
+                &delegate_context_args,
                 proc_api,
                 errors,
             ) {
@@ -1639,8 +1676,14 @@ fn generate_nested_wrapper_defs(
                     &mut dynamic_hook_temp_counter,
                 ));
             }
-            let routed_handler =
-                proc_child_when_body(proc, callee_proc, &nested_path, &local_def.name, options);
+            let routed_handler = proc_child_when_body(
+                proc,
+                callee_proc,
+                &nested_path,
+                &local_def.name,
+                options,
+                &delegate_context_args,
+            );
             if !routed_handler.is_empty() {
                 body.extend(rewrite_owner_proc_stmts(
                     routed_handler,
@@ -1665,10 +1708,18 @@ fn generate_nested_wrapper_defs(
                 proc_api,
                 errors,
             );
+            let mut captured_buffers =
+                if is_generated_proc_delegate_local(callee_proc, &local_def.name) {
+                    callee_shape.buffer_specs.clone()
+                } else {
+                    Vec::new()
+                };
+            captured_buffers.extend(delegate_context_specs.iter().cloned());
             nested_defs.push(Block::Def(nested_wrapper_proc_local_hidden_def(
                 &proc.name,
                 &nested_path,
                 &local_def,
+                &captured_buffers,
                 body,
             )));
         }
@@ -1688,6 +1739,7 @@ fn generate_nested_wrapper_defs(
             &callee_shape.field_array_slots,
             &callee_shape.in_array_slots,
             &callee_shape.nested_proc_array_slots,
+            &delegate_context_args,
             proc_api,
             errors,
         ) {
@@ -1733,6 +1785,7 @@ fn generate_nested_wrapper_defs(
                 default: None,
             });
         }
+        extend_proc_buffer_fn_params(&mut nested_step_params, &delegate_context_specs);
         let nested_step_name = nested_step_fn_name(&proc.name, &nested_path);
         if callee_sample_oversample_factor > 1 {
             let stage_count = proc_os_sinc_stage_count(callee_sample_oversample_factor);
@@ -1875,7 +1928,7 @@ fn generate_nested_wrapper_defs(
                     );
                     continue;
                 };
-                let (nested_event_params, nested_event_body) =
+                let (mut nested_event_params, nested_event_body) =
                     if is_builtin_proc_init_event_name(&event.name) {
                         build_builtin_proc_init_event_parts(
                             &proc.name,
@@ -1883,6 +1936,7 @@ fn generate_nested_wrapper_defs(
                             &callee_shape.buffer_specs,
                             |slot| nested_field_name(&nested_path, slot),
                             nested_init_fn_name(&proc.name, &nested_path),
+                            &delegate_context_args,
                         )
                     } else {
                         let mut nested_event_params = Vec::<onda_frontend::FnParamDecl>::new();
@@ -1938,6 +1992,7 @@ fn generate_nested_wrapper_defs(
                             &callee_shape.field_array_slots,
                             &callee_event_in_array_slots,
                             &callee_shape.nested_proc_array_slots,
+                            &delegate_context_args,
                             proc_api,
                             errors,
                         );
@@ -1952,6 +2007,7 @@ fn generate_nested_wrapper_defs(
                         );
                         (nested_event_params, nested_event_body)
                     };
+                extend_proc_buffer_fn_params(&mut nested_event_params, &delegate_context_specs);
                 let nested_event_name = nested_event_fn_name(&proc.name, &nested_path, &event.name);
                 def_sample_oversample_factors
                     .insert(nested_event_name.clone(), callee_sample_oversample_factor);
@@ -1992,6 +2048,7 @@ fn generate_nested_wrapper_defs(
                     default: None,
                 });
             }
+            extend_proc_buffer_fn_params(&mut nested_block_params, &delegate_context_specs);
             let mut nested_block_pre_body = Vec::<Stmt>::new();
             nested_block_pre_body.extend(lower_callee_stmts_for_nested_wrapper(
                 callee_proc.block_pre.clone(),
@@ -2004,6 +2061,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
                 &callee_shape.nested_proc_array_slots,
+                &delegate_context_args,
                 proc_api,
                 errors,
             ));
@@ -2065,6 +2123,13 @@ fn generate_nested_wrapper_defs(
                 call_args.extend(expand_proc_buffer_call_args(
                     instance, api, nested_var, errors,
                 ));
+                call_args.extend(
+                    instance
+                        .delegate_context_args
+                        .iter()
+                        .cloned()
+                        .map(|expr| CallArg { name: None, expr }),
+                );
                 nested_block_pre_body.push(Stmt::Expr {
                     loc: Default::default(),
                     expr: Expr::UserCall {
@@ -2117,6 +2182,7 @@ fn generate_nested_wrapper_defs(
                     &callee_shape.field_array_slots,
                     &callee_shape.in_array_slots,
                     &callee_shape.nested_proc_array_slots,
+                    &delegate_context_args,
                     proc_api,
                     errors,
                 ));
@@ -2141,6 +2207,13 @@ fn generate_nested_wrapper_defs(
                 call_args.extend(expand_proc_buffer_call_args(
                     instance, api, nested_var, errors,
                 ));
+                call_args.extend(
+                    instance
+                        .delegate_context_args
+                        .iter()
+                        .cloned()
+                        .map(|expr| CallArg { name: None, expr }),
+                );
                 nested_block_post_body.push(Stmt::Expr {
                     loc: Default::default(),
                     expr: Expr::UserCall {
@@ -2165,6 +2238,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
                 &callee_shape.nested_proc_array_slots,
+                &delegate_context_args,
                 proc_api,
                 errors,
             ));
@@ -2194,6 +2268,13 @@ fn generate_nested_wrapper_defs(
                         raw_slot_name,
                         errors,
                     ));
+                    call_args.extend(
+                        instance
+                            .delegate_context_args
+                            .iter()
+                            .cloned()
+                            .map(|expr| CallArg { name: None, expr }),
+                    );
                     nested_block_post_body.push(Stmt::If {
                         loc: Default::default(),
                         cond: Expr::Index {
@@ -2254,6 +2335,12 @@ fn generate_nested_wrapper_defs(
                 call_args.push(CallArg {
                     name: None,
                     expr: Expr::var(buffer.name.clone()),
+                });
+            }
+            for name in &delegate_context_args {
+                call_args.push(CallArg {
+                    name: None,
+                    expr: Expr::var(name.clone()),
                 });
             }
             nested_defs.push(Block::Def(FunctionDef {
@@ -2339,11 +2426,36 @@ pub(super) fn generate_lowered_proc_blocks(
                 );
                 continue;
             }
+            let captures_delegate_context = proc_defs_by_name
+                .get(&nested_state.proc_name)
+                .is_some_and(|callee| {
+                    callee.delegates.iter().any(|delegate| {
+                        !proc_child_when_body(
+                            proc,
+                            callee,
+                            nested_var,
+                            &delegate.name,
+                            options,
+                            &[],
+                        )
+                        .is_empty()
+                    })
+                });
             nested_instances.insert(
                 nested_var.clone(),
                 ProcCallInstance {
                     proc_name: nested_state.proc_name.clone(),
                     buffer_args: Vec::new(),
+                    delegate_context_args: if captures_delegate_context {
+                        shape
+                            .buffer_specs
+                            .iter()
+                            .map(|buffer| Expr::var(buffer.name.clone()))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                    routes_owner_delegates: captures_delegate_context,
                 },
             );
         }
@@ -2353,6 +2465,8 @@ pub(super) fn generate_lowered_proc_blocks(
             ProcCallInstance {
                 proc_name: proc.name.clone(),
                 buffer_args: Vec::new(),
+                delegate_context_args: Vec::new(),
+                routes_owner_delegates: false,
             },
         );
 
@@ -2595,6 +2709,10 @@ pub(super) fn generate_lowered_proc_blocks(
                             );
                             continue;
                         };
+                        let delegate_context_args = nested_instances
+                            .get(slot_name)
+                            .map(|instance| instance.delegate_context_args.clone())
+                            .unwrap_or_default();
                         let (expanded, bound_buffers) = expand_nested_proc_ctor_assign(
                             &proc.name,
                             slot_name,
@@ -2602,6 +2720,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &slot_ctor_args,
                             &callee_shape.param_specs,
                             &callee_shape.buffer_specs,
+                            &delegate_context_args,
                             proc_array_slot,
                             &constructor_array_symbols,
                             errors,
@@ -2793,6 +2912,10 @@ pub(super) fn generate_lowered_proc_blocks(
                         );
                         continue;
                     };
+                    let delegate_context_args = nested_instances
+                        .get(var)
+                        .map(|instance| instance.delegate_context_args.clone())
+                        .unwrap_or_default();
                     let (expanded, bound_buffers) = expand_nested_proc_ctor_assign(
                         &proc.name,
                         var,
@@ -2800,6 +2923,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         args,
                         &callee_shape.param_specs,
                         &callee_shape.buffer_specs,
+                        &delegate_context_args,
                         None,
                         &constructor_array_symbols,
                         errors,
@@ -3004,6 +3128,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         &shape.buffer_specs,
                         |slot| format!("self.{slot}"),
                         format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX),
+                        &[],
                     )
                 } else {
                     let mut event_params = Vec::<onda_frontend::FnParamDecl>::new();
@@ -3150,8 +3275,16 @@ pub(super) fn generate_lowered_proc_blocks(
             let local_fn_name = proc_local_hidden_def_name(&proc.name, &local_def.name);
             def_sample_oversample_factors
                 .insert(local_fn_name.clone(), proc_sample_oversample_factor);
+            let captured_buffers = if is_generated_proc_delegate_local(proc, &local_def.name) {
+                shape.buffer_specs.as_slice()
+            } else {
+                &[]
+            };
             generated_defs.push(Block::Def(owner_proc_local_hidden_def(
-                &proc.name, &local_def, body,
+                &proc.name,
+                &local_def,
+                captured_buffers,
+                body,
             )));
         }
         let persistent_buffer_aliases =
@@ -3287,6 +3420,13 @@ pub(super) fn generate_lowered_proc_blocks(
                 call_args.extend(expand_proc_buffer_call_args(
                     instance, api, nested_var, errors,
                 ));
+                call_args.extend(
+                    instance
+                        .delegate_context_args
+                        .iter()
+                        .cloned()
+                        .map(|expr| CallArg { name: None, expr }),
+                );
                 block_pre_body.push(Stmt::Expr {
                     loc: Default::default(),
                     expr: Expr::UserCall {
@@ -3358,6 +3498,13 @@ pub(super) fn generate_lowered_proc_blocks(
                 call_args.extend(expand_proc_buffer_call_args(
                     instance, api, nested_var, errors,
                 ));
+                call_args.extend(
+                    instance
+                        .delegate_context_args
+                        .iter()
+                        .cloned()
+                        .map(|expr| CallArg { name: None, expr }),
+                );
                 block_post_body.push(Stmt::Expr {
                     loc: Default::default(),
                     expr: Expr::UserCall {

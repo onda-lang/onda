@@ -135,6 +135,25 @@ fn proc_child_when_handler_name(ordinal: usize) -> String {
     format!("{PROC_CHILD_WHEN_PREFIX}{ordinal}")
 }
 
+pub(super) fn is_generated_proc_delegate_local(proc: &ProcessorDef, name: &str) -> bool {
+    name.starts_with(SELF_WHEN_PREFIX)
+        || name.starts_with(PROC_CHILD_WHEN_PREFIX)
+        || (proc.delegates.iter().any(|delegate| delegate.name == name)
+            && proc
+                .local_defs
+                .iter()
+                .find(|def| def.name == name)
+                .is_some_and(|def| {
+                    collect_source_calls(&def.body)
+                        .into_iter()
+                        .any(|call| call.name.contains(SELF_WHEN_PREFIX))
+                }))
+}
+
+pub(super) fn delegate_owner_buffer_param_name(index: usize) -> String {
+    format!("__onda_delegate_owner_buffer_{index}")
+}
+
 fn validate_and_bind_when(
     when: &WhenDef,
     delegate: &DelegateDef,
@@ -3570,6 +3589,7 @@ pub(super) fn proc_child_when_body(
     nested_path: &str,
     delegate_name: &str,
     options: AnalysisOptions,
+    owner_buffer_args: &[String],
 ) -> Vec<Stmt> {
     let Some(delegate) = callee
         .delegates
@@ -3613,6 +3633,16 @@ pub(super) fn proc_child_when_body(
             delegate,
             leading,
         ));
+        if let Some(Stmt::Expr {
+            expr: Expr::UserCall { args, .. },
+            ..
+        }) = body.last_mut()
+        {
+            args.extend(owner_buffer_args.iter().map(|buffer| CallArg {
+                name: None,
+                expr: Expr::var(buffer.clone()),
+            }));
+        }
     }
     body
 }

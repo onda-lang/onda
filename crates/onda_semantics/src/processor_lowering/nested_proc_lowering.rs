@@ -164,7 +164,11 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::var(resolved_slot.clone()),
+                            expr: if instance.routes_owner_delegates {
+                                Expr::var("self")
+                            } else {
+                                Expr::var(resolved_slot.clone())
+                            },
                         });
                         let expanded_inputs =
                             expand_proc_call_args(args, api, resolved_slot.as_str(), errors);
@@ -176,7 +180,18 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                             errors,
                         );
                         rewritten.extend(expanded_buffers);
-                        *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
+                        rewritten.extend(
+                            instance
+                                .delegate_context_args
+                                .iter()
+                                .cloned()
+                                .map(|expr| CallArg { name: None, expr }),
+                        );
+                        *name = if instance.routes_owner_delegates {
+                            nested_call_out_fn_name(owner_proc, &resolved_slot, 0)
+                        } else {
+                            format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0")
+                        };
                         *args = rewritten;
                         return;
                     }
@@ -336,7 +351,8 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                     let is_array_slot =
                         find_proc_array_slot(var.as_str(), proc_array_slots).is_some();
-                    if is_array_slot {
+                    let uses_nested_wrapper = !is_array_slot || instance.routes_owner_delegates;
+                    if !uses_nested_wrapper {
                         rewritten.push(CallArg {
                             name: None,
                             expr: Expr::var(var.to_owned()),
@@ -352,7 +368,14 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     let expanded_buffers =
                         expand_proc_buffer_call_args(instance, api, var.as_str(), errors);
                     rewritten.extend(expanded_buffers);
-                    if is_array_slot {
+                    rewritten.extend(
+                        instance
+                            .delegate_context_args
+                            .iter()
+                            .cloned()
+                            .map(|expr| CallArg { name: None, expr }),
+                    );
+                    if !uses_nested_wrapper {
                         *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
                     } else {
                         *name = nested_call_out_fn_name(owner_proc, var.as_str(), out_idx);
@@ -389,7 +412,8 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                 let is_array_slot =
                     find_proc_array_slot(nested_var.as_str(), proc_array_slots).is_some();
-                if is_array_slot {
+                let uses_nested_wrapper = !is_array_slot || instance.routes_owner_delegates;
+                if !uses_nested_wrapper {
                     rewritten.push(CallArg {
                         name: None,
                         expr: Expr::var(nested_var.clone()),
@@ -405,7 +429,14 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 let expanded_buffers =
                     expand_proc_buffer_call_args(instance, api, &nested_var, errors);
                 rewritten.extend(expanded_buffers);
-                if is_array_slot {
+                rewritten.extend(
+                    instance
+                        .delegate_context_args
+                        .iter()
+                        .cloned()
+                        .map(|expr| CallArg { name: None, expr }),
+                );
+                if !uses_nested_wrapper {
                     *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
                 } else {
                     *name = nested_call_out_fn_name(owner_proc, &nested_var, 0);
@@ -586,7 +617,8 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     };
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                     let is_array_slot = find_proc_array_slot(&base, proc_array_slots).is_some();
-                    if is_array_slot {
+                    let uses_nested_wrapper = !is_array_slot || instance.routes_owner_delegates;
+                    if !uses_nested_wrapper {
                         rewritten.push(CallArg {
                             name: None,
                             expr: Expr::var(base.clone()),
@@ -605,7 +637,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         errors,
                     );
                     rewritten.extend(expanded);
-                    if is_array_slot {
+                    if !uses_nested_wrapper {
                         *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                     } else {
                         *name = nested_event_fn_name(owner_proc, base.as_str(), event_name);
@@ -693,7 +725,11 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                             let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                             rewritten.push(CallArg {
                                 name: None,
-                                expr: Expr::var(resolved_slot.clone()),
+                                expr: if instance.routes_owner_delegates {
+                                    Expr::var("self")
+                                } else {
+                                    Expr::var(resolved_slot.clone())
+                                },
                             });
                             let expanded_args =
                                 expand_proc_call_args(args, api, resolved_slot.as_str(), errors);
@@ -705,7 +741,18 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                                 errors,
                             );
                             rewritten.extend(expanded_buffers);
-                            *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
+                            rewritten.extend(
+                                instance
+                                    .delegate_context_args
+                                    .iter()
+                                    .cloned()
+                                    .map(|expr| CallArg { name: None, expr }),
+                            );
+                            *name = if instance.routes_owner_delegates {
+                                nested_step_fn_name(owner_proc, &resolved_slot)
+                            } else {
+                                format!("{proc_name}{PROC_STEP_FN_SUFFIX}")
+                            };
                             *args = rewritten;
                             return;
                         }
@@ -755,7 +802,8 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                     let is_array_slot =
                         find_proc_array_slot(nested_var.as_str(), proc_array_slots).is_some();
-                    if is_array_slot {
+                    let uses_nested_wrapper = !is_array_slot || instance.routes_owner_delegates;
+                    if !uses_nested_wrapper {
                         rewritten.push(CallArg {
                             name: None,
                             expr: Expr::var(nested_var.clone()),
@@ -771,7 +819,14 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     let expanded_buffers =
                         expand_proc_buffer_call_args(instance, api, &nested_var, errors);
                     rewritten.extend(expanded_buffers);
-                    if is_array_slot {
+                    rewritten.extend(
+                        instance
+                            .delegate_context_args
+                            .iter()
+                            .cloned()
+                            .map(|expr| CallArg { name: None, expr }),
+                    );
+                    if !uses_nested_wrapper {
                         *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
                     } else {
                         *name = nested_step_fn_name(owner_proc, &nested_var);
@@ -903,7 +958,8 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                         let mut rewritten =
                             Vec::<CallArg>::with_capacity(1 + args.len() + api.buffers.len());
                         let is_array_slot = find_proc_array_slot(&base, proc_array_slots).is_some();
-                        if is_array_slot {
+                        let uses_nested_wrapper = !is_array_slot || instance.routes_owner_delegates;
+                        if !uses_nested_wrapper {
                             rewritten.push(CallArg {
                                 name: None,
                                 expr: Expr::var(base.clone()),
@@ -928,7 +984,14 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                             &format!("{base}.{event_name}"),
                             errors,
                         ));
-                        if is_array_slot {
+                        rewritten.extend(
+                            instance
+                                .delegate_context_args
+                                .iter()
+                                .cloned()
+                                .map(|expr| CallArg { name: None, expr }),
+                        );
+                        if !uses_nested_wrapper {
                             *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                         } else {
                             *name = nested_event_fn_name(owner_proc, base.as_str(), event_name);
@@ -1292,6 +1355,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
     ctor_args: &[CallArg],
     callee_param_specs: &[ProcParamSpec],
     callee_buffer_specs: &[ProcBufferSpec],
+    delegate_context_args: &[Expr],
     proc_array_slot: Option<(usize, usize)>,
     constructor_array_symbols: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
@@ -1433,6 +1497,12 @@ pub(super) fn expand_nested_proc_ctor_assign(
     ];
     init_args.extend(
         bound_buffers
+            .iter()
+            .cloned()
+            .map(|expr| CallArg { name: None, expr }),
+    );
+    init_args.extend(
+        delegate_context_args
             .iter()
             .cloned()
             .map(|expr| CallArg { name: None, expr }),
@@ -1617,6 +1687,7 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
     callee_field_array_slots: &HashMap<String, Vec<String>>,
     callee_in_array_slots: &HashMap<String, Vec<String>>,
     callee_proc_array_slots: &HashMap<String, Vec<String>>,
+    delegate_context_args: &[String],
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Stmt> {
@@ -1635,7 +1706,13 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
             );
         }
         remap_nested_symbols_in_stmt(&mut stmt, &remap);
-        rewrite_nested_wrapper_local_calls(&mut stmt, callee_proc, owner_proc, nested_path);
+        rewrite_nested_wrapper_local_calls(
+            &mut stmt,
+            callee_proc,
+            owner_proc,
+            nested_path,
+            delegate_context_args,
+        );
 
         let nested_fields = callee_shape
             .nested_fields
@@ -1707,6 +1784,7 @@ pub(super) fn lower_callee_stmts_for_nested_wrapper(
     callee_field_array_slots: &HashMap<String, Vec<String>>,
     callee_in_array_slots: &HashMap<String, Vec<String>>,
     callee_proc_array_slots: &HashMap<String, Vec<String>>,
+    delegate_context_args: &[String],
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
@@ -1731,6 +1809,7 @@ pub(super) fn lower_callee_stmts_for_nested_wrapper(
                 callee_field_array_slots,
                 callee_in_array_slots,
                 callee_proc_array_slots,
+                delegate_context_args,
                 proc_api,
                 errors,
             )

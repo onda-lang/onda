@@ -24,8 +24,6 @@ const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE_BODY: &str = r#"Commands:
-  
-  onda                              Open the interactive run window
 
   onda compile <input>               Check, inspect, or emit compile artifacts
     

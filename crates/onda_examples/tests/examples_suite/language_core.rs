@@ -138,6 +138,89 @@ sample:
 }
 
 #[test]
+fn delegate_handlers_use_their_owner_buffer_bindings_at_runtime() {
+    let src = r#"
+delegate top_fired()
+
+proc Child:
+  delegate fired()
+  buffers:
+    own: f32
+  when fired():
+    own[0] = own[0] + 2.0
+  block:
+    held = 0.0
+    sample:
+      fired()
+      out1 = held
+
+proc Parent:
+  delegate own_fired()
+  buffers:
+    own: f32
+    routed: f32
+    child_own: f32
+  init:
+    child = Child(own = child_own)
+  when own_fired():
+    own[0] = own[0] + 1.0
+  when child.fired():
+    routed[0] = routed[0] + 10.0
+  sample:
+    own_fired()
+    out1 = child()
+
+buffers:
+  top: f32
+  own: f32
+  routed: f32
+  child_own: f32
+
+when top_fired():
+  top[0] = top[0] + 100.0
+
+when parent.own_fired():
+  top[0] = top[0] + 1000.0
+
+init:
+  parent = Parent(own = own, routed = routed, child_own = child_own)
+
+sample:
+  top_fired()
+  out1 = parent()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut top = [0.0_f32];
+    let mut own = [0.0_f32];
+    let mut routed = [0.0_f32];
+    let mut child_own = [0.0_f32];
+    for (index, buffer) in [&mut top, &mut own, &mut routed, &mut child_own]
+        .into_iter()
+        .enumerate()
+    {
+        bind_buffer(
+            &mut instance,
+            index,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            1,
+            48_000.0,
+            PrimitiveType::F32,
+        )
+        .expect("bind delegate handler buffer");
+    }
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(top[0], 4400.0, 1e-6);
+    assert_near(own[0], 4.0, 1e-6);
+    assert_near(routed[0], 40.0, 1e-6);
+    assert_near(child_own[0], 8.0, 1e-6);
+}
+
+#[test]
 
 fn init_restores_resettable_runtime_state() {
     let frames = 4;

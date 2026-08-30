@@ -640,6 +640,8 @@ fn reject_explicit_oversampled_child_calls_in_context(
                 ProcCallInstance {
                     proc_name: nested.proc_name.clone(),
                     buffer_args: Vec::new(),
+                    delegate_context_args: Vec::new(),
+                    routes_owner_delegates: false,
                 },
             )
         })
@@ -1018,6 +1020,8 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 ProcCallInstance {
                                     proc_name: ctor_name.clone(),
                                     buffer_args: buffer_args.clone(),
+                                    delegate_context_args: Vec::new(),
+                                    routes_owner_delegates: false,
                                 },
                             );
                             if let Some((array_base, slot_idx)) = array_slot.as_ref() {

@@ -3,9 +3,9 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    Block, CallArgument, Function, FunctionId, FunctionKind, Place, PlaceBase, Program, Rvalue,
-    SliceSource, SourceSpan, StatementKind, Type, Value, MIR_SCHEMA_VERSION, PROCESS_PARAM_COUNT,
-    PROCESS_PARAM_NAMES,
+    Block, CallArgument, Function, FunctionId, FunctionKind, FunctionOrigin, Place, PlaceBase,
+    Program, Rvalue, SliceSource, SourceSpan, StatementKind, Type, Value, MIR_SCHEMA_VERSION,
+    PROCESS_PARAM_COUNT, PROCESS_PARAM_NAMES,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -4528,10 +4528,13 @@ impl Validator<'_> {
         source: SourceSpan,
         operation: &str,
     ) {
-        if !matches!(
+        let has_runtime_buffer_capability = matches!(
             function.kind,
             FunctionKind::Init | FunctionKind::Process | FunctionKind::Event(_)
-        ) {
+        ) || (function.kind == FunctionKind::User
+            && function.attributes.origin == FunctionOrigin::CompilerGenerated
+            && function.attributes.runtime_context);
+        if !has_runtime_buffer_capability {
             self.function_error(
                 function_id,
                 source,
@@ -7009,6 +7012,52 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.message.contains("spans incompatible descriptors")));
+    }
+
+    #[test]
+    fn direct_buffers_in_user_functions_require_compiler_runtime_provenance() {
+        let mut program = empty_program();
+        program.types.push(Type::Scalar(ScalarType::F32));
+        program.interface.buffers.push(Buffer {
+            name: "samples".to_owned(),
+            element: ScalarType::F32,
+            channels: BufferChannels::Mono,
+            access: AccessMode::ReadWrite,
+        });
+        let mut handler = function("delegate_handler", FunctionKind::User);
+        handler.locals.push(Local {
+            integer_range: None,
+            name: Some("sample".to_owned()),
+            ty: test_type(0),
+        });
+        handler.body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::Local(LocalId::new(0)),
+                    projections: Vec::new(),
+                },
+                value: Rvalue::BufferLoad {
+                    buffer: BufferRef::Direct(BufferId::new(0)),
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    bounds: crate::BoundsMode::Clamp,
+                },
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        handler.attributes.runtime_context = true;
+        program.functions.push(handler.clone());
+        let errors = super::validate(&program)
+            .expect_err("source user functions must not gain direct buffer capability");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("user functions must receive buffers")));
+
+        handler.attributes.origin = crate::FunctionOrigin::CompilerGenerated;
+        program.functions[2] = handler;
+        super::validate(&program)
+            .expect("compiler-generated runtime handlers may access direct host buffers");
     }
 
     #[test]

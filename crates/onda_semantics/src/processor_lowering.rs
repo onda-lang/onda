@@ -1076,8 +1076,45 @@ fn build_proc_lowering_env(
         );
     }
     for proc in &proc_defs {
-        for local_def in unique_proc_local_defs(proc) {
-            pre_desugar_defs.push(pre_desugar_proc_local_hidden_def(&proc.name, &local_def));
+        let local_defs = unique_proc_local_defs(proc);
+        let needs_buffer_capture = local_defs
+            .iter()
+            .any(|def| is_generated_proc_delegate_local(proc, &def.name));
+        let captured_buffers = if needs_buffer_capture {
+            let factor = proc_sample_oversample_factors
+                .get(&proc.name)
+                .copied()
+                .unwrap_or(1);
+            // This provisional signature pass runs before full proc-shape
+            // validation. The shape pass below reports the authoritative
+            // diagnostics for the same declarations.
+            let mut ignored_buffer_errors = Vec::new();
+            crate::declaration_coercion::coerce_buffers(
+                &proc.buffers,
+                proc_runtime_analysis_options(options, factor),
+                &mut ignored_buffer_errors,
+            )
+            .into_iter()
+            .map(|buffer| ProcBufferSpec {
+                name: buffer.name,
+                elem_ty: buffer.elem_ty,
+                channels: buffer.channels,
+                array_len: buffer.array_len,
+                is_array: buffer.is_array,
+            })
+            .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for local_def in local_defs {
+            let buffers = if is_generated_proc_delegate_local(proc, &local_def.name) {
+                captured_buffers.as_slice()
+            } else {
+                &[]
+            };
+            pre_desugar_defs.push(pre_desugar_proc_local_hidden_def(
+                &proc.name, &local_def, buffers,
+            ));
         }
     }
     let pre_desugar_fn_signatures = pre_desugar_defs
@@ -1335,6 +1372,8 @@ fn build_proc_lowering_env(
                     ProcCallInstance {
                         proc_name: nested.proc_name.clone(),
                         buffer_args: Vec::new(),
+                        delegate_context_args: Vec::new(),
+                        routes_owner_delegates: false,
                     },
                 )
             })

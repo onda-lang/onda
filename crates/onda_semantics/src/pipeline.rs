@@ -11257,6 +11257,8 @@ pub fn analyze_with_options_and_inputs(
                                             ProcCallInstance {
                                                 proc_name: nested.proc_name.clone(),
                                                 buffer_args: Vec::new(),
+                                                delegate_context_args: Vec::new(),
+                                                routes_owner_delegates: false,
                                             },
                                         );
                                         let prefixed_slot = format!("{param_name}.{slot}");
@@ -11264,6 +11266,8 @@ pub fn analyze_with_options_and_inputs(
                                             ProcCallInstance {
                                                 proc_name: nested.proc_name.clone(),
                                                 buffer_args: Vec::new(),
+                                                delegate_context_args: Vec::new(),
+                                                routes_owner_delegates: false,
                                             },
                                         );
                                     }
@@ -11274,6 +11278,8 @@ pub fn analyze_with_options_and_inputs(
                                     ProcCallInstance {
                                         proc_name: nested.proc_name.clone(),
                                         buffer_args: Vec::new(),
+                                        delegate_context_args: Vec::new(),
+                                        routes_owner_delegates: false,
                                     },
                                 );
                                 let prefixed_instance = format!("{param_name}.{instance_name}");
@@ -11281,6 +11287,8 @@ pub fn analyze_with_options_and_inputs(
                                     ProcCallInstance {
                                         proc_name: nested.proc_name.clone(),
                                         buffer_args: Vec::new(),
+                                        delegate_context_args: Vec::new(),
+                                        routes_owner_delegates: false,
                                     },
                                 );
                             }
@@ -11291,6 +11299,8 @@ pub fn analyze_with_options_and_inputs(
                                 ProcCallInstance {
                                     proc_name: struct_name.clone(),
                                     buffer_args: Vec::new(),
+                                    delegate_context_args: Vec::new(),
+                                    routes_owner_delegates: false,
                                 },
                             );
                         }
@@ -11305,6 +11315,8 @@ pub fn analyze_with_options_and_inputs(
                                 ProcCallInstance {
                                     proc_name: proc_name.clone(),
                                     buffer_args: Vec::new(),
+                                    delegate_context_args: Vec::new(),
+                                    routes_owner_delegates: false,
                                 },
                             );
                         }

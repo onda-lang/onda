@@ -107,6 +107,10 @@ pub(crate) struct ProcEventParamSlotSpec {
 pub(crate) struct ProcCallInstance {
     pub(crate) proc_name: String,
     pub(crate) buffer_args: Vec<Expr>,
+    /// Buffers captured from the owner so routed child delegates can execute
+    /// their owner's `when` handlers in the documented proc event scope.
+    pub(crate) delegate_context_args: Vec<Expr>,
+    pub(crate) routes_owner_delegates: bool,
 }
 
 #[derive(Default, Debug, Clone)]
