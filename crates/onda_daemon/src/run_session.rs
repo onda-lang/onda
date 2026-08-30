@@ -10,7 +10,7 @@ use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, decode_print_batch_for_program,
-    format_print_batch_for_program, init_with_output, prepare_unchecked_process,
+    format_decoded_print_occurrences, init_with_output, prepare_unchecked_process,
     process_unchecked_segment, set_param_by_index, trigger_event_by_index, DelegateBatch,
     ExecutionOutput, InitMode, Instance, InstanceConfig, PrintBatch, PrintValue,
     DELEGATE_RECORD_HEADER_SIZE,
@@ -1433,8 +1433,9 @@ fn decode_run_print_batch(
     jit: &JitProgram,
     batch: &PrintBatch<'_>,
 ) -> Result<RunPrintBatch, Diagnostic> {
-    let text = format_print_batch_for_program(jit, batch)?;
-    let entries = decode_print_batch_for_program(jit, batch)?
+    let decoded = decode_print_batch_for_program(jit, batch)?;
+    let text = format_decoded_print_occurrences(&decoded);
+    let entries = decoded
         .into_iter()
         .map(|occurrence| {
             let site = occurrence.site;

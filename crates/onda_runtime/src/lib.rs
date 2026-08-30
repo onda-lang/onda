@@ -839,6 +839,28 @@ pub fn decode_print_batch_for_program<'program>(
     Ok(decoded)
 }
 
+/// Formats validated, decoded print occurrences without revisiting their packed payloads.
+pub fn format_decoded_print_occurrences(occurrences: &[DecodedPrintOccurrence<'_>]) -> String {
+    let mut text = String::new();
+    for occurrence in occurrences {
+        if let Some(label) = &occurrence.site.label {
+            write_escaped_print_label(&mut text, label)
+                .expect("writing escaped print labels to a String cannot fail");
+            if !occurrence.values.is_empty() {
+                text.push_str(": ");
+            }
+        }
+        for (index, value) in occurrence.values.iter().enumerate() {
+            if index > 0 {
+                text.push(' ');
+            }
+            write!(&mut text, "{value}").expect("writing print values to a String cannot fail");
+        }
+        text.push('\n');
+    }
+    text
+}
+
 pub const PROCESS_BEGIN_BLOCK: u32 = 1 << 0;
 pub const PROCESS_END_BLOCK: u32 = 1 << 1;
 pub const PROCESS_FULL_BLOCK: u32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
@@ -2623,6 +2645,45 @@ sample:
             escaped,
             "\\0\\\\\\n\\r\\t\\u{7}\\u{b}\\u{c}\\u{7f}\\u{85}\\u{2028}\\u{2029}sound"
         );
+    }
+
+    #[test]
+    fn decoded_print_formatting_matches_packed_batch_formatting() {
+        let mut instance = compile_test_instance(
+            r#"
+sample:
+  print("escaped\nlabel", 1.25, f64(-0.0), 7, i64(-9), true)
+  out1 = 0.0
+"#,
+            1,
+            1,
+        );
+        let mut output = [0.0_f32; 1];
+        unsafe {
+            bind_output(
+                &mut instance,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output),
+            )
+            .expect("output should bind");
+        }
+        let mut storage = [0_u8; 256];
+        let mut batch = PrintBatch::from_storage(&mut storage);
+        process_checked(
+            &mut instance,
+            1,
+            ExecutionOutput {
+                delegate_batch: None,
+                print_batch: Some(&mut batch),
+            },
+        )
+        .expect("sample should print");
+
+        let packed = format_print_batch(&instance, &batch).expect("packed batch should format");
+        let decoded = decode_print_batch(&instance, &batch).expect("batch should decode");
+
+        assert_eq!(format_decoded_print_occurrences(&decoded), packed);
     }
 
     #[test]
