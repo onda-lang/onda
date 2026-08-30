@@ -143,86 +143,36 @@ namespace std::delay<Capacity = SR * 2>:
 
       write_index += 1
 
-  proc Feedback<T>:
-    ins<T> 1
-    outs<T> 1
-
-    params<T>:
-      delay_s = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
-      feedback = 0.0
-      mix = 1.0 {0.0, 1.0}
-      transition_s = 0.02 {0.0, 1.0}
-
-    init:
-      line = Smooth<T>(delay_samples = delay_s * SR, transition_s = transition_s)
-      delayed = T(0.0)
-
-    event reset():
-      line.reset()
-      delayed = T(0.0)
-
-    sample:
-      delayed = line(
-        in1 + delayed * feedback,
-        delay_samples = delay_s * SR,
-        transition_s = transition_s
-      )
-      out1 = lerp(in1, delayed, mix)
-
   proc Delay<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
       delay_s = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
-      feedback = 0.0
+      feedback = 0.0 {-0.999, 0.999}
       mix = 1.0 {0.0, 1.0}
-      transition_s = 0.02 {0.0, 1.0}
+      transition_s = 0.02 {0.0, 1.0} => update_transition
 
-    init:
-      effect = Feedback<T>(
-        delay_s = delay_s,
-        feedback = feedback,
-        mix = mix,
-        transition_s = transition_s
-      )
+    init<T>:
+      data = std::data<Capacity>::Data<T>()
+      write_index = 0 {Capacity, wrap}
+      current_delay = delay_s * SR
+      transition_coefficient = 0.0
+
+    def update_transition():
+      transition_coefficient = std::smoothing::time_coefficient<T>(transition_s)
 
     event reset():
-      effect.reset()
+      data.storage[:] = 0.0
+      write_index = 0
+      current_delay = delay_s * SR
 
     sample:
-      out1 = effect(
-        in1,
-        delay_s = delay_s,
-        feedback = feedback,
-        mix = mix,
-        transition_s = transition_s
-      )
-
-  proc CrossfadeFeedback<T>:
-    ins<T> 1
-    outs<T> 1
-
-    params<T>:
-      delay_s = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
-      feedback = 0.0
-      mix = 1.0 {0.0, 1.0}
-      transition_s = 0.02 {0.0, 1.0}
-
-    init:
-      line = Crossfade<T>(delay_samples = delay_s * SR, transition_s = transition_s)
-      delayed = T(0.0)
-
-    event reset():
-      line.reset()
-      delayed = T(0.0)
-
-    sample:
-      delayed = line(
-        in1 + delayed * feedback,
-        delay_samples = delay_s * SR,
-        transition_s = transition_s
-      )
+      requested_delay = delay_s * SR
+      current_delay = requested_delay + (current_delay - requested_delay) * transition_coefficient
+      delayed = data.readL(T(write_index) - current_delay)
+      data.storage[write_index] = in1 + delayed * feedback
+      write_index += 1
       out1 = lerp(in1, delayed, mix)
 
   proc CrossfadeDelay<T>:
@@ -231,26 +181,49 @@ namespace std::delay<Capacity = SR * 2>:
 
     params<T>:
       delay_s = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
-      feedback = 0.0
+      feedback = 0.0 {-0.999, 0.999}
       mix = 1.0 {0.0, 1.0}
-      transition_s = 0.02 {0.0, 1.0}
+      transition_s = 0.02 {0.0, 1.0} => update_transition
 
-    init:
-      effect = CrossfadeFeedback<T>(
-        delay_s = delay_s,
-        feedback = feedback,
-        mix = mix,
-        transition_s = transition_s
-      )
+    init<T>:
+      data = std::data<Capacity>::Data<T>()
+      write_index = 0 {Capacity, wrap}
+      old_delay = delay_s * SR
+      target_delay = old_delay
+      fade = 1.0
+      transition_step = 1.0
+
+    def update_transition():
+      transition_step = 1.0 / max(transition_s * SR, T(1.0))
 
     event reset():
-      effect.reset()
+      data.storage[:] = 0.0
+      write_index = 0
+      old_delay = delay_s * SR
+      target_delay = old_delay
+      fade = 1.0
 
     sample:
-      out1 = effect(
-        in1,
-        delay_s = delay_s,
-        feedback = feedback,
-        mix = mix,
-        transition_s = transition_s
-      )
+      requested_delay = delay_s * SR
+      if fade >= 1.0 && requested_delay != target_delay:
+        if transition_step >= 1.0:
+          old_delay = requested_delay
+          target_delay = requested_delay
+        else:
+          old_delay = target_delay
+          target_delay = requested_delay
+          fade = 0.0
+
+      if fade < 1.0:
+        a = data.readL(T(write_index) - old_delay)
+        b = data.readL(T(write_index) - target_delay)
+        delayed = lerp(a, b, fade)
+        fade = min(fade + transition_step, T(1.0))
+        if fade >= 1.0:
+          old_delay = target_delay
+      else:
+        delayed = data.readL(T(write_index) - target_delay)
+
+      data.storage[write_index] = in1 + delayed * feedback
+      write_index += 1
+      out1 = lerp(in1, delayed, mix)

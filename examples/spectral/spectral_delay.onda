@@ -3,7 +3,9 @@ import std/fft
 import std/osc
 import std/pitch
 
-namespace SpectralDelay<N = 1024, HistoryFrames = 128>:
+const SpectralDelayCapacityS = 1.0
+
+namespace SpectralDelay<N = 1024, HistoryFrames = i32(SpectralDelayCapacityS * SR * 2 / N) + 3>:
   proc Engine:
     params:
       delay_s = 0.34
@@ -91,7 +93,7 @@ const Notes: f32[PatternLength] = [45.0, 52.0, 57.0, 48.0, 55.0, 62.0]
 params:
   auto_play = true
   live_input = false
-  delay_s = 0.34 {0.03, 1.0, log, unit = "s"}
+  delay_s = 0.34 {0.03, SpectralDelayCapacityS, log, unit = "s"}
   slope = 0.78 {0.0, 1.0}
   feedback = 0.42 {0.0, 0.9}
   stereo = 0.68 {0.0, 1.0}
@@ -142,6 +144,6 @@ sample:
     feedback = feedback,
     stereo = stereo
   )
-  
+
   out1 = tanh((source * (1.0 - mix) + delayed_l * mix) * level)
   out2 = tanh((source * (1.0 - mix) + delayed_r * mix) * level)

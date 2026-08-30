@@ -16,12 +16,12 @@ params:
 
 init:
   audition = EffectAudition()
-  delay_l = std::delay::Delay(
+  delay_l = std::delay<SR * 3>::Delay(
     delay_s = time_s,
     feedback = 0.0,
     mix = 1.0
   )
-  delay_r = std::delay::Delay(
+  delay_r = std::delay<SR * 3>::Delay(
     delay_s = time_s * 1.317,
     feedback = 0.0,
     mix = 1.0

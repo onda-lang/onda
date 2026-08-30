@@ -863,7 +863,56 @@ sample:
     let mut output = [0.0_f32; 11];
     process_interleaved(&mut instance, &[], &mut output, frames)
         .expect("process immediate feedback delay");
-    assert_eq!(output, [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    assert_eq!(
+        output,
+        [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    );
+}
+
+#[test]
+fn stdlib_feedback_delays_repeat_at_the_requested_interval() {
+    let source = r#"
+import std/delay
+
+init:
+  frame = 0
+  delay = std::delay<16>::Delay(
+    delay_s = 2.0 / SR,
+    feedback = 0.5,
+    mix = 1.0,
+    transition_s = 0.0
+  )
+  crossfade = std::delay<16>::CrossfadeDelay(
+    delay_s = 2.0 / SR,
+    feedback = 0.5,
+    mix = 1.0,
+    transition_s = 0.0
+  )
+
+sample:
+  if frame == 0:
+    impulse = 1.0
+  else:
+    impulse = 0.0
+  out1 = delay(impulse)
+  out2 = crossfade(impulse)
+  frame += 1
+"#;
+    let frames = 9;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = [0.0_f32; 18];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process feedback delay impulse");
+    assert_eq!(
+        output,
+        [
+            0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.25, 0.25, 0.0, 0.0,
+            0.125, 0.125,
+        ]
+    );
 }
 
 #[test]
